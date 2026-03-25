@@ -34,6 +34,9 @@ desktop.ini
 .claude/
 docs/
 
+# Git worktrees
+.worktrees/
+
 # Logs
 *.log
 npm-debug.log*
