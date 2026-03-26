@@ -1,6 +1,6 @@
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { corsHeaders } from '../lib/http';
+import { corsHeaders, errorMessage } from '../lib/http';
 
 const s3Client = new S3Client({});
 
@@ -10,7 +10,9 @@ const BUCKET_NAME = process.env.LEGAL_BUCKET_NAME!;
 const REQUIRED_TOS_VERSION = process.env.REQUIRED_TOS_VERSION!;
 const PRESIGN_EXPIRY_SECONDS = 3600; // 1 hour
 
-export const handler = async (): Promise<any> => {
+import type { APIGatewayProxyResult } from 'aws-lambda';
+
+export const handler = async (): Promise<APIGatewayProxyResult> => {
   try {
     const tosUrl = await getSignedUrl(
       s3Client,
@@ -40,7 +42,7 @@ export const handler = async (): Promise<any> => {
       }),
     };
   } catch (err) {
-    console.error('get-tos handler error:', err);
+    console.error('get-tos handler error:', errorMessage(err));
     return {
       statusCode: 500,
       headers: CORS_HEADERS,

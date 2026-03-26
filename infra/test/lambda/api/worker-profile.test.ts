@@ -1,3 +1,4 @@
+import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../lambda/api/worker-profile';
 import { getDbPool } from '../../../lambda/lib/db';
 import { checkCompliance } from '../../../lambda/legal/check-compliance';
@@ -38,7 +39,7 @@ describe('Worker Profile API Lambda', () => {
         },
       },
     },
-  };
+  } as unknown as APIGatewayProxyEvent;
 
   it('should return 403 if legal compliance is not met', async () => {
     mockCheckCompliance.mockResolvedValue({

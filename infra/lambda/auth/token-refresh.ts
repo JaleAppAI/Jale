@@ -3,14 +3,10 @@ import {
   InitiateAuthCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { corsHeaders, VALID_USER_TYPES, errorMessage } from '../lib/http';
 
 const cognito = new CognitoIdentityProviderClient({});
-
-const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000',
-  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-  'Access-Control-Allow-Methods': 'POST,OPTIONS',
-};
+const CORS_HEADERS = corsHeaders();
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -19,7 +15,7 @@ export const handler = async (
     const body = JSON.parse(event.body ?? '{}');
     const { refreshToken, userType } = body as {
       refreshToken: string;
-      userType: 'worker' | 'employer';
+      userType: string;
     };
 
     if (!refreshToken || !userType) {
@@ -27,6 +23,17 @@ export const handler = async (
         statusCode: 400,
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'missing_params', message: 'refreshToken and userType are required' }),
+      };
+    }
+
+    if (!VALID_USER_TYPES.includes(userType as any)) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          error: 'invalid_user_type',
+          message: 'userType must be "worker" or "employer"',
+        }),
       };
     }
 
@@ -55,8 +62,8 @@ export const handler = async (
         expiresIn: auth?.ExpiresIn,
       }),
     };
-  } catch (err: any) {
-    console.error('Token refresh failed:', err);
+  } catch (err: unknown) {
+    console.error('Token refresh failed:', errorMessage(err));
     return {
       statusCode: 401,
       headers: CORS_HEADERS,

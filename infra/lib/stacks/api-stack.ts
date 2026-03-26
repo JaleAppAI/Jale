@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -154,6 +155,23 @@ export class ApiStack extends cdk.Stack {
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
+
+    // ── IAM: Cognito permissions for auth Lambdas ──
+    // Scoped to the two pool ARNs to respect least privilege.
+    const poolArns = [
+      props.workerPool.userPool.userPoolArn,
+      props.employerPool.userPool.userPoolArn,
+    ];
+
+    tokenRefreshLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:InitiateAuth'],
+      resources: poolArns,
+    }));
+
+    logoutLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:GlobalSignOut', 'cognito-idp:RevokeToken'],
+      resources: poolArns,
+    }));
 
     // ── Routes ──
 

@@ -88,8 +88,8 @@ describe('Logout API Lambda', () => {
     expect(RevokeTokenCommand).toHaveBeenCalledWith({ Token: 'ref-token-emp', ClientId: 'employer-client-id' });
   });
 
-  it('should return 200 even if Cognito calls fail (graceful failure)', async () => {
-    // Force the first call to fail (GlobalSignOut) and the second to fail (RevokeToken)
+  it('should return 500 when both Cognito calls fail', async () => {
+    // Force both calls to fail (GlobalSignOut and RevokeToken)
     mockSend.mockRejectedValue(new Error('Cognito error'));
 
     const event = createEvent({
@@ -97,12 +97,15 @@ describe('Logout API Lambda', () => {
       refreshToken: 'ref-token',
       userType: 'worker',
     });
-    
+
     const response = await handler(event);
 
-    // It still returns 200 because it catches them individually
-    expect(response.statusCode).toBe(200);
-    expect(JSON.parse(response.body)).toEqual({ loggedOut: true });
+    // When both operations fail, the user is NOT logged out — return 500
+    expect(response.statusCode).toBe(500);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'logout_failed',
+      message: 'Both sign-out operations failed. Please try again.',
+    });
     expect(mockSend).toHaveBeenCalledTimes(2);
   });
 

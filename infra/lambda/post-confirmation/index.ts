@@ -6,7 +6,9 @@ import {
   SQSClient,
   SendMessageCommand,
 } from '@aws-sdk/client-sqs';
+import type { PostConfirmationTriggerEvent } from 'aws-lambda';
 import { getDbPool } from '../lib/db';
+import { errorMessage } from '../lib/http';
 
 const VALID_USER_TYPES = ['worker', 'employer'];
 
@@ -14,7 +16,7 @@ const VALID_USER_TYPES = ['worker', 'employer'];
 const cognitoClient = new CognitoIdentityProviderClient({});
 const sqsClient = new SQSClient({});
 
-export const handler = async (event: any): Promise<any> => {
+export const handler = async (event: PostConfirmationTriggerEvent): Promise<PostConfirmationTriggerEvent> => {
   // Only act on sign-up confirmation events
   if (event.triggerSource !== 'PostConfirmation_ConfirmSignUp') {
     return event;
@@ -39,7 +41,7 @@ export const handler = async (event: any): Promise<any> => {
       console.log(`[PostConfirm] Added ${event.userName} to group ${groupName}`);
     } catch (err) {
       // Log but never rethrow — group assignment failure must not block sign-up
-      console.error('[PostConfirm] Group assignment failed (non-fatal):', err);
+      console.error('[PostConfirm] Group assignment failed (non-fatal):', errorMessage(err));
     }
   } else {
     console.error(`[PostConfirm] Unknown user_type for ${event.userName}: ${userTypeAttr}`);
@@ -59,16 +61,14 @@ export const handler = async (event: any): Promise<any> => {
           QueueUrl: process.env.DLQ_URL,
           MessageBody: JSON.stringify({
             error: `Invalid user_type: ${userType}`,
-            event: {
-              triggerSource: event.triggerSource,
-              userPoolId: event.userPoolId,
-              userName: event.userName,
-              userAttributes: attrs,
-            },
+            triggerSource: event.triggerSource,
+            userPoolId: event.userPoolId,
+            userName: event.userName,
+            // userAttributes intentionally omitted — contains PII (phone, email)
           }),
         }));
       } catch (sqsErr) {
-        console.error('[PostConfirm] CRITICAL: Failed to push to DLQ:', sqsErr);
+        console.error('[PostConfirm] CRITICAL: Failed to push to DLQ:', errorMessage(sqsErr));
       }
     }
     return event;
@@ -99,7 +99,7 @@ export const handler = async (event: any): Promise<any> => {
     if (client) {
       try { await client.query('ROLLBACK'); } catch (_) {}
     }
-    console.error('Post-confirmation handler error:', err);
+    console.error('Post-confirmation handler error:', errorMessage(err));
 
     // Push failed event to DLQ for manual investigation/retry.
     // We do NOT re-throw because Cognito would block the user's sign-up.
@@ -108,18 +108,16 @@ export const handler = async (event: any): Promise<any> => {
         await sqsClient.send(new SendMessageCommand({
           QueueUrl: process.env.DLQ_URL,
           MessageBody: JSON.stringify({
-            error: String(err),
-            event: {
-              triggerSource: event.triggerSource,
-              userPoolId: event.userPoolId,
-              userName: event.userName,
-              userAttributes: attrs,
-            },
+            error: errorMessage(err),
+            triggerSource: event.triggerSource,
+            userPoolId: event.userPoolId,
+            userName: event.userName,
+            // userAttributes intentionally omitted — contains PII (phone, email)
           }),
         }));
         console.log('[PostConfirm] Failed event pushed to DLQ for retry');
       } catch (sqsErr) {
-        console.error('[PostConfirm] CRITICAL: Failed to push to DLQ:', sqsErr);
+        console.error('[PostConfirm] CRITICAL: Failed to push to DLQ:', errorMessage(sqsErr));
       }
     }
   } finally {

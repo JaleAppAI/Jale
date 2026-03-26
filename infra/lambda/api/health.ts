@@ -1,6 +1,7 @@
+import type { APIGatewayProxyResult } from 'aws-lambda';
 import { corsHeaders } from '../lib/http';
 
-export const handler = async (): Promise<any> => {
+export const handler = async (): Promise<APIGatewayProxyResult> => {
   return {
     statusCode: 200,
     headers: corsHeaders(),

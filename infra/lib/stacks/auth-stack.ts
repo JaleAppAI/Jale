@@ -59,10 +59,12 @@ export class AuthStack extends cdk.Stack {
         },
       }),
     });
+    // Scope SNS to this region/account. Cognito only publishes to phone numbers
+    // (not topic ARNs), so the resource pattern covers all phone-targeted publishes.
     smsRole.addToPolicy(
       new iam.PolicyStatement({
         actions: ['sns:Publish'],
-        resources: ['*'],
+        resources: [`arn:aws:sns:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:*`],
       }),
     );
 
@@ -130,15 +132,17 @@ export class AuthStack extends cdk.Stack {
     });
 
     // ── Grant post-confirmation Lambda permission to assign groups ──
-    // Using resources: ['*'] because scoping to pool ARNs creates a CDK circular
-    // dependency: Lambda Policy → Fn::GetAtt(Pool.Arn) → Pool → Lambda trigger → Policy.
-    // cdk.Lazy.string was attempted but resolves to Fn::GetAtt at synth time, same cycle.
-    // The real authorization boundary is the Cognito trigger itself — Cognito only calls
-    // this Lambda for the two pools it's registered on.
-    // TODO: Resolve via SSM Parameter Store to break the cycle and scope the resource.
+    // Scoping to pool ARNs creates a CDK circular dependency:
+    //   Lambda Policy → Fn::GetAtt(Pool.Arn) → Pool → Lambda trigger → Policy
+    // Instead, scope to all Cognito pools in this account/region. This is tighter
+    // than '*' (no cross-account access) while avoiding the circular dependency.
+    // The real authorization boundary is the Cognito trigger itself — Cognito only
+    // calls this Lambda for the two pools it's registered on.
     postConfirmationLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminAddUserToGroup'],
-      resources: ['*'],
+      resources: [
+        `arn:aws:cognito-idp:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:userpool/*`,
+      ],
     }));
 
     // Note: pool IDs are NOT injected as env vars — doing so would create a CDK circular

@@ -64,12 +64,12 @@ export async function getDbPool(): Promise<Pool> {
     max: 1,
     idleTimeoutMillis: 10000,
     connectionTimeoutMillis: 2000,
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: true },
   });
 
   // Prevent unhandled promise rejections on idle client errors
   pool.on('error', (err) => {
-    console.error('Unexpected error on idle pg client:', err);
+    console.error('Unexpected error on idle pg client:', err instanceof Error ? err.message : String(err));
     // Force pool recreation on next call
     pool = undefined;
   });

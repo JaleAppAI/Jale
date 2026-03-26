@@ -1,14 +1,15 @@
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool } from '../lib/db';
-import { corsHeaders } from '../lib/http';
+import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
 
-export const handler = async (event: any): Promise<any> => {
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
 
   try {
-    const cognitoSub: string = event.requestContext.authorizer.claims.sub;
+    const cognitoSub: string = event.requestContext.authorizer?.claims?.sub;
 
     const pool = await getDbPool();
     client = await pool.connect();
@@ -58,7 +59,7 @@ export const handler = async (event: any): Promise<any> => {
     if (client) {
       try { await client.query('ROLLBACK'); } catch (_) {}
     }
-    console.error('Employer profile handler error:', err);
+    console.error('Employer profile handler error:', errorMessage(err));
     return {
       statusCode: 500,
       headers: CORS_HEADERS,

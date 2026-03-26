@@ -1,9 +1,10 @@
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool } from '../lib/db';
-import { corsHeaders } from '../lib/http';
+import { corsHeaders, errorMessage } from '../lib/http';
 
 const CORS_HEADERS = corsHeaders();
 
-export const handler = async (event: any): Promise<any> => {
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
 
   try {
@@ -98,7 +99,7 @@ export const handler = async (event: any): Promise<any> => {
       body: JSON.stringify({ accepted: true, version: tosVersion }),
     };
   } catch (err) {
-    console.error('accept-tos handler error:', err);
+    console.error('accept-tos handler error:', errorMessage(err));
     return {
       statusCode: 500,
       headers: CORS_HEADERS,

@@ -100,15 +100,19 @@ describe('AuthStack', () => {
     });
   });
 
-  test('Post-confirmation Lambda has AdminAddUserToGroup permission', () => {
-    // CloudFormation serializes a single-action policy as a string, not an array
+  test('Post-confirmation Lambda has scoped AdminAddUserToGroup permission', () => {
+    // Policy is scoped to all Cognito pools in this account/region (not '*')
+    // to respect least privilege while avoiding CDK circular dependency.
+    // CDK serializes a single-element Resource as a Fn::Join, not an array.
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: Match.objectLike({
         Statement: Match.arrayWith([
           Match.objectLike({
             Action: 'cognito-idp:AdminAddUserToGroup',
             Effect: 'Allow',
-            Resource: '*',
+            Resource: Match.objectLike({
+              'Fn::Join': Match.anyValue(),
+            }),
           }),
         ]),
       }),

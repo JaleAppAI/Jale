@@ -1,3 +1,4 @@
+import type { PostConfirmationTriggerEvent } from 'aws-lambda';
 import { handler } from '../../../lambda/post-confirmation/index';
 import { CognitoIdentityProviderClient, AdminAddUserToGroupCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
@@ -58,10 +59,10 @@ describe('Post-confirmation trigger Lambda', () => {
         name: 'Test Setup User',
       },
     },
-  });
+  }) as unknown as PostConfirmationTriggerEvent;
 
   it('should ignore non PostConfirmation_ConfirmSignUp trigger sources', async () => {
-    const event = { triggerSource: 'PreSignUp_AdminCreateUser' };
+    const event = { triggerSource: 'PreSignUp_AdminCreateUser' } as unknown as PostConfirmationTriggerEvent;
     const response = await handler(event);
 
     expect(response).toEqual(event);
