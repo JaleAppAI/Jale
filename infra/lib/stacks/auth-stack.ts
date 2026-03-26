@@ -109,5 +109,35 @@ export class AuthStack extends cdk.Stack {
         postConfirmation: postConfirmationLambda.function,
       },
     });
+
+    // ── Cognito User Groups (Task 2.1) ──
+    new cognito.CfnUserPoolGroup(this, 'WorkerGroup', {
+      userPoolId: this.workerPool.userPool.userPoolId,
+      groupName: 'Workers',
+      description: 'Blue-collar workers authenticated via phone/OTP',
+      precedence: 1,
+    });
+
+    new cognito.CfnUserPoolGroup(this, 'EmployerGroup', {
+      userPoolId: this.employerPool.userPool.userPoolId,
+      groupName: 'Employers',
+      description: 'Employers authenticated via email/password',
+      precedence: 1,
+    });
+
+    // ── Grant post-confirmation Lambda permission to assign groups ──
+    // Using addToRolePolicy with resource:'*' instead of userPool.grant() to avoid a CDK
+    // circular dependency: userPool.grant() references the pool ARN (Fn::GetAtt), and the
+    // pool already references the Lambda ARN (via the trigger), so CDK detects a cycle.
+    // The real authorization boundary is the Cognito trigger itself — Cognito only calls
+    // this Lambda for the two pools it's registered on.
+    postConfirmationLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminAddUserToGroup'],
+      resources: ['*'],
+    }));
+
+    // Note: pool IDs are NOT injected as env vars — doing so would create a CDK circular
+    // dependency (Lambda env var Ref: UserPool ↔ UserPool LambdaConfig: Lambda ARN).
+    // The Lambda determines the group from the custom:user_type attribute in the event instead.
   }
 }

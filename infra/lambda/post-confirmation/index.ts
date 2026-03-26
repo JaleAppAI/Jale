@@ -3,6 +3,10 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import {
+  CognitoIdentityProviderClient,
+  AdminAddUserToGroupCommand,
+} from '@aws-sdk/client-cognito-identity-provider';
 
 interface DbSecret {
   host: string;
@@ -18,6 +22,9 @@ let cachedSecret: DbSecret | undefined;
 const smClient = new SecretsManagerClient({
   region: process.env.DB_REGION,
 });
+
+// Module-level client — reused across warm Lambda invocations
+const cognitoClient = new CognitoIdentityProviderClient({});
 
 async function getDbSecret(): Promise<DbSecret> {
   if (cachedSecret) {
@@ -38,6 +45,31 @@ export const handler = async (event: any): Promise<any> => {
   // Only act on sign-up confirmation events
   if (event.triggerSource !== 'PostConfirmation_ConfirmSignUp') {
     return event;
+  }
+
+  // ── Group assignment (Task 2.1) ──
+  // Determine the group from custom:user_type attribute in the event.
+  // Using the attribute avoids injecting pool ID env vars which would create
+  // a CDK circular dependency (Lambda Ref:UserPool ↔ UserPool Ref:Lambda).
+  const userTypeAttr = event.request.userAttributes['custom:user_type'];
+  const groupName =
+    userTypeAttr === 'worker'   ? 'Workers'   :
+    userTypeAttr === 'employer' ? 'Employers' : null;
+
+  if (groupName) {
+    try {
+      await cognitoClient.send(new AdminAddUserToGroupCommand({
+        UserPoolId: event.userPoolId,
+        Username:   event.userName,
+        GroupName:  groupName,
+      }));
+      console.log(`[PostConfirm] Added ${event.userName} to group ${groupName}`);
+    } catch (err) {
+      // Log but never rethrow — group assignment failure must not block sign-up
+      console.error('[PostConfirm] Group assignment failed (non-fatal):', err);
+    }
+  } else {
+    console.error(`[PostConfirm] Unknown userPoolId: ${event.userPoolId}`);
   }
 
   let client: Client | undefined;

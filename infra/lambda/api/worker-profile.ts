@@ -56,10 +56,14 @@ export const handler = async (event: any): Promise<any> => {
 
     await client.connect();
 
+    // RLS requires an explicit transaction so SET LOCAL survives until the SELECT
+    await client.query('BEGIN');
+    await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
     const result = await client.query(
-      'SELECT * FROM users WHERE cognito_sub = $1',
+      'SELECT id, user_type, email, phone, full_name, tenant_id, created_at FROM users WHERE cognito_sub = $1',
       [cognitoSub],
     );
+    await client.query('COMMIT');
 
     if (result.rows.length === 0) {
       return {
@@ -72,17 +76,15 @@ export const handler = async (event: any): Promise<any> => {
       };
     }
 
-    const user = result.rows[0];
-    // Omit sensitive fields
-    delete user.password_hash;
-    delete user.internal_notes;
-
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify(user),
+      body: JSON.stringify(result.rows[0]),
     };
   } catch (err) {
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
     console.error('Worker profile handler error:', err);
     return {
       statusCode: 500,

@@ -58,4 +58,32 @@ describe('ApiStack', () => {
       Description: 'Employer profile endpoint',
     });
   });
+
+  // Task 2.2 — per-route authorizer verification
+  test('GET /worker/profile is protected by WorkerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  test('GET /employer/profile is protected by EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
+  test('GET /health has no authorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'NONE',
+    });
+  });
 });

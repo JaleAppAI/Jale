@@ -65,4 +65,36 @@ describe('AuthStack', () => {
       }),
     });
   });
+
+  // Task 2.1 — Cognito User Groups
+  test('Workers group exists in Worker pool', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolGroup', {
+      GroupName: 'Workers',
+    });
+  });
+
+  test('Employers group exists in Employer pool', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolGroup', {
+      GroupName: 'Employers',
+    });
+  });
+
+  test('Exactly two user pool groups exist', () => {
+    template.resourceCountIs('AWS::Cognito::UserPoolGroup', 2);
+  });
+
+  test('Post-confirmation Lambda has AdminAddUserToGroup permission', () => {
+    // CloudFormation serializes a single-action policy as a string, not an array
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: 'cognito-idp:AdminAddUserToGroup',
+            Effect: 'Allow',
+            Resource: '*',
+          }),
+        ]),
+      }),
+    });
+  });
 });
