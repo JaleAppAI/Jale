@@ -61,6 +61,12 @@ describe('Worker Profile API Lambda', () => {
     expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['worker-sub-123']);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT'); // Commit after blocking
     expect(mockRelease).toHaveBeenCalled();
+
+    // Verify RLS setup order: BEGIN → SET LOCAL → checkCompliance → COMMIT
+    // If SET LOCAL were moved after checkCompliance, the query would run without RLS context
+    expect(mockQuery.mock.calls[0]).toEqual(['BEGIN']);
+    expect(mockQuery.mock.calls[1]).toEqual(['SET LOCAL app.current_user_id = $1', ['worker-sub-123']]);
+    expect(mockQuery.mock.calls[2]).toEqual(['COMMIT']);
   });
 
   it('should return 404 if user profile is not found', async () => {

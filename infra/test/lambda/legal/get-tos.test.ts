@@ -57,6 +57,10 @@ describe('Get ToS API Lambda', () => {
       Bucket: 'test-legal-bucket',
       Key: 'privacy-policy.md',
     });
+
+    // Verify presigned URL expiry is 1 hour — changing this silently would break ToS delivery
+    expect(mockGetSignedUrl.mock.calls[0][2]).toEqual({ expiresIn: 3600 });
+    expect(mockGetSignedUrl.mock.calls[1][2]).toEqual({ expiresIn: 3600 });
   });
 
   it('should handle errors gracefully returning 500', async () => {

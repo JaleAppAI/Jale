@@ -79,10 +79,16 @@ describe('Accept ToS API Lambda', () => {
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
     expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['test-user']);
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), ['v1.0', 'test-user']);
+    // Both consent log inserts must happen — one for 'tos' and one for 'privacy'
     expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining("document_type, document_version"), 
+      expect.stringContaining("SELECT id, 'tos'"),
       ['v1.0', '127.0.0.1', 'Jest Test', 'test-user']
     );
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("SELECT id, 'privacy'"),
+      ['v1.0', '127.0.0.1', 'Jest Test', 'test-user']
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(6); // BEGIN + SET LOCAL + UPDATE + INSERT tos + INSERT privacy + COMMIT
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
   });

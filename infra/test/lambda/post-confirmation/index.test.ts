@@ -109,6 +109,46 @@ describe('Post-confirmation trigger Lambda', () => {
     }));
   });
 
+  it('should add employer to Employers group and insert into DB', async () => {
+    const event = createEvent('employer');
+
+    mockCognitoSend.mockResolvedValue({});
+    mockQuery.mockResolvedValue({});
+
+    const response = await handler(event);
+
+    expect(response).toEqual(event);
+    expect(AdminAddUserToGroupCommand).toHaveBeenCalledWith({
+      UserPoolId: 'pool-123',
+      Username: 'user-id-123',
+      GroupName: 'Employers',
+    });
+
+    expect(mockQuery).toHaveBeenCalledWith('BEGIN');
+    expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['sub-183492']);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO users'),
+      ['sub-183492', 'employer', 'test@example.com', '+1234567890', 'Test Setup User']
+    );
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('should push to DLQ if user_type is null', async () => {
+    const event = createEvent(null);
+
+    const response = await handler(event);
+
+    expect(response).toEqual(event);
+    expect(mockCognitoSend).not.toHaveBeenCalled(); // No group to assign
+    expect(mockQuery).not.toHaveBeenCalled();       // DB insert skipped
+
+    expect(SendMessageCommand).toHaveBeenCalledWith(expect.objectContaining({
+      QueueUrl: 'https://sqs.dlq.url',
+      MessageBody: expect.stringContaining('Invalid user_type: null'),
+    }));
+  });
+
   it('should catch db errors, rollback, push to DLQ, and not block signup', async () => {
     const event = createEvent('employer');
     mockQuery.mockImplementation((queryText) => {

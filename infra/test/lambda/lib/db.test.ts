@@ -84,6 +84,24 @@ describe('DB Utility', () => {
 
       expect(mockSend).toHaveBeenCalledTimes(2);
     });
+
+    it('should refetch secret after TTL expires', async () => {
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(mockSecret) });
+
+      const dateSpy = jest.spyOn(Date, 'now');
+      const baseTime = 1_000_000;
+      dateSpy.mockReturnValue(baseTime);
+
+      await getDbSecret(); // First fetch — cachedAt set to baseTime
+
+      // Advance time past the 5-minute TTL (300 000 ms)
+      dateSpy.mockReturnValue(baseTime + 5 * 60 * 1000 + 1);
+
+      await getDbSecret(); // TTL expired — must refetch from Secrets Manager
+
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      dateSpy.mockRestore();
+    });
   });
 
   describe('getDbPool', () => {
