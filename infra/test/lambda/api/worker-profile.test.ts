@@ -130,4 +130,15 @@ describe('Worker Profile API Lambda', () => {
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockRelease).toHaveBeenCalled();
   });
+
+  test('should return 401 if cognitoSub is missing from authorizer claims', async () => {
+    const event = {
+      requestContext: { authorizer: { claims: {} } },
+    } as unknown as APIGatewayProxyEvent;
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(401);
+    expect(JSON.parse(result.body)).toEqual({ error: 'unauthorized' });
+  });
 });

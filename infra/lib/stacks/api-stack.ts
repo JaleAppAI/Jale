@@ -30,6 +30,21 @@ export class ApiStack extends cdk.Stack {
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
 
+    // ── API Gateway CloudWatch account role ──
+    // This is an account-level setting (one per region) required before API Gateway
+    // can write access logs to CloudWatch. Without it, stage creation fails with
+    // "CloudWatch Logs role ARN must be set in account settings".
+    const apiGwCloudWatchRole = new iam.Role(this, 'ApiGatewayCloudWatchRole', {
+      assumedBy: new iam.ServicePrincipal('apigateway.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('service-role/AmazonAPIGatewayPushToCloudWatchLogs'),
+      ],
+    });
+
+    const apiGwAccount = new apigateway.CfnAccount(this, 'ApiGatewayAccount', {
+      cloudWatchRoleArn: apiGwCloudWatchRole.roleArn,
+    });
+
     // ── CloudWatch access log group ──
     const accessLogGroup = new logs.LogGroup(this, 'ApiAccessLogs', {
       logGroupName: '/aws/apigateway/jale-api',
@@ -53,6 +68,9 @@ export class ApiStack extends cdk.Stack {
         allowHeaders: ['Content-Type', 'Authorization'],
       },
     });
+
+    // Deployment stage must wait for the account CloudWatch role to be set
+    this.api.node.addDependency(apiGwAccount);
 
     // ── Default Gateway Responses ──
     // API Gateway returns 4xx/5xx before reaching Lambda (auth failures, throttling).

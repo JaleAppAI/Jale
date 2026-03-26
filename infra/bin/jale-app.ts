@@ -26,6 +26,7 @@ const auth = new AuthStack(app, 'JaleAuthStack', {
   privateSubnets: network.privateSubnets,
   lambdaSg: network.lambdaSg,
   dbSecret: database.dbSecret,
+  cognitoSmsRole: network.cognitoSmsRole,
 });
 
 const api = new ApiStack(app, 'JaleApiStack', {

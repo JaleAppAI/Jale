@@ -18,6 +18,7 @@ describe('AuthStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      cognitoSmsRole: network.cognitoSmsRole,
     });
     template = Template.fromStack(auth);
   });
@@ -52,19 +53,8 @@ describe('AuthStack', () => {
     });
   });
 
-  test('IAM role for SMS exists with cognito-idp trust', () => {
-    template.hasResourceProperties('AWS::IAM::Role', {
-      AssumeRolePolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Principal: {
-              Service: 'cognito-idp.amazonaws.com',
-            },
-          }),
-        ]),
-      }),
-    });
-  });
+  // SMS IAM role now lives in NetworkStack (pre-deployed for IAM propagation).
+  // See network-stack.test.ts for the cognito-idp trust assertion.
 
   // Task 2.1 — Cognito User Groups
   test('Workers group exists in Worker pool', () => {

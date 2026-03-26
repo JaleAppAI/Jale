@@ -20,6 +20,7 @@ describe('ApiStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      cognitoSmsRole: network.cognitoSmsRole,
     });
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,

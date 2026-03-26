@@ -14,6 +14,7 @@ export interface AuthStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly dbSecret: secretsmanager.ISecret;
+  readonly cognitoSmsRole: iam.IRole;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -50,23 +51,9 @@ export class AuthStack extends cdk.Stack {
     this.postConfirmationLambda = postConfirmationLambda;
 
     // ── SMS IAM Role for Worker Pool MFA ──
-    const smsRole = new iam.Role(this, 'WorkerPoolSmsRole', {
-      assumedBy: new iam.ServicePrincipal('cognito-idp.amazonaws.com', {
-        conditions: {
-          StringEquals: {
-            'sts:ExternalId': 'jale-worker-sms',
-          },
-        },
-      }),
-    });
-    // Scope SNS to this region/account. Cognito only publishes to phone numbers
-    // (not topic ARNs), so the resource pattern covers all phone-targeted publishes.
-    smsRole.addToPolicy(
-      new iam.PolicyStatement({
-        actions: ['sns:Publish'],
-        resources: [`arn:aws:sns:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:*`],
-      }),
-    );
+    // Role is pre-created in NetworkStack to ensure IAM propagation completes
+    // before Cognito validates SNS permissions at UserPool creation time.
+    const smsRole = props.cognitoSmsRole;
 
     // ── Worker Cognito Pool ──
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {

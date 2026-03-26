@@ -72,4 +72,21 @@ describe('NetworkStack', () => {
       }),
     });
   });
+
+  test('Cognito SMS IAM role exists with cognito-idp trust and inline SNS policy', () => {
+    template.hasResourceProperties('AWS::IAM::Role', {
+      AssumeRolePolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Principal: { Service: 'cognito-idp.amazonaws.com' },
+          }),
+        ]),
+      }),
+      Policies: Match.arrayWith([
+        Match.objectLike({
+          PolicyName: 'SnsPublish',
+        }),
+      ]),
+    });
+  });
 });

@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
 
 export class NetworkStack extends cdk.Stack {
@@ -8,6 +9,7 @@ export class NetworkStack extends cdk.Stack {
   public readonly isolatedSubnets: ec2.ISubnet[];
   public readonly lambdaSg: ec2.SecurityGroup;
   public readonly rdsSg: ec2.SecurityGroup;
+  public readonly cognitoSmsRole: iam.Role;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -87,6 +89,32 @@ export class NetworkStack extends cdk.Stack {
 
     this.vpc.addGatewayEndpoint('S3Endpoint', {
       service: ec2.GatewayVpcEndpointAwsService.S3,
+    });
+
+    // ── Cognito SMS IAM Role ──
+    // Created here (not in AuthStack) so it is fully propagated through IAM
+    // before AuthStack deploys. Cognito validates SNS permissions at UserPool
+    // creation time, and newly-created roles can fail that check due to IAM
+    // eventual-consistency delays if the role and UserPool are in the same stack.
+    this.cognitoSmsRole = new iam.Role(this, 'CognitoSmsRole', {
+      assumedBy: new iam.ServicePrincipal('cognito-idp.amazonaws.com', {
+        conditions: {
+          StringEquals: { 'sts:ExternalId': 'jale-worker-sms' },
+        },
+      }),
+      inlinePolicies: {
+        SnsPublish: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              actions: ['sns:Publish'],
+              // Must be '*': Cognito SMS sends OTPs directly to phone numbers,
+              // not through SNS topics. Direct phone publishing has no topic ARN,
+              // so a scoped regional ARN fails Cognito's role permission validation.
+              resources: ['*'],
+            }),
+          ],
+        }),
+      },
     });
   }
 }

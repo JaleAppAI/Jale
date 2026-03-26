@@ -10,6 +10,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
   try {
     const cognitoSub: string = event.requestContext.authorizer?.claims?.sub;
+    if (!cognitoSub) {
+      return {
+        statusCode: 401,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'unauthorized' }),
+      };
+    }
 
     const pool = await getDbPool();
     client = await pool.connect();
