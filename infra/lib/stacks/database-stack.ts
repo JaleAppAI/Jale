@@ -21,7 +21,8 @@ export class DatabaseStack extends cdk.Stack {
     const { vpc, isolatedSubnets, rdsSg } = props.network;
 
     const env = this.node.tryGetContext('environment') ?? 'dev';
-    const deletionProtection = this.node.tryGetContext('deletionProtection') ?? false;
+    const deletionProtection = this.node.tryGetContext('deletionProtection') !== false;
+    const multiAz = this.node.tryGetContext('multiAz') ?? false;
     const removalPolicy =
       env === 'dev' ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
 
@@ -50,7 +51,7 @@ export class DatabaseStack extends cdk.Stack {
       databaseName: 'jale',
       backupRetention: cdk.Duration.days(7),
       deletionProtection,
-      multiAz: false,
+      multiAz,
       removalPolicy,
       storageEncrypted: true,
     });

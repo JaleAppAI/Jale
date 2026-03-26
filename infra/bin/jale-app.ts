@@ -45,4 +45,5 @@ new LegalStack(app, 'JaleLegalStack', {
   lambdaSg: network.lambdaSg,
   dbSecret: database.dbSecret,
   api: api.api,
+  dualAuthorizer: api.dualAuthorizer,
 });

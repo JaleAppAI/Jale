@@ -27,6 +27,7 @@ export class AuthStack extends cdk.Stack {
     // ── Dead-letter queue for post-confirmation Lambda ──
     const dlq = new sqs.Queue(this, 'PostConfirmationDlq', {
       queueName: 'jale-post-confirmation-dlq',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
     });
 
     // ── Post-Confirmation Lambda ──
@@ -35,6 +36,7 @@ export class AuthStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
         DB_REGION: cdk.Stack.of(this).region,
+        DLQ_URL: dlq.queueUrl,
       },
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
@@ -44,6 +46,7 @@ export class AuthStack extends cdk.Stack {
     });
 
     props.dbSecret.grantRead(postConfirmationLambda.function);
+    dlq.grantSendMessages(postConfirmationLambda.function);
     this.postConfirmationLambda = postConfirmationLambda;
 
     // ── SMS IAM Role for Worker Pool MFA ──
@@ -71,10 +74,10 @@ export class AuthStack extends cdk.Stack {
       smsRole,
       smsExternalId: 'jale-worker-sms',
       passwordPolicy: {
-        minLength: 8,
+        minLength: 12,
         requireLowercase: false,
         requireUppercase: false,
-        requireDigits: false,
+        requireDigits: true,
         requireSymbols: false,
       },
       customAttributes: {
@@ -91,7 +94,8 @@ export class AuthStack extends cdk.Stack {
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
       poolName: 'jale-employer-pool',
       signInAliases: { email: true },
-      mfa: cognito.Mfa.OFF,
+      mfa: cognito.Mfa.OPTIONAL,
+      mfaSecondFactor: { sms: false, otp: true },
       passwordPolicy: {
         minLength: 8,
         requireLowercase: true,
@@ -100,7 +104,7 @@ export class AuthStack extends cdk.Stack {
         requireSymbols: true,
       },
       customAttributes: {
-        user_type: new cognito.StringAttribute({ mutable: true }),
+        user_type: new cognito.StringAttribute({ mutable: false }),
         company_name: new cognito.StringAttribute({ mutable: true }),
       },
       selfSignUp: true,
@@ -126,11 +130,12 @@ export class AuthStack extends cdk.Stack {
     });
 
     // ── Grant post-confirmation Lambda permission to assign groups ──
-    // Using addToRolePolicy with resource:'*' instead of userPool.grant() to avoid a CDK
-    // circular dependency: userPool.grant() references the pool ARN (Fn::GetAtt), and the
-    // pool already references the Lambda ARN (via the trigger), so CDK detects a cycle.
+    // Using resources: ['*'] because scoping to pool ARNs creates a CDK circular
+    // dependency: Lambda Policy → Fn::GetAtt(Pool.Arn) → Pool → Lambda trigger → Policy.
+    // cdk.Lazy.string was attempted but resolves to Fn::GetAtt at synth time, same cycle.
     // The real authorization boundary is the Cognito trigger itself — Cognito only calls
     // this Lambda for the two pools it's registered on.
+    // TODO: Resolve via SSM Parameter Store to break the cycle and scope the resource.
     postConfirmationLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ['cognito-idp:AdminAddUserToGroup'],
       resources: ['*'],

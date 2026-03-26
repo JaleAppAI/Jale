@@ -7,7 +7,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 const cognito = new CognitoIdentityProviderClient({});
 
 const CORS_HEADERS = {
-  'Access-Control-Allow-Origin': 'http://localhost:3000',
+  'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000',
   'Access-Control-Allow-Headers': 'Content-Type,Authorization',
   'Access-Control-Allow-Methods': 'POST,OPTIONS',
 };
@@ -62,7 +62,7 @@ export const handler = async (
       headers: CORS_HEADERS,
       body: JSON.stringify({
         error: 'refresh_failed',
-        message: err.message,
+        message: 'Token refresh failed. Please sign in again.',
       }),
     };
   }

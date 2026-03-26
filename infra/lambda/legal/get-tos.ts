@@ -1,12 +1,10 @@
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { corsHeaders } from '../lib/http';
 
 const s3Client = new S3Client({});
 
-const CORS_HEADERS = {
-  'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin': 'http://localhost:3000',
-};
+const CORS_HEADERS = corsHeaders();
 
 const BUCKET_NAME = process.env.LEGAL_BUCKET_NAME!;
 const REQUIRED_TOS_VERSION = process.env.REQUIRED_TOS_VERSION!;

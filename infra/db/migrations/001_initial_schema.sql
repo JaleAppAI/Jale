@@ -11,9 +11,13 @@ CREATE TABLE IF NOT EXISTS users (
     email        TEXT,
     phone        TEXT,
     full_name    TEXT,
-    tenant_id    UUID,       -- nullable in Sprint 1; future FK to organizations table
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    tenant_id            UUID,            -- nullable in Sprint 1; future FK to organizations table
+    tos_version          TEXT,            -- version of ToS the user accepted
+    tos_accepted_at      TIMESTAMPTZ,    -- when the user accepted ToS
+    privacy_version      TEXT,            -- version of privacy policy the user accepted
+    privacy_accepted_at  TIMESTAMPTZ,    -- when the user accepted privacy policy
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_cognito_sub ON users (cognito_sub);
@@ -26,7 +30,7 @@ CREATE TABLE IF NOT EXISTS legal_consent_log (
     document_type    TEXT        NOT NULL CHECK (document_type IN ('tos', 'privacy')),
     document_version TEXT        NOT NULL,
     accepted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ip_address       TEXT,
+    ip_address       INET,
     user_agent       TEXT
 );
 

@@ -14,6 +14,8 @@ export interface CognitoPoolProps {
   };
   /** MFA enforcement level */
   mfa: cognito.Mfa;
+  /** MFA second factor configuration (SMS, TOTP) */
+  mfaSecondFactor?: cognito.MfaSecondFactor;
   /** Password policy overrides */
   passwordPolicy?: cognito.PasswordPolicy;
   /** Whether users can self-register */
@@ -53,6 +55,7 @@ export class CognitoPool extends Construct {
       selfSignUpEnabled: props.selfSignUp,
       autoVerify: props.autoVerify,
       mfa: props.mfa,
+      mfaSecondFactor: props.mfaSecondFactor,
       passwordPolicy: props.passwordPolicy,
       customAttributes: props.customAttributes,
       lambdaTriggers: props.lambdaTriggers

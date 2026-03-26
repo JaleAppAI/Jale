@@ -14,7 +14,11 @@ export class NetworkStack extends cdk.Stack {
 
     const maxAzs = this.node.tryGetContext('vpcMaxAzs') ?? 2;
 
-    // VPC with two private subnet tiers and no NAT gateways
+    // VPC with two private subnet tiers and no NAT gateways.
+    // WARNING: natGateways: 0 means PRIVATE_WITH_EGRESS subnets have NO actual
+    // internet egress. Lambdas can ONLY reach AWS services via VPC Endpoints.
+    // Current endpoints: SecretsManager, SNS, Cognito-IDP, STS, CloudWatch Logs, SQS, S3 (gateway)
+    // Adding a Lambda that calls any service without an endpoint will silently timeout.
     this.vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs,
       natGateways: 0,
@@ -68,6 +72,7 @@ export class NetworkStack extends cdk.Stack {
       CognitoIdp: ec2.InterfaceVpcEndpointAwsService.COGNITO_IDP,
       Sts: ec2.InterfaceVpcEndpointAwsService.STS,
       CloudWatchLogs: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
+      Sqs: ec2.InterfaceVpcEndpointAwsService.SQS,
     };
 
     for (const [name, service] of Object.entries(interfaceEndpoints)) {

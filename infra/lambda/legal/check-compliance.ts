@@ -1,4 +1,4 @@
-import { Client } from 'pg';
+import { Client, PoolClient } from 'pg';
 
 export interface ComplianceResult {
   compliant: boolean;
@@ -13,7 +13,7 @@ export interface ComplianceResult {
  * compliance before proceeding with their primary logic.
  */
 export async function checkCompliance(
-  dbClient: Client,
+  dbClient: Client | PoolClient,
   cognitoSub: string,
   requiredTosVersion: string,
 ): Promise<ComplianceResult> {
@@ -28,7 +28,7 @@ export async function checkCompliance(
 
   const user = result.rows[0];
   return {
-    compliant: user.tos_version === requiredTosVersion,
+    compliant: user.tos_version?.trim() === requiredTosVersion.trim(),
     currentVersion: user.tos_version ?? null,
   };
 }

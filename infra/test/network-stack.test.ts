@@ -37,13 +37,14 @@ describe('NetworkStack', () => {
     });
   });
 
-  test('Interface VPC endpoints exist for secretsmanager, sns, cognito-idp, sts, logs', () => {
+  test('Interface VPC endpoints exist for secretsmanager, sns, cognito-idp, sts, logs, sqs', () => {
     const endpoints = [
       'secretsmanager',
       'sns',
       'cognito-idp',
       'sts',
       'logs',
+      'sqs',
     ];
     for (const svc of endpoints) {
       template.hasResourceProperties('AWS::EC2::VPCEndpoint', {

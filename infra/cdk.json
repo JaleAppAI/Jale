@@ -102,6 +102,9 @@
     "environment": "dev",
     "vpcMaxAzs": 2,
     "dbInstanceClass": "t4g.micro",
-    "deletionProtection": false
+    "deletionProtection": false,
+    "allowedOrigin": "http://localhost:3000",
+    "requiredTosVersion": "1.0",
+    "multiAz": false
   }
 }

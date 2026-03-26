@@ -46,3 +46,20 @@ GRANT SELECT, INSERT ON legal_consent_log TO jale_admin;
 --   SELECT * FROM users;
 --   COMMIT;
 -- ============================================================
+
+-- ============================================================
+-- RLS for legal_consent_log
+-- Each session can only see/insert its own consent records.
+-- ============================================================
+ALTER TABLE legal_consent_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE legal_consent_log FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY consent_log_isolation_select
+  ON legal_consent_log FOR SELECT
+  USING (user_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
+
+CREATE POLICY consent_log_isolation_insert
+  ON legal_consent_log FOR INSERT
+  WITH CHECK (user_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
+
+GRANT SELECT, INSERT ON legal_consent_log TO jale_admin;

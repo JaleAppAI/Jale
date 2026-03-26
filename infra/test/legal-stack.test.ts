@@ -8,6 +8,7 @@ import { LegalStack } from '../lib/stacks/legal-stack';
 
 describe('LegalStack', () => {
   let template: Template;
+  let apiTemplate: Template;
 
   beforeAll(() => {
     const app = new cdk.App();
@@ -35,8 +36,10 @@ describe('LegalStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
       api: api.api,
+      dualAuthorizer: api.dualAuthorizer,
     });
     template = Template.fromStack(legal);
+    apiTemplate = Template.fromStack(api);
   });
 
   test('S3 bucket exists with versioning enabled', () => {
@@ -56,6 +59,15 @@ describe('LegalStack', () => {
   test('accept-tos Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Records user acceptance of ToS and privacy policy',
+    });
+  });
+
+  // The /legal/accept method is added to ApiStack's API, so the Method resource
+  // lives in ApiStack's template, not LegalStack's. Verify via the API template.
+  test('POST /legal/accept is protected by Cognito authorizer (via ApiStack)', () => {
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'COGNITO_USER_POOLS',
     });
   });
 });

@@ -13,6 +13,7 @@ export interface LegalStackProps extends cdk.StackProps {
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly dbSecret: secretsmanager.ISecret;
   readonly api: apigateway.RestApi;
+  readonly dualAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
 }
 
 export class LegalStack extends cdk.Stack {
@@ -20,6 +21,10 @@ export class LegalStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: LegalStackProps) {
     super(scope, id, props);
+
+    // ── Context values ──
+    const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
+    const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
 
     // ── S3 Bucket for legal documents (ToS, privacy policy) ──
     this.legalBucket = new s3.Bucket(this, 'LegalDocsBucket', {
@@ -39,7 +44,8 @@ export class LegalStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         LEGAL_BUCKET_NAME: this.legalBucket.bucketName,
-        REQUIRED_TOS_VERSION: '1.0',
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     this.legalBucket.grantRead(getTosFn.function);
@@ -53,7 +59,8 @@ export class LegalStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
         DB_REGION: cdk.Stack.of(this).region,
-        REQUIRED_TOS_VERSION: '1.0',
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     props.dbSecret.grantRead(acceptTosFn.function);
@@ -62,18 +69,15 @@ export class LegalStack extends cdk.Stack {
     const legalResource = props.api.root.addResource('legal');
 
     // GET /legal/tos — public, no auth
+    // TODO: Add WAF/usage plan for production rate limiting
     const tosResource = legalResource.addResource('tos');
     tosResource.addMethod('GET', new apigateway.LambdaIntegration(getTosFn.function));
 
-    // POST /legal/accept — no CDK authorizer; the Lambda decodes the JWT
-    // from the Authorization header to extract the user sub.
-    // TODO: Refactor to use a custom authorizer that validates tokens against
-    //       both the worker and employer Cognito pools. For now, the Lambda
-    //       trusts the JWT without cryptographic verification (acceptable in dev
-    //       since the client has already authenticated against Cognito).
+    // POST /legal/accept — protected by dual Cognito authorizer (created in ApiStack)
     const acceptResource = legalResource.addResource('accept');
     acceptResource.addMethod('POST', new apigateway.LambdaIntegration(acceptTosFn.function), {
-      authorizationType: apigateway.AuthorizationType.NONE,
+      authorizer: props.dualAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
     });
   }
 }

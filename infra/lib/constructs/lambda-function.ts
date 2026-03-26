@@ -37,7 +37,6 @@ export class JaleLambdaFunction extends Construct {
     super(scope, id);
 
     this.logGroup = new logs.LogGroup(this, 'LogGroup', {
-      logGroupName: `/aws/lambda/${id}`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
@@ -61,7 +60,7 @@ export class JaleLambdaFunction extends Construct {
       retryAttempts: props.retryAttempts,
       maxEventAge: props.maxEventAge,
       bundling: {
-        externalModules: ['pg-native'],
+        externalModules: ['pg-native', '@aws-sdk/*'],
       },
     });
   }

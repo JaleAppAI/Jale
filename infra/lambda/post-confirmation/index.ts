@@ -1,45 +1,18 @@
-import { Client } from 'pg';
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
 import {
   CognitoIdentityProviderClient,
   AdminAddUserToGroupCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
+import {
+  SQSClient,
+  SendMessageCommand,
+} from '@aws-sdk/client-sqs';
+import { getDbPool } from '../lib/db';
 
-interface DbSecret {
-  host: string;
-  port: number;
-  dbname: string;
-  username: string;
-  password: string;
-}
+const VALID_USER_TYPES = ['worker', 'employer'];
 
-// Cache the parsed secret across warm invocations
-let cachedSecret: DbSecret | undefined;
-
-const smClient = new SecretsManagerClient({
-  region: process.env.DB_REGION,
-});
-
-// Module-level client — reused across warm Lambda invocations
+// Module-level clients — reused across warm Lambda invocations
 const cognitoClient = new CognitoIdentityProviderClient({});
-
-async function getDbSecret(): Promise<DbSecret> {
-  if (cachedSecret) {
-    return cachedSecret;
-  }
-
-  const result = await smClient.send(
-    new GetSecretValueCommand({
-      SecretId: process.env.DB_SECRET_ARN,
-    }),
-  );
-
-  cachedSecret = JSON.parse(result.SecretString!) as DbSecret;
-  return cachedSecret;
-}
+const sqsClient = new SQSClient({});
 
 export const handler = async (event: any): Promise<any> => {
   // Only act on sign-up confirmation events
@@ -69,52 +42,89 @@ export const handler = async (event: any): Promise<any> => {
       console.error('[PostConfirm] Group assignment failed (non-fatal):', err);
     }
   } else {
-    console.error(`[PostConfirm] Unknown userPoolId: ${event.userPoolId}`);
+    console.error(`[PostConfirm] Unknown user_type for ${event.userName}: ${userTypeAttr}`);
   }
 
-  let client: Client | undefined;
+  const attrs = event.request.userAttributes;
+  const userType: string | null = attrs['custom:user_type'] || null;
 
+  // H-3: Validate user_type is in the allowed set before DB insert
+  if (!userType || !VALID_USER_TYPES.includes(userType)) {
+    console.error(`[PostConfirm] Invalid user_type: ${userType} for ${event.userName} — skipping DB insert`);
+    // User exists in Cognito but won't have a DB record. DLQ fallback below
+    // will capture this for investigation. Return event so sign-up completes.
+    if (process.env.DLQ_URL) {
+      try {
+        await sqsClient.send(new SendMessageCommand({
+          QueueUrl: process.env.DLQ_URL,
+          MessageBody: JSON.stringify({
+            error: `Invalid user_type: ${userType}`,
+            event: {
+              triggerSource: event.triggerSource,
+              userPoolId: event.userPoolId,
+              userName: event.userName,
+              userAttributes: attrs,
+            },
+          }),
+        }));
+      } catch (sqsErr) {
+        console.error('[PostConfirm] CRITICAL: Failed to push to DLQ:', sqsErr);
+      }
+    }
+    return event;
+  }
+
+  const cognitoSub: string = attrs.sub;
+  const email: string | null = attrs.email || null;
+  const phone: string | null = attrs.phone_number || null;
+  const fullName: string | null = attrs.name || null;
+
+  let client;
   try {
-    const secret = await getDbSecret();
+    const pool = await getDbPool();
+    client = await pool.connect();
 
-    client = new Client({
-      host: secret.host,
-      port: secret.port,
-      database: secret.dbname,
-      user: secret.username,
-      password: secret.password,
-      ssl: { rejectUnauthorized: false },
-    });
-
-    await client.connect();
-
-    const attrs = event.request.userAttributes;
-
-    // Determine user_type from custom attribute or fall back to inference
-    const userType: string | null =
-      attrs['custom:user_type'] || null;
-
-    const cognitoSub: string = attrs.sub;
-    const email: string | null = attrs.email || null;
-    const phone: string | null = attrs.phone_number || null;
-    const fullName: string | null = attrs.name || null;
-
+    // RLS requires SET LOCAL before INSERT — see 002_rls_policies.sql
+    await client.query('BEGIN');
+    await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
     await client.query(
       `INSERT INTO users (cognito_sub, user_type, email, phone, full_name)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (cognito_sub) DO NOTHING`,
       [cognitoSub, userType, email, phone, fullName],
     );
+    await client.query('COMMIT');
   } catch (err) {
-    // Log but never throw — do not block Cognito confirmation
+    // ROLLBACK the DB transaction if it was started
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
     console.error('Post-confirmation handler error:', err);
+
+    // Push failed event to DLQ for manual investigation/retry.
+    // We do NOT re-throw because Cognito would block the user's sign-up.
+    if (process.env.DLQ_URL) {
+      try {
+        await sqsClient.send(new SendMessageCommand({
+          QueueUrl: process.env.DLQ_URL,
+          MessageBody: JSON.stringify({
+            error: String(err),
+            event: {
+              triggerSource: event.triggerSource,
+              userPoolId: event.userPoolId,
+              userName: event.userName,
+              userAttributes: attrs,
+            },
+          }),
+        }));
+        console.log('[PostConfirm] Failed event pushed to DLQ for retry');
+      } catch (sqsErr) {
+        console.error('[PostConfirm] CRITICAL: Failed to push to DLQ:', sqsErr);
+      }
+    }
   } finally {
     if (client) {
-      try {
-        await client.end();
-      } catch (endErr) {
-        console.error('Error closing DB connection:', endErr);
-      }
+      client.release();
     }
   }
 

@@ -83,6 +83,23 @@ describe('AuthStack', () => {
     template.resourceCountIs('AWS::Cognito::UserPoolGroup', 2);
   });
 
+  test('Employer pool has MFA optional', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserPoolName: 'jale-employer-pool',
+      MfaConfiguration: 'OPTIONAL',
+    });
+  });
+
+  test('Post-confirmation Lambda has DLQ_URL environment variable', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          DLQ_URL: Match.anyValue(),
+        }),
+      }),
+    });
+  });
+
   test('Post-confirmation Lambda has AdminAddUserToGroup permission', () => {
     // CloudFormation serializes a single-action policy as a string, not an array
     template.hasResourceProperties('AWS::IAM::Policy', {

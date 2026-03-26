@@ -20,9 +20,14 @@ export interface ApiStackProps extends cdk.StackProps {
 export class ApiStack extends cdk.Stack {
   public readonly api: apigateway.RestApi;
   public readonly apiUrl: string;
+  public readonly dualAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
+
+    // ── Context values ──
+    const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
+    const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
 
     // ── CloudWatch access log group ──
     const accessLogGroup = new logs.LogGroup(this, 'ApiAccessLogs', {
@@ -42,9 +47,27 @@ export class ApiStack extends cdk.Stack {
         throttlingRateLimit: 50,
       },
       defaultCorsPreflightOptions: {
-        allowOrigins: ['http://localhost:3000'],
+        allowOrigins: [allowedOrigin],
         allowMethods: apigateway.Cors.ALL_METHODS,
         allowHeaders: ['Content-Type', 'Authorization'],
+      },
+    });
+
+    // ── Default Gateway Responses ──
+    // API Gateway returns 4xx/5xx before reaching Lambda (auth failures, throttling).
+    // These responses lack CORS headers by default, causing browser CORS errors.
+    this.api.addGatewayResponse('Default4xx', {
+      type: apigateway.ResponseType.DEFAULT_4XX,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': `'${allowedOrigin}'`,
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
+      },
+    });
+    this.api.addGatewayResponse('Default5xx', {
+      type: apigateway.ResponseType.DEFAULT_5XX,
+      responseHeaders: {
+        'Access-Control-Allow-Origin': `'${allowedOrigin}'`,
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
       },
     });
 
@@ -59,6 +82,12 @@ export class ApiStack extends cdk.Stack {
       authorizerName: 'employer-authorizer',
     });
 
+    // Dual authorizer — validates tokens from either pool (used by LegalStack)
+    this.dualAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'DualAuthorizer', {
+      cognitoUserPools: [props.workerPool.userPool, props.employerPool.userPool],
+      authorizerName: 'legal-dual-authorizer',
+    });
+
     // ── Lambda Functions ──
 
     // Health check — no auth, no DB
@@ -67,6 +96,9 @@ export class ApiStack extends cdk.Stack {
       description: 'Health check endpoint',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
+      environment: {
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
     });
 
     // Worker profile — worker auth, DB access
@@ -77,6 +109,8 @@ export class ApiStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     props.dbSecret.grantRead(workerProfileLambda.function);
@@ -89,9 +123,37 @@ export class ApiStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     props.dbSecret.grantRead(employerProfileLambda.function);
+
+    // Token refresh — no auth (refresh token is the credential), no DB
+    const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/token-refresh.ts'),
+      description: 'Token refresh endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        WORKER_CLIENT_ID: props.workerPool.clientId,
+        EMPLOYER_CLIENT_ID: props.employerPool.clientId,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+
+    // Logout — no auth (user may have expired access token), no DB
+    const logoutLambda = new JaleLambdaFunction(this, 'LogoutLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/logout.ts'),
+      description: 'Logout endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        WORKER_CLIENT_ID: props.workerPool.clientId,
+        EMPLOYER_CLIENT_ID: props.employerPool.clientId,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
 
     // ── Routes ──
 
@@ -114,6 +176,15 @@ export class ApiStack extends cdk.Stack {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
+
+    // POST /auth/refresh — no auth (user's access token may be expired)
+    const authResource = this.api.root.addResource('auth');
+    const refreshResource = authResource.addResource('refresh');
+    refreshResource.addMethod('POST', new apigateway.LambdaIntegration(tokenRefreshLambda.function));
+
+    // POST /auth/logout — no auth (user may have expired access token)
+    const logoutResource = authResource.addResource('logout');
+    logoutResource.addMethod('POST', new apigateway.LambdaIntegration(logoutLambda.function));
 
     // ── Outputs ──
     this.apiUrl = this.api.url;

@@ -1,80 +1,20 @@
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
-import { Client } from 'pg';
+import { getDbPool } from '../lib/db';
+import { corsHeaders } from '../lib/http';
 
-interface DbSecret {
-  host: string;
-  port: number;
-  dbname: string;
-  username: string;
-  password: string;
-}
-
-// Cache the parsed secret across warm invocations
-let cachedSecret: DbSecret | undefined;
-
-const smClient = new SecretsManagerClient({});
-
-async function getDbSecret(): Promise<DbSecret> {
-  if (cachedSecret) {
-    return cachedSecret;
-  }
-
-  const result = await smClient.send(
-    new GetSecretValueCommand({
-      SecretId: process.env.DB_SECRET_ARN,
-    }),
-  );
-
-  cachedSecret = JSON.parse(result.SecretString!) as DbSecret;
-  return cachedSecret;
-}
-
-/**
- * Decode a JWT and extract the payload without verification.
- * This is acceptable here because the token was already validated by Cognito
- * on the client side. In production, use a custom authorizer.
- */
-function decodeJwtPayload(token: string): Record<string, any> {
-  const parts = token.replace(/^Bearer\s+/i, '').split('.');
-  if (parts.length !== 3) {
-    throw new Error('Invalid JWT format');
-  }
-  const payload = Buffer.from(parts[1], 'base64url').toString('utf-8');
-  return JSON.parse(payload);
-}
-
-const CORS_HEADERS = {
-  'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin': 'http://localhost:3000',
-};
+const CORS_HEADERS = corsHeaders();
 
 export const handler = async (event: any): Promise<any> => {
-  let client: Client | undefined;
+  let client;
 
   try {
-    // Extract user sub from Authorization header JWT
-    const authHeader: string | undefined =
-      event.headers?.Authorization ?? event.headers?.authorization;
-
-    if (!authHeader) {
-      return {
-        statusCode: 401,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'unauthorized', message: 'Missing Authorization header' }),
-      };
-    }
-
-    const jwtPayload = decodeJwtPayload(authHeader);
-    const cognitoSub: string = jwtPayload.sub;
+    // Extract user sub from Cognito authorizer claims (set by API Gateway)
+    const cognitoSub: string = event.requestContext?.authorizer?.claims?.sub;
 
     if (!cognitoSub) {
       return {
         statusCode: 401,
         headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'unauthorized', message: 'Invalid token: missing sub' }),
+        body: JSON.stringify({ error: 'unauthorized', message: 'Missing user identity' }),
       };
     }
 
@@ -90,27 +30,33 @@ export const handler = async (event: any): Promise<any> => {
       };
     }
 
-    // Connect to DB
-    const secret = await getDbSecret();
-    client = new Client({
-      host: secret.host,
-      port: secret.port,
-      database: secret.dbname,
-      user: secret.username,
-      password: secret.password,
-      ssl: { rejectUnauthorized: false },
-    });
-    await client.connect();
+    // Server-side validation: reject requests with non-matching version
+    if (tosVersion.trim() !== process.env.REQUIRED_TOS_VERSION!.trim()) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          error: 'invalid_tos_version',
+          message: `Expected version ${process.env.REQUIRED_TOS_VERSION}`,
+        }),
+      };
+    }
 
     // Extract request metadata for consent log
-    const ipAddress: string =
-      event.requestContext?.identity?.sourceIp ?? '0.0.0.0';
+    // Pass null for missing IPs — column is INET, no need for ::inet cast
+    const ipAddress: string | null =
+      event.requestContext?.identity?.sourceIp || null;
     const userAgent: string =
       event.headers?.['User-Agent'] ?? event.headers?.['user-agent'] ?? 'unknown';
 
-    // Transaction: update user + insert consent log entries
+    // Connect to DB via shared pool
+    const pool = await getDbPool();
+    client = await pool.connect();
+
+    // Transaction: update user + insert consent log entries (RLS-aware)
     try {
       await client.query('BEGIN');
+      await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
 
       await client.query(
         `UPDATE users
@@ -125,7 +71,7 @@ export const handler = async (event: any): Promise<any> => {
       await client.query(
         `INSERT INTO legal_consent_log
             (user_id, document_type, document_version, ip_address, user_agent)
-         SELECT id, 'tos', $1, $2::inet, $3
+         SELECT id, 'tos', $1, $2, $3
            FROM users
           WHERE cognito_sub = $4`,
         [tosVersion, ipAddress, userAgent, cognitoSub],
@@ -134,7 +80,7 @@ export const handler = async (event: any): Promise<any> => {
       await client.query(
         `INSERT INTO legal_consent_log
             (user_id, document_type, document_version, ip_address, user_agent)
-         SELECT id, 'privacy_policy', $1, $2::inet, $3
+         SELECT id, 'privacy', $1, $2, $3
            FROM users
           WHERE cognito_sub = $4`,
         [tosVersion, ipAddress, userAgent, cognitoSub],
@@ -160,11 +106,7 @@ export const handler = async (event: any): Promise<any> => {
     };
   } finally {
     if (client) {
-      try {
-        await client.end();
-      } catch (endErr) {
-        console.error('Error closing DB connection:', endErr);
-      }
+      client.release();
     }
   }
 };
