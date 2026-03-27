@@ -71,6 +71,7 @@ export class CognitoPool extends Construct {
     const authFlows: cognito.AuthFlow = {
       userSrp: true,
       custom: props.signInAliases.phone ? true : false,
+      adminUserPassword: true,
     };
 
     this.userPoolClient = new cognito.UserPoolClient(this, 'UserPoolClient', {
