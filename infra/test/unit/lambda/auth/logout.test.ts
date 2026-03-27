@@ -27,7 +27,7 @@ describe('Logout API Lambda', () => {
     };
 
     // Load after env vars are set
-    handler = require('../../../lambda/auth/logout').handler;
+    handler = require('../../../../lambda/auth/logout').handler;
   });
 
   afterAll(() => {

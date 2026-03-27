@@ -40,7 +40,7 @@ describe('DB Utility', () => {
     
     // isolate modules so the database smClient is reinstantiated per-test suite if needed
     jest.isolateModules(() => {
-      const db = require('../../../lambda/lib/db');
+      const db = require('../../../../lambda/lib/db');
       getDbSecret = db.getDbSecret;
       getDbPool = db.getDbPool;
       clearSecretCache = db.clearSecretCache;

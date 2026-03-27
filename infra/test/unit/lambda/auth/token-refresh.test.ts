@@ -25,7 +25,7 @@ describe('Token Refresh API Lambda', () => {
       ALLOWED_ORIGIN: 'http://localhost:3000',
     };
 
-    handler = require('../../../lambda/auth/token-refresh').handler;
+    handler = require('../../../../lambda/auth/token-refresh').handler;
   });
 
   afterAll(() => {

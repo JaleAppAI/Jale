@@ -1,5 +1,5 @@
-import { handler } from '../../../lambda/api/health';
-import { corsHeaders } from '../../../lambda/lib/http';
+import { handler } from '../../../../lambda/api/health';
+import { corsHeaders } from '../../../../lambda/lib/http';
 
 describe('Health API Lambda', () => {
   it('should return 200 and healthy status', async () => {

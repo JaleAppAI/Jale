@@ -1,8 +1,8 @@
-import { handler } from '../../../lambda/legal/accept-tos';
-import { getDbPool } from '../../../lambda/lib/db';
-import { corsHeaders } from '../../../lambda/lib/http';
+import { handler } from '../../../../lambda/legal/accept-tos';
+import { getDbPool } from '../../../../lambda/lib/db';
+import { corsHeaders } from '../../../../lambda/lib/http';
 
-jest.mock('../../../lambda/lib/db');
+jest.mock('../../../../lambda/lib/db');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockQuery = jest.fn();

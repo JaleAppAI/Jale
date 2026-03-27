@@ -1,12 +1,12 @@
 import type { PostConfirmationTriggerEvent } from 'aws-lambda';
-import { handler } from '../../../lambda/post-confirmation/index';
+import { handler } from '../../../../lambda/post-confirmation/index';
 import { CognitoIdentityProviderClient, AdminAddUserToGroupCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { getDbPool } from '../../../lambda/lib/db';
+import { getDbPool } from '../../../../lambda/lib/db';
 
 jest.mock('@aws-sdk/client-cognito-identity-provider');
 jest.mock('@aws-sdk/client-sqs');
-jest.mock('../../../lambda/lib/db');
+jest.mock('../../../../lambda/lib/db');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 

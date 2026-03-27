@@ -24,7 +24,7 @@ describe('Get ToS API Lambda', () => {
     };
     
     // Require handler dynamically so module-level constants pick up the mocked env variables
-    handler = require('../../../lambda/legal/get-tos').handler;
+    handler = require('../../../../lambda/legal/get-tos').handler;
   });
 
   afterAll(() => {

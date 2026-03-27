@@ -1,4 +1,4 @@
-import { checkCompliance } from '../../../lambda/legal/check-compliance';
+import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { Client } from 'pg';
 
 describe('Check Compliance Utility', () => {

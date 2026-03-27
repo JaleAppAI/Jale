@@ -1,11 +1,11 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
-import { handler } from '../../../lambda/api/worker-profile';
-import { getDbPool } from '../../../lambda/lib/db';
-import { checkCompliance } from '../../../lambda/legal/check-compliance';
-import { corsHeaders } from '../../../lambda/lib/http';
+import { handler } from '../../../../lambda/api/worker-profile';
+import { getDbPool } from '../../../../lambda/lib/db';
+import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { corsHeaders } from '../../../../lambda/lib/http';
 
-jest.mock('../../../lambda/lib/db');
-jest.mock('../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/db');
+jest.mock('../../../../lambda/legal/check-compliance');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;

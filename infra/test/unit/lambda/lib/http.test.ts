@@ -1,4 +1,4 @@
-import { corsHeaders } from '../../../lambda/lib/http';
+import { corsHeaders } from '../../../../lambda/lib/http';
 
 describe('HTTP Lib', () => {
   const originalEnv = process.env;

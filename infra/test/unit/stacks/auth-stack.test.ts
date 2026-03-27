@@ -1,8 +1,8 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import { NetworkStack } from '../lib/stacks/network-stack';
-import { DatabaseStack } from '../lib/stacks/database-stack';
-import { AuthStack } from '../lib/stacks/auth-stack';
+import { NetworkStack } from '../../../lib/stacks/network-stack';
+import { DatabaseStack } from '../../../lib/stacks/database-stack';
+import { AuthStack } from '../../../lib/stacks/auth-stack';
 
 describe('AuthStack', () => {
   let template: Template;
