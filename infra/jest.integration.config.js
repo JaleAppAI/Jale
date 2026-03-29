@@ -7,6 +7,7 @@ module.exports = {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
+  setupFiles: ['<rootDir>/test/integration/setup/load-env.js'],
   testTimeout: 30000,
   globalSetup: '<rootDir>/test/integration/setup/global-setup.ts',
   globalTeardown: '<rootDir>/test/integration/setup/global-teardown.ts',
