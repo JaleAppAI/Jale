@@ -9,14 +9,28 @@ import {
   AdminInitiateAuthCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { fromIni } from '@aws-sdk/credential-provider-ini';
 
-// Uses AWS_PROFILE and AWS_REGION from process.env (loaded by dotenv in global-setup)
+// Uses AWS_PROFILE and AWS_REGION from process.env (loaded by dotenv in global-setup).
+// Credentials are passed explicitly because the default provider chain does not reliably
+// pick up AWS_PROFILE when it is set dynamically via process.env.
+function getCredentials() {
+  const profile = process.env.AWS_PROFILE;
+  return profile ? fromIni({ profile }) : undefined;
+}
+
 function makeCognito() {
-  return new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
+  return new CognitoIdentityProviderClient({
+    region: process.env.AWS_REGION,
+    credentials: getCredentials(),
+  });
 }
 
 function makeLambda() {
-  return new LambdaClient({ region: process.env.AWS_REGION });
+  return new LambdaClient({
+    region: process.env.AWS_REGION,
+    credentials: getCredentials(),
+  });
 }
 
 export interface TestUserTokens {
