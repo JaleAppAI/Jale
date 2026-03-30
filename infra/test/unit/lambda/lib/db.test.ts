@@ -130,38 +130,36 @@ describe('DB Utility', () => {
   });
 
   it('passes RDS CA bundle to pg Pool ssl config', async () => {
-    jest.resetModules();
+    // Use top-level mockSend (already wired to the module-level smClient) for the secret fetch.
+    mockSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        host: 'localhost',
+        port: 5432,
+        dbname: 'test',
+        username: 'user',
+        password: 'pass',
+      }),
+    });
 
-    const mockPoolConstructor = jest.fn().mockImplementation(() => ({
-      on: jest.fn(),
-    }));
-    jest.mock('pg', () => ({ Pool: mockPoolConstructor }));
+    // Mock fs.readFileSync to return a known CA cert string, then re-require the
+    // module in isolation so db.ts loads with the patched fs and a fresh pool state.
+    let isolatedGetDbPool: any;
+    jest.isolateModules(() => {
+      jest.doMock('fs', () => ({
+        ...jest.requireActual('fs'),
+        readFileSync: jest.fn().mockReturnValue('MOCK_CA_CERT'),
+      }));
 
-    jest.mock('fs', () => ({
-      ...jest.requireActual('fs'),
-      readFileSync: jest.fn().mockReturnValue('MOCK_CA_CERT'),
-    }));
+      const db = require('../../../../lambda/lib/db');
+      db.clearSecretCache();
+      isolatedGetDbPool = db.getDbPool;
+    });
 
-    jest.mock('@aws-sdk/client-secrets-manager', () => ({
-      SecretsManagerClient: jest.fn().mockImplementation(() => ({
-        send: jest.fn().mockResolvedValue({
-          SecretString: JSON.stringify({
-            host: 'localhost',
-            port: 5432,
-            dbname: 'test',
-            username: 'user',
-            password: 'pass',
-          }),
-        }),
-      })),
-      GetSecretValueCommand: jest.fn(),
-    }));
-
-    const { getDbPool } = await import('../../../../lambda/lib/db');
     process.env.DB_SECRET_ARN = 'arn:aws:secretsmanager:us-east-2:123456789:secret:test';
-    await getDbPool();
+    await isolatedGetDbPool();
 
-    expect(mockPoolConstructor).toHaveBeenCalledWith(
+    // The top-level jest.mock('pg', ...) is still active; Pool is the hoisted mock.
+    expect(Pool).toHaveBeenCalledWith(
       expect.objectContaining({
         ssl: expect.objectContaining({
           rejectUnauthorized: true,
