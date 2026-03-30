@@ -61,6 +61,13 @@ export class JaleLambdaFunction extends Construct {
       maxEventAge: props.maxEventAge,
       bundling: {
         externalModules: ['pg-native', '@aws-sdk/*'],
+        commandHooks: {
+          afterBundling: (inputDir: string, outputDir: string) => [
+            `cp ${inputDir}/lambda/lib/rds-ca-bundle.pem ${outputDir}/rds-ca-bundle.pem`,
+          ],
+          beforeBundling: () => [],
+          beforeInstall: () => [],
+        },
       },
     });
   }
