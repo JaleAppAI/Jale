@@ -68,6 +68,7 @@ export class CognitoPool extends Construct {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // Note: CDK automatically includes ALLOW_REFRESH_TOKEN_AUTH when any auth flow is enabled.
     const authFlows: cognito.AuthFlow = {
       userSrp: true,
       custom: props.signInAliases.phone ? true : false,
@@ -78,12 +79,6 @@ export class CognitoPool extends Construct {
       userPool: this.userPool,
       generateSecret: false,
       authFlows,
-    });
-
-    const domain = this.userPool.addDomain('CognitoDomain', {
-      cognitoDomain: {
-        domainPrefix: props.poolName.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-      },
     });
 
     this.userPoolId = this.userPool.userPoolId;

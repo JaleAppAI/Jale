@@ -8,7 +8,7 @@ describe('AuthStack', () => {
   let template: Template;
 
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = new cdk.App({ context: { environment: 'prod' } });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', {
       network,
@@ -38,6 +38,12 @@ describe('AuthStack', () => {
     template.resourceCountIs('AWS::Cognito::UserPoolClient', 2);
     template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
       GenerateSecret: false,
+    });
+  });
+
+  test('UserPoolClients include ALLOW_REFRESH_TOKEN_AUTH', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      ExplicitAuthFlows: Match.arrayWith(['ALLOW_REFRESH_TOKEN_AUTH']),
     });
   });
 
