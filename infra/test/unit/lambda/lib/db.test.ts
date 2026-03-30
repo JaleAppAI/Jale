@@ -128,4 +128,46 @@ describe('DB Utility', () => {
       expect(Pool).toHaveBeenCalledTimes(1);
     });
   });
+
+  it('passes RDS CA bundle to pg Pool ssl config', async () => {
+    jest.resetModules();
+
+    const mockPoolConstructor = jest.fn().mockImplementation(() => ({
+      on: jest.fn(),
+    }));
+    jest.mock('pg', () => ({ Pool: mockPoolConstructor }));
+
+    jest.mock('fs', () => ({
+      ...jest.requireActual('fs'),
+      readFileSync: jest.fn().mockReturnValue('MOCK_CA_CERT'),
+    }));
+
+    jest.mock('@aws-sdk/client-secrets-manager', () => ({
+      SecretsManagerClient: jest.fn().mockImplementation(() => ({
+        send: jest.fn().mockResolvedValue({
+          SecretString: JSON.stringify({
+            host: 'localhost',
+            port: 5432,
+            dbname: 'test',
+            username: 'user',
+            password: 'pass',
+          }),
+        }),
+      })),
+      GetSecretValueCommand: jest.fn(),
+    }));
+
+    const { getDbPool } = await import('../../../../lambda/lib/db');
+    process.env.DB_SECRET_ARN = 'arn:aws:secretsmanager:us-east-2:123456789:secret:test';
+    await getDbPool();
+
+    expect(mockPoolConstructor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ssl: expect.objectContaining({
+          rejectUnauthorized: true,
+          ca: 'MOCK_CA_CERT',
+        }),
+      }),
+    );
+  });
 });

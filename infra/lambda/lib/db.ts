@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -64,7 +66,10 @@ export async function getDbPool(): Promise<Pool> {
     max: 1,
     idleTimeoutMillis: 10000,
     connectionTimeoutMillis: 2000,
-    ssl: { rejectUnauthorized: true },
+    ssl: {
+      rejectUnauthorized: true,
+      ca: fs.readFileSync(path.join(__dirname, 'rds-ca-bundle.pem'), 'utf-8'),
+    },
   });
 
   // Prevent unhandled promise rejections on idle client errors
