@@ -12,7 +12,7 @@ describe('AuthStack', () => {
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', {
       network,
-    });
+    }); 
     const auth = new AuthStack(app, 'TestAuthStack', {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,

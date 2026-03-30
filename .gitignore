@@ -16,6 +16,7 @@ cdk.context.json
 .env.*
 !.env.example
 *.pem
+!infra/lambda/lib/rds-ca-bundle.pem   # Public AWS RDS CA bundle — safe to commit
 credentials.json
 
 # IDE
