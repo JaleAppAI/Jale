@@ -1,0 +1,41 @@
+{
+    "common": {
+        "loading": "Cargando...",
+        "error": "Algo salió mal",
+        "retry": "Intente de nuevo"
+    },
+    "header": {
+        "language_toggle": "English"
+    },
+    "landing": {
+        "headline": "Encuentra trabajo. Encuentra trabajadores.",
+        "worker_cta": "Estoy buscando trabajo",
+        "employer_cta": "Estoy contratando"
+    },
+    "auth": {
+        "worker": {
+            "title": "Inicia sesión con tu teléfono",
+            "phone_label": "Número de teléfono",
+            "send_otp": "Enviar código",
+            "otp_label": "Ingresa el código que te enviamos",
+            "verify": "Verificar",
+            "back": "Volver"
+        },
+        "employer": {
+            "title": "Inicio de sesión para empleadores",
+            "email_label": "Correo electrónico",
+            "password_label": "Contraseña",
+            "sign_in": "Iniciar sesión"
+        }
+    },
+    "legal": {
+        "title": "Antes de continuar",
+        "body": "Por favor, lee y acepta nuestros Términos de Servicio y Política de Privacidad para usar Jale.",
+        "tos_link": "Términos de Servicio",
+        "privacy_link": "Política de Privacidad",
+        "checkbox": "He leído y acepto los Términos de Servicio y la Política de Privacidad",
+        "accept_cta": "Continuar",
+        "error_fetch": "No se pudieron cargar los documentos. Por favor, intenta de nuevo.",
+        "error_submit": "No se pudo guardar tu aceptación. Por favor, intenta de nuevo."
+    }
+}

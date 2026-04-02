@@ -1,0 +1,41 @@
+{
+    "common": {
+        "loading": "Loading...",
+        "error": "Something went wrong",
+        "retry": "Try again"
+    },
+    "header": {
+        "language_toggle": "Español"
+    },
+    "landing": {
+        "headline": "Find work. Find workers.",
+        "worker_cta": "I'm looking for work",
+        "employer_cta": "I'm hiring"
+    },
+    "auth": {
+        "worker": {
+            "title": "Sign in with your phone",
+            "phone_label": "Phone number",
+            "send_otp": "Send code",
+            "otp_label": "Enter the code we sent you",
+            "verify": "Verify",
+            "back": "Back"
+        },
+        "employer": {
+            "title": "Employer sign in",
+            "email_label": "Email",
+            "password_label": "Password",
+            "sign_in": "Sign in"
+        }
+    },
+    "legal": {
+        "title": "Before you continue",
+        "body": "Please read and accept our Terms of Service and Privacy Policy to use Jale.",
+        "tos_link": "Terms of Service",
+        "privacy_link": "Privacy Policy",
+        "checkbox": "I have read and agree to the Terms of Service and Privacy Policy",
+        "accept_cta": "Continue",
+        "error_fetch": "Could not load documents. Please try again.",
+        "error_submit": "Could not save your acceptance. Please try again."
+    }
+}
