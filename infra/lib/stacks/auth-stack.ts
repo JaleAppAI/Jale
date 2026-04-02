@@ -59,7 +59,7 @@ export class AuthStack extends cdk.Stack {
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
       signInAliases: { phone: true },
-      mfa: cognito.Mfa.REQUIRED,
+      mfa: this.node.tryGetContext('environment') === 'prod' ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
       smsRole,
       smsExternalId: 'jale-worker-sms',
       passwordPolicy: {

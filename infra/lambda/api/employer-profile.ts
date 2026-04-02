@@ -11,6 +11,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   try {
     const cognitoSub: string = event.requestContext.authorizer?.claims?.sub;
 
+    if (!cognitoSub) {
+      return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
+    }
+
     const pool = await getDbPool();
     client = await pool.connect();
 
@@ -57,7 +61,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     };
   } catch (err) {
     if (client) {
-      try { await client.query('ROLLBACK'); } catch (_) {}
+      try { await client.query('ROLLBACK'); } catch (_) { }
     }
     console.error('Employer profile handler error:', errorMessage(err));
     return {
