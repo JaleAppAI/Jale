@@ -4,7 +4,7 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
-import { Pool } from 'pg';
+import { Client, Pool, PoolClient } from 'pg';
 
 export interface DbSecret {
   host: string;
@@ -44,6 +44,25 @@ export async function getDbSecret(): Promise<DbSecret> {
 export function clearSecretCache(): void {
   cachedSecret = undefined;
   cachedAt = 0;
+}
+
+/**
+ * Sets the RLS session variable for the current transaction.
+ * Must be called inside a BEGIN/COMMIT block.
+ *
+ * Uses set_config() instead of SET LOCAL because PostgreSQL's SET command
+ * does not support parameterized queries ($1 placeholders). set_config()
+ * with is_local=true is functionally identical to SET LOCAL but accepts
+ * parameterized values, preventing SQL injection.
+ */
+export async function setRlsContext(
+  client: Client | PoolClient,
+  cognitoSub: string,
+): Promise<void> {
+  await client.query(
+    `SELECT set_config('app.current_user_id', $1, true)`,
+    [cognitoSub],
+  );
 }
 
 // ── Connection pool ──

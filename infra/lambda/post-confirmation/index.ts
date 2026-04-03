@@ -7,7 +7,7 @@ import {
   SendMessageCommand,
 } from '@aws-sdk/client-sqs';
 import type { PostConfirmationTriggerEvent } from 'aws-lambda';
-import { getDbPool } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { errorMessage } from '../lib/http';
 
 const VALID_USER_TYPES = ['worker', 'employer'];
@@ -86,7 +86,7 @@ export const handler = async (event: PostConfirmationTriggerEvent): Promise<Post
 
     // RLS requires SET LOCAL before INSERT — see 002_rls_policies.sql
     await client.query('BEGIN');
-    await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
+    await setRlsContext(client, cognitoSub);
     await client.query(
       `INSERT INTO users (cognito_sub, user_type, email, phone, full_name)
        VALUES ($1, $2, $3, $4, $5)

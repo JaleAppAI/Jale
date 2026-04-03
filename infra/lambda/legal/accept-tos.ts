@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 
 const CORS_HEADERS = corsHeaders();
@@ -57,7 +57,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Transaction: update user + insert consent log entries (RLS-aware)
     try {
       await client.query('BEGIN');
-      await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
+      await setRlsContext(client, cognitoSub);
 
       await client.query(
         `UPDATE users
