@@ -8,6 +8,7 @@ interface AuthState {
     idToken: string | null;
     userType: 'worker' | 'employer' | null;
     isAuthenticated: boolean;
+    isLoading: boolean;
     setTokens: (tokens: { accessToken: string; idToken: string; refreshToken: string }, userType: 'worker' | 'employer') => void;
     logout: () => Promise<void>;
     refreshTokens: () => Promise<void>;
@@ -20,6 +21,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     const [refreshToken, setRefreshToken] = useState<string | null>(null);
     const [idToken, setIdToken] = useState<string | null>(null);
     const [userType, setUserType] = useState<'worker' | 'employer' | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
         const rt = sessionStorage.getItem('refreshToken');
@@ -27,7 +29,6 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         if (rt) {
             setRefreshToken(rt);
             setUserType(ut);
-            // Attempt silent refresh
             apiFetch('/auth/refresh', {
                 method: 'POST',
                 body: JSON.stringify({ refreshToken: rt }),
@@ -39,7 +40,9 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     sessionStorage.setItem('accessToken', data.accessToken);
                     sessionStorage.setItem('idToken', data.idToken);
                 }
-            }).catch(() => {/* silent fail — user will need to re-auth */ });
+            }).catch(() => {}).finally(() => setIsLoading(false));
+        } else {
+            setIsLoading(false);
         }
     }, []);
 
@@ -55,15 +58,22 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     };
 
     const logout = async () => {
-        await apiFetch('/auth/logout', { method: 'POST' }, accessToken ?? undefined).catch(() => { });
+        await apiFetch('/auth/logout', {
+            method: 'POST',
+            body: JSON.stringify({ accessToken, refreshToken, userType }),
+        }).catch(() => {});
         sessionStorage.clear();
-        setAccessToken(null); setIdToken(null); setRefreshToken(null); setUserType(null);
+        setAccessToken(null);
+        setIdToken(null);
+        setRefreshToken(null);
+        setUserType(null);
         window.location.href = `/${locale}/`;
     };
 
     const refreshTokens = async () => {
         if (!refreshToken) return;
         const res = await apiFetch('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) });
+        if (!res.ok) return;
         const data = await res.json();
         setAccessToken(data.accessToken);
         setIdToken(data.idToken);
@@ -72,15 +82,15 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     };
 
     return (
-        <AuthContext.Provider value= {{
-        accessToken, refreshToken, idToken, userType,
+        <AuthContext.Provider value={{
+            accessToken, refreshToken, idToken, userType,
             isAuthenticated: !!accessToken,
-                setTokens, logout, refreshTokens,
-    }
-}>
-    { children }
-    </AuthContext.Provider>
-  );
+            isLoading,
+            setTokens, logout, refreshTokens,
+        }}>
+            {children}
+        </AuthContext.Provider>
+    );
 }
 
 export function useAuth() {

@@ -9,6 +9,7 @@
     },
     "landing": {
         "headline": "Find work. Find workers.",
+        "subheadline": "Jale connects workers with employers in the construction industry.",
         "worker_cta": "I'm looking for work",
         "employer_cta": "I'm hiring"
     },
@@ -37,5 +38,15 @@
         "accept_cta": "Continue",
         "error_fetch": "Could not load documents. Please try again.",
         "error_submit": "Could not save your acceptance. Please try again."
+    },
+    "worker": {
+        "profile": {
+            "title": "Worker Profile"
+        }
+    },
+    "employer": {
+        "profile": {
+            "title": "Employer Profile"
+        }
     }
 }

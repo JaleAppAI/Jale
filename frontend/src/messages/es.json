@@ -9,6 +9,7 @@
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
+        "subheadline": "Jale conecta trabajadores con empleadores en la industria de la construcción.",
         "worker_cta": "Estoy buscando trabajo",
         "employer_cta": "Estoy contratando"
     },
@@ -37,5 +38,15 @@
         "accept_cta": "Continuar",
         "error_fetch": "No se pudieron cargar los documentos. Por favor, intenta de nuevo.",
         "error_submit": "No se pudo guardar tu aceptación. Por favor, intenta de nuevo."
+    },
+    "worker": {
+        "profile": {
+            "title": "Perfil del trabajador"
+        }
+    },
+    "employer": {
+        "profile": {
+            "title": "Perfil del empleador"
+        }
     }
 }

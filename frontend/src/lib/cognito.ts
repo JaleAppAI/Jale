@@ -40,17 +40,6 @@ export function workerVerifyOtp(user: CognitoUser, otp: string): Promise<AuthTok
                 refreshToken: session.getRefreshToken().getToken(),
             }),
             onFailure: reject,
-            // Handle SMS_MFA challenge if pool uses it instead of CUSTOM_CHALLENGE
-            mfaRequired: (challengeName) => {
-                user.sendMFACode(otp, {
-                    onSuccess: (session) => resolve({
-                        accessToken: session.getAccessToken().getJwtToken(),
-                        idToken: session.getIdToken().getJwtToken(),
-                        refreshToken: session.getRefreshToken().getToken(),
-                    }),
-                    onFailure: reject,
-                });
-            },
         });
     });
 }

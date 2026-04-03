@@ -1,4 +1,4 @@
-export class LegalWallError extends Error { }
+export class LegalWallError extends Error {}
 
 export async function apiFetch(
     path: string,
@@ -15,8 +15,14 @@ export async function apiFetch(
     });
 
     if (res.status === 403) {
-        const body = await res.json();
-        if (body.code === 'legal_required') throw new LegalWallError();
+        // Clone before reading body so the original response remains usable by the caller
+        try {
+            const body = await res.clone().json();
+            if (body.code === 'legal_required') throw new LegalWallError();
+        } catch (e) {
+            if (e instanceof LegalWallError) throw e;
+            // Non-JSON 403 or different error code — fall through and return response as-is
+        }
     }
 
     return res;
