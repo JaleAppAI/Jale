@@ -57,7 +57,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Transaction: update user + insert consent log entries (RLS-aware)
     try {
       await client.query('BEGIN');
-      await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
+      await client.query(`SET LOCAL app.current_user_id = ${client.escapeLiteral(cognitoSub)}`);
 
       await client.query(
         `UPDATE users

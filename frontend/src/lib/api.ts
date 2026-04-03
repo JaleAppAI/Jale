@@ -18,7 +18,7 @@ export async function apiFetch(
         // Clone before reading body so the original response remains usable by the caller
         try {
             const body = await res.clone().json();
-            if (body.code === 'legal_required') throw new LegalWallError();
+            if (body.error === 'legal_required') throw new LegalWallError();
         } catch (e) {
             if (e instanceof LegalWallError) throw e;
             // Non-JSON 403 or different error code — fall through and return response as-is

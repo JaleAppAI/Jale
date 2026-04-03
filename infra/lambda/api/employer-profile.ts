@@ -20,7 +20,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // RLS requires an explicit transaction so SET LOCAL survives until the SELECT
     await client.query('BEGIN');
-    await client.query('SET LOCAL app.current_user_id = $1', [cognitoSub]);
+    await client.query(`SET LOCAL app.current_user_id = ${client.escapeLiteral(cognitoSub)}`);
 
     // Legal wall: block access if ToS not accepted
     const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);

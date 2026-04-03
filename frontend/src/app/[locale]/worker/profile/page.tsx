@@ -13,7 +13,7 @@ interface WorkerProfile {
 }
 
 export default function WorkerProfilePage() {
-    const { accessToken } = useAuth();
+    const { idToken } = useAuth();
     useRequireAuth();
     const router = useRouter();
     const t = useTranslations('worker.profile');
@@ -22,8 +22,8 @@ export default function WorkerProfilePage() {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!accessToken) return;
-        apiFetch('/worker/profile', {}, accessToken)
+        if (!idToken) return;
+        apiFetch('/worker/profile', {}, idToken)
             .then(async (res) => {
                 if (!res.ok) throw new Error('fetch_failed');
                 return res.json();
@@ -37,7 +37,7 @@ export default function WorkerProfilePage() {
                     setError(tCommon('error'));
                 }
             });
-    }, [accessToken]);
+    }, [idToken]);
 
     if (error) return <p>{error}</p>;
     if (!profile) return <p>{tCommon('loading')}</p>;

@@ -16,7 +16,7 @@ export default function LegalWall() {
     const t = useTranslations('legal');
     const tCommon = useTranslations('common');
     const router = useRouter();
-    const { accessToken } = useAuth();
+    const { idToken } = useAuth();
 
     const [tosData, setTosData] = useState<TosData | null>(null);
     const [checked, setChecked] = useState(false);
@@ -25,10 +25,10 @@ export default function LegalWall() {
     const [isSubmitting, setIsSubmitting] = useState(false);
 
     const fetchTos = async () => {
-        if (!accessToken) return;
+        if (!idToken) return;
         setFetchError(false);
         try {
-            const res = await apiFetch('/legal/tos', {}, accessToken);
+            const res = await apiFetch('/legal/tos', {}, idToken);
             if (!res.ok) throw new Error('Failed to fetch');
             const data = await res.json();
             setTosData(data);
@@ -39,7 +39,7 @@ export default function LegalWall() {
 
     useEffect(() => {
         fetchTos();
-    }, [accessToken]);
+    }, [idToken]);
 
     const handleAccept = async () => {
         if (!tosData || !checked) return;
@@ -49,7 +49,7 @@ export default function LegalWall() {
             const res = await apiFetch(
                 '/legal/accept',
                 { method: 'POST', body: JSON.stringify({ tosVersion: tosData.version }) },
-                accessToken ?? undefined
+                idToken ?? undefined
             );
             if (!res.ok) throw new Error('Failed to accept');
             const returnUrl = sessionStorage.getItem('legalReturnUrl') ?? '/';
