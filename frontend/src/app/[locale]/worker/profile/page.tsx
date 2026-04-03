@@ -39,14 +39,24 @@ export default function WorkerProfilePage() {
             });
     }, [idToken]);
 
-    if (error) return <p>{error}</p>;
-    if (!profile) return <p>{tCommon('loading')}</p>;
+    if (error) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-destructive">{error}</p></main>;
+    if (!profile) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-muted-foreground">{tCommon('loading')}</p></main>;
 
     return (
-        <main>
-            <h1>{t('title')}</h1>
-            {profile.name && <p>{profile.name}</p>}
-            <p>{profile.phone}</p>
+        <main className="mx-auto max-w-5xl px-4 py-10">
+            <h1 className="text-2xl font-semibold mb-6">{t('title')}</h1>
+            <div className="rounded-lg border bg-card p-6 space-y-4">
+                <div>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Phone</p>
+                    <p className="text-sm">{profile.phone}</p>
+                </div>
+                {profile.name && (
+                    <div>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Name</p>
+                        <p className="text-sm">{profile.name}</p>
+                    </div>
+                )}
+            </div>
         </main>
     );
 }

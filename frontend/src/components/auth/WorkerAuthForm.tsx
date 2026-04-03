@@ -54,40 +54,45 @@ export default function WorkerAuthForm() {
     };
 
     return (
-        <>
-            {step === 'phone' && (
-                <div>
-                    <h1>{t('title')}</h1>
-                    <input
-                        type="tel"
-                        placeholder={t('phone_label')}
-                        value={phone}
-                        onChange={(e) => setPhone(e.target.value)}
-                    />
-                    {error && <p>{error}</p>}
-                    <Button size="lg" variant="outline" className="w-full sm:w-auto" onClick={handleSendOtp} disabled={isLoading}>
-                        {isLoading ? tCommon('loading') : t('send_otp')}
-                    </Button>
-                </div>
-            )}
-            {step === 'otp' && (
-                <div>
-                    <h1>{t('title')}</h1>
-                    <input
-                        type="text"
-                        placeholder={t('otp_label')}
-                        value={otp}
-                        onChange={(e) => setOtp(e.target.value)}
-                    />
-                    {error && <p>{error}</p>}
-                    <Button size="lg" variant="outline" className="w-full sm:w-auto" onClick={handleBack} disabled={isLoading}>
-                        {t('back')}
-                    </Button>
-                    <Button size="lg" variant="outline" className="w-full sm:w-auto" onClick={handleVerifyOtp} disabled={isLoading}>
-                        {isLoading ? tCommon('loading') : t('verify')}
-                    </Button>
-                </div>
-            )}
-        </>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+            <div className="w-full max-w-sm rounded-lg border bg-card p-8 space-y-6">
+                <h1 className="text-xl font-semibold">{t('title')}</h1>
+                {step === 'phone' && (
+                    <div className="space-y-4">
+                        <input
+                            type="tel"
+                            placeholder={t('phone_label')}
+                            value={phone}
+                            onChange={(e) => setPhone(e.target.value)}
+                            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                        {error && <p className="text-sm text-destructive">{error}</p>}
+                        <Button className="w-full" onClick={handleSendOtp} disabled={isLoading}>
+                            {isLoading ? tCommon('loading') : t('send_otp')}
+                        </Button>
+                    </div>
+                )}
+                {step === 'otp' && (
+                    <div className="space-y-4">
+                        <input
+                            type="text"
+                            placeholder={t('otp_label')}
+                            value={otp}
+                            onChange={(e) => setOtp(e.target.value)}
+                            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                        />
+                        {error && <p className="text-sm text-destructive">{error}</p>}
+                        <div className="flex gap-3">
+                            <Button variant="outline" className="flex-1" onClick={handleBack} disabled={isLoading}>
+                                {t('back')}
+                            </Button>
+                            <Button className="flex-1" onClick={handleVerifyOtp} disabled={isLoading}>
+                                {isLoading ? tCommon('loading') : t('verify')}
+                            </Button>
+                        </div>
+                    </div>
+                )}
+            </div>
+        </main>
     );
 }
