@@ -31,7 +31,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             setUserType(ut);
             apiFetch('/auth/refresh', {
                 method: 'POST',
-                body: JSON.stringify({ refreshToken: rt }),
+                body: JSON.stringify({ refreshToken: rt, userType: ut }),
             }).then(async (res) => {
                 if (res.ok) {
                     const data = await res.json();

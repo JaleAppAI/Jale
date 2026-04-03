@@ -13,7 +13,7 @@ interface EmployerProfile {
 }
 
 export default function EmployerProfilePage() {
-    const { accessToken } = useAuth();
+    const { idToken } = useAuth();
     useRequireAuth();
     const router = useRouter();
     const t = useTranslations('employer.profile');
@@ -22,8 +22,8 @@ export default function EmployerProfilePage() {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!accessToken) return;
-        apiFetch('/employer/profile', {}, accessToken)
+        if (!idToken) return;
+        apiFetch('/employer/profile', {}, idToken)
             .then(async (res) => {
                 if (!res.ok) throw new Error('fetch_failed');
                 return res.json();
@@ -37,7 +37,7 @@ export default function EmployerProfilePage() {
                     setError(tCommon('error'));
                 }
             });
-    }, [accessToken]);
+    }, [idToken]);
 
     if (error) return <p>{error}</p>;
     if (!profile) return <p>{tCommon('loading')}</p>;

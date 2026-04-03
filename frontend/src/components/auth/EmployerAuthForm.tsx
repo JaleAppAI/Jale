@@ -24,7 +24,8 @@ export default function EmployerAuthForm() {
             const tokens = await employerSignIn(email, password);
             setTokens(tokens, 'employer');
             router.push('/employer/profile');
-        } catch {
+        } catch (err) {
+            console.error('[EmployerAuth] sign-in error:', err);
             setError(tCommon('error'));
         } finally {
             setIsLoading(false);

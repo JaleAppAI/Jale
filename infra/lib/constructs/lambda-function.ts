@@ -6,6 +6,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
 import * as os from 'os';
+import * as path from 'path';
 
 export interface JaleLambdaFunctionProps {
   /** Path to the Lambda entry file */
@@ -64,13 +65,12 @@ export class JaleLambdaFunction extends Construct {
         externalModules: ['pg-native', '@aws-sdk/*'],
         commandHooks: {
           afterBundling: (inputDir: string, outputDir: string) => {
-            const isWindows = os.platform() === 'win32';
-            const src = `${inputDir}/lambda/lib/rds-ca-bundle.pem`;
-            const dst = `${outputDir}/rds-ca-bundle.pem`;
-            if (isWindows) {
-              return [`copy "${src.replace(/\//g, '\\')}" "${dst.replace(/\//g, '\\')}"`];
+            const src = path.join(inputDir, 'lambda', 'lib', 'rds-ca-bundle.pem');
+            const dst = path.join(outputDir, 'rds-ca-bundle.pem');
+            if (os.platform() === 'win32') {
+              return [`copy "${src}" "${dst}"`];
             }
-            return [`cp ${src} ${dst}`];
+            return [`cp "${src}" "${dst}"`];
           },
           beforeBundling: () => [],
           beforeInstall: () => [],
