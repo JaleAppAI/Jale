@@ -8,13 +8,11 @@
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
-    "test:integration": "jest --config jest.integration.config.js --runInBand --forceExit",
     "cdk": "cdk",
     "deploy": "npm run test && npx cdk deploy"
   },
   "devDependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1015.0",
-    "@aws-sdk/client-lambda": "^3.1018.0",
     "@aws-sdk/client-s3": "^3.1015.0",
     "@aws-sdk/client-secrets-manager": "^3.1015.0",
     "@aws-sdk/client-sqs": "^3.1017.0",
@@ -24,7 +22,6 @@
     "@types/node": "^24.10.1",
     "@types/pg": "^8.20.0",
     "aws-cdk": "2.1113.0",
-    "dotenv": "^17.3.1",
     "esbuild": "^0.27.4",
     "jest": "^30",
     "ts-jest": "^29",
