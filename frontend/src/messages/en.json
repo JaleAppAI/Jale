@@ -5,7 +5,8 @@
         "retry": "Try again"
     },
     "header": {
-        "language_toggle": "Español"
+        "language_toggle": "Español",
+        "sign_out": "Sign out"
     },
     "landing": {
         "headline": "Find work. Find workers.",

@@ -5,7 +5,8 @@
         "retry": "Intente de nuevo"
     },
     "header": {
-        "language_toggle": "English"
+        "language_toggle": "English",
+        "sign_out": "Cerrar sesión"
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",

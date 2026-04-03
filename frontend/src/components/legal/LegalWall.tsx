@@ -64,46 +64,59 @@ export default function LegalWall() {
 
     if (fetchError) {
         return (
-            <div>
-                <p>{t('error_fetch')}</p>
-                <Button onClick={fetchTos}>{tCommon('retry')}</Button>
-            </div>
+            <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+                <div className="text-center space-y-4">
+                    <p className="text-sm text-muted-foreground">{t('error_fetch')}</p>
+                    <Button variant="outline" onClick={fetchTos}>{tCommon('retry')}</Button>
+                </div>
+            </main>
         );
     }
 
     if (!tosData) {
-        return <p>{tCommon('loading')}</p>;
+        return (
+            <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
+                <p className="text-sm text-muted-foreground">{tCommon('loading')}</p>
+            </main>
+        );
     }
 
     return (
-        <div>
-            <h1>{t('title')}</h1>
-            <p>{t('body')}</p>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+            <div className="w-full max-w-lg rounded-lg border bg-card p-8 space-y-6">
+                <div>
+                    <h1 className="text-xl font-semibold mb-2">{t('title')}</h1>
+                    <p className="text-sm text-muted-foreground">{t('body')}</p>
+                </div>
 
-            <div>
-                <a href={tosData.tosUrl} target="_blank" rel="noopener noreferrer">
-                    {t('tos_link')}
-                </a>
-                <a href={tosData.privacyUrl} target="_blank" rel="noopener noreferrer">
-                    {t('privacy_link')}
-                </a>
+                <div className="flex gap-4 text-sm">
+                    <a href={tosData.tosUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-primary underline underline-offset-4 hover:opacity-80">
+                        {t('tos_link')}
+                    </a>
+                    <a href={tosData.privacyUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-primary underline underline-offset-4 hover:opacity-80">
+                        {t('privacy_link')}
+                    </a>
+                </div>
+
+                <label className="flex items-start gap-3 cursor-pointer">
+                    <input
+                        type="checkbox"
+                        id="legal-checkbox"
+                        checked={checked}
+                        onChange={(e) => setChecked(e.target.checked)}
+                        className="mt-0.5 h-4 w-4 shrink-0"
+                    />
+                    <span className="text-sm">{t('checkbox')}</span>
+                </label>
+
+                {submitError && <p className="text-sm text-destructive">{t('error_submit')}</p>}
+
+                <Button className="w-full" onClick={handleAccept} disabled={!checked || isSubmitting}>
+                    {isSubmitting ? tCommon('loading') : t('accept_cta')}
+                </Button>
             </div>
-
-            <div>
-                <input
-                    type="checkbox"
-                    id="legal-checkbox"
-                    checked={checked}
-                    onChange={(e) => setChecked(e.target.checked)}
-                />
-                <label htmlFor="legal-checkbox">{t('checkbox')}</label>
-            </div>
-
-            {submitError && <p>{t('error_submit')}</p>}
-
-            <Button onClick={handleAccept} disabled={!checked || isSubmitting}>
-                {isSubmitting ? tCommon('loading') : t('accept_cta')}
-            </Button>
-        </div>
+        </main>
     );
 }
