@@ -9,7 +9,8 @@
     "watch": "tsc -w",
     "test": "jest",
     "cdk": "cdk",
-    "deploy": "npm run test && npx cdk deploy"
+    "deploy": "npm run test && npx cdk deploy",
+    "test:integration": "jest --config jest.integration.config.js"
   },
   "devDependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.1015.0",

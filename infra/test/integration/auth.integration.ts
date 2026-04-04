@@ -1,19 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import { get, post } from './helpers/api-client';
-
-interface TokenStore {
-  workerA:  { username: string; idToken: string; accessToken: string; refreshToken: string };
-  workerB:  { username: string; idToken: string; accessToken: string; refreshToken: string };
-  employer: { username: string; idToken: string; accessToken: string; refreshToken: string };
-}
-
-function loadTokens(): TokenStore {
-  return JSON.parse(
-    fs.readFileSync(path.join(os.tmpdir(), 'jale-integration-tokens.json'), 'utf-8'),
-  );
-}
+import { loadTokens, TokenStore } from './helpers/tokens';
 
 describe('Cross-role rejection', () => {
   let tokens: TokenStore;

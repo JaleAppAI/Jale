@@ -1,14 +1,15 @@
 import * as dotenv from 'dotenv';
-import * as path from 'path';
-import * as os from 'os';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { createTestUser, deleteTestUser } from '../helpers/cognito-admin';
 
-// Test usernames — phone format for workers (Worker pool requires phone sign-in alias),
-// email format for employers (Employer pool is email-based).
-const WORKER_A   = '+19999000001';
-const WORKER_B   = '+19999000002';
-const EMPLOYER   = 'test-integration-employer@jale.test';
+// Test usernames: phone format for workers, email format for employers.
+const WORKER_A = '+19999000001';
+const WORKER_B = '+19999000002';
+const EMPLOYER = 'test-integration-employer@jale.test';
+const PROFILE_WORKER = '+19999000003';
+const PROFILE_EMPLOYER = 'test-integration-profile-employer@jale.test';
 
 module.exports = async () => {
   dotenv.config({ path: path.join(__dirname, '../../../.env.integration'), override: true });
@@ -23,7 +24,7 @@ module.exports = async () => {
 
   if (!WORKER_POOL_ID || !WORKER_CLIENT_ID || !EMPLOYER_POOL_ID || !EMPLOYER_CLIENT_ID || !POST_CONFIRMATION_LAMBDA_ARN) {
     throw new Error(
-      'Missing required env vars. Check infra/.env.integration — ' +
+      'Missing required env vars. Check infra/.env.integration - ' +
       'WORKER_POOL_ID, WORKER_CLIENT_ID, EMPLOYER_POOL_ID, EMPLOYER_CLIENT_ID, and POST_CONFIRMATION_LAMBDA_ARN must all be set.',
     );
   }
@@ -32,25 +33,31 @@ module.exports = async () => {
     throw new Error('POST_CONFIRMATION_LAMBDA_ARN still has placeholder value. Fill it in from the AWS Console.');
   }
 
-  // Clean up any leftover users from a previous crashed run
+  // Clean up any leftover users from a previous crashed run.
   await Promise.all([
-    deleteTestUser(WORKER_POOL_ID,   WORKER_A),
-    deleteTestUser(WORKER_POOL_ID,   WORKER_B),
+    deleteTestUser(WORKER_POOL_ID, WORKER_A),
+    deleteTestUser(WORKER_POOL_ID, WORKER_B),
+    deleteTestUser(WORKER_POOL_ID, PROFILE_WORKER),
     deleteTestUser(EMPLOYER_POOL_ID, EMPLOYER),
+    deleteTestUser(EMPLOYER_POOL_ID, PROFILE_EMPLOYER),
   ]);
 
   const password = 'TestPass123!';
 
-  const [workerA, workerB, employer] = await Promise.all([
-    createTestUser(WORKER_POOL_ID,   WORKER_CLIENT_ID,   WORKER_A, password, 'worker',   POST_CONFIRMATION_LAMBDA_ARN),
-    createTestUser(WORKER_POOL_ID,   WORKER_CLIENT_ID,   WORKER_B, password, 'worker',   POST_CONFIRMATION_LAMBDA_ARN),
+  const [workerA, workerB, employer, profileWorker, profileEmployer] = await Promise.all([
+    createTestUser(WORKER_POOL_ID, WORKER_CLIENT_ID, WORKER_A, password, 'worker', POST_CONFIRMATION_LAMBDA_ARN),
+    createTestUser(WORKER_POOL_ID, WORKER_CLIENT_ID, WORKER_B, password, 'worker', POST_CONFIRMATION_LAMBDA_ARN),
     createTestUser(EMPLOYER_POOL_ID, EMPLOYER_CLIENT_ID, EMPLOYER, password, 'employer', POST_CONFIRMATION_LAMBDA_ARN),
+    createTestUser(WORKER_POOL_ID, WORKER_CLIENT_ID, PROFILE_WORKER, password, 'worker', POST_CONFIRMATION_LAMBDA_ARN),
+    createTestUser(EMPLOYER_POOL_ID, EMPLOYER_CLIENT_ID, PROFILE_EMPLOYER, password, 'employer', POST_CONFIRMATION_LAMBDA_ARN),
   ]);
 
   const tokens = {
-    workerA:  { username: WORKER_A,  ...workerA  },
-    workerB:  { username: WORKER_B,  ...workerB  },
-    employer: { username: EMPLOYER,  ...employer },
+    workerA: { username: WORKER_A, ...workerA },
+    workerB: { username: WORKER_B, ...workerB },
+    employer: { username: EMPLOYER, ...employer },
+    profileWorker: { username: PROFILE_WORKER, ...profileWorker },
+    profileEmployer: { username: PROFILE_EMPLOYER, ...profileEmployer },
   };
 
   fs.writeFileSync(

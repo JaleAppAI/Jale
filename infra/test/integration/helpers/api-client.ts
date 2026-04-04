@@ -53,3 +53,40 @@ function extractHeaders(res: Response): Record<string, string> {
   res.headers.forEach((value, key) => { out[key] = value; });
   return out;
 }
+
+/**
+ * GET request that throws if the response status doesn't match expectedStatus.
+ * Use in beforeAll/setup where failures should abort immediately.
+ */
+export async function getExpect(
+  path: string,
+  expectedStatus: number,
+  idToken?: string,
+): Promise<ApiResponse> {
+  const res = await get(path, idToken);
+  if (res.status !== expectedStatus) {
+    throw new Error(
+      `GET ${path} expected ${expectedStatus} but got ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return res;
+}
+
+/**
+ * POST request that throws if the response status doesn't match expectedStatus.
+ * Use in beforeAll/setup where failures should abort immediately.
+ */
+export async function postExpect(
+  path: string,
+  data: unknown,
+  expectedStatus: number,
+  idToken?: string,
+): Promise<ApiResponse> {
+  const res = await post(path, data, idToken);
+  if (res.status !== expectedStatus) {
+    throw new Error(
+      `POST ${path} expected ${expectedStatus} but got ${res.status}: ${JSON.stringify(res.body)}`,
+    );
+  }
+  return res;
+}

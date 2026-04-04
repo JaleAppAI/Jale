@@ -18,6 +18,7 @@ cdk.context.json
 *.pem
 !infra/lambda/lib/rds-ca-bundle.pem   # Public AWS RDS CA bundle — safe to commit
 credentials.json
+AGENTS.md
 
 # IDE
 .vscode/

@@ -55,37 +55,44 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     client = await pool.connect();
 
     // Transaction: update user + insert consent log entries (RLS-aware)
+    // Idempotent: if the user already accepted this exact version, skip writes.
     try {
       await client.query('BEGIN');
       await setRlsContext(client, cognitoSub);
 
-      await client.query(
+      // Conditional UPDATE — only writes when the version actually changes.
+      // Uses IS DISTINCT FROM to handle NULL → value transitions correctly.
+      const updateResult = await client.query(
         `UPDATE users
             SET tos_version = $1,
                 tos_accepted_at = NOW(),
                 privacy_version = $1,
                 privacy_accepted_at = NOW()
-          WHERE cognito_sub = $2`,
+          WHERE cognito_sub = $2
+            AND tos_version IS DISTINCT FROM $1`,
         [tosVersion, cognitoSub],
       );
 
-      await client.query(
-        `INSERT INTO legal_consent_log
-            (user_id, document_type, document_version, ip_address, user_agent)
-         SELECT id, 'tos', $1, $2, $3
-           FROM users
-          WHERE cognito_sub = $4`,
-        [tosVersion, ipAddress, userAgent, cognitoSub],
-      );
+      // Only insert consent log rows if the UPDATE actually changed something
+      if (updateResult.rowCount && updateResult.rowCount > 0) {
+        await client.query(
+          `INSERT INTO legal_consent_log
+              (user_id, document_type, document_version, ip_address, user_agent)
+           SELECT id, 'tos', $1, $2, $3
+             FROM users
+            WHERE cognito_sub = $4`,
+          [tosVersion, ipAddress, userAgent, cognitoSub],
+        );
 
-      await client.query(
-        `INSERT INTO legal_consent_log
-            (user_id, document_type, document_version, ip_address, user_agent)
-         SELECT id, 'privacy', $1, $2, $3
-           FROM users
-          WHERE cognito_sub = $4`,
-        [tosVersion, ipAddress, userAgent, cognitoSub],
-      );
+        await client.query(
+          `INSERT INTO legal_consent_log
+              (user_id, document_type, document_version, ip_address, user_agent)
+           SELECT id, 'privacy', $1, $2, $3
+             FROM users
+            WHERE cognito_sub = $4`,
+          [tosVersion, ipAddress, userAgent, cognitoSub],
+        );
+      }
 
       await client.query('COMMIT');
     } catch (txErr) {

@@ -67,9 +67,14 @@ describe('Accept ToS API Lambda', () => {
     expect(JSON.parse(response.body).error).toBe('invalid_tos_version');
   });
 
-  it('should successfully update tos and log consent', async () => {
+  it('should successfully update tos and log consent (first acceptance)', async () => {
     const event = createEvent({ sub: 'test-user' }, { tosVersion: 'v1.0' });
-    mockQuery.mockResolvedValue({});
+    mockQuery.mockImplementation((queryText: string) => {
+      if (queryText.includes('UPDATE users')) {
+        return Promise.resolve({ rowCount: 1 });
+      }
+      return Promise.resolve({});
+    });
 
     const response = await handler(event);
 
@@ -90,6 +95,32 @@ describe('Accept ToS API Lambda', () => {
       ['v1.0', '127.0.0.1', 'Jest Test', 'test-user']
     );
     expect(mockQuery).toHaveBeenCalledTimes(5); // BEGIN + UPDATE + INSERT tos + INSERT privacy + COMMIT
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('should skip consent log inserts when same version already accepted (idempotent)', async () => {
+    const event = createEvent({ sub: 'test-user' }, { tosVersion: 'v1.0' });
+    mockQuery.mockImplementation((queryText: string) => {
+      if (queryText.includes('UPDATE users')) {
+        return Promise.resolve({ rowCount: 0 }); // no rows changed — already accepted
+      }
+      return Promise.resolve({});
+    });
+
+    const response = await handler(event);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ accepted: true, version: 'v1.0' });
+
+    // Should only have BEGIN + UPDATE + COMMIT (no INSERT calls)
+    expect(mockQuery).toHaveBeenCalledWith('BEGIN');
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), ['v1.0', 'test-user']);
+    expect(mockQuery).not.toHaveBeenCalledWith(
+      expect.stringContaining("SELECT id, 'tos'"),
+      expect.any(Array)
+    );
+    expect(mockQuery).toHaveBeenCalledTimes(3); // BEGIN + UPDATE + COMMIT
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
   });

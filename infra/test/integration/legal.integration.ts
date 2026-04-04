@@ -1,19 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import { get, post } from './helpers/api-client';
-
-interface TokenStore {
-  workerA:  { username: string; idToken: string; accessToken: string; refreshToken: string };
-  workerB:  { username: string; idToken: string; accessToken: string; refreshToken: string };
-  employer: { username: string; idToken: string; accessToken: string; refreshToken: string };
-}
-
-function loadTokens(): TokenStore {
-  return JSON.parse(
-    fs.readFileSync(path.join(os.tmpdir(), 'jale-integration-tokens.json'), 'utf-8'),
-  );
-}
+import { loadTokens, TokenStore } from './helpers/tokens';
 
 describe('Legal wall and ToS acceptance', () => {
   let tokens: TokenStore;
@@ -21,8 +7,6 @@ describe('Legal wall and ToS acceptance', () => {
   beforeAll(() => {
     tokens = loadTokens();
   });
-
-  // --- Legal wall (before any ToS acceptance) ---
 
   it('GET /worker/profile before ToS returns 403 legal_required', async () => {
     const res = await get('/worker/profile', tokens.workerA.idToken);
@@ -46,8 +30,6 @@ describe('Legal wall and ToS acceptance', () => {
     });
   });
 
-  // --- GET /legal/tos ---
-
   it('GET /legal/tos returns 200 with version and two presigned S3 URLs', async () => {
     const res = await get('/legal/tos');
 
@@ -58,8 +40,6 @@ describe('Legal wall and ToS acceptance', () => {
     expect((res.body as any).tosUrl).toMatch(/^https:\/\//);
     expect((res.body as any).privacyUrl).toMatch(/^https:\/\//);
   });
-
-  // --- POST /legal/accept error cases ---
 
   it('POST /legal/accept with no token returns 401', async () => {
     const res = await post('/legal/accept', { tosVersion: '1.0' });
@@ -80,8 +60,6 @@ describe('Legal wall and ToS acceptance', () => {
     expect((res.body as any).error).toBe('bad_request');
   });
 
-  // --- POST /legal/accept happy path ---
-
   it('Worker A accepts ToS and gets { accepted: true, version: "1.0" }', async () => {
     const res = await post('/legal/accept', { tosVersion: '1.0' }, tokens.workerA.idToken);
 
@@ -96,7 +74,12 @@ describe('Legal wall and ToS acceptance', () => {
     expect(res.body).toEqual({ accepted: true, version: '1.0' });
   });
 
-  // --- Profile access after ToS acceptance ---
+  it('Worker A re-accepts same ToS version and still gets 200 (idempotent)', async () => {
+    const res = await post('/legal/accept', { tosVersion: '1.0' }, tokens.workerA.idToken);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ accepted: true, version: '1.0' });
+  });
 
   it('GET /worker/profile after Worker A accepts ToS returns 200', async () => {
     const res = await get('/worker/profile', tokens.workerA.idToken);
@@ -107,8 +90,6 @@ describe('Legal wall and ToS acceptance', () => {
     const res = await get('/employer/profile', tokens.employer.idToken);
     expect(res.status).toBe(200);
   });
-
-  // --- Per-user legal wall: Worker B has NOT accepted ToS ---
 
   it('GET /worker/profile for Worker B (no ToS) still returns 403', async () => {
     const res = await get('/worker/profile', tokens.workerB.idToken);
