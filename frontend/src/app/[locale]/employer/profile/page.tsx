@@ -1,10 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
-import { apiFetch, LegalWallError } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 
 interface EmployerProfile {
     id: string;
@@ -14,8 +13,7 @@ interface EmployerProfile {
 
 export default function EmployerProfilePage() {
     const { idToken } = useAuth();
-    useRequireAuth();
-    const router = useRouter();
+    const { handleLegalWall } = useRequireAuth();
     const t = useTranslations('employer.profile');
     const tCommon = useTranslations('common');
     const [profile, setProfile] = useState<EmployerProfile | null>(null);
@@ -30,10 +28,9 @@ export default function EmployerProfilePage() {
             })
             .then(setProfile)
             .catch((err) => {
-                if (err instanceof LegalWallError) {
-                    sessionStorage.setItem('legalReturnUrl', '/employer/profile');
-                    router.replace('/legal/accept');
-                } else {
+                try {
+                    handleLegalWall(err, '/employer/profile');
+                } catch {
                     setError(tCommon('error'));
                 }
             });
@@ -47,12 +44,12 @@ export default function EmployerProfilePage() {
             <h1 className="text-2xl font-semibold mb-6">{t('title')}</h1>
             <div className="rounded-lg border bg-card p-6 space-y-4">
                 <div>
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Email</p>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">{t('field_email')}</p>
                     <p className="text-sm">{profile.email}</p>
                 </div>
                 {profile.companyName && (
                     <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Company</p>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">{t('field_company')}</p>
                         <p className="text-sm">{profile.companyName}</p>
                     </div>
                 )}

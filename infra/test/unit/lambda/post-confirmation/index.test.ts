@@ -2,13 +2,14 @@ import type { PostConfirmationTriggerEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/post-confirmation/index';
 import { CognitoIdentityProviderClient, AdminAddUserToGroupCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
-import { getDbPool } from '../../../../lambda/lib/db';
+import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 
 jest.mock('@aws-sdk/client-cognito-identity-provider');
 jest.mock('@aws-sdk/client-sqs');
 jest.mock('../../../../lambda/lib/db');
 
 const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetRlsContext = setRlsContext as jest.Mock;
 
 describe('Post-confirmation trigger Lambda', () => {
   let mockCognitoSend: jest.Mock;
@@ -86,7 +87,7 @@ describe('Post-confirmation trigger Lambda', () => {
     });
     
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
-    expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['sub-183492']);
+    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'sub-183492');
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO users'),
       ['sub-183492', 'worker', 'test@example.com', '+1234567890', 'Test Setup User']
@@ -126,7 +127,7 @@ describe('Post-confirmation trigger Lambda', () => {
     });
 
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
-    expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['sub-183492']);
+    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'sub-183492');
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO users'),
       ['sub-183492', 'employer', 'test@example.com', '+1234567890', 'Test Setup User']

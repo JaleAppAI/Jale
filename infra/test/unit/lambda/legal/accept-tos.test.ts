@@ -1,10 +1,11 @@
 import { handler } from '../../../../lambda/legal/accept-tos';
-import { getDbPool } from '../../../../lambda/lib/db';
+import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { corsHeaders } from '../../../../lambda/lib/http';
 
 jest.mock('../../../../lambda/lib/db');
 
 const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -77,7 +78,7 @@ describe('Accept ToS API Lambda', () => {
 
     // Verify transaction blocks
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
-    expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['test-user']);
+    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'test-user');
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), ['v1.0', 'test-user']);
     // Both consent log inserts must happen — one for 'tos' and one for 'privacy'
     expect(mockQuery).toHaveBeenCalledWith(
@@ -88,7 +89,7 @@ describe('Accept ToS API Lambda', () => {
       expect.stringContaining("SELECT id, 'privacy'"),
       ['v1.0', '127.0.0.1', 'Jest Test', 'test-user']
     );
-    expect(mockQuery).toHaveBeenCalledTimes(6); // BEGIN + SET LOCAL + UPDATE + INSERT tos + INSERT privacy + COMMIT
+    expect(mockQuery).toHaveBeenCalledTimes(5); // BEGIN + UPDATE + INSERT tos + INSERT privacy + COMMIT
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
   });

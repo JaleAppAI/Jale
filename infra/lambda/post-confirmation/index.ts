@@ -86,7 +86,7 @@ export const handler = async (event: PostConfirmationTriggerEvent): Promise<Post
 
     // RLS requires SET LOCAL before INSERT — see 002_rls_policies.sql
     await client.query('BEGIN');
-    await client.query(`SET LOCAL app.current_user_id = ${client.escapeLiteral(cognitoSub)}`);
+    await setRlsContext(client, cognitoSub);
     await client.query(
       `INSERT INTO users (cognito_sub, user_type, email, phone, full_name)
        VALUES ($1, $2, $3, $4, $5)

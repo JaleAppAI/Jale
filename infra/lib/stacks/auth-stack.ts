@@ -56,10 +56,12 @@ export class AuthStack extends cdk.Stack {
     const smsRole = props.cognitoSmsRole;
 
     // ── Worker Cognito Pool ──
+    const isProd = this.node.tryGetContext('environment') === 'prod';
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
       signInAliases: { phone: true },
-      mfa: this.node.tryGetContext('environment') === 'prod' ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
+      mfa: isProd ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
+      adminUserPassword: !isProd,
       smsRole,
       smsExternalId: 'jale-worker-sms',
       passwordPolicy: {
@@ -83,6 +85,7 @@ export class AuthStack extends cdk.Stack {
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
       poolName: 'jale-employer-pool',
       signInAliases: { email: true },
+      adminUserPassword: !isProd,
       mfa: cognito.Mfa.OPTIONAL,
       mfaSecondFactor: { sms: false, otp: true },
       passwordPolicy: {

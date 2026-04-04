@@ -35,6 +35,8 @@ export interface CognitoPoolProps {
   smsRole?: iam.IRole;
   /** External ID for SMS role */
   smsExternalId?: string;
+  /** Enable ADMIN_USER_PASSWORD_AUTH flow — for integration tests only, must NOT be true in prod */
+  adminUserPassword?: boolean;
 }
 
 export { CognitoPool as JaleCognitoPool };
@@ -69,10 +71,11 @@ export class CognitoPool extends Construct {
     });
 
     // Note: CDK automatically includes ALLOW_REFRESH_TOKEN_AUTH when any auth flow is enabled.
+    // adminUserPassword is enabled only when explicitly requested (non-prod integration tests).
     const authFlows: cognito.AuthFlow = {
       userSrp: true,
       custom: props.signInAliases.phone ? true : false,
-      adminUserPassword: true,
+      adminUserPassword: props.adminUserPassword ?? false,
     };
 
     this.userPoolClient = new cognito.UserPoolClient(this, 'UserPoolClient', {

@@ -14,7 +14,7 @@ export function useRequireAuth() {
             const dest = userType === 'employer' ? 'employer' : 'worker';
             router.replace(`/auth/${dest}`);
         }
-    }, [isLoading, isAuthenticated]);
+    }, [isLoading, isAuthenticated, userType, router]);
 
     return {
         handleLegalWall: (err: unknown, returnUrl: string) => {

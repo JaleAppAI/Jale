@@ -42,12 +42,16 @@
     },
     "worker": {
         "profile": {
-            "title": "Perfil del trabajador"
+            "title": "Perfil del trabajador",
+            "field_phone": "Teléfono",
+            "field_name": "Nombre"
         }
     },
     "employer": {
         "profile": {
-            "title": "Perfil del empleador"
+            "title": "Perfil del empleador",
+            "field_email": "Correo electrónico",
+            "field_company": "Empresa"
         }
     }
 }

@@ -54,7 +54,7 @@ export default function WorkerAuthForm() {
     };
 
     return (
-        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+        <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
             <div className="w-full max-w-sm rounded-lg border bg-card p-8 space-y-6">
                 <h1 className="text-xl font-semibold">{t('title')}</h1>
                 {step === 'phone' && (
@@ -93,6 +93,6 @@ export default function WorkerAuthForm() {
                     </div>
                 )}
             </div>
-        </main>
+        </div>
     );
 }

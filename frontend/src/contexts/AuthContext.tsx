@@ -72,7 +72,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
 
     const refreshTokens = async () => {
         if (!refreshToken) return;
-        const res = await apiFetch('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken }) });
+        const res = await apiFetch('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken, userType }) });
         if (!res.ok) return;
         const data = await res.json();
         setAccessToken(data.accessToken);
@@ -84,7 +84,7 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     return (
         <AuthContext.Provider value={{
             accessToken, refreshToken, idToken, userType,
-            isAuthenticated: !!accessToken,
+            isAuthenticated: !!idToken,
             isLoading,
             setTokens, logout, refreshTokens,
         }}>

@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-profile';
-import { getDbPool } from '../../../../lambda/lib/db';
+import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { corsHeaders } from '../../../../lambda/lib/http';
 
@@ -8,6 +8,7 @@ jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 
 const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -59,15 +60,13 @@ describe('Worker Profile API Lambda', () => {
     });
     
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
-    expect(mockQuery).toHaveBeenCalledWith('SET LOCAL app.current_user_id = $1', ['worker-sub-123']);
+    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'worker-sub-123');
     expect(mockQuery).toHaveBeenCalledWith('COMMIT'); // Commit after blocking
     expect(mockRelease).toHaveBeenCalled();
 
-    // Verify RLS setup order: BEGIN → SET LOCAL → checkCompliance → COMMIT
-    // If SET LOCAL were moved after checkCompliance, the query would run without RLS context
+    // Verify RLS setup order: BEGIN → setRlsContext → checkCompliance → COMMIT
     expect(mockQuery.mock.calls[0]).toEqual(['BEGIN']);
-    expect(mockQuery.mock.calls[1]).toEqual(['SET LOCAL app.current_user_id = $1', ['worker-sub-123']]);
-    expect(mockQuery.mock.calls[2]).toEqual(['COMMIT']);
+    expect(mockQuery.mock.calls[1]).toEqual(['COMMIT']);
   });
 
   it('should return 404 if user profile is not found', async () => {

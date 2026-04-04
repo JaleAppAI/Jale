@@ -1,10 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
-import { apiFetch, LegalWallError } from '@/lib/api';
+import { apiFetch } from '@/lib/api';
 
 interface WorkerProfile {
     id: string;
@@ -14,8 +13,7 @@ interface WorkerProfile {
 
 export default function WorkerProfilePage() {
     const { idToken } = useAuth();
-    useRequireAuth();
-    const router = useRouter();
+    const { handleLegalWall } = useRequireAuth();
     const t = useTranslations('worker.profile');
     const tCommon = useTranslations('common');
     const [profile, setProfile] = useState<WorkerProfile | null>(null);
@@ -30,10 +28,9 @@ export default function WorkerProfilePage() {
             })
             .then(setProfile)
             .catch((err) => {
-                if (err instanceof LegalWallError) {
-                    sessionStorage.setItem('legalReturnUrl', '/worker/profile');
-                    router.replace('/legal/accept');
-                } else {
+                try {
+                    handleLegalWall(err, '/worker/profile');
+                } catch {
                     setError(tCommon('error'));
                 }
             });
@@ -47,12 +44,12 @@ export default function WorkerProfilePage() {
             <h1 className="text-2xl font-semibold mb-6">{t('title')}</h1>
             <div className="rounded-lg border bg-card p-6 space-y-4">
                 <div>
-                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Phone</p>
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">{t('field_phone')}</p>
                     <p className="text-sm">{profile.phone}</p>
                 </div>
                 {profile.name && (
                     <div>
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">Name</p>
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1">{t('field_name')}</p>
                         <p className="text-sm">{profile.name}</p>
                     </div>
                 )}

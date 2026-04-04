@@ -33,7 +33,7 @@ export default function EmployerAuthForm() {
     };
 
     return (
-        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+        <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
             <div className="w-full max-w-sm rounded-lg border bg-card p-8 space-y-6">
                 <h1 className="text-xl font-semibold">{t('title')}</h1>
                 <div className="space-y-4">
@@ -58,6 +58,6 @@ export default function EmployerAuthForm() {
                     </Button>
                 </div>
             </div>
-        </main>
+        </div>
     );
 }
