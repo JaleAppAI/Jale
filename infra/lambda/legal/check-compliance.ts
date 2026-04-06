@@ -3,6 +3,7 @@ import { Client, PoolClient } from 'pg';
 export interface ComplianceResult {
   compliant: boolean;
   currentVersion: string | null;
+  userExists: boolean;
 }
 
 /**
@@ -23,12 +24,13 @@ export async function checkCompliance(
   );
 
   if (result.rows.length === 0) {
-    return { compliant: false, currentVersion: null };
+    return { compliant: false, currentVersion: null, userExists: false };
   }
 
   const user = result.rows[0];
   return {
     compliant: user.tos_version?.trim() === requiredTosVersion.trim(),
     currentVersion: user.tos_version ?? null,
+    userExists: true,
   };
 }

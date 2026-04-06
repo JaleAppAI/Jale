@@ -129,6 +129,15 @@ describe('DB Utility', () => {
     });
   });
 
+  it('rds-ca-bundle.pem contains the full AWS global CA bundle (not truncated)', () => {
+    const fs = jest.requireActual('fs');
+    const path = jest.requireActual('path');
+    const bundlePath = path.resolve(__dirname, '../../../../lambda/lib/rds-ca-bundle.pem');
+    const content = fs.readFileSync(bundlePath, 'utf-8');
+    const certCount = (content.match(/-----BEGIN CERTIFICATE-----/g) || []).length;
+    expect(certCount).toBeGreaterThanOrEqual(50);
+  });
+
   it('passes RDS CA bundle to pg Pool ssl config', async () => {
     // Use top-level mockSend (already wired to the module-level smClient) for the secret fetch.
     mockSend.mockResolvedValue({

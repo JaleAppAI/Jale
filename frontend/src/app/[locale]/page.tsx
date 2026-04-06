@@ -6,13 +6,13 @@ export default function Home() {
   const t = useTranslations();
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="flex flex-col items-center justify-center min-h-[calc(100vh-4rem)] px-4">
+    <div className="min-h-screen">
+      <main className="flex flex-col items-center justify-center min-h-[calc(100vh-4rem)] px-6">
         <div className="text-center max-w-2xl">
-          <h1 className="text-4xl md:text-6xl font-bold mb-6">
+          <h1 className="text-[1.4rem] md:text-[1.7rem] font-bold tracking-[-0.03em] leading-[1.2] mb-6">
             {t('landing.headline')}
           </h1>
-          <p className="text-xl text-muted-foreground mb-10">
+          <p className="text-base md:text-lg text-muted leading-[1.65] mb-10">
             {t('landing.subheadline')}
           </p>
           <div className="flex flex-col sm:flex-row gap-4 justify-center">

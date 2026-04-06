@@ -6,6 +6,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { workerSignIn, workerVerifyOtp } from '@/lib/cognito';
 import { CognitoUser } from 'amazon-cognito-identity-js';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
 
 export default function WorkerAuthForm() {
     const router = useRouter();
@@ -54,19 +56,18 @@ export default function WorkerAuthForm() {
     };
 
     return (
-        <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-            <div className="w-full max-w-sm rounded-lg border bg-card p-8 space-y-6">
-                <h1 className="text-xl font-semibold">{t('title')}</h1>
+        <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-6">
+            <Card className="w-full max-w-md p-8 md:p-10 space-y-6">
+                <h1 className="text-[1.15rem] font-semibold tracking-[-0.02em] leading-[1.45]">{t('title')}</h1>
                 {step === 'phone' && (
                     <div className="space-y-4">
-                        <input
+                        <Input
                             type="tel"
                             placeholder={t('phone_label')}
                             value={phone}
                             onChange={(e) => setPhone(e.target.value)}
-                            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                         />
-                        {error && <p className="text-sm text-destructive">{error}</p>}
+                        {error && <p className="text-sm text-error">{error}</p>}
                         <Button className="w-full" onClick={handleSendOtp} disabled={isLoading}>
                             {isLoading ? tCommon('loading') : t('send_otp')}
                         </Button>
@@ -74,14 +75,13 @@ export default function WorkerAuthForm() {
                 )}
                 {step === 'otp' && (
                     <div className="space-y-4">
-                        <input
+                        <Input
                             type="text"
                             placeholder={t('otp_label')}
                             value={otp}
                             onChange={(e) => setOtp(e.target.value)}
-                            className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                         />
-                        {error && <p className="text-sm text-destructive">{error}</p>}
+                        {error && <p className="text-sm text-error">{error}</p>}
                         <div className="flex gap-3">
                             <Button variant="outline" className="flex-1" onClick={handleBack} disabled={isLoading}>
                                 {t('back')}
@@ -92,7 +92,7 @@ export default function WorkerAuthForm() {
                         </div>
                     </div>
                 )}
-            </div>
+            </Card>
         </div>
     );
 }

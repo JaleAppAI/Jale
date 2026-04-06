@@ -92,6 +92,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             WHERE cognito_sub = $4`,
           [tosVersion, ipAddress, userAgent, cognitoSub],
         );
+      } else {
+        // rowCount === 0: either user already accepted (idempotent) or user row
+        // doesn't exist at all (post-confirmation DB sync failed).
+        const existsResult = await client.query(
+          'SELECT 1 FROM users WHERE cognito_sub = $1',
+          [cognitoSub],
+        );
+        if (existsResult.rows.length === 0) {
+          await client.query('COMMIT');
+          return {
+            statusCode: 409,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({
+              error: 'user_not_provisioned',
+              message: 'Account setup incomplete. Please try signing out and back in.',
+            }),
+          };
+        }
+        // else: idempotent accept — user already has this version, fall through to 200
       }
 
       await client.query('COMMIT');

@@ -42,10 +42,30 @@ describe('Worker Profile API Lambda', () => {
     },
   } as unknown as APIGatewayProxyEvent;
 
+  it('should return 409 if user row does not exist (post-confirmation sync failed)', async () => {
+    mockCheckCompliance.mockResolvedValue({
+      compliant: false,
+      currentVersion: null,
+      userExists: false,
+    });
+    mockQuery.mockResolvedValue({});
+
+    const response = await handler(mockEvent);
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'user_not_provisioned',
+      message: 'Account setup incomplete. Please try signing out and back in.',
+    });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
   it('should return 403 if legal compliance is not met', async () => {
     mockCheckCompliance.mockResolvedValue({
       compliant: false,
-      currentVersion: 'v0.9'
+      currentVersion: 'v0.9',
+      userExists: true,
     });
     mockQuery.mockResolvedValue({});
 
@@ -70,7 +90,7 @@ describe('Worker Profile API Lambda', () => {
   });
 
   it('should return 404 if user profile is not found', async () => {
-    mockCheckCompliance.mockResolvedValue({ compliant: true });
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     // Simulate empty result for user query
     mockQuery.mockImplementation((queryText) => {
       if (queryText.includes('SELECT id, user_type')) {
@@ -90,7 +110,7 @@ describe('Worker Profile API Lambda', () => {
   });
 
   it('should return 200 and user profile if successful', async () => {
-    mockCheckCompliance.mockResolvedValue({ compliant: true });
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const mockUser = {
       id: 'usr-456',
       user_type: 'worker',

@@ -105,6 +105,9 @@ describe('Accept ToS API Lambda', () => {
       if (queryText.includes('UPDATE users')) {
         return Promise.resolve({ rowCount: 0 }); // no rows changed — already accepted
       }
+      if (queryText.includes('SELECT 1 FROM users')) {
+        return Promise.resolve({ rows: [{ '?column?': 1 }] }); // user exists
+      }
       return Promise.resolve({});
     });
 
@@ -113,14 +116,38 @@ describe('Accept ToS API Lambda', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ accepted: true, version: 'v1.0' });
 
-    // Should only have BEGIN + UPDATE + COMMIT (no INSERT calls)
+    // Should have BEGIN + UPDATE + existence check SELECT + COMMIT (no INSERT calls)
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
     expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE users'), ['v1.0', 'test-user']);
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('SELECT 1 FROM users'), ['test-user']);
     expect(mockQuery).not.toHaveBeenCalledWith(
       expect.stringContaining("SELECT id, 'tos'"),
       expect.any(Array)
     );
-    expect(mockQuery).toHaveBeenCalledTimes(3); // BEGIN + UPDATE + COMMIT
+    expect(mockQuery).toHaveBeenCalledTimes(4); // BEGIN + UPDATE + SELECT existence + COMMIT
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('should return 409 when user row does not exist (post-confirmation sync failed)', async () => {
+    const event = createEvent({ sub: 'ghost-user' }, { tosVersion: 'v1.0' });
+    mockQuery.mockImplementation((queryText: string) => {
+      if (queryText.includes('UPDATE users')) {
+        return Promise.resolve({ rowCount: 0 }); // no rows changed — user doesn't exist
+      }
+      if (queryText.includes('SELECT 1 FROM users')) {
+        return Promise.resolve({ rows: [] }); // user not found
+      }
+      return Promise.resolve({});
+    });
+
+    const response = await handler(event);
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({
+      error: 'user_not_provisioned',
+      message: 'Account setup incomplete. Please try signing out and back in.',
+    });
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
   });

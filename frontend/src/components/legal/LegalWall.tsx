@@ -5,6 +5,7 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 
 interface TosData {
     version: string;
@@ -64,9 +65,9 @@ export default function LegalWall() {
 
     if (fetchError) {
         return (
-            <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+            <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-6">
                 <div className="text-center space-y-4">
-                    <p className="text-sm text-muted-foreground">{t('error_fetch')}</p>
+                    <p className="text-sm text-muted">{t('error_fetch')}</p>
                     <Button variant="outline" onClick={fetchTos}>{tCommon('retry')}</Button>
                 </div>
             </main>
@@ -76,26 +77,26 @@ export default function LegalWall() {
     if (!tosData) {
         return (
             <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
-                <p className="text-sm text-muted-foreground">{tCommon('loading')}</p>
+                <p className="text-sm text-muted">{tCommon('loading')}</p>
             </main>
         );
     }
 
     return (
-        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-            <div className="w-full max-w-lg rounded-lg border bg-card p-8 space-y-6">
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-6">
+            <Card className="w-full max-w-lg p-8 md:p-10 space-y-6">
                 <div>
-                    <h1 className="text-xl font-semibold mb-2">{t('title')}</h1>
-                    <p className="text-sm text-muted-foreground">{t('body')}</p>
+                    <h1 className="text-[1.15rem] font-semibold tracking-[-0.02em] leading-[1.45] mb-2">{t('title')}</h1>
+                    <p className="text-sm text-muted">{t('body')}</p>
                 </div>
 
                 <div className="flex gap-4 text-sm">
                     <a href={tosData.tosUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-primary underline underline-offset-4 hover:opacity-80">
+                        className="text-primary underline underline-offset-4 hover:text-primary-hover transition-colors duration-200 cursor-pointer">
                         {t('tos_link')}
                     </a>
                     <a href={tosData.privacyUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-primary underline underline-offset-4 hover:opacity-80">
+                        className="text-primary underline underline-offset-4 hover:text-primary-hover transition-colors duration-200 cursor-pointer">
                         {t('privacy_link')}
                     </a>
                 </div>
@@ -106,17 +107,17 @@ export default function LegalWall() {
                         id="legal-checkbox"
                         checked={checked}
                         onChange={(e) => setChecked(e.target.checked)}
-                        className="mt-0.5 h-4 w-4 shrink-0"
+                        className="mt-0.5 h-5 w-5 shrink-0 cursor-pointer accent-primary"
                     />
                     <span className="text-sm">{t('checkbox')}</span>
                 </label>
 
-                {submitError && <p className="text-sm text-destructive">{t('error_submit')}</p>}
+                {submitError && <p className="text-sm text-error">{t('error_submit')}</p>}
 
                 <Button className="w-full" onClick={handleAccept} disabled={!checked || isSubmitting}>
                     {isSubmitting ? tCommon('loading') : t('accept_cta')}
                 </Button>
-            </div>
+            </Card>
         </main>
     );
 }

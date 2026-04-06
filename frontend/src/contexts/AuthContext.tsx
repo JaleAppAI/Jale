@@ -25,7 +25,8 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
 
     useEffect(() => {
         const rt = sessionStorage.getItem('refreshToken');
-        const ut = sessionStorage.getItem('userType') as 'worker' | 'employer' | null;
+        const raw = sessionStorage.getItem('userType');
+        const ut = raw === 'worker' || raw === 'employer' ? raw : null;
         if (rt) {
             setRefreshToken(rt);
             setUserType(ut);
@@ -37,10 +38,18 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
                     const data = await res.json();
                     setAccessToken(data.accessToken);
                     setIdToken(data.idToken);
-                    sessionStorage.setItem('accessToken', data.accessToken);
-                    sessionStorage.setItem('idToken', data.idToken);
+                } else {
+                    sessionStorage.removeItem('refreshToken');
+                    sessionStorage.removeItem('userType');
+                    setRefreshToken(null);
+                    setUserType(null);
                 }
-            }).catch(() => {}).finally(() => setIsLoading(false));
+            }).catch(() => {
+                sessionStorage.removeItem('refreshToken');
+                sessionStorage.removeItem('userType');
+                setRefreshToken(null);
+                setUserType(null);
+            }).finally(() => setIsLoading(false));
         } else {
             setIsLoading(false);
         }
@@ -51,8 +60,6 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         setIdToken(tokens.idToken);
         setRefreshToken(tokens.refreshToken);
         setUserType(ut);
-        sessionStorage.setItem('accessToken', tokens.accessToken);
-        sessionStorage.setItem('idToken', tokens.idToken);
         sessionStorage.setItem('refreshToken', tokens.refreshToken);
         sessionStorage.setItem('userType', ut);
     };
@@ -62,7 +69,8 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
             method: 'POST',
             body: JSON.stringify({ accessToken, refreshToken, userType }),
         }).catch(() => {});
-        sessionStorage.clear();
+        sessionStorage.removeItem('refreshToken');
+        sessionStorage.removeItem('userType');
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);
@@ -73,12 +81,18 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
     const refreshTokens = async () => {
         if (!refreshToken) return;
         const res = await apiFetch('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken, userType }) });
-        if (!res.ok) return;
+        if (!res.ok) {
+            sessionStorage.removeItem('refreshToken');
+            sessionStorage.removeItem('userType');
+            setAccessToken(null);
+            setIdToken(null);
+            setRefreshToken(null);
+            setUserType(null);
+            return;
+        }
         const data = await res.json();
         setAccessToken(data.accessToken);
         setIdToken(data.idToken);
-        sessionStorage.setItem('accessToken', data.accessToken);
-        sessionStorage.setItem('idToken', data.idToken);
     };
 
     return (

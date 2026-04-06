@@ -12,16 +12,16 @@ export function Header() {
     const { isAuthenticated, logout } = useAuth();
 
     return (
-        <header className="sticky top-0 z-10 border-b bg-background">
-            <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
-                <Link href="/" className="text-lg font-semibold tracking-tight">
+        <header className="sticky top-0 z-10 border-b border-border/50 bg-card/80 backdrop-blur-md">
+            <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+                <Link href="/" className="text-lg font-bold tracking-tight">
                     Jale
                 </Link>
                 <div className="flex items-center gap-3">
                     <Link
                         href={pathname}
                         locale={otherLocale}
-                        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        className="text-sm text-muted hover:text-foreground transition-colors"
                     >
                         {t('language_toggle')}
                     </Link>

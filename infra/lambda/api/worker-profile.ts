@@ -25,8 +25,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('BEGIN');
     await setRlsContext(client, cognitoSub);
 
-    // Legal wall: block access if ToS not accepted
+    // Legal wall: block access if user missing or ToS not accepted
     const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
+    if (!compliance.userExists) {
+      await client.query('COMMIT');
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          error: 'user_not_provisioned',
+          message: 'Account setup incomplete. Please try signing out and back in.',
+        }),
+      };
+    }
     if (!compliance.compliant) {
       await client.query('COMMIT');
       return {

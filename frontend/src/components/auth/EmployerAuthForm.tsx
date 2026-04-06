@@ -5,6 +5,8 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerSignIn } from '@/lib/cognito';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
 
 export default function EmployerAuthForm() {
     const router = useRouter();
@@ -33,31 +35,29 @@ export default function EmployerAuthForm() {
     };
 
     return (
-        <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-            <div className="w-full max-w-sm rounded-lg border bg-card p-8 space-y-6">
-                <h1 className="text-xl font-semibold">{t('title')}</h1>
+        <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-6">
+            <Card className="w-full max-w-md p-8 md:p-10 space-y-6">
+                <h1 className="text-[1.15rem] font-semibold tracking-[-0.02em] leading-[1.45]">{t('title')}</h1>
                 <div className="space-y-4">
-                    <input
+                    <Input
                         type="email"
                         placeholder={t('email_label')}
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
-                    <input
+                    <Input
                         type="password"
                         placeholder={t('password_label')}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         autoComplete="current-password"
-                        className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
                     />
-                    {error && <p className="text-sm text-destructive">{error}</p>}
+                    {error && <p className="text-sm text-error">{error}</p>}
                     <Button className="w-full" onClick={handleSignIn} disabled={isLoading}>
                         {isLoading ? tCommon('loading') : t('sign_in')}
                     </Button>
                 </div>
-            </div>
+            </Card>
         </div>
     );
 }
