@@ -6,7 +6,8 @@
     },
     "header": {
         "language_toggle": "Español",
-        "sign_out": "Sign out"
+        "sign_out": "Sign out",
+        "profile": "Profile"
     },
     "landing": {
         "headline": "Find work. Find workers.",
@@ -52,6 +53,47 @@
             "title": "Employer Profile",
             "field_email": "Email",
             "field_company": "Company"
+        }
+    },
+    "employer_dashboard": {
+        "stats": {
+            "active_jobs": "Active Jobs",
+            "total_applicants": "Total Applicants",
+            "total_views": "Total Views"
+        },
+        "jobs": {
+            "title": "Job Postings",
+            "post_job": "Post Job",
+            "active": "Active",
+            "closed": "Closed",
+            "toggle": {
+                "activate": "Mark Active",
+                "close": "Mark Closed"
+            },
+            "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
+            "posted": "Posted"
+        },
+        "applicants": {
+            "title": "Applicants",
+            "view_profile": "View Profile",
+            "applied": "Applied",
+            "phone": "Phone",
+            "status": {
+                "pending": "Pending",
+                "reviewed": "Reviewed",
+                "hired": "Hired"
+            }
+        },
+        "modal": {
+            "title": "Post a Job",
+            "job_title": "Job Title",
+            "location": "Location",
+            "job_type": "Job Type",
+            "job_type_fulltime": "Full-time",
+            "job_type_parttime": "Part-time",
+            "job_type_contract": "Contract",
+            "submit": "Post Job",
+            "cancel": "Cancel"
         }
     }
 }

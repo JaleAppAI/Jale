@@ -9,7 +9,7 @@ export function Header() {
     const pathname = usePathname();
     const t = useTranslations('header');
     const otherLocale = locale === 'en' ? 'es' : 'en';
-    const { isAuthenticated, logout } = useAuth();
+    const { isAuthenticated, logout, userType } = useAuth();
 
     return (
         <header className="sticky top-0 z-10 border-b border-border/50 bg-card/80 backdrop-blur-md">
@@ -26,9 +26,23 @@ export function Header() {
                         {t('language_toggle')}
                     </Link>
                     {isAuthenticated && (
-                        <Button variant="outline" size="sm" onClick={logout}>
-                            {t('sign_out')}
-                        </Button>
+                        <>
+                            {userType === 'employer' && (
+                                <Link
+                                    href="/employer/profile"
+                                    aria-label={t('profile')}
+                                    className="text-muted hover:text-foreground transition-colors"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                        <circle cx="12" cy="7" r="4"/>
+                                    </svg>
+                                </Link>
+                            )}
+                            <Button variant="outline" size="sm" onClick={logout}>
+                                {t('sign_out')}
+                            </Button>
+                        </>
                     )}
                 </div>
             </div>

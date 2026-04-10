@@ -6,7 +6,8 @@
     },
     "header": {
         "language_toggle": "English",
-        "sign_out": "Cerrar sesión"
+        "sign_out": "Cerrar sesión",
+        "profile": "Perfil"
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
@@ -52,6 +53,47 @@
             "title": "Perfil del empleador",
             "field_email": "Correo electrónico",
             "field_company": "Empresa"
+        }
+    },
+    "employer_dashboard": {
+        "stats": {
+            "active_jobs": "Empleos activos",
+            "total_applicants": "Total de candidatos",
+            "total_views": "Total de vistas"
+        },
+        "jobs": {
+            "title": "Publicaciones de empleo",
+            "post_job": "Publicar empleo",
+            "active": "Activo",
+            "closed": "Cerrado",
+            "toggle": {
+                "activate": "Marcar como activo",
+                "close": "Marcar como cerrado"
+            },
+            "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
+            "posted": "Publicado"
+        },
+        "applicants": {
+            "title": "Candidatos",
+            "view_profile": "Ver perfil",
+            "applied": "Aplicado",
+            "phone": "Teléfono",
+            "status": {
+                "pending": "Pendiente",
+                "reviewed": "Revisado",
+                "hired": "Contratado"
+            }
+        },
+        "modal": {
+            "title": "Publicar un empleo",
+            "job_title": "Título del puesto",
+            "location": "Ubicación",
+            "job_type": "Tipo de empleo",
+            "job_type_fulltime": "Tiempo completo",
+            "job_type_parttime": "Medio tiempo",
+            "job_type_contract": "Contrato",
+            "submit": "Publicar empleo",
+            "cancel": "Cancelar"
         }
     }
 }
