@@ -91,10 +91,15 @@ CREATE POLICY applications_worker_insert
   ON job_applications FOR INSERT
   WITH CHECK (worker_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
 
--- Employers see applications to their jobs (leverages jobs RLS: SELECT id FROM jobs returns only this employer's jobs)
+-- Employers see applications to their jobs (explicit employer ownership check, not relying on cascade)
 CREATE POLICY applications_employer_select
   ON job_applications FOR SELECT
-  USING (job_id IN (SELECT id FROM jobs));
+  USING (
+    job_id IN (
+      SELECT id FROM jobs
+      WHERE employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true))
+    )
+  );
 
 -- ── RLS: worker_profiles ─────────────────────────────────────
 ALTER TABLE worker_profiles ENABLE ROW LEVEL SECURITY;
