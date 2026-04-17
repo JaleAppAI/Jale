@@ -109,4 +109,28 @@ describe('ApiStack', () => {
       AuthorizationType: 'NONE',
     });
   });
+
+  test('Employer jobs list Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer jobs list endpoint',
+    });
+  });
+
+  test('Employer jobs create Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer jobs create endpoint',
+    });
+  });
+
+  test('Employer jobs update Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer jobs update endpoint',
+    });
+  });
+
+  test('Employer job applicants Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer job applicants endpoint',
+    });
+  });
 });
