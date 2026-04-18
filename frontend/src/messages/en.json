@@ -111,7 +111,8 @@
             "job_type_contract": "Contract",
             "submit": "Post Job",
             "cancel": "Cancel",
-            "error": "Failed to post job. Please try again."
+            "error": "Failed to post job. Please try again.",
+            "job_description": "Job Description"
         }
     }
 }

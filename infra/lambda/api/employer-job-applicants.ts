@@ -1,0 +1,111 @@
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { getDbPool, setRlsContext } from '../lib/db';
+import { corsHeaders, errorMessage } from '../lib/http';
+import { checkCompliance } from '../legal/check-compliance';
+
+const CORS_HEADERS = corsHeaders();
+
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  let client;
+
+  try {
+    const cognitoSub: string = event.requestContext.authorizer?.claims?.sub;
+
+    if (!cognitoSub) {
+      return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
+    }
+
+    const jobId = event.pathParameters?.jobId;
+    if (!jobId) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_job_id' }) };
+    }
+
+    const pool = await getDbPool();
+    client = await pool.connect();
+
+    await client.query('BEGIN');
+    await setRlsContext(client, cognitoSub);
+
+    const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
+    if (!compliance.userExists) {
+      await client.query('COMMIT');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+    }
+    if (!compliance.compliant) {
+      await client.query('COMMIT');
+      return {
+        statusCode: 403,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }),
+      };
+    }
+
+    // Verify this job belongs to the caller (RLS returns no rows if not)
+    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1', [jobId]);
+    if (jobCheck.rowCount === 0) {
+      await client.query('COMMIT');
+      return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
+    }
+
+    // Build applicant query with optional filters
+    const qs = event.queryStringParameters ?? {};
+    const conditions: string[] = ['ja.job_id = $1'];
+    const params: (string | number | string[])[] = [jobId];
+    let idx = 2;
+
+    if (qs.status) {
+      conditions.push(`ja.status = $${idx++}`);
+      params.push(qs.status);
+    }
+    if (qs.availability) {
+      conditions.push(`wp.availability = $${idx++}`);
+      params.push(qs.availability);
+    }
+    if (qs.min_experience) {
+      conditions.push(`wp.years_experience >= $${idx++}`);
+      params.push(parseInt(qs.min_experience, 10));
+    }
+    if (qs.skills) {
+      // skills is a comma-separated list — match any skill using the && (overlap) operator
+      const skillList = qs.skills.split(',').map((s) => s.trim()).filter(Boolean);
+      if (skillList.length > 0) {
+        conditions.push(`wp.skills && $${idx++}`);
+        params.push(skillList);
+      }
+    }
+
+    const result = await client.query(
+      `SELECT
+         ja.id            AS application_id,
+         ja.worker_id,
+         COALESCE(wp.full_name, u.full_name) AS full_name,
+         COALESCE(wp.phone, u.phone)         AS phone,
+         ja.status,
+         ja.applied_at,
+         COALESCE(wp.skills, '{}')           AS skills,
+         wp.availability,
+         wp.years_experience,
+         wp.location
+       FROM job_applications ja
+       JOIN users u ON u.id = ja.worker_id
+       LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY ja.applied_at DESC`,
+      params,
+    );
+
+    await client.query('COMMIT');
+
+    return {
+      statusCode: 200,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({ applicants: result.rows, total: result.rowCount }),
+    };
+  } catch (err) {
+    if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    console.error('employer-job-applicants error:', errorMessage(err));
+    return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
+  } finally {
+    if (client) client.release();
+  }
+};

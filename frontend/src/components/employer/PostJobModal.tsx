@@ -22,6 +22,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [title, setTitle] = useState('')
   const [location, setLocation] = useState('')
   const [jobType, setJobType] = useState<'full-time' | 'part-time' | 'contract'>('full-time')
+  const [jobDescription, setJobDescription] = useState('');
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -32,10 +33,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setLoading(true)
     setError(null)
     try {
-      const job = await createJob(idToken, { title, location, job_type: jobType })
+      const job = await createJob(idToken, { title, location, job_type: jobType, description: jobDescription })
       setTitle('')
       setLocation('')
       setJobType('full-time')
+      setJobDescription('')
       onJobCreated(job)
     } catch {
       setError(t('modal.error'))
@@ -46,7 +48,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-      <div className="bg-card rounded-2xl p-6 w-full max-w-md mx-4 flex flex-col gap-4">
+      <div className="bg-card rounded-2xl p-6 w-full max-w-xl mx-4 flex flex-col gap-4">
         <h2 className="text-lg font-semibold text-foreground">{t('modal.title')}</h2>
 
         {error && <p className="text-sm text-error">{error}</p>}
@@ -83,6 +85,17 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             <option value="part-time">{t('modal.job_type_parttime')}</option>
             <option value="contract">{t('modal.job_type_contract')}</option>
           </select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label htmlFor="post-job-description" className="text-sm font-medium text-foreground over text-ellipsis">{t('modal.job_description')}</label>
+          <textarea
+            id="post-job-description"
+            value={jobDescription}
+            onChange={(e) => setJobDescription(e.target.value)}
+            placeholder={t('modal.job_description')}
+            className="w-full min-h-[44px] rounded-[var(--radius-input)] border border-border bg-input px-3 py-2.5 text-sm text-foreground placeholder:text-placeholder transition-[background-color,border-color,box-shadow] duration-200 focus:outline-none focus:bg-input-focus focus:border-primary focus:shadow-[var(--shadow-focus)] disabled:opacity-50 disabled:cursor-not-allowed"
+          />
         </div>
 
         <div className="flex gap-3 justify-end pt-2">

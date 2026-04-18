@@ -111,7 +111,8 @@
             "job_type_contract": "Contrato",
             "submit": "Publicar empleo",
             "cancel": "Cancelar",
-            "error": "Error al publicar el empleo. Inténtalo de nuevo."
+            "error": "Error al publicar el empleo. Inténtalo de nuevo.",
+            "job_description": "Descripción del empleo"
         }
     }
 }
