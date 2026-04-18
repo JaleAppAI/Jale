@@ -58,8 +58,7 @@
     "employer_dashboard": {
         "stats": {
             "active_jobs": "Empleos activos",
-            "total_applicants": "Total de candidatos",
-            "total_views": "Total de vistas"
+            "total_applicants": "Total de candidatos"
         },
         "jobs": {
             "title": "Publicaciones de empleo",
@@ -71,17 +70,35 @@
                 "close": "Marcar como cerrado"
             },
             "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
-            "posted": "Publicado"
+            "posted": "Publicado",
+            "search_placeholder": "Buscar por título o ubicación...",
+            "back_to_dashboard": "← Volver al panel"
+        },
+        "filter": {
+            "title": "Filtrar candidatos",
+            "status": "Estado",
+            "status_all": "Todos",
+            "skills": "Habilidades",
+            "skills_placeholder": "ej. montacargas, OSHA",
+            "availability": "Disponibilidad",
+            "availability_any": "Cualquiera",
+            "availability_immediate": "Inmediata",
+            "availability_2weeks": "2 semanas",
+            "availability_1month": "1 mes",
+            "min_experience": "Exp. mínima (años)",
+            "clear": "Limpiar filtros"
         },
         "applicants": {
             "title": "Candidatos",
             "view_profile": "Ver perfil",
-            "applied": "Aplicado",
+            "applied": "Aplicó",
             "phone": "Teléfono",
+            "empty": "Ningún candidato coincide con los filtros.",
             "status": {
                 "pending": "Pendiente",
                 "reviewed": "Revisado",
-                "hired": "Contratado"
+                "hired": "Contratado",
+                "rejected": "Rechazado"
             }
         },
         "modal": {
@@ -93,7 +110,8 @@
             "job_type_parttime": "Medio tiempo",
             "job_type_contract": "Contrato",
             "submit": "Publicar empleo",
-            "cancel": "Cancelar"
+            "cancel": "Cancelar",
+            "error": "Error al publicar el empleo. Inténtalo de nuevo."
         }
     }
 }
