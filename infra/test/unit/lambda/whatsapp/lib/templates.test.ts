@@ -1,0 +1,77 @@
+import { t, detectLanguage } from '../../../../../lambda/whatsapp/lib/templates';
+
+describe('templates.ts — t()', () => {
+  it('returns the ES variant', () => {
+    expect(t('welcome_new_user', 'es')).toMatch(/Bienvenido/);
+  });
+
+  it('returns the EN variant', () => {
+    expect(t('welcome_new_user', 'en')).toMatch(/Welcome/);
+  });
+
+  it('substitutes {{placeholder}} values', () => {
+    const s = t('legal_prompt', 'es', { tos_url: 'https://example.com/tos' });
+    expect(s).toContain('https://example.com/tos');
+    expect(s).not.toContain('{{tos_url}}');
+  });
+
+  it('substitutes multiple placeholders', () => {
+    const s = t('profile_reprompt', 'en', { question: 'What is your name?' });
+    expect(s).toContain('What is your name?');
+    expect(s).not.toContain('{{question}}');
+  });
+
+  it('leaves unknown placeholders intact', () => {
+    const s = t('legal_prompt', 'es', {});
+    // tos_url placeholder stays because no value was supplied
+    expect(s).toContain('{{tos_url}}');
+  });
+
+  it('all keys have both ES and EN variants (no missing translations)', () => {
+    const keys = [
+      'welcome_new_user', 'welcome_existing_user', 'otp_retry', 'otp_timeout', 'otp_expired',
+      'legal_prompt', 'legal_accepted', 'legal_declined',
+      'profile_intro', 'ask_name', 'ask_city', 'ask_trade', 'ask_trade_freetext',
+      'ask_experience', 'ask_transportation', 'ask_availability',
+      'profile_complete', 'profile_reprompt', 'profile_jobs_blocked',
+      'idle_help', 'jobs_none', 'job_accepted', 'job_declined', 'job_not_found',
+      'unknown_message',
+    ] as const;
+    for (const k of keys) {
+      const es = t(k, 'es');
+      const en = t(k, 'en');
+      expect(es).toBeTruthy();
+      expect(en).toBeTruthy();
+      expect(es).not.toBe(en);
+    }
+  });
+
+  it('profile question numeric choices match the canonical slug order', () => {
+    // ask_trade lists: 1)Electricista 2)Plomero 3)Carpintero 4)Concreto 5)Pintura 6)Otro
+    // These must align with PROFILE_FIELDS.find('main_trade').options in flows.ts:
+    // [electrician, plumber, carpenter, concrete, painting, other]
+    const tradeEs = t('ask_trade', 'es');
+    expect(tradeEs).toMatch(/1\).*Electricista/);
+    expect(tradeEs).toMatch(/6\).*Otro/);
+
+    const expEn = t('ask_experience', 'en');
+    expect(expEn).toMatch(/1\).*0-1/);
+    expect(expEn).toMatch(/4\).*10\+/);
+  });
+});
+
+describe('templates.ts — detectLanguage', () => {
+  test.each([
+    ['Hola', 'es'],
+    ['HOLA', 'es'],
+    ['Hello', 'en'],
+    ['hello', 'en'],
+    ['Hi', 'en'],
+    ['hey', 'en'],
+    ['Trabajos', 'es'],
+    ['Anything else', 'es'], // default
+    ['', 'es'],
+  ])('detectLanguage("%s") → %s', (input, expected) => {
+    expect(detectLanguage(input)).toBe(expected);
+  });
+});

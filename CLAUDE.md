@@ -33,7 +33,7 @@ Jale/
 
 ## Architecture (5 Stacks)
 
-**NetworkStack** — VPC (2 AZs, NO NAT Gateway), private + isolated subnets, Lambda/RDS security groups, 7 VPC endpoints (6 interface: secretsmanager, sns, cognito-idp, sts, logs, sqs + 1 gateway: s3). All Lambda egress goes through VPC endpoints — missing an endpoint = silent timeout.
+**NetworkStack** — VPC (2 AZs, 1 NAT Gateway in public subnet), private-with-egress + isolated subnets, Lambda/RDS security groups, 7 VPC endpoints (6 interface: secretsmanager, sns, cognito-idp, sts, logs, sqs + 1 gateway: s3). NAT Gateway provides internet egress for Lambdas that call external APIs (Twilio). AWS-service traffic still routes through VPC endpoints for cost + latency.
 
 **DatabaseStack** — RDS PostgreSQL 16 in isolated subnets, credentials in Secrets Manager. Takes `NetworkStack` as a prop (not individual fields).
 
@@ -79,8 +79,12 @@ import { corsHeaders } from '../lib/http';
 ### Legal Wall Enforcement
 Profile endpoints (`/worker/profile`, `/employer/profile`) call `checkCompliance()` inside the RLS transaction before returning data. Users who haven't accepted the current ToS version receive a `403 legal_required` response. The `POST /legal/accept` endpoint validates the submitted `tosVersion` matches `REQUIRED_TOS_VERSION` server-side — clients cannot self-issue compliance.
 
-### VPC Endpoint Constraint
-There is NO NAT Gateway. Lambdas can ONLY reach AWS services that have VPC endpoints (secretsmanager, sns, cognito-idp, sts, logs, sqs, s3). Adding a call to Twilio, Stripe, or any external API requires adding `natGateways: 1` to NetworkStack first.
+### Network Egress (NAT + VPC Endpoints)
+All Lambdas live in PRIVATE_WITH_EGRESS subnets routed through a single NAT Gateway. Internet egress is available but SHARED across every Lambda — not just WhatsApp. AWS-service calls should still prefer VPC endpoints (secretsmanager, sns, cognito-idp, sts, logs, sqs, s3) when an endpoint exists — cheaper and private. Before calling a new external API, consider whether it warrants a new egress path or scoping the Lambda SG.
+
+**Known risk:** `lambdaSg` has `allowAllOutbound: true`, so any compromised Lambda can reach any public endpoint. Mitigation deferred to V2 (per-Lambda egress SG rules). Flagged in the 2026-04-20 audit.
+
+**Endpoint strategy:** Only SecretsManager + CloudWatch Logs have interface endpoints (high-frequency, security-sensitive calls). Cognito-IDP, SNS, STS, and SQS calls route via the NAT Gateway — cheaper at current scale per the 2026-04-20 audit cost analysis. Re-evaluate at ~100k DAU: Cognito-IDP traffic approaches the endpoint break-even (~417 GB/mo) around that threshold.
 
 ### Database
 - Schema must be migrated manually after first deploy: `001_initial_schema.sql` → `002_rls_policies.sql`
@@ -111,7 +115,7 @@ npx cdk destroy --all  # Tear down (DO NOT run without user approval)
 
 - NEVER run `cdk deploy` or `cdk destroy` without explicit user approval
 - NEVER hardcode AWS account IDs, secrets, or credentials in source files
-- When adding a new Lambda that calls an external service (non-AWS), check if NAT Gateway is needed
+- When adding a new Lambda that calls an external service (non-AWS), check whether it expands the egress surface on the shared NAT and whether a narrower SG rule is appropriate
 - When adding a new Lambda that calls an AWS service, check if a VPC endpoint exists for it
 - All new Lambdas should use the `JaleLambdaFunction` construct for consistency
 - All new Cognito pools should use the `CognitoPool` construct
@@ -120,3 +124,27 @@ npx cdk destroy --all  # Tear down (DO NOT run without user approval)
 - Test files go in `infra/test/` — one test file per stack
 - All DB-accessing Lambdas must use `lambda/lib/db.ts` shared module — no copy-pasting DB boilerplate
 - All Lambda CORS headers must use `lambda/lib/http.ts` — no hardcoded origins
+
+## Design Context
+
+### Users
+- **Workers (primary):** Blue-collar — construction, trades. Phone-first, Spanish-first speakers common. Authenticate via phone/OTP.
+- **Employers (secondary):** Small business owners in construction/trades. Email/password auth.
+
+### Brand Personality
+**Confident. Direct. Empowering.** Speaks to workers as skilled professionals. No corporate jargon, no condescension. Action-oriented.
+
+### Aesthetic Direction
+- **Tone:** Bold & Professional. Geometric, high contrast, polished.
+- **Primary:** #0179FF (vibrant blue), hover #0164D9, gradient to #4DB3FF
+- **Light bg:** #D4DCE6, **Dark bg:** #181855 (deep indigo, not neutral gray)
+- **Font:** Syne (geometric), tight letter-spacing on headings
+- **Theme:** Both light and dark mode
+- **Anti-reference:** Craigslist — nothing bare-bones or dated
+
+### Design Principles
+1. **Respect through craft** — every pixel says workers deserve a well-made tool
+2. **Clarity over cleverness** — instantly understandable across literacy levels
+3. **Bilingual parity** — EN/ES are equal citizens, layout accommodates longer Spanish strings
+4. **Mobile-first, job-site-ready** — large touch targets, high contrast, fast loads
+5. **Speed is respect** — minimize steps, maximize directness
