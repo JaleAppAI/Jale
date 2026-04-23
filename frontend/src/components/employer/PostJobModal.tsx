@@ -1,116 +1,141 @@
-'use client'
+'use client';
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { useAuth } from '@/contexts/AuthContext';
+import { createJob, Job } from '@/lib/api/employer';
 
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { useAuth } from '@/contexts/AuthContext'
-import { createJob } from '@/lib/api/employer'
-import type { Job } from '@/lib/api/employer'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
+type DocType = 'resume' | 'driver_license' | 'ssn';
+const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
 
 interface Props {
-  open: boolean
-  onClose: () => void
-  onJobCreated: (job: Job) => void
+  open: boolean;
+  onClose: () => void;
+  onJobCreated: (job: Job) => void;
 }
 
+// IMPORTANT: named export — dashboard imports this as { PostJobModal }
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
-  const t = useTranslations('employer_dashboard')
-  const tCommon = useTranslations('common')
-  const { idToken } = useAuth()
+  const t = useTranslations('employer_dashboard');
+  const { idToken } = useAuth();
 
-  const [title, setTitle] = useState('')
-  const [location, setLocation] = useState('')
-  const [jobType, setJobType] = useState<'full-time' | 'part-time' | 'contract'>('full-time')
-  const [jobDescription, setJobDescription] = useState('');
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [step, setStep] = useState<1 | 2>(1);
+  const [title, setTitle] = useState('');
+  const [location, setLocation] = useState('');
+  const [jobType, setJobType] = useState('full-time');
+  const [description, setDescription] = useState('');
+  const [requiredDocs, setRequiredDocs] = useState<Record<DocType, boolean>>({
+    resume: false, driver_license: false, ssn: false,
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  if (!open) return null
+  if (!open) return null;
 
-  async function handleSubmit() {
-    if (!title.trim() || !location.trim() || !idToken) return
-    setLoading(true)
-    setError(null)
+  const handleClose = () => {
+    setStep(1); setTitle(''); setLocation(''); setJobType('full-time');
+    setDescription(''); setRequiredDocs({ resume: false, driver_license: false, ssn: false });
+    setError(''); onClose();
+  };
+
+  const toggleDoc = (doc: DocType) =>
+    setRequiredDocs(prev => ({ ...prev, [doc]: !prev[doc] }));
+
+  const handleSubmit = async () => {
+    setLoading(true); setError('');
     try {
-      const job = await createJob(idToken, { title, location, job_type: jobType, description: jobDescription })
-      setTitle('')
-      setLocation('')
-      setJobType('full-time')
-      setJobDescription('')
-      onJobCreated(job)
+      const required_docs = DOC_TYPES.filter(d => requiredDocs[d]);
+      const job = await createJob(idToken!, { title, location, job_type: jobType, description, required_docs });
+      onJobCreated(job);
+      handleClose();
     } catch {
-      setError(t('modal.error'))
+      setError(t('modal.error'));
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
+
+  const docLabel: Record<DocType, string> = {
+    resume: t('worker_profile.doc_resume'),
+    driver_license: t('worker_profile.doc_driver_license'),
+    ssn: t('worker_profile.doc_ssn'),
+  };
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-      <div className="bg-card rounded-2xl p-6 w-full max-w-xl mx-4 flex flex-col gap-4">
-        <h2 className="text-lg font-semibold text-foreground">{t('modal.title')}</h2>
-
-        {error && <p className="text-sm text-error">{error}</p>}
-
-        <div className="flex flex-col gap-1">
-          <label htmlFor="post-job-title" className="text-sm font-medium text-foreground">{t('modal.job_title')}</label>
-          <Input
-            id="post-job-title"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder={t('modal.job_title')}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label htmlFor="post-job-location" className="text-sm font-medium text-foreground">{t('modal.location')}</label>
-          <Input
-            id="post-job-location"
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            placeholder={t('modal.location')}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label htmlFor="post-job-type" className="text-sm font-medium text-foreground">{t('modal.job_type')}</label>
-          <select
-            id="post-job-type"
-            value={jobType}
-            onChange={(e) => setJobType(e.target.value as 'full-time' | 'part-time' | 'contract')}
-            className="w-full min-h-[44px] rounded-[var(--radius-input)] border border-border bg-input px-3 py-2.5 text-sm text-foreground transition-[background-color,border-color,box-shadow] duration-200 focus:outline-none focus:bg-input-focus focus:border-primary focus:shadow-[var(--shadow-focus)]"
-          >
-            <option value="full-time">{t('modal.job_type_fulltime')}</option>
-            <option value="part-time">{t('modal.job_type_parttime')}</option>
-            <option value="contract">{t('modal.job_type_contract')}</option>
-          </select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <label htmlFor="post-job-description" className="text-sm font-medium text-foreground over text-ellipsis">{t('modal.job_description')}</label>
-          <textarea
-            id="post-job-description"
-            value={jobDescription}
-            onChange={(e) => setJobDescription(e.target.value)}
-            placeholder={t('modal.job_description')}
-            className="w-full min-h-[44px] rounded-[var(--radius-input)] border border-border bg-input px-3 py-2.5 text-sm text-foreground placeholder:text-placeholder transition-[background-color,border-color,box-shadow] duration-200 focus:outline-none focus:bg-input-focus focus:border-primary focus:shadow-[var(--shadow-focus)] disabled:opacity-50 disabled:cursor-not-allowed"
-          />
-        </div>
-
-        <div className="flex gap-3 justify-end pt-2">
-          <Button variant="outline" onClick={onClose} disabled={loading}>
-            {t('modal.cancel')}
-          </Button>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!title.trim() || !location.trim() || loading}
-          >
-            {loading ? tCommon('loading') : t('modal.submit')}
-          </Button>
-        </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+        {step === 1 ? (
+          <>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold">{t('modal.title')}</h2>
+              <span className="text-sm text-gray-400">Step 1 of 2</span>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('modal.job_title')} *</label>
+                <input className="w-full border rounded-lg px-3 py-2 text-sm" value={title} onChange={e => setTitle(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('modal.location')} *</label>
+                <input className="w-full border rounded-lg px-3 py-2 text-sm" value={location} onChange={e => setLocation(e.target.value)} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('modal.job_type')}</label>
+                <select className="w-full border rounded-lg px-3 py-2 text-sm" value={jobType} onChange={e => setJobType(e.target.value)}>
+                  <option value="full-time">{t('modal.job_type_fulltime')}</option>
+                  <option value="part-time">{t('modal.job_type_parttime')}</option>
+                  <option value="contract">{t('modal.job_type_contract')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">{t('modal.job_description')}</label>
+                <textarea className="w-full border rounded-lg px-3 py-2 text-sm h-20" value={description} onChange={e => setDescription(e.target.value)} />
+              </div>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button onClick={handleClose} className="flex-1 border rounded-lg py-2 text-sm">{t('modal.cancel')}</button>
+              <button
+                onClick={() => setStep(2)}
+                disabled={!title.trim() || !location.trim()}
+                className="flex-2 bg-blue-900 text-white rounded-lg py-2 text-sm font-semibold disabled:opacity-50 px-6"
+              >
+                {t('post_job_docs.next')} →
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-lg font-bold">{t('modal.title')}</h2>
+              <span className="text-sm text-gray-400">{t('post_job_docs.step_label')}</span>
+            </div>
+            <p className="text-sm text-gray-500 mb-4">{t('post_job_docs.subtitle')}</p>
+            <div className="space-y-3 mb-4">
+              {DOC_TYPES.map(doc => (
+                <div key={doc} className={`border rounded-lg p-3 flex justify-between items-center ${requiredDocs[doc] ? 'border-blue-900 bg-blue-50' : ''}`}>
+                  <span className="text-sm font-medium">{docLabel[doc]}</span>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className={requiredDocs[doc] ? 'text-gray-400' : 'text-blue-900 font-semibold'}>{t('post_job_docs.optional_label')}</span>
+                    <button
+                      onClick={() => toggleDoc(doc)}
+                      className={`w-8 h-4 rounded-full relative transition-colors ${requiredDocs[doc] ? 'bg-blue-900' : 'bg-gray-300'}`}
+                    >
+                      <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${requiredDocs[doc] ? 'right-0.5' : 'left-0.5'}`} />
+                    </button>
+                    <span className={requiredDocs[doc] ? 'text-blue-900 font-semibold' : 'text-gray-400'}>{t('post_job_docs.required_label')}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
+            <div className="flex gap-2">
+              <button onClick={() => setStep(1)} className="flex-1 border rounded-lg py-2 text-sm">{t('post_job_docs.back')}</button>
+              <button onClick={handleSubmit} disabled={loading} className="flex-2 bg-blue-900 text-white rounded-lg py-2 text-sm font-semibold disabled:opacity-50 px-6">
+                {loading ? '...' : t('post_job_docs.submit')}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
-  )
+  );
 }

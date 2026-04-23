@@ -113,6 +113,52 @@
             "cancel": "Cancelar",
             "error": "Error al publicar el empleo. Inténtalo de nuevo.",
             "job_description": "Descripción del empleo"
+        },
+        "worker_profile": {
+            "back": "Volver a postulantes",
+            "share_upload_link": "Compartir enlace de carga",
+            "link_copied": "¡Enlace copiado!",
+            "documents": "Documentos",
+            "required": "Requerido",
+            "optional": "Opcional",
+            "not_uploaded": "Aún no subido",
+            "request": "Solicitar",
+            "view": "Ver",
+            "download": "Descargar",
+            "status_label": "Estado de postulación",
+            "save_status": "Guardar",
+            "doc_resume": "Currículum",
+            "doc_driver_license": "Licencia de conducir",
+            "doc_ssn": "Tarjeta SSN"
+        },
+        "post_job_docs": {
+            "step_label": "Paso 2 de 2",
+            "title": "Requisitos de documentos",
+            "subtitle": "¿Qué documentos necesitan los postulantes? Todos opcionales por defecto.",
+            "optional_label": "Opcional",
+            "required_label": "Requerido",
+            "next": "Siguiente: Requisitos de documentos",
+            "back": "Atrás",
+            "submit": "Publicar trabajo"
         }
+    },
+    "upload_page": {
+        "title": "Sube tus documentos",
+        "for_job": "Para:",
+        "at_employer": "en",
+        "uploaded": "Subido",
+        "replace": "Reemplazar",
+        "tap_to_upload": "Toca para subir",
+        "file_hint": "JPG, PNG o PDF · Máx 10 MB",
+        "security_notice": "Tus documentos están encriptados y solo se comparten con el empleador al que postulaste.",
+        "submit": "Enviar documentos",
+        "submit_hint": "El botón se activa cuando todos los documentos requeridos estén subidos",
+        "success_title": "¡Documentos enviados!",
+        "success_body": "El empleador ha sido notificado.",
+        "error_size": "El archivo debe ser menor de 10 MB",
+        "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
+        "doc_resume": "Currículum",
+        "doc_driver_license": "Licencia de conducir",
+        "doc_ssn": "Tarjeta SSN / ITIN"
     }
 }
