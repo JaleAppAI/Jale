@@ -15,7 +15,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
     }
 
-    let body: { title?: string; location?: string; job_type?: string; description?: string };
+    let body: {
+      title?: string;
+      location?: string;
+      job_type?: string;
+      description?: string;
+      required_docs?: string[];
+    };
     try {
       body = JSON.parse(event.body ?? '{}');
     } catch {
@@ -30,6 +36,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const validTypes = ['full-time', 'part-time', 'contract'];
     if (!validTypes.includes(job_type)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_type', valid: validTypes }) };
+    }
+
+    const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'];
+    const required_docs = body.required_docs ?? [];
+    if (
+      !Array.isArray(required_docs) ||
+      required_docs.some((d) => !VALID_DOC_TYPES.includes(d))
+    ) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'invalid_required_docs', valid: VALID_DOC_TYPES }),
+      };
     }
 
     const pool = await getDbPool();
@@ -53,13 +72,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `INSERT INTO jobs (employer_id, title, location, job_type, description)
+      `INSERT INTO jobs (employer_id, title, location, job_type, description, required_docs)
        VALUES (
          (SELECT id FROM users WHERE cognito_sub = $1),
-         $2, $3, $4, $5
+         $2, $3, $4, $5, $6
        )
-       RETURNING id, title, location, job_type, status, created_at`,
-      [cognitoSub, title.trim(), location.trim(), job_type, description ?? null],
+       RETURNING id, title, location, job_type, status, required_docs, created_at`,
+      [cognitoSub, title.trim(), location.trim(), job_type, description ?? null, required_docs],
     );
 
     await client.query('COMMIT');

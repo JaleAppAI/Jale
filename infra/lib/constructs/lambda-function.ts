@@ -29,6 +29,9 @@ export interface JaleLambdaFunctionProps {
   retryAttempts?: number;
   /** Max event age */
   maxEventAge?: cdk.Duration;
+  /** Node modules to bundle despite the @aws-sdk/* externalModules exclusion.
+   *  Use for SDK packages NOT provided by the Node 20.x runtime (e.g. @aws-sdk/s3-request-presigner). */
+  nodeModules?: string[];
 }
 
 export class JaleLambdaFunction extends Construct {
@@ -63,6 +66,7 @@ export class JaleLambdaFunction extends Construct {
       maxEventAge: props.maxEventAge,
       bundling: {
         externalModules: ['pg-native', '@aws-sdk/*'],
+        nodeModules: props.nodeModules,
         commandHooks: {
           afterBundling: (inputDir: string, outputDir: string) => {
             const src = path.join(inputDir, 'lambda', 'lib', 'rds-ca-bundle.pem');
