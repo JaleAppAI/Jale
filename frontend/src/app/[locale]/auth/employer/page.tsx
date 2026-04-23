@@ -10,7 +10,7 @@ export default function EmployerAuthPage() {
 
     useEffect(() => {
         if (!isLoading && isAuthenticated) {
-            router.replace('/employer/profile');
+            router.replace('/employer/dashboard');
         }
     }, [isLoading, isAuthenticated]);
 

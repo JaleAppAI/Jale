@@ -6,7 +6,8 @@
     },
     "header": {
         "language_toggle": "English",
-        "sign_out": "Cerrar sesión"
+        "sign_out": "Cerrar sesión",
+        "profile": "Perfil"
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
@@ -52,6 +53,66 @@
             "title": "Perfil del empleador",
             "field_email": "Correo electrónico",
             "field_company": "Empresa"
+        }
+    },
+    "employer_dashboard": {
+        "stats": {
+            "active_jobs": "Empleos activos",
+            "total_applicants": "Total de candidatos"
+        },
+        "jobs": {
+            "title": "Publicaciones de empleo",
+            "post_job": "Publicar empleo",
+            "active": "Activo",
+            "closed": "Cerrado",
+            "toggle": {
+                "activate": "Marcar como activo",
+                "close": "Marcar como cerrado"
+            },
+            "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
+            "posted": "Publicado",
+            "search_placeholder": "Buscar por título o ubicación...",
+            "back_to_dashboard": "← Volver al panel"
+        },
+        "filter": {
+            "title": "Filtrar candidatos",
+            "status": "Estado",
+            "status_all": "Todos",
+            "skills": "Habilidades",
+            "skills_placeholder": "ej. montacargas, OSHA",
+            "availability": "Disponibilidad",
+            "availability_any": "Cualquiera",
+            "availability_immediate": "Inmediata",
+            "availability_2weeks": "2 semanas",
+            "availability_1month": "1 mes",
+            "min_experience": "Exp. mínima (años)",
+            "clear": "Limpiar filtros"
+        },
+        "applicants": {
+            "title": "Candidatos",
+            "view_profile": "Ver perfil",
+            "applied": "Aplicó",
+            "phone": "Teléfono",
+            "empty": "Ningún candidato coincide con los filtros.",
+            "status": {
+                "pending": "Pendiente",
+                "reviewed": "Revisado",
+                "hired": "Contratado",
+                "rejected": "Rechazado"
+            }
+        },
+        "modal": {
+            "title": "Publicar un empleo",
+            "job_title": "Título del puesto",
+            "location": "Ubicación",
+            "job_type": "Tipo de empleo",
+            "job_type_fulltime": "Tiempo completo",
+            "job_type_parttime": "Medio tiempo",
+            "job_type_contract": "Contrato",
+            "submit": "Publicar empleo",
+            "cancel": "Cancelar",
+            "error": "Error al publicar el empleo. Inténtalo de nuevo.",
+            "job_description": "Descripción del empleo"
         }
     }
 }

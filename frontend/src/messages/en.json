@@ -6,7 +6,8 @@
     },
     "header": {
         "language_toggle": "Español",
-        "sign_out": "Sign out"
+        "sign_out": "Sign out",
+        "profile": "Profile"
     },
     "landing": {
         "headline": "Find work. Find workers.",
@@ -52,6 +53,66 @@
             "title": "Employer Profile",
             "field_email": "Email",
             "field_company": "Company"
+        }
+    },
+    "employer_dashboard": {
+        "stats": {
+            "active_jobs": "Active Jobs",
+            "total_applicants": "Total Applicants"
+        },
+        "jobs": {
+            "title": "Job Postings",
+            "post_job": "Post Job",
+            "active": "Active",
+            "closed": "Closed",
+            "toggle": {
+                "activate": "Mark Active",
+                "close": "Mark Closed"
+            },
+            "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
+            "posted": "Posted",
+            "search_placeholder": "Search by title or location...",
+            "back_to_dashboard": "← Back to Dashboard"
+        },
+        "filter": {
+            "title": "Filter Applicants",
+            "status": "Status",
+            "status_all": "All",
+            "skills": "Skills",
+            "skills_placeholder": "e.g. forklift, OSHA",
+            "availability": "Availability",
+            "availability_any": "Any",
+            "availability_immediate": "Immediate",
+            "availability_2weeks": "2 Weeks",
+            "availability_1month": "1 Month",
+            "min_experience": "Min Experience (years)",
+            "clear": "Clear Filters"
+        },
+        "applicants": {
+            "title": "Applicants",
+            "view_profile": "View Profile",
+            "applied": "Applied",
+            "phone": "Phone",
+            "empty": "No applicants match your filters.",
+            "status": {
+                "pending": "Pending",
+                "reviewed": "Reviewed",
+                "hired": "Hired",
+                "rejected": "Rejected"
+            }
+        },
+        "modal": {
+            "title": "Post a Job",
+            "job_title": "Job Title",
+            "location": "Location",
+            "job_type": "Job Type",
+            "job_type_fulltime": "Full-time",
+            "job_type_parttime": "Part-time",
+            "job_type_contract": "Contract",
+            "submit": "Post Job",
+            "cancel": "Cancel",
+            "error": "Failed to post job. Please try again.",
+            "job_description": "Job Description"
         }
     }
 }
