@@ -91,10 +91,20 @@ export class AuthStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       description: 'Worker pool CreateAuthChallenge — OTP gen + Twilio SMS via Secrets Manager',
       environment: {
-        TWILIO_SECRET_ARN: otpTwilioSecret.secretArn,
+        // Pass the stable name as SecretId. Imported-by-name secrets expose a
+        // partial ARN as secretArn; Secrets Manager's runtime auth path has
+        // denied that partial ARN even when IAM simulation says allowed.
+        TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
       },
     });
     otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
+    // Keep an explicit partial-ARN allow for compatibility with any deployed
+    // code/config that still passes the imported secretArn as SecretId.
+    // grantRead() covers the real full ARN pattern ending in "-??????".
+    createAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
+      resources: [otpTwilioSecret.secretArn],
+    }));
 
     // VerifyAuthChallenge: compares user answer to stored OTP. Stateless.
     const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {

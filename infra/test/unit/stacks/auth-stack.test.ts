@@ -157,10 +157,38 @@ describe('AuthStack', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Environment: Match.objectLike({
         Variables: Match.objectLike({
-          TWILIO_SECRET_ARN: Match.anyValue(),
+          TWILIO_SECRET_ARN: 'jale/whatsapp/otp-twilio',
         }),
       }),
     });
+  });
+
+  test('CreateAuthChallenge policy keeps partial ARN compatibility allow', () => {
+    const secretArnParts = (resourceName: string) => [
+      'arn:',
+      { Ref: 'AWS::Partition' },
+      ':secretsmanager:',
+      { Ref: 'AWS::Region' },
+      ':',
+      { Ref: 'AWS::AccountId' },
+      `:secret:${resourceName}`,
+    ];
+
+    const policies = template.findResources('AWS::IAM::Policy');
+    const secretResources = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => {
+        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+        return actions.includes('secretsmanager:GetSecretValue');
+      })
+      .map((statement: any) => JSON.stringify(statement.Resource));
+
+    expect(secretResources).toContain(JSON.stringify({
+      'Fn::Join': ['', secretArnParts('jale/whatsapp/otp-twilio')],
+    }));
+    expect(secretResources).toContain(JSON.stringify({
+      'Fn::Join': ['', secretArnParts('jale/whatsapp/otp-twilio-??????')],
+    }));
   });
 
   test('synthesized template contains no plaintext Twilio credentials', () => {

@@ -101,10 +101,10 @@ async function queueText(
     `INSERT INTO whatsapp_outbox
         (inbound_message_sid, sequence, whatsapp_number, body)
      VALUES (
-       $1,
+       $1::varchar,
        (SELECT COALESCE(MAX(sequence), 0) + 1
           FROM whatsapp_outbox
-         WHERE inbound_message_sid = $1),
+         WHERE inbound_message_sid = $1::varchar),
        $2, $3
      )`,
     [inboundMessageSid, whatsappNumber, body],
@@ -307,6 +307,54 @@ async function updateConversation(
 }
 
 // ── Main SQS handler ────────────────────────────────────────────
+async function tableColumnExists(
+  client: PoolClient,
+  tableName: string,
+  columnName: string,
+): Promise<boolean> {
+  const r = await client.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM information_schema.columns
+        WHERE table_schema = ANY (current_schemas(false))
+          AND table_name = $1
+          AND column_name = $2
+     ) AS exists`,
+    [tableName, columnName],
+  );
+  return r.rows[0]?.exists === true;
+}
+
+async function hasPlaceholderDependents(
+  client: PoolClient,
+  placeholderUserId: string,
+): Promise<boolean> {
+  // Dev databases may lag the latest migration shape. Probe for dependency
+  // columns before referencing them so reconcile does not crash on an older
+  // table that exists without user_id.
+  if (await tableColumnExists(client, 'legal_consent_log', 'user_id')) {
+    const legalDeps = await client.query<{ has_deps: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM legal_consent_log WHERE user_id = $1
+       ) AS has_deps`,
+      [placeholderUserId],
+    );
+    if (legalDeps.rows[0]?.has_deps) return true;
+  }
+
+  if (await tableColumnExists(client, 'job_applications', 'user_id')) {
+    const jobDeps = await client.query<{ has_deps: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM job_applications WHERE user_id = $1
+       ) AS has_deps`,
+      [placeholderUserId],
+    );
+    if (jobDeps.rows[0]?.has_deps) return true;
+  }
+
+  return false;
+}
+
 export const handler: SQSHandler = async (event: SQSEvent): Promise<void> => {
   for (const record of event.Records) {
     try {
@@ -554,7 +602,7 @@ async function handleNewOrRestart(
   );
 
   // InitiateAuth with CUSTOM_AUTH — triggers DefineAuthChallenge → CreateAuthChallenge.
-  // CreateAuthChallenge sends the 6-digit OTP via Twilio SMS and returns a
+  // CreateAuthChallenge sends the 6-digit OTP via Twilio WhatsApp in dev and returns a
   // Cognito Session containing challengeMetadata. We PERSIST that Session on
   // the conversation row and reuse it in handleAwaitingOtp (Fix 1, 2026-04-17)
   // so subsequent webhook deliveries don't trigger fresh Twilio sends that
@@ -593,7 +641,7 @@ async function handleNewOrRestart(
 // ── awaiting_otp — RespondToAuthChallenge (Fix 1 + Fix 2, 2026-04-17) ──
 //
 // The previous implementation called a fresh InitiateAuth before every
-// RespondToAuthChallenge, which triggered CreateAuthChallenge → Twilio SMS
+// RespondToAuthChallenge, which triggered CreateAuthChallenge → Twilio OTP
 // of a NEW 6-digit code → the worker's submitted code was validated against
 // a code they never received. Codex catch.
 //
@@ -603,7 +651,7 @@ async function handleNewOrRestart(
 //   - Reuse that Session here (no fresh InitiateAuth).
 //   - On wrong OTP: Cognito re-issues a CUSTOM_CHALLENGE with a new Session;
 //     persist it. create-auth-challenge's reuse branch preserves the same
-//     OTP (no new SMS) as long as `challengeMetadata` is on the session.
+  //     OTP (no new outbound message) as long as `challengeMetadata` is on the session.
 //   - On "Invalid session"/expired session: call fresh InitiateAuth once,
 //     store the new Session, reply `otp_expired_retry` — NOT a counted
 //     attempt.
@@ -672,7 +720,7 @@ async function handleAwaitingOtp(
   //   - ChallengeName present + no AuthenticationResult → OTP wrong; Cognito
   //     has re-issued a CUSTOM_CHALLENGE and the new Session carries forward
   //     the same challengeMetadata (→ create-auth-challenge reuses the OTP,
-  //     no new SMS).
+  //     no new outbound message).
   if (!resp.AuthenticationResult?.IdToken) {
     await recordWrongOtp(client, conv, msg, resp.Session);
     return;
@@ -722,7 +770,7 @@ async function handleAwaitingOtp(
 /**
  * Record a wrong-OTP attempt. If newSession is provided (from Cognito's
  * retry-challenge response), persist it so the next RespondToAuthChallenge
- * uses it (create-auth-challenge reuses the same OTP — no new SMS). Three
+ * uses it (create-auth-challenge reuses the same OTP — no new outbound message). Three
  * attempts → otp_timeout.
  */
 async function recordWrongOtp(
@@ -756,7 +804,7 @@ async function recordWrongOtp(
 
 /**
  * Cognito session expired or missing. Fire a fresh InitiateAuth (which
- * triggers CreateAuthChallenge → new Twilio SMS), persist the new Session,
+ * triggers CreateAuthChallenge → new Twilio WhatsApp OTP in dev), persist the new Session,
  * reply `otp_expired_retry`. Does NOT increment otp_attempts.
  */
 async function reissueOtp(
@@ -829,27 +877,13 @@ async function reconcileUserRow(
     // accumulated data. If tripped: throw → outer tx ROLLBACK → SQS DLQ →
     // operator reconciliation. FK `ON DELETE RESTRICT` on both tables
     // (migration 006 §B) is the DB-side safety net below this check.
-    const deps = await client.query<{ has_deps: boolean }>(
-      `SELECT
-         EXISTS (
-           SELECT 1 FROM legal_consent_log
-            WHERE user_id = (
-              SELECT id FROM users
-               WHERE cognito_sub = $1 AND user_type = 'worker'
-            )
-         )
-         OR
-         EXISTS (
-           SELECT 1 FROM job_applications
-            WHERE user_id = (
-              SELECT id FROM users
-               WHERE cognito_sub = $1 AND user_type = 'worker'
-            )
-         )
-         AS has_deps`,
+    const placeholder = await client.query<{ id: string }>(
+      `SELECT id FROM users
+        WHERE cognito_sub = $1 AND user_type = 'worker'`,
       [whatsappNumber],
     );
-    if (deps.rows[0]?.has_deps) {
+    const placeholderUserId = placeholder.rows[0]?.id;
+    if (placeholderUserId && await hasPlaceholderDependents(client, placeholderUserId)) {
       throw new Error(
         `reconcileUserRow: placeholder for ${whatsappNumber} has dependent legal_consent_log or job_applications rows; aborting reconcile — manual ops merge required`,
       );

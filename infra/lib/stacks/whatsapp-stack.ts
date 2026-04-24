@@ -108,7 +108,7 @@ export class WhatsAppStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        TWILIO_SECRET_ARN: twilioSecret.secretArn,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
         SQS_QUEUE_URL: this.inboundQueue.queueUrl,
         ALLOWED_ORIGIN: allowedOrigin,
       },
@@ -131,8 +131,8 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       timeout: 60,
       environment: {
-        DB_SECRET_ARN: whatsappDbSecret.secretArn, // alias: getDbPool() reads this
-        TWILIO_SECRET_ARN: twilioSecret.secretArn,
+        DB_SECRET_ARN: whatsappDbSecret.secretName, // alias: getDbPool() reads this
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
         WORKER_POOL_ID: props.workerPool.userPoolId,
         WORKER_CLIENT_ID: props.workerPool.clientId,
         REQUIRED_TOS_VERSION: tosVersion,
@@ -178,8 +178,8 @@ export class WhatsAppStack extends cdk.Stack {
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
-        DB_SECRET_ARN: whatsappDbSecret.secretArn,
-        TWILIO_SECRET_ARN: twilioSecret.secretArn,
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });

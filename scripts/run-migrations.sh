@@ -31,9 +31,13 @@ DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. 001 + 002 are already live in dev RDS.
+# Migration files in execution order. Runs the full chain 001→006 against
+# a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
+# is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
 MIGRATIONS=(
+  "001_initial_schema.sql"
+  "002_rls_policies.sql"
   "003_whatsapp.sql"
   "004_jobs.sql"
   "005_job_applications.sql"

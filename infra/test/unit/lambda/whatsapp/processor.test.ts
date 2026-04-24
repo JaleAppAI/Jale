@@ -287,6 +287,14 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
       // Exactly one Twilio call (the welcome message) across the whole flow.
       expect(mockFetch).toHaveBeenCalledTimes(1);
 
+      // Regression: the outbox insert must cast the reused SID parameter.
+      // Without this, Postgres can infer $1 as both text and varchar and
+      // crash with 42P08 before the conversation state commits.
+      const outboxInsert = mockQuery.mock.calls.find(([sql]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string),
+      )?.[0] as string | undefined;
+      expect(outboxInsert).toContain('$1::varchar');
+
       // Final state: status='completed'
       const completed = findQueryByPattern(
         /UPDATE whatsapp_processed_messages\s+SET status = 'completed'/i,
@@ -386,6 +394,8 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
         // UPDATE users (link whatsapp to real-sub row)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] })
         // has_deps check → TRUE (placeholder has dependent rows)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'u-placeholder' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] })
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ has_deps: true }],
@@ -433,6 +443,13 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
           rows: [{ id: 'u-real', tos_version: '1.0' }],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users (link)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'u-placeholder' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ has_deps: false }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] })
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ has_deps: false }],

@@ -52,12 +52,12 @@ export type TemplateKey =
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   // ── Onboarding ────────────────────────────────────────────────
   welcome_new_user: {
-    es: '¡Bienvenido a Jale! Te enviamos un código por SMS. Envíalo aquí:',
-    en: 'Welcome to Jale! We sent you a verification code by SMS. Send it here:',
+    es: '¡Bienvenido a Jale! Te enviamos un código por WhatsApp. Envíalo aquí:',
+    en: 'Welcome to Jale! We sent you a verification code by WhatsApp. Send it here:',
   },
   welcome_existing_user: {
-    es: '¡Hola! Verificaremos tu cuenta. Te enviamos un código por SMS:',
-    en: 'Hello! We will verify your account. We sent you a code by SMS:',
+    es: '¡Hola! Verificaremos tu cuenta. Te enviamos un código por WhatsApp:',
+    en: 'Hello! We will verify your account. We sent you a code by WhatsApp:',
   },
   otp_retry: {
     es: 'Código incorrecto. Intenta de nuevo:',
@@ -73,10 +73,10 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   },
   // Used when the Cognito session timed out (~3 min) while the worker was still
   // entering a code. The processor issues a fresh InitiateAuth (→ new Twilio
-  // SMS) and keeps the worker in awaiting_otp — NOT a failed attempt.
+  // WhatsApp OTP in dev) and keeps the worker in awaiting_otp — NOT a failed attempt.
   otp_expired_retry: {
-    es: 'Tu código expiró. Te enviamos uno nuevo por SMS — envíalo aquí:',
-    en: 'Your code expired. We sent a new one by SMS — send it here:',
+    es: 'Tu código expiró. Te enviamos uno nuevo por WhatsApp — envíalo aquí:',
+    en: 'Your code expired. We sent a new one by WhatsApp — send it here:',
   },
 
   // ── Legal ─────────────────────────────────────────────────────
