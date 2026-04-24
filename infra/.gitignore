@@ -8,3 +8,12 @@ node_modules
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+cdk.out-auth-deploy/
+JaleNetworkStack.template.json
+
+# Bastion scripts — forward guard. Earlier iterations generated
+# infra/setup-bastion.ps1 and infra/cleanup-bastion.ps1 with hardcoded
+# EC2/SG/VPC-endpoint IDs and printed the DB secret to stdout. The scripts
+# have been removed; this pattern prevents accidental re-commit if anyone
+# regenerates them.
+*bastion*.ps1

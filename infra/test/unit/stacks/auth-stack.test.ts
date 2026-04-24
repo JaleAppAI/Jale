@@ -114,4 +114,90 @@ describe('AuthStack', () => {
       }),
     });
   });
+
+  // ── Custom Auth Challenge (Phase 2) ──────────────────────────────
+  test('Stack contains 4 Lambda functions (post-confirmation + 3 auth challenge)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 4);
+  });
+
+  test('Worker pool has all 4 Lambda triggers wired', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserPoolName: 'jale-worker-pool',
+      LambdaConfig: Match.objectLike({
+        PostConfirmation: Match.anyValue(),
+        DefineAuthChallenge: Match.anyValue(),
+        CreateAuthChallenge: Match.anyValue(),
+        VerifyAuthChallengeResponse: Match.anyValue(),
+      }),
+    });
+  });
+
+  test('Employer pool has ONLY post-confirmation trigger (no auth challenge triggers)', () => {
+    // CDK emits an undefined key as absent from the CFN template.
+    // We assert the employer pool has PostConfirmation but NOT the three
+    // auth challenge triggers.
+    const pools = template.findResources('AWS::Cognito::UserPool', {
+      Properties: {
+        UserPoolName: 'jale-employer-pool',
+      },
+    });
+    const employerPool = Object.values(pools)[0] as any;
+    expect(employerPool.Properties.LambdaConfig).toBeDefined();
+    expect(employerPool.Properties.LambdaConfig.PostConfirmation).toBeDefined();
+    expect(employerPool.Properties.LambdaConfig.DefineAuthChallenge).toBeUndefined();
+    expect(employerPool.Properties.LambdaConfig.CreateAuthChallenge).toBeUndefined();
+    expect(employerPool.Properties.LambdaConfig.VerifyAuthChallengeResponse).toBeUndefined();
+  });
+
+  test('CreateAuthChallenge Lambda has TWILIO_SECRET_ARN env var pointing at Secrets Manager', () => {
+    // Fix Plan v3 (Fix 6, 2026-04-17): the Lambda loads Twilio creds from
+    // Secrets Manager at runtime. The only Twilio-related env var is
+    // TWILIO_SECRET_ARN. The actual accountSid/authToken/fromNumber values
+    // never appear in the synthesized template.
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          TWILIO_SECRET_ARN: 'jale/whatsapp/otp-twilio',
+        }),
+      }),
+    });
+  });
+
+  test('CreateAuthChallenge policy keeps partial ARN compatibility allow', () => {
+    const secretArnParts = (resourceName: string) => [
+      'arn:',
+      { Ref: 'AWS::Partition' },
+      ':secretsmanager:',
+      { Ref: 'AWS::Region' },
+      ':',
+      { Ref: 'AWS::AccountId' },
+      `:secret:${resourceName}`,
+    ];
+
+    const policies = template.findResources('AWS::IAM::Policy');
+    const secretResources = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => {
+        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+        return actions.includes('secretsmanager:GetSecretValue');
+      })
+      .map((statement: any) => JSON.stringify(statement.Resource));
+
+    expect(secretResources).toContain(JSON.stringify({
+      'Fn::Join': ['', secretArnParts('jale/whatsapp/otp-twilio')],
+    }));
+    expect(secretResources).toContain(JSON.stringify({
+      'Fn::Join': ['', secretArnParts('jale/whatsapp/otp-twilio-??????')],
+    }));
+  });
+
+  test('synthesized template contains no plaintext Twilio credentials', () => {
+    // Regression guard: stringify the entire CFN template and assert that
+    // none of the pre-v3 plaintext env var names appear. If someone adds
+    // them back via CDK context or env fallback, this test fires.
+    const templateJson = JSON.stringify(template.toJSON());
+    expect(templateJson).not.toContain('TWILIO_ACCOUNT_SID');
+    expect(templateJson).not.toContain('TWILIO_AUTH_TOKEN');
+    expect(templateJson).not.toContain('TWILIO_FROM_NUMBER');
+  });
 });

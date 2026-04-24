@@ -30,6 +30,7 @@ export class ApiStack extends cdk.Stack {
     // ── Context values ──
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
+    const stageName = this.node.tryGetContext('environment') ?? 'dev';
 
     // ── API Gateway CloudWatch account role ──
     // This is an account-level setting (one per region) required before API Gateway
@@ -57,7 +58,7 @@ export class ApiStack extends cdk.Stack {
     this.api = new apigateway.RestApi(this, 'JaleApi', {
       restApiName: 'jale-api',
       deployOptions: {
-        stageName: 'dev',
+        stageName,
         accessLogDestination: new apigateway.LogGroupLogDestination(accessLogGroup),
         accessLogFormat: apigateway.AccessLogFormat.jsonWithStandardFields(),
         throttlingBurstLimit: 100,

@@ -30,6 +30,15 @@ export interface CognitoPoolProps {
   /** Lambda triggers */
   lambdaTriggers?: {
     postConfirmation?: lambda.IFunction;
+    defineAuthChallenge?: lambda.IFunction;
+    createAuthChallenge?: lambda.IFunction;
+    /**
+     * Note: the CDK property key is `verifyAuthChallengeResponse` (NOT
+     * `verifyAuthChallenge`). Using the wrong key silently fails to wire
+     * the trigger, so OTP verification would never fire. Keep the prop
+     * name matching CDK's expected key.
+     */
+    verifyAuthChallengeResponse?: lambda.IFunction;
   };
   /** IAM role for SMS sending */
   smsRole?: iam.IRole;
@@ -63,6 +72,10 @@ export class CognitoPool extends Construct {
       lambdaTriggers: props.lambdaTriggers
         ? {
             postConfirmation: props.lambdaTriggers.postConfirmation,
+            defineAuthChallenge: props.lambdaTriggers.defineAuthChallenge,
+            createAuthChallenge: props.lambdaTriggers.createAuthChallenge,
+            // CDK key is `verifyAuthChallengeResponse`, NOT `verifyAuthChallenge`
+            verifyAuthChallengeResponse: props.lambdaTriggers.verifyAuthChallengeResponse,
           }
         : undefined,
       smsRole: props.smsRole,

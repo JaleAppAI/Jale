@@ -16,15 +16,33 @@ export class NetworkStack extends cdk.Stack {
 
     const maxAzs = this.node.tryGetContext('vpcMaxAzs') ?? 2;
 
-    // VPC with two private subnet tiers and no NAT gateways.
-    // WARNING: natGateways: 0 means PRIVATE_WITH_EGRESS subnets have NO actual
-    // internet egress. Lambdas can ONLY reach AWS services via VPC Endpoints.
-    // Current endpoints: SecretsManager, SNS, Cognito-IDP, STS, CloudWatch Logs, SQS, S3 (gateway)
-    // Adding a Lambda that calls any service without an endpoint will silently timeout.
+    // VPC with three subnet tiers and 1 NAT gateway.
+    // NAT gateway (~$32/mo) enables internet egress from PRIVATE_WITH_EGRESS
+    // subnets. Required for Lambdas that call external APIs (Twilio for WhatsApp).
+    //
+    // Subnet tiers (2 AZs × 3 tiers = 6 subnets):
+    //   - Public (cidrMask 28): hosts the NAT gateway. Small because only the
+    //     NAT sits here — no application traffic lives in public subnets.
+    //   - Private (cidrMask 24): PRIVATE_WITH_EGRESS. Routes outbound through
+    //     the NAT gateway. All Lambdas run here.
+    //   - Isolated (cidrMask 24): PRIVATE_ISOLATED. No internet egress. RDS lives here.
+    //
+    // KNOWN RISK — NAT blast radius: all PRIVATE_WITH_EGRESS Lambdas share the
+    // NAT, so any Lambda in the VPC gains internet egress, not just WhatsApp.
+    // Accepted for V1 (no untrusted Lambdas). Tighten with per-Lambda SG egress
+    // rules in V2.
+    //
+    // For AWS services we still prefer VPC endpoints (cheaper + private):
+    // SecretsManager, SNS, Cognito-IDP, STS, CloudWatch Logs, SQS, S3 (gateway).
     this.vpc = new ec2.Vpc(this, 'Vpc', {
       maxAzs,
-      natGateways: 0,
+      natGateways: 1,
       subnetConfiguration: [
+        {
+          name: 'Public',
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 28,
+        },
         {
           name: 'Private',
           subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
@@ -67,14 +85,18 @@ export class NetworkStack extends cdk.Stack {
     );
 
     // ---------- VPC Interface Endpoints ----------
-
+    //
+    // Interface endpoints for services we call FREQUENTLY or where the
+    // security posture benefits from private routing. Other AWS services
+    // (Cognito-IDP, SNS, STS, SQS) route via the NAT Gateway — cheaper
+    // at current scale per the 2026-04-20 audit cost analysis
+    // (docs/Audit.md, Status Log "Aggressive VPC endpoint pruning").
+    //
+    // Re-evaluate at ~100k DAU: Cognito-IDP traffic approaches the
+    // endpoint break-even (~417 GB/mo) around that threshold.
     const interfaceEndpoints: Record<string, ec2.InterfaceVpcEndpointAwsService> = {
       SecretsManager: ec2.InterfaceVpcEndpointAwsService.SECRETS_MANAGER,
-      Sns: ec2.InterfaceVpcEndpointAwsService.SNS,
-      CognitoIdp: ec2.InterfaceVpcEndpointAwsService.COGNITO_IDP,
-      Sts: ec2.InterfaceVpcEndpointAwsService.STS,
       CloudWatchLogs: ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
-      Sqs: ec2.InterfaceVpcEndpointAwsService.SQS,
     };
 
     for (const [name, service] of Object.entries(interfaceEndpoints)) {

@@ -25,15 +25,21 @@ export class LegalStack extends cdk.Stack {
     // ── Context values ──
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
+    const envName = this.node.tryGetContext('environment') ?? 'dev';
+    const isDev = envName === 'dev';
 
     // ── S3 Bucket for legal documents (ToS, privacy policy) ──
+    // Dev: DESTROY + autoDelete so `cdk destroy` is ergonomic. Non-dev: RETAIN
+    // + disable autoDelete so a mistaken `cdk destroy` cannot wipe the legal
+    // audit trail (versioned ToS + privacy docs are the source of truth for
+    // user consent).
     this.legalBucket = new s3.Bucket(this, 'LegalDocsBucket', {
       bucketName: `jale-legal-docs-${cdk.Stack.of(this).account}`,
       versioned: true,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+      removalPolicy: isDev ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN,
+      autoDeleteObjects: isDev,
     });
 
     // ── get-tos Lambda ──
@@ -58,7 +64,6 @@ export class LegalStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
-        DB_REGION: cdk.Stack.of(this).region,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },

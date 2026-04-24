@@ -11,10 +11,11 @@ describe('NetworkStack', () => {
     template = Template.fromStack(stack);
   });
 
-  test('VPC exists with 2 AZs (4 subnets: 2 Private + 2 Isolated)', () => {
+  test('VPC exists with 2 AZs (6 subnets: 2 Public + 2 Private + 2 Isolated)', () => {
     template.resourceCountIs('AWS::EC2::VPC', 1);
-    // 2 AZs x 2 subnet tiers = 4 subnets
-    template.resourceCountIs('AWS::EC2::Subnet', 4);
+    // 2 AZs × 3 subnet tiers = 6 subnets.
+    // Public tier added in Phase 3 to host the NAT gateway for Twilio egress.
+    template.resourceCountIs('AWS::EC2::Subnet', 6);
   });
 
   test('Lambda security group exists', () => {
@@ -37,15 +38,8 @@ describe('NetworkStack', () => {
     });
   });
 
-  test('Interface VPC endpoints exist for secretsmanager, sns, cognito-idp, sts, logs, sqs', () => {
-    const endpoints = [
-      'secretsmanager',
-      'sns',
-      'cognito-idp',
-      'sts',
-      'logs',
-      'sqs',
-    ];
+  test('Interface VPC endpoints exist for secretsmanager and cloudwatch logs only', () => {
+    const endpoints = ['secretsmanager', 'logs'];
     for (const svc of endpoints) {
       template.hasResourceProperties('AWS::EC2::VPCEndpoint', {
         VpcEndpointType: 'Interface',
@@ -57,6 +51,28 @@ describe('NetworkStack', () => {
           ]),
         }),
       });
+    }
+  });
+
+  test('Pruned interface endpoints (sns, cognito-idp, sts, sqs) are absent', () => {
+    // Per 2026-04-20 audit (docs/Audit.md Status Log): these services route
+    // via the NAT Gateway instead. Negative assertion guards against drive-by
+    // re-adds without review.
+    const pruned = ['sns', 'cognito-idp', 'sts', 'sqs'];
+    for (const svc of pruned) {
+      const found = template.findResources('AWS::EC2::VPCEndpoint', {
+        Properties: {
+          VpcEndpointType: 'Interface',
+          ServiceName: Match.objectLike({
+            'Fn::Join': Match.arrayWith([
+              Match.arrayWith([
+                Match.stringLikeRegexp(`.*${svc}.*`),
+              ]),
+            ]),
+          }),
+        },
+      });
+      expect(Object.keys(found)).toHaveLength(0);
     }
   });
 
@@ -88,5 +104,14 @@ describe('NetworkStack', () => {
         }),
       ]),
     });
+  });
+
+  // ── Phase 3: NAT Gateway (needed for Twilio API egress) ─────────
+  test('Exactly 1 NAT Gateway exists (for Twilio external egress)', () => {
+    template.resourceCountIs('AWS::EC2::NatGateway', 1);
+  });
+
+  test('Exactly 1 Elastic IP exists (attached to the NAT Gateway)', () => {
+    template.resourceCountIs('AWS::EC2::EIP', 1);
   });
 });
