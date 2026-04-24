@@ -27,6 +27,26 @@ export function Header() {
                     </Link>
                     {isAuthenticated && (
                         <>
+                            {userType === 'worker' && (
+                                <>
+                                    <Link
+                                        href="/worker/applications"
+                                        className="text-sm text-muted hover:text-foreground transition-colors"
+                                    >
+                                        {t('my_applications')}
+                                    </Link>
+                                    <Link
+                                        href="/worker/profile"
+                                        aria-label={t('profile')}
+                                        className="text-muted hover:text-foreground transition-colors"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                                            <circle cx="12" cy="7" r="4"/>
+                                        </svg>
+                                    </Link>
+                                </>
+                            )}
                             {userType === 'employer' && (
                                 <Link
                                     href="/employer/profile"

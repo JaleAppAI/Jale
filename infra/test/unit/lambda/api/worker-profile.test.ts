@@ -93,7 +93,7 @@ describe('Worker Profile API Lambda', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     // Simulate empty result for user query
     mockQuery.mockImplementation((queryText) => {
-      if (queryText.includes('SELECT id, user_type')) {
+      if (queryText.includes('LEFT JOIN worker_profiles')) {
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({});
@@ -118,11 +118,16 @@ describe('Worker Profile API Lambda', () => {
       phone: '0987654321',
       full_name: 'Test Worker',
       tenant_id: null,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      skills: [],
+      availability: null,
+      years_experience: null,
+      location: null,
+      bio: null,
     };
-    
+
     mockQuery.mockImplementation((queryText) => {
-      if (queryText.includes('SELECT id, user_type')) {
+      if (queryText.includes('LEFT JOIN worker_profiles')) {
         return Promise.resolve({ rows: [mockUser] });
       }
       return Promise.resolve({});

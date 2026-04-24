@@ -10,7 +10,7 @@ export default function WorkerAuthPage() {
 
     useEffect(() => {
         if (!isLoading && isAuthenticated) {
-            router.replace('/worker/profile');
+            router.replace('/worker/home');
         }
     }, [isLoading, isAuthenticated]);
 

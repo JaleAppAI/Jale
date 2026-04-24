@@ -19,7 +19,7 @@ const mkEv = (body: any) => ({
 describe('worker-doc-upload-url-auth', () => {
   const env = process.env;
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
     process.env = { ...env, REQUIRED_TOS_VERSION: 'v1.0', DOCUMENTS_BUCKET: 'bucket' };
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });

@@ -23,6 +23,7 @@ export class ApiStack extends cdk.Stack {
   public readonly apiUrl: string;
   public readonly dualAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   public readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
+  public readonly workerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -92,10 +93,11 @@ export class ApiStack extends cdk.Stack {
     });
 
     // ── Cognito Authorizers ──
-    const workerAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'WorkerAuthorizer', {
+    this.workerAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'WorkerAuthorizer', {
       cognitoUserPools: [props.workerPool.userPool],
       authorizerName: 'worker-authorizer',
     });
+    const workerAuthorizer = this.workerAuthorizer;
 
     this.employerAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'EmployerAuthorizer', {
       cognitoUserPools: [props.employerPool.userPool],
@@ -232,6 +234,76 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
+    // Worker jobs list — worker auth, DB access
+    const workerJobsListLambda = new JaleLambdaFunction(this, 'WorkerJobsListLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-jobs-list.ts'),
+      description: 'Worker jobs list endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerJobsListLambda.function);
+
+    // Worker job detail — worker auth, DB access
+    const workerJobsDetailLambda = new JaleLambdaFunction(this, 'WorkerJobsDetailLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-jobs-detail.ts'),
+      description: 'Worker job detail endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerJobsDetailLambda.function);
+
+    // Worker job apply — worker auth, DB access
+    const workerJobsApplyLambda = new JaleLambdaFunction(this, 'WorkerJobsApplyLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-jobs-apply.ts'),
+      description: 'Worker job apply endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerJobsApplyLambda.function);
+
+    // Worker applications list — worker auth, DB access
+    const workerApplicationsListLambda = new JaleLambdaFunction(this, 'WorkerApplicationsListLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-applications-list.ts'),
+      description: 'Worker applications list endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerApplicationsListLambda.function);
+
+    // Worker profile update — worker auth, DB access
+    const workerProfileUpdateLambda = new JaleLambdaFunction(this, 'WorkerProfileUpdateLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-profile-update.ts'),
+      description: 'Worker profile update endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerProfileUpdateLambda.function);
+
     // ── IAM: Cognito permissions for auth Lambdas ──
     // Scoped to the two pool ARNs to respect least privilege.
     const poolArns = [
@@ -256,9 +328,40 @@ export class ApiStack extends cdk.Stack {
     healthResource.addMethod('GET', new apigateway.LambdaIntegration(healthLambda.function));
 
     // GET /worker/profile
+    // PATCH /worker/profile
     const workerResource = this.api.root.addResource('worker');
     const workerProfileResource = workerResource.addResource('profile');
     workerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(workerProfileLambda.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    workerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(workerProfileUpdateLambda.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET /worker/jobs — list open jobs for worker
+    // GET /worker/jobs/{id} — job detail
+    // POST /worker/jobs/{id}/apply — apply to a job
+    const workerJobsResource = workerResource.addResource('jobs');
+    workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const workerJobResource = workerJobsResource.addResource('{id}');
+    workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const workerJobApplyResource = workerJobResource.addResource('apply');
+    workerJobApplyResource.addMethod('POST', new apigateway.LambdaIntegration(workerJobsApplyLambda.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET /worker/applications — list worker's own applications
+    const workerApplicationsResource = workerResource.addResource('applications');
+    workerApplicationsResource.addMethod('GET', new apigateway.LambdaIntegration(workerApplicationsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

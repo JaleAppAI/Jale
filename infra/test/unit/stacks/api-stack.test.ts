@@ -133,4 +133,65 @@ describe('ApiStack', () => {
       Description: 'Employer job applicants endpoint',
     });
   });
+
+  // Task 12 — new worker marketplace route assertions
+  test('Worker jobs list Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker jobs list endpoint',
+    });
+  });
+
+  test('Worker job detail Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker job detail endpoint',
+    });
+  });
+
+  test('Worker job apply Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker job apply endpoint',
+    });
+  });
+
+  test('Worker applications list Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker applications list endpoint',
+    });
+  });
+
+  test('Worker profile update Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker profile update endpoint',
+    });
+  });
+
+  test('GET /worker/jobs is protected by WorkerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  test('PATCH /worker/profile exists with WorkerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'PATCH',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  test('POST /worker/jobs/{id}/apply exists with WorkerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
 });

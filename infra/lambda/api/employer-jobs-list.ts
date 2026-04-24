@@ -35,7 +35,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const result = await client.query(`
+    const result = await client.query(
+      `
       SELECT
         j.id,
         j.title,
@@ -43,12 +44,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         j.job_type,
         j.status,
         j.created_at,
-        COUNT(ja.id)::int AS applicant_count
+        (
+          SELECT COUNT(*)::int
+          FROM job_applications ja
+          WHERE ja.job_id = j.id
+        ) AS applicant_count
       FROM jobs j
-      LEFT JOIN job_applications ja ON ja.job_id = j.id
-      GROUP BY j.id
+      WHERE j.employer_id = (
+        SELECT id
+        FROM users
+        WHERE cognito_sub = $1
+      )
       ORDER BY j.created_at DESC
-    `);
+    `,
+      [cognitoSub],
+    );
 
     await client.query('COMMIT');
 

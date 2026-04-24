@@ -7,7 +7,8 @@
     "header": {
         "language_toggle": "Español",
         "sign_out": "Sign out",
-        "profile": "Profile"
+        "profile": "Profile",
+        "my_applications": "My Applications"
     },
     "landing": {
         "headline": "Find work. Find workers.",
@@ -160,5 +161,95 @@
         "doc_resume": "Resume",
         "doc_driver_license": "Driver's License",
         "doc_ssn": "SSN Card / ITIN"
+    },
+    "worker_applications": {
+        "title": "My Applications",
+        "applied": "Applied",
+        "empty": "You haven't applied to any jobs yet.",
+        "empty_cta": "Browse jobs",
+        "status": {
+            "pending": "Pending",
+            "reviewed": "Reviewed",
+            "hired": "Hired",
+            "rejected": "Rejected"
+        }
+    },
+    "worker_home": {
+        "title": "Find jobs",
+        "search_placeholder": "Search by title or location",
+        "filter": {
+            "all": "All",
+            "full_time": "Full-time",
+            "part_time": "Part-time",
+            "contract": "Contract"
+        },
+        "empty": "No active jobs right now."
+    },
+    "worker_job_detail": {
+        "back": "← Back to jobs",
+        "required_docs": "Required documents",
+        "upload_prompt": "Upload missing documents in your profile.",
+        "upload_link": "Go to profile",
+        "apply": "Apply",
+        "already_applied": "Already applied",
+        "errors": {
+            "missing_docs": "Missing documents: {docs}",
+            "job_closed": "This job is no longer accepting applications."
+        }
+    },
+    "worker_profile": {
+        "title": "My Profile",
+        "info_title": "Profile",
+        "edit_button": "Edit",
+        "field_phone": "Phone",
+        "field_name": "Full name",
+        "field_skills": "Skills",
+        "field_availability": "Availability",
+        "field_years_experience": "Years of experience",
+        "field_location": "Location",
+        "field_bio": "About",
+        "documents_title": "Documents",
+        "documents_subtitle": "Uploaded documents are reused automatically when you apply to jobs.",
+        "documents": {
+            "types": {
+                "resume": "Resume",
+                "driver_license": "Driver's License",
+                "ssn": "SSN"
+            },
+            "not_uploaded": "Not uploaded",
+            "upload": "Upload",
+            "replace": "Replace",
+            "delete": "Delete",
+            "view": "View"
+        },
+        "edit": {
+            "full_name": "Full name",
+            "skills_placeholder": "Skills (comma separated)",
+            "availability": {
+                "immediate": "Immediately",
+                "2_weeks": "Within 2 weeks",
+                "1_month": "Within 1 month"
+            },
+            "years_experience": "Years of experience",
+            "location": "Location",
+            "bio": "About you",
+            "save": "Save",
+            "cancel": "Cancel"
+        },
+        "complete_modal": {
+            "title": "Complete your profile",
+            "subtitle": "Employers need a few details before you can apply.",
+            "full_name": "Full name",
+            "skills_placeholder": "Skills (comma separated)",
+            "availability": {
+                "immediate": "Immediately",
+                "2_weeks": "Within 2 weeks",
+                "1_month": "Within 1 month"
+            },
+            "years_experience": "Years of experience",
+            "location": "Location",
+            "cancel": "Cancel",
+            "submit": "Save and apply"
+        }
     }
 }
