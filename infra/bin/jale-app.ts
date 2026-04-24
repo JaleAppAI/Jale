@@ -5,6 +5,7 @@ import { DatabaseStack } from '../lib/stacks/database-stack';
 import { AuthStack } from '../lib/stacks/auth-stack';
 import { ApiStack } from '../lib/stacks/api-stack';
 import { LegalStack } from '../lib/stacks/legal-stack';
+import { DocumentsStack } from '../lib/stacks/documents-stack';
 
 const app = new cdk.App();
 
@@ -47,4 +48,13 @@ new LegalStack(app, 'JaleLegalStack', {
   dbSecret: database.dbSecret,
   api: api.api,
   dualAuthorizer: api.dualAuthorizer,
+});
+
+new DocumentsStack(app, 'JaleDocumentsStack', {
+  env,
+  network,
+  api,
+  dbSecret: database.dbSecret,
+  allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
+  requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
 });

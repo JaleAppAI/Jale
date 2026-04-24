@@ -180,9 +180,12 @@ export default function JobDetailPage() {
                     <span>{t('applicants.applied')}: {new Date(applicant.applied_at).toLocaleDateString()}</span>
                   </div>
 
-                  <Button variant="outline" size="sm" className="self-start mt-1" disabled>
+                  <Link
+                    href={`/employer/workers/${applicant.worker_id}?job_id=${job.id}`}
+                    className="self-start mt-1 text-xs bg-blue-900 text-white px-3 py-1.5 rounded-lg"
+                  >
                     {t('applicants.view_profile')}
-                  </Button>
+                  </Link>
                 </Card>
               ))}
             </div>

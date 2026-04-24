@@ -47,6 +47,7 @@ export function workerVerifyOtp(user: CognitoUser, otp: string): Promise<AuthTok
 export function employerSignIn(email: string, password: string): Promise<AuthTokens> {
     return new Promise((resolve, reject) => {
         const user = new CognitoUser({ Username: email, Pool: employerPool });
+        user.setAuthenticationFlowType('USER_PASSWORD_AUTH');
         const authDetails = new AuthenticationDetails({ Username: email, Password: password });
         user.authenticateUser(authDetails, {
             onSuccess: (session) => resolve({

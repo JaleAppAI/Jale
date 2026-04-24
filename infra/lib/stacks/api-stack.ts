@@ -22,6 +22,7 @@ export class ApiStack extends cdk.Stack {
   public readonly api: apigateway.RestApi;
   public readonly apiUrl: string;
   public readonly dualAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
+  public readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -96,10 +97,11 @@ export class ApiStack extends cdk.Stack {
       authorizerName: 'worker-authorizer',
     });
 
-    const employerAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'EmployerAuthorizer', {
+    this.employerAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'EmployerAuthorizer', {
       cognitoUserPools: [props.employerPool.userPool],
       authorizerName: 'employer-authorizer',
     });
+    const employerAuthorizer = this.employerAuthorizer;
 
     // Dual authorizer — validates tokens from either pool (used by LegalStack)
     this.dualAuthorizer = new apigateway.CognitoUserPoolsAuthorizer(this, 'DualAuthorizer', {

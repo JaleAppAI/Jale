@@ -39,7 +39,13 @@ export async function getJobs(token: string): Promise<Job[]> {
 
 export async function createJob(
   token: string,
-  data: { title: string; location: string; job_type: string; description?: string }
+  data: {
+    title: string;
+    location: string;
+    job_type: string;
+    description?: string;
+    required_docs?: string[];
+  }
 ): Promise<Job> {
   const res = await apiFetch('/employer/jobs', {
     method: 'POST',
@@ -81,5 +87,72 @@ export async function getJobApplicants(
     token
   );
   if (!res.ok) throw new Error('fetch_failed');
+  return res.json();
+}
+
+export interface WorkerDocument {
+  doc_type: 'resume' | 'driver_license' | 'ssn';
+  s3_key: string;
+  file_name: string;
+  file_size: number;
+  uploaded_at: string;
+  url: string;
+}
+
+export interface WorkerProfile {
+  worker_id: string;
+  full_name: string;
+  phone: string;
+  skills: string[];
+  availability: string;
+  years_experience: number;
+  location: string;
+  application_status: 'pending' | 'reviewed' | 'hired' | 'rejected';
+  applied_at: string;
+}
+
+export async function getWorkerProfile(
+  token: string,
+  workerId: string,
+  jobId: string,
+): Promise<WorkerProfile> {
+  const res = await apiFetch(
+    `/employer/workers/${workerId}/profile?job_id=${jobId}`,
+    {},
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  return res.json();
+}
+
+export async function getWorkerDocuments(
+  token: string,
+  workerId: string,
+  jobId: string,
+): Promise<{ documents: WorkerDocument[] }> {
+  const res = await apiFetch(
+    `/employer/workers/${workerId}/documents?job_id=${jobId}`,
+    {},
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'docs_fetch_failed');
+  return res.json();
+}
+
+export async function createUploadToken(
+  token: string,
+  jobId: string,
+  workerId: string,
+): Promise<{ upload_url: string }> {
+  const res = await apiFetch(
+    '/employer/upload-tokens',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId, worker_id: workerId }),
+    },
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'token_create_failed');
   return res.json();
 }

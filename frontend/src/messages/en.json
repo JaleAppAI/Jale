@@ -18,7 +18,7 @@
     "auth": {
         "worker": {
             "title": "Sign in with your phone",
-            "phone_label": "Phone number",
+            "phone_label": "Phone number: +1 3463488162",
             "send_otp": "Send code",
             "otp_label": "Enter the code we sent you",
             "verify": "Verify",
@@ -113,6 +113,52 @@
             "cancel": "Cancel",
             "error": "Failed to post job. Please try again.",
             "job_description": "Job Description"
+        },
+        "worker_profile": {
+            "back": "Back to applicants",
+            "share_upload_link": "Share Upload Link",
+            "link_copied": "Link copied to clipboard!",
+            "documents": "Documents",
+            "required": "Required",
+            "optional": "Optional",
+            "not_uploaded": "Not uploaded yet",
+            "request": "Request",
+            "view": "View",
+            "download": "Download",
+            "status_label": "Application Status",
+            "save_status": "Save",
+            "doc_resume": "Resume",
+            "doc_driver_license": "Driver's License",
+            "doc_ssn": "SSN Card"
+        },
+        "post_job_docs": {
+            "step_label": "Step 2 of 2",
+            "title": "Document Requirements",
+            "subtitle": "Which documents do applicants need? All optional by default.",
+            "optional_label": "Optional",
+            "required_label": "Required",
+            "next": "Next: Document Requirements",
+            "back": "Back",
+            "submit": "Post Job"
         }
+    },
+    "upload_page": {
+        "title": "Upload Your Documents",
+        "for_job": "For:",
+        "at_employer": "at",
+        "uploaded": "Uploaded",
+        "replace": "Replace",
+        "tap_to_upload": "Tap to upload",
+        "file_hint": "JPG, PNG or PDF · Max 10 MB",
+        "security_notice": "Your documents are encrypted and only shared with the employer you applied to.",
+        "submit": "Submit Documents",
+        "submit_hint": "Submit is enabled once all required documents are uploaded",
+        "success_title": "Documents submitted!",
+        "success_body": "The employer has been notified.",
+        "error_size": "File must be under 10 MB",
+        "error_type": "Only JPG, PNG, or PDF files are accepted",
+        "doc_resume": "Resume",
+        "doc_driver_license": "Driver's License",
+        "doc_ssn": "SSN Card / ITIN"
     }
 }
