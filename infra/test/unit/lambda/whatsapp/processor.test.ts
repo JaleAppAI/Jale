@@ -478,4 +478,150 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
       expect(countQueryByPattern(/DELETE FROM users/i)).toBeGreaterThan(0);
     });
   });
+
+  describe('Trust signals and typed jobs', () => {
+    it('writes final trust signals and moves the conversation to idle', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-3' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'building_trust_signal',
+            user_id: 'user-1',
+            state_context: {
+              trust_step: 2,
+              trust_answers: [
+                {
+                  questionKey: 'specialization',
+                  optionKey: 'opt_0',
+                  label: 'Residential',
+                  answeredAt: '2026-04-24T00:00:00.000Z',
+                },
+                {
+                  questionKey: 'seniority',
+                  optionKey: 'opt_1',
+                  label: 'Can work alone',
+                  answeredAt: '2026-04-24T00:01:00.000Z',
+                },
+              ],
+            },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users trust_signals
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-trust-3',
+          From: 'whatsapp:+15125551234',
+          Body: '2',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const trustUpdate = findQueryByPattern(/UPDATE users\s+SET trust_signals/i);
+      expect(trustUpdate).toBeDefined();
+      const signals = JSON.parse(trustUpdate![0] as string);
+      expect(signals).toHaveProperty('specialization');
+      expect(signals).toHaveProperty('seniority');
+      expect(signals).toHaveProperty('tasks');
+
+      const idleUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && params.includes('idle'),
+      );
+      expect(idleUpdate).toBeDefined();
+    });
+
+    it('stores recent job ids when an idle worker asks for jobs', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-jobs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 2,
+          rows: [
+            { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+            { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso', pay: '$22/hr' },
+          ],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox job list
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Trabajos',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const update = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && typeof params[1] === 'string'
+        && (params[1] as string).includes('recent_jobs'),
+      );
+      expect(update).toBeDefined();
+      expect(JSON.parse((update![1] as unknown[])[1] as string).recent_jobs).toEqual([
+        'job-1',
+        'job-2',
+      ]);
+    });
+
+    it('typed accept uses the stored recent job id', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-accept' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            state_context: { recent_jobs: ['job-1', 'job-2'] },
+          })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT job application
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox accepted
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-accept',
+          From: 'whatsapp:+15125551234',
+          Body: '1 aceptar',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
+      expect(applicationInsert).toEqual(['job-1', 'user-1']);
+    });
+  });
 });

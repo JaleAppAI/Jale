@@ -47,7 +47,8 @@ $MigrationFiles = @(
     '003_whatsapp.sql',
     '004_jobs.sql',
     '005_job_applications.sql',
-    '006_whatsapp_reliability.sql'
+    '006_whatsapp_reliability.sql',
+    '007_trust_signal_layer.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -209,6 +210,7 @@ $remoteScript = $remoteTemplate `
     -replace '__WA_DB_SECRET_NAME__',         $waDbSecretNameSafe `
     -replace '__MIGRATION_FILES_ARRAY__',     $fileArrayLiteralSafe `
     -replace '__MIGRATION_B64_ASSIGNMENTS__', $b64AssignmentsSafe
+$remoteScript = $remoteScript -replace "`r`n", "`n"
 
 # ---------------------------------------------------------------------------
 # Write the SSM parameters JSON to a temp file with UTF-8 NO-BOM.

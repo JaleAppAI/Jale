@@ -5,6 +5,10 @@ import {
   isDecline,
   parseButtonPayload,
   parseProfileAnswer,
+  getTrustOptions,
+  buildTrustQuestion,
+  parseTrustAnswer,
+  parseTypedJobAction,
   computeNextField,
   PROFILE_FIELDS,
 } from '../../../../../lambda/whatsapp/lib/flows';
@@ -224,6 +228,71 @@ describe('flows.ts — computeNextField', () => {
     expect(
       computeNextField({}, { full_name: null, city: null }),
     ).toBe('full_name');
+  });
+});
+
+describe('flows.ts — trust signals', () => {
+  it('returns trade-specific specialization options', () => {
+    expect(getTrustOptions(0, 'electrician')).toEqual([
+      'Residential',
+      'Commercial',
+      'Industrial',
+    ]);
+  });
+
+  it('returns shared seniority options', () => {
+    expect(getTrustOptions(1, 'plumber')).toEqual([
+      'Helper',
+      'Can work alone',
+      'Lead crew',
+    ]);
+  });
+
+  it('falls back to other for unknown trades', () => {
+    expect(getTrustOptions(2, 'welder')).toEqual([
+      'Use power tools',
+      'Read plans',
+      'Site cleanup/safety',
+    ]);
+  });
+
+  it('builds a numbered trust question', () => {
+    const question = buildTrustQuestion(0, 'electrician', 'en');
+    expect(question).toContain('What is your specialization?');
+    expect(question).toContain('1. Residential');
+    expect(question).toContain('Reply with the number.');
+  });
+
+  it('parses a valid trust answer', () => {
+    const answer = parseTrustAnswer(0, 'electrician', '2');
+    expect(answer).toMatchObject({
+      questionKey: 'specialization',
+      optionKey: 'opt_1',
+      label: 'Commercial',
+    });
+  });
+
+  it('rejects invalid trust answers', () => {
+    expect(parseTrustAnswer(0, 'electrician', '0')).toBeNull();
+    expect(parseTrustAnswer(0, 'electrician', '9')).toBeNull();
+    expect(parseTrustAnswer(0, 'electrician', 'yes')).toBeNull();
+  });
+});
+
+describe('flows.ts — parseTypedJobAction', () => {
+  test.each([
+    ['1 aceptar', { index: 0, action: 'accept' }],
+    ['2 accept', { index: 1, action: 'accept' }],
+    ['3 si', { index: 2, action: 'accept' }],
+    ['1 no', { index: 0, action: 'decline' }],
+    ['2 rechazar', { index: 1, action: 'decline' }],
+    ['1 info', { index: 0, action: 'info' }],
+  ])('parses "%s"', (input, expected) => {
+    expect(parseTypedJobAction(input)).toEqual(expected);
+  });
+
+  test.each(['Trabajos', '1', 'apply 1', ''])('rejects "%s"', (input) => {
+    expect(parseTypedJobAction(input)).toBeNull();
   });
 });
 

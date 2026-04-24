@@ -18,6 +18,7 @@ export type ConversationState =
   | 'awaiting_otp'
   | 'awaiting_legal'
   | 'building_profile'
+  | 'building_trust_signal'
   | 'legal_declined'
   | 'otp_timeout'
   | 'idle';
@@ -115,6 +116,133 @@ export interface ProfileStateContext {
   otp_issued_at?: string;
   /** Map of accepted profile field → MessageSid that wrote it (Fix 3). */
   field_sids?: Partial<Record<ProfileField, string>>;
+  trust_step?: number;
+  trust_answers?: TrustAnswer[];
+  recent_jobs?: string[];
+}
+
+// -- Trust Signal Layer ----------------------------------------------------
+
+export type TrustField = 'specialization' | 'seniority' | 'tasks';
+
+export interface TrustAnswer {
+  questionKey: TrustField;
+  optionKey: string;
+  label: string;
+  answeredAt: string;
+}
+
+const TRADE_KEYS = [
+  'electrician',
+  'plumber',
+  'carpenter',
+  'concrete',
+  'painting',
+  'other',
+] as const;
+
+export type TradeKey = typeof TRADE_KEYS[number];
+
+export const TRUST_QUESTIONS: Record<
+  TradeKey,
+  { specialization: string[]; tasks: string[] }
+> = {
+  electrician: {
+    specialization: ['Residential', 'Commercial', 'Industrial'],
+    tasks: ['Pull wire', 'Bend conduit', 'Work panels'],
+  },
+  plumber: {
+    specialization: ['Repairs', 'New installs', 'Drain/sewer'],
+    tasks: ['Install pipe', 'Set fixtures', 'Water heaters'],
+  },
+  carpenter: {
+    specialization: ['Framing', 'Finish work', 'Cabinets/trim'],
+    tasks: ['Read plans', 'Frame walls', 'Install doors/trim'],
+  },
+  concrete: {
+    specialization: ['Forms', 'Rebar', 'Pour/finish'],
+    tasks: ['Set forms', 'Tie rebar', 'Finish concrete'],
+  },
+  painting: {
+    specialization: ['Interior', 'Exterior', 'Prep/texture'],
+    tasks: ['Prep/sanding', 'Spray', 'Roll/brush'],
+  },
+  other: {
+    specialization: ['General labor', 'Skilled trade', 'Equipment/tools'],
+    tasks: ['Use power tools', 'Read plans', 'Site cleanup/safety'],
+  },
+};
+
+export const SENIORITY_OPTIONS = ['Helper', 'Can work alone', 'Lead crew'];
+export const TRUST_STEPS: TrustField[] = ['specialization', 'seniority', 'tasks'];
+
+export function getTrustOptions(step: number, trade: string): string[] {
+  const tradeKey: TradeKey = TRADE_KEYS.includes(trade as TradeKey)
+    ? (trade as TradeKey)
+    : 'other';
+  if (step === 0) return TRUST_QUESTIONS[tradeKey].specialization;
+  if (step === 1) return SENIORITY_OPTIONS;
+  return TRUST_QUESTIONS[tradeKey].tasks;
+}
+
+export function buildTrustQuestion(step: number, trade: string, lang: Lang): string {
+  const field = TRUST_STEPS[step] ?? TRUST_STEPS[0];
+  const numbered = getTrustOptions(step, trade)
+    .map((option, i) => `${i + 1}. ${option}`)
+    .join('\n');
+  const prompts: Record<TrustField, { es: string; en: string }> = {
+    specialization: {
+      es: `En que te especializas?\n${numbered}\n\nResponde con el numero.`,
+      en: `What is your specialization?\n${numbered}\n\nReply with the number.`,
+    },
+    seniority: {
+      es: `Cual es tu nivel de experiencia?\n${numbered}\n\nResponde con el numero.`,
+      en: `What is your experience level?\n${numbered}\n\nReply with the number.`,
+    },
+    tasks: {
+      es: `Que tipo de trabajo haces principalmente?\n${numbered}\n\nResponde con el numero.`,
+      en: `What type of work do you mainly do?\n${numbered}\n\nReply with the number.`,
+    },
+  };
+  return prompts[field][lang];
+}
+
+export function parseTrustAnswer(
+  step: number,
+  trade: string,
+  rawInput: string,
+): TrustAnswer | null {
+  const index = parseInt(rawInput.trim(), 10) - 1;
+  const options = getTrustOptions(step, trade);
+  if (Number.isNaN(index) || index < 0 || index >= options.length) return null;
+  return {
+    questionKey: TRUST_STEPS[step] ?? TRUST_STEPS[0],
+    optionKey: `opt_${index}`,
+    label: options[index],
+    answeredAt: new Date().toISOString(),
+  };
+}
+
+export interface TypedJobAction {
+  index: number;
+  action: 'accept' | 'decline' | 'info';
+}
+
+export function parseTypedJobAction(text: string): TypedJobAction | null {
+  const m = text.trim().toLowerCase().match(
+    /^(\d+)\s+(aceptar|accept|si|sí|yes|no|decline|rechazar|info)$/,
+  );
+  if (!m) return null;
+  const index = parseInt(m[1], 10) - 1;
+  if (index < 0) return null;
+  const verb = m[2];
+  if (['aceptar', 'accept', 'si', 'sí', 'yes'].includes(verb)) {
+    return { index, action: 'accept' };
+  }
+  if (['no', 'decline', 'rechazar'].includes(verb)) {
+    return { index, action: 'decline' };
+  }
+  return { index, action: 'info' };
 }
 
 // ── Keyword detection ───────────────────────────────────────────

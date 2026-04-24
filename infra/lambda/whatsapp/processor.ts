@@ -27,11 +27,16 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseTypedJobAction,
   parseProfileAnswer,
+  parseTrustAnswer,
+  buildTrustQuestion,
   computeNextField,
+  TRUST_STEPS,
   type ConversationState,
   type ProfileField,
   type ProfileStateContext,
+  type TrustAnswer,
 } from './lib/flows';
 import { decodeIdTokenSub } from './lib/jwt';
 
@@ -534,6 +539,10 @@ async function routeMessage(
       await handleBuildingProfile(client, conv, msg);
       return;
 
+    case 'building_trust_signal':
+      await handleBuildingTrustSignal(client, conv, msg);
+      return;
+
     case 'idle':
       await handleIdle(client, conv, msg);
       return;
@@ -1004,13 +1013,13 @@ async function enterProfileBuilderOrIdle(
   const dbFilled = await loadProfileFromDb(client, userId);
   const next = computeNextField({}, dbFilled);
   if (next === null) {
-    // Fully filled — skip the builder
-    await updateConversation(client, conv.id, {
-      conversation_state: 'idle',
-      state_context: {},
-      last_processed_message_sid: messageSid,
-    });
-    await queueReply(client, messageSid, from, 'idle_help', conv.language);
+    await enterTrustSignalOrIdle(
+      client,
+      conv,
+      from,
+      messageSid,
+      (dbFilled.main_trade as string | undefined) ?? 'other',
+    );
     return;
   }
   await updateConversation(client, conv.id, {
@@ -1033,6 +1042,17 @@ async function loadProfileFromDb(
     [userId],
   );
   return (r.rows[0] ?? {}) as Partial<Record<ProfileField, string | boolean | null>>;
+}
+
+async function loadTradeFromDb(
+  client: PoolClient,
+  userId: string,
+): Promise<string> {
+  const r = await client.query<{ main_trade: string | null }>(
+    `SELECT main_trade FROM users WHERE id = $1`,
+    [userId],
+  );
+  return r.rows[0]?.main_trade ?? 'other';
 }
 
 // Mapping from ProfileField → question template key
@@ -1178,9 +1198,41 @@ async function flushProfileAndAdvance(
     );
   }
 
-  // Final state transition — atomic with the sid stamp. state_context is
-  // cleared on entry to `idle` (cognito_session, field_sids, etc. are
-  // profile-builder-scoped and have no meaning in `idle`).
+  await enterTrustSignalOrIdle(
+    client,
+    conv,
+    from,
+    messageSid,
+    (data.main_trade as string | undefined) ?? undefined,
+  );
+}
+
+async function enterTrustSignalOrIdle(
+  client: PoolClient,
+  conv: ConversationRow,
+  from: string,
+  messageSid: string,
+  tradeHint?: string,
+): Promise<void> {
+  if (!conv.user_id) throw new Error('user_id missing before trust signal');
+
+  const trust = await client.query<{ trust_signals_completed_at: string | null }>(
+    `SELECT trust_signals_completed_at FROM users WHERE id = $1`,
+    [conv.user_id],
+  );
+  const trustDone = !!trust.rows[0]?.trust_signals_completed_at;
+
+  if (!trustDone) {
+    const trade = tradeHint ?? await loadTradeFromDb(client, conv.user_id);
+    await updateConversation(client, conv.id, {
+      conversation_state: 'building_trust_signal',
+      state_context: { trust_step: 0, trust_answers: [] },
+      last_processed_message_sid: messageSid,
+    });
+    await queueText(client, messageSid, from, buildTrustQuestion(0, trade, conv.language));
+    return;
+  }
+
   await updateConversation(client, conv.id, {
     conversation_state: 'idle',
     state_context: {},
@@ -1189,14 +1241,92 @@ async function flushProfileAndAdvance(
   await queueReply(client, messageSid, from, 'profile_complete', conv.language);
 }
 
+async function handleBuildingTrustSignal(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  if (!conv.user_id) throw new Error('user_id missing in building_trust_signal');
+
+  const step = conv.state_context?.trust_step ?? 0;
+  const answers = conv.state_context?.trust_answers ?? [];
+  const trade = await loadTradeFromDb(client, conv.user_id);
+  const answer = parseTrustAnswer(step, trade, msg.body);
+
+  if (!answer) {
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      buildTrustQuestion(step, trade, conv.language),
+    );
+    return;
+  }
+
+  const updatedAnswers: TrustAnswer[] = [...answers, answer];
+
+  if (step < TRUST_STEPS.length - 1) {
+    await updateConversation(client, conv.id, {
+      state_context: {
+        trust_step: step + 1,
+        trust_answers: updatedAnswers,
+      },
+      last_processed_message_sid: msg.messageSid,
+    });
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      buildTrustQuestion(step + 1, trade, conv.language),
+    );
+    return;
+  }
+
+  const signalMap = Object.fromEntries(
+    updatedAnswers.map((item) => [item.questionKey, item]),
+  );
+  await client.query(
+    `UPDATE users
+        SET trust_signals = $1::jsonb,
+            trust_signals_completed_at = now(),
+            updated_at = now()
+      WHERE id = $2`,
+    [JSON.stringify(signalMap), conv.user_id],
+  );
+  await updateConversation(client, conv.id, {
+    conversation_state: 'idle',
+    state_context: {},
+    last_processed_message_sid: msg.messageSid,
+  });
+  await reply(client, msg, 'profile_complete', conv.language);
+}
+
 // ── idle — handle Jobs keyword + button callbacks ───────────────
 async function handleIdle(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<void> {
+  const typedAction = parseTypedJobAction(msg.body);
+  if (typedAction) {
+    const recentJobs = conv.state_context?.recent_jobs ?? [];
+    const jobId = recentJobs[typedAction.index];
+    if (!jobId) {
+      await reply(client, msg, 'job_not_found', conv.language);
+      return;
+    }
+    await handleJobAction(
+      client,
+      conv,
+      jobId,
+      typedAction.action,
+      msg.from,
+      msg.messageSid,
+    );
+    return;
+  }
+
   if (isJobsKeyword(msg.body)) {
-    // Query the jobs table, send matching jobs. For V1, return a simple list.
     const jobs = await client.query<{
       id: string; title: string; company: string; location: string; pay: string;
     }>(`SELECT id, title, company, location, pay FROM jobs ORDER BY created_at DESC LIMIT 5`);
@@ -1204,14 +1334,24 @@ async function handleIdle(
       await reply(client, msg,'jobs_none', conv.language);
       return;
     }
-    // V1: send a single summary message. Template button replies come in Phase 6.
+    const recentJobs = jobs.rows.map((j) => j.id);
+    await updateConversation(client, conv.id, {
+      state_context: {
+        ...conv.state_context,
+        recent_jobs: recentJobs,
+      },
+      last_processed_message_sid: msg.messageSid,
+    });
     const lines = jobs.rows.map(
-      (j) =>
+      (j, i) =>
         conv.language === 'es'
-          ? `• ${j.title} en ${j.company}, ${j.location} — ${j.pay}`
-          : `• ${j.title} at ${j.company}, ${j.location} — ${j.pay}`,
+          ? `${i + 1}. ${j.title} en ${j.company}, ${j.location} - ${j.pay}`
+          : `${i + 1}. ${j.title} at ${j.company}, ${j.location} - ${j.pay}`,
     );
-    await queueText(client, msg.messageSid, msg.from, lines.join('\n'));
+    const instructions = conv.language === 'es'
+      ? 'Responde "1 aceptar", "1 info", o "1 no".'
+      : 'Reply "1 accept", "1 info", or "1 no".';
+    await queueText(client, msg.messageSid, msg.from, `${lines.join('\n')}\n\n${instructions}`);
     return;
   }
 
@@ -1227,11 +1367,21 @@ async function handleJobButton(
 ): Promise<void> {
   // jobId is "job-<uuid>"; strip the prefix to get the bare UUID
   const bareJobId = payload.jobId.replace(/^job-/, '');
+  await handleJobAction(client, conv, bareJobId, payload.action, from, inboundMessageSid);
+}
 
+async function handleJobAction(
+  client: PoolClient,
+  conv: ConversationRow,
+  jobId: string,
+  action: 'accept' | 'decline' | 'info',
+  from: string,
+  inboundMessageSid: string,
+): Promise<void> {
   const job = await client.query<{
     id: string; title: string; company: string;
     location: string; pay: string;
-  }>(`SELECT id, title, company, location, pay FROM jobs WHERE id = $1`, [bareJobId]);
+  }>(`SELECT id, title, company, location, pay FROM jobs WHERE id = $1`, [jobId]);
   if (job.rowCount === 0) {
     await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     return;
@@ -1242,7 +1392,7 @@ async function handleJobButton(
     return;
   }
 
-  if (payload.action === 'accept') {
+  if (action === 'accept') {
     // Real job application insert. ON CONFLICT DO NOTHING handles double-taps
     // and SQS replays idempotently — the (job_id, user_id) unique constraint
     // from 005_job_applications.sql enforces one application per (job, worker).
@@ -1250,10 +1400,10 @@ async function handleJobButton(
       `INSERT INTO job_applications (job_id, user_id, status)
        VALUES ($1, $2, 'submitted')
        ON CONFLICT (job_id, user_id) DO NOTHING`,
-      [bareJobId, conv.user_id],
+      [jobId, conv.user_id],
     );
     await queueReply(client, inboundMessageSid, from, 'job_accepted', conv.language);
-  } else if (payload.action === 'decline') {
+  } else if (action === 'decline') {
     // No DB write for decline in V1 — just acknowledge. Future: log for
     // recommendation tuning in a whatsapp_job_declines table.
     await queueReply(client, inboundMessageSid, from, 'job_declined', conv.language);
