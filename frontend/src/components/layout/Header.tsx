@@ -30,6 +30,12 @@ export function Header() {
                             {userType === 'worker' && (
                                 <>
                                     <Link
+                                        href="/worker/home"
+                                        className="text-sm text-muted hover:text-foreground transition-colors"
+                                    >
+                                        {t('worker_home')}
+                                    </Link>
+                                    <Link
                                         href="/worker/applications"
                                         className="text-sm text-muted hover:text-foreground transition-colors"
                                     >
