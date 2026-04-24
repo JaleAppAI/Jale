@@ -34,7 +34,7 @@ desktop.ini
 
 # Claude Code
 .claude/
-.superpowers/brainstorm
+.superpowers/
 docs/
 
 # Git worktrees

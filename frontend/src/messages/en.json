@@ -18,7 +18,7 @@
     "auth": {
         "worker": {
             "title": "Sign in with your phone",
-            "phone_label": "Phone number",
+            "phone_label": "Phone number: +1 3463488162",
             "send_otp": "Send code",
             "otp_label": "Enter the code we sent you",
             "verify": "Verify",
