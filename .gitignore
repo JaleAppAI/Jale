@@ -36,6 +36,7 @@ desktop.ini
 .claude/
 .superpowers/
 docs/
+cloudshell-db-psql.md
 
 # Git worktrees
 .worktrees/

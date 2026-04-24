@@ -4,6 +4,7 @@ import { NetworkStack } from '../lib/stacks/network-stack';
 import { DatabaseStack } from '../lib/stacks/database-stack';
 import { AuthStack } from '../lib/stacks/auth-stack';
 import { ApiStack } from '../lib/stacks/api-stack';
+import { BastionStack } from '../lib/stacks/bastion-stack';
 import { LegalStack } from '../lib/stacks/legal-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
 
@@ -39,6 +40,14 @@ const api = new ApiStack(app, 'JaleApiStack', {
   workerPool: auth.workerPool,
   employerPool: auth.employerPool,
 });
+
+const bastion = new BastionStack(app, 'JaleBastionStack', {
+  env,
+  vpc: network.vpc,
+  rdsSg: network.rdsSg,
+});
+
+database.dbSecret.grantRead(bastion.bastionHost.instance.role);
 
 new LegalStack(app, 'JaleLegalStack', {
   env,
