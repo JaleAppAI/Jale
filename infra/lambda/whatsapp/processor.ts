@@ -24,6 +24,8 @@ import {
 import {
   isGreetingKeyword,
   isJobsKeyword,
+  isHelpCommand,
+  isProfileCommand,
   isAccept,
   isDecline,
   parseButtonPayload,
@@ -513,6 +515,16 @@ async function routeMessage(
       await handleJobButton(client, conv, parsed, from, msg.messageSid);
       return;
     }
+  }
+
+  if (isHelpCommand(msg.body)) {
+    await reply(client, msg, 'help_menu', conv.language);
+    return;
+  }
+
+  if (isProfileCommand(msg.body)) {
+    await handleProfileCommand(client, conv, msg);
+    return;
   }
 
   switch (conv.conversation_state) {
@@ -1055,6 +1067,181 @@ async function loadTradeFromDb(
   return r.rows[0]?.main_trade ?? 'other';
 }
 
+interface WorkerProfileSummary {
+  phone: string | null;
+  whatsapp_number: string | null;
+  full_name: string | null;
+  city: string | null;
+  main_trade: string | null;
+  main_trade_other: string | null;
+  years_experience: string | null;
+  has_transportation: boolean | null;
+  availability: string | null;
+  trust_signals: unknown;
+  trust_signals_completed_at: string | null;
+}
+
+interface StoredTrustAnswer {
+  label?: string;
+}
+
+async function handleProfileCommand(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  if (!conv.user_id) {
+    await reply(client, msg, 'profile_not_ready', conv.language);
+    return;
+  }
+
+  const result = await client.query<WorkerProfileSummary>(
+    `SELECT phone, whatsapp_number, full_name, city, main_trade, main_trade_other,
+            years_experience, has_transportation, availability,
+            trust_signals, trust_signals_completed_at
+       FROM users
+      WHERE id = $1 AND user_type = 'worker'`,
+    [conv.user_id],
+  );
+
+  const profile = result.rows[0];
+  if (!profile) {
+    await reply(client, msg, 'profile_not_ready', conv.language);
+    return;
+  }
+
+  await queueText(
+    client,
+    msg.messageSid,
+    msg.from,
+    formatProfileSummary(profile, conv.language),
+  );
+}
+
+function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string {
+  const trustSignals = parseTrustSignals(profile.trust_signals);
+  const text = lang === 'es'
+    ? {
+        title: 'Tu perfil',
+        phone: 'Telefono',
+        name: 'Nombre',
+        city: 'Ubicacion',
+        trade: 'Oficio',
+        experience: 'Experiencia',
+        transportation: 'Transporte',
+        availability: 'Disponibilidad',
+        trust: 'Confianza',
+        specialization: 'Especialidad',
+        seniority: 'Nivel',
+        tasks: 'Trabajo principal',
+        missing: 'Sin completar',
+        yes: 'Si',
+        no: 'No',
+      }
+    : {
+        title: 'Your profile',
+        phone: 'Phone',
+        name: 'Name',
+        city: 'Location',
+        trade: 'Trade',
+        experience: 'Experience',
+        transportation: 'Transportation',
+        availability: 'Availability',
+        trust: 'Trust',
+        specialization: 'Specialty',
+        seniority: 'Level',
+        tasks: 'Main work',
+        missing: 'Not set',
+        yes: 'Yes',
+        no: 'No',
+      };
+
+  const mainTrade = profile.main_trade === 'other' && profile.main_trade_other
+    ? profile.main_trade_other
+    : labelFor('main_trade', profile.main_trade, lang);
+  const transportation = typeof profile.has_transportation === 'boolean'
+    ? (profile.has_transportation ? text.yes : text.no)
+    : text.missing;
+
+  const lines = [
+    text.title,
+    '',
+    `${text.phone}: ${profile.whatsapp_number ?? profile.phone ?? text.missing}`,
+    `${text.name}: ${profile.full_name ?? text.missing}`,
+    `${text.city}: ${profile.city ?? text.missing}`,
+    `${text.trade}: ${mainTrade}`,
+    `${text.experience}: ${labelFor('years_experience', profile.years_experience, lang)}`,
+    `${text.transportation}: ${transportation}`,
+    `${text.availability}: ${labelFor('availability', profile.availability, lang)}`,
+    '',
+    text.trust,
+  ];
+
+  if (profile.trust_signals_completed_at && trustSignals) {
+    lines.push(
+      `${text.specialization}: ${trustSignals.specialization?.label ?? text.missing}`,
+      `${text.seniority}: ${trustSignals.seniority?.label ?? text.missing}`,
+      `${text.tasks}: ${trustSignals.tasks?.label ?? text.missing}`,
+    );
+  } else {
+    lines.push(text.missing);
+  }
+
+  return lines.join('\n');
+}
+
+function parseTrustSignals(value: unknown): Record<string, StoredTrustAnswer> | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value) as Record<string, StoredTrustAnswer>;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof value === 'object') {
+    return value as Record<string, StoredTrustAnswer>;
+  }
+  return null;
+}
+
+function labelFor(
+  field: 'main_trade' | 'years_experience' | 'availability',
+  value: string | null,
+  lang: Lang,
+): string {
+  const labels: Record<typeof field, Record<string, Record<Lang, string>>> = {
+    main_trade: {
+      electrician: { es: 'Electricista', en: 'Electrician' },
+      plumber: { es: 'Plomero', en: 'Plumber' },
+      carpenter: { es: 'Carpintero', en: 'Carpenter' },
+      concrete: { es: 'Concreto', en: 'Concrete' },
+      painting: { es: 'Pintura', en: 'Painting' },
+      other: { es: 'Otro', en: 'Other' },
+    },
+    years_experience: {
+      '0-1': { es: '0-1 anos', en: '0-1 years' },
+      '2-4': { es: '2-4 anos', en: '2-4 years' },
+      '5-9': { es: '5-9 anos', en: '5-9 years' },
+      '10+': { es: '10+ anos', en: '10+ years' },
+    },
+    availability: {
+      full_time: { es: 'Tiempo completo', en: 'Full-time' },
+      part_time: { es: 'Medio tiempo', en: 'Part-time' },
+      weekends: { es: 'Fines de semana', en: 'Weekends' },
+      flexible: { es: 'Flexible', en: 'Flexible' },
+    },
+  };
+
+  return value ? labels[field][value]?.[lang] ?? value : (lang === 'es' ? 'Sin completar' : 'Not set');
+}
+
+async function trustSignalColumnsAvailable(client: PoolClient): Promise<boolean> {
+  const hasSignals = await tableColumnExists(client, 'users', 'trust_signals');
+  if (!hasSignals) return false;
+  return tableColumnExists(client, 'users', 'trust_signals_completed_at');
+}
+
 // Mapping from ProfileField → question template key
 const FIELD_PROMPT_KEY: Record<ProfileField, TemplateKey> = {
   full_name: 'ask_name',
@@ -1216,6 +1403,19 @@ async function enterTrustSignalOrIdle(
 ): Promise<void> {
   if (!conv.user_id) throw new Error('user_id missing before trust signal');
 
+  if (!await trustSignalColumnsAvailable(client)) {
+    console.warn('[processor] trust signal columns missing; skipping trust flow', {
+      userId: conv.user_id,
+    });
+    await updateConversation(client, conv.id, {
+      conversation_state: 'idle',
+      state_context: {},
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+    return;
+  }
+
   const trust = await client.query<{ trust_signals_completed_at: string | null }>(
     `SELECT trust_signals_completed_at FROM users WHERE id = $1`,
     [conv.user_id],
@@ -1247,6 +1447,19 @@ async function handleBuildingTrustSignal(
   msg: IncomingMessage,
 ): Promise<void> {
   if (!conv.user_id) throw new Error('user_id missing in building_trust_signal');
+
+  if (!await trustSignalColumnsAvailable(client)) {
+    console.warn('[processor] trust signal columns missing during trust flow; completing profile without trust signals', {
+      userId: conv.user_id,
+    });
+    await updateConversation(client, conv.id, {
+      conversation_state: 'idle',
+      state_context: {},
+      last_processed_message_sid: msg.messageSid,
+    });
+    await reply(client, msg, 'profile_complete', conv.language);
+    return;
+  }
 
   const step = conv.state_context?.trust_step ?? 0;
   const answers = conv.state_context?.trust_answers ?? [];
@@ -1288,8 +1501,7 @@ async function handleBuildingTrustSignal(
   await client.query(
     `UPDATE users
         SET trust_signals = $1::jsonb,
-            trust_signals_completed_at = now(),
-            updated_at = now()
+            trust_signals_completed_at = now()
       WHERE id = $2`,
     [JSON.stringify(signalMap), conv.user_id],
   );
@@ -1343,15 +1555,19 @@ async function handleIdle(
       last_processed_message_sid: msg.messageSid,
     });
     const lines = jobs.rows.map(
-      (j, i) =>
-        conv.language === 'es'
-          ? `${i + 1}. ${j.title} en ${j.company}, ${j.location} - ${j.pay}`
-          : `${i + 1}. ${j.title} at ${j.company}, ${j.location} - ${j.pay}`,
+      (j, i) => `${i + 1}. ${j.title}\n${j.company}\n${j.location}\n${j.pay}`,
     );
     const instructions = conv.language === 'es'
-      ? 'Responde "1 aceptar", "1 info", o "1 no".'
-      : 'Reply "1 accept", "1 info", or "1 no".';
-    await queueText(client, msg.messageSid, msg.from, `${lines.join('\n')}\n\n${instructions}`);
+      ? 'Responde con:\n1 aceptar - Aplicar\n1 info - Ver detalles\n1 no - Omitir'
+      : 'Reply with:\n1 accept - Apply\n1 info - See details\n1 no - Skip';
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'es'
+        ? `Trabajos disponibles\n\n${lines.join('\n\n')}\n\n${instructions}`
+        : `Available jobs\n\n${lines.join('\n\n')}\n\n${instructions}`,
+    );
     return;
   }
 
@@ -1387,15 +1603,11 @@ async function handleJobAction(
     return;
   }
   if (!conv.user_id) {
-    // Button tap from an unlinked conversation — shouldn't happen, but treat as error
     await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     return;
   }
 
   if (action === 'accept') {
-    // Real job application insert. ON CONFLICT DO NOTHING handles double-taps
-    // and SQS replays idempotently — the (job_id, user_id) unique constraint
-    // from 005_job_applications.sql enforces one application per (job, worker).
     await client.query(
       `INSERT INTO job_applications (job_id, user_id, status)
        VALUES ($1, $2, 'submitted')
@@ -1404,19 +1616,18 @@ async function handleJobAction(
     );
     await queueReply(client, inboundMessageSid, from, 'job_accepted', conv.language);
   } else if (action === 'decline') {
-    // No DB write for decline in V1 — just acknowledge. Future: log for
-    // recommendation tuning in a whatsapp_job_declines table.
     await queueReply(client, inboundMessageSid, from, 'job_declined', conv.language);
   } else {
-    // info — V1 sends a richer detail message with the same Accept/Decline
-    // buttons. In Phase 6 we can send a second template with all 5 vars;
-    // for the processor path (where this tap arrives as a button callback),
-    // the simplest move is a detail summary in the user's language.
     const r = job.rows[0];
-    await queueText(client, inboundMessageSid, from,
+    const recentIndex = conv.state_context?.recent_jobs?.indexOf(jobId) ?? -1;
+    const commandIndex = recentIndex >= 0 ? recentIndex + 1 : 1;
+    await queueText(
+      client,
+      inboundMessageSid,
+      from,
       conv.language === 'es'
-        ? `📋 ${r.title} en ${r.company}\n📍 ${r.location}\n💰 ${r.pay}`
-        : `📋 ${r.title} at ${r.company}\n📍 ${r.location}\n💰 ${r.pay}`,
+        ? `Detalles del trabajo\n\n${r.title}\n${r.company}\n${r.location}\n${r.pay}\n\nResponde "${commandIndex} aceptar" para aplicar.`
+        : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${r.pay}\n\nReply "${commandIndex} accept" to apply.`,
     );
   }
 }

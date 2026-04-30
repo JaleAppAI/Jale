@@ -100,6 +100,12 @@ function countQueryByPattern(pattern: RegExp): number {
   return mockQuery.mock.calls.filter(([sql]) => pattern.test(sql as string)).length;
 }
 
+function outboxBodies(): string[] {
+  return mockQuery.mock.calls
+    .filter(([sql]) => /INSERT INTO whatsapp_outbox/i.test(sql as string))
+    .map(([, params]) => (params as unknown[])[2] as string);
+}
+
 // ── Suite ─────────────────────────────────────────────────────────────────
 
 describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
@@ -508,6 +514,8 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
             },
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals exists
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals_completed_at exists
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users trust_signals
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
@@ -533,6 +541,10 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
       expect(signals).toHaveProperty('specialization');
       expect(signals).toHaveProperty('seniority');
       expect(signals).toHaveProperty('tasks');
+      const trustSql = mockQuery.mock.calls.find(([sql]) =>
+        /UPDATE users\s+SET trust_signals/i.test(sql as string),
+      )?.[0] as string;
+      expect(trustSql).not.toMatch(/updated_at/i);
 
       const idleUpdate = mockQuery.mock.calls.find(([sql, params]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string)
@@ -540,6 +552,204 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
         && params.includes('idle'),
       );
       expect(idleUpdate).toBeDefined();
+    });
+
+    it('skips trust questions if migration 007 columns are missing', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-missing' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'building_trust_signal',
+            user_id: 'user-1',
+            state_context: { trust_step: 0, trust_answers: [] },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: false }] }) // users.trust_signals missing
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-trust-missing',
+          From: 'whatsapp:+15125551234',
+          Body: '1',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(findQueryByPattern(/UPDATE users\s+SET trust_signals/i)).toBeUndefined();
+      const idleUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && params.includes('idle'),
+      );
+      expect(idleUpdate).toBeDefined();
+    });
+
+    it('returns the command menu when a worker sends help', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-help' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-help',
+          From: 'whatsapp:+15125551234',
+          Body: 'Help',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxBodies()[0]).toContain('Commands');
+      expect(outboxBodies()[0]).toContain('Jobs - See opportunities');
+      expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
+    });
+
+    it('returns profile details for a linked worker profile command', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            phone: '+15125551234',
+            whatsapp_number: '+15125551234',
+            full_name: 'Luis Gomez',
+            city: '79928',
+            main_trade: 'electrician',
+            main_trade_other: null,
+            years_experience: '10+',
+            has_transportation: true,
+            availability: 'flexible',
+            trust_signals_completed_at: '2026-04-29T00:00:00.000Z',
+            trust_signals: {
+              specialization: { label: 'Commercial' },
+              seniority: { label: 'Lead crew' },
+              tasks: { label: 'Work panels' },
+            },
+          }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-profile',
+          From: 'whatsapp:+15125551234',
+          Body: 'profile',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const body = outboxBodies()[0];
+      expect(body).toContain('Your profile');
+      expect(body).toContain('Name: Luis Gomez');
+      expect(body).toContain('Trade: Electrician');
+      expect(body).toContain('Specialty: Commercial');
+      expect(countQueryByPattern(/UPDATE users/i)).toBe(0);
+    });
+
+    it('does not consume an in-progress profile answer when profile command is sent', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile-mid-flow' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'building_profile',
+            language: 'es',
+            user_id: 'user-1',
+            state_context: { next_field: 'city' },
+          })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            phone: '+15125551234',
+            whatsapp_number: '+15125551234',
+            full_name: 'Luis Gomez',
+            city: '79928',
+            main_trade: 'electrician',
+            main_trade_other: null,
+            years_experience: '10+',
+            has_transportation: true,
+            availability: 'flexible',
+            trust_signals_completed_at: null,
+            trust_signals: null,
+          }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-profile-mid-flow',
+          From: 'whatsapp:+15125551234',
+          Body: 'perfil',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxBodies()[0]).toContain('Tu perfil');
+      expect(findQueryByPattern(/UPDATE users\s+SET city/i)).toBeUndefined();
+      expect(countQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBe(0);
+    });
+
+    it('asks the worker to finish onboarding when profile command has no linked user', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile-not-ready' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: null })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_not_ready
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-profile-not-ready',
+          From: 'whatsapp:+15125551234',
+          Body: 'profile',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxBodies()[0]).toContain('Your profile is not ready yet');
+      expect(countQueryByPattern(/FROM users/i)).toBe(0);
     });
 
     it('stores recent job ids when an idle worker asks for jobs', async () => {

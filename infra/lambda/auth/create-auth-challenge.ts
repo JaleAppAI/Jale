@@ -95,7 +95,7 @@ export const handler = async (
       throw new Error('Missing phone_number attribute on user');
     }
 
-    await sendTwilioWhatsAppOtp(phoneNumber, `Your Jale verification code is: ${otp}`);
+    await sendTwilioWhatsAppOtp(phoneNumber, `Jale verification code: ${otp}\n\nReply with this code to continue.`);
   }
 
   // Mask the phone number for display (e.g. "+1***1234")

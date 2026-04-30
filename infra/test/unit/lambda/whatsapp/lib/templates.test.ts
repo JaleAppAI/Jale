@@ -30,11 +30,13 @@ describe('templates.ts — t()', () => {
   it('all keys have both ES and EN variants (no missing translations)', () => {
     const keys = [
       'welcome_new_user', 'welcome_existing_user', 'otp_retry', 'otp_timeout', 'otp_expired',
+      'otp_expired_retry',
       'legal_prompt', 'legal_accepted', 'legal_declined',
       'profile_intro', 'ask_name', 'ask_city', 'ask_trade', 'ask_trade_freetext',
       'ask_experience', 'ask_transportation', 'ask_availability',
       'profile_complete', 'profile_reprompt', 'profile_jobs_blocked',
-      'idle_help', 'jobs_none', 'job_accepted', 'job_declined', 'job_not_found',
+      'idle_help', 'help_menu', 'profile_not_ready',
+      'jobs_none', 'job_accepted', 'job_declined', 'job_not_found',
       'unknown_message',
     ] as const;
     for (const k of keys) {
@@ -47,16 +49,32 @@ describe('templates.ts — t()', () => {
   });
 
   it('profile question numeric choices match the canonical slug order', () => {
-    // ask_trade lists: 1)Electricista 2)Plomero 3)Carpintero 4)Concreto 5)Pintura 6)Otro
+    // ask_trade lists: 1. Electricista 2. Plomero 3. Carpintero 4. Concreto 5. Pintura 6. Otro
     // These must align with PROFILE_FIELDS.find('main_trade').options in flows.ts:
     // [electrician, plumber, carpenter, concrete, painting, other]
     const tradeEs = t('ask_trade', 'es');
-    expect(tradeEs).toMatch(/1\).*Electricista/);
-    expect(tradeEs).toMatch(/6\).*Otro/);
+    expect(tradeEs).toMatch(/1\.\s*Electricista/);
+    expect(tradeEs).toMatch(/6\.\s*Otro/);
 
     const expEn = t('ask_experience', 'en');
-    expect(expEn).toMatch(/1\).*0-1/);
-    expect(expEn).toMatch(/4\).*10\+/);
+    expect(expEn).toMatch(/1\.\s*0-1/);
+    expect(expEn).toMatch(/4\.\s*10\+/);
+  });
+
+  it('profile completion points users to help and jobs', () => {
+    const done = t('profile_complete', 'en');
+    expect(done).toContain('"Help"');
+    expect(done).toContain('"Jobs"');
+  });
+
+  it('help menu lists the main commands', () => {
+    const help = t('help_menu', 'en');
+    expect(help).toContain('Jobs');
+    expect(help).toContain('Profile');
+    expect(help).toContain('Help');
+    expect(help).toContain('use the buttons');
+    expect(help).toContain('[number] accept');
+    expect(help).not.toContain('1 accept');
   });
 });
 

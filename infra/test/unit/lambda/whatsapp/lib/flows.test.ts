@@ -1,6 +1,8 @@
 import {
   isGreetingKeyword,
   isJobsKeyword,
+  isHelpCommand,
+  isProfileCommand,
   isAccept,
   isDecline,
   parseButtonPayload,
@@ -240,6 +242,27 @@ describe('flows.ts — trust signals', () => {
     ]);
   });
 
+  describe('isHelpCommand / isProfileCommand', () => {
+    test.each(['Help', 'help', 'Ayuda', 'commands', 'comandos'])(
+      'isHelpCommand("%s") -> true',
+      (input) => {
+        expect(isHelpCommand(input)).toBe(true);
+      },
+    );
+
+    test.each(['Profile', 'perfil', 'my profile', 'mi perfil'])(
+      'isProfileCommand("%s") -> true',
+      (input) => {
+        expect(isProfileCommand(input)).toBe(true);
+      },
+    );
+
+    test.each(['Trabajos', 'Hola', '1 aceptar', ''])('rejects "%s"', (input) => {
+      expect(isHelpCommand(input)).toBe(false);
+      expect(isProfileCommand(input)).toBe(false);
+    });
+  });
+
   it('returns shared seniority options', () => {
     expect(getTrustOptions(1, 'plumber')).toEqual([
       'Helper',
@@ -258,7 +281,8 @@ describe('flows.ts — trust signals', () => {
 
   it('builds a numbered trust question', () => {
     const question = buildTrustQuestion(0, 'electrician', 'en');
-    expect(question).toContain('What is your specialization?');
+    expect(question).toContain('Trust profile');
+    expect(question).toContain('What is your specialty?');
     expect(question).toContain('1. Residential');
     expect(question).toContain('Reply with the number.');
   });

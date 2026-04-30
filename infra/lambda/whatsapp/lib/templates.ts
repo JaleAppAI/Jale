@@ -1,16 +1,9 @@
 /**
  * Bilingual message templates (EN/ES) for the WhatsApp processor.
  *
- * SESSION messages (sent in reply to a user-initiated message within 24h) are
- * plain strings — we send them via Twilio's free-form message API.
- *
- * TEMPLATE messages (business-initiated outside the session window — job alerts,
- * profile reminders, welcome re-engagement) are identified by their HX SID
- * from Twilio Content Template Builder. Those SIDs live in the Twilio secret
- * under `.templates.{name}` and are NOT in this file.
- *
- * Source: docs/superpowers/specs/2026-04-09-whatsapp-v1-profile-builder-design.md
- *         docs/superpowers/specs/2026-04-07-whatsapp-integration-design.md
+ * Session messages are sent as plain WhatsApp text in response to a user.
+ * Business-initiated template messages live in Twilio Content Template Builder
+ * and are referenced by HX SID from the Twilio secret.
  */
 
 export type Lang = 'en' | 'es';
@@ -40,8 +33,10 @@ export type TemplateKey =
   | 'profile_complete'
   | 'profile_reprompt'
   | 'profile_jobs_blocked'
-  // Idle / job responses
+  // Commands / idle / jobs
   | 'idle_help'
+  | 'help_menu'
+  | 'profile_not_ready'
   | 'jobs_none'
   | 'job_accepted'
   | 'job_declined'
@@ -50,130 +45,126 @@ export type TemplateKey =
   | 'unknown_message';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
-  // ── Onboarding ────────────────────────────────────────────────
   welcome_new_user: {
-    es: '¡Bienvenido a Jale! Te enviamos un código por WhatsApp. Envíalo aquí:',
-    en: 'Welcome to Jale! We sent you a verification code by WhatsApp. Send it here:',
+    es: 'Bienvenido a Jale.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
+    en: 'Welcome to Jale.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
   },
   welcome_existing_user: {
-    es: '¡Hola! Verificaremos tu cuenta. Te enviamos un código por WhatsApp:',
-    en: 'Hello! We will verify your account. We sent you a code by WhatsApp:',
+    es: 'Hola de nuevo.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
+    en: 'Welcome back.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
   },
   otp_retry: {
-    es: 'Código incorrecto. Intenta de nuevo:',
-    en: 'Incorrect code. Please try again:',
+    es: 'Ese codigo no funciono. Intenta de nuevo.',
+    en: 'That code did not work. Try again.',
   },
   otp_timeout: {
-    es: 'Demasiados intentos. Escríbenos de nuevo más tarde.',
-    en: 'Too many attempts. Message us again later.',
+    es: 'Hubo demasiados intentos.\n\nEnvia "Hola" para empezar de nuevo.',
+    en: 'There were too many attempts.\n\nSend "Hi" to start again.',
   },
   otp_expired: {
-    es: 'Tu código expiró. Envía "Hola" para recibir uno nuevo.',
-    en: 'Your code expired. Send "Hi" to receive a new one.',
+    es: 'Tu codigo expiro.\n\nEnvia "Hola" para recibir uno nuevo.',
+    en: 'Your code expired.\n\nSend "Hi" to receive a new one.',
   },
-  // Used when the Cognito session timed out (~3 min) while the worker was still
-  // entering a code. The processor issues a fresh InitiateAuth (→ new Twilio
-  // WhatsApp OTP in dev) and keeps the worker in awaiting_otp — NOT a failed attempt.
   otp_expired_retry: {
-    es: 'Tu código expiró. Te enviamos uno nuevo por WhatsApp — envíalo aquí:',
-    en: 'Your code expired. We sent a new one by WhatsApp — send it here:',
+    es: 'Tu codigo expiro.\n\nTe enviamos uno nuevo por WhatsApp. Responde aqui con el codigo.',
+    en: 'Your code expired.\n\nWe sent a new one on WhatsApp. Reply here with the code.',
   },
 
-  // ── Legal ─────────────────────────────────────────────────────
   legal_prompt: {
-    es: 'Cuenta verificada. Revisa nuestros Términos: {{tos_url}}\n¿Aceptas? Responde "Acepto" o "No acepto".',
-    en: 'Account verified. Review our Terms: {{tos_url}}\nDo you accept? Reply "Accept" or "Decline".',
+    es: 'Cuenta verificada.\n\nAntes de enviarte trabajos, acepta los terminos:\n{{tos_url}}\n\nResponde "Acepto" o "No acepto".',
+    en: 'Account verified.\n\nBefore we send jobs, accept the terms:\n{{tos_url}}\n\nReply "Accept" or "Decline".',
   },
   legal_accepted: {
-    es: '¡Perfecto! Vamos a crear tu perfil para enviarte los trabajos correctos. Toma como 3 minutos.',
-    en: 'Perfect! Let\'s build your profile so we send you the right jobs. Takes about 3 minutes.',
+    es: 'Listo. Vamos a crear tu perfil para enviarte mejores trabajos.',
+    en: 'Done. Let\'s build your profile so we can send better jobs.',
   },
   legal_declined: {
-    es: 'No podemos enviarte alertas sin aceptar. Escríbenos cuando quieras.',
-    en: "We can't send you alerts without your acceptance. Message us anytime.",
+    es: 'Entendido. No podemos enviarte trabajos hasta que aceptes los terminos.\n\nEnvia "Hola" cuando quieras empezar de nuevo.',
+    en: 'Understood. We cannot send jobs until you accept the terms.\n\nSend "Hi" when you want to start again.',
   },
 
-  // ── Profile builder (from 2026-04-09 spec §Bilingual Templates) ─
   profile_intro: {
-    es: 'Vamos a crear tu perfil para enviarte los trabajos correctos. Toma como 3 minutos.',
-    en: "Let's build your profile so we send you the right jobs. Takes about 3 minutes.",
+    es: 'Vamos a crear tu perfil para enviarte mejores trabajos.',
+    en: 'Let\'s build your profile so we can send better jobs.',
   },
   ask_name: {
-    es: '¿Cuál es tu nombre completo?',
-    en: 'What is your full name?',
+    es: 'Perfil\n\nCual es tu nombre completo?',
+    en: 'Profile\n\nWhat is your full name?',
   },
   ask_city: {
-    es: '¿En qué ciudad o código postal estás?',
-    en: 'What city or zip code are you in?',
+    es: 'Perfil\n\nEn que ciudad o codigo postal trabajas?',
+    en: 'Profile\n\nWhat city or zip code do you work in?',
   },
   ask_trade: {
-    es: '¿Cuál es tu oficio principal? Responde con el número:\n1) Electricista\n2) Plomero\n3) Carpintero\n4) Concreto\n5) Pintura\n6) Otro',
-    en: 'What is your main trade? Reply with the number:\n1) Electrician\n2) Plumber\n3) Carpenter\n4) Concrete\n5) Painting\n6) Other',
+    es: 'Perfil\n\nCual es tu oficio principal?\n1. Electricista\n2. Plomero\n3. Carpintero\n4. Concreto\n5. Pintura\n6. Otro\n\nResponde con el numero.',
+    en: 'Profile\n\nWhat is your main trade?\n1. Electrician\n2. Plumber\n3. Carpenter\n4. Concrete\n5. Painting\n6. Other\n\nReply with the number.',
   },
   ask_trade_freetext: {
-    es: '¿Cuál es tu oficio?',
-    en: 'What is your trade?',
+    es: 'Perfil\n\nCual es tu oficio?',
+    en: 'Profile\n\nWhat is your trade?',
   },
   ask_experience: {
-    es: '¿Cuántos años de experiencia tienes? Responde con el número:\n1) 0-1 años\n2) 2-4 años\n3) 5-9 años\n4) 10+ años',
-    en: 'How many years of experience? Reply with the number:\n1) 0-1 years\n2) 2-4 years\n3) 5-9 years\n4) 10+ years',
+    es: 'Perfil\n\nCuantos anos de experiencia tienes?\n1. 0-1 anos\n2. 2-4 anos\n3. 5-9 anos\n4. 10+ anos\n\nResponde con el numero.',
+    en: 'Profile\n\nHow many years of experience do you have?\n1. 0-1 years\n2. 2-4 years\n3. 5-9 years\n4. 10+ years\n\nReply with the number.',
   },
   ask_transportation: {
-    es: '¿Tienes transporte propio? Responde:\n1) Sí\n2) No',
-    en: 'Do you have your own transportation? Reply:\n1) Yes\n2) No',
+    es: 'Perfil\n\nTienes transporte propio?\n1. Si\n2. No\n\nResponde con el numero.',
+    en: 'Profile\n\nDo you have your own transportation?\n1. Yes\n2. No\n\nReply with the number.',
   },
   ask_availability: {
-    es: '¿Cuál es tu disponibilidad? Responde con el número:\n1) Tiempo completo\n2) Medio tiempo\n3) Fines de semana\n4) Flexible',
-    en: 'What is your availability? Reply with the number:\n1) Full-time\n2) Part-time\n3) Weekends\n4) Flexible',
+    es: 'Perfil\n\nCual es tu disponibilidad?\n1. Tiempo completo\n2. Medio tiempo\n3. Fines de semana\n4. Flexible\n\nResponde con el numero.',
+    en: 'Profile\n\nWhat is your availability?\n1. Full-time\n2. Part-time\n3. Weekends\n4. Flexible\n\nReply with the number.',
   },
   profile_complete: {
-    es: '¡Tu perfil está listo! Ahora recibirás alertas de trabajo. Envía "Trabajos" para ver oportunidades disponibles.',
-    en: 'Your profile is ready! You\'ll now receive job alerts. Send "Jobs" to see available opportunities.',
+    es: 'Tu perfil esta listo.\n\nEnvia "Ayuda" para ver comandos o "Trabajos" para ver oportunidades.',
+    en: 'Your profile is ready.\n\nSend "Help" to see commands or "Jobs" to see opportunities.',
   },
   profile_reprompt: {
-    es: 'Terminemos tu perfil primero. {{question}}',
-    en: "Let's finish your profile first. {{question}}",
+    es: 'Terminemos tu perfil primero.\n\n{{question}}',
+    en: 'Let\'s finish your profile first.\n\n{{question}}',
   },
   profile_jobs_blocked: {
-    es: '¡Recibirás alertas de trabajo cuando completes tu perfil! {{question}}',
-    en: "You'll get job alerts once your profile is complete! {{question}}",
+    es: 'Podras ver trabajos cuando termines tu perfil.\n\n{{question}}',
+    en: 'You can view jobs after your profile is complete.\n\n{{question}}',
   },
 
-  // ── Idle / job responses ──────────────────────────────────────
   idle_help: {
-    es: 'Envía "Trabajos" para ver oportunidades disponibles.',
-    en: 'Send "Jobs" to see available opportunities.',
+    es: 'No entendi ese mensaje.\n\nEnvia "Ayuda" para ver comandos.',
+    en: 'I did not understand that message.\n\nSend "Help" to see commands.',
+  },
+  help_menu: {
+    es: 'Comandos\n\nTrabajos - Ver oportunidades\nPerfil - Ver tu perfil\nAyuda - Ver estos comandos\n\nEn una alerta de trabajo, usa los botones.\n\nSi ves una lista numerada, responde con el numero del trabajo:\n[numero] aceptar - Aplicar\n[numero] info - Ver detalles\n[numero] no - Omitir',
+    en: 'Commands\n\nJobs - See opportunities\nProfile - See your profile\nHelp - Show these commands\n\nOn a job alert, use the buttons.\n\nIf you see a numbered list, reply with the job number:\n[number] accept - Apply\n[number] info - See details\n[number] no - Skip',
+  },
+  profile_not_ready: {
+    es: 'Tu perfil aun no esta listo.\n\nTermina las preguntas primero. Envia "Ayuda" para ver comandos.',
+    en: 'Your profile is not ready yet.\n\nFinish the questions first. Send "Help" to see commands.',
   },
   jobs_none: {
-    es: 'No hay trabajos disponibles ahora mismo. Te avisaremos cuando lleguen oportunidades.',
-    en: 'No jobs available right now. We\'ll let you know when opportunities come in.',
+    es: 'No hay trabajos disponibles ahora.\n\nTe avisaremos cuando lleguen oportunidades.',
+    en: 'No jobs are available right now.\n\nWe will let you know when opportunities come in.',
   },
   job_accepted: {
-    es: '✅ ¡Aplicación enviada! El empleador recibirá tu información.',
-    en: '✅ Application sent! The employer will receive your information.',
+    es: 'Aplicacion enviada.\n\nEl empleador recibira tu informacion.',
+    en: 'Application sent.\n\nThe employer will receive your information.',
   },
   job_declined: {
-    es: 'Entendido. ¡Seguiremos buscando para ti! 👍',
-    en: "Got it. We'll keep looking for you! 👍",
+    es: 'Entendido. Seguiremos buscando trabajos para ti.',
+    en: 'Got it. We will keep looking for jobs for you.',
   },
   job_not_found: {
-    es: 'Este trabajo ya no está disponible.',
-    en: 'This job is no longer available.',
+    es: 'Ese trabajo ya no esta disponible.\n\nEnvia "Trabajos" para ver opciones actuales.',
+    en: 'That job is no longer available.\n\nSend "Jobs" to see current options.',
   },
 
-  // ── Errors ────────────────────────────────────────────────────
   unknown_message: {
-    es: 'No entendí eso. Envía "Trabajos" para ver oportunidades.',
-    en: "I didn't understand that. Send \"Jobs\" to see opportunities.",
+    es: 'No entendi ese mensaje.\n\nEnvia "Ayuda" para ver comandos.',
+    en: 'I did not understand that message.\n\nSend "Help" to see commands.',
   },
 };
 
 /**
  * Get a bilingual template, optionally substituting `{{placeholder}}` values.
- *
- * @param key  Template key
- * @param lang 'en' or 'es'
- * @param vars Map of placeholder names → values (e.g. { tos_url: 'https://...' })
  */
 export function t(
   key: TemplateKey,
@@ -191,8 +182,6 @@ export function t(
 
 /**
  * Detect language from the user's greeting. Falls back to Spanish.
- *
- * Matches the 2026-04-07 spec: "Hola" → es, "Hello"/"Hi" → en, anything else → es.
  */
 export function detectLanguage(text: string): Lang {
   const normalized = text.trim().toLowerCase();

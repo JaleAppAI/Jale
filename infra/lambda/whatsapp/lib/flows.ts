@@ -192,16 +192,16 @@ export function buildTrustQuestion(step: number, trade: string, lang: Lang): str
     .join('\n');
   const prompts: Record<TrustField, { es: string; en: string }> = {
     specialization: {
-      es: `En que te especializas?\n${numbered}\n\nResponde con el numero.`,
-      en: `What is your specialization?\n${numbered}\n\nReply with the number.`,
+      es: `Perfil de confianza\n\nEn que te especializas?\n${numbered}\n\nResponde con el numero.`,
+      en: `Trust profile\n\nWhat is your specialty?\n${numbered}\n\nReply with the number.`,
     },
     seniority: {
-      es: `Cual es tu nivel de experiencia?\n${numbered}\n\nResponde con el numero.`,
-      en: `What is your experience level?\n${numbered}\n\nReply with the number.`,
+      es: `Perfil de confianza\n\nCual es tu nivel?\n${numbered}\n\nResponde con el numero.`,
+      en: `Trust profile\n\nWhat is your level?\n${numbered}\n\nReply with the number.`,
     },
     tasks: {
-      es: `Que tipo de trabajo haces principalmente?\n${numbered}\n\nResponde con el numero.`,
-      en: `What type of work do you mainly do?\n${numbered}\n\nReply with the number.`,
+      es: `Perfil de confianza\n\nQue trabajo haces mas?\n${numbered}\n\nResponde con el numero.`,
+      en: `Trust profile\n\nWhat work do you do most?\n${numbered}\n\nReply with the number.`,
     },
   };
   return prompts[field][lang];
@@ -255,6 +255,16 @@ export function isGreetingKeyword(text: string): boolean {
 export function isJobsKeyword(text: string): boolean {
   const n = text.trim().toLowerCase();
   return /^(trabajos?|jobs?|empleos?)\b/.test(n);
+}
+
+export function isHelpCommand(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  return /^(help|ayuda|commands?|comandos?)$/.test(n);
+}
+
+export function isProfileCommand(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  return /^(profile|perfil|my profile|mi perfil)$/.test(n);
 }
 
 // JS `\b` is ASCII-only, so it fails on Spanish accented chars (sí, está).
