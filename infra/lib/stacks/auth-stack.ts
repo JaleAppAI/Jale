@@ -36,7 +36,6 @@ export class AuthStack extends cdk.Stack {
       entry: path.join(__dirname, '../../lambda/post-confirmation/index.ts'),
       environment: {
         DB_SECRET_ARN: props.dbSecret.secretArn,
-        DB_REGION: cdk.Stack.of(this).region,
         DLQ_URL: dlq.queueUrl,
       },
       vpc: props.vpc,
@@ -54,6 +53,66 @@ export class AuthStack extends cdk.Stack {
     // Role is pre-created in NetworkStack to ensure IAM propagation completes
     // before Cognito validates SNS permissions at UserPool creation time.
     const smsRole = props.cognitoSmsRole;
+
+    // ── Custom Auth Challenge Lambdas (Worker Pool — passwordless OTP) ──
+    // DefineAuthChallenge: routes the challenge flow (first attempt, success, retry, fail).
+    const defineAuthChallengeLambda = new JaleLambdaFunction(this, 'DefineAuthChallengeLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/define-auth-challenge.ts'),
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      description: 'Worker pool DefineAuthChallenge — session routing',
+    });
+
+    // CreateAuthChallenge: generates 6-digit OTP and sends via Twilio SMS.
+    //
+    // Fix Plan v3 (Fix 6, 2026-04-17): Twilio credentials are read at
+    // RUNTIME from Secrets Manager (`jale/whatsapp/otp-twilio`), not
+    // synthesized into CloudFormation as plaintext Lambda env vars. The
+    // secret is separate from `jale/whatsapp/twilio` (used by the
+    // WhatsApp processor/webhook) for least-privilege isolation —
+    // compromising the OTP Lambda does not grant access to the WhatsApp
+    // templates/account and vice versa.
+    //
+    // The secret must be seeded manually by ops before first OTP flow:
+    //   aws secretsmanager create-secret \
+    //     --name jale/whatsapp/otp-twilio \
+    //     --secret-string '{"accountSid":"AC...","authToken":"...","fromNumber":"+1..."}'
+    // The Lambda throws if the secret is missing any field, failing loudly
+    // on first use rather than silently sending to empty creds.
+    const otpTwilioSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      'OtpTwilioSecret',
+      'jale/whatsapp/otp-twilio',
+    );
+
+    const createAuthChallengeLambda = new JaleLambdaFunction(this, 'CreateAuthChallengeLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/create-auth-challenge.ts'),
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      description: 'Worker pool CreateAuthChallenge — OTP gen + Twilio SMS via Secrets Manager',
+      environment: {
+        // Pass the stable name as SecretId. Imported-by-name secrets expose a
+        // partial ARN as secretArn; Secrets Manager's runtime auth path has
+        // denied that partial ARN even when IAM simulation says allowed.
+        TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
+      },
+    });
+    otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
+    // Keep an explicit partial-ARN allow for compatibility with any deployed
+    // code/config that still passes the imported secretArn as SecretId.
+    // grantRead() covers the real full ARN pattern ending in "-??????".
+    createAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
+      resources: [otpTwilioSecret.secretArn],
+    }));
+
+    // VerifyAuthChallenge: compares user answer to stored OTP. Stateless.
+    const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/verify-auth-challenge.ts'),
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
+    });
 
     // ── Worker Cognito Pool ──
     const isProd = this.node.tryGetContext('environment') === 'prod';
@@ -78,6 +137,10 @@ export class AuthStack extends cdk.Stack {
       autoVerify: { phone: true },
       lambdaTriggers: {
         postConfirmation: postConfirmationLambda.function,
+        defineAuthChallenge: defineAuthChallengeLambda.function,
+        createAuthChallenge: createAuthChallengeLambda.function,
+        // CDK key is `verifyAuthChallengeResponse`, NOT `verifyAuthChallenge`
+        verifyAuthChallengeResponse: verifyAuthChallengeLambda.function,
       },
     });
 
