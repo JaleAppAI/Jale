@@ -43,6 +43,7 @@ MIGRATIONS=(
   "005_job_applications.sql"
   "006_whatsapp_reliability.sql"
   "007_trust_signal_layer.sql"
+  "008_worker_marketplace.sql"
 )
 
 echo ">> Using region: $REGION"

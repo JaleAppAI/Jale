@@ -111,6 +111,40 @@ export class DocumentsStack extends cdk.Stack {
       ...lambdaProps,
     });
 
+    // Worker doc upload URL (authenticated) — worker auth, DB + S3 write
+    const workerDocUploadUrlAuthFn = new JaleLambdaFunction(this, 'WorkerDocUploadUrlAuth', {
+      entry: path.join(__dirname, '../../lambda/api/worker-doc-upload-url-auth.ts'),
+      description: 'worker-doc-upload-url-auth',
+      environment: commonEnv,
+      nodeModules: ['@aws-sdk/s3-request-presigner'],
+      ...lambdaProps,
+    });
+
+    // Worker doc confirm (authenticated) — worker auth, DB access only
+    const workerDocConfirmAuthFn = new JaleLambdaFunction(this, 'WorkerDocConfirmAuth', {
+      entry: path.join(__dirname, '../../lambda/api/worker-doc-confirm-auth.ts'),
+      description: 'worker-doc-confirm-auth',
+      environment: commonEnv,
+      ...lambdaProps,
+    });
+
+    // Worker documents list (authenticated) — worker auth, DB + S3 read
+    const workerDocumentsListFn = new JaleLambdaFunction(this, 'WorkerDocumentsList', {
+      entry: path.join(__dirname, '../../lambda/api/worker-documents-list.ts'),
+      description: 'worker-documents-list',
+      environment: commonEnv,
+      nodeModules: ['@aws-sdk/s3-request-presigner'],
+      ...lambdaProps,
+    });
+
+    // Worker doc delete (authenticated) — worker auth, DB + S3 delete
+    const workerDocDeleteFn = new JaleLambdaFunction(this, 'WorkerDocDelete', {
+      entry: path.join(__dirname, '../../lambda/api/worker-doc-delete.ts'),
+      description: 'worker-doc-delete',
+      environment: commonEnv,
+      ...lambdaProps,
+    });
+
     // Grant S3 + KMS permissions
     docsBucket.grantPut(uploadUrlFn.function); // kms:GenerateDataKey
     docsBucket.grantRead(workerDocsFn.function); // kms:Decrypt
@@ -121,21 +155,71 @@ export class DocumentsStack extends cdk.Stack {
     props.dbSecret.grantRead(workerDocsFn.function);
     props.dbSecret.grantRead(uploadTokenFn.function);
 
+    // Authenticated worker doc Lambda permissions
+    docsBucket.grantPut(workerDocUploadUrlAuthFn.function); // PUT presigned URL generation
+    docsBucket.grantRead(workerDocumentsListFn.function); // GET presigned URL generation
+    docsBucket.grantDelete(workerDocDeleteFn.function); // DELETE object
+    props.dbSecret.grantRead(workerDocUploadUrlAuthFn.function);
+    props.dbSecret.grantRead(workerDocConfirmAuthFn.function);
+    props.dbSecret.grantRead(workerDocumentsListFn.function);
+    props.dbSecret.grantRead(workerDocDeleteFn.function);
+
     // Wire API Gateway routes
     const restApi = props.api.api;
     const employerAuth = props.api.employerAuthorizer;
+    const workerAuth = props.api.workerAuthorizer;
 
-    // Worker routes (no auth). /worker already exists from ApiStack.
-    const workerDocs = restApi.root.getResource('worker')!.addResource('documents');
+    // Worker document routes (unauthenticated tokenized flow). /worker already exists from ApiStack.
+    const workerResource = restApi.root.getResource('worker')!;
+    const workerDocs = workerResource.addResource('documents');
+
+    // POST /worker/documents/upload-url — no auth (employer-shared-link / pre-account tokenized flow)
     workerDocs
       .addResource('upload-url')
       .addMethod('POST', new apigateway.LambdaIntegration(uploadUrlFn.function));
+
+    // POST /worker/documents/confirm — no auth (tokenized flow)
     workerDocs
       .addResource('confirm')
       .addMethod('POST', new apigateway.LambdaIntegration(confirmFn.function));
+
+    // POST /worker/documents/submit — no auth (legacy WhatsApp onboarding flow)
     workerDocs
       .addResource('submit')
       .addMethod('POST', new apigateway.LambdaIntegration(submitFn.function));
+
+    // Authenticated vault routes under /worker/vault (no path collision with tokenized flow)
+    const workerVault = workerResource.addResource('vault');
+
+    // POST /worker/vault/upload-url — worker auth (authenticated presigned URL)
+    workerVault
+      .addResource('upload-url')
+      .addMethod('POST', new apigateway.LambdaIntegration(workerDocUploadUrlAuthFn.function), {
+        authorizer: workerAuth,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+
+    // POST /worker/vault/confirm — worker auth
+    workerVault
+      .addResource('confirm')
+      .addMethod('POST', new apigateway.LambdaIntegration(workerDocConfirmAuthFn.function), {
+        authorizer: workerAuth,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+
+    // GET /worker/vault — worker auth (list own docs with presigned GET URLs)
+    workerVault.addMethod('GET', new apigateway.LambdaIntegration(workerDocumentsListFn.function), {
+      authorizer: workerAuth,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // DELETE /worker/vault/{doc_type} — worker auth
+    workerVault
+      .addResource('{doc_type}')
+      .addMethod('DELETE', new apigateway.LambdaIntegration(workerDocDeleteFn.function), {
+        authorizer: workerAuth,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
 
     // Employer routes (Cognito auth). /employer already exists from ApiStack.
     const employerRoot = restApi.root.getResource('employer')!;
