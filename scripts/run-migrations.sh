@@ -43,6 +43,7 @@ MIGRATIONS=(
   "005_document_vault.sql"
   "006_trust_signal_layer.sql"
   "007_worker_marketplace.sql"
+  "008_ai_profile_media.sql"
 )
 
 echo ">> Using region: $REGION"
