@@ -66,8 +66,9 @@ export const handler = async (
     }
 
     const { worker_id, job_id } = tokenResult.rows[0];
-    // Set RLS context to worker's UUID so INSERT policy passes
-    await client.query("SELECT set_config('app.current_user_id', $1, true)", [worker_id]);
+    // Set token-auth context to the worker's internal UUID. Cognito-sub RLS
+    // uses app.current_user_id; internal UUID flows use this separate setting.
+    await client.query("SELECT set_config('app.current_internal_user_id', $1, true)", [worker_id]);
 
     await client.query(
       `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type)

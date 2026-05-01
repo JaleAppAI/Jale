@@ -1,9 +1,4 @@
 {
-  "scripts": {
-    "wa:test": "node --env-file-if-exists=.env.whatsapp.test --env-file-if-exists=.env.whatsapp.templates scripts/whatsapp-smoke-test.mjs",
-    "otp:test": "node --env-file-if-exists=.env.otp.test scripts/otp-smoke-test.mjs",
-    "otp:quick": "node --env-file-if-exists=.env.whatsapp.test scripts/quick-otp-test.mjs"
-  },
   "dependencies": {
     "next-intl": "^4.9.0"
   }

@@ -194,25 +194,73 @@ export function getTrustOptions(step: number, trade: string): string[] {
 
 export function buildTrustQuestion(step: number, trade: string, lang: Lang): string {
   const field = TRUST_STEPS[step] ?? TRUST_STEPS[0];
-  const numbered = getTrustOptions(step, trade)
+  const options = getTrustOptions(step, trade);
+  const displayOptions = options.map((option) => trustOptionLabel(option, lang));
+  const numbered = displayOptions
     .map((option, i) => `${i + 1}. ${option}`)
     .join('\n');
   const prompts: Record<TrustField, { es: string; en: string }> = {
     specialization: {
-      es: `Perfil de confianza\n\nEn que te especializas?\n${numbered}\n\nResponde con el numero.`,
-      en: `Trust profile\n\nWhat is your specialty?\n${numbered}\n\nReply with the number.`,
+      es: `Una pregunta mas para recomendarte mejores trabajos.\n\nEn que te especializas?\n${numbered}\n\nResponde con el numero.`,
+      en: `One more question so we can recommend better jobs.\n\nWhat is your specialty?\n${numbered}\n\nReply with the number.`,
     },
     seniority: {
-      es: `Perfil de confianza\n\nCual es tu nivel?\n${numbered}\n\nResponde con el numero.`,
-      en: `Trust profile\n\nWhat is your level?\n${numbered}\n\nReply with the number.`,
+      es: `Cual es tu nivel?\n${numbered}\n\nResponde con el numero.`,
+      en: `What is your level?\n${numbered}\n\nReply with the number.`,
     },
     tasks: {
-      es: `Perfil de confianza\n\nQue trabajo haces mas?\n${numbered}\n\nResponde con el numero.`,
-      en: `Trust profile\n\nWhat work do you do most?\n${numbered}\n\nReply with the number.`,
+      es: `Que trabajo haces mas?\n${numbered}\n\nResponde con el numero.`,
+      en: `What work do you do most?\n${numbered}\n\nReply with the number.`,
     },
   };
   return prompts[field][lang];
 }
+
+function trustOptionLabel(option: string, lang: Lang): string {
+  if (lang === 'en') return option;
+  return TRUST_OPTION_LABELS_ES[option] ?? option;
+}
+
+const TRUST_OPTION_LABELS_ES: Record<string, string> = {
+  Residential: 'Residencial',
+  Commercial: 'Comercial',
+  Industrial: 'Industrial',
+  Repairs: 'Reparaciones',
+  'New installs': 'Instalaciones nuevas',
+  'Drain/sewer': 'Drenaje',
+  Framing: 'Framing',
+  'Finish work': 'Acabados',
+  'Cabinets/trim': 'Gabinetes y molduras',
+  Forms: 'Formas',
+  Rebar: 'Varilla',
+  'Pour/finish': 'Colado y acabado',
+  Interior: 'Interior',
+  Exterior: 'Exterior',
+  'Prep/texture': 'Preparacion y textura',
+  'General labor': 'Trabajo general',
+  'Skilled trade': 'Oficio especializado',
+  'Equipment/tools': 'Equipo y herramientas',
+  Helper: 'Ayudante',
+  'Can work alone': 'Puedo trabajar solo',
+  'Lead crew': 'Lider de cuadrilla',
+  'Pull wire': 'Jalar cable',
+  'Bend conduit': 'Doblar conduit',
+  'Work panels': 'Trabajar paneles',
+  'Install pipe': 'Instalar tuberia',
+  'Set fixtures': 'Instalar accesorios',
+  'Water heaters': 'Calentadores de agua',
+  'Read plans': 'Leer planos',
+  'Frame walls': 'Levantar muros',
+  'Install doors/trim': 'Instalar puertas y molduras',
+  'Set forms': 'Poner formas',
+  'Tie rebar': 'Amarrar varilla',
+  'Finish concrete': 'Acabar concreto',
+  'Prep/sanding': 'Preparar y lijar',
+  Spray: 'Spray',
+  'Roll/brush': 'Rodillo y brocha',
+  'Use power tools': 'Usar herramientas electricas',
+  'Site cleanup/safety': 'Limpieza y seguridad',
+};
 
 export function parseTrustAnswer(
   step: number,
@@ -256,7 +304,8 @@ export function parseTypedJobAction(text: string): TypedJobAction | null {
 
 export function isGreetingKeyword(text: string): boolean {
   const n = text.trim().toLowerCase();
-  return /^(hola|hello|hi|hey|buenas|buenos d[ií]as)\b/.test(n);
+  const words = n.match(/[a-záéíóúñ]+/gi);
+  return words?.length === 1 && (words[0] === 'hola' || words[0] === 'hello');
 }
 
 export function isJobsKeyword(text: string): boolean {

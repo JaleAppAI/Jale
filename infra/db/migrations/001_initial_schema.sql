@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_users_tenant_id   ON users (tenant_id);
 -- legal_consent_log: used by LegalStack
 CREATE TABLE IF NOT EXISTS legal_consent_log (
     id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id          UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id          UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     document_type    TEXT        NOT NULL CHECK (document_type IN ('tos', 'privacy')),
     document_version TEXT        NOT NULL,
     accepted_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

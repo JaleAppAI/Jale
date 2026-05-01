@@ -1,6 +1,6 @@
 -- ============================================================
--- 003_whatsapp.sql
--- Run manually AFTER 002_rls_policies.sql
+-- 004_whatsapp.sql
+-- Run manually AFTER 003_jobs_and_applications.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --
 -- Creates the jale_whatsapp role, whatsapp_conversations table,
@@ -16,6 +16,34 @@
 -- jale_whatsapp: dedicated login role for WhatsApp Lambdas.
 -- Password is NOT set here — set via ALTER ROLE after migration.
 CREATE ROLE jale_whatsapp WITH LOGIN;
+
+-- Job/application/profile access for WhatsApp job alerts and accepts.
+GRANT SELECT ON jobs TO jale_whatsapp;
+GRANT SELECT, INSERT ON job_applications TO jale_whatsapp;
+GRANT SELECT, INSERT, UPDATE ON worker_profiles TO jale_whatsapp;
+
+CREATE POLICY jobs_read_wa ON jobs
+    FOR SELECT TO jale_whatsapp USING (true);
+
+CREATE POLICY jobapp_whatsapp_all ON job_applications
+    FOR ALL TO jale_whatsapp USING (true) WITH CHECK (true);
+
+CREATE POLICY worker_profiles_whatsapp_all ON worker_profiles
+    FOR ALL TO jale_whatsapp
+    USING (
+        EXISTS (
+            SELECT 1 FROM users u
+            WHERE u.id = worker_profiles.user_id
+              AND u.user_type = 'worker'
+        )
+    )
+    WITH CHECK (
+        EXISTS (
+            SELECT 1 FROM users u
+            WHERE u.id = worker_profiles.user_id
+              AND u.user_type = 'worker'
+        )
+    );
 
 -- ── Users table extensions ────────────────────────────────────
 -- WhatsApp linking columns

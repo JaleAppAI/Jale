@@ -2,6 +2,10 @@
 -- 003_jobs_and_applications.sql
 -- Run manually AFTER 002_rls_policies.sql
 -- Connect as: jale_admin (NOT the RDS master user)
+--
+-- Canonical undeployed baseline for employer jobs, worker profiles,
+-- and applications. Older duplicate job/application migrations were
+-- folded into this file so fresh databases have one schema path.
 -- ============================================================
 
 -- ── Jobs ────────────────────────────────────────────────────
@@ -9,7 +13,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   employer_id UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   title       TEXT        NOT NULL,
+  company     TEXT,
   location    TEXT        NOT NULL,
+  pay         TEXT,
   job_type    TEXT        NOT NULL CHECK (job_type IN ('full-time', 'part-time', 'contract')),
   description TEXT,
   status      TEXT        NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
@@ -25,16 +31,26 @@ CREATE TRIGGER jobs_updated_at
 
 -- ── Job Applications ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS job_applications (
-  id        UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  job_id    UUID        NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  worker_id UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  status    TEXT        NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected')),
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id     UUID        NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  worker_id  UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  status     TEXT        NOT NULL DEFAULT 'submitted'
+             CHECK (status IN ('submitted', 'viewed', 'contacted', 'hired', 'rejected')),
   applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (job_id, worker_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_applications_job_id    ON job_applications(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_applications_worker_id ON job_applications(worker_id);
+CREATE INDEX IF NOT EXISTS idx_job_applications_status_submitted
+  ON job_applications(job_id, applied_at DESC)
+  WHERE status = 'submitted';
+
+CREATE TRIGGER job_applications_updated_at
+  BEFORE UPDATE ON job_applications
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ── Worker Profiles ──────────────────────────────────────────
 -- full_name and phone are denormalized here so employers can read
@@ -45,8 +61,8 @@ CREATE TABLE IF NOT EXISTS worker_profiles (
   full_name        TEXT,
   phone            TEXT,
   skills           TEXT[]  NOT NULL DEFAULT '{}',
-  availability     TEXT    CHECK (availability IN ('immediate', '2-weeks', '1-month')),
-  years_experience INTEGER,
+  availability     TEXT    CHECK (availability IN ('full_time', 'part_time', 'weekends', 'flexible')),
+  years_experience INTEGER CHECK (years_experience IS NULL OR years_experience >= 0),
   location         TEXT,
   bio              TEXT,
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -108,7 +124,8 @@ ALTER TABLE worker_profiles FORCE ROW LEVEL SECURITY;
 -- Workers manage their own profile
 CREATE POLICY worker_profiles_self
   ON worker_profiles FOR ALL
-  USING (user_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
+  USING (user_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)))
+  WITH CHECK (user_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
 
 -- Employers can read any worker profile (needed to display applicant details)
 CREATE POLICY worker_profiles_employer_read

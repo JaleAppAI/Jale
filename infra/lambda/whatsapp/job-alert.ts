@@ -136,7 +136,7 @@ export const handler = async (
     // full profile is built, so this set = "ready-to-receive" workers.
     //
     // Skip workers who already applied to this job (dedup) or who have
-    // already been alerted for it. V1 uses the UNIQUE(job_id, user_id)
+    // already been alerted for it. V1 uses the UNIQUE(job_id, worker_id)
     // constraint on job_applications as the dedup signal for accepts;
     // for the alert send itself, we just skip workers with an existing
     // application row.
@@ -149,7 +149,7 @@ export const handler = async (
           AND wc.conversation_state = 'idle'
           AND NOT EXISTS (
               SELECT 1 FROM job_applications ja
-               WHERE ja.job_id = $1 AND ja.user_id = u.id
+               WHERE ja.job_id = $1 AND ja.worker_id = u.id
           )`,
       [job.id],
     );

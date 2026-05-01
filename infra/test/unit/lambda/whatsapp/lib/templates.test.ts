@@ -29,6 +29,7 @@ describe('templates.ts — t()', () => {
 
   it('all keys have both ES and EN variants (no missing translations)', () => {
     const keys = [
+      'start_prompt',
       'welcome_new_user', 'welcome_existing_user', 'otp_retry', 'otp_timeout', 'otp_expired',
       'otp_expired_retry',
       'legal_prompt', 'legal_accepted', 'legal_declined',
@@ -62,6 +63,34 @@ describe('templates.ts — t()', () => {
     const expEn = t('ask_experience', 'en');
     expect(expEn).toMatch(/1\.\s*0-1/);
     expect(expEn).toMatch(/4\.\s*10\+/);
+  });
+
+  it('profile questions read like chat prompts without repeated section headers', () => {
+    const prompts = [
+      t('ask_name', 'es'),
+      t('ask_city', 'es'),
+      t('ask_trade', 'es'),
+      t('ask_trade_freetext', 'es'),
+      t('ask_experience', 'es'),
+      t('ask_transportation', 'es'),
+      t('ask_availability', 'es'),
+      t('ask_name', 'en'),
+      t('ask_city', 'en'),
+      t('ask_trade', 'en'),
+      t('ask_trade_freetext', 'en'),
+      t('ask_experience', 'en'),
+      t('ask_transportation', 'en'),
+      t('ask_availability', 'en'),
+    ];
+
+    for (const prompt of prompts) {
+      expect(prompt).not.toMatch(/^(Perfil|Profile)\n\n/);
+    }
+  });
+
+  it('Spanish profile questions use compact numeric reply instructions', () => {
+    expect(t('ask_trade', 'es')).toContain('Responde con 1, 2, 3, 4, 5 o 6.');
+    expect(t('ask_transportation', 'es')).toContain('Responde con 1 o 2.');
   });
 
   it('profile completion points users to help and jobs', () => {

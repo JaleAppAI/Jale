@@ -10,7 +10,7 @@
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→006
+#   - Base64-encodes migrations 001→007
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -44,12 +44,11 @@ $WaDbSecretName  = 'jale/whatsapp/db'
 $MigrationFiles = @(
     '001_initial_schema.sql',
     '002_rls_policies.sql',
-    '003_whatsapp.sql',
-    '004_jobs.sql',
-    '005_job_applications.sql',
-    '006_whatsapp_reliability.sql',
-    '007_trust_signal_layer.sql',
-    '008_worker_marketplace.sql'
+    '003_jobs_and_applications.sql',
+    '004_whatsapp.sql',
+    '005_document_vault.sql',
+    '006_trust_signal_layer.sql',
+    '007_worker_marketplace.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

@@ -1,6 +1,6 @@
 -- ============================================================
--- 004_document_vault.sql
--- Run manually AFTER 003_jobs_and_applications.sql
+-- 005_document_vault.sql
+-- Run manually AFTER 004_whatsapp.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 -- ============================================================
 
@@ -45,13 +45,14 @@ ALTER TABLE worker_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE worker_documents FORCE ROW LEVEL SECURITY;
 
 -- Workers can read/insert their own documents.
--- Worker endpoints authenticate via token and set app.current_user_id
--- to the worker's internal users.id UUID (not cognito_sub).
+-- Worker endpoints authenticate via token and set app.current_internal_user_id
+-- to the worker's internal users.id UUID. app.current_user_id is reserved for
+-- Cognito sub values.
 CREATE POLICY worker_documents_worker_select ON worker_documents
-  FOR SELECT USING (worker_id::text = current_setting('app.current_user_id', true));
+  FOR SELECT USING (worker_id::text = current_setting('app.current_internal_user_id', true));
 
 CREATE POLICY worker_documents_worker_insert ON worker_documents
-  FOR INSERT WITH CHECK (worker_id::text = current_setting('app.current_user_id', true));
+  FOR INSERT WITH CHECK (worker_id::text = current_setting('app.current_internal_user_id', true));
 
 -- Employers can read documents for workers who applied to their jobs.
 -- Employer endpoints use the existing convention: app.current_user_id = cognito_sub.

@@ -322,6 +322,46 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
       );
       expect(completed).toBeDefined();
     });
+
+    it('does not start onboarding for a new conversation unless the worker sends hola or hello', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new-jobs' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT conversation FOR UPDATE
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'new' })],
+        }) // INSERT whatsapp_conversations
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox start_prompt
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'o-1',
+            sequence: 1,
+            whatsapp_number: '+15125551234',
+            body: 'Envia "Hola" o "Hello" para empezar.',
+          }],
+        }) // sendPendingOutbox: SELECT pending rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE outbox sent
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-new-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Trabajos',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockCognitoSend).not.toHaveBeenCalled();
+      expect(outboxBodies()[0]).toBe('Envia "Hola" o "Hello" para empezar.');
+      expect(countQueryByPattern(/INSERT INTO users/i)).toBe(0);
+      expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
+    });
   });
 
   // ── Fix 5: outbox — Twilio failure leaves claim db_committed ────────────
