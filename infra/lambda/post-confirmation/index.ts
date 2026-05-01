@@ -22,7 +22,7 @@ export const handler = async (event: PostConfirmationTriggerEvent): Promise<Post
     return event;
   }
 
-  // ── Group assignment (Task 2.1) ──
+  // ── Group assignment ──
   // Determine the group from custom:user_type attribute in the event.
   // Using the attribute avoids injecting pool ID env vars which would create
   // a CDK circular dependency (Lambda Ref:UserPool ↔ UserPool Ref:Lambda).

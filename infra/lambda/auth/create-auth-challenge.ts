@@ -13,14 +13,12 @@ import {
  *
  * publicChallengeParameters carries a UI-safe hint only ("WhatsApp sent to +1***1234").
  *
- * Fix Plan v3 (Fix 6, 2026-04-17): Twilio credentials are loaded from AWS
- * Secrets Manager (`jale/whatsapp/otp-twilio`), not from plaintext Lambda
- * environment variables. The secret JSON shape is:
+ * Twilio credentials are loaded from Secrets Manager (`jale/whatsapp/otp-twilio`),
+ * not from plaintext Lambda environment variables. The secret JSON shape is:
  *   { accountSid, authToken, messagingServiceSid }
- * The auth-stack sets TWILIO_SECRET_ARN on the Lambda and grants read via
- * IAM. An operator seeds the secret value manually before first OTP flow.
- * The Messaging Service is shared with the WhatsApp secret — it carries
- * both an SMS-capable sender and a WhatsApp sender on the same number.
+ * The auth-stack sets TWILIO_SECRET_ARN on the Lambda and grants read via IAM.
+ * The Messaging Service is shared with the WhatsApp secret — it carries both an
+ * SMS-capable sender and a WhatsApp sender on the same number.
  *
  * Temporary dev transport: U.S. SMS from the +1 long code is blocked until the
  * number is attached to an approved A2P 10DLC campaign. For now, send the OTP

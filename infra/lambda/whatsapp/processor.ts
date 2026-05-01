@@ -87,13 +87,11 @@ async function sendTwilioMessage(to: string, body: string): Promise<void> {
   }
 }
 
-// ── Outbox helpers (Fix Plan v3, 2026-04-17) ────────────────────
+// ── Outbox helpers ──────────────────────────────────────────────
 //
-// Replies are NO LONGER sent inline by handlers. Instead every reply writes
-// a row to `whatsapp_outbox` within the same DB transaction as the state
-// change, and `sendPendingOutbox` flushes them to Twilio AFTER the
-// transaction commits. This prevents the "state advanced but reply never
-// arrived" class of silent bug that SQS retries used to create.
+// Replies are written to `whatsapp_outbox` inside the same DB transaction as
+// the state change; `sendPendingOutbox` flushes them to Twilio after commit.
+// This ensures Twilio failure never silently advances state.
 
 async function queueText(
   client: PoolClient,
@@ -219,10 +217,9 @@ interface ConversationRow {
 
 // ── DB: conversation lookup / upsert ────────────────────────────
 //
-// After Fix Plan v3, the processor always calls
-// `getOrCreateConversationForUpdate` to serialize concurrent Lambdas
-// against the same whatsapp_number. The plain `getOrCreateConversation`
-// is retained for job-alert and read-only callers.
+// The processor always calls `getOrCreateConversationForUpdate` to serialize
+// concurrent Lambdas against the same whatsapp_number. The plain
+// `getOrCreateConversation` is retained for job-alert and read-only callers.
 async function getOrCreateConversation(
   client: PoolClient,
   whatsappNumber: string,
@@ -391,7 +388,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const pool = await getDbPool();
   const client = await pool.connect();
   try {
-    // ── Claim + side-effects transaction (Fix Plan v3, 2026-04-17) ────────
+    // ── Claim + side-effects transaction ─────────────────────────────────
     //
     // Atomic MessageSid claim via `INSERT ... ON CONFLICT DO NOTHING
     // RETURNING`. UNIQUE(message_sid) on whatsapp_processed_messages (PK)
@@ -599,7 +596,7 @@ async function handleNewOrRestart(
 
     // Confirm immediately via admin API — custom auth needs a CONFIRMED user.
     // AdminConfirmSignUp does NOT fire PostConfirmation, but we defensively
-    // insert the DB row in the processor regardless (Codex Door-2 fix).
+    // insert the DB row in the processor regardless.
     await cognito.send(new AdminConfirmSignUpCommand({
       UserPoolId: poolId,
       Username: whatsappNumber,
@@ -631,9 +628,9 @@ async function handleNewOrRestart(
   // InitiateAuth with CUSTOM_AUTH — triggers DefineAuthChallenge → CreateAuthChallenge.
   // CreateAuthChallenge sends the 6-digit OTP via Twilio WhatsApp in dev and returns a
   // Cognito Session containing challengeMetadata. We PERSIST that Session on
-  // the conversation row and reuse it in handleAwaitingOtp (Fix 1, 2026-04-17)
-  // so subsequent webhook deliveries don't trigger fresh Twilio sends that
-  // would invalidate the code the worker actually received.
+  // the conversation row and reuse it in handleAwaitingOtp so subsequent
+  // webhook deliveries don't trigger fresh Twilio sends that would invalidate
+  // the code the worker actually received.
   const init = await cognito.send(new InitiateAuthCommand({
     AuthFlow: AuthFlowType.CUSTOM_AUTH,
     ClientId: clientId,
@@ -665,25 +662,17 @@ async function handleNewOrRestart(
   );
 }
 
-// ── awaiting_otp — RespondToAuthChallenge (Fix 1 + Fix 2, 2026-04-17) ──
+// ── awaiting_otp — RespondToAuthChallenge ───────────────────────
 //
-// The previous implementation called a fresh InitiateAuth before every
-// RespondToAuthChallenge, which triggered CreateAuthChallenge → Twilio OTP
-// of a NEW 6-digit code → the worker's submitted code was validated against
-// a code they never received. Codex catch.
-//
-// Fix:
-//   - Persist the Cognito Session returned by the initial InitiateAuth into
-//     state_context.cognito_session (done in handleNewOrRestart).
-//   - Reuse that Session here (no fresh InitiateAuth).
-//   - On wrong OTP: Cognito re-issues a CUSTOM_CHALLENGE with a new Session;
-//     persist it. create-auth-challenge's reuse branch preserves the same
-  //     OTP (no new outbound message) as long as `challengeMetadata` is on the session.
-//   - On "Invalid session"/expired session: call fresh InitiateAuth once,
-//     store the new Session, reply `otp_expired_retry` — NOT a counted
-//     attempt.
-//   - On success: decode the real Cognito `sub` from the ID token and
-//     reconcile the users row (see reconcileUserRow).
+// Reuses the Cognito Session from state_context.cognito_session — a fresh
+// InitiateAuth would rotate the OTP and invalidate the code sent to the worker.
+// Session lifecycle:
+//   - Wrong OTP: Cognito re-issues CUSTOM_CHALLENGE with a new Session; persist it.
+//     create-auth-challenge's reuse branch preserves the same OTP code.
+//   - Expired/invalid session: call fresh InitiateAuth once, store the new
+//     Session, reply `otp_expired_retry` — NOT a counted attempt.
+//   - Success: decode the real Cognito `sub` from the ID token and reconcile
+//     the users row (see reconcileUserRow).
 
 async function handleAwaitingOtp(
   client: PoolClient,
@@ -708,9 +697,8 @@ async function handleAwaitingOtp(
 
   const session = conv.state_context?.cognito_session;
   if (!session) {
-    // No Session persisted — shouldn't happen in the normal state machine
-    // (handleNewOrRestart always writes one), but if a pre-Fix-1 conversation
-    // row is still in `awaiting_otp` we fall through to re-issue.
+    // No Session persisted — defensive guard; handleNewOrRestart always writes
+    // one. If missing we fall through to re-issue.
     await reissueOtp(client, conv, msg, clientId, 'missing_session');
     return;
   }
@@ -753,7 +741,7 @@ async function handleAwaitingOtp(
     return;
   }
 
-  // OTP correct. Resolve the real Cognito sub from the ID token (Fix 2).
+  // OTP correct. Resolve the real Cognito sub from the ID token.
   const idToken = resp.AuthenticationResult.IdToken;
   const realSub = decodeIdTokenSub(idToken);
 
@@ -875,9 +863,9 @@ async function reconcileUserRow(
   realSub: string,
   whatsappNumber: string,
 ): Promise<{ userId: string; tosVersion: string | null }> {
-  // Runs inside processRecord's outer transaction (Fix Plan v3): no inner
-  // BEGIN/COMMIT. Any throw here propagates up and the outer tx ROLLBACKs
-  // everything, including the whatsapp_processed_messages claim.
+  // Runs inside processRecord's outer transaction: no inner BEGIN/COMMIT.
+  // Any throw propagates up and the outer tx rolls back everything, including
+  // the whatsapp_processed_messages claim.
 
   // Does a real-sub row already exist? (Worker may have signed up via web
   // before messaging us on WhatsApp.) `cognito_sub` is UNIQUE, so we cannot
@@ -897,13 +885,11 @@ async function reconcileUserRow(
         WHERE cognito_sub = $2 AND user_type = 'worker'`,
       [whatsappNumber, realSub],
     );
-    // ABORT guard (Fix 3, 2026-04-17): before DELETEing the placeholder,
-    // verify it has no dependent rows in legal_consent_log or
-    // job_applications. Greenfield deploys should never trip this; it
-    // exists as defense-in-depth in case a pre-Fix-2 placeholder
-    // accumulated data. If tripped: throw → outer tx ROLLBACK → SQS DLQ →
-    // operator reconciliation. FK `ON DELETE RESTRICT` on both tables
-    // (migration 006 §B) is the DB-side safety net below this check.
+    // Before DELETEing the placeholder, verify it has no dependent rows in
+    // legal_consent_log or job_applications — defense-in-depth against orphaned
+    // data. If tripped: throw → outer tx ROLLBACK → SQS DLQ → operator
+    // reconciliation. FK `ON DELETE RESTRICT` on both tables is the DB-side
+    // safety net.
     const placeholder = await client.query<{ id: string }>(
       `SELECT id FROM users
         WHERE cognito_sub = $1 AND user_type = 'worker'`,
@@ -988,11 +974,10 @@ async function handleAwaitingLegal(
   const cognitoSub = userRow.rows[0].cognito_sub;
   const requiredVersion = process.env.REQUIRED_TOS_VERSION ?? '1.0';
 
-  // Consent transaction (Fix Plan v3): runs inside processRecord's outer tx.
-  // No inner BEGIN/COMMIT; any throw propagates up and the outer tx rolls
-  // back the entire message including the claim.
-  // `setRlsContext` uses `set_config('app.current_user_id', $1, true)` —
-  // its scope is the current tx, which is processRecord's outer tx here.
+  // Runs inside processRecord's outer tx — no inner BEGIN/COMMIT. Any throw
+  // propagates up and rolls back the entire message including the claim.
+  // `setRlsContext` uses `set_config('app.current_user_id', $1, true)` scoped
+  // to the current tx.
   await setRlsContext(client, cognitoSub);
   const upd = await client.query(
     `UPDATE users
@@ -1269,14 +1254,11 @@ async function askProfileQuestion(
   await queueReply(client, inboundMessageSid, to, FIELD_PROMPT_KEY[field], lang);
 }
 
-// ── building_profile — pending-field model (Fix 3, 2026-04-17) ──
+// ── building_profile — pending-field model ────────────────────────
 //
 // Replay protection runs at the top of processRecord (`isDuplicateSid` scans
 // both `last_processed_message_sid` and `state_context.field_sids`), so any
-// duplicate MessageSid has already been rejected before we get here. No
-// in-handler stale-replay guard is needed, and the old field-ordering-based
-// `isStaleReplay` has been removed from flows.ts — it could never detect
-// out-of-order retries since its call site passed `pending` twice.
+// duplicate MessageSid has already been rejected before we get here.
 //
 // When a valid answer is accepted we bind that answer to the inbound
 // MessageSid via state_context.field_sids. Subsequent retries of the same

@@ -1,23 +1,18 @@
 /**
- * Processor Lambda — unit tests for Fix Plan v3 (2026-04-17).
+ * Processor Lambda — unit tests.
  *
- * The Fix Plan v2 tests were rewritten when processRecord moved from
- * `isDuplicateSid` + post-route stamp to a `whatsapp_processed_messages`
- * claim + outbox lifecycle. These tests cover:
+ * These tests cover:
  *
- *   - Fix 3 (ABORT): reconcileUserRow throws when the placeholder has
- *     dependent consent or application rows.
- *   - Fix 4 (atomic claim): processRecord elects one winner on concurrent
- *     MessageSid; duplicate invocations either no-op or resume outbox.
- *   - Fix 5 (outbox): handler replies go into whatsapp_outbox inside the
- *     transaction; sendPendingOutbox drains them AFTER commit; a Twilio
- *     failure leaves state committed but claim status=db_committed so a
- *     retry can resume without re-running side effects.
- *
- * Underlying invariants from v2 (persisted Cognito Session, JWT-decoded
- * cognito_sub reconcile cases A/B/C, `otp_expired_retry` path) are still
- * exercised by the happy-path tests — those flows are unchanged, only the
- * reply-delivery mechanism moved.
+ *   - Atomic MessageSid claim: processRecord elects one winner on concurrent
+ *     delivery; duplicate invocations either no-op or resume the outbox.
+ *   - Outbox resilience: handler replies go into whatsapp_outbox inside the
+ *     transaction; sendPendingOutbox drains them after commit; a Twilio
+ *     failure leaves claim status=db_committed so a retry resumes without
+ *     re-running side effects.
+ *   - reconcileUserRow ABORT: throws when the placeholder has dependent
+ *     consent or application rows.
+ *   - Persisted Cognito Session, JWT-decoded cognito_sub reconcile cases
+ *     A/B/C, and `otp_expired_retry` path are exercised by the happy-path tests.
  */
 
 // ── Mocks (must come before the handler import) ────────────────────────────
@@ -108,7 +103,7 @@ function outboxBodies(): string[] {
 
 // ── Suite ─────────────────────────────────────────────────────────────────
 
-describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
+describe('Processor Lambda', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
@@ -138,9 +133,9 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
     process.env = originalEnv;
   });
 
-  // ── Fix 4: atomic claim / duplicate detection ───────────────────────────
+  // ── atomic claim / duplicate detection ──────────────────────────────────
 
-  describe('Fix 4 — claim lifecycle', () => {
+  describe('claim lifecycle', () => {
     it('short-circuits when status=completed (no routeMessage, no Twilio)', async () => {
       mockQuery
         // BEGIN
@@ -349,9 +344,9 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
     });
   });
 
-  // ── Fix 5: outbox — Twilio failure leaves claim db_committed ────────────
+  // ── outbox — Twilio failure leaves claim db_committed ───────────────────
 
-  describe('Fix 5 — outbox resilience to Twilio failure', () => {
+  describe('outbox resilience to Twilio failure', () => {
     it('Twilio 500 on outbox send: row marked failed, markCompleted NOT called', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -403,9 +398,9 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
     });
   });
 
-  // ── Fix 3: ABORT on placeholder with dependent rows ─────────────────────
+  // ── ABORT on placeholder with dependent rows ─────────────────────────────
 
-  describe('Fix 3 — reconcileUserRow ABORT on dependents', () => {
+  describe('reconcileUserRow ABORT on dependents', () => {
     const realSub = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
 
     it('throws when placeholder has dependent legal_consent_log rows', async () => {
@@ -594,7 +589,7 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
       expect(idleUpdate).toBeDefined();
     });
 
-    it('skips trust questions if migration 007 columns are missing', async () => {
+    it('skips trust questions if migration 006 columns are missing', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-missing' }] }) // claim

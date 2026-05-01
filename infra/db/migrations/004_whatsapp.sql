@@ -172,7 +172,7 @@ CREATE POLICY wa_consent_select ON legal_consent_log
     FOR SELECT TO jale_whatsapp USING (true);
 
 -- ============================================================
--- Reconcile-path grants (originally 006 §A, folded in 2026-04-20)
+-- Reconcile-path grants
 --
 -- When a worker confirms OTP, reconcileUserRow promotes the placeholder
 -- row written during the defensive INSERT:
@@ -199,7 +199,6 @@ CREATE POLICY wa_users_delete_placeholder ON users
 
 -- ============================================================
 -- whatsapp_processed_messages — atomic MessageSid idempotency
--- (originally 006 §C, folded in 2026-04-20)
 --
 -- The processor INSERTs each inbound MessageSid with status='processing'
 -- using ON CONFLICT DO NOTHING RETURNING — a losing race returns zero rows
@@ -231,7 +230,6 @@ CREATE POLICY wa_processed_messages_all ON whatsapp_processed_messages
 
 -- ============================================================
 -- whatsapp_outbox — durable pending replies
--- (originally 006 §D, folded in 2026-04-20)
 --
 -- The processor writes intended replies here INSIDE the DB transaction,
 -- then sends them via Twilio AFTER commit. A Twilio failure never silently

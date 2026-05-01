@@ -15,11 +15,6 @@ import {
   PROFILE_FIELDS,
 } from '../../../../../lambda/whatsapp/lib/flows';
 
-// `isStaleReplay` was removed 2026-04-17 (Codex fix pass). Its call site
-// passed `pending` twice so the guard was always false — dead code. Replay
-// protection now lives in processor.ts via `isDuplicateSid` (covers the
-// coarse last-sid match and per-field `state_context.field_sids` scan).
-
 describe('flows.ts — keyword detection', () => {
   describe('isGreetingKeyword', () => {
     test.each([

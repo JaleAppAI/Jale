@@ -95,26 +95,22 @@ export const PROFILE_FIELDS: readonly ProfileFieldDef[] = [
 /**
  * Shape of the `whatsapp_conversations.state_context` JSONB column.
  *
- * Extended 2026-04-17 (Codex fix pass):
- *   - `cognito_session` persists the Cognito custom-auth Session string between
- *     webhook deliveries so `RespondToAuthChallenge` doesn't need a fresh
- *     `InitiateAuth` per attempt (which would rotate the OTP and invalidate
- *     the code the worker actually received).
- *   - `otp_issued_at` is informational only — used for log correlation when
- *     diagnosing expired-code vs wrong-code failures.
- *   - `field_sids` binds each accepted profile answer to the Twilio
- *     `MessageSid` that produced it. On SQS retry we can detect "this SID
- *     already produced a field-write" and short-circuit, independently of
- *     the coarse-grained `last_processed_message_sid` column.
+ * Key fields:
+ *   - `cognito_session` persists the Cognito custom-auth Session between webhook
+ *     deliveries so `RespondToAuthChallenge` reuses the same session — a fresh
+ *     `InitiateAuth` would rotate the OTP and invalidate the code sent to the worker.
+ *   - `otp_issued_at` is informational — used for log correlation.
+ *   - `field_sids` binds each accepted profile answer to the Twilio MessageSid that
+ *     produced it, enabling fine-grained SQS replay detection per field.
  */
 export interface ProfileStateContext {
   pending_field?: ProfileField;
   collected?: Partial<Record<ProfileField, string | boolean>>;
-  /** Cognito custom-auth Session string (Fix 1). Cleared on OTP success. */
+  /** Cognito custom-auth Session string. Cleared on OTP success. */
   cognito_session?: string;
   /** ISO timestamp of the most recent `InitiateAuth` that sent an SMS. */
   otp_issued_at?: string;
-  /** Map of accepted profile field → MessageSid that wrote it (Fix 3). */
+  /** Map of accepted profile field → MessageSid that wrote it. */
   field_sids?: Partial<Record<ProfileField, string>>;
   trust_step?: number;
   trust_answers?: TrustAnswer[];
@@ -414,21 +410,3 @@ export function computeNextField(
   }
   return null;
 }
-
-// ── Replay detection (MessageSid-based) ─────────────────────────
-//
-// The previous `isStaleReplay(answeredField, collected, pendingField)` export
-// was removed 2026-04-17 (Codex fix pass). It relied on field-ordering to
-// detect stale SQS replays, but the processor call site passed `pending` as
-// BOTH the answeredField and pendingField arguments, so the guard's
-// `answeredIdx < pendingIdx` comparison was always false — dead code.
-//
-// Replay protection now lives in the processor via two mechanisms:
-//   1. `last_processed_message_sid` check at routeMessage entry (covers the
-//      coarse "same message delivered twice in a row" case).
-//   2. `state_context.field_sids` scan (covers the fine-grained "old field's
-//      MessageSid re-arrives after state advanced" case that the old guard
-//      tried and failed to catch).
-//
-// See processor.ts:routeMessage for the implementation and the processor
-// test suite for the scenarios it covers.
