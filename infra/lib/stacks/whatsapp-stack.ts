@@ -2,6 +2,9 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -185,6 +188,167 @@ export class WhatsAppStack extends cdk.Stack {
     });
     whatsappDbSecret.grantRead(this.jobAlertLambda.function);
     twilioSecret.grantRead(this.jobAlertLambda.function);
+
+    // ── Media S3 Bucket ──────────────────────────────────────────
+    const mediaBucket = new s3.Bucket(this, 'WorkerMediaBucket', {
+      bucketName: `jale-worker-media-${cdk.Stack.of(this).account}-${cdk.Stack.of(this).region}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: false,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // ── ai-profile-writer Lambda ─────────────────────────────────
+    const aiProfileWriterLambda = new JaleLambdaFunction(this, 'AiProfileWriterLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/ai-profile-writer.ts'),
+      description: 'ai-profile-writer: Bedrock extraction + DB writes after Transcribe',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      timeout: 60,
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        BEDROCK_MODEL_ID: 'amazon.nova-lite-v1:0',
+        AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
+        AI_INDUSTRY_KEYWORDS: '[]',
+      },
+      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
+    });
+    whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
+    mediaBucket.grantRead(aiProfileWriterLambda.function);
+
+    aiProfileWriterLambda.function.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-lite-v1:0`,
+        ],
+      }),
+    );
+
+    // ── Step Functions: AI Pipeline ─────────────────────────────
+    const startTranscribeJob = new tasks.CallAwsService(this, 'StartTranscribeJob', {
+      service: 'transcribe',
+      action: 'startTranscriptionJob',
+      parameters: {
+        TranscriptionJobName: sfn.JsonPath.stringAt('$.transcriptionJobName'),
+        LanguageCode: sfn.JsonPath.stringAt('$.languageCode'),
+        Media: {
+          MediaFileUri: sfn.JsonPath.stringAt('$.mediaS3Uri'),
+        },
+        OutputBucketName: sfn.JsonPath.stringAt('$.mediaBucketName'),
+        OutputKey: sfn.JsonPath.stringAt('$.transcriptOutputKey'),
+      },
+      iamResources: ['*'],
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+    const waitForTranscribe = new sfn.Wait(this, 'WaitForTranscribe', {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(10)),
+    });
+
+    const getTranscribeJob = new tasks.CallAwsService(this, 'GetTranscribeJob', {
+      service: 'transcribe',
+      action: 'getTranscriptionJob',
+      parameters: {
+        TranscriptionJobName: sfn.JsonPath.stringAt('$.transcriptionJobName'),
+      },
+      iamResources: ['*'],
+      resultPath: '$.transcribeStatus',
+    });
+
+    const invokeWriter = new tasks.LambdaInvoke(this, 'InvokeAiProfileWriter', {
+      lambdaFunction: aiProfileWriterLambda.function,
+      payload: sfn.TaskInput.fromObject({
+        userId: sfn.JsonPath.stringAt('$.userId'),
+        conversationId: sfn.JsonPath.stringAt('$.conversationId'),
+        whatsappNumber: sfn.JsonPath.stringAt('$.whatsappNumber'),
+        language: sfn.JsonPath.stringAt('$.language'),
+        mediaBucketName: sfn.JsonPath.stringAt('$.mediaBucketName'),
+        transcriptOutputKey: sfn.JsonPath.stringAt('$.transcriptOutputKey'),
+        voiceMessageMediaId: sfn.JsonPath.stringAt('$.voiceMessageMediaId'),
+        status: 'transcription_complete',
+      }),
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+    const invokeWriterOnFailure = new tasks.LambdaInvoke(this, 'InvokeAiProfileWriterOnFailure', {
+      lambdaFunction: aiProfileWriterLambda.function,
+      payload: sfn.TaskInput.fromObject({
+        userId: sfn.JsonPath.stringAt('$.userId'),
+        conversationId: sfn.JsonPath.stringAt('$.conversationId'),
+        whatsappNumber: sfn.JsonPath.stringAt('$.whatsappNumber'),
+        language: sfn.JsonPath.stringAt('$.language'),
+        status: 'failed',
+        errorMessage: 'Transcription job failed',
+      }),
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+    const checkTranscribeStatus = new sfn.Choice(this, 'CheckTranscribeStatus')
+      .when(
+        sfn.Condition.stringEquals(
+          '$.transcribeStatus.TranscriptionJob.TranscriptionJobStatus',
+          'COMPLETED',
+        ),
+        invokeWriter,
+      )
+      .when(
+        sfn.Condition.stringEquals(
+          '$.transcribeStatus.TranscriptionJob.TranscriptionJobStatus',
+          'FAILED',
+        ),
+        invokeWriterOnFailure,
+      )
+      .otherwise(waitForTranscribe);
+
+    const aiPipelineDefinition = startTranscribeJob
+      .next(waitForTranscribe)
+      .next(getTranscribeJob)
+      .next(checkTranscribeStatus);
+
+    // Standard Workflow (not Express): Express Workflows have a 5-minute hard limit.
+    // Transcribe jobs + polling intervals can exceed this.
+    const aiPipelineStateMachine = new sfn.StateMachine(this, 'AiPipelineStateMachine', {
+      definitionBody: sfn.DefinitionBody.fromChainable(aiPipelineDefinition),
+      stateMachineType: sfn.StateMachineType.STANDARD,
+      timeout: cdk.Duration.minutes(15),
+    });
+
+    aiPipelineStateMachine.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'transcribe:StartTranscriptionJob',
+          'transcribe:GetTranscriptionJob',
+        ],
+        resources: ['*'],
+      }),
+    );
+
+    mediaBucket.grantReadWrite(aiPipelineStateMachine);
+
+    // Allow Transcribe service to write transcript output directly to the bucket.
+    mediaBucket.addToResourcePolicy(
+      new iam.PolicyStatement({
+        principals: [new iam.ServicePrincipal('transcribe.amazonaws.com')],
+        actions: ['s3:PutObject'],
+        resources: [`${mediaBucket.bucketArn}/*`],
+        conditions: {
+          StringEquals: {
+            'aws:SourceAccount': cdk.Stack.of(this).account,
+          },
+        },
+      }),
+    );
+
+    // ── Processor Lambda: add media env vars and grants ──────────
+    this.processorLambda.function.addEnvironment('MEDIA_BUCKET_NAME', mediaBucket.bucketName);
+    this.processorLambda.function.addEnvironment(
+      'AI_PIPELINE_STATE_MACHINE_ARN',
+      aiPipelineStateMachine.stateMachineArn,
+    );
+    mediaBucket.grantPut(this.processorLambda.function);
+    aiPipelineStateMachine.grantStartExecution(this.processorLambda.function);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────
     // INTENTIONALLY UNAUTHENTICATED. Twilio signs webhook requests with

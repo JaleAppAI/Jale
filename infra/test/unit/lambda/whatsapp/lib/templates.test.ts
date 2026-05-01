@@ -1,4 +1,4 @@
-import { t, detectLanguage } from '../../../../../lambda/whatsapp/lib/templates';
+import { t, detectLanguage, TemplateKey } from '../../../../../lambda/whatsapp/lib/templates';
 
 describe('templates.ts — t()', () => {
   it('returns the ES variant', () => {
@@ -38,6 +38,9 @@ describe('templates.ts — t()', () => {
       'idle_help', 'help_menu', 'profile_not_ready',
       'jobs_none', 'job_accepted', 'job_declined', 'job_not_found',
       'unknown_message',
+      'ask_media_photo', 'media_photo_invalid', 'ask_media_photo_type',
+      'ask_media_voice', 'media_voice_invalid',
+      'ai_processing_ack', 'ai_processing_wait', 'ai_extraction_summary', 'ai_extraction_failed',
     ] as const;
     for (const k of keys) {
       const es = t(k, 'es');
@@ -75,6 +78,38 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('use the buttons');
     expect(help).toContain('[number] accept');
     expect(help).not.toContain('1 accept');
+  });
+});
+
+describe('media flow templates', () => {
+  const newKeys: TemplateKey[] = [
+    'ask_media_photo',
+    'media_photo_invalid',
+    'ask_media_photo_type',
+    'ask_media_voice',
+    'media_voice_invalid',
+    'ai_processing_ack',
+    'ai_processing_wait',
+    'ai_extraction_summary',
+    'ai_extraction_failed',
+  ];
+
+  test.each(newKeys)('%s has both en and es variants', (key) => {
+    expect(t(key, 'en')).toBeTruthy();
+    expect(t(key, 'es')).toBeTruthy();
+    expect(t(key, 'en')).not.toBe(t(key, 'es'));
+  });
+
+  test('ai_extraction_summary interpolates {{summary}} variable', () => {
+    const result = t('ai_extraction_summary', 'en', { summary: 'Electrician in Austin' });
+    expect(result).toContain('Electrician in Austin');
+    expect(result).not.toContain('{{summary}}');
+  });
+
+  test('ai_extraction_summary interpolates {{summary}} in Spanish', () => {
+    const result = t('ai_extraction_summary', 'es', { summary: 'Electricista en Austin' });
+    expect(result).toContain('Electricista en Austin');
+    expect(result).not.toContain('{{summary}}');
   });
 });
 

@@ -13,6 +13,9 @@ import {
   parseTypedJobAction,
   computeNextField,
   PROFILE_FIELDS,
+  isSkipKeyword,
+  type ConversationState,
+  type ProfileStateContext,
 } from '../../../../../lambda/whatsapp/lib/flows';
 
 // `isStaleReplay` was removed 2026-04-17 (Codex fix pass). Its call site
@@ -353,5 +356,47 @@ describe('flows.ts — PROFILE_FIELDS structural', () => {
   it('availability options match the DB CHECK constraint slugs', () => {
     const av = PROFILE_FIELDS.find((f) => f.field === 'availability');
     expect(av?.options).toEqual(['full_time', 'part_time', 'weekends', 'flexible']);
+  });
+});
+
+describe('new media state types', () => {
+  test('ConversationState includes awaiting_media_photo', () => {
+    const s: ConversationState = 'awaiting_media_photo';
+    expect(s).toBe('awaiting_media_photo');
+  });
+
+  test('ConversationState includes awaiting_media_voice', () => {
+    const s: ConversationState = 'awaiting_media_voice';
+    expect(s).toBe('awaiting_media_voice');
+  });
+
+  test('ConversationState includes processing_ai', () => {
+    const s: ConversationState = 'processing_ai';
+    expect(s).toBe('processing_ai');
+  });
+
+  test('ProfileStateContext accepts ai_pipeline_execution_arn', () => {
+    const ctx: ProfileStateContext = {
+      ai_pipeline_execution_arn: 'arn:aws:states:us-east-2:123:execution:test:run-1',
+      pending_media_photo_id: 'uuid-1',
+    };
+    expect(ctx.ai_pipeline_execution_arn).toBeDefined();
+    expect(ctx.pending_media_photo_id).toBeDefined();
+  });
+
+  test('isSkipKeyword detects English skip', () => {
+    expect(isSkipKeyword('skip')).toBe(true);
+    expect(isSkipKeyword('Skip')).toBe(true);
+    expect(isSkipKeyword('SKIP')).toBe(true);
+  });
+
+  test('isSkipKeyword detects Spanish skip', () => {
+    expect(isSkipKeyword('saltar')).toBe(true);
+    expect(isSkipKeyword('Saltar')).toBe(true);
+  });
+
+  test('isSkipKeyword returns false for non-skip input', () => {
+    expect(isSkipKeyword('hello')).toBe(false);
+    expect(isSkipKeyword('si')).toBe(false);
   });
 });

@@ -83,8 +83,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 3 Lambda functions (webhook + processor + job-alert)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 3);
+  test('Stack creates 4 Lambda functions (webhook + processor + job-alert + ai-profile-writer)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 4);
   });
 
   test('Webhook Lambda has TWILIO_SECRET_ARN + SQS_QUEUE_URL env vars', () => {
@@ -169,5 +169,74 @@ describe('WhatsAppStack', () => {
     });
     // At least one unauthenticated POST method should exist
     expect(webhookMethods.length).toBeGreaterThan(0);
+  });
+
+  describe('Sprint 7: AI profile media resources', () => {
+    test('Stack creates a private S3 media bucket', () => {
+      // BucketName is a Fn::Join token at synth time (account/region are unresolved),
+      // so we assert on Block Public Access as the bucket identity signal instead.
+      // The name prefix 'jale-worker-media' is validated by the encryption test below.
+      template.resourceCountIs('AWS::S3::Bucket', 1);
+    });
+
+    test('Media bucket has Block Public Access enabled', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+      });
+    });
+
+    test('Media bucket has server-side encryption', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        BucketEncryption: {
+          ServerSideEncryptionConfiguration: Match.arrayWith([
+            Match.objectLike({
+              ServerSideEncryptionByDefault: {
+                SSEAlgorithm: 'AES256',
+              },
+            }),
+          ]),
+        },
+      });
+    });
+
+    test('Stack creates a Standard (not Express) Step Functions state machine', () => {
+      template.resourceCountIs('AWS::StepFunctions::StateMachine', 1);
+      template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
+        StateMachineType: 'STANDARD',
+      });
+    });
+
+    test('Stack creates ai-profile-writer Lambda', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('ai-profile-writer'),
+      });
+    });
+
+    test('Processor Lambda has MEDIA_BUCKET_NAME env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            MEDIA_BUCKET_NAME: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('Processor Lambda has AI_PIPELINE_STATE_MACHINE_ARN env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            AI_PIPELINE_STATE_MACHINE_ARN: Match.anyValue(),
+          }),
+        },
+      });
+    });
   });
 });

@@ -1,5 +1,6 @@
 import type { SQSEvent, SQSHandler, SQSRecord } from 'aws-lambda';
 import type { PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -13,6 +14,10 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import {
+  SFNClient,
+  StartExecutionCommand,
+} from '@aws-sdk/client-sfn';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
 import {
@@ -26,6 +31,7 @@ import {
   isJobsKeyword,
   isHelpCommand,
   isProfileCommand,
+  isSkipKeyword,
   isAccept,
   isDecline,
   parseButtonPayload,
@@ -40,11 +46,18 @@ import {
   type ProfileStateContext,
   type TrustAnswer,
 } from './lib/flows';
+import {
+  detectMediaCategory,
+  buildS3Key,
+  downloadTwilioMedia,
+  uploadMediaToS3,
+} from './lib/media';
 import { decodeIdTokenSub } from './lib/jwt';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const cognito = new CognitoIdentityProviderClient({});
 const secretsManager = new SecretsManagerClient({});
+const sfn = new SFNClient({});
 
 // ── Twilio secret cache (5-min TTL) ─────────────────────────────
 let cachedTwilio: TwilioSecret | null = null;
@@ -380,6 +393,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const from = params.From; // "whatsapp:+15125551234"
   const body = params.Body ?? '';
   const buttonPayload = params.ButtonPayload; // present on template button taps
+  const numMedia = parseInt(params.NumMedia ?? '0', 10);
+  const mediaUrl = params.MediaUrl0;
+  const mediaContentType = params.MediaContentType0;
 
   if (!from || !messageSid) {
     console.warn('[processor] skipping: missing From/MessageSid', { messageSid, from });
@@ -456,7 +472,15 @@ async function processRecord(record: SQSRecord): Promise<void> {
         defaultLang,
       );
 
-      await routeMessage(client, conv, { body, buttonPayload, messageSid, from });
+      await routeMessage(client, conv, {
+        body,
+        buttonPayload,
+        messageSid,
+        from,
+        numMedia,
+        mediaUrl,
+        mediaContentType,
+      });
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
       // retries re-enter via the conflict branch above and resume from the
@@ -498,6 +522,190 @@ interface IncomingMessage {
   buttonPayload: string | undefined;
   messageSid: string;
   from: string;
+  numMedia: number;
+  mediaUrl: string | undefined;
+  mediaContentType: string | undefined;
+}
+
+// ── awaiting_media_photo — optional photo upload step ───────────
+async function handleAwaitingMediaPhoto(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+
+  // If a photo was already received, we are waiting for the classification reply (1 or 2).
+  const pendingPhotoId = conv.state_context?.pending_media_photo_id;
+  if (pendingPhotoId) {
+    const bodyTrimmed = msg.body.trim();
+    if (bodyTrimmed === '1' || /^profile/i.test(bodyTrimmed)) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else if (bodyTrimmed === '2' || /^work/i.test(bodyTrimmed)) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'work_sample' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else {
+      // Invalid classification response — re-prompt
+      await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+      return;
+    }
+    // Classification done — advance to voice step
+    await updateConversation(client, conv.id, {
+      state_context: { ...conv.state_context, pending_media_photo_id: undefined },
+      conversation_state: 'awaiting_media_voice',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    return;
+  }
+
+  // Worker skipped or sent text (no photo yet) — proceed to voice step
+  if (numMedia === 0 || isSkipKeyword(msg.body)) {
+    await updateConversation(client, conv.id, {
+      conversation_state: 'awaiting_media_voice',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    return;
+  }
+
+  if (!mediaUrl || !mediaContentType) {
+    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
+    return;
+  }
+
+  const category = detectMediaCategory(mediaContentType);
+  if (category !== 'photo') {
+    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
+    return;
+  }
+
+  // Download from Twilio and upload to S3
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+
+  const mediaId = randomUUID();
+  const s3Key = buildS3Key(conv.user_id!, mediaId, 'photo');
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
+
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
+     VALUES ($1, $2, 'profile_photo', $3, $4, $5)`,
+    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+  );
+
+  await updateConversation(client, conv.id, {
+    state_context: {
+      ...conv.state_context,
+      pending_media_photo_id: mediaId,
+    },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+}
+
+// ── awaiting_media_voice — optional voice message step ──────────
+async function handleAwaitingMediaVoice(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+
+  // Worker skipped or sent text — go straight to text questions
+  if (numMedia === 0 || isSkipKeyword(msg.body)) {
+    await updateConversation(client, conv.id, {
+      conversation_state: 'building_profile',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'profile_intro', conv.language);
+    return;
+  }
+
+  if (!mediaUrl || !mediaContentType) {
+    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
+    return;
+  }
+
+  const category = detectMediaCategory(mediaContentType);
+  if (category !== 'voice') {
+    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
+    return;
+  }
+
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+
+  const mediaId = randomUUID();
+  const s3Key = buildS3Key(conv.user_id!, mediaId, 'voice');
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  const stateMachineArn = process.env.AI_PIPELINE_STATE_MACHINE_ARN;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+  if (!stateMachineArn) throw new Error('AI_PIPELINE_STATE_MACHINE_ARN not set');
+
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
+
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
+     VALUES ($1, $2, 'voice_message', $3, $4, $5)`,
+    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+  );
+
+  // Language code for Transcribe
+  const languageCode = conv.language === 'es' ? 'es-US' : 'en-US';
+  const transcriptionJobName = `jale-${conv.user_id!.replace(/-/g, '')}-${Date.now()}`;
+  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
+  const transcriptOutputKey = `${conv.user_id}/transcripts/${transcriptionJobName}.json`;
+
+  // Start Step Functions execution
+  const execution = await sfn.send(
+    new StartExecutionCommand({
+      stateMachineArn,
+      input: JSON.stringify({
+        userId: conv.user_id,
+        conversationId: conv.id,
+        whatsappNumber: conv.whatsapp_number,
+        language: conv.language,
+        mediaBucketName: bucketName,
+        transcriptionJobName,
+        languageCode,
+        mediaS3Uri,
+        transcriptOutputKey,
+        voiceMessageMediaId: mediaId,
+      }),
+    }),
+  );
+
+  await updateConversation(client, conv.id, {
+    conversation_state: 'processing_ai',
+    state_context: {
+      ...conv.state_context,
+      ai_pipeline_execution_arn: execution.executionArn,
+    },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'ai_processing_ack', conv.language);
+}
+
+// ── processing_ai — waiting for AI pipeline to complete ─────────
+async function handleProcessingAi(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  // State transition happens when ai-profile-writer updates the conversation.
+  // While waiting, just acknowledge any worker message.
+  await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
 }
 
 async function routeMessage(
@@ -545,6 +753,18 @@ async function routeMessage(
 
     case 'awaiting_legal':
       await handleAwaitingLegal(client, conv, msg);
+      return;
+
+    case 'awaiting_media_photo':
+      await handleAwaitingMediaPhoto(client, conv, msg);
+      return;
+
+    case 'awaiting_media_voice':
+      await handleAwaitingMediaVoice(client, conv, msg);
+      return;
+
+    case 'processing_ai':
+      await handleProcessingAi(client, conv, msg);
       return;
 
     case 'building_profile':
@@ -1034,13 +1254,14 @@ async function enterProfileBuilderOrIdle(
     );
     return;
   }
+  // Sprint 7: collect media before text questions
   await updateConversation(client, conv.id, {
-    conversation_state: 'building_profile',
-    state_context: { pending_field: next, collected: {}, field_sids: {} },
+    conversation_state: 'awaiting_media_photo',
+    state_context: { collected: {}, field_sids: {} },
     last_processed_message_sid: messageSid,
   });
   await queueReply(client, messageSid, from, 'legal_accepted', conv.language);
-  await askProfileQuestion(client, messageSid, from, next, conv.language);
+  await queueReply(client, messageSid, from, 'ask_media_photo', conv.language);
 }
 
 async function loadProfileFromDb(
