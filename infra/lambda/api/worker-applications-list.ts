@@ -7,17 +7,14 @@ const CORS_HEADERS = corsHeaders();
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
-
   try {
-    const cognitoSub: string = event.requestContext.authorizer?.claims?.sub;
-
+    const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
     if (!cognitoSub) {
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
     }
 
     const pool = await getDbPool();
     client = await pool.connect();
-
     await client.query('BEGIN');
     await setRlsContext(client, cognitoSub);
 
@@ -28,48 +25,24 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (!compliance.compliant) {
       await client.query('COMMIT');
-      return {
-        statusCode: 403,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }),
-      };
+      return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
     const result = await client.query(
-      `
-      SELECT
-        j.id,
-        j.title,
-        j.location,
-        j.job_type,
-        j.status,
-        j.created_at,
-        (
-          SELECT COUNT(*)::int
-          FROM job_applications ja
-          WHERE ja.job_id = j.id
-        ) AS applicant_count
-      FROM jobs j
-      WHERE j.employer_id = (
-        SELECT id
-        FROM users
-        WHERE cognito_sub = $1
-      )
-      ORDER BY j.created_at DESC
-    `,
-      [cognitoSub],
+      `SELECT a.id AS application_id, a.job_id, a.status, a.applied_at,
+              j.title AS job_title, u.full_name AS company_name
+       FROM job_applications a
+       JOIN jobs j ON j.id = a.job_id
+       JOIN users u ON u.id = j.employer_id
+       ORDER BY a.applied_at DESC
+       LIMIT 200`,
     );
-
     await client.query('COMMIT');
 
-    return {
-      statusCode: 200,
-      headers: CORS_HEADERS,
-      body: JSON.stringify({ jobs: result.rows }),
-    };
+    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ applications: result.rows }) };
   } catch (err) {
-    if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
-    console.error('employer-jobs-list error:', errorMessage(err));
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    console.error('worker-applications-list error:', errorMessage(err));
     return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
   } finally {
     if (client) client.release();

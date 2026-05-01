@@ -7,7 +7,9 @@
     "header": {
         "language_toggle": "English",
         "sign_out": "Cerrar sesión",
-        "profile": "Perfil"
+        "profile": "Perfil",
+        "worker_home": "Trabajos",
+        "my_applications": "Mis aplicaciones"
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
@@ -160,5 +162,95 @@
         "doc_resume": "Currículum",
         "doc_driver_license": "Licencia de conducir",
         "doc_ssn": "Tarjeta SSN / ITIN"
+    },
+    "worker_applications": {
+        "title": "Mis aplicaciones",
+        "applied": "Aplicado",
+        "empty": "Aún no has postulado a ningún trabajo.",
+        "empty_cta": "Buscar trabajos",
+        "status": {
+            "pending": "Pendiente",
+            "reviewed": "Revisado",
+            "hired": "Contratado",
+            "rejected": "Rechazado"
+        }
+    },
+    "worker_home": {
+        "title": "Buscar trabajos",
+        "search_placeholder": "Buscar por título o ubicación",
+        "filter": {
+            "all": "Todos",
+            "full_time": "Tiempo completo",
+            "part_time": "Medio tiempo",
+            "contract": "Contrato"
+        },
+        "empty": "No hay trabajos activos en este momento."
+    },
+    "worker_job_detail": {
+        "back": "← Volver a trabajos",
+        "required_docs": "Documentos requeridos",
+        "upload_prompt": "Sube los documentos faltantes en tu perfil.",
+        "upload_link": "Ir al perfil",
+        "apply": "Postularse",
+        "already_applied": "Ya postulaste",
+        "errors": {
+            "missing_docs": "Faltan documentos: {docs}",
+            "job_closed": "Este trabajo ya no acepta postulaciones."
+        }
+    },
+    "worker_profile": {
+        "title": "Mi perfil",
+        "info_title": "Perfil",
+        "edit_button": "Editar",
+        "field_phone": "Teléfono",
+        "field_name": "Nombre completo",
+        "field_skills": "Habilidades",
+        "field_availability": "Disponibilidad",
+        "field_years_experience": "Años de experiencia",
+        "field_location": "Ubicación",
+        "field_bio": "Acerca de ti",
+        "documents_title": "Documentos",
+        "documents_subtitle": "Los documentos cargados se reutilizan automáticamente cuando postulas a trabajos.",
+        "documents": {
+            "types": {
+                "resume": "Currículum",
+                "driver_license": "Licencia de conducir",
+                "ssn": "SSN"
+            },
+            "not_uploaded": "No subido",
+            "upload": "Subir",
+            "replace": "Reemplazar",
+            "delete": "Eliminar",
+            "view": "Ver"
+        },
+        "edit": {
+            "full_name": "Nombre completo",
+            "skills_placeholder": "Habilidades (separadas por comas)",
+            "availability": {
+                "immediate": "De inmediato",
+                "2_weeks": "En 2 semanas",
+                "1_month": "En 1 mes"
+            },
+            "years_experience": "Años de experiencia",
+            "location": "Ubicación",
+            "bio": "Acerca de ti",
+            "save": "Guardar",
+            "cancel": "Cancelar"
+        },
+        "complete_modal": {
+            "title": "Completa tu perfil",
+            "subtitle": "Los empleadores necesitan algunos datos antes de que puedas postular.",
+            "full_name": "Nombre completo",
+            "skills_placeholder": "Habilidades (separadas por comas)",
+            "availability": {
+                "immediate": "De inmediato",
+                "2_weeks": "En 2 semanas",
+                "1_month": "En 1 mes"
+            },
+            "years_experience": "Años de experiencia",
+            "location": "Ubicación",
+            "cancel": "Cancelar",
+            "submit": "Guardar y postular"
+        }
     }
 }

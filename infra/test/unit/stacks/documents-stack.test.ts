@@ -9,6 +9,9 @@ import { DocumentsStack } from '../../../lib/stacks/documents-stack';
 
 describe('DocumentsStack', () => {
   let template: Template;
+  // API methods added by DocumentsStack are synthesized into the ApiStack template
+  // because the RestApi construct lives there. Capture it separately for route assertions.
+  let apiTemplate: Template;
 
   beforeAll(() => {
     const app = new cdk.App();
@@ -47,6 +50,7 @@ describe('DocumentsStack', () => {
       requiredTosVersion: 'v1.0',
     });
     template = Template.fromStack(documents);
+    apiTemplate = Template.fromStack(api);
   });
 
   it('creates an S3 bucket with KMS encryption and versioning', () => {
@@ -74,8 +78,10 @@ describe('DocumentsStack', () => {
     });
   });
 
-  it('creates exactly 6 Lambda functions', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 6);
+  it('creates exactly 10 Lambda functions', () => {
+    // 6 original (uploadUrl, confirm, submit, workerProfile, workerDocs, uploadToken)
+    // + 4 authenticated vault Lambdas (uploadUrlAuth, confirmAuth, documentsList, docDelete)
+    template.resourceCountIs('AWS::Lambda::Function', 10);
   });
 
   it('worker-doc-upload-url Lambda has DOCUMENTS_BUCKET env var', () => {
@@ -110,6 +116,57 @@ describe('DocumentsStack', () => {
           }),
         ],
       },
+    });
+  });
+
+  // Task 12 — vault route assertions
+  // Note: AWS::ApiGateway::Method resources are synthesized into the ApiStack template
+  // (the RestApi construct lives there); apiTemplate is used for these assertions.
+  it('POST /worker/vault/upload-url is protected by WorkerAuthorizer', () => {
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  it('GET /worker/vault is protected by WorkerAuthorizer', () => {
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  it('DELETE /worker/vault/{doc_type} is protected by WorkerAuthorizer', () => {
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'DELETE',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  it('worker-doc-upload-url-auth Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'worker-doc-upload-url-auth',
+    });
+  });
+
+  it('worker-documents-list Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'worker-documents-list',
+    });
+  });
+
+  it('worker-doc-delete Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'worker-doc-delete',
     });
   });
 });

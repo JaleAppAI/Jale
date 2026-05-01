@@ -52,7 +52,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      'SELECT id, user_type, email, phone, full_name, tenant_id, created_at FROM users WHERE cognito_sub = $1',
+      `SELECT u.id, u.user_type, u.email, u.phone, u.full_name, u.tenant_id, u.created_at,
+          wp.skills, wp.availability, wp.years_experience, wp.location, wp.bio
+   FROM users u
+   LEFT JOIN worker_profiles wp ON wp.user_id = u.id
+   WHERE u.cognito_sub = $1`,
       [cognitoSub],
     );
     await client.query('COMMIT');
