@@ -44,11 +44,10 @@ $WaDbSecretName  = 'jale/whatsapp/db'
 $MigrationFiles = @(
     '001_initial_schema.sql',
     '002_rls_policies.sql',
-    '003_whatsapp.sql',
-    '004_jobs.sql',
-    '005_job_applications.sql',
-    '006_whatsapp_reliability.sql',
-    '007_trust_signal_layer.sql'
+    '003_jobs_and_applications.sql',
+    '004_whatsapp.sql',
+    '005_document_vault.sql',
+    '006_trust_signal_layer.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

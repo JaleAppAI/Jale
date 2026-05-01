@@ -11,6 +11,7 @@ export type Lang = 'en' | 'es';
 /** All plain-text message keys used by the processor state machine. */
 export type TemplateKey =
   // Onboarding
+  | 'start_prompt'
   | 'welcome_new_user'
   | 'welcome_existing_user'
   | 'otp_retry'
@@ -45,6 +46,10 @@ export type TemplateKey =
   | 'unknown_message';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
+  start_prompt: {
+    es: 'Envia "Hola" o "Hello" para empezar.',
+    en: 'Send "Hola" or "Hello" to get started.',
+  },
   welcome_new_user: {
     es: 'Bienvenido a Jale.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
     en: 'Welcome to Jale.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
@@ -88,32 +93,32 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Let\'s build your profile so we can send better jobs.',
   },
   ask_name: {
-    es: 'Perfil\n\nCual es tu nombre completo?',
-    en: 'Profile\n\nWhat is your full name?',
+    es: 'Para empezar, cual es tu nombre completo?',
+    en: 'To get started, what is your full name?',
   },
   ask_city: {
-    es: 'Perfil\n\nEn que ciudad o codigo postal trabajas?',
-    en: 'Profile\n\nWhat city or zip code do you work in?',
+    es: 'En que ciudad o codigo postal trabajas?',
+    en: 'What city or zip code do you work in?',
   },
   ask_trade: {
-    es: 'Perfil\n\nCual es tu oficio principal?\n1. Electricista\n2. Plomero\n3. Carpintero\n4. Concreto\n5. Pintura\n6. Otro\n\nResponde con el numero.',
-    en: 'Profile\n\nWhat is your main trade?\n1. Electrician\n2. Plumber\n3. Carpenter\n4. Concrete\n5. Painting\n6. Other\n\nReply with the number.',
+    es: 'Cual es tu oficio principal?\n\n1. Electricista\n2. Plomero\n3. Carpintero\n4. Concreto\n5. Pintura\n6. Otro\n\nResponde con 1, 2, 3, 4, 5 o 6.',
+    en: 'What is your main trade?\n\n1. Electrician\n2. Plumber\n3. Carpenter\n4. Concrete\n5. Painting\n6. Other\n\nReply with 1, 2, 3, 4, 5, or 6.',
   },
   ask_trade_freetext: {
-    es: 'Perfil\n\nCual es tu oficio?',
-    en: 'Profile\n\nWhat is your trade?',
+    es: 'Cual es tu oficio?',
+    en: 'What is your trade?',
   },
   ask_experience: {
-    es: 'Perfil\n\nCuantos anos de experiencia tienes?\n1. 0-1 anos\n2. 2-4 anos\n3. 5-9 anos\n4. 10+ anos\n\nResponde con el numero.',
-    en: 'Profile\n\nHow many years of experience do you have?\n1. 0-1 years\n2. 2-4 years\n3. 5-9 years\n4. 10+ years\n\nReply with the number.',
+    es: 'Cuantos anos de experiencia tienes?\n\n1. 0-1 anos\n2. 2-4 anos\n3. 5-9 anos\n4. 10+ anos\n\nResponde con 1, 2, 3 o 4.',
+    en: 'How many years of experience do you have?\n\n1. 0-1 years\n2. 2-4 years\n3. 5-9 years\n4. 10+ years\n\nReply with 1, 2, 3, or 4.',
   },
   ask_transportation: {
-    es: 'Perfil\n\nTienes transporte propio?\n1. Si\n2. No\n\nResponde con el numero.',
-    en: 'Profile\n\nDo you have your own transportation?\n1. Yes\n2. No\n\nReply with the number.',
+    es: 'Tienes transporte propio?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
+    en: 'Do you have your own transportation?\n\n1. Yes\n2. No\n\nReply with 1 or 2.',
   },
   ask_availability: {
-    es: 'Perfil\n\nCual es tu disponibilidad?\n1. Tiempo completo\n2. Medio tiempo\n3. Fines de semana\n4. Flexible\n\nResponde con el numero.',
-    en: 'Profile\n\nWhat is your availability?\n1. Full-time\n2. Part-time\n3. Weekends\n4. Flexible\n\nReply with the number.',
+    es: 'Cual es tu disponibilidad?\n\n1. Tiempo completo\n2. Medio tiempo\n3. Fines de semana\n4. Flexible\n\nResponde con 1, 2, 3 o 4.',
+    en: 'What is your availability?\n\n1. Full-time\n2. Part-time\n3. Weekends\n4. Flexible\n\nReply with 1, 2, 3, or 4.',
   },
   profile_complete: {
     es: 'Tu perfil esta listo.\n\nEnvia "Ayuda" para ver comandos o "Trabajos" para ver oportunidades.',

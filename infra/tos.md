@@ -1,1 +1,0 @@
-﻿Terms of Service v1.0 - Placeholder

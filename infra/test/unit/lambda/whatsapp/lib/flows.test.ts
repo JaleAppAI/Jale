@@ -26,12 +26,15 @@ describe('flows.ts — keyword detection', () => {
       ['Hola', true],
       ['hola', true],
       ['HOLA', true],
+      ['Hola!', true],
       ['Hello', true],
-      ['hi', true],
-      ['Hey there', true],
-      ['Buenas', true],
-      ['Buenos días', true],
+      ['hello.', true],
+      ['hi', false],
+      ['Hey there', false],
+      ['Buenas', false],
+      ['Buenos días', false],
       ['Trabajos', false],
+      ['hola trabajos', false],
       ['', false],
       ['hell', false], // not 'hello' prefix
     ])('isGreetingKeyword("%s") → %s', (input, expected) => {
@@ -281,10 +284,18 @@ describe('flows.ts — trust signals', () => {
 
   it('builds a numbered trust question', () => {
     const question = buildTrustQuestion(0, 'electrician', 'en');
-    expect(question).toContain('Trust profile');
+    expect(question).toContain('One more question');
     expect(question).toContain('What is your specialty?');
     expect(question).toContain('1. Residential');
     expect(question).toContain('Reply with the number.');
+  });
+
+  it('builds Spanish trust questions without profile headers', () => {
+    const question = buildTrustQuestion(0, 'electrician', 'es');
+    expect(question).toContain('Una pregunta mas');
+    expect(question).toContain('En que te especializas?');
+    expect(question).toContain('1. Residencial');
+    expect(question).not.toContain('Perfil de confianza');
   });
 
   it('parses a valid trust answer', () => {

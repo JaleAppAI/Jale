@@ -1,4 +1,4 @@
--- 007_trust_signal_layer.sql
+-- 006_trust_signal_layer.sql
 -- Adds trust signal storage to the users table.
 -- Apply BEFORE deploying the updated JaleWhatsAppStack.
 

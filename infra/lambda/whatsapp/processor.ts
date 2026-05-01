@@ -336,9 +336,8 @@ async function hasPlaceholderDependents(
   client: PoolClient,
   placeholderUserId: string,
 ): Promise<boolean> {
-  // Dev databases may lag the latest migration shape. Probe for dependency
-  // columns before referencing them so reconcile does not crash on an older
-  // table that exists without user_id.
+  // Placeholder rows may not be deleted if any audit/application rows already
+  // reference them.
   if (await tableColumnExists(client, 'legal_consent_log', 'user_id')) {
     const legalDeps = await client.query<{ has_deps: boolean }>(
       `SELECT EXISTS (
@@ -349,10 +348,10 @@ async function hasPlaceholderDependents(
     if (legalDeps.rows[0]?.has_deps) return true;
   }
 
-  if (await tableColumnExists(client, 'job_applications', 'user_id')) {
+  if (await tableColumnExists(client, 'job_applications', 'worker_id')) {
     const jobDeps = await client.query<{ has_deps: boolean }>(
       `SELECT EXISTS (
-         SELECT 1 FROM job_applications WHERE user_id = $1
+         SELECT 1 FROM job_applications WHERE worker_id = $1
        ) AS has_deps`,
       [placeholderUserId],
     );
@@ -529,13 +528,20 @@ async function routeMessage(
 
   switch (conv.conversation_state) {
     case 'new':
+      if (isGreetingKeyword(msg.body)) {
+        await handleNewOrRestart(client, conv, msg);
+      } else {
+        await reply(client, msg, 'start_prompt', detectLanguage(msg.body));
+      }
+      return;
+
     case 'otp_timeout':
     case 'legal_declined':
       // On re-contact with a greeting, restart onboarding from `new`.
-      if (isGreetingKeyword(msg.body) || conv.conversation_state === 'new') {
+      if (isGreetingKeyword(msg.body)) {
         await handleNewOrRestart(client, conv, msg);
       } else {
-        await reply(client, msg, 'welcome_new_user', conv.language);
+        await reply(client, msg, 'start_prompt', conv.language);
       }
       return;
 
@@ -1385,6 +1391,33 @@ async function flushProfileAndAdvance(
     );
   }
 
+  await client.query(
+    `INSERT INTO worker_profiles
+       (user_id, full_name, phone, availability, years_experience, location)
+     SELECT
+       id,
+       full_name,
+       COALESCE(whatsapp_number, phone),
+       availability,
+       CASE years_experience
+         WHEN '0-1' THEN 1
+         WHEN '2-4' THEN 3
+         WHEN '5-9' THEN 7
+         WHEN '10+' THEN 10
+         ELSE NULL
+       END,
+       city
+     FROM users
+     WHERE id = $1 AND user_type = 'worker'
+     ON CONFLICT (user_id) DO UPDATE
+       SET full_name = EXCLUDED.full_name,
+           phone = EXCLUDED.phone,
+           availability = EXCLUDED.availability,
+           years_experience = EXCLUDED.years_experience,
+           location = EXCLUDED.location`,
+    [conv.user_id],
+  );
+
   await enterTrustSignalOrIdle(
     client,
     conv,
@@ -1541,7 +1574,17 @@ async function handleIdle(
   if (isJobsKeyword(msg.body)) {
     const jobs = await client.query<{
       id: string; title: string; company: string; location: string; pay: string;
-    }>(`SELECT id, title, company, location, pay FROM jobs ORDER BY created_at DESC LIMIT 5`);
+    }>(
+      `SELECT id,
+              title,
+              COALESCE(company, 'Jale') AS company,
+              location,
+              COALESCE(pay, 'Pay not specified') AS pay
+         FROM jobs
+        WHERE status = 'active'
+        ORDER BY created_at DESC
+        LIMIT 5`,
+    );
     if (jobs.rowCount === 0) {
       await reply(client, msg,'jobs_none', conv.language);
       return;
@@ -1597,7 +1640,17 @@ async function handleJobAction(
   const job = await client.query<{
     id: string; title: string; company: string;
     location: string; pay: string;
-  }>(`SELECT id, title, company, location, pay FROM jobs WHERE id = $1`, [jobId]);
+  }>(
+    `SELECT id,
+            title,
+            COALESCE(company, 'Jale') AS company,
+            location,
+            COALESCE(pay, 'Pay not specified') AS pay
+       FROM jobs
+      WHERE id = $1
+        AND status = 'active'`,
+    [jobId],
+  );
   if (job.rowCount === 0) {
     await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     return;
@@ -1609,9 +1662,9 @@ async function handleJobAction(
 
   if (action === 'accept') {
     await client.query(
-      `INSERT INTO job_applications (job_id, user_id, status)
+      `INSERT INTO job_applications (job_id, worker_id, status)
        VALUES ($1, $2, 'submitted')
-       ON CONFLICT (job_id, user_id) DO NOTHING`,
+       ON CONFLICT (job_id, worker_id) DO NOTHING`,
       [jobId, conv.user_id],
     );
     await queueReply(client, inboundMessageSid, from, 'job_accepted', conv.language);
