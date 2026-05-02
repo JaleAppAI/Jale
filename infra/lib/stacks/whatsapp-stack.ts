@@ -208,7 +208,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        BEDROCK_MODEL_ID: 'amazon.nova-lite-v1:0',
+        BEDROCK_MODEL_ID: 'us.amazon.nova-lite-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
       },
@@ -221,7 +221,10 @@ export class WhatsAppStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
         resources: [
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.amazon.nova-lite-v1:0`,
+          'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
           `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-lite-v1:0`,
+          'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
         ],
       }),
     );
@@ -262,6 +265,7 @@ export class WhatsAppStack extends cdk.Stack {
       payload: sfn.TaskInput.fromObject({
         userId: sfn.JsonPath.stringAt('$.userId'),
         conversationId: sfn.JsonPath.stringAt('$.conversationId'),
+        inboundMessageSid: sfn.JsonPath.stringAt('$.inboundMessageSid'),
         whatsappNumber: sfn.JsonPath.stringAt('$.whatsappNumber'),
         language: sfn.JsonPath.stringAt('$.language'),
         mediaBucketName: sfn.JsonPath.stringAt('$.mediaBucketName'),
@@ -277,6 +281,7 @@ export class WhatsAppStack extends cdk.Stack {
       payload: sfn.TaskInput.fromObject({
         userId: sfn.JsonPath.stringAt('$.userId'),
         conversationId: sfn.JsonPath.stringAt('$.conversationId'),
+        inboundMessageSid: sfn.JsonPath.stringAt('$.inboundMessageSid'),
         whatsappNumber: sfn.JsonPath.stringAt('$.whatsappNumber'),
         language: sfn.JsonPath.stringAt('$.language'),
         status: 'failed',

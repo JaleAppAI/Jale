@@ -12,7 +12,7 @@ const s3 = new S3Client({});
 const bedrock = new BedrockRuntimeClient({});
 
 const BEDROCK_MODEL_ID =
-  process.env.BEDROCK_MODEL_ID ?? 'amazon.nova-lite-v1:0';
+  process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
 
 const CONFIDENCE_THRESHOLD = parseFloat(
   process.env.AI_EXTRACTION_CONFIDENCE_THRESHOLD ?? '0.75',
@@ -26,6 +26,7 @@ const INDUSTRY_KEYWORDS: string[] = JSON.parse(
 export interface AiProfileWriterEvent {
   userId: string;
   conversationId: string;
+  inboundMessageSid?: string;
   whatsappNumber: string;
   language: Lang;
   mediaBucketName?: string;
@@ -50,6 +51,13 @@ interface BedrockResult {
   confidence_scores: Record<string, number>;
   summary_en: string;
   summary_es: string;
+}
+
+function parseBedrockJsonResponse(responseText: string): BedrockResult {
+  const trimmed = responseText.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const jsonText = fenced ? fenced[1].trim() : trimmed;
+  return JSON.parse(jsonText) as BedrockResult;
 }
 
 // ── Transcript reader ────────────────────────────────────────────
@@ -104,7 +112,7 @@ async function extractProfileFromTranscript(
   );
 
   const responseText = res.output?.message?.content?.[0]?.text ?? '';
-  return JSON.parse(responseText) as BedrockResult;
+  return parseBedrockJsonResponse(responseText);
 }
 
 // ── DB helpers ───────────────────────────────────────────────────
@@ -151,6 +159,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
   const {
     userId,
     conversationId,
+    inboundMessageSid,
     whatsappNumber,
     language,
     mediaBucketName,
@@ -158,6 +167,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     voiceMessageMediaId,
     status,
   } = event;
+  const outboxMessageSid = inboundMessageSid ?? conversationId;
 
   const pool = await getDbPool();
   const client = await pool.connect();
@@ -179,13 +189,13 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_seq
            FROM whatsapp_outbox
           WHERE inbound_message_sid = $1`,
-        [conversationId],
+        [outboxMessageSid],
       );
       await client.query(
         `INSERT INTO whatsapp_outbox
            (inbound_message_sid, sequence, whatsapp_number, body)
          VALUES ($1, $2, $3, $4)`,
-        [conversationId, nextSeq.rows[0].next_seq, whatsappNumber, replyBody],
+        [outboxMessageSid, nextSeq.rows[0].next_seq, whatsappNumber, replyBody],
       );
 
       // Transition state to building_profile
@@ -236,14 +246,14 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     const nextSeq = await client.query<{ next_seq: number }>(
       `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_seq
          FROM whatsapp_outbox
-        WHERE inbound_message_sid = $1`,
-      [conversationId],
+       WHERE inbound_message_sid = $1`,
+      [outboxMessageSid],
     );
     await client.query(
       `INSERT INTO whatsapp_outbox
          (inbound_message_sid, sequence, whatsapp_number, body)
        VALUES ($1, $2, $3, $4)`,
-      [conversationId, nextSeq.rows[0].next_seq, whatsappNumber, summaryBody],
+      [outboxMessageSid, nextSeq.rows[0].next_seq, whatsappNumber, summaryBody],
     );
 
     // Transition state to building_profile

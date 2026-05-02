@@ -25,7 +25,7 @@ jest.mock('../../../../lambda/lib/db', () => ({
 
 process.env.DB_SECRET_ARN = 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/db';
 process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
-process.env.BEDROCK_MODEL_ID = 'amazon.nova-lite-v1:0';
+process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
 process.env.AI_EXTRACTION_CONFIDENCE_THRESHOLD = '0.75';
 process.env.AI_INDUSTRY_KEYWORDS = '["electrician","plumber","carpenter"]';
 
@@ -57,6 +57,22 @@ function makeBedrockResponse(fields: object, scores: object, summaryEn: string, 
   };
 }
 
+function makeFencedBedrockResponse(fields: object, scores: object, summaryEn: string, summaryEs: string) {
+  const json = JSON.stringify({
+    extracted_fields: fields,
+    confidence_scores: scores,
+    summary_en: summaryEn,
+    summary_es: summaryEs,
+  });
+  return {
+    output: {
+      message: {
+        content: [{ text: `\`\`\`json\n${json}\n\`\`\`` }],
+      },
+    },
+  };
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockConnect.mockReturnValue({ query: mockQuery, release: mockRelease });
@@ -75,6 +91,7 @@ test('handler writes completed extraction and updates user on success', async ()
   await handler({
     userId: 'user-1',
     conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-1',
     whatsappNumber: '+15125551234',
     language: 'en',
     mediaBucketName: 'jale-worker-media-test',
@@ -101,6 +118,7 @@ test('handler writes completed extraction and updates user on success', async ()
     /INSERT INTO whatsapp_outbox/.test(sql)
   );
   expect(outboxCall).toBeDefined();
+  expect(outboxCall![1][0]).toBe('MMvoice-1');
   // Should have updated conversation state to building_profile
   const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
     /UPDATE whatsapp_conversations/.test(sql) && /building_profile/.test(sql)
@@ -112,6 +130,7 @@ test('handler writes failed extraction and falls back on failed status', async (
   await handler({
     userId: 'user-1',
     conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-failed',
     whatsappNumber: '+15125551234',
     language: 'es',
     status: 'failed',
@@ -136,6 +155,7 @@ test('handler writes failed extraction and falls back on failed status', async (
     /INSERT INTO whatsapp_outbox/.test(sql)
   );
   expect(outboxCall).toBeDefined();
+  expect(outboxCall![1][0]).toBe('MMvoice-failed');
 });
 
 test('fields with confidence below threshold are not written to users', async () => {
@@ -150,6 +170,7 @@ test('fields with confidence below threshold are not written to users', async ()
   await handler({
     userId: 'user-1',
     conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-2',
     whatsappNumber: '+15125551234',
     language: 'en',
     mediaBucketName: 'jale-worker-media-test',
@@ -165,4 +186,30 @@ test('fields with confidence below threshold are not written to users', async ()
   expect(updateCall![0]).toContain('main_trade');
   expect(updateCall![0]).not.toContain('city');
   expect(updateCall![0]).not.toContain('years_experience');
+});
+
+test('handler accepts Bedrock JSON wrapped in a markdown fence', async () => {
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('Soy electricista en Austin'));
+  mockBedrockSend.mockResolvedValue(makeFencedBedrockResponse(
+    { city: 'Austin', main_trade: 'electrician' },
+    { city: 0.9, main_trade: 0.95 },
+    'Electrician in Austin.',
+    'Electricista en Austin.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-3',
+    whatsappNumber: '+15125551234',
+    language: 'es',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-3.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql)
+  );
+  expect(insertCall).toBeDefined();
 });

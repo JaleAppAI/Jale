@@ -673,6 +673,7 @@ async function handleAwaitingMediaVoice(
       input: JSON.stringify({
         userId: conv.user_id,
         conversationId: conv.id,
+        inboundMessageSid: messageSid,
         whatsappNumber: conv.whatsapp_number,
         language: conv.language,
         mediaBucketName: bucketName,
