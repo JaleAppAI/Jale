@@ -20,12 +20,21 @@ import {
 } from '@aws-sdk/client-sfn';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
+import { sendPendingOutbox } from './lib/outbox';
 import {
   t,
   detectLanguage,
   type Lang,
   type TemplateKey,
 } from './lib/templates';
+import {
+  FIELD_PROMPT_KEY,
+  loadProfileFromDb,
+  loadTradeFromDb,
+  profileQuestionBody,
+  trustSignalColumnsAvailable,
+  upsertWorkerProfileFromUsers,
+} from './lib/profile-flow';
 import {
   isGreetingKeyword,
   isJobsKeyword,
@@ -74,30 +83,6 @@ async function getTwilioSecret(): Promise<TwilioSecret> {
   cachedTwilio = JSON.parse(r.SecretString) as TwilioSecret;
   twilioCacheExp = now + CACHE_TTL_MS;
   return cachedTwilio;
-}
-
-// ── Twilio send (session-message, plain text) ───────────────────
-async function sendTwilioMessage(to: string, body: string): Promise<void> {
-  const secret = await getTwilioSecret();
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
-  const form = new URLSearchParams({
-    MessagingServiceSid: secret.messagingServiceSid,
-    To: to, // Already in "whatsapp:+1..." format from Twilio inbound event
-    Body: body,
-  });
-  const auth = Buffer.from(`${secret.accountSid}:${secret.authToken}`).toString('base64');
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: form.toString(),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Twilio send failed ${res.status}: ${text}`);
-  }
 }
 
 // ── Outbox helpers (Fix Plan v3, 2026-04-17) ────────────────────
@@ -152,55 +137,6 @@ async function reply(
   vars?: Record<string, string>,
 ): Promise<void> {
   await queueReply(client, msg.messageSid, msg.from, key, lang, vars);
-}
-
-/**
- * Drain pending outbox rows to Twilio. Called AFTER the DB transaction
- * commits. On first failure, records the error and re-throws so the SQS
- * handler can retry; subsequent retry invocations resume from 'db_committed'
- * via `processRecord`'s conflict branch and re-enter this function.
- */
-async function sendPendingOutbox(
-  client: PoolClient,
-  inboundMessageSid: string,
-): Promise<void> {
-  const pending = await client.query<{
-    id: string;
-    sequence: number;
-    whatsapp_number: string;
-    body: string;
-  }>(
-    `SELECT id, sequence, whatsapp_number, body
-       FROM whatsapp_outbox
-      WHERE inbound_message_sid = $1
-        AND status IN ('pending', 'failed')
-      ORDER BY sequence`,
-    [inboundMessageSid],
-  );
-  for (const row of pending.rows) {
-    try {
-      await sendTwilioMessage(`whatsapp:${row.whatsapp_number}`, row.body);
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'sent', sent_at = now()
-          WHERE id = $1`,
-        [row.id],
-      );
-    } catch (err) {
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'failed',
-                attempt_count = attempt_count + 1,
-                last_error = $1
-          WHERE id = $2`,
-        [(err as Error).message, row.id],
-      );
-      // Propagate so SQS retries the whole message. The next retry will see
-      // `processed_messages.status = 'db_committed'` and re-enter
-      // sendPendingOutbox without re-executing any state mutations.
-      throw err;
-    }
-  }
 }
 
 async function markCompleted(
@@ -1271,30 +1207,6 @@ async function enterProfileBuilderOrIdle(
   await queueReply(client, messageSid, from, 'ask_media_photo', conv.language);
 }
 
-async function loadProfileFromDb(
-  client: PoolClient,
-  userId: string,
-): Promise<Partial<Record<ProfileField, string | boolean | null>>> {
-  const r = await client.query(
-    `SELECT full_name, city, main_trade, main_trade_other,
-            years_experience, has_transportation, availability
-       FROM users WHERE id = $1`,
-    [userId],
-  );
-  return (r.rows[0] ?? {}) as Partial<Record<ProfileField, string | boolean | null>>;
-}
-
-async function loadTradeFromDb(
-  client: PoolClient,
-  userId: string,
-): Promise<string> {
-  const r = await client.query<{ main_trade: string | null }>(
-    `SELECT main_trade FROM users WHERE id = $1`,
-    [userId],
-  );
-  return r.rows[0]?.main_trade ?? 'other';
-}
-
 interface WorkerProfileSummary {
   phone: string | null;
   whatsapp_number: string | null;
@@ -1464,23 +1376,6 @@ function labelFor(
   return value ? labels[field][value]?.[lang] ?? value : (lang === 'es' ? 'Sin completar' : 'Not set');
 }
 
-async function trustSignalColumnsAvailable(client: PoolClient): Promise<boolean> {
-  const hasSignals = await tableColumnExists(client, 'users', 'trust_signals');
-  if (!hasSignals) return false;
-  return tableColumnExists(client, 'users', 'trust_signals_completed_at');
-}
-
-// Mapping from ProfileField → question template key
-const FIELD_PROMPT_KEY: Record<ProfileField, TemplateKey> = {
-  full_name: 'ask_name',
-  city: 'ask_city',
-  main_trade: 'ask_trade',
-  main_trade_other: 'ask_trade_freetext',
-  years_experience: 'ask_experience',
-  has_transportation: 'ask_transportation',
-  availability: 'ask_availability',
-};
-
 async function askProfileQuestion(
   client: PoolClient,
   inboundMessageSid: string,
@@ -1488,7 +1383,7 @@ async function askProfileQuestion(
   field: ProfileField,
   lang: Lang,
 ): Promise<void> {
-  await queueReply(client, inboundMessageSid, to, FIELD_PROMPT_KEY[field], lang);
+  await queueText(client, inboundMessageSid, to, profileQuestionBody(field, lang));
 }
 
 // ── building_profile — pending-field model (Fix 3, 2026-04-17) ──
@@ -1613,32 +1508,7 @@ async function flushProfileAndAdvance(
     );
   }
 
-  await client.query(
-    `INSERT INTO worker_profiles
-       (user_id, full_name, phone, availability, years_experience, location)
-     SELECT
-       id,
-       full_name,
-       COALESCE(whatsapp_number, phone),
-       availability,
-       CASE years_experience
-         WHEN '0-1' THEN 1
-         WHEN '2-4' THEN 3
-         WHEN '5-9' THEN 7
-         WHEN '10+' THEN 10
-         ELSE NULL
-       END,
-       city
-     FROM users
-     WHERE id = $1 AND user_type = 'worker'
-     ON CONFLICT (user_id) DO UPDATE
-       SET full_name = EXCLUDED.full_name,
-           phone = EXCLUDED.phone,
-           availability = EXCLUDED.availability,
-           years_experience = EXCLUDED.years_experience,
-           location = EXCLUDED.location`,
-    [conv.user_id],
-  );
+  await upsertWorkerProfileFromUsers(client, conv.user_id);
 
   await enterTrustSignalOrIdle(
     client,

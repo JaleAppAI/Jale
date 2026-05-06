@@ -43,7 +43,7 @@ const mockSfnSend = jest.fn();
 jest.mock('@aws-sdk/client-sfn', () => ({
   SFNClient: jest.fn(() => ({ send: mockSfnSend })),
   StartExecutionCommand: jest.fn((args) => ({ input: args, __type: 'StartExecution' })),
-}));
+}), { virtual: true });
 
 jest.mock('../../../../lambda/whatsapp/lib/media', () => ({
   detectMediaCategory: jest.fn(),
@@ -894,6 +894,7 @@ describe('Processor Lambda — Fix Plan v3 (2026-04-17)', () => {
 describe('awaiting_media_photo state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -1019,6 +1020,7 @@ describe('awaiting_media_photo state', () => {
 describe('awaiting_media_voice state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -1115,6 +1117,7 @@ describe('awaiting_media_voice state', () => {
 describe('processing_ai state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({

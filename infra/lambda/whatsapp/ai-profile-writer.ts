@@ -1,4 +1,5 @@
 import type { Handler } from 'aws-lambda';
+import type { PoolClient } from 'pg';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import {
   BedrockRuntimeClient,
@@ -6,6 +7,8 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import { getDbPool } from '../lib/db';
 import { t, type Lang } from './lib/templates';
+import { sendPendingOutbox } from './lib/outbox';
+import { autoAdvanceProfileAfterAi } from './lib/profile-flow';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const s3 = new S3Client({});
@@ -154,6 +157,26 @@ function buildUserUpdateSql(
   return { sql, params };
 }
 
+async function queueOutboxText(
+  client: PoolClient,
+  inboundMessageSid: string,
+  whatsappNumber: string,
+  body: string,
+): Promise<void> {
+  const nextSeq = await client.query<{ next_seq: number }>(
+    `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_seq
+       FROM whatsapp_outbox
+      WHERE inbound_message_sid = $1`,
+    [inboundMessageSid],
+  );
+  await client.query(
+    `INSERT INTO whatsapp_outbox
+       (inbound_message_sid, sequence, whatsapp_number, body)
+     VALUES ($1, $2, $3, $4)`,
+    [inboundMessageSid, nextSeq.rows[0].next_seq, whatsappNumber, body],
+  );
+}
+
 // ── Handler ─────────────────────────────────────────────────────
 export const handler: Handler<AiProfileWriterEvent> = async (event) => {
   const {
@@ -171,6 +194,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
 
   const pool = await getDbPool();
   const client = await pool.connect();
+  let committed = false;
   try {
     await client.query('BEGIN');
 
@@ -184,30 +208,27 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       );
 
       // Queue fallback reply
-      const replyBody = t('ai_extraction_failed', language);
-      const nextSeq = await client.query<{ next_seq: number }>(
-        `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_seq
-           FROM whatsapp_outbox
-          WHERE inbound_message_sid = $1`,
-        [outboxMessageSid],
-      );
-      await client.query(
-        `INSERT INTO whatsapp_outbox
-           (inbound_message_sid, sequence, whatsapp_number, body)
-         VALUES ($1, $2, $3, $4)`,
-        [outboxMessageSid, nextSeq.rows[0].next_seq, whatsappNumber, replyBody],
+      await queueOutboxText(
+        client,
+        outboxMessageSid,
+        whatsappNumber,
+        t('ai_extraction_failed', language),
       );
 
-      // Transition state to building_profile
-      await client.query(
-        `UPDATE whatsapp_conversations
-            SET conversation_state = 'building_profile',
-                updated_at = NOW()
-          WHERE id = $1`,
-        [conversationId],
+      await autoAdvanceProfileAfterAi(
+        client,
+        {
+          userId,
+          conversationId,
+          inboundMessageSid: outboxMessageSid,
+          language,
+          queueBody: (body) => queueOutboxText(client, outboxMessageSid, whatsappNumber, body),
+        },
       );
 
       await client.query('COMMIT');
+      committed = true;
+      await sendPendingOutbox(client, outboxMessageSid);
       return;
     }
 
@@ -242,32 +263,31 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
 
     // Queue confirmation summary
     const summary = language === 'en' ? result.summary_en : result.summary_es;
-    const summaryBody = t('ai_extraction_summary', language, { summary });
-    const nextSeq = await client.query<{ next_seq: number }>(
-      `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_seq
-         FROM whatsapp_outbox
-       WHERE inbound_message_sid = $1`,
-      [outboxMessageSid],
-    );
-    await client.query(
-      `INSERT INTO whatsapp_outbox
-         (inbound_message_sid, sequence, whatsapp_number, body)
-       VALUES ($1, $2, $3, $4)`,
-      [outboxMessageSid, nextSeq.rows[0].next_seq, whatsappNumber, summaryBody],
+    await queueOutboxText(
+      client,
+      outboxMessageSid,
+      whatsappNumber,
+      t('ai_extraction_summary', language, { summary }),
     );
 
-    // Transition state to building_profile
-    await client.query(
-      `UPDATE whatsapp_conversations
-          SET conversation_state = 'building_profile',
-              updated_at = NOW()
-        WHERE id = $1`,
-      [conversationId],
+    await autoAdvanceProfileAfterAi(
+      client,
+      {
+        userId,
+        conversationId,
+        inboundMessageSid: outboxMessageSid,
+        language,
+        queueBody: (body) => queueOutboxText(client, outboxMessageSid, whatsappNumber, body),
+      },
     );
 
     await client.query('COMMIT');
+    committed = true;
+    await sendPendingOutbox(client, outboxMessageSid);
   } catch (err) {
-    try { await client.query('ROLLBACK'); } catch { /* swallow */ }
+    if (!committed) {
+      try { await client.query('ROLLBACK'); } catch { /* swallow */ }
+    }
     console.error('[ai-profile-writer] failed:', (err as Error).message);
     throw err;
   } finally {

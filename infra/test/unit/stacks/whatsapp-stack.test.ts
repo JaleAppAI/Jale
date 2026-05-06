@@ -217,6 +217,19 @@ describe('WhatsAppStack', () => {
       });
     });
 
+    test('ai-profile-writer Lambda has DB, Twilio, and media env vars', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('ai-profile-writer'),
+        Environment: {
+          Variables: Match.objectLike({
+            DB_SECRET_ARN: Match.anyValue(),
+            TWILIO_SECRET_ARN: Match.anyValue(),
+            MEDIA_BUCKET_NAME: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
     test('Processor Lambda has MEDIA_BUCKET_NAME env var', () => {
       template.hasResourceProperties('AWS::Lambda::Function', {
         Description: Match.stringLikeRegexp('SQS processor'),

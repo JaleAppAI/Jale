@@ -207,6 +207,7 @@ export class WhatsAppStack extends cdk.Stack {
       timeout: 60,
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
         BEDROCK_MODEL_ID: 'us.amazon.nova-lite-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
@@ -215,6 +216,7 @@ export class WhatsAppStack extends cdk.Stack {
       nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
+    twilioSecret.grantRead(aiProfileWriterLambda.function);
     mediaBucket.grantRead(aiProfileWriterLambda.function);
 
     aiProfileWriterLambda.function.addToRolePolicy(
