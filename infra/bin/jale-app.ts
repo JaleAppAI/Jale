@@ -63,6 +63,9 @@ const api = new ApiStack(app, 'JaleApiStack', {
   workerPool: auth.workerPool,
   employerPool: auth.employerPool,
   candidateMaterializationQueue: matching.candidateMaterializationQueue,
+  // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
+  // references this API. Enable cross-region exports.
+  crossRegionReferences: true,
 });
 
 new LegalStack(app, 'JaleLegalStack', {
@@ -136,9 +139,17 @@ new DocumentsStack(app, 'JaleDocumentsStack', {
   requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
 });
 
-new FrontendStack(app, 'JaleFrontendStack', {
-  env,
+// FrontendStack — Lambda + CloudFront + Route 53 for jaleapp.ai
+// Deployed to us-east-1 because CloudFront ACM certificates must live there.
+// Pass surveyOriginDomain via context to enable /survey/* routing to Amplify.
+const frontend = new FrontendStack(app, 'JaleFrontendStack', {
+  env: { account: env.account, region: 'us-east-1' },
   api: api.api,
   domainName: app.node.tryGetContext('domainName') ?? 'jaleapp.ai',
   hostedZoneId: app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3',
+  surveyOriginDomain: app.node.tryGetContext('surveyOriginDomain'),
+  // ApiStack is in another region; allow cross-region references for the
+  // CloudFront /api/* origin (RestApiOrigin reads stage URL at synth time).
+  crossRegionReferences: true,
 });
+frontend.addDependency(api);
