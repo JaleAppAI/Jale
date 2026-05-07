@@ -5,6 +5,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
@@ -16,6 +17,7 @@ export interface ApiStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly dbSecret: secretsmanager.ISecret;
+  readonly candidateMaterializationQueue?: sqs.IQueue;
 }
 
 export class ApiStack extends cdk.Stack {

@@ -53,7 +53,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const result = await client.query(
       `SELECT u.id, u.user_type, u.email, u.phone, u.full_name, u.tenant_id, u.created_at,
-          wp.skills, wp.availability, wp.years_experience, wp.location, wp.bio
+          ARRAY(
+            SELECT ws.skill
+            FROM worker_skills ws
+            WHERE ws.worker_id = wp.user_id
+            ORDER BY ws.skill
+          ) AS skills,
+          wp.availability, wp.years_experience, wp.location, wp.bio
    FROM users u
    LEFT JOIN worker_profiles wp ON wp.user_id = u.id
    WHERE u.cognito_sub = $1`,

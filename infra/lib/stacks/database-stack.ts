@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as rds from 'aws-cdk-lib/aws-rds';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { NetworkStack } from './network-stack';
 
@@ -11,7 +12,8 @@ export interface DatabaseStackProps extends cdk.StackProps {
 
 export class DatabaseStack extends cdk.Stack {
   public readonly dbInstance: rds.DatabaseInstance;
-  public readonly dbSecret: cdk.aws_secretsmanager.ISecret;
+  public readonly dbSecret: secretsmanager.ISecret;
+  public readonly matchingDbSecret: secretsmanager.ISecret;
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
 
@@ -57,6 +59,15 @@ export class DatabaseStack extends cdk.Stack {
     });
 
     this.dbSecret = this.dbInstance.secret!;
+    this.matchingDbSecret = new secretsmanager.Secret(this, 'MatchingDbSecret', {
+      secretName: 'jale/matching/db',
+      description: 'jale_matching role DB credentials for matching engine reads/writes',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({ username: 'jale_matching' }),
+        generateStringKey: 'password',
+        excludePunctuation: true,
+      },
+    });
     this.dbEndpoint = this.dbInstance.dbInstanceEndpointAddress;
     this.dbPort = this.dbInstance.dbInstanceEndpointPort;
   }

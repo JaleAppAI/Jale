@@ -23,6 +23,7 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
   /** Existing API Gateway (from ApiStack) — webhook route added here */
   readonly api: apigateway.RestApi;
+  readonly workerRerankQueue?: sqs.IQueue;
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { setJobCoordinates } from '../lib/location';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -21,6 +22,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       job_type?: string;
       description?: string;
       required_docs?: string[];
+      latitude?: number;
+      longitude?: number;
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -49,6 +52,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'invalid_required_docs', valid: VALID_DOC_TYPES }),
       };
+    }
+
+    const hasLatitude = Object.prototype.hasOwnProperty.call(body, 'latitude');
+    const hasLongitude = Object.prototype.hasOwnProperty.call(body, 'longitude');
+    if (hasLatitude !== hasLongitude) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_coordinates' }) };
+    }
+    if (hasLatitude) {
+      if (typeof body.latitude !== 'number' || !Number.isFinite(body.latitude) || body.latitude < -90 || body.latitude > 90) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_latitude' }) };
+      }
+      if (typeof body.longitude !== 'number' || !Number.isFinite(body.longitude) || body.longitude < -180 || body.longitude > 180) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_longitude' }) };
+      }
     }
 
     const pool = await getDbPool();
@@ -80,13 +97,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        RETURNING id, title, location, job_type, status, required_docs, created_at`,
       [cognitoSub, title.trim(), location.trim(), job_type, description ?? null, required_docs],
     );
+    const job = result.rows[0];
+
+    if (hasLatitude) {
+      await setJobCoordinates(client, job.id, body.latitude!, body.longitude!, 'manual');
+    }
 
     await client.query('COMMIT');
 
     return {
       statusCode: 201,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ ...result.rows[0], applicant_count: 0 }),
+      body: JSON.stringify({ ...job, applicant_count: 0 }),
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
