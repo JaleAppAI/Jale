@@ -36,6 +36,10 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       domainName: 'example.com',
       hostedZoneId: 'Z1234567890ABC',
       surveyOriginDomain: 'd1a2b3c4.amplifyapp.com',
+      workerPoolId: 'us-east-1_TEST',
+      workerClientId: 'test-worker-client',
+      employerPoolId: 'us-east-1_EMPL',
+      employerClientId: 'test-employer-client',
     });
 
     template = Template.fromStack(stack);
@@ -169,6 +173,10 @@ describeIfDocker('FrontendStack without survey origin', () => {
       domainName: 'example.com',
       hostedZoneId: 'Z1234567890ABC',
       // surveyOriginDomain omitted
+      workerPoolId: 'us-east-1_TEST',
+      workerClientId: 'test-worker-client',
+      employerPoolId: 'us-east-1_EMPL',
+      employerClientId: 'test-employer-client',
     });
 
     const tpl = Template.fromStack(stack);

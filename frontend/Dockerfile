@@ -10,13 +10,27 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
 
-# Install full dependencies (including devDeps needed for build)
 COPY package.json package-lock.json ./
 RUN npm ci
 
 # ─── Stage 2: Build ───────────────────────────────────────
 FROM node:20-alpine AS builder
 WORKDIR /app
+
+# Public Next.js env vars MUST be present at build time — they get inlined
+# into the client JS bundle. Pass them via `docker build --build-arg ...`
+# or via CDK `buildArgs` in DockerImageCode.fromImageAsset().
+ARG NEXT_PUBLIC_WORKER_POOL_ID
+ARG NEXT_PUBLIC_WORKER_CLIENT_ID
+ARG NEXT_PUBLIC_EMPLOYER_POOL_ID
+ARG NEXT_PUBLIC_EMPLOYER_CLIENT_ID
+ARG NEXT_PUBLIC_API_BASE_URL
+
+ENV NEXT_PUBLIC_WORKER_POOL_ID=$NEXT_PUBLIC_WORKER_POOL_ID
+ENV NEXT_PUBLIC_WORKER_CLIENT_ID=$NEXT_PUBLIC_WORKER_CLIENT_ID
+ENV NEXT_PUBLIC_EMPLOYER_POOL_ID=$NEXT_PUBLIC_EMPLOYER_POOL_ID
+ENV NEXT_PUBLIC_EMPLOYER_CLIENT_ID=$NEXT_PUBLIC_EMPLOYER_CLIENT_ID
+ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .

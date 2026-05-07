@@ -24,6 +24,17 @@ export interface FrontendStackProps extends cdk.StackProps {
    * (e.g., 'd1a2b3c4.amplifyapp.com'). If omitted, no /survey/* behavior is added.
    */
   readonly surveyOriginDomain?: string;
+  /**
+   * Cognito Worker pool ID (NEXT_PUBLIC_*; baked into JS bundle at build time).
+   * Read from CDK context or env var if not provided.
+   */
+  readonly workerPoolId: string;
+  /** Cognito Worker app client ID. */
+  readonly workerClientId: string;
+  /** Cognito Employer pool ID. */
+  readonly employerPoolId: string;
+  /** Cognito Employer app client ID. */
+  readonly employerClientId: string;
 }
 
 /**
@@ -76,11 +87,20 @@ export class FrontendStack extends cdk.Stack {
 
     // ── Lambda (Next.js server in container image) ──────────────────
     // CDK builds frontend/Dockerfile, pushes to ECR, and deploys the Lambda.
+    // Public Cognito + API config must be passed at build time (NEXT_PUBLIC_*
+    // gets inlined into the client JS bundle).
     const frontendDir = path.resolve(__dirname, '..', '..', '..', 'frontend');
     this.nextjsFunction = new lambda.DockerImageFunction(this, 'NextjsFunction', {
       functionName: 'jale-frontend-nextjs',
       code: lambda.DockerImageCode.fromImageAsset(frontendDir, {
         platform: Platform.LINUX_AMD64,
+        buildArgs: {
+          NEXT_PUBLIC_WORKER_POOL_ID: props.workerPoolId,
+          NEXT_PUBLIC_WORKER_CLIENT_ID: props.workerClientId,
+          NEXT_PUBLIC_EMPLOYER_POOL_ID: props.employerPoolId,
+          NEXT_PUBLIC_EMPLOYER_CLIENT_ID: props.employerClientId,
+          NEXT_PUBLIC_API_BASE_URL: `https://${props.domainName}/api`,
+        },
       }),
       memorySize: 1024, // Next.js needs >512 MB; 1024 keeps cold starts reasonable
       timeout: cdk.Duration.seconds(30),
@@ -93,8 +113,8 @@ export class FrontendStack extends cdk.Stack {
         // AWS Lambda Web Adapter config
         AWS_LAMBDA_EXEC_WRAPPER: '/opt/extensions/lambda-adapter',
         AWS_LWA_INVOKE_MODE: 'response_stream',
-        // Frontend uses /api/* relative path; CloudFront forwards to API Gateway
-        NEXT_PUBLIC_API_BASE: `https://${props.domainName}/api`,
+        // Server-side runtime fallback (NEXT_PUBLIC_* are already inlined at build time)
+        NEXT_PUBLIC_API_BASE_URL: `https://${props.domainName}/api`,
       },
     });
 
