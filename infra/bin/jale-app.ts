@@ -8,6 +8,7 @@ import { AuthStack } from '../lib/stacks/auth-stack';
 import { ApiStack } from '../lib/stacks/api-stack';
 import { LegalStack } from '../lib/stacks/legal-stack';
 import { MatchingStack } from '../lib/stacks/matching-stack';
+import { AiStack } from '../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../lib/stacks/whatsapp-stack';
 import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
@@ -33,6 +34,14 @@ const auth = new AuthStack(app, 'JaleAuthStack', {
   lambdaSg: network.lambdaSg,
   dbSecret: database.dbSecret,
   cognitoSmsRole: network.cognitoSmsRole,
+});
+
+const ai = new AiStack(app, 'JaleAiStack', {
+  env,
+  vpc: network.vpc,
+  privateSubnets: network.privateSubnets,
+  lambdaSg: network.lambdaSg,
+  aiDbSecret: database.aiDbSecret,
 });
 
 const matching = new MatchingStack(app, 'JaleMatchingStack', {
@@ -94,6 +103,7 @@ const bastion = new BastionStack(app, 'JaleBastionStack', {
 // no cycle: BastionStack → DatabaseStack is a valid forward edge.
 database.dbSecret.grantRead(bastion.bastionHost.instance.role);
 database.matchingDbSecret.grantRead(bastion.bastionHost.instance.role);
+database.aiDbSecret.grantRead(bastion.bastionHost.instance.role);
 
 // Bastion needs scoped access to internal DB role secrets used by migration and
 // runbook operations. The WhatsApp migration script creates/updates its secret;
@@ -109,6 +119,7 @@ bastion.bastionHost.instance.role.addToPrincipalPolicy(
     resources: [
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/whatsapp/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/matching/db*`,
+      `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/ai/db*`,
     ],
   }),
 );
