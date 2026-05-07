@@ -22,6 +22,7 @@ export type ConversationState =
   | 'processing_ai'
   | 'building_profile'
   | 'building_trust_signal'
+  | 'building_custom_trust'
   | 'legal_declined'
   | 'otp_timeout'
   | 'idle';
@@ -117,6 +118,12 @@ export interface ProfileStateContext {
   field_sids?: Partial<Record<ProfileField, string>>;
   trust_step?: number;
   trust_answers?: TrustAnswer[];
+  custom_trust_step?: number;
+  custom_trust_answers?: unknown[];
+  custom_trust_profession?: string;
+  custom_trust_questions?: unknown[];
+  custom_trust_assessment_id?: string;
+  processing_ai_type?: 'profile' | 'trust';
   recent_jobs?: string[];
   /** ARN of the running Step Functions execution for the AI pipeline. */
   ai_pipeline_execution_arn?: string;

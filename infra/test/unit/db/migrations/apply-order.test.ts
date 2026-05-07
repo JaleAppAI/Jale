@@ -18,6 +18,8 @@ const expectedBaselineMigrations = [
   '008_worker_skills.sql',
   '009_location_foundation.sql',
   '010_matching_write_semantics.sql',
+  '011_ai_profile_media.sql',
+  '012_ai_trust_assessment.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -71,7 +73,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-010 readiness baseline order', () => {
+  it('locks the 001-012 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -137,6 +139,20 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('ALTER TABLE worker_job_impressions FORCE ROW LEVEL SECURITY');
     expect(migration).toContain('ALTER TABLE worker_match_log FORCE ROW LEVEL SECURITY');
     expect(migration).toContain('CREATE POLICY matching_write_candidates');
+  });
+
+  it('adds AI trust assessment tables, role, RLS, and denormalized score in migration 012', () => {
+    const migration = readMigration('012_ai_trust_assessment.sql');
+
+    expect(migration).toContain('CREATE ROLE jale_ai LOGIN');
+    expectTable(migration, 'trade_questions');
+    expectTable(migration, 'worker_trust_assessments');
+    expect(migration).toContain('idx_worker_trust_assessments_active');
+    expect(migration).toContain('ALTER TABLE worker_trust_assessments FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('CREATE POLICY wta_ai_service_rows');
+    expect(migration).toContain('GRANT SELECT (id, user_id, profession_key, answers, status, created_at)');
+    expect(migration).toContain('ADD COLUMN trade_competency_score INTEGER');
+    expect(migration).toContain('CREATE POLICY users_ai_score_update');
   });
 
   it('documents canonical matching source fields in the architecture guide', () => {
