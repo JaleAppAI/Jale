@@ -147,6 +147,33 @@ test('handler writes completed extraction and updates user on success', async ()
   expect(commitOrder).toBeLessThan(mockSendPendingOutbox.mock.invocationCallOrder[0]);
 });
 
+test('handler accepts VoiceTranscriptionPipeline completion envelope', async () => {
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('I am a plumber in Denver'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { city: 'Denver', main_trade: 'plumber' },
+    { city: 0.9, main_trade: 0.95 },
+    'Plumber in Denver.',
+    'Plomero en Denver.',
+  ));
+
+  await handler({
+    status: 'COMPLETED',
+    executionContext: {
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      inboundMessageSid: 'MMvoice-envelope',
+      whatsappNumber: '+15125551234',
+      language: 'en',
+      mediaBucketName: 'jale-worker-media-test',
+      transcriptOutputKey: 'user-1/transcripts/job-envelope.json',
+    },
+  }, {} as any, () => {});
+
+  expect(mockS3Send).toHaveBeenCalledTimes(1);
+  expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+  expect(outboxInserts()[0][1][0]).toBe('MMvoice-envelope');
+});
+
 test('handler writes failed extraction and falls back on failed status', async () => {
   await handler({
     userId: 'user-1',

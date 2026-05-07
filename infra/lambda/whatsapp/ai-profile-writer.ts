@@ -26,7 +26,7 @@ const INDUSTRY_KEYWORDS: string[] = JSON.parse(
 );
 
 // ── Types ───────────────────────────────────────────────────────
-export interface AiProfileWriterEvent {
+export interface AiProfileWriterContext {
   userId: string;
   conversationId: string;
   inboundMessageSid?: string;
@@ -35,9 +35,21 @@ export interface AiProfileWriterEvent {
   mediaBucketName?: string;
   transcriptOutputKey?: string;
   voiceMessageMediaId?: string;
+}
+
+export interface VoicePipelineAiProfileWriterEvent {
+  status: 'COMPLETED' | 'FAILED';
+  executionContext: AiProfileWriterContext;
+}
+
+interface LegacyAiProfileWriterEvent extends AiProfileWriterContext {
   status: 'transcription_complete' | 'failed';
   errorMessage?: string;
 }
+
+export type AiProfileWriterEvent =
+  | VoicePipelineAiProfileWriterEvent
+  | LegacyAiProfileWriterEvent;
 
 interface ExtractedFields {
   full_name?: string | null;
@@ -191,7 +203,23 @@ async function setWorkerRlsContextByUserId(
 }
 
 // ── Handler ─────────────────────────────────────────────────────
+function normalizeEvent(event: AiProfileWriterEvent): {
+  ctx: AiProfileWriterContext;
+  status: 'COMPLETED' | 'FAILED';
+} {
+  if ('executionContext' in event) {
+    return { ctx: event.executionContext, status: event.status };
+  }
+
+  const { status: legacyStatus, errorMessage: _errorMessage, ...ctx } = event;
+  return {
+    ctx,
+    status: legacyStatus === 'failed' ? 'FAILED' : 'COMPLETED',
+  };
+}
+
 export const handler: Handler<AiProfileWriterEvent> = async (event) => {
+  const normalized = normalizeEvent(event);
   const {
     userId,
     conversationId,
@@ -201,8 +229,8 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     mediaBucketName,
     transcriptOutputKey,
     voiceMessageMediaId,
-    status,
-  } = event;
+  } = normalized.ctx;
+  const status = normalized.status;
   const outboxMessageSid = inboundMessageSid ?? conversationId;
 
   const pool = await getDbPool();
@@ -212,7 +240,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     await client.query('BEGIN');
     await setWorkerRlsContextByUserId(client, userId);
 
-    if (status === 'failed') {
+    if (status === 'FAILED') {
       // Write failed extraction record
       await client.query(
         `INSERT INTO worker_profile_ai_extractions
@@ -246,9 +274,9 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       return;
     }
 
-    // status === 'transcription_complete'
+    // status === 'COMPLETED'
     if (!mediaBucketName || !transcriptOutputKey) {
-      throw new Error('mediaBucketName and transcriptOutputKey required for transcription_complete');
+      throw new Error('mediaBucketName and transcriptOutputKey required for completed transcription');
     }
 
     const transcript = await readTranscript(mediaBucketName, transcriptOutputKey);
