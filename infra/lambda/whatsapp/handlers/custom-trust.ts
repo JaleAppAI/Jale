@@ -30,9 +30,9 @@ export interface TrustAnswer {
 
 interface ConvRow {
   id: string;
-  user_id: string;
+  user_id: string | null;
   language: Lang;
-  state_context: Record<string, unknown>;
+  state_context: Record<string, unknown> | object;
 }
 
 interface IncomingMessage {
@@ -131,7 +131,7 @@ export async function handleBuildingCustomTrust(
 ): Promise<void> {
   if (!conv.user_id) throw new Error('user_id missing in building_custom_trust');
 
-  const ctx = conv.state_context ?? {};
+  const ctx = (conv.state_context ?? {}) as Record<string, unknown>;
   const step = (ctx.custom_trust_step as number) ?? 0;
   const professionRaw = (ctx.custom_trust_profession as string) ?? '';
   const professionKey = normalizeProfession(professionRaw);

@@ -62,6 +62,7 @@ import {
   uploadMediaToS3,
 } from './lib/media';
 import { decodeIdTokenSub } from './lib/jwt';
+import { handleBuildingCustomTrust } from './handlers/custom-trust';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const cognito = new CognitoIdentityProviderClient({});
@@ -659,8 +660,13 @@ async function handleProcessingAi(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<void> {
-  // State transition happens when ai-profile-writer updates the conversation.
-  // While waiting, just acknowledge any worker message.
+  const aiType = conv.state_context?.processing_ai_type;
+  if (aiType === 'trust') {
+    await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
+    return;
+  }
+
+  // Profile or legacy state transition happens when ai-profile-writer updates the conversation.
   await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
 }
 
@@ -736,6 +742,10 @@ async function routeMessage(
 
     case 'building_trust_signal':
       await handleBuildingTrustSignal(client, conv, msg);
+      return;
+
+    case 'building_custom_trust':
+      await handleBuildingCustomTrust(client, conv, msg);
       return;
 
     case 'idle':
@@ -1548,6 +1558,51 @@ async function enterTrustSignalOrIdle(
 ): Promise<void> {
   if (!conv.user_id) throw new Error('user_id missing before trust signal');
 
+  const trade = tradeHint ?? await loadTradeFromDb(client, conv.user_id);
+
+  if (trade === 'other') {
+    const tradeOtherRow = await client.query<{ main_trade_other: string | null }>(
+      'SELECT main_trade_other FROM users WHERE id = $1',
+      [conv.user_id],
+    );
+    const professionRaw = tradeOtherRow.rows[0]?.main_trade_other;
+    if (professionRaw) {
+      const { normalizeProfession } = await import('./handlers/custom-trust');
+      const professionKey = normalizeProfession(professionRaw);
+      const existingWta = await client.query(
+        `SELECT id FROM worker_trust_assessments
+         WHERE user_id = $1 AND profession_key = $2
+           AND status IN ('pending','scoring','scored','failed')`,
+        [conv.user_id, professionKey],
+      );
+
+      if (existingWta.rows.length === 0) {
+        const assessmentId = randomUUID();
+        await updateConversation(client, conv.id, {
+          conversation_state: 'building_custom_trust',
+          state_context: {
+            custom_trust_step: 0,
+            custom_trust_answers: [],
+            custom_trust_profession: professionRaw,
+            custom_trust_questions: [],
+            custom_trust_assessment_id: assessmentId,
+          },
+          last_processed_message_sid: messageSid,
+        });
+        await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+        return;
+      }
+    }
+
+    await updateConversation(client, conv.id, {
+      conversation_state: 'idle',
+      state_context: {},
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+    return;
+  }
+
   if (!await trustSignalColumnsAvailable(client)) {
     console.warn('[processor] trust signal columns missing; skipping trust flow', {
       userId: conv.user_id,
@@ -1568,7 +1623,6 @@ async function enterTrustSignalOrIdle(
   const trustDone = !!trust.rows[0]?.trust_signals_completed_at;
 
   if (!trustDone) {
-    const trade = tradeHint ?? await loadTradeFromDb(client, conv.user_id);
     await updateConversation(client, conv.id, {
       conversation_state: 'building_trust_signal',
       state_context: { trust_step: 0, trust_answers: [] },
@@ -1650,6 +1704,56 @@ async function handleBuildingTrustSignal(
       WHERE id = $2`,
     [JSON.stringify(signalMap), conv.user_id],
   );
+
+  type SeededTrustQuestion = { q_en: string; q_es: string };
+  const knownTradeQuestions = await client.query<{ questions: SeededTrustQuestion[] }>(
+    'SELECT questions FROM trade_questions WHERE profession_key = $1 AND is_seeded = true',
+    [trade],
+  );
+  if (knownTradeQuestions.rows.length > 0) {
+    const seededQuestions = knownTradeQuestions.rows[0].questions;
+    const existingWta = await client.query(
+      `SELECT id FROM worker_trust_assessments
+       WHERE user_id = $1 AND profession_key = $2
+         AND status IN ('pending','scoring','scored','failed')`,
+      [conv.user_id, trade],
+    );
+    if (existingWta.rows.length === 0) {
+      const questionIndexByField: Record<TrustAnswer['questionKey'], number> = {
+        specialization: 0,
+        seniority: 1,
+        tasks: 2,
+      };
+      const answersArray = updatedAnswers.map((item) => ({
+        q_en: seededQuestions[questionIndexByField[item.questionKey]]?.q_en ?? item.questionKey,
+        answer_text: item.label,
+        answer_source: 'text' as const,
+        answered_at: new Date().toISOString(),
+      }));
+      const assessmentId = randomUUID();
+      await client.query(
+        `INSERT INTO worker_trust_assessments (id, user_id, profession_key, answers, status)
+         VALUES ($1, $2, $3, $4::jsonb, 'pending')
+         ON CONFLICT DO NOTHING`,
+        [assessmentId, conv.user_id, trade, JSON.stringify(answersArray)],
+      );
+      const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
+      const sqsClientLocal = new SQSClient({});
+      await sqsClientLocal.send(
+        new SendMessageCommand({
+          QueueUrl: process.env.TRUST_ASSESSMENT_QUEUE_URL!,
+          MessageBody: JSON.stringify({ assessmentId, userId: conv.user_id, professionKey: trade }),
+        }),
+      );
+    }
+  } else {
+    console.warn('[processor] known-trade seeded questions missing for trade', {
+      trade,
+      userId: conv.user_id,
+    });
+    console.log(JSON.stringify({ metric: 'AIKnownTradeQuestionsMissing', trade }));
+  }
+
   await updateConversation(client, conv.id, {
     conversation_state: 'idle',
     state_context: {},
