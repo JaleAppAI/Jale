@@ -20,6 +20,7 @@
     "@aws-sdk/client-secrets-manager": "^3.1015.0",
     "@aws-sdk/client-sfn": "^3.1040.0",
     "@aws-sdk/client-sqs": "^3.1017.0",
+    "@aws-sdk/client-ssm": "^3.1044.0",
     "@aws-sdk/s3-request-presigner": "^3.1015.0",
     "@types/aws-lambda": "^8.10.161",
     "@types/jest": "^30",

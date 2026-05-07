@@ -14,6 +14,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly dbInstance: rds.DatabaseInstance;
   public readonly dbSecret: secretsmanager.ISecret;
   public readonly matchingDbSecret: secretsmanager.ISecret;
+  public readonly aiDbSecret: secretsmanager.ISecret;
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
 
@@ -64,6 +65,20 @@ export class DatabaseStack extends cdk.Stack {
       description: 'jale_matching role DB credentials for matching engine reads/writes',
       generateSecretString: {
         secretStringTemplate: JSON.stringify({ username: 'jale_matching' }),
+        generateStringKey: 'password',
+        excludePunctuation: true,
+      },
+    });
+    this.aiDbSecret = new secretsmanager.Secret(this, 'AiDbSecret', {
+      secretName: 'jale/ai/db',
+      description: 'jale_ai role DB credentials for AI trust assessment service writes',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          username: 'jale_ai',
+          host: this.dbInstance.dbInstanceEndpointAddress,
+          port: 5432,
+          dbname: 'jale',
+        }),
         generateStringKey: 'password',
         excludePunctuation: true,
       },
