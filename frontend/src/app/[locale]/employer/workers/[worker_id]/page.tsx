@@ -1,4 +1,5 @@
 'use client';
+
 import { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
@@ -7,6 +8,8 @@ import {
   getWorkerProfile, getWorkerDocuments, createUploadToken,
   WorkerProfile, WorkerDocument,
 } from '@/lib/api/employer';
+
+export const dynamic = 'force-dynamic';
 
 type DocType = 'resume' | 'driver_license' | 'ssn';
 const ALL_DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];

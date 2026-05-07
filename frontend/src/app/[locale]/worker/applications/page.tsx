@@ -9,6 +9,8 @@ import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip
 import { getApplications } from '@/lib/api/worker';
 import type { Application } from '@/lib/api/worker';
 
+export const dynamic = 'force-dynamic';
+
 export default function WorkerApplicationsPage() {
   const { idToken } = useAuth();
   const { handleLegalWall } = useRequireAuth();

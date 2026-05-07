@@ -25,8 +25,9 @@ export function DocumentSlot(props: {
       await uploadFileToS3(url, file);
       await confirmAuthUpload(props.token, s3_key, props.doc_type, file);
       props.onChange();
-    } catch (e: any) {
-      setError(e.message ?? 'upload_failed');
+    } catch (e) {
+      const err = e as Record<string, unknown>;
+      setError(typeof err.message === 'string' ? err.message : 'upload_failed');
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
@@ -38,8 +39,9 @@ export function DocumentSlot(props: {
     try {
       await deleteVaultDocument(props.token, props.doc_type);
       props.onChange();
-    } catch (e: any) {
-      setError(e.message ?? 'delete_failed');
+    } catch (e) {
+      const err = e as Record<string, unknown>;
+      setError(typeof err.message === 'string' ? err.message : 'delete_failed');
     } finally {
       setBusy(false);
     }

@@ -11,6 +11,8 @@ import { PostJobModal } from '@/components/employer/PostJobModal';
 import { getJobs } from '@/lib/api/employer';
 import type { Job } from '@/lib/api/employer';
 
+export const dynamic = 'force-dynamic';
+
 export default function EmployerDashboardPage() {
     const { idToken } = useAuth();
     const { handleLegalWall } = useRequireAuth();

@@ -1,8 +1,11 @@
 'use client';
+
 import { useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { getUploadUrl, uploadFileToS3, confirmUpload, submitUpload, DocType } from '@/lib/api/worker';
+
+export const dynamic = 'force-dynamic';
 
 const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024;

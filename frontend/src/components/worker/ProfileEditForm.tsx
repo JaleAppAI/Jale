@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import type { WorkerProfileData } from '@/lib/api/worker';
 
 const AVAILABILITY = ['immediate', '2-weeks', '1-month'] as const;
+type Availability = (typeof AVAILABILITY)[number];
 
 export function ProfileEditForm(props: {
   initial: WorkerProfileData;
@@ -27,7 +28,7 @@ export function ProfileEditForm(props: {
       await props.onSave({
         full_name: fullName.trim() || null,
         skills: skills.split(',').map(s => s.trim()).filter(Boolean),
-        availability: availability as any,
+        availability: availability as Availability,
         years_experience: Number(yearsExp) || 0,
         location: location.trim() || null,
         bio: bio.trim() || null,

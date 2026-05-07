@@ -140,7 +140,7 @@ export async function applyToJob(token: string, id: string): Promise<Application
   const res = await apiFetch(`/worker/jobs/${id}/apply`, { method: 'POST' }, token);
   if (!res.ok) {
     const body = await res.json();
-    const err: any = new Error(body.error ?? 'apply_failed');
+    const err = new Error(body.error ?? 'apply_failed') as Error & { status?: number; missing_docs?: string[] };
     err.status = res.status;
     err.missing_docs = body.missing_docs;
     throw err;
