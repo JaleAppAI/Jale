@@ -5,6 +5,7 @@ import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
+import { AiStack } from '../../../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../../../lib/stacks/whatsapp-stack';
 
 describe('WhatsAppStack', () => {
@@ -30,6 +31,12 @@ describe('WhatsAppStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
     });
+    const ai = new AiStack(app, 'TestAiStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+    });
     // LegalStack must be instantiated to satisfy CDK validation: the
     // DualAuthorizer is created in ApiStack but only "attached to a RestApi"
     // when a route uses it (POST /legal/accept in LegalStack). Without this,
@@ -49,6 +56,8 @@ describe('WhatsAppStack', () => {
       dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
+      questionGeneratorFn: ai.questionGeneratorFn.function,
+      trustAssessmentQueue: ai.trustAssessmentQueue,
     });
     template = Template.fromStack(whatsapp);
     apiTemplate = Template.fromStack(api);
@@ -83,8 +92,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 4 Lambda functions (webhook + processor + job-alert + ai-profile-writer)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 4);
+  test('Stack creates 5 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 5);
   });
 
   test('Webhook Lambda has TWILIO_SECRET_ARN + SQS_QUEUE_URL env vars', () => {
@@ -204,8 +213,8 @@ describe('WhatsAppStack', () => {
       });
     });
 
-    test('Stack creates a Standard (not Express) Step Functions state machine', () => {
-      template.resourceCountIs('AWS::StepFunctions::StateMachine', 1);
+    test('Stack creates two Standard (not Express) Step Functions state machines', () => {
+      template.resourceCountIs('AWS::StepFunctions::StateMachine', 2);
       template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
         StateMachineType: 'STANDARD',
       });
@@ -214,6 +223,12 @@ describe('WhatsAppStack', () => {
     test('Stack creates ai-profile-writer Lambda', () => {
       template.hasResourceProperties('AWS::Lambda::Function', {
         Description: Match.stringLikeRegexp('ai-profile-writer'),
+      });
+    });
+
+    test('Stack creates voice-trust-receiver Lambda', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('voice-trust-receiver'),
       });
     });
 
@@ -247,6 +262,19 @@ describe('WhatsAppStack', () => {
         Environment: {
           Variables: Match.objectLike({
             AI_PIPELINE_STATE_MACHINE_ARN: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('Processor Lambda has trust AI env vars', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            TRUST_PIPELINE_STATE_MACHINE_ARN: Match.anyValue(),
+            QUESTION_GENERATOR_ARN: Match.anyValue(),
+            TRUST_ASSESSMENT_QUEUE_URL: Match.anyValue(),
           }),
         },
       });

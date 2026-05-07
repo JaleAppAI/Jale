@@ -83,6 +83,8 @@ new WhatsAppStack(app, 'JaleWhatsAppStack', {
   workerPool: auth.workerPool,
   api: api.api,
   workerRerankQueue: matching.workerRerankQueue,
+  questionGeneratorFn: ai.questionGeneratorFn.function,
+  trustAssessmentQueue: ai.trustAssessmentQueue,
 });
 
 // BastionStack — throwaway host for DB migrations & ad-hoc psql. Synthesized
