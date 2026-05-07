@@ -46,6 +46,7 @@ MIGRATIONS=(
   "008_worker_skills.sql"
   "009_location_foundation.sql"
   "010_matching_write_semantics.sql"
+  "011_ai_profile_media.sql"
 )
 
 echo ">> Using region: $REGION"

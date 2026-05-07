@@ -34,6 +34,21 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
   GetSecretValueCommand: jest.fn((args) => ({ input: args, __type: 'GetSecretValue' })),
 }));
 
+const mockSfnSend = jest.fn();
+jest.mock('@aws-sdk/client-sfn', () => ({
+  SFNClient: jest.fn(() => ({ send: mockSfnSend })),
+  StartExecutionCommand: jest.fn((args) => ({ input: args, __type: 'StartExecution' })),
+}), { virtual: true });
+
+jest.mock('../../../../lambda/whatsapp/lib/media', () => ({
+  detectMediaCategory: jest.fn(),
+  buildS3Key: jest.fn((userId: string, mediaId: string, type: string) => `${userId}/${type}/${mediaId}`),
+  downloadTwilioMedia: jest.fn(),
+  uploadMediaToS3: jest.fn(),
+  ALLOWED_PHOTO_TYPES: ['image/jpeg', 'image/png', 'image/webp'],
+  ALLOWED_VOICE_TYPES: ['audio/ogg', 'audio/mpeg', 'audio/mp4'],
+}));
+
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const mockConnect = jest.fn();
@@ -868,5 +883,279 @@ describe('Processor Lambda', () => {
       const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
       expect(applicationInsert).toEqual(['job-1', 'user-1']);
     });
+  });
+});
+
+describe('awaiting_media_photo state', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+  });
+
+  test('text message (skip) transitions to awaiting_media_voice', async () => {
+    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
+    detectMediaCategory.mockReturnValue(null);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM001' }] }) // claim
+      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'awaiting_media_photo', user_id: 'user-1' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_media_voice
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM001',
+      From: 'whatsapp:+15125551234',
+      Body: 'skip',
+      NumMedia: '0',
+    }), {} as any, {} as any);
+
+    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('awaiting_media_voice')
+    );
+    expect(convUpdate).toBeDefined();
+  });
+
+  test('valid photo triggers S3 upload and asks classification', async () => {
+    const { detectMediaCategory, downloadTwilioMedia, uploadMediaToS3 } =
+      require('../../../../lambda/whatsapp/lib/media');
+    detectMediaCategory.mockReturnValue('photo');
+    downloadTwilioMedia.mockResolvedValue(Buffer.from('fake-image'));
+    uploadMediaToS3.mockResolvedValue(undefined);
+    process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM002' }] }) // claim
+      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'awaiting_media_photo', user_id: 'user-1' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] }) // SELECT worker for RLS
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_profile_media
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_media_photo_type
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM002',
+      From: 'whatsapp:+15125551234',
+      Body: '',
+      NumMedia: '1',
+      MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
+      MediaContentType0: 'image/jpeg',
+    }), {} as any, {} as any);
+
+    expect(uploadMediaToS3).toHaveBeenCalled();
+    const mediaInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO worker_profile_media/.test(sql)
+    );
+    expect(mediaInsert).toBeDefined();
+    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO whatsapp_outbox/.test(sql)
+    );
+    expect(outboxInsert).toBeDefined();
+  });
+
+  test('invalid media content type replies gracefully and stays in state', async () => {
+    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
+    detectMediaCategory.mockReturnValue(null);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM003' }] }) // claim
+      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'awaiting_media_photo', user_id: 'user-1' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox media_photo_invalid
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM003',
+      From: 'whatsapp:+15125551234',
+      Body: '',
+      NumMedia: '1',
+      MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
+      MediaContentType0: 'application/pdf',
+    }), {} as any, {} as any);
+
+    // State should NOT advance — no UPDATE whatsapp_conversations to new state
+    const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /UPDATE whatsapp_conversations/.test(sql)
+    );
+    expect(convUpdate).toBeUndefined();
+  });
+});
+
+describe('awaiting_media_voice state', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+  });
+
+  test('text message (skip) transitions to building_profile', async () => {
+    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
+    detectMediaCategory.mockReturnValue(null);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM004' }] }) // claim
+      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'awaiting_media_voice', user_id: 'user-1' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_intro
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM004',
+      From: 'whatsapp:+15125551234',
+      Body: 'skip',
+      NumMedia: '0',
+    }), {} as any, {} as any);
+
+    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('building_profile')
+    );
+    expect(convUpdate).toBeDefined();
+  });
+
+  test('valid voice message starts Step Functions execution and transitions to processing_ai', async () => {
+    const { detectMediaCategory, downloadTwilioMedia, uploadMediaToS3 } =
+      require('../../../../lambda/whatsapp/lib/media');
+    detectMediaCategory.mockReturnValue('voice');
+    downloadTwilioMedia.mockResolvedValue(Buffer.from('fake-audio'));
+    uploadMediaToS3.mockResolvedValue(undefined);
+    mockSfnSend.mockResolvedValue({ executionArn: 'arn:aws:states:us-east-2:123:execution:test:run-1' });
+    process.env.AI_PIPELINE_STATE_MACHINE_ARN = 'arn:aws:states:us-east-2:123:stateMachine:test';
+    process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM005' }] }) // claim
+      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'awaiting_media_voice', user_id: 'user-1' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] }) // SELECT worker for RLS
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_profile_media
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ai_processing_ack
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM005',
+      From: 'whatsapp:+15125551234',
+      Body: '',
+      NumMedia: '1',
+      MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
+      MediaContentType0: 'audio/ogg',
+    }), {} as any, {} as any);
+
+    expect(mockSfnSend).toHaveBeenCalledTimes(1);
+    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('processing_ai')
+    );
+    expect(convUpdate).toBeDefined();
+    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO whatsapp_outbox/.test(sql)
+    );
+    expect(outboxInsert).toBeDefined();
+  });
+});
+
+describe('processing_ai state', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+  });
+
+  test('any inbound message replies with ai_processing_wait and does not change state', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM006' }] }) // claim
+      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'processing_ai', user_id: 'user-1' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ai_processing_wait
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM006',
+      From: 'whatsapp:+15125551234',
+      Body: 'are you done yet?',
+      NumMedia: '0',
+    }), {} as any, {} as any);
+
+    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO whatsapp_outbox/.test(sql)
+    );
+    expect(outboxInsert).toBeDefined();
+    // State should NOT change — still processing_ai
+    const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /UPDATE whatsapp_conversations/.test(sql) && /building_profile/.test(sql)
+    );
+    expect(convUpdate).toBeUndefined();
   });
 });

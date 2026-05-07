@@ -22,7 +22,19 @@ describe('database migrations', () => {
 
     expect(numbers).not.toContain(undefined);
     expect(new Set(numbers).size).toBe(numbers.length);
-    expect(numbers).toEqual(['001', '002', '003', '004', '005', '006', '007', '008', '009', '010']);
+    expect(numbers).toEqual([
+      '001',
+      '002',
+      '003',
+      '004',
+      '005',
+      '006',
+      '007',
+      '008',
+      '009',
+      '010',
+      '011',
+    ]);
   });
 
   it('define canonical jobs and applications only once', () => {

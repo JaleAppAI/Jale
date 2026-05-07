@@ -36,9 +36,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$BastionStack    = 'JaleBastionStack'
-$DatabaseStack   = 'JaleDatabaseStack'
-$WaDbSecretName  = 'jale/whatsapp/db'
+$BastionStack = 'JaleBastionStack'
+$DatabaseStack = 'JaleDatabaseStack'
+$WaDbSecretName = 'jale/whatsapp/db'
 
 # Migration files in execution order. Full chain against a fresh RDS.
 $MigrationFiles = @(
@@ -51,7 +51,8 @@ $MigrationFiles = @(
     '007_worker_marketplace.sql',
     '008_worker_skills.sql',
     '009_location_foundation.sql',
-    '010_matching_write_semantics.sql'
+    '010_matching_write_semantics.sql',
+    '011_ai_profile_media.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -63,10 +64,10 @@ Write-Host ">> Using region: $Region"
 # ---------------------------------------------------------------------------
 Write-Host ">> Resolving bastion instance ID..."
 $bastionId = (aws cloudformation describe-stacks `
-    --stack-name $BastionStack `
-    --region $Region `
-    --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" `
-    --output text)
+        --stack-name $BastionStack `
+        --region $Region `
+        --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" `
+        --output text)
 if ($bastionId) { $bastionId = $bastionId.Trim() }
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
@@ -81,10 +82,10 @@ Write-Host "   bastion: $bastionId"
 # ---------------------------------------------------------------------------
 Write-Host ">> Resolving jale_admin DB secret ARN..."
 $rawSecret = (aws cloudformation describe-stack-resources `
-    --stack-name $DatabaseStack `
-    --region $Region `
-    --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret'].PhysicalResourceId" `
-    --output text)
+        --stack-name $DatabaseStack `
+        --region $Region `
+        --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret'].PhysicalResourceId" `
+        --output text)
 
 $dbSecretArn = ($rawSecret -split "\s+" | Where-Object { $_ } | Select-Object -First 1)
 
@@ -201,17 +202,17 @@ $b64Assignments = $assignLines -join "`n"
 # because PS -replace treats '$1', '$&', etc. as backrefs. Base64 has no '$',
 # file names have no '$', region/ARN have no '$' — safe. But we defensively
 # double any '$' in dbSecretArn just in case ARN format evolves.
-$dbSecretArnSafe    = $dbSecretArn    -replace '\$', '$$$$'
-$regionSafe         = $Region         -replace '\$', '$$$$'
+$dbSecretArnSafe = $dbSecretArn -replace '\$', '$$$$'
+$regionSafe = $Region -replace '\$', '$$$$'
 $waDbSecretNameSafe = $WaDbSecretName -replace '\$', '$$$$'
 $fileArrayLiteralSafe = $fileArrayLiteral -replace '\$', '$$$$'
-$b64AssignmentsSafe   = $b64Assignments   -replace '\$', '$$$$'
+$b64AssignmentsSafe = $b64Assignments -replace '\$', '$$$$'
 
 $remoteScript = $remoteTemplate `
-    -replace '__REGION__',                    $regionSafe `
-    -replace '__DB_SECRET_ARN__',             $dbSecretArnSafe `
-    -replace '__WA_DB_SECRET_NAME__',         $waDbSecretNameSafe `
-    -replace '__MIGRATION_FILES_ARRAY__',     $fileArrayLiteralSafe `
+    -replace '__REGION__', $regionSafe `
+    -replace '__DB_SECRET_ARN__', $dbSecretArnSafe `
+    -replace '__WA_DB_SECRET_NAME__', $waDbSecretNameSafe `
+    -replace '__MIGRATION_FILES_ARRAY__', $fileArrayLiteralSafe `
     -replace '__MIGRATION_B64_ASSIGNMENTS__', $b64AssignmentsSafe
 $remoteScript = $remoteScript -replace "`r`n", "`n"
 
@@ -232,13 +233,13 @@ try {
     # -----------------------------------------------------------------------
     Write-Host ">> Sending command to bastion via SSM..."
     $cmdId = (aws ssm send-command `
-        --region $Region `
-        --document-name 'AWS-RunShellScript' `
-        --instance-ids $bastionId `
-        --comment 'Jale DB migrations + jale_whatsapp password seed' `
-        --parameters "file://$paramsFile" `
-        --query 'Command.CommandId' `
-        --output text)
+            --region $Region `
+            --document-name 'AWS-RunShellScript' `
+            --instance-ids $bastionId `
+            --comment 'Jale DB migrations + jale_whatsapp password seed' `
+            --parameters "file://$paramsFile" `
+            --query 'Command.CommandId' `
+            --output text)
     if ($cmdId) { $cmdId = $cmdId.Trim() }
 
     if ([string]::IsNullOrEmpty($cmdId)) {

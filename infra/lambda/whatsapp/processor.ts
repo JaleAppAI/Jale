@@ -1,5 +1,6 @@
 import type { SQSEvent, SQSHandler, SQSRecord } from 'aws-lambda';
 import type { PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -13,8 +14,13 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import {
+  SFNClient,
+  StartExecutionCommand,
+} from '@aws-sdk/client-sfn';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
+import { sendPendingOutbox } from './lib/outbox';
 import {
   t,
   detectLanguage,
@@ -22,10 +28,19 @@ import {
   type TemplateKey,
 } from './lib/templates';
 import {
+  FIELD_PROMPT_KEY,
+  loadProfileFromDb,
+  loadTradeFromDb,
+  profileQuestionBody,
+  trustSignalColumnsAvailable,
+  upsertWorkerProfileFromUsers,
+} from './lib/profile-flow';
+import {
   isGreetingKeyword,
   isJobsKeyword,
   isHelpCommand,
   isProfileCommand,
+  isSkipKeyword,
   isAccept,
   isDecline,
   parseButtonPayload,
@@ -40,11 +55,18 @@ import {
   type ProfileStateContext,
   type TrustAnswer,
 } from './lib/flows';
+import {
+  detectMediaCategory,
+  buildS3Key,
+  downloadTwilioMedia,
+  uploadMediaToS3,
+} from './lib/media';
 import { decodeIdTokenSub } from './lib/jwt';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const cognito = new CognitoIdentityProviderClient({});
 const secretsManager = new SecretsManagerClient({});
+const sfn = new SFNClient({});
 
 // ── Twilio secret cache (5-min TTL) ─────────────────────────────
 let cachedTwilio: TwilioSecret | null = null;
@@ -63,35 +85,13 @@ async function getTwilioSecret(): Promise<TwilioSecret> {
   return cachedTwilio;
 }
 
-// ── Twilio send (session-message, plain text) ───────────────────
-async function sendTwilioMessage(to: string, body: string): Promise<void> {
-  const secret = await getTwilioSecret();
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
-  const form = new URLSearchParams({
-    MessagingServiceSid: secret.messagingServiceSid,
-    To: to, // Already in "whatsapp:+1..." format from Twilio inbound event
-    Body: body,
-  });
-  const auth = Buffer.from(`${secret.accountSid}:${secret.authToken}`).toString('base64');
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: form.toString(),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Twilio send failed ${res.status}: ${text}`);
-  }
-}
-
-// ── Outbox helpers ──────────────────────────────────────────────
+// ── Outbox helpers (Fix Plan v3, 2026-04-17) ────────────────────
 //
-// Replies are written to `whatsapp_outbox` inside the same DB transaction as
-// the state change; `sendPendingOutbox` flushes them to Twilio after commit.
-// This ensures Twilio failure never silently advances state.
+// Replies are NO LONGER sent inline by handlers. Instead every reply writes
+// a row to `whatsapp_outbox` within the same DB transaction as the state
+// change, and `sendPendingOutbox` flushes them to Twilio AFTER the
+// transaction commits. This prevents the "state advanced but reply never
+// arrived" class of silent bug that SQS retries used to create.
 
 async function queueText(
   client: PoolClient,
@@ -139,55 +139,6 @@ async function reply(
   await queueReply(client, msg.messageSid, msg.from, key, lang, vars);
 }
 
-/**
- * Drain pending outbox rows to Twilio. Called AFTER the DB transaction
- * commits. On first failure, records the error and re-throws so the SQS
- * handler can retry; subsequent retry invocations resume from 'db_committed'
- * via `processRecord`'s conflict branch and re-enter this function.
- */
-async function sendPendingOutbox(
-  client: PoolClient,
-  inboundMessageSid: string,
-): Promise<void> {
-  const pending = await client.query<{
-    id: string;
-    sequence: number;
-    whatsapp_number: string;
-    body: string;
-  }>(
-    `SELECT id, sequence, whatsapp_number, body
-       FROM whatsapp_outbox
-      WHERE inbound_message_sid = $1
-        AND status IN ('pending', 'failed')
-      ORDER BY sequence`,
-    [inboundMessageSid],
-  );
-  for (const row of pending.rows) {
-    try {
-      await sendTwilioMessage(`whatsapp:${row.whatsapp_number}`, row.body);
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'sent', sent_at = now()
-          WHERE id = $1`,
-        [row.id],
-      );
-    } catch (err) {
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'failed',
-                attempt_count = attempt_count + 1,
-                last_error = $1
-          WHERE id = $2`,
-        [(err as Error).message, row.id],
-      );
-      // Propagate so SQS retries the whole message. The next retry will see
-      // `processed_messages.status = 'db_committed'` and re-enter
-      // sendPendingOutbox without re-executing any state mutations.
-      throw err;
-    }
-  }
-}
-
 async function markCompleted(
   client: PoolClient,
   inboundMessageSid: string,
@@ -217,9 +168,10 @@ interface ConversationRow {
 
 // ── DB: conversation lookup / upsert ────────────────────────────
 //
-// The processor always calls `getOrCreateConversationForUpdate` to serialize
-// concurrent Lambdas against the same whatsapp_number. The plain
-// `getOrCreateConversation` is retained for job-alert and read-only callers.
+// After Fix Plan v3, the processor always calls
+// `getOrCreateConversationForUpdate` to serialize concurrent Lambdas
+// against the same whatsapp_number. The plain `getOrCreateConversation`
+// is retained for job-alert and read-only callers.
 async function getOrCreateConversation(
   client: PoolClient,
   whatsappNumber: string,
@@ -376,6 +328,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const from = params.From; // "whatsapp:+15125551234"
   const body = params.Body ?? '';
   const buttonPayload = params.ButtonPayload; // present on template button taps
+  const numMedia = parseInt(params.NumMedia ?? '0', 10);
+  const mediaUrl = params.MediaUrl0;
+  const mediaContentType = params.MediaContentType0;
 
   if (!from || !messageSid) {
     console.warn('[processor] skipping: missing From/MessageSid', { messageSid, from });
@@ -388,7 +343,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const pool = await getDbPool();
   const client = await pool.connect();
   try {
-    // ── Claim + side-effects transaction ─────────────────────────────────
+    // ── Claim + side-effects transaction (Fix Plan v3, 2026-04-17) ────────
     //
     // Atomic MessageSid claim via `INSERT ... ON CONFLICT DO NOTHING
     // RETURNING`. UNIQUE(message_sid) on whatsapp_processed_messages (PK)
@@ -452,7 +407,15 @@ async function processRecord(record: SQSRecord): Promise<void> {
         defaultLang,
       );
 
-      await routeMessage(client, conv, { body, buttonPayload, messageSid, from });
+      await routeMessage(client, conv, {
+        body,
+        buttonPayload,
+        messageSid,
+        from,
+        numMedia,
+        mediaUrl,
+        mediaContentType,
+      });
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
       // retries re-enter via the conflict branch above and resume from the
@@ -494,6 +457,211 @@ interface IncomingMessage {
   buttonPayload: string | undefined;
   messageSid: string;
   from: string;
+  numMedia: number;
+  mediaUrl: string | undefined;
+  mediaContentType: string | undefined;
+}
+
+async function setWorkerRlsContextByUserId(
+  client: PoolClient,
+  userId: string,
+): Promise<void> {
+  const userRow = await client.query<{ cognito_sub: string }>(
+    `SELECT cognito_sub FROM users WHERE id = $1 AND user_type = 'worker'`,
+    [userId],
+  );
+  const cognitoSub = userRow.rows[0]?.cognito_sub;
+  if (!cognitoSub) throw new Error('worker cognito_sub missing before media write');
+  await setRlsContext(client, cognitoSub);
+}
+
+// ── awaiting_media_photo — optional photo upload step ───────────
+async function handleAwaitingMediaPhoto(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+
+  // If a photo was already received, we are waiting for the classification reply (1 or 2).
+  const pendingPhotoId = conv.state_context?.pending_media_photo_id;
+  if (pendingPhotoId) {
+    if (!conv.user_id) throw new Error('user_id missing before media write');
+    await setWorkerRlsContextByUserId(client, conv.user_id);
+
+    const bodyTrimmed = msg.body.trim();
+    if (bodyTrimmed === '1' || /^profile/i.test(bodyTrimmed)) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else if (bodyTrimmed === '2' || /^work/i.test(bodyTrimmed)) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'work_sample' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else {
+      // Invalid classification response — re-prompt
+      await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+      return;
+    }
+    // Classification done — advance to voice step
+    await updateConversation(client, conv.id, {
+      state_context: { ...conv.state_context, pending_media_photo_id: undefined },
+      conversation_state: 'awaiting_media_voice',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    return;
+  }
+
+  // Worker skipped or sent text (no photo yet) — proceed to voice step
+  if (numMedia === 0 || isSkipKeyword(msg.body)) {
+    await updateConversation(client, conv.id, {
+      conversation_state: 'awaiting_media_voice',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    return;
+  }
+
+  if (!mediaUrl || !mediaContentType) {
+    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
+    return;
+  }
+
+  const category = detectMediaCategory(mediaContentType);
+  if (category !== 'photo') {
+    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
+    return;
+  }
+
+  // Download from Twilio and upload to S3
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+
+  const mediaId = randomUUID();
+  if (!conv.user_id) throw new Error('user_id missing before media write');
+  const s3Key = buildS3Key(conv.user_id, mediaId, 'photo');
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
+  await setWorkerRlsContextByUserId(client, conv.user_id);
+
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
+     VALUES ($1, $2, 'profile_photo', $3, $4, $5)`,
+    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+  );
+
+  await updateConversation(client, conv.id, {
+    state_context: {
+      ...conv.state_context,
+      pending_media_photo_id: mediaId,
+    },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+}
+
+// ── awaiting_media_voice — optional voice message step ──────────
+async function handleAwaitingMediaVoice(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+
+  // Worker skipped or sent text — go straight to text questions
+  if (numMedia === 0 || isSkipKeyword(msg.body)) {
+    await updateConversation(client, conv.id, {
+      conversation_state: 'building_profile',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'profile_intro', conv.language);
+    return;
+  }
+
+  if (!mediaUrl || !mediaContentType) {
+    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
+    return;
+  }
+
+  const category = detectMediaCategory(mediaContentType);
+  if (category !== 'voice') {
+    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
+    return;
+  }
+
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+
+  const mediaId = randomUUID();
+  if (!conv.user_id) throw new Error('user_id missing before media write');
+  const s3Key = buildS3Key(conv.user_id, mediaId, 'voice');
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  const stateMachineArn = process.env.AI_PIPELINE_STATE_MACHINE_ARN;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+  if (!stateMachineArn) throw new Error('AI_PIPELINE_STATE_MACHINE_ARN not set');
+
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
+  await setWorkerRlsContextByUserId(client, conv.user_id);
+
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
+     VALUES ($1, $2, 'voice_message', $3, $4, $5)`,
+    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+  );
+
+  // Language code for Transcribe
+  const languageCode = conv.language === 'es' ? 'es-US' : 'en-US';
+  const transcriptionJobName = `jale-${conv.user_id.replace(/-/g, '')}-${Date.now()}`;
+  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
+  const transcriptOutputKey = `${conv.user_id}/transcripts/${transcriptionJobName}.json`;
+
+  // Start Step Functions execution
+  const execution = await sfn.send(
+    new StartExecutionCommand({
+      stateMachineArn,
+      input: JSON.stringify({
+        userId: conv.user_id,
+        conversationId: conv.id,
+        inboundMessageSid: messageSid,
+        whatsappNumber: conv.whatsapp_number,
+        language: conv.language,
+        mediaBucketName: bucketName,
+        transcriptionJobName,
+        languageCode,
+        mediaS3Uri,
+        transcriptOutputKey,
+        voiceMessageMediaId: mediaId,
+      }),
+    }),
+  );
+
+  await updateConversation(client, conv.id, {
+    conversation_state: 'processing_ai',
+    state_context: {
+      ...conv.state_context,
+      ai_pipeline_execution_arn: execution.executionArn,
+    },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'ai_processing_ack', conv.language);
+}
+
+// ── processing_ai — waiting for AI pipeline to complete ─────────
+async function handleProcessingAi(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  // State transition happens when ai-profile-writer updates the conversation.
+  // While waiting, just acknowledge any worker message.
+  await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
 }
 
 async function routeMessage(
@@ -550,6 +718,18 @@ async function routeMessage(
       await handleAwaitingLegal(client, conv, msg);
       return;
 
+    case 'awaiting_media_photo':
+      await handleAwaitingMediaPhoto(client, conv, msg);
+      return;
+
+    case 'awaiting_media_voice':
+      await handleAwaitingMediaVoice(client, conv, msg);
+      return;
+
+    case 'processing_ai':
+      await handleProcessingAi(client, conv, msg);
+      return;
+
     case 'building_profile':
       await handleBuildingProfile(client, conv, msg);
       return;
@@ -596,7 +776,7 @@ async function handleNewOrRestart(
 
     // Confirm immediately via admin API — custom auth needs a CONFIRMED user.
     // AdminConfirmSignUp does NOT fire PostConfirmation, but we defensively
-    // insert the DB row in the processor regardless.
+    // insert the DB row in the processor regardless (Codex Door-2 fix).
     await cognito.send(new AdminConfirmSignUpCommand({
       UserPoolId: poolId,
       Username: whatsappNumber,
@@ -628,9 +808,9 @@ async function handleNewOrRestart(
   // InitiateAuth with CUSTOM_AUTH — triggers DefineAuthChallenge → CreateAuthChallenge.
   // CreateAuthChallenge sends the 6-digit OTP via Twilio WhatsApp in dev and returns a
   // Cognito Session containing challengeMetadata. We PERSIST that Session on
-  // the conversation row and reuse it in handleAwaitingOtp so subsequent
-  // webhook deliveries don't trigger fresh Twilio sends that would invalidate
-  // the code the worker actually received.
+  // the conversation row and reuse it in handleAwaitingOtp (Fix 1, 2026-04-17)
+  // so subsequent webhook deliveries don't trigger fresh Twilio sends that
+  // would invalidate the code the worker actually received.
   const init = await cognito.send(new InitiateAuthCommand({
     AuthFlow: AuthFlowType.CUSTOM_AUTH,
     ClientId: clientId,
@@ -662,17 +842,25 @@ async function handleNewOrRestart(
   );
 }
 
-// ── awaiting_otp — RespondToAuthChallenge ───────────────────────
+// ── awaiting_otp — RespondToAuthChallenge (Fix 1 + Fix 2, 2026-04-17) ──
 //
-// Reuses the Cognito Session from state_context.cognito_session — a fresh
-// InitiateAuth would rotate the OTP and invalidate the code sent to the worker.
-// Session lifecycle:
-//   - Wrong OTP: Cognito re-issues CUSTOM_CHALLENGE with a new Session; persist it.
-//     create-auth-challenge's reuse branch preserves the same OTP code.
-//   - Expired/invalid session: call fresh InitiateAuth once, store the new
-//     Session, reply `otp_expired_retry` — NOT a counted attempt.
-//   - Success: decode the real Cognito `sub` from the ID token and reconcile
-//     the users row (see reconcileUserRow).
+// The previous implementation called a fresh InitiateAuth before every
+// RespondToAuthChallenge, which triggered CreateAuthChallenge → Twilio OTP
+// of a NEW 6-digit code → the worker's submitted code was validated against
+// a code they never received. Codex catch.
+//
+// Fix:
+//   - Persist the Cognito Session returned by the initial InitiateAuth into
+//     state_context.cognito_session (done in handleNewOrRestart).
+//   - Reuse that Session here (no fresh InitiateAuth).
+//   - On wrong OTP: Cognito re-issues a CUSTOM_CHALLENGE with a new Session;
+//     persist it. create-auth-challenge's reuse branch preserves the same
+  //     OTP (no new outbound message) as long as `challengeMetadata` is on the session.
+//   - On "Invalid session"/expired session: call fresh InitiateAuth once,
+//     store the new Session, reply `otp_expired_retry` — NOT a counted
+//     attempt.
+//   - On success: decode the real Cognito `sub` from the ID token and
+//     reconcile the users row (see reconcileUserRow).
 
 async function handleAwaitingOtp(
   client: PoolClient,
@@ -697,8 +885,9 @@ async function handleAwaitingOtp(
 
   const session = conv.state_context?.cognito_session;
   if (!session) {
-    // No Session persisted — defensive guard; handleNewOrRestart always writes
-    // one. If missing we fall through to re-issue.
+    // No Session persisted — shouldn't happen in the normal state machine
+    // (handleNewOrRestart always writes one), but if a pre-Fix-1 conversation
+    // row is still in `awaiting_otp` we fall through to re-issue.
     await reissueOtp(client, conv, msg, clientId, 'missing_session');
     return;
   }
@@ -741,7 +930,7 @@ async function handleAwaitingOtp(
     return;
   }
 
-  // OTP correct. Resolve the real Cognito sub from the ID token.
+  // OTP correct. Resolve the real Cognito sub from the ID token (Fix 2).
   const idToken = resp.AuthenticationResult.IdToken;
   const realSub = decodeIdTokenSub(idToken);
 
@@ -863,9 +1052,9 @@ async function reconcileUserRow(
   realSub: string,
   whatsappNumber: string,
 ): Promise<{ userId: string; tosVersion: string | null }> {
-  // Runs inside processRecord's outer transaction: no inner BEGIN/COMMIT.
-  // Any throw propagates up and the outer tx rolls back everything, including
-  // the whatsapp_processed_messages claim.
+  // Runs inside processRecord's outer transaction (Fix Plan v3): no inner
+  // BEGIN/COMMIT. Any throw here propagates up and the outer tx ROLLBACKs
+  // everything, including the whatsapp_processed_messages claim.
 
   // Does a real-sub row already exist? (Worker may have signed up via web
   // before messaging us on WhatsApp.) `cognito_sub` is UNIQUE, so we cannot
@@ -885,11 +1074,13 @@ async function reconcileUserRow(
         WHERE cognito_sub = $2 AND user_type = 'worker'`,
       [whatsappNumber, realSub],
     );
-    // Before DELETEing the placeholder, verify it has no dependent rows in
-    // legal_consent_log or job_applications — defense-in-depth against orphaned
-    // data. If tripped: throw → outer tx ROLLBACK → SQS DLQ → operator
-    // reconciliation. FK `ON DELETE RESTRICT` on both tables is the DB-side
-    // safety net.
+    // ABORT guard (Fix 3, 2026-04-17): before DELETEing the placeholder,
+    // verify it has no dependent rows in legal_consent_log or
+    // job_applications. Greenfield deploys should never trip this; it
+    // exists as defense-in-depth in case a pre-Fix-2 placeholder
+    // accumulated data. If tripped: throw → outer tx ROLLBACK → SQS DLQ →
+    // operator reconciliation. FK `ON DELETE RESTRICT` on both tables
+    // (migration 006 §B) is the DB-side safety net below this check.
     const placeholder = await client.query<{ id: string }>(
       `SELECT id FROM users
         WHERE cognito_sub = $1 AND user_type = 'worker'`,
@@ -974,10 +1165,11 @@ async function handleAwaitingLegal(
   const cognitoSub = userRow.rows[0].cognito_sub;
   const requiredVersion = process.env.REQUIRED_TOS_VERSION ?? '1.0';
 
-  // Runs inside processRecord's outer tx — no inner BEGIN/COMMIT. Any throw
-  // propagates up and rolls back the entire message including the claim.
-  // `setRlsContext` uses `set_config('app.current_user_id', $1, true)` scoped
-  // to the current tx.
+  // Consent transaction (Fix Plan v3): runs inside processRecord's outer tx.
+  // No inner BEGIN/COMMIT; any throw propagates up and the outer tx rolls
+  // back the entire message including the claim.
+  // `setRlsContext` uses `set_config('app.current_user_id', $1, true)` —
+  // its scope is the current tx, which is processRecord's outer tx here.
   await setRlsContext(client, cognitoSub);
   const upd = await client.query(
     `UPDATE users
@@ -1025,37 +1217,14 @@ async function enterProfileBuilderOrIdle(
     );
     return;
   }
+  // Sprint 7: collect media before text questions
   await updateConversation(client, conv.id, {
-    conversation_state: 'building_profile',
-    state_context: { pending_field: next, collected: {}, field_sids: {} },
+    conversation_state: 'awaiting_media_photo',
+    state_context: { collected: {}, field_sids: {} },
     last_processed_message_sid: messageSid,
   });
   await queueReply(client, messageSid, from, 'legal_accepted', conv.language);
-  await askProfileQuestion(client, messageSid, from, next, conv.language);
-}
-
-async function loadProfileFromDb(
-  client: PoolClient,
-  userId: string,
-): Promise<Partial<Record<ProfileField, string | boolean | null>>> {
-  const r = await client.query(
-    `SELECT full_name, city, main_trade, main_trade_other,
-            years_experience, has_transportation, availability
-       FROM users WHERE id = $1`,
-    [userId],
-  );
-  return (r.rows[0] ?? {}) as Partial<Record<ProfileField, string | boolean | null>>;
-}
-
-async function loadTradeFromDb(
-  client: PoolClient,
-  userId: string,
-): Promise<string> {
-  const r = await client.query<{ main_trade: string | null }>(
-    `SELECT main_trade FROM users WHERE id = $1`,
-    [userId],
-  );
-  return r.rows[0]?.main_trade ?? 'other';
+  await queueReply(client, messageSid, from, 'ask_media_photo', conv.language);
 }
 
 interface WorkerProfileSummary {
@@ -1227,23 +1396,6 @@ function labelFor(
   return value ? labels[field][value]?.[lang] ?? value : (lang === 'es' ? 'Sin completar' : 'Not set');
 }
 
-async function trustSignalColumnsAvailable(client: PoolClient): Promise<boolean> {
-  const hasSignals = await tableColumnExists(client, 'users', 'trust_signals');
-  if (!hasSignals) return false;
-  return tableColumnExists(client, 'users', 'trust_signals_completed_at');
-}
-
-// Mapping from ProfileField → question template key
-const FIELD_PROMPT_KEY: Record<ProfileField, TemplateKey> = {
-  full_name: 'ask_name',
-  city: 'ask_city',
-  main_trade: 'ask_trade',
-  main_trade_other: 'ask_trade_freetext',
-  years_experience: 'ask_experience',
-  has_transportation: 'ask_transportation',
-  availability: 'ask_availability',
-};
-
 async function askProfileQuestion(
   client: PoolClient,
   inboundMessageSid: string,
@@ -1251,14 +1403,17 @@ async function askProfileQuestion(
   field: ProfileField,
   lang: Lang,
 ): Promise<void> {
-  await queueReply(client, inboundMessageSid, to, FIELD_PROMPT_KEY[field], lang);
+  await queueText(client, inboundMessageSid, to, profileQuestionBody(field, lang));
 }
 
-// ── building_profile — pending-field model ────────────────────────
+// ── building_profile — pending-field model (Fix 3, 2026-04-17) ──
 //
 // Replay protection runs at the top of processRecord (`isDuplicateSid` scans
 // both `last_processed_message_sid` and `state_context.field_sids`), so any
-// duplicate MessageSid has already been rejected before we get here.
+// duplicate MessageSid has already been rejected before we get here. No
+// in-handler stale-replay guard is needed, and the old field-ordering-based
+// `isStaleReplay` has been removed from flows.ts — it could never detect
+// out-of-order retries since its call site passed `pending` twice.
 //
 // When a valid answer is accepted we bind that answer to the inbound
 // MessageSid via state_context.field_sids. Subsequent retries of the same
@@ -1373,32 +1528,7 @@ async function flushProfileAndAdvance(
     );
   }
 
-  await client.query(
-    `INSERT INTO worker_profiles
-       (user_id, full_name, phone, availability, years_experience, location)
-     SELECT
-       id,
-       full_name,
-       COALESCE(whatsapp_number, phone),
-       availability,
-       CASE years_experience
-         WHEN '0-1' THEN 1
-         WHEN '2-4' THEN 3
-         WHEN '5-9' THEN 7
-         WHEN '10+' THEN 10
-         ELSE NULL
-       END,
-       city
-     FROM users
-     WHERE id = $1 AND user_type = 'worker'
-     ON CONFLICT (user_id) DO UPDATE
-       SET full_name = EXCLUDED.full_name,
-           phone = EXCLUDED.phone,
-           availability = EXCLUDED.availability,
-           years_experience = EXCLUDED.years_experience,
-           location = EXCLUDED.location`,
-    [conv.user_id],
-  );
+  await upsertWorkerProfileFromUsers(client, conv.user_id);
 
   await enterTrustSignalOrIdle(
     client,

@@ -17,6 +17,9 @@ export type ConversationState =
   | 'new'
   | 'awaiting_otp'
   | 'awaiting_legal'
+  | 'awaiting_media_photo'
+  | 'awaiting_media_voice'
+  | 'processing_ai'
   | 'building_profile'
   | 'building_trust_signal'
   | 'legal_declined'
@@ -115,6 +118,10 @@ export interface ProfileStateContext {
   trust_step?: number;
   trust_answers?: TrustAnswer[];
   recent_jobs?: string[];
+  /** ARN of the running Step Functions execution for the AI pipeline. */
+  ai_pipeline_execution_arn?: string;
+  /** DB id of the worker_profile_media row for the pending photo (UUID). */
+  pending_media_photo_id?: string;
 }
 
 // -- Trust Signal Layer ----------------------------------------------------
@@ -310,6 +317,10 @@ export function isHelpCommand(text: string): boolean {
 export function isProfileCommand(text: string): boolean {
   const n = text.trim().toLowerCase();
   return /^(profile|perfil|my profile|mi perfil)$/.test(n);
+}
+
+export function isSkipKeyword(text: string): boolean {
+  return /^(skip|saltar)$/i.test(text.trim());
 }
 
 // JS `\b` is ASCII-only, so it fails on Spanish accented chars (sí, está).
