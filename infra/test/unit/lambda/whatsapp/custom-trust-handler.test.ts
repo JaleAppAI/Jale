@@ -33,3 +33,80 @@ describe('normalizeProfession', () => {
     expect(normalizeProfession('Soldad\u00f3r')).toBe('soldador');
   });
 });
+
+const mockDbQuery = jest.fn();
+const mockLambdaSend = jest.fn();
+const mockSqsSend = jest.fn();
+
+jest.mock('@aws-sdk/client-lambda', () => ({
+  LambdaClient: jest.fn().mockImplementation(() => ({ send: mockLambdaSend })),
+  InvokeCommand: jest.fn().mockImplementation((input) => input),
+}));
+
+jest.mock('@aws-sdk/client-sqs', () => ({
+  SQSClient: jest.fn().mockImplementation(() => ({ send: mockSqsSend })),
+  SendMessageCommand: jest.fn().mockImplementation((input) => input),
+}));
+
+jest.mock('@aws-sdk/client-secrets-manager', () => ({
+  SecretsManagerClient: jest.fn().mockImplementation(() => ({ send: jest.fn() })),
+  GetSecretValueCommand: jest.fn().mockImplementation((input) => input),
+}));
+
+const THREE_QUESTIONS = [
+  { q_en: 'Q1 en', q_es: 'Q1 es' },
+  { q_en: 'Q2 en', q_es: 'Q2 es' },
+  { q_en: 'Q3 en', q_es: 'Q3 es' },
+];
+
+describe('handleBuildingCustomTrust', () => {
+  const { handleBuildingCustomTrust } = require('../../../../lambda/whatsapp/handlers/custom-trust');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-1:123:function:gen';
+    process.env.TRUST_ASSESSMENT_QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123/queue';
+  });
+
+  it('on entry with cached questions asks Q1', async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [] });
+    const client = { query: mockDbQuery };
+    const conv = {
+      id: 'conv1',
+      user_id: 'user1',
+      language: 'en',
+      state_context: {
+        custom_trust_step: 0,
+        custom_trust_profession: 'soldador',
+        custom_trust_questions: THREE_QUESTIONS,
+        custom_trust_answers: [],
+        custom_trust_assessment_id: 'assess1',
+      },
+    };
+    const msg = { from: 'whatsapp:+1555', messageSid: 'SM1', body: '' };
+
+    await handleBuildingCustomTrust(client, conv, msg);
+
+    const outboxCall = mockDbQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO whatsapp_outbox'));
+    expect(outboxCall?.[1]?.[2]).toBe('Q1 en');
+  });
+
+  it('blocks re-entry if WTA row exists', async () => {
+    mockDbQuery.mockResolvedValueOnce({ rows: [{ id: 'existing-assessment' }] });
+    const client = { query: mockDbQuery };
+    const conv = {
+      id: 'conv1',
+      user_id: 'user1',
+      language: 'es',
+      state_context: { custom_trust_profession: 'soldador' },
+    };
+    const msg = { from: 'whatsapp:+1555', messageSid: 'SM1', body: 'soldador' };
+
+    await handleBuildingCustomTrust(client, conv, msg);
+
+    const updateCall = mockDbQuery.mock.calls.find(([sql]) =>
+      String(sql).includes("conversation_state = 'idle'"));
+    expect(updateCall).toBeDefined();
+  });
+});
