@@ -43,7 +43,17 @@ export type TemplateKey =
   | 'job_declined'
   | 'job_not_found'
   // Errors
-  | 'unknown_message';
+  | 'unknown_message'
+  // Media onboarding
+  | 'ask_media_photo'
+  | 'media_photo_invalid'
+  | 'ask_media_photo_type'
+  | 'ask_media_voice'
+  | 'media_voice_invalid'
+  | 'ai_processing_ack'
+  | 'ai_processing_wait'
+  | 'ai_extraction_summary'
+  | 'ai_extraction_failed';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -165,6 +175,43 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   unknown_message: {
     es: 'No entendi ese mensaje.\n\nEnvia "Ayuda" para ver comandos.',
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
+  },
+
+  ask_media_photo: {
+    es: 'Perfil con foto\n\nManda una foto tuya o de tu trabajo. Es opcional.\n\nSi no tienes foto ahora, escribe "Saltar" para continuar.',
+    en: 'Profile with photo\n\nSend a photo of yourself or your work. This is optional.\n\nIf you do not have a photo right now, type "Skip" to continue.',
+  },
+  media_photo_invalid: {
+    es: 'Ese archivo no se pudo guardar. Manda una foto en formato JPEG, PNG o WebP, o escribe "Saltar".',
+    en: 'That file could not be saved. Please send a photo in JPEG, PNG, or WebP format, or type "Skip".',
+  },
+  ask_media_photo_type: {
+    es: 'Es esta foto de tu perfil o una muestra de tu trabajo?\n1. Foto de perfil\n2. Muestra de trabajo\n\nResponde con el numero.',
+    en: 'Is this a profile photo or a work sample?\n1. Profile photo\n2. Work sample\n\nReply with the number.',
+  },
+  ask_media_voice: {
+    es: 'Como quieres crear tu perfil?\n\n1. Manda una nota de voz breve (15-30 segundos)\n2. Contestar preguntas por texto\n\nSi mandas voz, cuenta: tu oficio, anos de experiencia, ciudad, disponibilidad, transporte y herramientas o certificaciones.\n\nResponde "texto" o "2" para seguir por texto.',
+    en: 'How do you want to create your profile?\n\n1. Send a short voice note (15-30 seconds)\n2. Answer questions by text\n\nIf you send voice, tell us: your trade, years of experience, city, availability, transportation, and any tools or certifications.\n\nReply "text" or "2" to continue by text.',
+  },
+  media_voice_invalid: {
+    es: 'Ese audio no se pudo guardar. Manda un mensaje de voz, o escribe "Saltar" para continuar con preguntas.',
+    en: 'That audio could not be saved. Please send a voice message, or type "Skip" to continue with questions.',
+  },
+  ai_processing_ack: {
+    es: 'Recibido. Estamos analizando tu mensaje de voz...\n\nTe responderemos en unos momentos.',
+    en: 'Got it. We are analyzing your voice message...\n\nWe will reply in a moment.',
+  },
+  ai_processing_wait: {
+    es: 'Todavia estamos procesando tu mensaje de voz. Te avisamos enseguida.',
+    en: 'We are still processing your voice message. We will let you know shortly.',
+  },
+  ai_extraction_summary: {
+    es: 'Perfil creado.\n\n{{summary}}\n\nVamos a completar los datos que falten.',
+    en: 'Profile created.\n\n{{summary}}\n\nLet\'s fill in any missing details.',
+  },
+  ai_extraction_failed: {
+    es: 'No pudimos procesar tu mensaje de voz. Continuemos con algunas preguntas rapidas.',
+    en: 'We could not process your voice message. Let\'s continue with a few quick questions.',
   },
 };
 

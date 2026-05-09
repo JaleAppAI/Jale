@@ -67,9 +67,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (qs.skills) {
       // skills is a comma-separated list — match any skill using the && (overlap) operator
-      const skillList = qs.skills.split(',').map((s) => s.trim()).filter(Boolean);
+      const skillList = qs.skills
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
       if (skillList.length > 0) {
-        conditions.push(`wp.skills && $${idx++}`);
+        conditions.push(`EXISTS (
+          SELECT 1
+          FROM worker_skills ws
+          WHERE ws.worker_id = ja.worker_id
+            AND ws.skill = ANY($${idx++}::text[])
+        )`);
         params.push(skillList);
       }
     }
@@ -82,7 +90,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          COALESCE(wp.phone, u.phone)         AS phone,
          ja.status,
          ja.applied_at,
-         COALESCE(wp.skills, '{}')           AS skills,
+         ARRAY(
+           SELECT ws.skill
+           FROM worker_skills ws
+           WHERE ws.worker_id = wp.user_id
+           ORDER BY ws.skill
+         ) AS skills,
          wp.availability,
          wp.years_experience,
          wp.location

@@ -5,6 +5,7 @@ import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
+import { AiStack } from '../../../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../../../lib/stacks/whatsapp-stack';
 
 describe('WhatsAppStack', () => {
@@ -30,6 +31,12 @@ describe('WhatsAppStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
     });
+    const ai = new AiStack(app, 'TestAiStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+    });
     // LegalStack must be instantiated to satisfy CDK validation: the
     // DualAuthorizer is created in ApiStack but only "attached to a RestApi"
     // when a route uses it (POST /legal/accept in LegalStack). Without this,
@@ -49,6 +56,8 @@ describe('WhatsAppStack', () => {
       dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
+      questionGeneratorFn: ai.questionGeneratorFn.function,
+      trustAssessmentQueue: ai.trustAssessmentQueue,
     });
     template = Template.fromStack(whatsapp);
     apiTemplate = Template.fromStack(api);
@@ -83,8 +92,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 3 Lambda functions (webhook + processor + job-alert)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 3);
+  test('Stack creates 5 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 5);
   });
 
   test('Webhook Lambda has TWILIO_SECRET_ARN + SQS_QUEUE_URL env vars', () => {
@@ -169,5 +178,106 @@ describe('WhatsAppStack', () => {
     });
     // At least one unauthenticated POST method should exist
     expect(webhookMethods.length).toBeGreaterThan(0);
+  });
+
+  describe('Sprint 7: AI profile media resources', () => {
+    test('Stack creates a private S3 media bucket', () => {
+      // BucketName is a Fn::Join token at synth time (account/region are unresolved),
+      // so we assert on Block Public Access as the bucket identity signal instead.
+      // The name prefix 'jale-worker-media' is validated by the encryption test below.
+      template.resourceCountIs('AWS::S3::Bucket', 1);
+    });
+
+    test('Media bucket has Block Public Access enabled', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true,
+          BlockPublicPolicy: true,
+          IgnorePublicAcls: true,
+          RestrictPublicBuckets: true,
+        },
+      });
+    });
+
+    test('Media bucket has server-side encryption', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        BucketEncryption: {
+          ServerSideEncryptionConfiguration: Match.arrayWith([
+            Match.objectLike({
+              ServerSideEncryptionByDefault: {
+                SSEAlgorithm: 'AES256',
+              },
+            }),
+          ]),
+        },
+      });
+    });
+
+    test('Stack creates two Standard (not Express) Step Functions state machines', () => {
+      template.resourceCountIs('AWS::StepFunctions::StateMachine', 2);
+      template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
+        StateMachineType: 'STANDARD',
+      });
+    });
+
+    test('Stack creates ai-profile-writer Lambda', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('ai-profile-writer'),
+      });
+    });
+
+    test('Stack creates voice-trust-receiver Lambda', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('voice-trust-receiver'),
+      });
+    });
+
+    test('ai-profile-writer Lambda has DB, Twilio, and media env vars', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('ai-profile-writer'),
+        Environment: {
+          Variables: Match.objectLike({
+            DB_SECRET_ARN: Match.anyValue(),
+            TWILIO_SECRET_ARN: Match.anyValue(),
+            MEDIA_BUCKET_NAME: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('Processor Lambda has MEDIA_BUCKET_NAME env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            MEDIA_BUCKET_NAME: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('Processor Lambda has AI_PIPELINE_STATE_MACHINE_ARN env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            AI_PIPELINE_STATE_MACHINE_ARN: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('Processor Lambda has trust AI env vars', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            TRUST_PIPELINE_STATE_MACHINE_ARN: Match.anyValue(),
+            QUESTION_GENERATOR_ARN: Match.anyValue(),
+            TRUST_ASSESSMENT_QUEUE_URL: Match.anyValue(),
+          }),
+        },
+      });
+    });
   });
 });

@@ -27,8 +27,16 @@ describe('DatabaseStack', () => {
     });
   });
 
-  test('Secrets Manager secret exists for DB credentials', () => {
-    template.resourceCountIs('AWS::SecretsManager::Secret', 1);
+  test('Secrets Manager secrets exist for admin, matching, and AI DB credentials', () => {
+    template.resourceCountIs('AWS::SecretsManager::Secret', 3);
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'jale/matching/db',
+      Description: 'jale_matching role DB credentials for matching engine reads/writes',
+    });
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'jale/ai/db',
+      Description: 'jale_ai role DB credentials for AI trust assessment service writes',
+    });
   });
 
   test('Backup retention is 7 days', () => {

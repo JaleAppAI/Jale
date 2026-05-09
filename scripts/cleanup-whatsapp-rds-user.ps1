@@ -16,12 +16,12 @@
 
 [CmdletBinding()]
 param(
-    [string]$Phone,
-    [string]$Region = $(
-        if ($env:AWS_REGION) { $env:AWS_REGION }
-        elseif ($env:AWS_DEFAULT_REGION) { $env:AWS_DEFAULT_REGION }
-        else { 'us-east-2' }
-    )
+  [string]$Phone,
+  [string]$Region = $(
+    if ($env:AWS_REGION) { $env:AWS_REGION }
+    elseif ($env:AWS_DEFAULT_REGION) { $env:AWS_DEFAULT_REGION }
+    else { 'us-east-2' }
+  )
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,13 +30,13 @@ $BastionStack = 'JaleBastionStack'
 $DatabaseStack = 'JaleDatabaseStack'
 
 if ([string]::IsNullOrWhiteSpace($Phone)) {
-    $Phone = Read-Host 'Enter worker phone number to delete from RDS (E.164, example +19152272188)'
+  $Phone = Read-Host 'Enter worker phone number to delete from RDS (E.164, example +19152272188)'
 }
 
 $Phone = $Phone.Trim()
 
 if ($Phone -notmatch '^\+\d{8,15}$') {
-    throw "Phone must be E.164 format, for example +19152272188."
+  throw "Phone must be E.164 format, for example +19152272188."
 }
 
 $PhoneSql = $Phone.Replace("'", "''")
@@ -52,9 +52,9 @@ $bastionId = (aws cloudformation describe-stacks `
     --output text).Trim()
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
-    Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
-    exit 1
+  Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
+  Write-Host "   Deploy it first: cd infra; npx cdk deploy $BastionStack"
+  exit 1
 }
 Write-Host "   bastion: $bastionId"
 
@@ -67,8 +67,8 @@ $rawSecret = (aws cloudformation describe-stack-resources `
 $dbSecretArn = ($rawSecret -split "\s+" | Where-Object { $_ } | Select-Object -First 1)
 
 if ([string]::IsNullOrEmpty($dbSecretArn)) {
-    Write-Host "!! Could not find DB secret in $DatabaseStack." -ForegroundColor Red
-    exit 1
+  Write-Host "!! Could not find DB secret in $DatabaseStack." -ForegroundColor Red
+  exit 1
 }
 Write-Host "   db-secret: $dbSecretArn"
 
@@ -143,6 +143,16 @@ BEGIN
     WHERE user_id IN (SELECT id FROM cleanup_user_ids);
   END IF;
 
+  IF to_regclass('worker_profile_ai_extractions') IS NOT NULL THEN
+    DELETE FROM worker_profile_ai_extractions
+    WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+  END IF;
+
+  IF to_regclass('worker_profile_media') IS NOT NULL THEN
+    DELETE FROM worker_profile_media
+    WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+  END IF;
+
   IF to_regclass('worker_profiles') IS NOT NULL THEN
     DELETE FROM worker_profiles
     WHERE user_id IN (SELECT id FROM cleanup_user_ids);
@@ -187,52 +197,52 @@ $paramsJson = @{ commands = @($remoteScript) } | ConvertTo-Json -Depth 10 -Compr
 $paramsFile = [System.IO.Path]::GetTempFileName()
 
 try {
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($paramsFile, $paramsJson, $utf8NoBom)
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($paramsFile, $paramsJson, $utf8NoBom)
 
-    Write-Host ">> Sending cleanup command to bastion via SSM..."
-    $cmdId = (aws ssm send-command `
-        --region $Region `
-        --document-name 'AWS-RunShellScript' `
-        --instance-ids $bastionId `
-        --comment "Jale WhatsApp RDS cleanup for $Phone" `
-        --parameters "file://$paramsFile" `
-        --query 'Command.CommandId' `
-        --output text).Trim()
+  Write-Host ">> Sending cleanup command to bastion via SSM..."
+  $cmdId = (aws ssm send-command `
+      --region $Region `
+      --document-name 'AWS-RunShellScript' `
+      --instance-ids $bastionId `
+      --comment "Jale WhatsApp RDS cleanup for $Phone" `
+      --parameters "file://$paramsFile" `
+      --query 'Command.CommandId' `
+      --output text).Trim()
 }
 finally {
-    Remove-Item $paramsFile -Force -ErrorAction SilentlyContinue
+  Remove-Item $paramsFile -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host "   CommandId: $cmdId"
 Write-Host ">> Waiting for command to complete..."
 $terminalStates = @('Failed', 'Cancelled', 'TimedOut')
 while ($true) {
-    Start-Sleep -Seconds 5
-    $status = (aws ssm list-command-invocations `
-        --region $Region `
-        --command-id $cmdId `
-        --details `
-        --query 'CommandInvocations[0].Status' `
-        --output text 2>$null).Trim()
+  Start-Sleep -Seconds 5
+  $status = (aws ssm list-command-invocations `
+      --region $Region `
+      --command-id $cmdId `
+      --details `
+      --query 'CommandInvocations[0].Status' `
+      --output text 2>$null).Trim()
 
-    if ($status -eq 'Success') { break }
-    if ($terminalStates -contains $status) {
-        Write-Host "!! Command ended with status: $status" -ForegroundColor Red
-        aws ssm list-command-invocations `
-            --region $Region `
-            --command-id $cmdId `
-            --details `
-            --query 'CommandInvocations[0].CommandPlugins[0].{Status:Status,Out:Output}' `
-            --output json
-        exit 1
-    }
+  if ($status -eq 'Success') { break }
+  if ($terminalStates -contains $status) {
+    Write-Host "!! Command ended with status: $status" -ForegroundColor Red
+    aws ssm list-command-invocations `
+      --region $Region `
+      --command-id $cmdId `
+      --details `
+      --query 'CommandInvocations[0].CommandPlugins[0].{Status:Status,Out:Output}' `
+      --output json
+    exit 1
+  }
 }
 
 Write-Host ">> Final bastion stdout:"
 aws ssm list-command-invocations `
-    --region $Region `
-    --command-id $cmdId `
-    --details `
-    --query 'CommandInvocations[0].CommandPlugins[0].Output' `
-    --output text
+  --region $Region `
+  --command-id $cmdId `
+  --details `
+  --query 'CommandInvocations[0].CommandPlugins[0].Output' `
+  --output text

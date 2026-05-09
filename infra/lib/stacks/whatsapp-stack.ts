@@ -2,6 +2,8 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -9,6 +11,7 @@ import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
+import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -23,6 +26,9 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
   /** Existing API Gateway (from ApiStack) — webhook route added here */
   readonly api: apigateway.RestApi;
+  readonly workerRerankQueue?: sqs.IQueue;
+  readonly questionGeneratorFn: lambda.IFunction;
+  readonly trustAssessmentQueue: sqs.IQueue;
 }
 
 /**
@@ -185,6 +191,107 @@ export class WhatsAppStack extends cdk.Stack {
     });
     whatsappDbSecret.grantRead(this.jobAlertLambda.function);
     twilioSecret.grantRead(this.jobAlertLambda.function);
+
+    // ── Media S3 Bucket ──────────────────────────────────────────
+    const mediaBucket = new s3.Bucket(this, 'WorkerMediaBucket', {
+      bucketName: `jale-worker-media-${cdk.Stack.of(this).account}-${cdk.Stack.of(this).region}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      versioned: false,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // ── ai-profile-writer Lambda ─────────────────────────────────
+    const aiProfileWriterLambda = new JaleLambdaFunction(this, 'AiProfileWriterLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/ai-profile-writer.ts'),
+      description: 'ai-profile-writer: Bedrock extraction + DB writes after Transcribe',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      timeout: 60,
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        BEDROCK_MODEL_ID: 'us.amazon.nova-lite-v1:0',
+        AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
+        AI_INDUSTRY_KEYWORDS: '[]',
+        QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+      },
+      nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-lambda'],
+    });
+    whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
+    twilioSecret.grantRead(aiProfileWriterLambda.function);
+    mediaBucket.grantRead(aiProfileWriterLambda.function);
+    props.questionGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
+
+    aiProfileWriterLambda.function.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: [
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.amazon.nova-lite-v1:0`,
+          'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-lite-v1:0`,
+          'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
+        ],
+      }),
+    );
+
+    // ── Step Functions: AI Pipeline ─────────────────────────────
+    const voiceTrustReceiverLambda = new JaleLambdaFunction(this, 'VoiceTrustReceiverLambda', {
+      entry: path.join(__dirname, '../../lambda/ai/voice-trust-receiver.ts'),
+      description: 'voice-trust-receiver: writes transcript to state_context, advances trust step',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      timeout: 30,
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
+        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
+        TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
+      },
+    });
+    whatsappDbSecret.grantRead(voiceTrustReceiverLambda.function);
+    twilioSecret.grantRead(voiceTrustReceiverLambda.function);
+    mediaBucket.grantRead(voiceTrustReceiverLambda.function);
+    props.trustAssessmentQueue.grantSendMessages(voiceTrustReceiverLambda.function);
+
+    const profileVoicePipeline = new VoiceTranscriptionPipeline(this, 'ProfileVoicePipeline', {
+      vpc: props.vpc,
+      lambdaSg: props.lambdaSg,
+      mediaBucket,
+      completionHandler: aiProfileWriterLambda.function,
+    });
+
+    const trustVoicePipeline = new VoiceTranscriptionPipeline(this, 'TrustVoicePipeline', {
+      vpc: props.vpc,
+      lambdaSg: props.lambdaSg,
+      mediaBucket,
+      completionHandler: voiceTrustReceiverLambda.function,
+    });
+
+    // ── Processor Lambda: add media env vars and grants ──────────
+    this.processorLambda.function.addEnvironment('MEDIA_BUCKET_NAME', mediaBucket.bucketName);
+    this.processorLambda.function.addEnvironment(
+      'AI_PIPELINE_STATE_MACHINE_ARN',
+      profileVoicePipeline.stateMachine.stateMachineArn,
+    );
+    this.processorLambda.function.addEnvironment(
+      'TRUST_PIPELINE_STATE_MACHINE_ARN',
+      trustVoicePipeline.stateMachine.stateMachineArn,
+    );
+    this.processorLambda.function.addEnvironment(
+      'QUESTION_GENERATOR_ARN',
+      props.questionGeneratorFn.functionArn,
+    );
+    this.processorLambda.function.addEnvironment(
+      'TRUST_ASSESSMENT_QUEUE_URL',
+      props.trustAssessmentQueue.queueUrl,
+    );
+    mediaBucket.grantPut(this.processorLambda.function);
+    profileVoicePipeline.stateMachine.grantStartExecution(this.processorLambda.function);
+    trustVoicePipeline.stateMachine.grantStartExecution(this.processorLambda.function);
+    props.trustAssessmentQueue.grantSendMessages(this.processorLambda.function);
+    props.questionGeneratorFn.grantInvoke(this.processorLambda.function);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────
     // INTENTIONALLY UNAUTHENTICATED. Twilio signs webhook requests with

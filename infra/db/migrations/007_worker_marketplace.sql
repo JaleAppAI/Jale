@@ -1,6 +1,6 @@
 -- ============================================================
--- 005_worker_marketplace.sql
--- Run manually AFTER 004_document_vault.sql
+-- 007_worker_marketplace.sql
+-- Run manually AFTER 006_trust_signal_layer.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 -- ============================================================
 

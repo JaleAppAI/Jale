@@ -12,12 +12,14 @@ const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
+let consoleErrorSpy: jest.SpyInstance;
 
 describe('Worker Profile API Lambda', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     jest.resetAllMocks();
+    consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     process.env = { ...originalEnv, REQUIRED_TOS_VERSION: 'v1.0' };
     
     mockGetDbPool.mockResolvedValue({
@@ -30,6 +32,10 @@ describe('Worker Profile API Lambda', () => {
 
   afterAll(() => {
     process.env = originalEnv;
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
   });
 
   const mockEvent = {
@@ -137,6 +143,9 @@ describe('Worker Profile API Lambda', () => {
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual(mockUser);
+    const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('LEFT JOIN worker_profiles'))?.[0];
+    expect(profileQuery).toContain('FROM worker_skills ws');
+    expect(profileQuery).not.toContain('wp.skills');
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
   });

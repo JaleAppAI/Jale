@@ -77,6 +77,9 @@ describe('employer-worker-profile Lambda', () => {
     const res = await handler(makeEvent('employer-sub'));
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual(mockProfile);
+    const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
+    expect(profileQuery).toContain('FROM worker_skills ws');
+    expect(profileQuery).not.toContain('wp.skills');
     expect(mockRelease).toHaveBeenCalled();
   });
 });

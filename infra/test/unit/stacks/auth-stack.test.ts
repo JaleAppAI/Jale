@@ -62,7 +62,7 @@ describe('AuthStack', () => {
   // SMS IAM role now lives in NetworkStack (pre-deployed for IAM propagation).
   // See network-stack.test.ts for the cognito-idp trust assertion.
 
-  // Task 2.1 — Cognito User Groups
+  // Cognito User Groups
   test('Workers group exists in Worker pool', () => {
     template.hasResourceProperties('AWS::Cognito::UserPoolGroup', {
       GroupName: 'Workers',
@@ -150,10 +150,9 @@ describe('AuthStack', () => {
   });
 
   test('CreateAuthChallenge Lambda has TWILIO_SECRET_ARN env var pointing at Secrets Manager', () => {
-    // Fix Plan v3 (Fix 6, 2026-04-17): the Lambda loads Twilio creds from
-    // Secrets Manager at runtime. The only Twilio-related env var is
-    // TWILIO_SECRET_ARN. The actual accountSid/authToken/fromNumber values
-    // never appear in the synthesized template.
+    // Twilio creds are loaded from Secrets Manager at runtime. The only
+    // Twilio-related env var is TWILIO_SECRET_ARN; no secret values appear
+    // in the synthesized template.
     template.hasResourceProperties('AWS::Lambda::Function', {
       Environment: Match.objectLike({
         Variables: Match.objectLike({

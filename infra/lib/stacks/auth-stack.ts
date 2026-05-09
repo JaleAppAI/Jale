@@ -65,20 +65,10 @@ export class AuthStack extends cdk.Stack {
 
     // CreateAuthChallenge: generates 6-digit OTP and sends via Twilio SMS.
     //
-    // Fix Plan v3 (Fix 6, 2026-04-17): Twilio credentials are read at
-    // RUNTIME from Secrets Manager (`jale/whatsapp/otp-twilio`), not
-    // synthesized into CloudFormation as plaintext Lambda env vars. The
-    // secret is separate from `jale/whatsapp/twilio` (used by the
-    // WhatsApp processor/webhook) for least-privilege isolation —
-    // compromising the OTP Lambda does not grant access to the WhatsApp
-    // templates/account and vice versa.
-    //
-    // The secret must be seeded manually by ops before first OTP flow:
-    //   aws secretsmanager create-secret \
-    //     --name jale/whatsapp/otp-twilio \
-    //     --secret-string '{"accountSid":"AC...","authToken":"...","fromNumber":"+1..."}'
-    // The Lambda throws if the secret is missing any field, failing loudly
-    // on first use rather than silently sending to empty creds.
+    // Credentials are read from Secrets Manager at runtime (`jale/whatsapp/otp-twilio`),
+    // kept separate from `jale/whatsapp/twilio` (WhatsApp processor) for least-privilege
+    // isolation — a compromised OTP Lambda cannot access the WhatsApp templates account.
+    // The Lambda throws on any missing field rather than silently sending to empty creds.
     const otpTwilioSecret = secretsmanager.Secret.fromSecretNameV2(
       this,
       'OtpTwilioSecret',
@@ -169,7 +159,7 @@ export class AuthStack extends cdk.Stack {
       },
     });
 
-    // ── Cognito User Groups (Task 2.1) ──
+    // ── Cognito User Groups ──
     new cognito.CfnUserPoolGroup(this, 'WorkerGroup', {
       userPoolId: this.workerPool.userPool.userPoolId,
       groupName: 'Workers',

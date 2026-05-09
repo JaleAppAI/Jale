@@ -1,5 +1,6 @@
 import type { SQSEvent, SQSHandler, SQSRecord } from 'aws-lambda';
 import type { PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
 import {
   CognitoIdentityProviderClient,
   SignUpCommand,
@@ -13,8 +14,13 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import {
+  SFNClient,
+  StartExecutionCommand,
+} from '@aws-sdk/client-sfn';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
+import { sendPendingOutbox } from './lib/outbox';
 import {
   t,
   detectLanguage,
@@ -22,10 +28,19 @@ import {
   type TemplateKey,
 } from './lib/templates';
 import {
+  FIELD_PROMPT_KEY,
+  loadProfileFromDb,
+  loadTradeFromDb,
+  profileQuestionBody,
+  trustSignalColumnsAvailable,
+  upsertWorkerProfileFromUsers,
+} from './lib/profile-flow';
+import {
   isGreetingKeyword,
   isJobsKeyword,
   isHelpCommand,
   isProfileCommand,
+  isSkipKeyword,
   isAccept,
   isDecline,
   parseButtonPayload,
@@ -40,11 +55,19 @@ import {
   type ProfileStateContext,
   type TrustAnswer,
 } from './lib/flows';
+import {
+  detectMediaCategory,
+  buildS3Key,
+  downloadTwilioMedia,
+  uploadMediaToS3,
+} from './lib/media';
 import { decodeIdTokenSub } from './lib/jwt';
+import { handleBuildingCustomTrust } from './handlers/custom-trust';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const cognito = new CognitoIdentityProviderClient({});
 const secretsManager = new SecretsManagerClient({});
+const sfn = new SFNClient({});
 
 // ── Twilio secret cache (5-min TTL) ─────────────────────────────
 let cachedTwilio: TwilioSecret | null = null;
@@ -61,30 +84,6 @@ async function getTwilioSecret(): Promise<TwilioSecret> {
   cachedTwilio = JSON.parse(r.SecretString) as TwilioSecret;
   twilioCacheExp = now + CACHE_TTL_MS;
   return cachedTwilio;
-}
-
-// ── Twilio send (session-message, plain text) ───────────────────
-async function sendTwilioMessage(to: string, body: string): Promise<void> {
-  const secret = await getTwilioSecret();
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
-  const form = new URLSearchParams({
-    MessagingServiceSid: secret.messagingServiceSid,
-    To: to, // Already in "whatsapp:+1..." format from Twilio inbound event
-    Body: body,
-  });
-  const auth = Buffer.from(`${secret.accountSid}:${secret.authToken}`).toString('base64');
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: form.toString(),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Twilio send failed ${res.status}: ${text}`);
-  }
 }
 
 // ── Outbox helpers (Fix Plan v3, 2026-04-17) ────────────────────
@@ -139,55 +138,6 @@ async function reply(
   vars?: Record<string, string>,
 ): Promise<void> {
   await queueReply(client, msg.messageSid, msg.from, key, lang, vars);
-}
-
-/**
- * Drain pending outbox rows to Twilio. Called AFTER the DB transaction
- * commits. On first failure, records the error and re-throws so the SQS
- * handler can retry; subsequent retry invocations resume from 'db_committed'
- * via `processRecord`'s conflict branch and re-enter this function.
- */
-async function sendPendingOutbox(
-  client: PoolClient,
-  inboundMessageSid: string,
-): Promise<void> {
-  const pending = await client.query<{
-    id: string;
-    sequence: number;
-    whatsapp_number: string;
-    body: string;
-  }>(
-    `SELECT id, sequence, whatsapp_number, body
-       FROM whatsapp_outbox
-      WHERE inbound_message_sid = $1
-        AND status IN ('pending', 'failed')
-      ORDER BY sequence`,
-    [inboundMessageSid],
-  );
-  for (const row of pending.rows) {
-    try {
-      await sendTwilioMessage(`whatsapp:${row.whatsapp_number}`, row.body);
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'sent', sent_at = now()
-          WHERE id = $1`,
-        [row.id],
-      );
-    } catch (err) {
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'failed',
-                attempt_count = attempt_count + 1,
-                last_error = $1
-          WHERE id = $2`,
-        [(err as Error).message, row.id],
-      );
-      // Propagate so SQS retries the whole message. The next retry will see
-      // `processed_messages.status = 'db_committed'` and re-enter
-      // sendPendingOutbox without re-executing any state mutations.
-      throw err;
-    }
-  }
 }
 
 async function markCompleted(
@@ -379,6 +329,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const from = params.From; // "whatsapp:+15125551234"
   const body = params.Body ?? '';
   const buttonPayload = params.ButtonPayload; // present on template button taps
+  const numMedia = parseInt(params.NumMedia ?? '0', 10);
+  const mediaUrl = params.MediaUrl0;
+  const mediaContentType = params.MediaContentType0;
 
   if (!from || !messageSid) {
     console.warn('[processor] skipping: missing From/MessageSid', { messageSid, from });
@@ -455,7 +408,15 @@ async function processRecord(record: SQSRecord): Promise<void> {
         defaultLang,
       );
 
-      await routeMessage(client, conv, { body, buttonPayload, messageSid, from });
+      await routeMessage(client, conv, {
+        body,
+        buttonPayload,
+        messageSid,
+        from,
+        numMedia,
+        mediaUrl,
+        mediaContentType,
+      });
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
       // retries re-enter via the conflict branch above and resume from the
@@ -497,6 +458,250 @@ interface IncomingMessage {
   buttonPayload: string | undefined;
   messageSid: string;
   from: string;
+  numMedia: number;
+  mediaUrl: string | undefined;
+  mediaContentType: string | undefined;
+}
+
+async function setWorkerRlsContextByUserId(
+  client: PoolClient,
+  userId: string,
+): Promise<void> {
+  const userRow = await client.query<{ cognito_sub: string }>(
+    `SELECT cognito_sub FROM users WHERE id = $1 AND user_type = 'worker'`,
+    [userId],
+  );
+  const cognitoSub = userRow.rows[0]?.cognito_sub;
+  if (!cognitoSub) throw new Error('worker cognito_sub missing before media write');
+  await setRlsContext(client, cognitoSub);
+}
+
+// ── awaiting_media_photo — optional photo upload step ───────────
+async function handleAwaitingMediaPhoto(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+
+  // If a photo was already received, we are waiting for the classification reply (1 or 2).
+  const pendingPhotoId = conv.state_context?.pending_media_photo_id;
+  if (pendingPhotoId) {
+    if (!conv.user_id) throw new Error('user_id missing before media write');
+    await setWorkerRlsContextByUserId(client, conv.user_id);
+
+    const bodyTrimmed = msg.body.trim();
+    if (bodyTrimmed === '1' || /^profile/i.test(bodyTrimmed)) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else if (bodyTrimmed === '2' || /^work/i.test(bodyTrimmed)) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'work_sample' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else {
+      // Invalid classification response — re-prompt
+      await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+      return;
+    }
+    // Classification done — advance to voice step
+    await updateConversation(client, conv.id, {
+      state_context: { ...conv.state_context, pending_media_photo_id: undefined },
+      conversation_state: 'awaiting_media_voice',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    return;
+  }
+
+  // Worker skipped or sent text (no photo yet) — proceed to voice step
+  if (numMedia === 0 || isSkipKeyword(msg.body)) {
+    await updateConversation(client, conv.id, {
+      conversation_state: 'awaiting_media_voice',
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    return;
+  }
+
+  if (!mediaUrl || !mediaContentType) {
+    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
+    return;
+  }
+
+  const category = detectMediaCategory(mediaContentType);
+  if (category !== 'photo') {
+    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
+    return;
+  }
+
+  // Download from Twilio and upload to S3
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+
+  const mediaId = randomUUID();
+  if (!conv.user_id) throw new Error('user_id missing before media write');
+  const s3Key = buildS3Key(conv.user_id, mediaId, 'photo');
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
+  await setWorkerRlsContextByUserId(client, conv.user_id);
+
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
+     VALUES ($1, $2, 'profile_photo', $3, $4, $5)`,
+    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+  );
+
+  await updateConversation(client, conv.id, {
+    state_context: {
+      ...conv.state_context,
+      pending_media_photo_id: mediaId,
+    },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+}
+
+// ── awaiting_media_voice — optional voice message step ──────────
+function wantsVoiceProfile(text: string): boolean {
+  return /^(1|voice|voz|audio|nota de voz)$/i.test(text.trim());
+}
+
+async function enterTextProfileFromVoiceChoice(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  if (!conv.user_id) throw new Error('user_id missing before text profile');
+  const collected = conv.state_context?.collected ?? {};
+  const fieldSids = conv.state_context?.field_sids ?? {};
+  const dbFilled = await loadProfileFromDb(client, conv.user_id);
+  const next = computeNextField(collected, dbFilled);
+
+  if (next === null) {
+    await flushProfileAndAdvance(client, conv, msg.from, msg.messageSid);
+    return;
+  }
+
+  await updateConversation(client, conv.id, {
+    conversation_state: 'building_profile',
+    state_context: {
+      ...conv.state_context,
+      collected,
+      field_sids: fieldSids,
+      pending_field: next,
+    },
+    last_processed_message_sid: msg.messageSid,
+  });
+  await queueReply(client, msg.messageSid, msg.from, 'profile_intro', conv.language);
+  await askProfileQuestion(client, msg.messageSid, msg.from, next, conv.language);
+}
+
+async function handleAwaitingMediaVoice(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+
+  // Worker skipped or sent text — go straight to text questions
+  if (numMedia === 0) {
+    if (!msg.body.trim() || wantsVoiceProfile(msg.body)) {
+      await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+      return;
+    }
+    await enterTextProfileFromVoiceChoice(client, conv, msg);
+    return;
+  }
+
+  if (!mediaUrl || !mediaContentType) {
+    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
+    return;
+  }
+
+  const category = detectMediaCategory(mediaContentType);
+  if (category !== 'voice') {
+    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
+    return;
+  }
+
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+
+  const mediaId = randomUUID();
+  if (!conv.user_id) throw new Error('user_id missing before media write');
+  const s3Key = buildS3Key(conv.user_id, mediaId, 'voice');
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  const stateMachineArn = process.env.AI_PIPELINE_STATE_MACHINE_ARN;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+  if (!stateMachineArn) throw new Error('AI_PIPELINE_STATE_MACHINE_ARN not set');
+
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
+  await setWorkerRlsContextByUserId(client, conv.user_id);
+
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
+     VALUES ($1, $2, 'voice_message', $3, $4, $5)`,
+    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+  );
+
+  // Language code for Transcribe
+  const languageCode = conv.language === 'es' ? 'es-US' : 'en-US';
+  const transcriptionJobName = `jale-${conv.user_id.replace(/-/g, '')}-${Date.now()}`;
+  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
+  const transcriptOutputKey = `${conv.user_id}/transcripts/${transcriptionJobName}.json`;
+
+  // Start Step Functions execution
+  const execution = await sfn.send(
+    new StartExecutionCommand({
+      stateMachineArn,
+      input: JSON.stringify({
+        userId: conv.user_id,
+        conversationId: conv.id,
+        inboundMessageSid: messageSid,
+        whatsappNumber: conv.whatsapp_number,
+        language: conv.language,
+        mediaBucketName: bucketName,
+        transcriptionJobName,
+        languageCode,
+        mediaS3Uri,
+        transcriptOutputKey,
+        voiceMessageMediaId: mediaId,
+      }),
+    }),
+  );
+
+  await updateConversation(client, conv.id, {
+    conversation_state: 'processing_ai',
+    state_context: {
+      ...conv.state_context,
+      ai_pipeline_execution_arn: execution.executionArn,
+    },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'ai_processing_ack', conv.language);
+}
+
+// ── processing_ai — waiting for AI pipeline to complete ─────────
+async function handleProcessingAi(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const aiType = conv.state_context?.processing_ai_type;
+  if (aiType === 'trust') {
+    await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
+    return;
+  }
+
+  // Profile or legacy state transition happens when ai-profile-writer updates the conversation.
+  await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
 }
 
 async function routeMessage(
@@ -553,12 +758,28 @@ async function routeMessage(
       await handleAwaitingLegal(client, conv, msg);
       return;
 
+    case 'awaiting_media_photo':
+      await handleAwaitingMediaPhoto(client, conv, msg);
+      return;
+
+    case 'awaiting_media_voice':
+      await handleAwaitingMediaVoice(client, conv, msg);
+      return;
+
+    case 'processing_ai':
+      await handleProcessingAi(client, conv, msg);
+      return;
+
     case 'building_profile':
       await handleBuildingProfile(client, conv, msg);
       return;
 
     case 'building_trust_signal':
       await handleBuildingTrustSignal(client, conv, msg);
+      return;
+
+    case 'building_custom_trust':
+      await handleBuildingCustomTrust(client, conv, msg);
       return;
 
     case 'idle':
@@ -1040,37 +1261,14 @@ async function enterProfileBuilderOrIdle(
     );
     return;
   }
+  // Sprint 7: collect media before text questions
   await updateConversation(client, conv.id, {
-    conversation_state: 'building_profile',
-    state_context: { pending_field: next, collected: {}, field_sids: {} },
+    conversation_state: 'awaiting_media_photo',
+    state_context: { collected: {}, field_sids: {} },
     last_processed_message_sid: messageSid,
   });
   await queueReply(client, messageSid, from, 'legal_accepted', conv.language);
-  await askProfileQuestion(client, messageSid, from, next, conv.language);
-}
-
-async function loadProfileFromDb(
-  client: PoolClient,
-  userId: string,
-): Promise<Partial<Record<ProfileField, string | boolean | null>>> {
-  const r = await client.query(
-    `SELECT full_name, city, main_trade, main_trade_other,
-            years_experience, has_transportation, availability
-       FROM users WHERE id = $1`,
-    [userId],
-  );
-  return (r.rows[0] ?? {}) as Partial<Record<ProfileField, string | boolean | null>>;
-}
-
-async function loadTradeFromDb(
-  client: PoolClient,
-  userId: string,
-): Promise<string> {
-  const r = await client.query<{ main_trade: string | null }>(
-    `SELECT main_trade FROM users WHERE id = $1`,
-    [userId],
-  );
-  return r.rows[0]?.main_trade ?? 'other';
+  await queueReply(client, messageSid, from, 'ask_media_photo', conv.language);
 }
 
 interface WorkerProfileSummary {
@@ -1085,10 +1283,24 @@ interface WorkerProfileSummary {
   availability: string | null;
   trust_signals: unknown;
   trust_signals_completed_at: string | null;
+  trust_assessment_profession_key: string | null;
+  trust_assessment_status: string | null;
+  trust_assessment_answers: unknown;
+  trust_assessment_questions: unknown;
 }
 
 interface StoredTrustAnswer {
   label?: string;
+}
+
+interface StoredAssessmentAnswer {
+  q_en?: string;
+  answer_text?: string;
+}
+
+interface StoredAssessmentQuestion {
+  q_en?: string;
+  q_es?: string;
 }
 
 async function handleProfileCommand(
@@ -1102,11 +1314,30 @@ async function handleProfileCommand(
   }
 
   const result = await client.query<WorkerProfileSummary>(
-    `SELECT phone, whatsapp_number, full_name, city, main_trade, main_trade_other,
-            years_experience, has_transportation, availability,
-            trust_signals, trust_signals_completed_at
-       FROM users
-      WHERE id = $1 AND user_type = 'worker'`,
+    `SELECT u.phone, u.whatsapp_number, u.full_name, u.city, u.main_trade, u.main_trade_other,
+            u.years_experience, u.has_transportation, u.availability,
+            u.trust_signals, u.trust_signals_completed_at,
+            wta.profession_key AS trust_assessment_profession_key,
+            wta.status AS trust_assessment_status,
+            wta.answers AS trust_assessment_answers,
+            tq.questions AS trust_assessment_questions
+       FROM users u
+       LEFT JOIN LATERAL (
+         SELECT profession_key, status, answers, created_at
+           FROM worker_trust_assessments
+          WHERE user_id = u.id
+          ORDER BY
+            CASE status
+              WHEN 'scored' THEN 0
+              WHEN 'scoring' THEN 1
+              WHEN 'pending' THEN 2
+              ELSE 3
+            END,
+            created_at DESC
+          LIMIT 1
+       ) wta ON TRUE
+       LEFT JOIN trade_questions tq ON tq.profession_key = wta.profession_key
+      WHERE u.id = $1 AND u.user_type = 'worker'`,
     [conv.user_id],
   );
 
@@ -1126,6 +1357,8 @@ async function handleProfileCommand(
 
 function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string {
   const trustSignals = parseTrustSignals(profile.trust_signals);
+  const assessmentAnswers = parseAssessmentAnswers(profile.trust_assessment_answers);
+  const assessmentQuestions = parseAssessmentQuestions(profile.trust_assessment_questions);
   const text = lang === 'es'
     ? {
         title: 'Tu perfil',
@@ -1137,6 +1370,9 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         transportation: 'Transporte',
         availability: 'Disponibilidad',
         trust: 'Confianza',
+        status: 'Estado',
+        trustQuestions: 'Preguntas de confianza',
+        answer: 'Respuesta',
         specialization: 'Especialidad',
         seniority: 'Nivel',
         tasks: 'Trabajo principal',
@@ -1154,6 +1390,9 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         transportation: 'Transportation',
         availability: 'Availability',
         trust: 'Trust',
+        status: 'Status',
+        trustQuestions: 'Trust questions',
+        answer: 'Answer',
         specialization: 'Specialty',
         seniority: 'Level',
         tasks: 'Main work',
@@ -1183,7 +1422,21 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
     text.trust,
   ];
 
-  if (profile.trust_signals_completed_at && trustSignals) {
+  if (profile.trust_assessment_status || assessmentAnswers.length > 0) {
+    if (profile.trust_assessment_status) {
+      lines.push(`${text.status}: ${assessmentStatusLabel(profile.trust_assessment_status, lang)}`);
+    }
+    if (assessmentAnswers.length > 0) {
+      lines.push('', text.trustQuestions);
+      assessmentAnswers.forEach((answer, index) => {
+        const question = displayQuestionForAnswer(answer, assessmentQuestions, lang);
+        lines.push(
+          `${index + 1}. ${question}`,
+          `${text.answer}: ${answer.answer_text ?? text.missing}`,
+        );
+      });
+    }
+  } else if (profile.trust_signals_completed_at && trustSignals) {
     lines.push(
       `${text.specialization}: ${trustSignals.specialization?.label ?? text.missing}`,
       `${text.seniority}: ${trustSignals.seniority?.label ?? text.missing}`,
@@ -1194,6 +1447,50 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
   }
 
   return lines.join('\n');
+}
+
+function parseAssessmentAnswers(value: unknown): StoredAssessmentAnswer[] {
+  return parseJsonArray<StoredAssessmentAnswer>(value);
+}
+
+function parseAssessmentQuestions(value: unknown): StoredAssessmentQuestion[] {
+  return parseJsonArray<StoredAssessmentQuestion>(value);
+}
+
+function parseJsonArray<T>(value: unknown): T[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value as T[];
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed as T[] : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function displayQuestionForAnswer(
+  answer: StoredAssessmentAnswer,
+  questions: StoredAssessmentQuestion[],
+  lang: Lang,
+): string {
+  const matched = questions.find((question) => question.q_en === answer.q_en);
+  if (lang === 'es') {
+    return matched?.q_es ?? answer.q_en ?? 'Pregunta';
+  }
+  return matched?.q_en ?? answer.q_en ?? 'Question';
+}
+
+function assessmentStatusLabel(status: string, lang: Lang): string {
+  const labels: Record<string, Record<Lang, string>> = {
+    pending: { es: 'Pendiente', en: 'Pending' },
+    scoring: { es: 'Calculando', en: 'Scoring' },
+    scored: { es: 'Evaluado', en: 'Scored' },
+    failed: { es: 'Fallido', en: 'Failed' },
+  };
+  return labels[status]?.[lang] ?? status;
 }
 
 function parseTrustSignals(value: unknown): Record<string, StoredTrustAnswer> | null {
@@ -1242,23 +1539,6 @@ function labelFor(
   return value ? labels[field][value]?.[lang] ?? value : (lang === 'es' ? 'Sin completar' : 'Not set');
 }
 
-async function trustSignalColumnsAvailable(client: PoolClient): Promise<boolean> {
-  const hasSignals = await tableColumnExists(client, 'users', 'trust_signals');
-  if (!hasSignals) return false;
-  return tableColumnExists(client, 'users', 'trust_signals_completed_at');
-}
-
-// Mapping from ProfileField → question template key
-const FIELD_PROMPT_KEY: Record<ProfileField, TemplateKey> = {
-  full_name: 'ask_name',
-  city: 'ask_city',
-  main_trade: 'ask_trade',
-  main_trade_other: 'ask_trade_freetext',
-  years_experience: 'ask_experience',
-  has_transportation: 'ask_transportation',
-  availability: 'ask_availability',
-};
-
 async function askProfileQuestion(
   client: PoolClient,
   inboundMessageSid: string,
@@ -1266,7 +1546,7 @@ async function askProfileQuestion(
   field: ProfileField,
   lang: Lang,
 ): Promise<void> {
-  await queueReply(client, inboundMessageSid, to, FIELD_PROMPT_KEY[field], lang);
+  await queueText(client, inboundMessageSid, to, profileQuestionBody(field, lang));
 }
 
 // ── building_profile — pending-field model (Fix 3, 2026-04-17) ──
@@ -1391,32 +1671,7 @@ async function flushProfileAndAdvance(
     );
   }
 
-  await client.query(
-    `INSERT INTO worker_profiles
-       (user_id, full_name, phone, availability, years_experience, location)
-     SELECT
-       id,
-       full_name,
-       COALESCE(whatsapp_number, phone),
-       availability,
-       CASE years_experience
-         WHEN '0-1' THEN 1
-         WHEN '2-4' THEN 3
-         WHEN '5-9' THEN 7
-         WHEN '10+' THEN 10
-         ELSE NULL
-       END,
-       city
-     FROM users
-     WHERE id = $1 AND user_type = 'worker'
-     ON CONFLICT (user_id) DO UPDATE
-       SET full_name = EXCLUDED.full_name,
-           phone = EXCLUDED.phone,
-           availability = EXCLUDED.availability,
-           years_experience = EXCLUDED.years_experience,
-           location = EXCLUDED.location`,
-    [conv.user_id],
-  );
+  await upsertWorkerProfileFromUsers(client, conv.user_id);
 
   await enterTrustSignalOrIdle(
     client,
@@ -1435,6 +1690,57 @@ async function enterTrustSignalOrIdle(
   tradeHint?: string,
 ): Promise<void> {
   if (!conv.user_id) throw new Error('user_id missing before trust signal');
+
+  const trade = tradeHint ?? await loadTradeFromDb(client, conv.user_id);
+
+  if (trade === 'other') {
+    const tradeOtherRow = await client.query<{ main_trade_other: string | null }>(
+      'SELECT main_trade_other FROM users WHERE id = $1',
+      [conv.user_id],
+    );
+    const professionRaw = tradeOtherRow.rows[0]?.main_trade_other;
+    if (professionRaw) {
+      const { loadOrGenerateQuestions, normalizeProfession } = await import('./handlers/custom-trust');
+      const professionKey = normalizeProfession(professionRaw);
+      const existingWta = await client.query(
+        `SELECT id FROM worker_trust_assessments
+         WHERE user_id = $1 AND profession_key = $2
+           AND status IN ('pending','scoring','scored','failed')`,
+        [conv.user_id, professionKey],
+      );
+
+      if (existingWta.rows.length === 0) {
+        const assessmentId = randomUUID();
+        const questions = await loadOrGenerateQuestions(client, professionKey, professionRaw);
+        await updateConversation(client, conv.id, {
+          conversation_state: 'building_custom_trust',
+          state_context: {
+            custom_trust_step: 0,
+            custom_trust_answers: [],
+            custom_trust_profession: professionRaw,
+            custom_trust_questions: questions,
+            custom_trust_assessment_id: assessmentId,
+          },
+          last_processed_message_sid: messageSid,
+        });
+        await queueText(
+          client,
+          messageSid,
+          from,
+          conv.language === 'es' ? questions[0].q_es : questions[0].q_en,
+        );
+        return;
+      }
+    }
+
+    await updateConversation(client, conv.id, {
+      conversation_state: 'idle',
+      state_context: {},
+      last_processed_message_sid: messageSid,
+    });
+    await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+    return;
+  }
 
   if (!await trustSignalColumnsAvailable(client)) {
     console.warn('[processor] trust signal columns missing; skipping trust flow', {
@@ -1456,7 +1762,6 @@ async function enterTrustSignalOrIdle(
   const trustDone = !!trust.rows[0]?.trust_signals_completed_at;
 
   if (!trustDone) {
-    const trade = tradeHint ?? await loadTradeFromDb(client, conv.user_id);
     await updateConversation(client, conv.id, {
       conversation_state: 'building_trust_signal',
       state_context: { trust_step: 0, trust_answers: [] },
@@ -1538,6 +1843,56 @@ async function handleBuildingTrustSignal(
       WHERE id = $2`,
     [JSON.stringify(signalMap), conv.user_id],
   );
+
+  type SeededTrustQuestion = { q_en: string; q_es: string };
+  const knownTradeQuestions = await client.query<{ questions: SeededTrustQuestion[] }>(
+    'SELECT questions FROM trade_questions WHERE profession_key = $1 AND is_seeded = true',
+    [trade],
+  );
+  if (knownTradeQuestions.rows.length > 0) {
+    const seededQuestions = knownTradeQuestions.rows[0].questions;
+    const existingWta = await client.query(
+      `SELECT id FROM worker_trust_assessments
+       WHERE user_id = $1 AND profession_key = $2
+         AND status IN ('pending','scoring','scored','failed')`,
+      [conv.user_id, trade],
+    );
+    if (existingWta.rows.length === 0) {
+      const questionIndexByField: Record<TrustAnswer['questionKey'], number> = {
+        specialization: 0,
+        seniority: 1,
+        tasks: 2,
+      };
+      const answersArray = updatedAnswers.map((item) => ({
+        q_en: seededQuestions[questionIndexByField[item.questionKey]]?.q_en ?? item.questionKey,
+        answer_text: item.label,
+        answer_source: 'text' as const,
+        answered_at: new Date().toISOString(),
+      }));
+      const assessmentId = randomUUID();
+      await client.query(
+        `INSERT INTO worker_trust_assessments (id, user_id, profession_key, answers, status)
+         VALUES ($1, $2, $3, $4::jsonb, 'pending')
+         ON CONFLICT DO NOTHING`,
+        [assessmentId, conv.user_id, trade, JSON.stringify(answersArray)],
+      );
+      const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
+      const sqsClientLocal = new SQSClient({});
+      await sqsClientLocal.send(
+        new SendMessageCommand({
+          QueueUrl: process.env.TRUST_ASSESSMENT_QUEUE_URL!,
+          MessageBody: JSON.stringify({ assessmentId, userId: conv.user_id, professionKey: trade }),
+        }),
+      );
+    }
+  } else {
+    console.warn('[processor] known-trade seeded questions missing for trade', {
+      trade,
+      userId: conv.user_id,
+    });
+    console.log(JSON.stringify({ metric: 'AIKnownTradeQuestionsMissing', trade }));
+  }
+
   await updateConversation(client, conv.id, {
     conversation_state: 'idle',
     state_context: {},

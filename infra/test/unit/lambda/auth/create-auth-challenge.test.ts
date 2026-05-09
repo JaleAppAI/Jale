@@ -1,10 +1,9 @@
 import type { CreateAuthChallengeTriggerEvent } from 'aws-lambda';
 
 // ── Mock Secrets Manager client BEFORE importing the handler ──────────────
-// Fix Plan v3 (Fix 6, 2026-04-17) moved Twilio credentials out of plaintext
-// Lambda env vars and into Secrets Manager (`jale/whatsapp/otp-twilio`).
-// These tests stub the SDK so we can exercise cache hits, missing secrets,
-// and malformed payloads without a real AWS call.
+// Twilio credentials are loaded from Secrets Manager (`jale/whatsapp/otp-twilio`).
+// These tests stub the SDK to exercise cache hits, missing secrets, and malformed
+// payloads without a real AWS call.
 const mockSecretsSend = jest.fn();
 jest.mock('@aws-sdk/client-secrets-manager', () => ({
   SecretsManagerClient: jest.fn(() => ({ send: mockSecretsSend })),

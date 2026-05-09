@@ -10,7 +10,7 @@
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 003→004→005→006→007
+#   - Base64-encodes migrations 001→012
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -43,6 +43,11 @@ MIGRATIONS=(
   "005_document_vault.sql"
   "006_trust_signal_layer.sql"
   "007_worker_marketplace.sql"
+  "008_worker_skills.sql"
+  "009_location_foundation.sql"
+  "010_matching_write_semantics.sql"
+  "011_ai_profile_media.sql"
+  "012_ai_trust_assessment.sql"
 )
 
 echo ">> Using region: $REGION"
