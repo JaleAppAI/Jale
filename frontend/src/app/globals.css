@@ -1,77 +1,130 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800&display=swap');
 
 @custom-variant dark (&:is(.dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-primary: var(--primary);
-  --color-primary-hover: var(--primary-hover);
-  --color-primary-fg: var(--primary-fg);
-  --color-input: var(--input);
-  --color-input-focus: var(--input-focus);
-  --color-muted: var(--muted);
-  --color-placeholder: var(--placeholder);
-  --color-border: var(--border);
-  --color-error: var(--error);
-  --color-dot: var(--dot-color);
-  --shadow-card: var(--shadow-card);
-  --shadow-focus: var(--shadow-focus);
-  --shadow-btn: var(--shadow-btn);
-  --radius-card: var(--radius-card);
-  --radius-input: var(--radius-input);
-  --font-sans: var(--font-syne), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-}
-
+/* ===== JALE DESIGN TOKENS ============================================ */
 :root {
-  --background: oklch(0.895 0.015 250);
-  --foreground: oklch(0.22 0.1 275);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.1 275);
-  --primary: oklch(0.575 0.219 258);
-  --primary-hover: oklch(0.52 0.2 258);
-  --primary-fg: oklch(1 0 0);
-  --input: oklch(0.985 0.003 250);
-  --input-focus: oklch(1 0 0);
-  --muted: oklch(0.555 0.04 260);
-  --placeholder: oklch(0.72 0.025 250);
-  --border: oklch(0.88 0.01 250);
-  --error: oklch(0.577 0.245 27);
-  --dot-color: oklch(0.55 0.1 255);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-focus: 0 0 0 3px rgba(1, 121, 255, 0.1);
-  --shadow-btn: 0 4px 12px rgba(1, 121, 255, 0.3);
-  --radius-card: 1rem;
+  /* Brand Blues */
+  --jale-blue-50:  #eaf2ff;
+  --jale-blue-100: #cfe0ff;
+  --jale-blue-200: #a8c5ff;
+  --jale-blue-300: #78a4ff;
+  --jale-blue-400: #4585ff;
+  --jale-blue-500: #0179FF;
+  --jale-blue-600: #0064d6;
+  --jale-blue-700: #0050ad;
+  --jale-blue-800: #003d85;
+  --jale-blue-900: #181855;
+  --jale-blue-950: #0e0e3d;
+
+  /* Brand Turquesa */
+  --jale-teal-50:  #e3faf4;
+  --jale-teal-500: #21c3a4;
+
+  /* Surfaces */
+  --jale-paper:    #e3eaf2;
+  --jale-paper-2:  #f4f6fa;
+  --jale-card:     #ffffff;
+  --jale-input:    #fafbfd;
+  --jale-divider:  #d8dde6;
+  --jale-ink:      #181855;
+  --jale-ink-2:    #5b6480;
+  --jale-placeholder: #a1a9b8;
+
+  /* Semantic */
+  --jale-success:     #1f9d55;
+  --jale-success-bg:  #d9f2e2;
+  --jale-warning:     #b65a00;
+  --jale-warning-bg:  #fdebd0;
+  --jale-danger:      #d4313c;
+  --jale-danger-bg:   #fde2e3;
+
+  /* Mapped roles (used by Tailwind theme + components) */
+  --background:      var(--jale-paper);
+  --foreground:      var(--jale-ink);
+  --card:            var(--jale-card);
+  --card-foreground: var(--jale-ink);
+  --primary:         var(--jale-blue-500);
+  --primary-hover:   var(--jale-blue-600);
+  --primary-deep:    var(--jale-blue-900);
+  --primary-fg:      #ffffff;
+  --input:           var(--jale-input);
+  --input-focus:     #ffffff;
+  --muted:           var(--jale-ink-2);
+  --placeholder:     var(--jale-placeholder);
+  --border:          var(--jale-divider);
+  --error:           var(--jale-danger);
+  --dot-color:       #6b7da4;
+
+  /* Elevation */
+  --shadow-card:  0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.06);
+  --shadow-focus: 0 0 0 3px rgba(1,121,255,.10);
+  --shadow-btn:   0 4px 12px rgba(1,121,255,.30);
+  --shadow-modal: 0 20px 50px -10px rgba(10,23,54,.25);
+
+  /* Radii */
+  --radius-card:  1rem;
   --radius-input: 0.625rem;
+  --radius-pill:  9999px;
+
+  /* Typography */
+  --font-sans: 'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-.dark {
-  --background: oklch(0.22 0.1 275);
-  --foreground: oklch(0.96 0.02 280);
-  --card: oklch(0.33 0.17 275);
-  --card-foreground: oklch(0.96 0.02 280);
-  --primary: oklch(0.575 0.219 258);
-  --primary-hover: oklch(0.52 0.2 258);
-  --primary-fg: oklch(1 0 0);
-  --input: oklch(0.28 0.14 275);
-  --input-focus: oklch(0.33 0.17 275);
-  --muted: oklch(0.65 0.1 275);
-  --placeholder: oklch(0.47 0.1 275);
-  --border: oklch(1 0 0 / 12%);
-  --error: oklch(0.577 0.245 27);
-  --dot-color: oklch(0.52 0.07 280);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.1), 0 4px 16px rgba(0, 0, 0, 0.15);
-  --shadow-focus: 0 0 0 3px rgba(1, 121, 255, 0.15);
-  --shadow-btn: 0 4px 12px rgba(1, 121, 255, 0.35);
+/* ===== TAILWIND THEME MAP ============================================ */
+@theme inline {
+  --color-background:      var(--background);
+  --color-foreground:      var(--foreground);
+  --color-card:            var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary:         var(--primary);
+  --color-primary-hover:   var(--primary-hover);
+  --color-primary-deep:    var(--primary-deep);
+  --color-primary-fg:      var(--primary-fg);
+  --color-input:           var(--input);
+  --color-input-focus:     var(--input-focus);
+  --color-muted:           var(--muted);
+  --color-placeholder:     var(--placeholder);
+  --color-border:          var(--border);
+  --color-error:           var(--error);
+  --color-dot:             var(--dot-color);
+
+  --color-jale-blue-50:    var(--jale-blue-50);
+  --color-jale-blue-500:   var(--jale-blue-500);
+  --color-jale-blue-600:   var(--jale-blue-600);
+  --color-jale-blue-700:   var(--jale-blue-700);
+  --color-jale-blue-900:   var(--jale-blue-900);
+  --color-jale-teal-500:   var(--jale-teal-500);
+  --color-jale-success:    var(--jale-success);
+  --color-jale-success-bg: var(--jale-success-bg);
+  --color-jale-warning:    var(--jale-warning);
+  --color-jale-warning-bg: var(--jale-warning-bg);
+  --color-jale-danger:     var(--jale-danger);
+  --color-jale-danger-bg:  var(--jale-danger-bg);
+  --color-jale-paper:      var(--jale-paper);
+  --color-jale-paper-2:    var(--jale-paper-2);
+  --color-jale-ink:        var(--jale-ink);
+  --color-jale-ink-2:      var(--jale-ink-2);
+  --color-jale-divider:    var(--jale-divider);
+
+  --shadow-card:           var(--shadow-card);
+  --shadow-focus:          var(--shadow-focus);
+  --shadow-btn:            var(--shadow-btn);
+  --shadow-modal:          var(--shadow-modal);
+
+  --radius-card:           var(--radius-card);
+  --radius-input:          var(--radius-input);
+
+  --font-sans: var(--font-lexend), 'Lexend', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-html,
-body {
+/* ===== BASE ========================================================== */
+html, body {
   max-width: 100vw;
   overflow-x: hidden;
+  font-family: var(--font-sans);
 }
 
 body {
@@ -83,26 +136,56 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-* {
-  box-sizing: border-box;
+* { box-sizing: border-box; }
+
+a { color: inherit; text-decoration: none; }
+
+/* ===== UTILITY CLASSES ============================================== */
+.jale-wordmark {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 1.5rem;
+  letter-spacing: -0.03em;
+  color: var(--jale-blue-500);
+  line-height: 1;
 }
 
-*,
-*::before,
-*::after {
-  transition: background-color 0.3s ease, border-color 0.3s ease,
-              color 0.3s ease, box-shadow 0.3s ease;
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.pill-success { background: var(--jale-success-bg); color: #1f7a44; }
+.pill-info    { background: var(--jale-blue-50);    color: var(--jale-blue-700); }
+.pill-warn    { background: var(--jale-warning-bg); color: #8a4400; }
+.pill-danger  { background: var(--jale-danger-bg);  color: #a51e28; }
+
+.stat-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--jale-blue-50);
+  color: var(--jale-blue-600);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    transition: none !important;
-  }
+.avatar-initials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: var(--jale-blue-50);
+  color: var(--jale-blue-700);
+  font-weight: 700;
+  font-size: 14px;
+  flex-shrink: 0;
 }
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
+.avatar-initials.square { border-radius: 12px; }

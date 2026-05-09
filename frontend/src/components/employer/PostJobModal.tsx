@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { createJob, Job } from '@/lib/api/employer';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 type DocType = 'resume' | 'driver_license' | 'ssn';
 const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
@@ -13,7 +15,6 @@ interface Props {
   onJobCreated: (job: Job) => void;
 }
 
-// IMPORTANT: named export — dashboard imports this as { PostJobModal }
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
   const { idToken } = useAuth();
@@ -61,77 +62,145 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      style={{ background: 'rgba(24,24,85,.45)' }}
+      onClick={handleClose}
+    >
+      <div
+        className="w-full max-w-md rounded-[var(--radius-card)] bg-white p-7"
+        style={{ boxShadow: 'var(--shadow-modal)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal header */}
+        <div className="flex items-center justify-between mb-1">
+          <h2
+            className="font-semibold"
+            style={{ fontSize: '1.05rem', color: 'var(--jale-ink)', letterSpacing: '-0.02em' }}
+          >
+            {t('modal.title')}
+          </h2>
+          <button
+            onClick={handleClose}
+            className="flex items-center justify-center w-7 h-7 rounded-full hover:bg-[var(--jale-paper-2)] transition-colors"
+            style={{ border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--jale-ink-2)' }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 6 6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+        <p className="text-xs font-semibold uppercase tracking-wider mb-5" style={{ color: 'var(--jale-ink-2)' }}>
+          Step {step} of 2
+        </p>
+
         {step === 1 ? (
           <>
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-bold">{t('modal.title')}</h2>
-              <span className="text-sm text-gray-400">Step 1 of 2</span>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+                  {t('modal.job_title')} *
+                </label>
+                <Input placeholder="e.g. Forklift operator — Day shift" value={title} onChange={e => setTitle(e.target.value)} />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+                    {t('modal.location')} *
+                  </label>
+                  <Input placeholder="Hayward, CA" value={location} onChange={e => setLocation(e.target.value)} />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+                    {t('modal.job_type')}
+                  </label>
+                  <select
+                    className="w-full min-h-[44px] rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] px-3.5 text-sm font-medium text-[var(--jale-ink)] focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)] transition-all duration-150"
+                    value={jobType}
+                    onChange={e => setJobType(e.target.value)}
+                  >
+                    <option value="full-time">{t('modal.job_type_fulltime')}</option>
+                    <option value="part-time">{t('modal.job_type_parttime')}</option>
+                    <option value="contract">{t('modal.job_type_contract')}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+                  {t('modal.job_description')}
+                </label>
+                <textarea
+                  className="w-full rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] px-3.5 py-2.5 text-sm font-medium text-[var(--jale-ink)] placeholder:text-[var(--jale-placeholder)] focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)] transition-all duration-150 resize-none"
+                  rows={4}
+                  placeholder="What does the job involve? What experience is required?"
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                />
+              </div>
             </div>
-            <div className="space-y-3">
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('modal.job_title')} *</label>
-                <input className="w-full border rounded-lg px-3 py-2 text-sm" value={title} onChange={e => setTitle(e.target.value)} />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('modal.location')} *</label>
-                <input className="w-full border rounded-lg px-3 py-2 text-sm" value={location} onChange={e => setLocation(e.target.value)} />
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('modal.job_type')}</label>
-                <select className="w-full border rounded-lg px-3 py-2 text-sm" value={jobType} onChange={e => setJobType(e.target.value)}>
-                  <option value="full-time">{t('modal.job_type_fulltime')}</option>
-                  <option value="part-time">{t('modal.job_type_parttime')}</option>
-                  <option value="contract">{t('modal.job_type_contract')}</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium mb-1">{t('modal.job_description')}</label>
-                <textarea className="w-full border rounded-lg px-3 py-2 text-sm h-20" value={description} onChange={e => setDescription(e.target.value)} />
-              </div>
-            </div>
-            <div className="flex gap-2 mt-4">
-              <button onClick={handleClose} className="flex-1 border rounded-lg py-2 text-sm">{t('modal.cancel')}</button>
-              <button
-                onClick={() => setStep(2)}
+
+            <div className="flex gap-2 mt-6">
+              <Button variant="ghost" onClick={handleClose} className="flex-1">{t('modal.cancel')}</Button>
+              <Button
+                variant="deep"
                 disabled={!title.trim() || !location.trim()}
-                className="flex-2 bg-blue-900 text-white rounded-lg py-2 text-sm font-semibold disabled:opacity-50 px-6"
+                onClick={() => setStep(2)}
+                className="flex-1"
               >
                 {t('post_job_docs.next')} →
-              </button>
+              </Button>
             </div>
           </>
         ) : (
           <>
-            <div className="flex justify-between items-center mb-2">
-              <h2 className="text-lg font-bold">{t('modal.title')}</h2>
-              <span className="text-sm text-gray-400">{t('post_job_docs.step_label')}</span>
-            </div>
-            <p className="text-sm text-gray-500 mb-4">{t('post_job_docs.subtitle')}</p>
-            <div className="space-y-3 mb-4">
+            <p className="text-sm mb-4" style={{ color: 'var(--jale-ink-2)' }}>
+              {t('post_job_docs.subtitle')}
+            </p>
+
+            <div className="flex flex-col gap-2.5 mb-4">
               {DOC_TYPES.map(doc => (
-                <div key={doc} className={`border rounded-lg p-3 flex justify-between items-center ${requiredDocs[doc] ? 'border-blue-900 bg-blue-50' : ''}`}>
-                  <span className="text-sm font-medium">{docLabel[doc]}</span>
+                <div
+                  key={doc}
+                  className="flex items-center justify-between rounded-[10px] px-4 py-3 border transition-all"
+                  style={{
+                    background:   requiredDocs[doc] ? 'var(--jale-blue-50)' : 'var(--jale-paper-2)',
+                    borderColor:  requiredDocs[doc] ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
+                  }}
+                >
+                  <span className="text-sm font-medium" style={{ color: 'var(--jale-ink)' }}>{docLabel[doc]}</span>
                   <div className="flex items-center gap-2 text-xs">
-                    <span className={requiredDocs[doc] ? 'text-gray-400' : 'text-blue-900 font-semibold'}>{t('post_job_docs.optional_label')}</span>
+                    <span style={{ color: requiredDocs[doc] ? 'var(--jale-ink-2)' : 'var(--jale-blue-700)', fontWeight: 600 }}>
+                      {t('post_job_docs.optional_label')}
+                    </span>
                     <button
                       onClick={() => toggleDoc(doc)}
-                      className={`w-8 h-4 rounded-full relative transition-colors ${requiredDocs[doc] ? 'bg-blue-900' : 'bg-gray-300'}`}
+                      className="w-9 h-5 rounded-full relative transition-colors"
+                      style={{ background: requiredDocs[doc] ? 'var(--jale-blue-500)' : 'var(--jale-divider)', border: 0, cursor: 'pointer' }}
                     >
-                      <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${requiredDocs[doc] ? 'right-0.5' : 'left-0.5'}`} />
+                      <span
+                        className="absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all"
+                        style={{ left: requiredDocs[doc] ? 'calc(100% - 18px)' : 2 }}
+                      />
                     </button>
-                    <span className={requiredDocs[doc] ? 'text-blue-900 font-semibold' : 'text-gray-400'}>{t('post_job_docs.required_label')}</span>
+                    <span style={{ color: requiredDocs[doc] ? 'var(--jale-blue-700)' : 'var(--jale-ink-2)', fontWeight: 600 }}>
+                      {t('post_job_docs.required_label')}
+                    </span>
                   </div>
                 </div>
               ))}
             </div>
-            {error && <p className="text-red-600 text-sm mb-3">{error}</p>}
-            <div className="flex gap-2">
-              <button onClick={() => setStep(1)} className="flex-1 border rounded-lg py-2 text-sm">{t('post_job_docs.back')}</button>
-              <button onClick={handleSubmit} disabled={loading} className="flex-2 bg-blue-900 text-white rounded-lg py-2 text-sm font-semibold disabled:opacity-50 px-6">
+
+            {error && <p className="text-sm mb-3" style={{ color: 'var(--jale-danger)' }}>{error}</p>}
+
+            <div className="flex gap-2 mt-6">
+              <Button variant="ghost" onClick={() => setStep(1)} className="flex-1">
+                {t('post_job_docs.back')}
+              </Button>
+              <Button variant="deep" disabled={loading} onClick={handleSubmit} className="flex-1">
                 {loading ? '...' : t('post_job_docs.submit')}
-              </button>
+              </Button>
             </div>
           </>
         )}

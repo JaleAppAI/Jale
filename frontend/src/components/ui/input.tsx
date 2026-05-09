@@ -8,10 +8,11 @@ export function Input({
     <input
       className={[
         "w-full min-h-[44px] rounded-[var(--radius-input)]",
-        "border border-border bg-input px-3 py-2.5 text-sm",
-        "text-foreground placeholder:text-placeholder",
-        "transition-[background-color,border-color,box-shadow] duration-200",
-        "focus:outline-none focus:bg-input-focus focus:border-primary focus:shadow-[var(--shadow-focus)]",
+        "border border-[var(--jale-divider)] bg-[var(--jale-input)]",
+        "px-3.5 py-2.5 text-sm font-medium",
+        "text-[var(--jale-ink)] placeholder:text-[var(--jale-placeholder)]",
+        "transition-[background-color,border-color,box-shadow] duration-150",
+        "focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]",
         "disabled:opacity-50 disabled:cursor-not-allowed",
         className,
       ].join(" ")}

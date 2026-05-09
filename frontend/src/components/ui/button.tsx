@@ -1,6 +1,6 @@
 import * as React from "react";
 
-type ButtonVariant = "primary" | "outline" | "ghost" | "error";
+type ButtonVariant = "primary" | "deep" | "secondary" | "outline" | "ghost" | "error";
 type ButtonSize = "default" | "sm" | "lg";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -10,19 +10,23 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
-    "bg-primary text-primary-fg hover:bg-primary-hover hover:shadow-[var(--shadow-btn)]",
+    "bg-[var(--jale-blue-500)] text-white hover:bg-[var(--jale-blue-600)] shadow-[var(--shadow-btn)]",
+  deep:
+    "bg-[var(--jale-blue-900)] text-white hover:bg-[var(--jale-blue-950,#0e0e3d)]",
+  secondary:
+    "bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)] hover:bg-[var(--jale-blue-100)]",
   outline:
-    "border border-border bg-card text-foreground hover:bg-input",
+    "border border-[var(--jale-divider)] bg-white text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]",
   ghost:
-    "text-foreground hover:bg-input",
+    "bg-transparent text-[var(--jale-ink)] border border-[var(--jale-divider)] hover:bg-[var(--jale-paper-2)]",
   error:
-    "bg-error/10 text-error hover:bg-error/20",
+    "bg-[var(--jale-danger-bg)] text-[var(--jale-danger)] hover:opacity-90",
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
   default: "h-11 px-5 text-sm",
-  sm: "h-9 px-3 text-sm",
-  lg: "h-12 px-6 text-base",
+  sm:      "h-9 px-4 text-xs",
+  lg:      "h-12 px-6 text-base",
 };
 
 export function Button({
@@ -36,11 +40,11 @@ export function Button({
   return (
     <button
       className={[
-        "inline-flex items-center justify-center rounded-full font-semibold",
-        "cursor-pointer select-none whitespace-nowrap",
-        "transition-all duration-200",
+        "inline-flex items-center justify-center gap-2 rounded-full font-semibold",
+        "cursor-pointer select-none whitespace-nowrap leading-none",
+        "transition-all duration-150",
         "focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]",
-        "active:translate-y-px",
+        "active:scale-[0.98]",
         "disabled:opacity-50 disabled:pointer-events-none",
         variantClasses[variant],
         sizeClasses[size],

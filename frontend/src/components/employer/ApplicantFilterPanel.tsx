@@ -1,8 +1,23 @@
 'use client';
 import { useTranslations } from 'next-intl';
-import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import type { ApplicantFilters } from '@/lib/api/employer';
+
+const SELECT_CLASS = [
+  'min-h-[40px] w-full rounded-[var(--radius-input)]',
+  'border border-[var(--jale-divider)] bg-[var(--jale-input)]',
+  'px-3 text-sm font-medium text-[var(--jale-ink)]',
+  'focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]',
+  'transition-all duration-150',
+].join(' ');
+
+const INPUT_CLASS = [
+  'min-h-[40px] w-full rounded-[var(--radius-input)]',
+  'border border-[var(--jale-divider)] bg-[var(--jale-input)]',
+  'px-3 text-sm font-medium text-[var(--jale-ink)] placeholder:text-[var(--jale-placeholder)]',
+  'focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]',
+  'transition-all duration-150',
+].join(' ');
 
 interface Props {
   filters: ApplicantFilters;
@@ -13,13 +28,18 @@ export function ApplicantFilterPanel({ filters, onChange }: Props) {
   const t = useTranslations('employer_dashboard');
 
   return (
-    <div className="flex flex-wrap gap-3 items-end p-4 bg-muted/30 rounded-lg mb-4">
+    <div
+      className="flex flex-wrap gap-3 items-end rounded-[var(--radius-input)] p-4 mb-4"
+      style={{ background: 'var(--jale-paper-2)', border: '1px solid var(--jale-divider)' }}
+    >
       <div className="flex flex-col gap-1 min-w-[140px]">
-        <label className="text-xs font-medium text-muted-foreground">{t('filter.status')}</label>
+        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+          {t('filter.status')}
+        </label>
         <select
           value={filters.status ?? ''}
           onChange={(e) => onChange({ ...filters, status: e.target.value || undefined })}
-          className="min-h-[36px] rounded border border-border bg-input px-2 py-1.5 text-sm text-foreground"
+          className={SELECT_CLASS}
         >
           <option value="">{t('filter.status_all')}</option>
           <option value="pending">{t('applicants.status.pending')}</option>
@@ -30,21 +50,25 @@ export function ApplicantFilterPanel({ filters, onChange }: Props) {
       </div>
 
       <div className="flex flex-col gap-1 min-w-[180px]">
-        <label className="text-xs font-medium text-muted-foreground">{t('filter.skills')}</label>
-        <Input
+        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+          {t('filter.skills')}
+        </label>
+        <input
           value={filters.skills ?? ''}
           onChange={(e) => onChange({ ...filters, skills: e.target.value || undefined })}
           placeholder={t('filter.skills_placeholder')}
-          className="h-[36px] text-sm"
+          className={INPUT_CLASS}
         />
       </div>
 
       <div className="flex flex-col gap-1 min-w-[140px]">
-        <label className="text-xs font-medium text-muted-foreground">{t('filter.availability')}</label>
+        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+          {t('filter.availability')}
+        </label>
         <select
           value={filters.availability ?? ''}
           onChange={(e) => onChange({ ...filters, availability: e.target.value || undefined })}
-          className="min-h-[36px] rounded border border-border bg-input px-2 py-1.5 text-sm text-foreground"
+          className={SELECT_CLASS}
         >
           <option value="">{t('filter.availability_any')}</option>
           <option value="immediate">{t('filter.availability_immediate')}</option>
@@ -53,20 +77,22 @@ export function ApplicantFilterPanel({ filters, onChange }: Props) {
         </select>
       </div>
 
-      <div className="flex flex-col gap-1 w-[120px]">
-        <label className="text-xs font-medium text-muted-foreground">{t('filter.min_experience')}</label>
-        <Input
+      <div className="flex flex-col gap-1 w-[110px]">
+        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
+          {t('filter.min_experience')}
+        </label>
+        <input
           type="number"
           min={0}
           value={filters.min_experience ?? ''}
           onChange={(e) =>
             onChange({ ...filters, min_experience: e.target.value ? Number(e.target.value) : undefined })
           }
-          className="h-[36px] text-sm"
+          className={INPUT_CLASS}
         />
       </div>
 
-      <Button variant="outline" size="sm" onClick={() => onChange({})} className="self-end">
+      <Button variant="ghost" size="sm" onClick={() => onChange({})}>
         {t('filter.clear')}
       </Button>
     </div>

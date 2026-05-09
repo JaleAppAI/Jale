@@ -12,59 +12,62 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
 
     return (
-        <header className="sticky top-0 z-10 border-b border-border/50 bg-card/80 backdrop-blur-md">
+        <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/90 backdrop-blur-md">
             <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
-                <Link href="/" className="text-lg font-bold tracking-tight">
+                {/* Wordmark */}
+                <Link href="/" className="jale-wordmark">
                     Jale
                 </Link>
-                <div className="flex items-center gap-3">
+
+                {/* Nav + actions */}
+                <div className="flex items-center gap-2">
+                    {isAuthenticated && userType === 'worker' && (
+                        <nav className="hidden sm:flex items-center gap-1 mr-2">
+                            <Link
+                                href="/worker/home"
+                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
+                            >
+                                {t('worker_home')}
+                            </Link>
+                            <Link
+                                href="/worker/applications"
+                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
+                            >
+                                {t('my_applications')}
+                            </Link>
+                        </nav>
+                    )}
+                    {isAuthenticated && userType === 'employer' && (
+                        <nav className="hidden sm:flex items-center gap-1 mr-2">
+                            <Link
+                                href="/employer/dashboard"
+                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
+                            >
+                                Jobs
+                            </Link>
+                        </nav>
+                    )}
+
+                    {/* Language toggle */}
                     <Link
                         href={pathname}
                         locale={otherLocale}
-                        className="text-sm text-muted hover:text-foreground transition-colors"
+                        className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors border border-[var(--jale-divider)]"
                     >
                         {t('language_toggle')}
                     </Link>
+
                     {isAuthenticated && (
                         <>
-                            {userType === 'worker' && (
-                                <>
-                                    <Link
-                                        href="/worker/home"
-                                        className="text-sm text-muted hover:text-foreground transition-colors"
-                                    >
-                                        {t('worker_home')}
-                                    </Link>
-                                    <Link
-                                        href="/worker/applications"
-                                        className="text-sm text-muted hover:text-foreground transition-colors"
-                                    >
-                                        {t('my_applications')}
-                                    </Link>
-                                    <Link
-                                        href="/worker/profile"
-                                        aria-label={t('profile')}
-                                        className="text-muted hover:text-foreground transition-colors"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                                            <circle cx="12" cy="7" r="4"/>
-                                        </svg>
-                                    </Link>
-                                </>
-                            )}
-                            {userType === 'employer' && (
-                                <Link
-                                    href="/employer/profile"
-                                    aria-label={t('profile')}
-                                    className="text-muted hover:text-foreground transition-colors"
-                                >
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-                                        <circle cx="12" cy="7" r="4"/>
-                                    </svg>
-                                </Link>
-                            )}
+                            {/* Profile avatar link */}
+                            <Link
+                                href={userType === 'worker' ? '/worker/profile' : '/employer/profile'}
+                                aria-label={t('profile')}
+                                className="avatar-initials square"
+                                style={{ width: 34, height: 34 }}
+                            >
+                                {userType === 'worker' ? 'W' : 'E'}
+                            </Link>
                             <Button variant="outline" size="sm" onClick={logout}>
                                 {t('sign_out')}
                             </Button>
