@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import type { Lang } from '../lib/templates';
 import type { TwilioSecret } from '../lib/twilio';
+import { queueTrustAssessmentEnqueue } from '../lib/trust-assessment-outbox';
 import {
   buildS3Key,
   detectMediaCategory,
@@ -13,7 +13,6 @@ import {
 } from '../lib/media';
 
 const lambdaClient = new LambdaClient({});
-const sqsClient = new SQSClient({});
 const secretsManager = new SecretsManagerClient({});
 
 export interface TrustQuestion {
@@ -47,12 +46,6 @@ function questionGeneratorArn(): string {
   const arn = process.env.QUESTION_GENERATOR_ARN;
   if (!arn) throw new Error('QUESTION_GENERATOR_ARN not set');
   return arn;
-}
-
-function trustAssessmentQueueUrl(): string {
-  const url = process.env.TRUST_ASSESSMENT_QUEUE_URL;
-  if (!url) throw new Error('TRUST_ASSESSMENT_QUEUE_URL not set');
-  return url;
 }
 
 function trustPipelineArn(): string {
@@ -128,7 +121,7 @@ export async function handleBuildingCustomTrust(
   client: PoolClient,
   conv: ConvRow,
   msg: IncomingMessage,
-): Promise<void> {
+): Promise<boolean> {
   if (!conv.user_id) throw new Error('user_id missing in building_custom_trust');
 
   const ctx = (conv.state_context ?? {}) as Record<string, unknown>;
@@ -154,7 +147,7 @@ export async function handleBuildingCustomTrust(
       ? 'Gracias. Hemos registrado tu experiencia. Te avisaremos sobre trabajos que encajen.'
       : "Thanks! We've noted your experience. We'll be in touch with matching jobs.";
     await queueOutboxText(client, msg.messageSid, msg.from, confirmation);
-    return;
+    return false;
   }
 
   let questions = (ctx.custom_trust_questions as TrustQuestion[]) ?? [];
@@ -179,7 +172,7 @@ export async function handleBuildingCustomTrust(
       ],
     );
     await queueOutboxText(client, msg.messageSid, msg.from, questionText);
-    return;
+    return false;
   }
 
   if (msg.mediaUrl && msg.mediaContentType) {
@@ -193,7 +186,7 @@ export async function handleBuildingCustomTrust(
           ? 'Por favor manda una nota de voz o escribe tu respuesta.'
           : 'Please send a voice note or type your answer.',
       );
-      return;
+      return false;
     }
 
     const bucketName = process.env.MEDIA_BUCKET_NAME;
@@ -248,7 +241,7 @@ export async function handleBuildingCustomTrust(
         conv.id,
       ],
     );
-    return;
+    return false;
   }
 
   const currentQuestion = questions[step];
@@ -276,7 +269,7 @@ export async function handleBuildingCustomTrust(
       ],
     );
     await queueOutboxText(client, msg.messageSid, msg.from, nextText);
-    return;
+    return false;
   }
 
   await client.query(
@@ -285,12 +278,7 @@ export async function handleBuildingCustomTrust(
      ON CONFLICT DO NOTHING`,
     [assessmentId, conv.user_id, professionKey, JSON.stringify(updatedAnswers)],
   );
-  await sqsClient.send(
-    new SendMessageCommand({
-      QueueUrl: trustAssessmentQueueUrl(),
-      MessageBody: JSON.stringify({ assessmentId, userId: conv.user_id, professionKey }),
-    }),
-  );
+  await queueTrustAssessmentEnqueue(client, assessmentId, conv.user_id, professionKey);
 
   const confirmation = conv.language === 'es'
     ? 'Gracias. Hemos registrado tu experiencia. Te avisaremos sobre trabajos que encajen.'
@@ -302,4 +290,5 @@ export async function handleBuildingCustomTrust(
     [conv.id],
   );
   await queueOutboxText(client, msg.messageSid, msg.from, confirmation);
+  return true;
 }

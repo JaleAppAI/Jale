@@ -17,6 +17,7 @@ export interface AiStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly aiDbSecret: secretsmanager.ISecret;
+  readonly workerRerankQueue: sqs.IQueue;
 }
 
 export interface AiStackOutputs {
@@ -125,6 +126,7 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
         BEDROCK_MODEL_ID,
         SSM_RUBRIC_PARAM: rubricParam.parameterName,
         TRUST_ASSESSMENT_QUEUE_URL: this.trustAssessmentQueue.queueUrl,
+        WORKER_RERANK_QUEUE_URL: props.workerRerankQueue.queueUrl,
       },
       nodeModules: [
         '@aws-sdk/client-bedrock-runtime',
@@ -146,6 +148,7 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
     );
     this.trustAssessmentQueue.grantConsumeMessages(trustScorerLambda.function);
     this.trustAssessmentQueue.grantSendMessages(trustScorerLambda.function);
+    props.workerRerankQueue.grantSendMessages(trustScorerLambda.function);
 
     trustScorerLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(this.trustAssessmentQueue, {

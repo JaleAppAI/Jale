@@ -35,7 +35,22 @@ describe('database migrations', () => {
       '010',
       '011',
       '012',
+      '013',
     ]);
+  });
+
+  it('defines the AI matching trust-score contract', () => {
+    const contractPath = path.join(migrationsDir, '013_ai_matching_contract.sql');
+
+    expect(fs.existsSync(contractPath)).toBe(true);
+
+    const contract = fs.readFileSync(contractPath, 'utf8');
+
+    expect(contract).toContain('trade_competency_profession_key');
+    expect(contract).toContain('CREATE OR REPLACE FUNCTION worker_effective_profession_key');
+    expect(contract).toMatch(/GRANT SELECT \([\s\S]*trade_competency_score[\s\S]*\) ON users TO jale_matching;/);
+    expect(contract).toContain('CREATE TABLE IF NOT EXISTS trust_score_rerank_outbox');
+    expect(contract).toContain('CREATE TABLE IF NOT EXISTS trust_assessment_enqueue_outbox');
   });
 
   it('define canonical jobs and applications only once', () => {

@@ -1,14 +1,16 @@
 import type { Handler } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
-import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { getDbPool } from '../lib/db';
 import type { Lang } from '../whatsapp/lib/templates';
 import { sendPendingOutbox } from '../whatsapp/lib/outbox';
 import { normalizeProfession } from '../whatsapp/handlers/custom-trust';
+import {
+  drainTrustAssessmentEnqueueOutbox,
+  queueTrustAssessmentEnqueue,
+} from '../whatsapp/lib/trust-assessment-outbox';
 
 const s3 = new S3Client({});
-const sqsClient = new SQSClient({});
 
 interface TrustQuestion {
   q_en: string;
@@ -38,12 +40,6 @@ export interface VoiceTrustContext {
 export interface VoiceTrustReceiverEvent {
   status: 'COMPLETED' | 'FAILED';
   executionContext: VoiceTrustContext;
-}
-
-function trustQueueUrl(): string {
-  const url = process.env.TRUST_ASSESSMENT_QUEUE_URL;
-  if (!url) throw new Error('TRUST_ASSESSMENT_QUEUE_URL not set');
-  return url;
 }
 
 async function readTranscript(bucket: string, key: string): Promise<string> {
@@ -155,16 +151,7 @@ export async function handleVoiceTrustCompletion(
       ],
     );
 
-    await sqsClient.send(
-      new SendMessageCommand({
-        QueueUrl: trustQueueUrl(),
-        MessageBody: JSON.stringify({
-          assessmentId: ctx.assessmentId,
-          userId: ctx.userId,
-          professionKey,
-        }),
-      }),
-    );
+    await queueTrustAssessmentEnqueue(client, ctx.assessmentId, ctx.userId, professionKey);
 
     const confirmation = ctx.language === 'es'
       ? 'Gracias. Hemos registrado tu experiencia. Te avisaremos sobre trabajos que encajen.'
@@ -176,6 +163,7 @@ export async function handleVoiceTrustCompletion(
       [ctx.conversationId],
     );
     await queueOutboxText(client, ctx.inboundMessageSid, ctx.whatsappNumber, confirmation);
+    await drainTrustAssessmentEnqueueOutbox(client);
     await sendPendingOutbox(client, ctx.inboundMessageSid);
   } finally {
     client.release();

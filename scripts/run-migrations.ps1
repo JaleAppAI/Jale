@@ -10,7 +10,7 @@
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→012
+#   - Base64-encodes migrations 001→013
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -53,7 +53,8 @@ $MigrationFiles = @(
     '009_location_foundation.sql',
     '010_matching_write_semantics.sql',
     '011_ai_profile_media.sql',
-    '012_ai_trust_assessment.sql'
+    '012_ai_trust_assessment.sql',
+    '013_ai_matching_contract.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

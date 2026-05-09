@@ -102,7 +102,7 @@ describe('handleVoiceTrustCompletion', () => {
     expect(String(updateCall?.[1]?.[0])).toContain('"custom_trust_step":1');
   });
 
-  it('on COMPLETED final step inserts WTA row and pushes to queue', async () => {
+  it('on COMPLETED final step inserts WTA row and drains enqueue outbox', async () => {
     const transcript = '{"results":{"transcripts":[{"transcript":"I handle crews"}]}}';
     mockS3Send.mockResolvedValueOnce({
       Body: { transformToString: () => Promise.resolve(transcript) },
@@ -122,7 +122,20 @@ describe('handleVoiceTrustCompletion', () => {
           },
         }],
       })
-      .mockResolvedValue({ rows: [] });
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_trust_assessments
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT trust_assessment_enqueue_outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT whatsapp_outbox
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'enqueue-1',
+          assessment_id: baseContext.assessmentId,
+          worker_id: baseContext.userId,
+          profession_key: 'soldador de arco',
+          attempts: 0,
+        }],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // UPDATE enqueue sent
     mockSqsSend.mockResolvedValue({});
 
     await handleVoiceTrustCompletion({
@@ -131,9 +144,20 @@ describe('handleVoiceTrustCompletion', () => {
     });
 
     expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    expect(mockSqsSend).toHaveBeenCalledWith(expect.objectContaining({
+      QueueUrl: 'https://sqs.us-east-1.amazonaws.com/123/queue',
+      MessageBody: JSON.stringify({
+        assessmentId: baseContext.assessmentId,
+        userId: baseContext.userId,
+        professionKey: 'soldador de arco',
+      }),
+    }));
     const insertCall = mockDbQuery.mock.calls.find(([sql]) =>
       String(sql).includes('INSERT INTO worker_trust_assessments'));
     expect(insertCall).toBeDefined();
+    const enqueueInsert = mockDbQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO trust_assessment_enqueue_outbox'));
+    expect(enqueueInsert).toBeDefined();
   });
 });
 

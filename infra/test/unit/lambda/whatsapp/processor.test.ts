@@ -40,6 +40,12 @@ jest.mock('@aws-sdk/client-sfn', () => ({
   StartExecutionCommand: jest.fn((args) => ({ input: args, __type: 'StartExecution' })),
 }), { virtual: true });
 
+const mockSqsSend = jest.fn();
+jest.mock('@aws-sdk/client-sqs', () => ({
+  SQSClient: jest.fn(() => ({ send: mockSqsSend })),
+  SendMessageCommand: jest.fn((args) => args),
+}));
+
 const mockLambdaSend = jest.fn();
 jest.mock('@aws-sdk/client-lambda', () => ({
   LambdaClient: jest.fn(() => ({ send: mockLambdaSend })),
@@ -136,6 +142,7 @@ describe('Processor Lambda', () => {
       TWILIO_SECRET_ARN: 'arn:twilio',
       DB_SECRET_ARN: 'arn:db',
       REQUIRED_TOS_VERSION: '1.0',
+      TRUST_ASSESSMENT_QUEUE_URL: 'https://sqs.us-east-1.amazonaws.com/123/trust-assessment-queue',
     };
 
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
@@ -193,6 +200,8 @@ describe('Processor Lambda', () => {
         // SELECT status FOR UPDATE
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ status: 'db_committed' }] })
         // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+        // drainTrustAssessmentEnqueueOutbox: no pending rows
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         // sendPendingOutbox: SELECT pending outbox rows
         .mockResolvedValueOnce({
@@ -542,7 +551,7 @@ describe('Processor Lambda', () => {
   });
 
   describe('Trust signals and typed jobs', () => {
-    it('writes final trust signals and moves the conversation to idle', async () => {
+    it('writes final trust signals and drains assessment enqueue outbox only after commit', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-3' }] }) // claim
@@ -574,10 +583,33 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals_completed_at exists
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users trust_signals
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            questions: [
+              { q_en: 'Specialization?', q_es: 'Especializacion?' },
+              { q_en: 'Seniority?', q_es: 'Experiencia?' },
+              { q_en: 'Tasks?', q_es: 'Tareas?' },
+            ],
+          }],
+        }) // SELECT seeded trade_questions
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // existing WTA
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_trust_assessments
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT trust_assessment_enqueue_outbox
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'enqueue-1',
+            assessment_id: 'assessment-1',
+            worker_id: 'user-1',
+            profession_key: 'electrician',
+          }],
+        }) // drain trust assessment enqueue outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // mark enqueue sent
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
 
@@ -608,6 +640,23 @@ describe('Processor Lambda', () => {
         && params.includes('idle'),
       );
       expect(idleUpdate).toBeDefined();
+
+      const enqueueInsertIndex = mockQuery.mock.calls.findIndex(([sql]) =>
+        /INSERT INTO trust_assessment_enqueue_outbox/i.test(sql as string));
+      const commitIndex = mockQuery.mock.calls.findIndex(([sql]) => sql === 'COMMIT');
+      expect(enqueueInsertIndex).toBeGreaterThan(-1);
+      expect(enqueueInsertIndex).toBeLessThan(commitIndex);
+      expect(mockSqsSend.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mockQuery.mock.invocationCallOrder[commitIndex],
+      );
+      expect(mockSqsSend).toHaveBeenCalledWith(expect.objectContaining({
+        QueueUrl: 'https://sqs.us-east-1.amazonaws.com/123/trust-assessment-queue',
+        MessageBody: JSON.stringify({
+          assessmentId: 'assessment-1',
+          userId: 'user-1',
+          professionKey: 'electrician',
+        }),
+      }));
     });
 
     it('skips trust questions if migration 006 columns are missing', async () => {

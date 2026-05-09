@@ -37,14 +37,6 @@ const auth = new AuthStack(app, 'JaleAuthStack', {
   cognitoSmsRole: network.cognitoSmsRole,
 });
 
-const ai = new AiStack(app, 'JaleAiStack', {
-  env,
-  vpc: network.vpc,
-  privateSubnets: network.privateSubnets,
-  lambdaSg: network.lambdaSg,
-  aiDbSecret: database.aiDbSecret,
-});
-
 const matching = new MatchingStack(app, 'JaleMatchingStack', {
   env,
   vpc: network.vpc,
@@ -52,6 +44,15 @@ const matching = new MatchingStack(app, 'JaleMatchingStack', {
   lambdaSg: network.lambdaSg,
   dbSecret: database.dbSecret,
   matchingDbSecret: database.matchingDbSecret,
+});
+
+const ai = new AiStack(app, 'JaleAiStack', {
+  env,
+  vpc: network.vpc,
+  privateSubnets: network.privateSubnets,
+  lambdaSg: network.lambdaSg,
+  aiDbSecret: database.aiDbSecret,
+  workerRerankQueue: matching.workerRerankQueue,
 });
 
 const api = new ApiStack(app, 'JaleApiStack', {
