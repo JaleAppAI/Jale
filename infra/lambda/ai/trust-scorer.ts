@@ -14,7 +14,8 @@ const BEDROCK_MODEL_ID =
   process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
 const STALE_MINUTES = 15;
 
-let cachedRubric: { rubricJson: string; version: number } | null = null;
+const RUBRIC_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let cachedRubric: { rubricJson: string; version: number; cachedAt: number } | null = null;
 
 interface ScoringResult {
   competency_score: number;
@@ -41,7 +42,10 @@ function trustQueueUrl(): string {
 }
 
 async function getRubric(): Promise<{ rubricJson: string; version: number }> {
-  if (cachedRubric) return cachedRubric;
+  const now = Date.now();
+  if (cachedRubric && now - cachedRubric.cachedAt < RUBRIC_CACHE_TTL_MS) {
+    return cachedRubric;
+  }
   const res = await ssm.send(
     new GetParameterCommand({ Name: rubricParamName() }),
   );
@@ -49,11 +53,18 @@ async function getRubric(): Promise<{ rubricJson: string; version: number }> {
   cachedRubric = {
     rubricJson: res.Parameter.Value,
     version: Number(res.Parameter.Version ?? 0),
+    cachedAt: now,
   };
   return cachedRubric;
 }
 
 function validateScore(raw: ScoringResult): void {
+  if (!raw.score_components || typeof raw.score_components !== 'object') {
+    throw new Error(
+      `score_components missing or not an object in Bedrock response. ` +
+      `Got: ${JSON.stringify(raw).slice(0, 200)}`,
+    );
+  }
   const required = [
     'specific_knowledge',
     'practical_experience',
@@ -75,11 +86,40 @@ function validateScore(raw: ScoringResult): void {
   }
 }
 
+const SCORE_JSON_KEYS = [
+  'competency_score',
+  'score_components',
+  'score_rationale',
+  'specific_knowledge',
+  'practical_experience',
+  'safety_awareness',
+  'communication_clarity',
+];
+
+function quoteKnownScoreKeys(rawText: string): string {
+  const keyPattern = SCORE_JSON_KEYS.join('|');
+  return rawText.replace(
+    new RegExp(`([{,]\\s*)(${keyPattern})(\\s*:)`, 'g'),
+    '$1"$2"$3',
+  );
+}
+
 function parseScore(rawText: string): ScoringResult {
   const trimmed = rawText.trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/, '');
-  const scored = JSON.parse(trimmed) as ScoringResult;
+  let scored: ScoringResult;
+  try {
+    scored = JSON.parse(trimmed) as ScoringResult;
+  } catch (err) {
+    const repaired = quoteKnownScoreKeys(trimmed);
+    if (repaired === trimmed) throw err;
+    try {
+      scored = JSON.parse(repaired) as ScoringResult;
+    } catch {
+      throw err;
+    }
+  }
   validateScore(scored);
   return scored;
 }
@@ -160,10 +200,15 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
         event.assessmentId,
       ],
     );
-    await client.query(
+    const userUpdate = await client.query(
       'UPDATE users SET trade_competency_score = $1 WHERE id = $2',
       [scored.competency_score, event.userId],
     );
+    if (userUpdate.rowCount !== 1) {
+      throw new Error(
+        `user score update matched no rows for user ${event.userId}`,
+      );
+    }
     await client.query('COMMIT');
     transactionStarted = false;
 

@@ -568,6 +568,40 @@ async function handleAwaitingMediaPhoto(
 }
 
 // ── awaiting_media_voice — optional voice message step ──────────
+function wantsVoiceProfile(text: string): boolean {
+  return /^(1|voice|voz|audio|nota de voz)$/i.test(text.trim());
+}
+
+async function enterTextProfileFromVoiceChoice(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  if (!conv.user_id) throw new Error('user_id missing before text profile');
+  const collected = conv.state_context?.collected ?? {};
+  const fieldSids = conv.state_context?.field_sids ?? {};
+  const dbFilled = await loadProfileFromDb(client, conv.user_id);
+  const next = computeNextField(collected, dbFilled);
+
+  if (next === null) {
+    await flushProfileAndAdvance(client, conv, msg.from, msg.messageSid);
+    return;
+  }
+
+  await updateConversation(client, conv.id, {
+    conversation_state: 'building_profile',
+    state_context: {
+      ...conv.state_context,
+      collected,
+      field_sids: fieldSids,
+      pending_field: next,
+    },
+    last_processed_message_sid: msg.messageSid,
+  });
+  await queueReply(client, msg.messageSid, msg.from, 'profile_intro', conv.language);
+  await askProfileQuestion(client, msg.messageSid, msg.from, next, conv.language);
+}
+
 async function handleAwaitingMediaVoice(
   client: PoolClient,
   conv: ConversationRow,
@@ -576,12 +610,12 @@ async function handleAwaitingMediaVoice(
   const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
 
   // Worker skipped or sent text — go straight to text questions
-  if (numMedia === 0 || isSkipKeyword(msg.body)) {
-    await updateConversation(client, conv.id, {
-      conversation_state: 'building_profile',
-      last_processed_message_sid: messageSid,
-    });
-    await queueReply(client, messageSid, from, 'profile_intro', conv.language);
+  if (numMedia === 0) {
+    if (!msg.body.trim() || wantsVoiceProfile(msg.body)) {
+      await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+      return;
+    }
+    await enterTextProfileFromVoiceChoice(client, conv, msg);
     return;
   }
 
@@ -1249,10 +1283,24 @@ interface WorkerProfileSummary {
   availability: string | null;
   trust_signals: unknown;
   trust_signals_completed_at: string | null;
+  trust_assessment_profession_key: string | null;
+  trust_assessment_status: string | null;
+  trust_assessment_answers: unknown;
+  trust_assessment_questions: unknown;
 }
 
 interface StoredTrustAnswer {
   label?: string;
+}
+
+interface StoredAssessmentAnswer {
+  q_en?: string;
+  answer_text?: string;
+}
+
+interface StoredAssessmentQuestion {
+  q_en?: string;
+  q_es?: string;
 }
 
 async function handleProfileCommand(
@@ -1266,11 +1314,30 @@ async function handleProfileCommand(
   }
 
   const result = await client.query<WorkerProfileSummary>(
-    `SELECT phone, whatsapp_number, full_name, city, main_trade, main_trade_other,
-            years_experience, has_transportation, availability,
-            trust_signals, trust_signals_completed_at
-       FROM users
-      WHERE id = $1 AND user_type = 'worker'`,
+    `SELECT u.phone, u.whatsapp_number, u.full_name, u.city, u.main_trade, u.main_trade_other,
+            u.years_experience, u.has_transportation, u.availability,
+            u.trust_signals, u.trust_signals_completed_at,
+            wta.profession_key AS trust_assessment_profession_key,
+            wta.status AS trust_assessment_status,
+            wta.answers AS trust_assessment_answers,
+            tq.questions AS trust_assessment_questions
+       FROM users u
+       LEFT JOIN LATERAL (
+         SELECT profession_key, status, answers, created_at
+           FROM worker_trust_assessments
+          WHERE user_id = u.id
+          ORDER BY
+            CASE status
+              WHEN 'scored' THEN 0
+              WHEN 'scoring' THEN 1
+              WHEN 'pending' THEN 2
+              ELSE 3
+            END,
+            created_at DESC
+          LIMIT 1
+       ) wta ON TRUE
+       LEFT JOIN trade_questions tq ON tq.profession_key = wta.profession_key
+      WHERE u.id = $1 AND u.user_type = 'worker'`,
     [conv.user_id],
   );
 
@@ -1290,6 +1357,8 @@ async function handleProfileCommand(
 
 function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string {
   const trustSignals = parseTrustSignals(profile.trust_signals);
+  const assessmentAnswers = parseAssessmentAnswers(profile.trust_assessment_answers);
+  const assessmentQuestions = parseAssessmentQuestions(profile.trust_assessment_questions);
   const text = lang === 'es'
     ? {
         title: 'Tu perfil',
@@ -1301,6 +1370,9 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         transportation: 'Transporte',
         availability: 'Disponibilidad',
         trust: 'Confianza',
+        status: 'Estado',
+        trustQuestions: 'Preguntas de confianza',
+        answer: 'Respuesta',
         specialization: 'Especialidad',
         seniority: 'Nivel',
         tasks: 'Trabajo principal',
@@ -1318,6 +1390,9 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         transportation: 'Transportation',
         availability: 'Availability',
         trust: 'Trust',
+        status: 'Status',
+        trustQuestions: 'Trust questions',
+        answer: 'Answer',
         specialization: 'Specialty',
         seniority: 'Level',
         tasks: 'Main work',
@@ -1347,7 +1422,21 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
     text.trust,
   ];
 
-  if (profile.trust_signals_completed_at && trustSignals) {
+  if (profile.trust_assessment_status || assessmentAnswers.length > 0) {
+    if (profile.trust_assessment_status) {
+      lines.push(`${text.status}: ${assessmentStatusLabel(profile.trust_assessment_status, lang)}`);
+    }
+    if (assessmentAnswers.length > 0) {
+      lines.push('', text.trustQuestions);
+      assessmentAnswers.forEach((answer, index) => {
+        const question = displayQuestionForAnswer(answer, assessmentQuestions, lang);
+        lines.push(
+          `${index + 1}. ${question}`,
+          `${text.answer}: ${answer.answer_text ?? text.missing}`,
+        );
+      });
+    }
+  } else if (profile.trust_signals_completed_at && trustSignals) {
     lines.push(
       `${text.specialization}: ${trustSignals.specialization?.label ?? text.missing}`,
       `${text.seniority}: ${trustSignals.seniority?.label ?? text.missing}`,
@@ -1358,6 +1447,50 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
   }
 
   return lines.join('\n');
+}
+
+function parseAssessmentAnswers(value: unknown): StoredAssessmentAnswer[] {
+  return parseJsonArray<StoredAssessmentAnswer>(value);
+}
+
+function parseAssessmentQuestions(value: unknown): StoredAssessmentQuestion[] {
+  return parseJsonArray<StoredAssessmentQuestion>(value);
+}
+
+function parseJsonArray<T>(value: unknown): T[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value as T[];
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      return Array.isArray(parsed) ? parsed as T[] : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function displayQuestionForAnswer(
+  answer: StoredAssessmentAnswer,
+  questions: StoredAssessmentQuestion[],
+  lang: Lang,
+): string {
+  const matched = questions.find((question) => question.q_en === answer.q_en);
+  if (lang === 'es') {
+    return matched?.q_es ?? answer.q_en ?? 'Pregunta';
+  }
+  return matched?.q_en ?? answer.q_en ?? 'Question';
+}
+
+function assessmentStatusLabel(status: string, lang: Lang): string {
+  const labels: Record<string, Record<Lang, string>> = {
+    pending: { es: 'Pendiente', en: 'Pending' },
+    scoring: { es: 'Calculando', en: 'Scoring' },
+    scored: { es: 'Evaluado', en: 'Scored' },
+    failed: { es: 'Fallido', en: 'Failed' },
+  };
+  return labels[status]?.[lang] ?? status;
 }
 
 function parseTrustSignals(value: unknown): Record<string, StoredTrustAnswer> | null {
@@ -1567,7 +1700,7 @@ async function enterTrustSignalOrIdle(
     );
     const professionRaw = tradeOtherRow.rows[0]?.main_trade_other;
     if (professionRaw) {
-      const { normalizeProfession } = await import('./handlers/custom-trust');
+      const { loadOrGenerateQuestions, normalizeProfession } = await import('./handlers/custom-trust');
       const professionKey = normalizeProfession(professionRaw);
       const existingWta = await client.query(
         `SELECT id FROM worker_trust_assessments
@@ -1578,18 +1711,24 @@ async function enterTrustSignalOrIdle(
 
       if (existingWta.rows.length === 0) {
         const assessmentId = randomUUID();
+        const questions = await loadOrGenerateQuestions(client, professionKey, professionRaw);
         await updateConversation(client, conv.id, {
           conversation_state: 'building_custom_trust',
           state_context: {
             custom_trust_step: 0,
             custom_trust_answers: [],
             custom_trust_profession: professionRaw,
-            custom_trust_questions: [],
+            custom_trust_questions: questions,
             custom_trust_assessment_id: assessmentId,
           },
           last_processed_message_sid: messageSid,
         });
-        await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+        await queueText(
+          client,
+          messageSid,
+          from,
+          conv.language === 'es' ? questions[0].q_es : questions[0].q_en,
+        );
         return;
       }
     }

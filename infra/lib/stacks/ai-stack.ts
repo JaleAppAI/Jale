@@ -5,7 +5,6 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -61,6 +60,21 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
           { key: 'safety_awareness', max_points: 20 },
           { key: 'communication_clarity', max_points: 20 },
         ],
+        output_format: {
+          competency_score: 'integer 0-100, exact sum of all dimension scores',
+          score_components: {
+            specific_knowledge: 'integer 0-30',
+            practical_experience: 'integer 0-30',
+            safety_awareness: 'integer 0-20',
+            communication_clarity: 'integer 0-20',
+          },
+          score_rationale: {
+            specific_knowledge: 'one sentence explaining this dimension score',
+            practical_experience: 'one sentence explaining this dimension score',
+            safety_awareness: 'one sentence explaining this dimension score',
+            communication_clarity: 'one sentence explaining this dimension score',
+          },
+        },
       }),
     });
 
@@ -133,12 +147,10 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
     this.trustAssessmentQueue.grantConsumeMessages(trustScorerLambda.function);
     this.trustAssessmentQueue.grantSendMessages(trustScorerLambda.function);
 
-    const cfnTrustScorer = trustScorerLambda.function.node.defaultChild as lambda.CfnFunction;
-    cfnTrustScorer.reservedConcurrentExecutions = 5;
-
     trustScorerLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(this.trustAssessmentQueue, {
         batchSize: 1,
+        maxConcurrency: 5,
       }),
     );
 

@@ -109,4 +109,53 @@ describe('handleBuildingCustomTrust', () => {
       String(sql).includes("conversation_state = 'idle'"));
     expect(updateCall).toBeDefined();
   });
+
+  it('after third spanish custom answer inserts assessment and enqueues scorer', async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rows: [] }) // existing WTA check
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_trust_assessments
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT confirmation outbox
+    mockSqsSend.mockResolvedValue({});
+    const client = { query: mockDbQuery };
+    const conv = {
+      id: 'conv1',
+      user_id: 'user1',
+      language: 'es',
+      state_context: {
+        custom_trust_step: 2,
+        custom_trust_profession: 'Soldador',
+        custom_trust_questions: THREE_QUESTIONS,
+        custom_trust_answers: [
+          {
+            q_en: 'Q1 en',
+            answer_text: 'Mig y arco',
+            answer_source: 'text',
+            answered_at: '2026-05-08T00:00:00.000Z',
+          },
+          {
+            q_en: 'Q2 en',
+            answer_text: 'Oficial',
+            answer_source: 'text',
+            answered_at: '2026-05-08T00:01:00.000Z',
+          },
+        ],
+        custom_trust_assessment_id: 'assess1',
+      },
+    };
+    const msg = { from: 'whatsapp:+1555', messageSid: 'SM3', body: 'Estructuras y reparaciones' };
+
+    await handleBuildingCustomTrust(client, conv, msg);
+
+    const assessmentInsert = mockDbQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO worker_trust_assessments'));
+    expect(assessmentInsert).toBeDefined();
+    expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    const sqsPayload = JSON.parse(mockSqsSend.mock.calls[0][0].MessageBody);
+    expect(sqsPayload).toEqual({
+      assessmentId: 'assess1',
+      userId: 'user1',
+      professionKey: 'soldador',
+    });
+  });
 });

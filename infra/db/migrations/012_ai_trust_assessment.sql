@@ -124,6 +124,14 @@ ALTER TABLE users
 
 GRANT SELECT (id, user_type) ON users TO jale_ai;
 GRANT UPDATE (trade_competency_score) ON users TO jale_ai;
+
+-- SELECT policy is required for UPDATE to find rows: PostgreSQL evaluates
+-- SELECT policies first (visibility phase) before applying UPDATE USING.
+-- Without this, UPDATE sees 0 rows even when the UPDATE policy permits the row.
+CREATE POLICY users_ai_select ON users
+  FOR SELECT TO jale_ai
+  USING (user_type = 'worker');
+
 CREATE POLICY users_ai_score_update ON users
   FOR UPDATE TO jale_ai
   USING (user_type = 'worker')

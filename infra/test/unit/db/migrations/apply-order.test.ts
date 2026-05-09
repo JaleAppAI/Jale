@@ -152,6 +152,7 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY wta_ai_service_rows');
     expect(migration).toContain('GRANT SELECT (id, user_id, profession_key, answers, status, created_at)');
     expect(migration).toContain('ADD COLUMN trade_competency_score INTEGER');
+    expect(migration).toContain('CREATE POLICY users_ai_select');
     expect(migration).toContain('CREATE POLICY users_ai_score_update');
   });
 

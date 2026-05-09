@@ -12,6 +12,12 @@ jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
   ConverseCommand: jest.fn((args) => ({ input: args, __type: 'Converse' })),
 }), { virtual: true });
 
+const mockLambdaSend = jest.fn();
+jest.mock('@aws-sdk/client-lambda', () => ({
+  LambdaClient: jest.fn(() => ({ send: mockLambdaSend })),
+  InvokeCommand: jest.fn((args) => ({ input: args, __type: 'Invoke' })),
+}));
+
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const mockConnect = jest.fn(() => ({
@@ -33,6 +39,7 @@ process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
 process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
 process.env.AI_EXTRACTION_CONFIDENCE_THRESHOLD = '0.75';
 process.env.AI_INDUSTRY_KEYWORDS = '["electrician","plumber","carpenter"]';
+process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';
 
 import { handler } from '../../../../lambda/whatsapp/ai-profile-writer';
 
@@ -355,6 +362,108 @@ test('when AI fills all profile fields, handler upserts worker profile and compl
   expect(outboxCalls).toHaveLength(2);
   expect(outboxCalls[0][1][3]).toContain('Profile created');
   expect(outboxCalls[1][1][3]).toContain('Your profile is ready');
+});
+
+test('spanish voice profile with custom trade generates questions and asks first custom question', async () => {
+  const customQuestions = [
+    { q_en: 'What welding work do you do?', q_es: 'Que tipo de soldadura haces?' },
+    { q_en: 'What is your welding level?', q_es: 'Cual es tu nivel en soldadura?' },
+    { q_en: 'What welding tasks do you do most?', q_es: 'Que tareas de soldadura haces mas?' },
+  ];
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response(
+    'Me llamo Luis, vivo en Denver, soy soldador, tengo diez anos de experiencia, tengo transporte y busco tiempo completo.',
+  ));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    {
+      full_name: 'Luis Worker',
+      city: 'Denver',
+      main_trade: 'other',
+      main_trade_other: 'Soldador',
+      years_experience: '10+',
+      has_transportation: true,
+      availability: 'full_time',
+    },
+    {
+      full_name: 0.95,
+      city: 0.95,
+      main_trade: 0.95,
+      main_trade_other: 0.95,
+      years_experience: 0.95,
+      has_transportation: 0.95,
+      availability: 0.95,
+    },
+    'Custom welding profile complete.',
+    'Perfil de soldador completo.',
+  ));
+  mockLambdaSend.mockResolvedValue({
+    Payload: Buffer.from(JSON.stringify(customQuestions)),
+  });
+
+  mockQuery.mockImplementation((sql: string) => {
+    if (/SELECT cognito_sub FROM users/.test(sql)) {
+      return Promise.resolve({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] });
+    }
+    if (/SELECT full_name, city, main_trade/.test(sql)) {
+      return Promise.resolve({
+        rowCount: 1,
+        rows: [{
+          full_name: 'Luis Worker',
+          city: 'Denver',
+          main_trade: 'other',
+          main_trade_other: 'Soldador',
+          years_experience: '10+',
+          has_transportation: true,
+          availability: 'full_time',
+        }],
+      });
+    }
+    if (/SELECT id FROM worker_trust_assessments/.test(sql)) {
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    }
+    if (/SELECT questions FROM trade_questions/.test(sql)) {
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    }
+    if (/SELECT COALESCE\(MAX\(sequence\)/.test(sql)) {
+      return Promise.resolve({ rowCount: 1, rows: [{ next_seq: 1 }] });
+    }
+    return Promise.resolve({ rowCount: 1, rows: [] });
+  });
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-custom-es',
+    whatsappNumber: '+15125551234',
+    language: 'es',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/custom-es.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+  const invokeInput = mockLambdaSend.mock.calls[0][0].input;
+  const payload = JSON.parse(Buffer.from(invokeInput.Payload).toString());
+  expect(payload).toEqual({ professionKey: 'soldador', professionRaw: 'Soldador' });
+
+  const customStateUpdate = mockQuery.mock.calls.find(([sql, params]: [string, unknown[]]) =>
+    /UPDATE whatsapp_conversations/.test(sql)
+    && (
+      String(sql).includes("conversation_state = 'building_custom_trust'")
+      || (Array.isArray(params) && params.includes('building_custom_trust'))
+    )
+  );
+  expect(customStateUpdate).toBeDefined();
+  const stateJson = (customStateUpdate![1] as unknown[]).find((value) =>
+    typeof value === 'string' && value.includes('custom_trust_questions')
+  );
+  expect(JSON.parse(String(stateJson))).toMatchObject({
+    custom_trust_step: 0,
+    custom_trust_profession: 'Soldador',
+    custom_trust_questions: customQuestions,
+  });
+
+  const outboxBodiesForCustomTrust = outboxInserts().map((call) => call[1][3]);
+  expect(outboxBodiesForCustomTrust).toContain('Que tipo de soldadura haces?');
 });
 
 test('handler accepts Bedrock JSON wrapped in a markdown fence', async () => {

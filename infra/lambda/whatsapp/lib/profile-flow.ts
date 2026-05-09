@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { randomUUID } from 'node:crypto';
 import {
   buildTrustQuestion,
   computeNextField,
@@ -106,6 +107,23 @@ export interface AutoAdvanceProfileArgs {
   inboundMessageSid: string;
   language: Lang;
   queueBody: (body: string) => Promise<void>;
+  loadCustomTrustQuestions?: (
+    client: PoolClient,
+    professionKey: string,
+    professionRaw: string,
+  ) => Promise<Array<{ q_en: string; q_es: string }>>;
+  assessmentIdFactory?: () => string;
+}
+
+export function normalizeProfession(raw: string): string {
+  return raw
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[-./]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export async function autoAdvanceProfileAfterAi(
@@ -134,6 +152,47 @@ export async function autoAdvanceProfileAfterAi(
   }
 
   await upsertWorkerProfileFromUsers(client, args.userId);
+
+  if (dbFilled.main_trade === 'other' && typeof dbFilled.main_trade_other === 'string') {
+    const professionRaw = dbFilled.main_trade_other.trim();
+    if (professionRaw) {
+      const professionKey = normalizeProfession(professionRaw);
+      const existing = await client.query(
+        `SELECT id FROM worker_trust_assessments
+         WHERE user_id = $1 AND profession_key = $2
+           AND status IN ('pending','scoring','scored','failed')`,
+        [args.userId, professionKey],
+      );
+      if (existing.rows.length === 0) {
+        if (!args.loadCustomTrustQuestions) {
+          throw new Error('loadCustomTrustQuestions required for custom AI profile trust flow');
+        }
+        const questions = await args.loadCustomTrustQuestions(client, professionKey, professionRaw);
+        const assessmentId = args.assessmentIdFactory?.() ?? randomUUID();
+        await client.query(
+          `UPDATE whatsapp_conversations
+              SET conversation_state = 'building_custom_trust',
+                  state_context = $2::jsonb,
+                  last_processed_message_sid = $3,
+                  updated_at = NOW()
+            WHERE id = $1`,
+          [
+            args.conversationId,
+            JSON.stringify({
+              custom_trust_step: 0,
+              custom_trust_answers: [],
+              custom_trust_profession: professionRaw,
+              custom_trust_questions: questions,
+              custom_trust_assessment_id: assessmentId,
+            }),
+            args.inboundMessageSid,
+          ],
+        );
+        await args.queueBody(args.language === 'es' ? questions[0].q_es : questions[0].q_en);
+        return;
+      }
+    }
+  }
 
   if (!await trustSignalColumnsAvailable(client)) {
     await client.query(

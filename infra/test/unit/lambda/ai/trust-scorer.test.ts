@@ -80,7 +80,7 @@ describe('scoreAssessment', () => {
       })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1 })
       .mockResolvedValueOnce({ rows: [] });
     mockBedrockSend.mockResolvedValueOnce({
       output: { message: { content: [{ text: JSON.stringify(VALID_SCORE) }] } },
@@ -91,6 +91,65 @@ describe('scoreAssessment', () => {
     expect(mockBedrockSend).toHaveBeenCalledTimes(1);
     expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'BEGIN')).toBe(true);
     expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'COMMIT')).toBe(true);
+  });
+
+  it('accepts score JSON with unquoted known keys from Bedrock', async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({
+        rows: [{ answers: [{ q_en: 'Q1', answer_text: 'Residential', answer_source: 'text' }] }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: {
+        message: {
+          content: [{
+            text: `{
+              competency_score: 72,
+              score_components: {
+                specific_knowledge: 22,
+                practical_experience: 25,
+                safety_awareness: 15,
+                communication_clarity: 10
+              },
+              score_rationale: {
+                specific_knowledge: "Good",
+                practical_experience: "Solid",
+                safety_awareness: "OK",
+                communication_clarity: "Clear"
+              }
+            }`,
+          }],
+        },
+      },
+    });
+
+    await scoreAssessment({ assessmentId: 'abc', userId: 'u1', professionKey: 'electrician' });
+
+    expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'COMMIT')).toBe(true);
+  });
+
+  it('rolls back if user score update affects no rows', async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ answers: [] }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1 })
+      .mockResolvedValueOnce({ rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [] });
+    mockBedrockSend.mockResolvedValueOnce({
+      output: { message: { content: [{ text: JSON.stringify(VALID_SCORE) }] } },
+    });
+
+    await expect(
+      scoreAssessment({ assessmentId: 'abc', userId: 'u1', professionKey: 'electrician' }),
+    ).rejects.toThrow(/user score update matched no rows/i);
+
+    expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'ROLLBACK')).toBe(true);
+    expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'COMMIT')).toBe(false);
   });
 
   it('validates score sum matches competency_score', async () => {

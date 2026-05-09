@@ -104,7 +104,7 @@ async function getTwilioSecret(): Promise<TwilioSecret> {
   return JSON.parse(result.SecretString) as TwilioSecret;
 }
 
-async function loadOrGenerateQuestions(
+export async function loadOrGenerateQuestions(
   client: PoolClient,
   professionKey: string,
   professionRaw: string,

@@ -215,12 +215,14 @@ export class WhatsAppStack extends cdk.Stack {
         BEDROCK_MODEL_ID: 'us.amazon.nova-lite-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
+        QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
       },
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
+      nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-lambda'],
     });
     whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
     twilioSecret.grantRead(aiProfileWriterLambda.function);
     mediaBucket.grantRead(aiProfileWriterLambda.function);
+    props.questionGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
 
     aiProfileWriterLambda.function.addToRolePolicy(
       new iam.PolicyStatement({

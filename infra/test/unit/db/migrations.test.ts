@@ -34,6 +34,7 @@ describe('database migrations', () => {
       '009',
       '010',
       '011',
+      '012',
     ]);
   });
 

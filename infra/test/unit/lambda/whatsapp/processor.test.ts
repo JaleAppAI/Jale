@@ -40,6 +40,12 @@ jest.mock('@aws-sdk/client-sfn', () => ({
   StartExecutionCommand: jest.fn((args) => ({ input: args, __type: 'StartExecution' })),
 }), { virtual: true });
 
+const mockLambdaSend = jest.fn();
+jest.mock('@aws-sdk/client-lambda', () => ({
+  LambdaClient: jest.fn(() => ({ send: mockLambdaSend })),
+  InvokeCommand: jest.fn((args) => ({ input: args, __type: 'Invoke' })),
+}));
+
 jest.mock('../../../../lambda/whatsapp/lib/media', () => ({
   detectMediaCategory: jest.fn(),
   buildS3Key: jest.fn((userId: string, mediaId: string, type: string) => `${userId}/${type}/${mediaId}`),
@@ -724,6 +730,77 @@ describe('Processor Lambda', () => {
       expect(countQueryByPattern(/UPDATE users/i)).toBe(0);
     });
 
+    it('includes custom trust assessment answers for a Spanish profile command', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile-custom' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'es', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            phone: '+15125551234',
+            whatsapp_number: '+15125551234',
+            full_name: 'Luis Gomez',
+            city: '79928',
+            main_trade: 'other',
+            main_trade_other: 'Drywall',
+            years_experience: '10+',
+            has_transportation: true,
+            availability: 'flexible',
+            trust_signals_completed_at: null,
+            trust_signals: null,
+            trust_assessment_profession_key: 'drywall',
+            trust_assessment_status: 'scored',
+            trust_assessment_answers: [
+              {
+                q_en: 'What types of drywall installations have you worked on?',
+                answer_text: 'Hago drywall residencial y comercial.',
+              },
+            ],
+            trust_assessment_questions: [
+              {
+                q_en: 'What types of drywall installations have you worked on?',
+                q_es: 'En que tipos de instalaciones de paneles de yeso has trabajado?',
+              },
+            ],
+          }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-profile-custom',
+          From: 'whatsapp:+15125551234',
+          Body: 'perfil',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const body = outboxBodies()[0];
+      expect(body).toContain('Tu perfil');
+      expect(body).toContain('Oficio: Drywall');
+      expect(body).toContain('Estado: Evaluado');
+      expect(body).toContain('Preguntas de confianza');
+      expect(body).toContain('En que tipos de instalaciones de paneles de yeso has trabajado?');
+      expect(body).toContain('Hago drywall residencial y comercial.');
+      expect(body).not.toContain('Puntaje:');
+      expect(body).not.toContain('75');
+      const profileQuery = mockQuery.mock.calls.find(([sql]) =>
+        /FROM users u/i.test(sql as string)
+        && /worker_trust_assessments/i.test(sql as string)
+      );
+      expect(profileQuery?.[0]).not.toContain('trade_competency_score');
+      expect(profileQuery?.[0]).not.toContain('competency_score');
+    });
+
     it('does not consume an in-progress profile answer when profile command is sent', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -1029,7 +1106,7 @@ describe('awaiting_media_voice state', () => {
     mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
-  test('text message (skip) transitions to building_profile', async () => {
+  test('text message (skip) transitions to building_profile and asks first profile question', async () => {
     const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
     detectMediaCategory.mockReturnValue(null);
 
@@ -1038,10 +1115,16 @@ describe('awaiting_media_voice state', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM004' }] }) // claim
       .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
         rowCount: 1,
-        rows: [convRow({ conversation_state: 'awaiting_media_voice', user_id: 'user-1' })],
+        rows: [convRow({
+          conversation_state: 'awaiting_media_voice',
+          user_id: 'user-1',
+          language: 'en',
+        })],
       })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_intro
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_name
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
@@ -1060,6 +1143,67 @@ describe('awaiting_media_voice state', () => {
       && (params as unknown[]).includes('building_profile')
     );
     expect(convUpdate).toBeDefined();
+    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
+      typeof value === 'string' && value.includes('pending_field')
+    );
+    expect(JSON.parse(String(stateJson))).toMatchObject({
+      pending_field: 'full_name',
+      collected: {},
+      field_sids: {},
+    });
+
+    const outboxBodiesForSkip = outboxBodies();
+    expect(outboxBodiesForSkip.length).toBeGreaterThanOrEqual(2);
+    expect(outboxBodiesForSkip.join('\n').toLowerCase()).toContain('full name');
+  });
+
+  test('spanish text choice transitions to text profile and asks first question in spanish', async () => {
+    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
+    detectMediaCategory.mockReturnValue(null);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM004-es' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({
+          conversation_state: 'awaiting_media_voice',
+          user_id: 'user-1',
+          language: 'es',
+        })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_intro
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_name
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM004-es',
+      From: 'whatsapp:+15125551234',
+      Body: 'texto',
+      NumMedia: '0',
+    }), {} as any, {} as any);
+
+    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('building_profile')
+    );
+    expect(convUpdate).toBeDefined();
+    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
+      typeof value === 'string' && value.includes('pending_field')
+    );
+    expect(JSON.parse(String(stateJson))).toMatchObject({
+      pending_field: 'full_name',
+    });
+
+    const outboxBodiesForTextChoice = outboxBodies();
+    expect(outboxBodiesForTextChoice.length).toBeGreaterThanOrEqual(2);
+    expect(outboxBodiesForTextChoice.join('\n').toLowerCase()).toContain('nombre completo');
   });
 
   test('valid voice message starts Step Functions execution and transitions to processing_ai', async () => {
@@ -1108,6 +1252,98 @@ describe('awaiting_media_voice state', () => {
       /INSERT INTO whatsapp_outbox/.test(sql)
     );
     expect(outboxInsert).toBeDefined();
+  });
+});
+
+describe('building_profile custom trade handoff', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+  });
+
+  test('last text profile answer for other trade generates custom questions and asks Q1 in spanish', async () => {
+    const customQuestions = [
+      { q_en: 'What welding work do you do?', q_es: 'Que tipo de soldadura haces?' },
+      { q_en: 'What is your level?', q_es: 'Cual es tu nivel?' },
+      { q_en: 'What tasks do you do most?', q_es: 'Que tareas haces mas?' },
+    ];
+    mockLambdaSend.mockResolvedValue({
+      Payload: Buffer.from(JSON.stringify(customQuestions)),
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-custom-final' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({
+          conversation_state: 'building_profile',
+          user_id: 'user-1',
+          language: 'es',
+          state_context: {
+            pending_field: 'availability',
+            collected: {
+              full_name: 'Luis Worker',
+              city: 'Denver',
+              main_trade: 'other',
+              main_trade_other: 'Soldador',
+              years_experience: '10+',
+              has_transportation: true,
+            },
+            field_sids: {},
+          },
+        })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields before compute next
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPSERT worker_profiles
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade_other: 'Soldador' }] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // existing WTA
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cached trade_questions
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation building_custom_trust
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox Q1
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSqsEvent({
+      MessageSid: 'SM-custom-final',
+      From: 'whatsapp:+15125551234',
+      Body: '1',
+      NumMedia: '0',
+    }), {} as any, {} as any);
+
+    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(Buffer.from(mockLambdaSend.mock.calls[0][0].input.Payload).toString());
+    expect(payload).toEqual({ professionKey: 'soldador', professionRaw: 'Soldador' });
+
+    const customStateUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('building_custom_trust')
+    );
+    expect(customStateUpdate).toBeDefined();
+    const stateJson = (customStateUpdate![1] as unknown[]).find((value) =>
+      typeof value === 'string' && value.includes('custom_trust_questions')
+    );
+    expect(JSON.parse(String(stateJson))).toMatchObject({
+      custom_trust_step: 0,
+      custom_trust_profession: 'Soldador',
+      custom_trust_questions: customQuestions,
+    });
+    expect(outboxBodies()).toContain('Que tipo de soldadura haces?');
   });
 });
 

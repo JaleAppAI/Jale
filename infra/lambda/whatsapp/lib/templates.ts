@@ -190,8 +190,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Is this a profile photo or a work sample?\n1. Profile photo\n2. Work sample\n\nReply with the number.',
   },
   ask_media_voice: {
-    es: 'Ahora manda un mensaje de voz breve (15-30 segundos).\n\nCuenta: tu oficio, anos de experiencia, ciudad, disponibilidad, transporte y herramientas o certificaciones.\n\nEscribe "Saltar" si prefieres continuar con preguntas.',
-    en: 'Now send a short voice message (15-30 seconds).\n\nTell us: your trade, years of experience, city, availability, transportation, and any tools or certifications.\n\nType "Skip" to continue with questions instead.',
+    es: 'Como quieres crear tu perfil?\n\n1. Manda una nota de voz breve (15-30 segundos)\n2. Contestar preguntas por texto\n\nSi mandas voz, cuenta: tu oficio, anos de experiencia, ciudad, disponibilidad, transporte y herramientas o certificaciones.\n\nResponde "texto" o "2" para seguir por texto.',
+    en: 'How do you want to create your profile?\n\n1. Send a short voice note (15-30 seconds)\n2. Answer questions by text\n\nIf you send voice, tell us: your trade, years of experience, city, availability, transportation, and any tools or certifications.\n\nReply "text" or "2" to continue by text.',
   },
   media_voice_invalid: {
     es: 'Ese audio no se pudo guardar. Manda un mensaje de voz, o escribe "Saltar" para continuar con preguntas.',

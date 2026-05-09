@@ -59,9 +59,16 @@ describe('AiStack', () => {
     });
   });
 
-  it('creates trust-scorer Lambda with reserved concurrency 5', () => {
+  it('limits trust-scorer SQS concurrency without reserved concurrency', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
-      ReservedConcurrentExecutions: 5,
+      Description: 'Async trust scorer with stale-claim recovery',
+      ReservedConcurrentExecutions: Match.absent(),
+    });
+    template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+      BatchSize: 1,
+      ScalingConfig: {
+        MaximumConcurrency: 5,
+      },
     });
   });
 
