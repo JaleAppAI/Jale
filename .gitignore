@@ -52,4 +52,6 @@ coverage/
 *.tmp
 *.temp
 
+# Local frontend deploy state
+infra/scripts/.frontend-fast-deploy-last.env
 
