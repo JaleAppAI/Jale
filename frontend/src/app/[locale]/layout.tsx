@@ -19,6 +19,13 @@ export const metadata: Metadata = {
   description: "Find work. Find workers.",
 };
 
+export function generateStaticParams() {
+  return [{ locale: 'en' }, { locale: 'es' }];
+}
+
+// Allow unknown locale params (for static export, we skip prerendering specific IDs)
+export const dynamicParams = false;
+
 export default async function RootLayout({
   children,
   params: { locale },

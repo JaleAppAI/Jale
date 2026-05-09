@@ -11,6 +11,8 @@ import { DocumentSlot } from '@/components/worker/DocumentSlot';
 import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerVaultDoc, DocType } from '@/lib/api/worker';
 
+export const dynamic = 'force-dynamic';
+
 const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
 
 export default function WorkerProfilePage() {

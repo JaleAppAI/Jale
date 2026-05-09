@@ -6,6 +6,8 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { apiFetch } from '@/lib/api';
 import { Card } from '@/components/ui/card';
 
+export const dynamic = 'force-dynamic';
+
 interface EmployerProfile {
     id: string;
     email: string;

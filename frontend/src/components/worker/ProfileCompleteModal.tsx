@@ -42,8 +42,9 @@ export function ProfileCompleteModal(props: {
         location: location.trim(),
         years_experience: Number(yearsExp) || 0,
       });
-    } catch (e: any) {
-      setError(e.message ?? 'error');
+    } catch (e) {
+      const err = e as Record<string, unknown>;
+      setError(typeof err.message === 'string' ? err.message : 'error');
     } finally {
       setSubmitting(false);
     }

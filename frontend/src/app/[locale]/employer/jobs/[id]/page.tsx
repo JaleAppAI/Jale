@@ -1,4 +1,5 @@
 'use client';
+
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
@@ -10,6 +11,8 @@ import { Button } from '@/components/ui/button';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
 import { getJobs, getJobApplicants, updateJobStatus } from '@/lib/api/employer';
 import type { Job, Applicant, ApplicantFilters } from '@/lib/api/employer';
+
+export const dynamic = 'force-dynamic';
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();

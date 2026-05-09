@@ -12,6 +12,7 @@ import { AiStack } from '../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../lib/stacks/whatsapp-stack';
 import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
+import { FrontendStack } from '../lib/stacks/frontend-stack';
 
 const app = new cdk.App();
 
@@ -62,6 +63,9 @@ const api = new ApiStack(app, 'JaleApiStack', {
   workerPool: auth.workerPool,
   employerPool: auth.employerPool,
   candidateMaterializationQueue: matching.candidateMaterializationQueue,
+  // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
+  // references this API. Enable cross-region exports.
+  crossRegionReferences: true,
 });
 
 new LegalStack(app, 'JaleLegalStack', {
@@ -134,3 +138,31 @@ new DocumentsStack(app, 'JaleDocumentsStack', {
   allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
   requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
 });
+
+// FrontendStack — Lambda + CloudFront + Route 53 for jaleapp.ai
+// Deployed to us-east-1 because CloudFront ACM certificates must live there.
+// Pass surveyOriginDomain via context to enable /survey/* routing to Amplify.
+//
+// NEXT_PUBLIC_* values must be present at build time (baked into JS bundle).
+// They can come from:
+//   1. CDK context: -c workerPoolId=us-east-1_xxx -c workerClientId=xxx ...
+//   2. Process env: $env:JALE_WORKER_POOL_ID = '...'
+// For local Docker smoke tests, set them via $env:* in PowerShell.
+const ctx = (key: string, envVar?: string): string =>
+  app.node.tryGetContext(key) ?? (envVar ? process.env[envVar] : undefined) ?? '';
+
+const frontend = new FrontendStack(app, 'JaleFrontendStack', {
+  env: { account: env.account, region: 'us-east-1' },
+  api: api.api,
+  domainName: app.node.tryGetContext('domainName') ?? 'jaleapp.ai',
+  hostedZoneId: app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3',
+  surveyOriginDomain: app.node.tryGetContext('surveyOriginDomain'),
+  workerPoolId: ctx('workerPoolId', 'JALE_WORKER_POOL_ID'),
+  workerClientId: ctx('workerClientId', 'JALE_WORKER_CLIENT_ID'),
+  employerPoolId: ctx('employerPoolId', 'JALE_EMPLOYER_POOL_ID'),
+  employerClientId: ctx('employerClientId', 'JALE_EMPLOYER_CLIENT_ID'),
+  // ApiStack is in another region; allow cross-region references for the
+  // CloudFront /api/* origin (RestApiOrigin reads stage URL at synth time).
+  crossRegionReferences: true,
+});
+frontend.addDependency(api);

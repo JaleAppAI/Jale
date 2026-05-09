@@ -4,6 +4,8 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import EmployerAuthForm from '@/components/auth/EmployerAuthForm';
 
+export const dynamic = 'force-dynamic';
+
 export default function EmployerAuthPage() {
     const { isAuthenticated, isLoading } = useAuth();
     const router = useRouter();

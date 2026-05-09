@@ -1,4 +1,5 @@
 'use client';
+
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
@@ -12,6 +13,8 @@ import { ProfileCompleteModal, ProfileCompleteValues } from '@/components/worker
 import { apiFetch } from '@/lib/api';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
 import type { JobDetail } from '@/lib/api/worker';
+
+export const dynamic = 'force-dynamic';
 
 const DOC_LABELS: Record<string, string> = {
   resume: 'Resume',
@@ -46,7 +49,7 @@ export default function WorkerJobDetailPage() {
     }
   }
 
-  useEffect(() => { load(); }, [idToken, id]);
+  useEffect(() => { load(); }, [idToken, id, load]);
 
   async function profileIsComplete(): Promise<boolean> {
     if (!idToken) return false;
@@ -71,12 +74,13 @@ export default function WorkerJobDetailPage() {
     try {
       await applyToJob(idToken, id);
       await load();
-    } catch (e: any) {
-      if (e.status === 400 && e.missing_docs) {
-        setError(t('errors.missing_docs', { docs: e.missing_docs.map((d: string) => DOC_LABELS[d] ?? d).join(', ') }));
-      } else if (e.status === 409) {
+    } catch (e) {
+      const err = e as Record<string, unknown>;
+      if (err.status === 400 && err.missing_docs) {
+        setError(t('errors.missing_docs', { docs: (err.missing_docs as string[]).map((d: string) => DOC_LABELS[d] ?? d).join(', ') }));
+      } else if (err.status === 409) {
         await load();
-      } else if (e.status === 410) {
+      } else if (err.status === 410) {
         setError(t('errors.job_closed'));
         await load();
       } else {

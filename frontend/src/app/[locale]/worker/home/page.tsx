@@ -8,6 +8,8 @@ import { WorkerJobCard } from '@/components/worker/WorkerJobCard';
 import { getJobs } from '@/lib/api/worker';
 import type { Job } from '@/lib/api/worker';
 
+export const dynamic = 'force-dynamic';
+
 type TypeFilter = 'all' | 'full-time' | 'part-time' | 'contract';
 
 export default function WorkerHomePage() {
