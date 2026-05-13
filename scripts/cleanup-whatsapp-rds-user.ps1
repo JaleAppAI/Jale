@@ -1,7 +1,7 @@
 # cleanup-whatsapp-rds-user.ps1
 #
-# Deletes one worker from RDS so you can retest the WhatsApp onboarding flow
-# for that phone number. This does not delete the Cognito user.
+# Deletes one worker from RDS and the worker Cognito pool so you can retest
+# the WhatsApp onboarding flow for that phone number.
 #
 # Usage:
 #   cd infra
@@ -11,12 +11,15 @@
 #   # Prompts for the phone number to delete.
 #   # Or run non-interactively:
 #   .\scripts\cleanup-whatsapp-rds-user.ps1 -Phone '+15551234567'
+#   # If pool lookup by name is unavailable, pass it explicitly:
+#   .\scripts\cleanup-whatsapp-rds-user.ps1 -Phone '+15551234567' -WorkerPoolId 'us-east-2_abc123'
 #   cd infra
 #   npx cdk destroy JaleBastionStack
 
 [CmdletBinding()]
 param(
   [string]$Phone,
+  [string]$WorkerPoolId,
   [string]$Region = $(
     if ($env:AWS_REGION) { $env:AWS_REGION }
     elseif ($env:AWS_DEFAULT_REGION) { $env:AWS_DEFAULT_REGION }
@@ -42,7 +45,21 @@ if ($Phone -notmatch '^\+\d{8,15}$') {
 $PhoneSql = $Phone.Replace("'", "''")
 
 Write-Host ">> Using region: $Region"
-Write-Host ">> Cleaning RDS WhatsApp worker data for: $Phone"
+Write-Host ">> Cleaning worker data for: $Phone"
+
+if ([string]::IsNullOrWhiteSpace($WorkerPoolId)) {
+  Write-Host ">> Resolving worker Cognito pool ID..."
+  $WorkerPoolId = (aws cognito-idp list-user-pools `
+      --region $Region `
+      --max-results 60 `
+      --query "UserPools[?Name=='jale-worker-pool'].Id | [0]" `
+      --output text).Trim()
+
+  if ([string]::IsNullOrEmpty($WorkerPoolId) -or $WorkerPoolId -eq 'None') {
+    throw "Could not find Cognito user pool named jale-worker-pool in $Region. Pass -WorkerPoolId explicitly."
+  }
+}
+Write-Host "   worker-pool: $WorkerPoolId"
 
 Write-Host ">> Resolving bastion instance ID..."
 $bastionId = (aws cloudformation describe-stacks `
@@ -62,11 +79,11 @@ Write-Host ">> Resolving DB secret ARN..."
 $rawSecret = (aws cloudformation describe-stack-resources `
     --stack-name $DatabaseStack `
     --region $Region `
-    --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret'].PhysicalResourceId" `
+    --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && contains(LogicalResourceId, 'DatabaseSecret')].PhysicalResourceId | [0]" `
     --output text)
-$dbSecretArn = ($rawSecret -split "\s+" | Where-Object { $_ } | Select-Object -First 1)
+$dbSecretArn = $rawSecret.Trim()
 
-if ([string]::IsNullOrEmpty($dbSecretArn)) {
+if ([string]::IsNullOrEmpty($dbSecretArn) -or $dbSecretArn -eq 'None') {
   Write-Host "!! Could not find DB secret in $DatabaseStack." -ForegroundColor Red
   exit 1
 }
@@ -87,7 +104,16 @@ WHERE user_type = 'worker'
     OR cognito_sub = '$PhoneSql'
   );
 
+ALTER TABLE cleanup_user_ids ADD PRIMARY KEY (id);
+
+CREATE TEMP TABLE cleanup_counts(
+  table_name TEXT PRIMARY KEY,
+  deleted_count INTEGER NOT NULL DEFAULT 0
+) ON COMMIT DROP;
+
 DO `$`$
+DECLARE
+  deleted_count INTEGER;
 BEGIN
   IF to_regclass('whatsapp_outbox') IS NOT NULL THEN
     DELETE FROM whatsapp_outbox
@@ -97,27 +123,82 @@ BEGIN
          FROM whatsapp_processed_messages
          WHERE whatsapp_number = '$PhoneSql'
        );
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('whatsapp_outbox', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('whatsapp_processed_messages') IS NOT NULL THEN
     DELETE FROM whatsapp_processed_messages
     WHERE whatsapp_number = '$PhoneSql';
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('whatsapp_processed_messages', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('whatsapp_conversations') IS NOT NULL THEN
     DELETE FROM whatsapp_conversations
     WHERE whatsapp_number = '$PhoneSql'
        OR user_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('whatsapp_conversations', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('document_upload_tokens') IS NOT NULL THEN
     DELETE FROM document_upload_tokens
     WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('document_upload_tokens', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('worker_documents') IS NOT NULL THEN
     DELETE FROM worker_documents
     WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_documents', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+  END IF;
+
+  IF to_regclass('job_candidates') IS NOT NULL THEN
+    DELETE FROM job_candidates
+    WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('job_candidates', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+  END IF;
+
+  IF to_regclass('worker_job_impressions') IS NOT NULL THEN
+    DELETE FROM worker_job_impressions
+    WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_job_impressions', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+  END IF;
+
+  IF to_regclass('worker_match_log') IS NOT NULL THEN
+    DELETE FROM worker_match_log
+    WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_match_log', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('job_applications') IS NOT NULL THEN
@@ -127,6 +208,11 @@ BEGIN
     ) THEN
       DELETE FROM job_applications
       WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+      GET DIAGNOSTICS deleted_count = ROW_COUNT;
+      INSERT INTO cleanup_counts(table_name, deleted_count)
+      VALUES ('job_applications', deleted_count)
+      ON CONFLICT (table_name) DO UPDATE
+        SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
     END IF;
 
     IF EXISTS (
@@ -135,34 +221,90 @@ BEGIN
     ) THEN
       DELETE FROM job_applications
       WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+      GET DIAGNOSTICS deleted_count = ROW_COUNT;
+      INSERT INTO cleanup_counts(table_name, deleted_count)
+      VALUES ('job_applications', deleted_count)
+      ON CONFLICT (table_name) DO UPDATE
+        SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
     END IF;
   END IF;
 
   IF to_regclass('legal_consent_log') IS NOT NULL THEN
     DELETE FROM legal_consent_log
     WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('legal_consent_log', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('worker_profile_ai_extractions') IS NOT NULL THEN
     DELETE FROM worker_profile_ai_extractions
     WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_profile_ai_extractions', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('worker_profile_media') IS NOT NULL THEN
     DELETE FROM worker_profile_media
     WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_profile_media', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+  END IF;
+
+  IF to_regclass('worker_trust_assessments') IS NOT NULL THEN
+    DELETE FROM worker_trust_assessments
+    WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_trust_assessments', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+  END IF;
+
+  IF to_regclass('worker_skills') IS NOT NULL THEN
+    DELETE FROM worker_skills
+    WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_skills', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
   IF to_regclass('worker_profiles') IS NOT NULL THEN
     DELETE FROM worker_profiles
     WHERE user_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('worker_profiles', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 END
 `$`$;
 
-DELETE FROM users
-WHERE id IN (SELECT id FROM cleanup_user_ids)
-   OR (user_type = 'worker' AND cognito_sub = '$PhoneSql');
+WITH deleted_users AS (
+  DELETE FROM users
+  WHERE id IN (SELECT id FROM cleanup_user_ids)
+     OR (user_type = 'worker' AND cognito_sub = '$PhoneSql')
+  RETURNING 1
+)
+INSERT INTO cleanup_counts(table_name, deleted_count)
+SELECT 'users', COUNT(*)::integer FROM deleted_users
+ON CONFLICT (table_name) DO UPDATE
+  SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+
+SELECT table_name, deleted_count
+FROM cleanup_counts
+ORDER BY table_name;
 
 COMMIT;
 "@
@@ -246,3 +388,22 @@ aws ssm list-command-invocations `
   --details `
   --query 'CommandInvocations[0].CommandPlugins[0].Output' `
   --output text
+
+Write-Host ">> Deleting Cognito worker user from pool $WorkerPoolId..."
+$cognitoDeleteOutput = & aws cognito-idp admin-delete-user `
+  --region $Region `
+  --user-pool-id $WorkerPoolId `
+  --username $Phone 2>&1
+
+if ($LASTEXITCODE -eq 0) {
+  Write-Host ">> Cognito worker user deleted for $Phone."
+}
+else {
+  $message = ($cognitoDeleteOutput | Out-String).Trim()
+  if ($message -match 'UserNotFoundException') {
+    Write-Host ">> Cognito worker user was already absent for $Phone."
+  }
+  else {
+    throw "Cognito worker delete failed for $Phone`: $message"
+  }
+}
