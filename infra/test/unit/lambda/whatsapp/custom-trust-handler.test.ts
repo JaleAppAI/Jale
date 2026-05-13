@@ -110,11 +110,10 @@ describe('handleBuildingCustomTrust', () => {
     expect(updateCall).toBeDefined();
   });
 
-  it('after third spanish custom answer inserts assessment and enqueue outbox row', async () => {
+  it('after third spanish custom answer inserts assessment and enqueues scorer', async () => {
     mockDbQuery
       .mockResolvedValueOnce({ rows: [] }) // existing WTA check
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_trust_assessments
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT trust_assessment_enqueue_outbox
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT confirmation outbox
     mockSqsSend.mockResolvedValue({});
@@ -151,9 +150,12 @@ describe('handleBuildingCustomTrust', () => {
     const assessmentInsert = mockDbQuery.mock.calls.find(([sql]) =>
       String(sql).includes('INSERT INTO worker_trust_assessments'));
     expect(assessmentInsert).toBeDefined();
-    const enqueueInsert = mockDbQuery.mock.calls.find(([sql]) =>
-      String(sql).includes('INSERT INTO trust_assessment_enqueue_outbox'));
-    expect(enqueueInsert?.[1]).toEqual(['assess1', 'user1', 'soldador']);
-    expect(mockSqsSend).not.toHaveBeenCalled();
+    expect(mockSqsSend).toHaveBeenCalledTimes(1);
+    const sqsPayload = JSON.parse(mockSqsSend.mock.calls[0][0].MessageBody);
+    expect(sqsPayload).toEqual({
+      assessmentId: 'assess1',
+      userId: 'user1',
+      professionKey: 'soldador',
+    });
   });
 });

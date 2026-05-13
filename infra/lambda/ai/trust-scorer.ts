@@ -41,12 +41,6 @@ function trustQueueUrl(): string {
   return url;
 }
 
-function workerRerankQueueUrl(): string {
-  const url = process.env.WORKER_RERANK_QUEUE_URL;
-  if (!url) throw new Error('WORKER_RERANK_QUEUE_URL not set');
-  return url;
-}
-
 async function getRubric(): Promise<{ rubricJson: string; version: number }> {
   const now = Date.now();
   if (cachedRubric && now - cachedRubric.cachedAt < RUBRIC_CACHE_TTL_MS) {
@@ -207,40 +201,16 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
       ],
     );
     const userUpdate = await client.query(
-      `UPDATE users
-          SET trade_competency_score = $1,
-              trade_competency_profession_key = $2
-        WHERE id = $3
-          AND user_type = 'worker'`,
-      [scored.competency_score, event.professionKey, event.userId],
+      'UPDATE users SET trade_competency_score = $1 WHERE id = $2',
+      [scored.competency_score, event.userId],
     );
     if (userUpdate.rowCount !== 1) {
       throw new Error(
         `user score update matched no rows for user ${event.userId}`,
       );
     }
-    await client.query(
-      `INSERT INTO trust_score_rerank_outbox (worker_id, reason, payload)
-       VALUES ($1, 'trust_score_updated', $2::jsonb)
-       ON CONFLICT (worker_id) WHERE status = 'pending'
-       DO UPDATE
-          SET reason = EXCLUDED.reason,
-              payload = EXCLUDED.payload,
-              next_attempt_at = now(),
-              last_error = NULL`,
-      [
-        event.userId,
-        JSON.stringify({
-          workerId: event.userId,
-          professionKey: event.professionKey,
-          reason: 'trust_score_updated',
-        }),
-      ],
-    );
     await client.query('COMMIT');
     transactionStarted = false;
-
-    await drainTrustScoreRerankOutbox();
 
     console.log('[trust-scorer] scored', {
       assessmentId: event.assessmentId,
@@ -252,58 +222,6 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
       await client.query('ROLLBACK').catch(() => {});
     }
     throw err;
-  } finally {
-    client.release();
-  }
-}
-
-async function drainTrustScoreRerankOutbox(limit = 25): Promise<void> {
-  const queueUrl = workerRerankQueueUrl();
-  const pool = await getDbPool();
-  const client = await pool.connect();
-
-  try {
-    const rows = await client.query<{
-      id: string;
-      worker_id: string;
-      payload: unknown;
-      attempts: number;
-    }>(
-      `SELECT id, worker_id, payload, attempts
-         FROM trust_score_rerank_outbox
-        WHERE status IN ('pending','failed')
-          AND next_attempt_at <= now()
-        ORDER BY created_at ASC
-        LIMIT $1`,
-      [limit],
-    );
-
-    for (const row of rows.rows) {
-      try {
-        await sqsClient.send(
-          new SendMessageCommand({
-            QueueUrl: queueUrl,
-            MessageBody: JSON.stringify(row.payload),
-          }),
-        );
-        await client.query(
-          `UPDATE trust_score_rerank_outbox
-              SET status = 'sent', sent_at = now(), last_error = NULL
-            WHERE id = $1`,
-          [row.id],
-        );
-      } catch (error) {
-        await client.query(
-          `UPDATE trust_score_rerank_outbox
-              SET status = 'failed',
-                  attempts = attempts + 1,
-                  next_attempt_at = now() + make_interval(mins => LEAST(60, GREATEST(1, attempts + 1) * 5)),
-                  last_error = left($2, 500)
-            WHERE id = $1`,
-          [row.id, error instanceof Error ? error.message : String(error)],
-        );
-      }
-    }
   } finally {
     client.release();
   }
@@ -324,28 +242,26 @@ export async function handleRecoveryCron(): Promise<void> {
        WHERE status = 'scoring'
          AND created_at < now() - interval '${STALE_MINUTES} minutes'`,
     );
-    if (stale.rows.length > 0) {
-      await client.query(
-        `UPDATE worker_trust_assessments SET status = 'pending'
-         WHERE id = ANY($1::uuid[])`,
-        [stale.rows.map((row) => row.id)],
-      );
+    if (stale.rows.length === 0) return;
 
-      for (const row of stale.rows) {
-        await sqsClient.send(
-          new SendMessageCommand({
-            QueueUrl: trustQueueUrl(),
-            MessageBody: JSON.stringify({
-              assessmentId: row.id,
-              userId: row.user_id,
-              professionKey: row.profession_key,
-            }),
+    await client.query(
+      `UPDATE worker_trust_assessments SET status = 'pending'
+       WHERE id = ANY($1::uuid[])`,
+      [stale.rows.map((row) => row.id)],
+    );
+
+    for (const row of stale.rows) {
+      await sqsClient.send(
+        new SendMessageCommand({
+          QueueUrl: trustQueueUrl(),
+          MessageBody: JSON.stringify({
+            assessmentId: row.id,
+            userId: row.user_id,
+            professionKey: row.profession_key,
           }),
-        );
-      }
+        }),
+      );
     }
-
-    await drainTrustScoreRerankOutbox();
   } finally {
     client.release();
   }

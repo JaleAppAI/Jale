@@ -5,7 +5,6 @@ import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
-import { MatchingStack } from '../../../lib/stacks/matching-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../../../lib/stacks/whatsapp-stack';
 
@@ -32,19 +31,11 @@ describe('WhatsAppStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
     });
-    const matching = new MatchingStack(app, 'TestMatchingStack', {
-      vpc: network.vpc,
-      privateSubnets: network.privateSubnets,
-      lambdaSg: network.lambdaSg,
-      dbSecret: database.dbSecret,
-      matchingDbSecret: database.matchingDbSecret,
-    });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       aiDbSecret: database.aiDbSecret,
-      workerRerankQueue: matching.workerRerankQueue,
     });
     // LegalStack must be instantiated to satisfy CDK validation: the
     // DualAuthorizer is created in ApiStack but only "attached to a RestApi"

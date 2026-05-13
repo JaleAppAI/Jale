@@ -22,10 +22,6 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
 import { sendPendingOutbox } from './lib/outbox';
 import {
-  drainTrustAssessmentEnqueueOutbox,
-  queueTrustAssessmentEnqueue,
-} from './lib/trust-assessment-outbox';
-import {
   t,
   detectLanguage,
   type Lang,
@@ -361,7 +357,6 @@ async function processRecord(record: SQSRecord): Promise<void> {
     // follow it. If any step throws, ROLLBACK discards everything including
     // the claim, and SQS retry cleanly re-claims.
     let claimed = false;
-    let trustAssessmentQueued = false;
     await client.query('BEGIN');
     try {
       const claim = await client.query<{ message_sid: string }>(
@@ -390,7 +385,6 @@ async function processRecord(record: SQSRecord): Promise<void> {
           // fully land (Lambda crash, timeout, Twilio outage). Resume from
           // the outbox without re-executing any state mutations.
           console.log('[processor] resuming db_committed claim', { messageSid });
-          await drainTrustAssessmentEnqueueOutbox(client);
           await sendPendingOutbox(client, messageSid);
           await markCompleted(client, messageSid);
           return;
@@ -414,7 +408,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         defaultLang,
       );
 
-      trustAssessmentQueued = await routeMessage(client, conv, {
+      await routeMessage(client, conv, {
         body,
         buttonPayload,
         messageSid,
@@ -451,9 +445,6 @@ async function processRecord(record: SQSRecord): Promise<void> {
     // Phase 2 — outside the tx, do the Twilio sends. If any throw, SQS
     // retry resumes from 'db_committed'. No DB rollback: the state is
     // already durably committed.
-    if (trustAssessmentQueued) {
-      await drainTrustAssessmentEnqueueOutbox(client);
-    }
     await sendPendingOutbox(client, messageSid);
     await markCompleted(client, messageSid);
   } finally {
@@ -717,7 +708,7 @@ async function routeMessage(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
-): Promise<boolean> {
+): Promise<void> {
   const from = msg.from;
 
   // Button-payload taps on job alerts are self-identifying. Route them first
@@ -726,18 +717,18 @@ async function routeMessage(
     const parsed = parseButtonPayload(msg.buttonPayload);
     if (parsed && (conv.conversation_state === 'idle' || conv.user_id)) {
       await handleJobButton(client, conv, parsed, from, msg.messageSid);
-      return false;
+      return;
     }
   }
 
   if (isHelpCommand(msg.body)) {
     await reply(client, msg, 'help_menu', conv.language);
-    return false;
+    return;
   }
 
   if (isProfileCommand(msg.body)) {
     await handleProfileCommand(client, conv, msg);
-    return false;
+    return;
   }
 
   switch (conv.conversation_state) {
@@ -747,7 +738,7 @@ async function routeMessage(
       } else {
         await reply(client, msg, 'start_prompt', detectLanguage(msg.body));
       }
-      return false;
+      return;
 
     case 'otp_timeout':
     case 'legal_declined':
@@ -757,43 +748,44 @@ async function routeMessage(
       } else {
         await reply(client, msg, 'start_prompt', conv.language);
       }
-      return false;
+      return;
 
     case 'awaiting_otp':
       await handleAwaitingOtp(client, conv, msg);
-      return false;
+      return;
 
     case 'awaiting_legal':
       await handleAwaitingLegal(client, conv, msg);
-      return false;
+      return;
 
     case 'awaiting_media_photo':
       await handleAwaitingMediaPhoto(client, conv, msg);
-      return false;
+      return;
 
     case 'awaiting_media_voice':
       await handleAwaitingMediaVoice(client, conv, msg);
-      return false;
+      return;
 
     case 'processing_ai':
       await handleProcessingAi(client, conv, msg);
-      return false;
+      return;
 
     case 'building_profile':
       await handleBuildingProfile(client, conv, msg);
-      return false;
+      return;
 
     case 'building_trust_signal':
-      return handleBuildingTrustSignal(client, conv, msg);
+      await handleBuildingTrustSignal(client, conv, msg);
+      return;
 
     case 'building_custom_trust':
-      return handleBuildingCustomTrust(client, conv, msg);
+      await handleBuildingCustomTrust(client, conv, msg);
+      return;
 
     case 'idle':
       await handleIdle(client, conv, msg);
-      return false;
+      return;
   }
-  return false;
 }
 
 // ── new / restart — SignUp + InitiateAuth(CUSTOM_AUTH) ──────────
@@ -1791,7 +1783,7 @@ async function handleBuildingTrustSignal(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
-): Promise<boolean> {
+): Promise<void> {
   if (!conv.user_id) throw new Error('user_id missing in building_trust_signal');
 
   if (!await trustSignalColumnsAvailable(client)) {
@@ -1804,7 +1796,7 @@ async function handleBuildingTrustSignal(
       last_processed_message_sid: msg.messageSid,
     });
     await reply(client, msg, 'profile_complete', conv.language);
-    return false;
+    return;
   }
 
   const step = conv.state_context?.trust_step ?? 0;
@@ -1819,7 +1811,7 @@ async function handleBuildingTrustSignal(
       msg.from,
       buildTrustQuestion(step, trade, conv.language),
     );
-    return false;
+    return;
   }
 
   const updatedAnswers: TrustAnswer[] = [...answers, answer];
@@ -1838,7 +1830,7 @@ async function handleBuildingTrustSignal(
       msg.from,
       buildTrustQuestion(step + 1, trade, conv.language),
     );
-    return false;
+    return;
   }
 
   const signalMap = Object.fromEntries(
@@ -1852,7 +1844,6 @@ async function handleBuildingTrustSignal(
     [JSON.stringify(signalMap), conv.user_id],
   );
 
-  let trustAssessmentQueued = false;
   type SeededTrustQuestion = { q_en: string; q_es: string };
   const knownTradeQuestions = await client.query<{ questions: SeededTrustQuestion[] }>(
     'SELECT questions FROM trade_questions WHERE profession_key = $1 AND is_seeded = true',
@@ -1885,8 +1876,14 @@ async function handleBuildingTrustSignal(
          ON CONFLICT DO NOTHING`,
         [assessmentId, conv.user_id, trade, JSON.stringify(answersArray)],
       );
-      await queueTrustAssessmentEnqueue(client, assessmentId, conv.user_id, trade);
-      trustAssessmentQueued = true;
+      const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
+      const sqsClientLocal = new SQSClient({});
+      await sqsClientLocal.send(
+        new SendMessageCommand({
+          QueueUrl: process.env.TRUST_ASSESSMENT_QUEUE_URL!,
+          MessageBody: JSON.stringify({ assessmentId, userId: conv.user_id, professionKey: trade }),
+        }),
+      );
     }
   } else {
     console.warn('[processor] known-trade seeded questions missing for trade', {
@@ -1902,7 +1899,6 @@ async function handleBuildingTrustSignal(
     last_processed_message_sid: msg.messageSid,
   });
   await reply(client, msg, 'profile_complete', conv.language);
-  return trustAssessmentQueued;
 }
 
 // ── idle — handle Jobs keyword + button callbacks ───────────────
