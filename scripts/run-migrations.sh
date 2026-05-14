@@ -10,7 +10,7 @@
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→013
+#   - Base64-encodes migrations 001→014
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -31,7 +31,7 @@ DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. Runs the full chain 001→013 against
+# Migration files in execution order. Runs the full chain 001→014 against
 # a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
 # is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
@@ -49,6 +49,7 @@ MIGRATIONS=(
   "011_ai_profile_media.sql"
   "012_ai_trust_assessment.sql"
   "013_application_status_alignment.sql"
+  "014_employer_profiles.sql"
 )
 
 echo ">> Using region: $REGION"

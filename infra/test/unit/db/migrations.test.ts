@@ -36,6 +36,7 @@ describe('database migrations', () => {
       '011',
       '012',
       '013',
+      '014',
     ]);
   });
 
@@ -49,6 +50,17 @@ describe('database migrations', () => {
     expect(applicationsTable).toContain("DEFAULT 'pending'");
     expect(applicationsTable).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
     expect(applicationsTable).not.toMatch(/\buser_id\b/i);
+  });
+
+  it('defines employer profiles for web account creation', () => {
+    const sql = migrationSql();
+    const employerProfilesTable = sql.match(/CREATE TABLE(?: IF NOT EXISTS)? employer_profiles\s*\([\s\S]*?\n\);/i)?.[0] ?? '';
+
+    expect(sql.match(/CREATE TABLE(?: IF NOT EXISTS)? employer_profiles\s*\(/gi)).toHaveLength(1);
+    expect(employerProfilesTable).toContain('user_id             UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE');
+    expect(employerProfilesTable).toContain('hiring_trades       TEXT[] NOT NULL DEFAULT');
+    expect(employerProfilesTable).toContain('typical_job_types   TEXT[] NOT NULL DEFAULT');
+    expect(sql).toContain('CREATE POLICY employer_profiles_self');
   });
 
   it('keeps identity contexts unambiguous', () => {

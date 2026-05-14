@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-const AVAILABILITY = ['immediate', '2-weeks', '1-month'] as const;
+const AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 type Availability = (typeof AVAILABILITY)[number];
 
 export interface ProfileCompleteValues {
@@ -23,7 +23,7 @@ export function ProfileCompleteModal(props: {
   const t = useTranslations('worker_profile.complete_modal');
   const [fullName, setFullName] = useState('');
   const [skills, setSkills] = useState('');
-  const [availability, setAvailability] = useState<Availability>('immediate');
+  const [availability, setAvailability] = useState<Availability>('full_time');
   const [location, setLocation] = useState('');
   const [yearsExp, setYearsExp] = useState('0');
   const [submitting, setSubmitting] = useState(false);
@@ -59,7 +59,7 @@ export function ProfileCompleteModal(props: {
         <Input placeholder={t('full_name')} value={fullName} onChange={(e) => setFullName(e.target.value)} />
         <Input placeholder={t('skills_placeholder')} value={skills} onChange={(e) => setSkills(e.target.value)} />
         <select className="w-full rounded border px-3 py-2 text-sm" value={availability} onChange={(e) => setAvailability(e.target.value as Availability)}>
-          {AVAILABILITY.map(a => <option key={a} value={a}>{t(`availability.${a.replace('-', '_')}`)}</option>)}
+          {AVAILABILITY.map(a => <option key={a} value={a}>{t(`availability.${a}`)}</option>)}
         </select>
         <Input placeholder={t('location')} value={location} onChange={(e) => setLocation(e.target.value)} />
         <Input type="number" min={0} placeholder={t('years_experience')} value={yearsExp} onChange={(e) => setYearsExp(e.target.value)} />

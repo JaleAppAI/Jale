@@ -36,6 +36,25 @@ describe('worker-profile-update', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('rejects invalid WhatsApp-compatible profile fields before writing', async () => {
+    const trade = await handler(mkEv({ main_trade: 'roofer' }));
+    const experience = await handler(mkEv({ years_experience: '11-20' }));
+    const transport = await handler(mkEv({ has_transportation: 'yes' }));
+
+    expect(trade.statusCode).toBe(400);
+    expect(experience.statusCode).toBe(400);
+    expect(transport.statusCode).toBe(400);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('requires main_trade_other when main_trade is other', async () => {
+    const res = await handler(mkEv({ main_trade: 'other' }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('main_trade_other_required');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
   it('accepts canonical database availability values', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('INSERT INTO worker_profiles')) {
@@ -47,6 +66,34 @@ describe('worker-profile-update', () => {
     const res = await handler(mkEv({ availability: 'full_time', years_experience: 3, location: 'TX' }));
 
     expect(res.statusCode).toBe(200);
+  });
+
+  it('writes WhatsApp-compatible fields to users and display fields to worker_profiles', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('INSERT INTO worker_profiles')) {
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: 'full_time', years_experience: 7, location: 'Austin', bio: null }] });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({
+      full_name: 'Ana Worker',
+      city: 'Austin',
+      main_trade: 'painting',
+      years_experience: '5-9',
+      has_transportation: true,
+      availability: 'full_time',
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE users SET'),
+      ['Ana Worker', 'Austin', 'painting', null, '5-9', true, 'full_time', 'w'],
+    );
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO worker_profiles'),
+      ['w', 'full_time', 7, 'Austin', null],
+    );
   });
 
   it('upserts worker_profiles without legacy skills and replaces worker_skills when provided', async () => {

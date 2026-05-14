@@ -69,6 +69,18 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       Match.objectLike({
         Action: 'lambda:InvokeFunctionUrl',
         Principal: 'cloudfront.amazonaws.com',
+        FunctionUrlAuthType: 'AWS_IAM',
+      }),
+    );
+  });
+
+  test('grants CloudFront permission to invoke the function via Function URL', () => {
+    template.hasResourceProperties(
+      'AWS::Lambda::Permission',
+      Match.objectLike({
+        Action: 'lambda:InvokeFunction',
+        Principal: 'cloudfront.amazonaws.com',
+        InvokedViaFunctionUrl: true,
       }),
     );
   });
@@ -93,6 +105,31 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
         DistributionConfig: Match.objectLike({
           CacheBehaviors: Match.arrayWith([
             Match.objectLike({ PathPattern: '/api/*' }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  test('rewrites /api prefix before forwarding to API Gateway', () => {
+    template.hasResourceProperties('AWS::CloudFront::Function', {
+      Name: 'jale-rewrite-api-prefix',
+      FunctionCode: Match.stringLikeRegexp(
+        'request\\.uri = request\\.uri\\.replace',
+      ),
+    });
+    template.hasResourceProperties(
+      'AWS::CloudFront::Distribution',
+      Match.objectLike({
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/api/*',
+              OriginRequestPolicyId: 'b689b0a8-53d0-40ab-baf2-68738e2966ac',
+              FunctionAssociations: Match.arrayWith([
+                Match.objectLike({ EventType: 'viewer-request' }),
+              ]),
+            }),
           ]),
         }),
       }),
@@ -127,6 +164,51 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
 
   test('creates Origin Access Control for the Function URL', () => {
     template.hasResource('AWS::CloudFront::OriginAccessControl', {});
+  });
+
+  test('does not forward viewer Authorization to the Function URL origin', () => {
+    template.hasResourceProperties('AWS::CloudFront::OriginRequestPolicy', {
+      OriginRequestPolicyConfig: Match.objectLike({
+        Name: 'jale-nextjs-origin-request',
+        CookiesConfig: {
+          CookieBehavior: 'all',
+        },
+        QueryStringsConfig: {
+          QueryStringBehavior: 'all',
+        },
+        HeadersConfig: Match.objectLike({
+          HeaderBehavior: 'allExcept',
+          Headers: ['host', 'authorization'],
+        }),
+      }),
+    });
+  });
+
+  test('strips viewer Authorization on frontend behaviors before OAC signing', () => {
+    template.hasResourceProperties('AWS::CloudFront::Function', {
+      Name: 'jale-strip-frontend-authorization',
+      FunctionCode: Match.stringLikeRegexp('delete request\\.headers\\.authorization'),
+    });
+    template.hasResourceProperties(
+      'AWS::CloudFront::Distribution',
+      Match.objectLike({
+        DistributionConfig: Match.objectLike({
+          DefaultCacheBehavior: Match.objectLike({
+            FunctionAssociations: Match.arrayWith([
+              Match.objectLike({ EventType: 'viewer-request' }),
+            ]),
+          }),
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/_next/static/*',
+              FunctionAssociations: Match.arrayWith([
+                Match.objectLike({ EventType: 'viewer-request' }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
   });
 
   test('creates Route 53 A and AAAA records', () => {

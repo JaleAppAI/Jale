@@ -384,9 +384,14 @@ export class ApiStack extends cdk.Stack {
     });
 
     // GET /employer/profile
+    // PATCH /employer/profile
     const employerResource = this.api.root.addResource('employer');
     const employerProfileResource = employerResource.addResource('profile');
     employerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(employerProfileLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerProfileLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

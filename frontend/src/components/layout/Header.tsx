@@ -11,6 +11,14 @@ export function Header() {
     const otherLocale = locale === 'en' ? 'es' : 'en';
     const { isAuthenticated, logout, userType } = useAuth();
 
+    const homeHref = !isAuthenticated
+        ? '/'
+        : userType === 'worker'
+            ? '/worker/home'
+            : userType === 'employer'
+                ? '/employer/dashboard'
+                : '/';
+
     return (
         <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/90 backdrop-blur-md">
             <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
@@ -21,6 +29,16 @@ export function Header() {
 
                 {/* Nav + actions */}
                 <div className="flex items-center gap-2">
+                    <Link
+                        href={homeHref}
+                        aria-label={t('home')}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
+                    >
+                        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" aria-hidden>
+                            <path d="M3 9.5L10 3l7 6.5V16a1 1 0 0 1-1 1h-3.5v-4.5h-5V17H4a1 1 0 0 1-1-1V9.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        <span className="hidden sm:inline">{t('home')}</span>
+                    </Link>
                     {isAuthenticated && userType === 'worker' && (
                         <nav className="hidden sm:flex items-center gap-1 mr-2">
                             <Link

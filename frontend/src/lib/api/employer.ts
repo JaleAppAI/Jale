@@ -32,6 +32,52 @@ export type ApplicantFilters = {
   min_experience?: number;
 };
 
+export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
+export type EmployerJobType = 'full-time' | 'part-time' | 'contract';
+export type CompanySize = '1-10' | '11-50' | '51-200' | '200+';
+
+export type EmployerProfileData = {
+  id: string;
+  user_type: 'employer';
+  email: string;
+  phone: string | null;
+  full_name: string | null;
+  tenant_id: string | null;
+  created_at: string;
+  company_name: string | null;
+  contact_name: string | null;
+  city: string | null;
+  service_area: string | null;
+  hiring_trades: EmployerTrade[];
+  typical_job_types: EmployerJobType[];
+  company_size: CompanySize | null;
+  company_description: string | null;
+};
+
+export type EmployerProfilePatch = Partial<Pick<EmployerProfileData,
+  'company_name' | 'contact_name' | 'phone' | 'city' | 'service_area' |
+  'hiring_trades' | 'typical_job_types' | 'company_size' | 'company_description'
+>>;
+
+export async function getEmployerProfile(token: string): Promise<EmployerProfileData> {
+  const res = await apiFetch('/employer/profile', {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  return res.json();
+}
+
+export async function updateEmployerProfile(
+  token: string,
+  patch: EmployerProfilePatch,
+): Promise<EmployerProfileData> {
+  const res = await apiFetch(
+    '/employer/profile',
+    { method: 'PATCH', body: JSON.stringify(patch) },
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_update_failed');
+  return res.json();
+}
+
 export async function getJobs(token: string): Promise<Job[]> {
   const res = await apiFetch('/employer/jobs', {}, token);
   if (!res.ok) throw new Error('fetch_failed');

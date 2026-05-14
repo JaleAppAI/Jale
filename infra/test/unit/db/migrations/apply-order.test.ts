@@ -21,6 +21,7 @@ const expectedBaselineMigrations = [
   '011_ai_profile_media.sql',
   '012_ai_trust_assessment.sql',
   '013_application_status_alignment.sql',
+  '014_employer_profiles.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -74,7 +75,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-012 readiness baseline order', () => {
+  it('locks the 001-014 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -175,6 +176,19 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY applications_employer_update');
   });
 
+  it('adds employer profiles in migration 014', () => {
+    const migration = readMigration('014_employer_profiles.sql');
+
+    expectTable(migration, 'employer_profiles');
+    expect(migration).toContain('company_name');
+    expect(migration).toContain('contact_name');
+    expect(migration).toContain('hiring_trades');
+    expect(migration).toContain('typical_job_types');
+    expect(migration).toContain('company_size');
+    expect(migration).toContain('ALTER TABLE employer_profiles FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('CREATE POLICY employer_profiles_self');
+  });
+
   it('documents canonical matching source fields in the architecture guide', () => {
     const architecture = fs.readFileSync(architecturePath, 'utf8');
 
@@ -190,7 +204,7 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-013 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-014 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

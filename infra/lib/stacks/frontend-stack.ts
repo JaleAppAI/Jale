@@ -124,13 +124,6 @@ export class FrontendStack extends cdk.Stack {
       invokeMode: lambda.InvokeMode.RESPONSE_STREAM,
     });
 
-    // Allow CloudFront (signed by OAC) to invoke the Function URL
-    this.nextjsFunction.addPermission('AllowCloudFrontInvoke', {
-      principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
-      action: 'lambda:InvokeFunctionUrl',
-      sourceArn: `arn:aws:cloudfront::${this.account}:distribution/*`,
-    });
-
     // ── CloudFront → Function URL Origin Access Control ─────────────
     const oac = new cloudfront.FunctionUrlOriginAccessControl(this, 'NextjsOac', {
       originAccessControlName: 'jale-nextjs-oac',
@@ -142,6 +135,51 @@ export class FrontendStack extends cdk.Stack {
       originAccessControl: oac,
     });
 
+    const nextjsOriginRequestPolicy = new cloudfront.OriginRequestPolicy(
+      this,
+      'NextjsOriginRequestPolicy',
+      {
+        originRequestPolicyName: 'jale-nextjs-origin-request',
+        comment: 'Forward SSR request data to Next.js without overriding OAC auth.',
+        cookieBehavior: cloudfront.OriginRequestCookieBehavior.all(),
+        queryStringBehavior: cloudfront.OriginRequestQueryStringBehavior.all(),
+        headerBehavior: cloudfront.OriginRequestHeaderBehavior.denyList(
+          'host',
+          'authorization',
+        ),
+      },
+    );
+
+    const stripFrontendAuthorization = new cloudfront.Function(
+      this,
+      'StripFrontendAuthorizationFunction',
+      {
+        functionName: 'jale-strip-frontend-authorization',
+        code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  delete request.headers.authorization;
+  return request;
+}
+`),
+      },
+    );
+
+    const rewriteApiPrefix = new cloudfront.Function(
+      this,
+      'RewriteApiPrefixFunction',
+      {
+        functionName: 'jale-rewrite-api-prefix',
+        code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  request.uri = request.uri.replace(/^\\/api(?=\\/|$)/, '') || '/';
+  return request;
+}
+`),
+      },
+    );
+
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {
       // Backend API → existing API Gateway
       '/api/*': {
@@ -150,6 +188,12 @@ export class FrontendStack extends cdk.Stack {
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        functionAssociations: [
+          {
+            function: rewriteApiPrefix,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
       },
       // Next.js static assets are content-hashed → safe to cache aggressively
       '/_next/static/*': {
@@ -157,6 +201,12 @@ export class FrontendStack extends cdk.Stack {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         compress: true,
+        functionAssociations: [
+          {
+            function: stripFrontendAuthorization,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
       },
     };
 
@@ -183,9 +233,15 @@ export class FrontendStack extends cdk.Stack {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         // HTML is server-rendered with potentially user-specific content; don't cache
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
-        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        originRequestPolicy: nextjsOriginRequestPolicy,
         compress: true,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        functionAssociations: [
+          {
+            function: stripFrontendAuthorization,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
       },
       additionalBehaviors,
       enableIpv6: true,
@@ -193,6 +249,22 @@ export class FrontendStack extends cdk.Stack {
       // PRICE_CLASS_100 = US/Canada/Europe edge locations only (cheaper).
       // Bump to PRICE_CLASS_ALL when launching to LATAM at scale.
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+    });
+
+    // Lambda Function URLs with AWS_IAM auth require both actions. CloudFront
+    // signs origin requests through OAC; these permissions scope that signer to
+    // this distribution and only to Function URL invocations.
+    this.nextjsFunction.addPermission('AllowCloudFrontInvokeFunctionUrl', {
+      principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
+      action: 'lambda:InvokeFunctionUrl',
+      sourceArn: this.distribution.distributionArn,
+      functionUrlAuthType: lambda.FunctionUrlAuthType.AWS_IAM,
+    });
+    this.nextjsFunction.addPermission('AllowCloudFrontInvokeFunction', {
+      principal: new iam.ServicePrincipal('cloudfront.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
+      sourceArn: this.distribution.distributionArn,
+      invokedViaFunctionUrl: true,
     });
 
     // ── Route 53 A + AAAA aliases ───────────────────────────────────

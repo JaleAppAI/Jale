@@ -97,15 +97,23 @@ export type Application = {
   applied_at: string;
 };
 
+export type WorkerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
+export type WorkerExperience = '0-1' | '2-4' | '5-9' | '10+';
+export type WorkerAvailability = 'full_time' | 'part_time' | 'weekends' | 'flexible';
+
 export type WorkerProfileData = {
   id: string;
   phone: string;
   full_name: string | null;
   skills: string[];
-  availability: 'immediate' | '2-weeks' | '1-month' | null;
+  availability: WorkerAvailability | null;
   years_experience: number | null;
   location: string | null;
   bio: string | null;
+  city?: string | null;
+  main_trade?: WorkerTrade | null;
+  main_trade_other?: string | null;
+  has_transportation?: boolean | null;
 };
 
 export type WorkerVaultDoc = {
@@ -116,6 +124,10 @@ export type WorkerVaultDoc = {
   uploaded_at: string;
   url: string;
 };
+
+export type WorkerProfilePatch = Partial<Omit<WorkerProfileData, 'id' | 'phone' | 'years_experience'> & {
+  years_experience: number | WorkerExperience | null;
+}>;
 
 export async function getJobs(
   token: string,
@@ -156,7 +168,7 @@ export async function getApplications(token: string): Promise<{ applications: Ap
 
 export async function updateWorkerProfile(
   token: string,
-  patch: Partial<Pick<WorkerProfileData, 'full_name' | 'skills' | 'availability' | 'years_experience' | 'location' | 'bio'>>,
+  patch: WorkerProfilePatch,
 ): Promise<WorkerProfileData> {
   const res = await apiFetch('/worker/profile', { method: 'PATCH', body: JSON.stringify(patch) }, token);
   if (!res.ok) throw new Error((await res.json()).error ?? 'update_failed');

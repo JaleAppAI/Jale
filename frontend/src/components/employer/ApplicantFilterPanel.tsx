@@ -71,9 +71,10 @@ export function ApplicantFilterPanel({ filters, onChange }: Props) {
           className={SELECT_CLASS}
         >
           <option value="">{t('filter.availability_any')}</option>
-          <option value="immediate">{t('filter.availability_immediate')}</option>
-          <option value="2-weeks">{t('filter.availability_2weeks')}</option>
-          <option value="1-month">{t('filter.availability_1month')}</option>
+          <option value="full_time">{t('filter.availability_full_time')}</option>
+          <option value="part_time">{t('filter.availability_part_time')}</option>
+          <option value="weekends">{t('filter.availability_weekends')}</option>
+          <option value="flexible">{t('filter.availability_flexible')}</option>
         </select>
       </div>
 
