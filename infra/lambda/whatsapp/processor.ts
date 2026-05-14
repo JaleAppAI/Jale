@@ -37,6 +37,13 @@ import {
   upsertWorkerProfileFromUsers,
 } from './lib/profile-flow';
 import {
+  buildLegalInteractivePrompt,
+  buildMediaInteractivePrompt,
+  buildProfileInteractivePrompt,
+  buildTrustInteractivePrompt,
+  type InteractivePrompt,
+} from './lib/interactive-templates';
+import {
   isGreetingKeyword,
   isJobsKeyword,
   isHelpCommand,
@@ -45,6 +52,10 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseLegalReplyPayload,
+  parseMediaPayload,
+  parseProfilePayloadAnswer,
+  parseTrustPayloadAnswer,
   parseTypedJobAction,
   parseProfileAnswer,
   parseTrustAnswer,
@@ -169,6 +180,80 @@ async function reply(
   vars?: Record<string, string>,
 ): Promise<void> {
   await queueReply(client, msg.messageSid, msg.from, key, lang, vars);
+}
+
+async function queueInteractivePrompt(
+  client: PoolClient,
+  inboundMessageSid: string,
+  to: string,
+  prompt: InteractivePrompt,
+): Promise<void> {
+  const whatsappNumber = to.replace(/^whatsapp:/, '');
+  await client.query(
+    `INSERT INTO whatsapp_outbox
+        (inbound_message_sid, sequence, whatsapp_number, content_template, content_variables)
+     VALUES (
+       $1::varchar,
+       (SELECT COALESCE(MAX(sequence), 0) + 1
+          FROM whatsapp_outbox
+         WHERE inbound_message_sid = $1::varchar),
+       $2, $3, $4
+     )`,
+    [
+      inboundMessageSid,
+      whatsappNumber,
+      prompt.templateName,
+      {
+        ...prompt.variables,
+        __fallback_body: prompt.fallbackBody,
+      },
+    ],
+  );
+}
+
+async function queueLegalPrompt(
+  client: PoolClient,
+  inboundMessageSid: string,
+  to: string,
+  lang: Lang,
+): Promise<void> {
+  await queueInteractivePrompt(
+    client,
+    inboundMessageSid,
+    to,
+    buildLegalInteractivePrompt(lang, 'https://jale.app/legal/tos'),
+  );
+}
+
+async function queueMediaPrompt(
+  client: PoolClient,
+  inboundMessageSid: string,
+  to: string,
+  lang: Lang,
+  prompt: Parameters<typeof buildMediaInteractivePrompt>[0],
+): Promise<void> {
+  await queueInteractivePrompt(
+    client,
+    inboundMessageSid,
+    to,
+    buildMediaInteractivePrompt(prompt, lang),
+  );
+}
+
+async function queueTrustPrompt(
+  client: PoolClient,
+  inboundMessageSid: string,
+  to: string,
+  step: number,
+  trade: string,
+  lang: Lang,
+): Promise<void> {
+  await queueInteractivePrompt(
+    client,
+    inboundMessageSid,
+    to,
+    buildTrustInteractivePrompt(step, trade, lang),
+  );
 }
 
 async function markCompleted(
@@ -360,6 +445,10 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const from = params.From; // "whatsapp:+15125551234"
   const body = params.Body ?? '';
   const buttonPayload = params.ButtonPayload; // present on template button taps
+  const interactivePayload =
+    buttonPayload
+    ?? extractInteractivePayload(params.InteractiveData)
+    ?? extractInteractivePayload(params.ChannelMetadata);
   const numMedia = parseInt(params.NumMedia ?? '0', 10);
   const mediaUrl = params.MediaUrl0;
   const mediaContentType = params.MediaContentType0;
@@ -442,6 +531,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
       await routeMessage(client, conv, {
         body,
         buttonPayload,
+        interactivePayload,
         messageSid,
         from,
         numMedia,
@@ -487,11 +577,41 @@ async function processRecord(record: SQSRecord): Promise<void> {
 interface IncomingMessage {
   body: string;
   buttonPayload: string | undefined;
+  interactivePayload: string | undefined;
   messageSid: string;
   from: string;
   numMedia: number;
   mediaUrl: string | undefined;
   mediaContentType: string | undefined;
+}
+
+function extractInteractivePayload(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  try {
+    return findKnownPayload(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+}
+
+function findKnownPayload(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return /^(legal|profile|trust|media):/.test(value) ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findKnownPayload(item);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (value && typeof value === 'object') {
+    for (const nested of Object.values(value as Record<string, unknown>)) {
+      const found = findKnownPayload(nested);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
 
 async function setWorkerRlsContextByUserId(
@@ -514,6 +634,7 @@ async function handleAwaitingMediaPhoto(
   msg: IncomingMessage,
 ): Promise<void> {
   const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+  const mediaPayload = parseMediaPayload(msg.interactivePayload);
 
   // If a photo was already received, we are waiting for the classification reply (1 or 2).
   const pendingPhotoId = conv.state_context?.pending_media_photo_id;
@@ -522,7 +643,23 @@ async function handleAwaitingMediaPhoto(
     await setWorkerRlsContextByUserId(client, conv.user_id);
 
     const bodyTrimmed = msg.body.trim();
-    if (bodyTrimmed === '1' || /^profile/i.test(bodyTrimmed)) {
+    if (
+      mediaPayload?.kind === 'photo_type'
+      && mediaPayload.value === 'profile_photo'
+    ) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else if (
+      mediaPayload?.kind === 'photo_type'
+      && mediaPayload.value === 'work_sample'
+    ) {
+      await client.query(
+        `UPDATE worker_profile_media SET media_type = 'work_sample' WHERE id = $1`,
+        [pendingPhotoId],
+      );
+    } else if (bodyTrimmed === '1' || /^profile/i.test(bodyTrimmed)) {
       await client.query(
         `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
         [pendingPhotoId],
@@ -534,7 +671,7 @@ async function handleAwaitingMediaPhoto(
       );
     } else {
       // Invalid classification response — re-prompt
-      await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+      await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_type');
       return;
     }
     // Classification done — advance to voice step
@@ -543,17 +680,17 @@ async function handleAwaitingMediaPhoto(
       conversation_state: 'awaiting_media_voice',
       last_processed_message_sid: messageSid,
     });
-    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
     return;
   }
 
   // Worker skipped or sent text (no photo yet) — proceed to voice step
-  if (numMedia === 0 || isSkipKeyword(msg.body)) {
+  if (mediaPayload?.kind === 'photo' || numMedia === 0 || isSkipKeyword(msg.body)) {
     await updateConversation(client, conv.id, {
       conversation_state: 'awaiting_media_voice',
       last_processed_message_sid: messageSid,
     });
-    await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+    await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
     return;
   }
 
@@ -595,7 +732,7 @@ async function handleAwaitingMediaPhoto(
     },
     last_processed_message_sid: messageSid,
   });
-  await queueReply(client, messageSid, from, 'ask_media_photo_type', conv.language);
+  await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_type');
 }
 
 // ── awaiting_media_voice — optional voice message step ──────────
@@ -639,11 +776,16 @@ async function handleAwaitingMediaVoice(
   msg: IncomingMessage,
 ): Promise<void> {
   const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+  const mediaPayload = parseMediaPayload(msg.interactivePayload);
 
   // Worker skipped or sent text — go straight to text questions
   if (numMedia === 0) {
+    if (mediaPayload?.kind === 'voice' && mediaPayload.value === 'text') {
+      await enterTextProfileFromVoiceChoice(client, conv, msg);
+      return;
+    }
     if (!msg.body.trim() || wantsVoiceProfile(msg.body)) {
-      await queueReply(client, messageSid, from, 'ask_media_voice', conv.language);
+      await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
       return;
     }
     await enterTextProfileFromVoiceChoice(client, conv, msg);
@@ -1031,9 +1173,7 @@ async function handleAwaitingOtp(
     // Mutate in-memory so any downstream helper that reads conv.user_id gets
     // the right value. (Post-route stamp also needs `conv`; staying safe.)
     conv.user_id = userId;
-    await reply(client, msg,'legal_prompt', conv.language, {
-      tos_url: 'https://jale.app/legal/tos',
-    });
+    await queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
   } else {
     // Already compliant — jump to profile builder or idle depending on profile completeness.
     await updateConversation(client, conv.id, {
@@ -1211,7 +1351,9 @@ async function handleAwaitingLegal(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<void> {
-  if (isDecline(msg.body, conv.language)) {
+  const legalPayload = parseLegalReplyPayload(msg.interactivePayload);
+
+  if (legalPayload === 'decline' || isDecline(msg.body, conv.language)) {
     await updateConversation(client, conv.id, {
       conversation_state: 'legal_declined',
       last_processed_message_sid: msg.messageSid,
@@ -1220,12 +1362,10 @@ async function handleAwaitingLegal(
     return;
   }
 
-  if (!isAccept(msg.body, conv.language)) {
+  if (legalPayload !== 'accept' && !isAccept(msg.body, conv.language)) {
     // Re-prompt with legal message (no state change; post-route stamp covers
     // idempotency)
-    await reply(client, msg,'legal_prompt', conv.language, {
-      tos_url: 'https://jale.app/legal/tos',
-    });
+    await queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
     return;
   }
 
@@ -1299,7 +1439,7 @@ async function enterProfileBuilderOrIdle(
     last_processed_message_sid: messageSid,
   });
   await queueReply(client, messageSid, from, 'legal_accepted', conv.language);
-  await queueReply(client, messageSid, from, 'ask_media_photo', conv.language);
+  await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_skip');
 }
 
 interface WorkerProfileSummary {
@@ -1577,6 +1717,11 @@ async function askProfileQuestion(
   field: ProfileField,
   lang: Lang,
 ): Promise<void> {
+  const prompt = buildProfileInteractivePrompt(field, lang);
+  if (prompt) {
+    await queueInteractivePrompt(client, inboundMessageSid, to, prompt);
+    return;
+  }
   await queueText(client, inboundMessageSid, to, profileQuestionBody(field, lang));
 }
 
@@ -1632,7 +1777,8 @@ async function handleBuildingProfile(
   const collected = conv.state_context?.collected ?? {};
   const fieldSids = conv.state_context?.field_sids ?? {};
 
-  const answer = parseProfileAnswer(pending, msg.body);
+  const answer = parseProfilePayloadAnswer(pending, msg.interactivePayload)
+    ?? parseProfileAnswer(pending, msg.body);
   if (answer === null) {
     // Invalid answer: re-prompt current question. No state change; post-route
     // stamp records the sid so an SQS retry of this same wrong answer won't
@@ -1798,7 +1944,7 @@ async function enterTrustSignalOrIdle(
       state_context: { trust_step: 0, trust_answers: [] },
       last_processed_message_sid: messageSid,
     });
-    await queueText(client, messageSid, from, buildTrustQuestion(0, trade, conv.language));
+    await queueTrustPrompt(client, messageSid, from, 0, trade, conv.language);
     return;
   }
 
@@ -1833,15 +1979,11 @@ async function handleBuildingTrustSignal(
   const step = conv.state_context?.trust_step ?? 0;
   const answers = conv.state_context?.trust_answers ?? [];
   const trade = await loadTradeFromDb(client, conv.user_id);
-  const answer = parseTrustAnswer(step, trade, msg.body);
+  const answer = parseTrustPayloadAnswer(step, trade, msg.interactivePayload)
+    ?? parseTrustAnswer(step, trade, msg.body);
 
   if (!answer) {
-    await queueText(
-      client,
-      msg.messageSid,
-      msg.from,
-      buildTrustQuestion(step, trade, conv.language),
-    );
+    await queueTrustPrompt(client, msg.messageSid, msg.from, step, trade, conv.language);
     return;
   }
 
@@ -1855,12 +1997,7 @@ async function handleBuildingTrustSignal(
       },
       last_processed_message_sid: msg.messageSid,
     });
-    await queueText(
-      client,
-      msg.messageSid,
-      msg.from,
-      buildTrustQuestion(step + 1, trade, conv.language),
-    );
+    await queueTrustPrompt(client, msg.messageSid, msg.from, step + 1, trade, conv.language);
     return;
   }
 

@@ -549,6 +549,185 @@ describe('Processor Lambda', () => {
   });
 
   describe('Trust signals and typed jobs', () => {
+    it('accepts legal terms from a rich quick-reply payload', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-legal-button' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'awaiting_legal',
+            user_id: 'user-1',
+            language: 'en',
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] }) // SELECT user
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users consent
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT tos log
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT privacy log
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_photo
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT legal_accepted
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_media_photo
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(makeSqsEvent({
+        MessageSid: 'SM-legal-button',
+        From: 'whatsapp:+15125551234',
+        Body: '',
+        ButtonPayload: 'legal:accept',
+      }), {} as any, {} as any);
+
+      expect(findQueryByPattern(/UPDATE users\s+SET tos_version/i)).toBeDefined();
+      const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('awaiting_media_photo')
+      );
+      expect(convUpdate).toBeDefined();
+      const mediaPrompt = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('onboarding_photo_skip_en')
+      );
+      expect(mediaPrompt).toBeDefined();
+    });
+
+    it('re-prompts legal terms as a rich quick-reply prompt', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-legal-reprompt' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'awaiting_legal',
+            user_id: 'user-1',
+            language: 'en',
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT legal prompt
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(makeSqsEvent({
+        MessageSid: 'SM-legal-reprompt',
+        From: 'whatsapp:+15125551234',
+        Body: 'maybe',
+      }), {} as any, {} as any);
+
+      const legalPrompt = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('onboarding_legal_en')
+      );
+      expect(legalPrompt).toBeDefined();
+    });
+
+    it('accepts profile answers from matching rich payloads', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile-button' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'building_profile',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: {
+              pending_field: 'has_transportation',
+              collected: {
+                full_name: 'Luis Worker',
+                city: 'Denver',
+                main_trade: 'electrician',
+                years_experience: '2-4',
+              },
+              field_sids: {},
+            },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation next field
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_availability
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(makeSqsEvent({
+        MessageSid: 'SM-profile-button',
+        From: 'whatsapp:+15125551234',
+        Body: '',
+        ButtonPayload: 'profile:has_transportation:true',
+      }), {} as any, {} as any);
+
+      const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).some((value) =>
+          typeof value === 'string' && value.includes('"has_transportation":true')
+        )
+      );
+      expect(convUpdate).toBeDefined();
+      const stateJson = (convUpdate![1] as unknown[]).find((value) =>
+        typeof value === 'string' && value.includes('pending_field')
+      );
+      expect(JSON.parse(String(stateJson))).toMatchObject({
+        pending_field: 'availability',
+        collected: { has_transportation: true },
+      });
+      const templateInsert = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('onboarding_availability_en')
+      );
+      expect(templateInsert).toBeDefined();
+    });
+
+    it('re-prompts trust questions as rich quick-reply prompts', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-invalid' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'building_trust_signal',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: { trust_step: 0, trust_answers: [] },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals exists
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals_completed_at exists
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT trust prompt
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(makeSqsEvent({
+        MessageSid: 'SM-trust-invalid',
+        From: 'whatsapp:+15125551234',
+        Body: 'bad',
+      }), {} as any, {} as any);
+
+      const trustPrompt = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('trust_choice_en')
+      );
+      expect(trustPrompt).toBeDefined();
+    });
+
     it('writes final trust signals and moves the conversation to idle', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -1070,7 +1249,11 @@ describe('awaiting_media_photo state', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM001' }] }) // claim
       .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
         rowCount: 1,
-        rows: [convRow({ conversation_state: 'awaiting_media_photo', user_id: 'user-1' })],
+        rows: [convRow({
+          conversation_state: 'awaiting_media_photo',
+          user_id: 'user-1',
+          language: 'en',
+        })],
       })
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_media_voice
@@ -1092,6 +1275,13 @@ describe('awaiting_media_photo state', () => {
       && (params as unknown[]).includes('awaiting_media_voice')
     );
     expect(convUpdate).toBeDefined();
+    const voicePrompt = mockQuery.mock.calls.find(([sql, params]) =>
+      /INSERT INTO whatsapp_outbox/i.test(sql as string)
+      && /content_template/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('onboarding_voice_choice_en')
+    );
+    expect(voicePrompt).toBeDefined();
   });
 
   test('valid photo triggers S3 upload and asks classification', async () => {
@@ -1132,8 +1322,11 @@ describe('awaiting_media_photo state', () => {
       /INSERT INTO worker_profile_media/.test(sql)
     );
     expect(mediaInsert).toBeDefined();
-    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /INSERT INTO whatsapp_outbox/.test(sql)
+    const outboxInsert = mockQuery.mock.calls.find(([sql, params]) =>
+      /INSERT INTO whatsapp_outbox/.test(sql as string)
+      && /content_template/i.test(sql as string)
+      && Array.isArray(params)
+      && (params as unknown[]).includes('onboarding_photo_type_es')
     );
     expect(outboxInsert).toBeDefined();
   });

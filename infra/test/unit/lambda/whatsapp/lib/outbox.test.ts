@@ -59,4 +59,28 @@ describe('whatsapp outbox templates', () => {
     expect(sentBody).toContain('ContentVariables=');
     expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1']);
   });
+
+  it('falls back to text when an in-session template SID is not configured', async () => {
+    query
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'outbox-2',
+          sequence: 1,
+          whatsapp_number: '+15125551234',
+          body: null,
+          content_template: 'onboarding_trade_en',
+          content_variables: {
+            __fallback_body: 'What is your main trade?\n\n1. Electrician',
+          },
+        }],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+    await sendPendingOutbox({ query } as any, 'SM-template-fallback');
+
+    const sentBody = mockFetch.mock.calls[0][1].body as string;
+    expect(sentBody).toContain('Body=What+is+your+main+trade');
+    expect(sentBody).not.toContain('ContentSid=');
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2']);
+  });
 });

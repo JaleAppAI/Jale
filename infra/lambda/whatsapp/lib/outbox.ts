@@ -6,6 +6,7 @@ import {
 import type { TwilioSecret } from './twilio';
 
 const secretsManager = new SecretsManagerClient({});
+const FALLBACK_BODY_KEY = '__fallback_body';
 
 let cachedTwilio: TwilioSecret | null = null;
 let twilioCacheExp = 0;
@@ -41,10 +42,16 @@ async function sendTwilioMessage(to: string, row: {
   if (row.content_template) {
     const contentSid = secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>];
     if (!contentSid) {
-      throw new Error(`Twilio template missing: ${row.content_template}`);
+      const fallbackBody = row.content_variables?.[FALLBACK_BODY_KEY];
+      if (!fallbackBody) {
+        throw new Error(`Twilio template missing: ${row.content_template}`);
+      }
+      formValues.Body = fallbackBody;
+    } else {
+      const { [FALLBACK_BODY_KEY]: _fallback, ...contentVariables } = row.content_variables ?? {};
+      formValues.ContentSid = contentSid;
+      formValues.ContentVariables = JSON.stringify(contentVariables);
     }
-    formValues.ContentSid = contentSid;
-    formValues.ContentVariables = JSON.stringify(row.content_variables ?? {});
   } else {
     formValues.Body = row.body ?? '';
   }
