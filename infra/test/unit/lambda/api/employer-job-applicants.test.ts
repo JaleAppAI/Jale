@@ -41,6 +41,7 @@ describe('employer-job-applicants Lambda', () => {
     expect(res.statusCode).toBe(200);
     const applicantQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
     expect(applicantQuery).toContain('FROM worker_skills ws');
+    expect(applicantQuery).toContain('WHERE ws.worker_id = ja.worker_id');
     expect(applicantQuery).not.toContain('wp.skills');
   });
 

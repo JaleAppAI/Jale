@@ -76,6 +76,9 @@ describe('worker-jobs-apply', () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.id).toBe('a1');
+    const applicationInsert = calls.find(c => c.includes('INSERT INTO job_applications')) as string;
+    expect(applicationInsert).toContain('(job_id, worker_id, status)');
+    expect(applicationInsert).toContain("'pending'");
     expect(calls.some(c => c.includes('INSERT INTO worker_documents'))).toBe(true);
   });
 });

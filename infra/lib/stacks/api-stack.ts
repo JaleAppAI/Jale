@@ -211,6 +211,20 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerJobApplicantsLambda.function);
 
+    // Employer application status update — employer auth, DB access
+    const employerApplicationStatusUpdateLambda = new JaleLambdaFunction(this, 'EmployerApplicationStatusUpdateLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-application-status-update.ts'),
+      description: 'Employer application status update endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerApplicationStatusUpdateLambda.function);
+
     // Token refresh — no auth (refresh token is the credential), no DB
     const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
       entry: path.join(__dirname, '../../lambda/auth/token-refresh.ts'),
@@ -399,6 +413,11 @@ export class ApiStack extends cdk.Stack {
 
     const employerJobApplicantsResource = employerJobResource.addResource('applicants');
     employerJobApplicantsResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobApplicantsLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const employerJobApplicantResource = employerJobApplicantsResource.addResource('{workerId}');
+    employerJobApplicantResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerApplicationStatusUpdateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

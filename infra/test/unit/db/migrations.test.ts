@@ -35,6 +35,7 @@ describe('database migrations', () => {
       '010',
       '011',
       '012',
+      '013',
     ]);
   });
 
@@ -45,6 +46,8 @@ describe('database migrations', () => {
     expect(sql.match(/CREATE TABLE(?: IF NOT EXISTS)? jobs\s*\(/gi)).toHaveLength(1);
     expect(sql.match(/CREATE TABLE(?: IF NOT EXISTS)? job_applications\s*\(/gi)).toHaveLength(1);
     expect(applicationsTable).toContain('worker_id  UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT');
+    expect(applicationsTable).toContain("DEFAULT 'pending'");
+    expect(applicationsTable).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
     expect(applicationsTable).not.toMatch(/\buser_id\b/i);
   });
 

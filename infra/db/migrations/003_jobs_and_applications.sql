@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS job_applications (
   id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   job_id     UUID        NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
   worker_id  UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  status     TEXT        NOT NULL DEFAULT 'submitted'
-             CHECK (status IN ('submitted', 'viewed', 'contacted', 'hired', 'rejected')),
+  status     TEXT        NOT NULL DEFAULT 'pending'
+             CONSTRAINT job_applications_status_check CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected')),
   applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -44,9 +44,9 @@ CREATE TABLE IF NOT EXISTS job_applications (
 
 CREATE INDEX IF NOT EXISTS idx_job_applications_job_id    ON job_applications(job_id);
 CREATE INDEX IF NOT EXISTS idx_job_applications_worker_id ON job_applications(worker_id);
-CREATE INDEX IF NOT EXISTS idx_job_applications_status_submitted
+CREATE INDEX IF NOT EXISTS idx_job_applications_status_pending
   ON job_applications(job_id, applied_at DESC)
-  WHERE status = 'submitted';
+  WHERE status = 'pending';
 
 CREATE TRIGGER job_applications_updated_at
   BEFORE UPDATE ON job_applications
@@ -111,6 +111,21 @@ CREATE POLICY applications_worker_insert
 CREATE POLICY applications_employer_select
   ON job_applications FOR SELECT
   USING (
+    job_id IN (
+      SELECT id FROM jobs
+      WHERE employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true))
+    )
+  );
+
+CREATE POLICY applications_employer_update
+  ON job_applications FOR UPDATE
+  USING (
+    job_id IN (
+      SELECT id FROM jobs
+      WHERE employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true))
+    )
+  )
+  WITH CHECK (
     job_id IN (
       SELECT id FROM jobs
       WHERE employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true))

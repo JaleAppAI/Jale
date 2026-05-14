@@ -78,11 +78,11 @@ export const handler = async (
     }
 
     const result = await client.query(
-      `SELECT wp.user_id AS worker_id, u.full_name, u.phone,
+      `SELECT ja.worker_id, u.full_name, u.phone,
               ARRAY(
                 SELECT ws.skill
                 FROM worker_skills ws
-                WHERE ws.worker_id = wp.user_id
+                WHERE ws.worker_id = ja.worker_id
                 ORDER BY ws.skill
               ) AS skills,
               wp.availability,

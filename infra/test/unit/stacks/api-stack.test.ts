@@ -134,6 +134,12 @@ describe('ApiStack', () => {
     });
   });
 
+  test('Employer application status update Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer application status update endpoint',
+    });
+  });
+
   // Task 12 — new worker marketplace route assertions
   test('Worker jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
@@ -193,5 +199,15 @@ describe('ApiStack', () => {
         Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
       }),
     });
+  });
+
+  test('Employer PATCH routes use EmployerAuthorizer', () => {
+    template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
+      HttpMethod: 'PATCH',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    }, 2);
   });
 });

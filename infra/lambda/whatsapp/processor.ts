@@ -2018,7 +2018,7 @@ async function handleJobAction(
   if (action === 'accept') {
     await client.query(
       `INSERT INTO job_applications (job_id, worker_id, status)
-       VALUES ($1, $2, 'submitted')
+       VALUES ($1, $2, 'pending')
        ON CONFLICT (job_id, worker_id) DO NOTHING`,
       [jobId, conv.user_id],
     );

@@ -10,15 +10,17 @@ export type Job = {
   created_at: string;
 };
 
+export type ApplicationStatus = 'pending' | 'reviewed' | 'hired' | 'rejected';
+
 export type Applicant = {
   application_id: string;
   worker_id: string;
-  full_name: string;
-  phone: string;
-  status: 'pending' | 'reviewed' | 'hired' | 'rejected';
+  full_name: string | null;
+  phone: string | null;
+  status: ApplicationStatus;
   applied_at: string;
   skills: string[];
-  availability: 'immediate' | '2-weeks' | '1-month' | null;
+  availability: string | null;
   years_experience: number | null;
   location: string | null;
 };
@@ -101,14 +103,14 @@ export interface WorkerDocument {
 
 export interface WorkerProfile {
   worker_id: string;
-  full_name: string;
-  phone: string;
-  skills: string[];
-  availability: string;
-  years_experience: number;
-  location: string;
-  application_status: 'pending' | 'reviewed' | 'hired' | 'rejected';
-  applied_at: string;
+  full_name: string | null;
+  phone: string | null;
+  skills: string[] | null;
+  availability: string | null;
+  years_experience: number | null;
+  location: string | null;
+  application_status: ApplicationStatus;
+  applied_at: string | null;
 }
 
 export async function getWorkerProfile(
@@ -122,6 +124,24 @@ export async function getWorkerProfile(
     token,
   );
   if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  return res.json();
+}
+
+export async function updateApplicantStatus(
+  token: string,
+  jobId: string,
+  workerId: string,
+  status: ApplicationStatus,
+): Promise<{ status: ApplicationStatus }> {
+  const res = await apiFetch(
+    `/employer/jobs/${jobId}/applicants/${workerId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    },
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'status_update_failed');
   return res.json();
 }
 

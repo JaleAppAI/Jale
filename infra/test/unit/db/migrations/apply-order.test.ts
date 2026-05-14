@@ -20,6 +20,7 @@ const expectedBaselineMigrations = [
   '010_matching_write_semantics.sql',
   '011_ai_profile_media.sql',
   '012_ai_trust_assessment.sql',
+  '013_application_status_alignment.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -156,6 +157,24 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY users_ai_score_update');
   });
 
+  it('aligns application statuses in migration 013', () => {
+    const migration = readMigration('013_application_status_alignment.sql');
+    const oldConstraintDropIndex = migration.indexOf('pg_get_constraintdef(con.oid) LIKE \'%submitted%\'');
+    const namedConstraintDropIndex = migration.indexOf('DROP CONSTRAINT IF EXISTS job_applications_status_check');
+    const statusUpdateIndex = migration.indexOf('UPDATE job_applications');
+
+    expect(migration).toContain("WHEN 'submitted' THEN 'pending'");
+    expect(migration).toContain("WHEN 'viewed' THEN 'reviewed'");
+    expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
+    expect(oldConstraintDropIndex).toBeGreaterThanOrEqual(0);
+    expect(namedConstraintDropIndex).toBeGreaterThanOrEqual(0);
+    expect(statusUpdateIndex).toBeGreaterThan(namedConstraintDropIndex);
+    expect(migration).toContain("ALTER COLUMN status SET DEFAULT 'pending'");
+    expect(migration).toContain('idx_job_applications_status_pending');
+    expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
+    expect(migration).toContain('CREATE POLICY applications_employer_update');
+  });
+
   it('documents canonical matching source fields in the architecture guide', () => {
     const architecture = fs.readFileSync(architecturePath, 'utf8');
 
@@ -171,7 +190,7 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-007 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-013 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
