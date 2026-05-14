@@ -24,7 +24,7 @@ export class LegalStack extends cdk.Stack {
 
     // ── Context values ──
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
-    const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
+    const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
     const envName = this.node.tryGetContext('environment') ?? 'dev';
     const isDev = envName === 'dev';
 

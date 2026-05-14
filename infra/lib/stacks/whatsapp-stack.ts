@@ -54,7 +54,7 @@ export class WhatsAppStack extends cdk.Stack {
     // ── Context values ──────────────────────────────────────────
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
-      this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
+      this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
 
     // ── Secrets Manager references ──────────────────────────────
     // NOTE: fromSecretNameV2 is an imported reference — CDK synth/deploy

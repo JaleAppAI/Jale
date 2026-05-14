@@ -35,6 +35,7 @@ describe('database migrations', () => {
       '010',
       '011',
       '012',
+      '013',
     ]);
   });
 
@@ -75,5 +76,14 @@ describe('database migrations', () => {
       expect(script).not.toContain('006_whatsapp_reliability.sql');
       expect(script).not.toContain('007_trust_signal_layer.sql');
     }
+  });
+
+  it('keeps WhatsApp template outbox migration independent from matching materialization tables', () => {
+    const sql013 = fs.readFileSync(path.join(migrationsDir, '013_whatsapp_template_outbox.sql'), 'utf8');
+
+    expect(sql013).toContain('content_template');
+    expect(sql013).toContain('content_variables');
+    expect(sql013).toContain("to_regclass('public.job_candidates')");
+    expect(sql013).toContain('whatsapp_read_ranked_jobs');
   });
 });

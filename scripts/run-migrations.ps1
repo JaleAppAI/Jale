@@ -53,7 +53,8 @@ $MigrationFiles = @(
     '009_location_foundation.sql',
     '010_matching_write_semantics.sql',
     '011_ai_profile_media.sql',
-    '012_ai_trust_assessment.sql'
+    '012_ai_trust_assessment.sql',
+    '013_whatsapp_template_outbox.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

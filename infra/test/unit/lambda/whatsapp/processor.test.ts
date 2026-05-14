@@ -63,6 +63,11 @@ jest.mock('../../../../lambda/lib/db', () => ({
   setRlsContext: jest.fn(),
 }));
 
+const mockListMatchedJobsForWorker = jest.fn();
+jest.mock('../../../../lambda/lib/job-matching', () => ({
+  listMatchedJobsForWorker: mockListMatchedJobsForWorker,
+}));
+
 const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
@@ -129,6 +134,10 @@ describe('Processor Lambda', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockQuery.mockReset();
+    mockConnect.mockReset();
+    mockRelease.mockReset();
+    mockListMatchedJobsForWorker.mockReset();
     process.env = {
       ...originalEnv,
       WORKER_POOL_ID: 'pool-abc',
@@ -373,8 +382,6 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-twilio-fail' }] }) // claim
         .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'idle' })] }) // SELECT conv FOR UPDATE
-        // handleIdle for "Trabajos": empty jobs list
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT from jobs
         // queueReply → INSERT whatsapp_outbox (jobs_none)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] })
         // UPDATE whatsapp_processed_messages status='db_committed'
@@ -880,6 +887,11 @@ describe('Processor Lambda', () => {
     });
 
     it('stores recent job ids when an idle worker asks for jobs', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+        { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso', pay: '$22/hr' },
+      ]);
+
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-jobs' }] }) // claim
@@ -887,15 +899,10 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })],
         })
-        .mockResolvedValueOnce({
-          rowCount: 2,
-          rows: [
-            { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
-            { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso', pay: '$22/hr' },
-          ],
-        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox job list
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 2
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
@@ -922,6 +929,81 @@ describe('Processor Lambda', () => {
         'job-1',
         'job-2',
       ]);
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+    });
+
+    it('queues one job alert template per matched job from the shared matcher', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-drywall', title: 'Drywall finisher', company: 'FinishPro', location: 'El Paso, TX 79928', pay: '$30/hr' },
+        { id: 'job-sheetrock', title: 'Sheetrock hanger', company: 'BoardCo', location: 'El Paso, TX 79928', pay: '$28/hr' },
+        { id: 'job-patch', title: 'Patch and texture tech', company: 'RepairCo', location: 'El Paso, TX 79936', pay: '$26/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-ranked-jobs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', user_id: 'worker-1', language: 'en' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 2
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 3
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-ranked-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'worker-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+
+      const update = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && typeof params[1] === 'string'
+        && (params[1] as string).includes('recent_jobs')
+        && (params[1] as string).includes('job-drywall')
+      );
+      expect(JSON.parse((update![1] as unknown[])[1] as string).recent_jobs).toEqual([
+        'job-drywall',
+        'job-sheetrock',
+        'job-patch',
+      ]);
+
+      const templateInserts = mockQuery.mock.calls.filter(([sql]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+      );
+      expect(templateInserts).toHaveLength(3);
+      expect(templateInserts[0][1]).toEqual(expect.arrayContaining([
+        'SM-ranked-jobs',
+        '+15125551234',
+        'job_alert_en',
+        expect.objectContaining({ '1': 'Drywall finisher', '5': 'job-job-drywall' }),
+      ]));
+      expect(templateInserts[1][1]).toEqual(expect.arrayContaining([
+        'SM-ranked-jobs',
+        '+15125551234',
+        'job_alert_en',
+        expect.objectContaining({ '1': 'Sheetrock hanger', '5': 'job-job-sheetrock' }),
+      ]));
     });
 
     it('typed accept uses the stored recent job id', async () => {

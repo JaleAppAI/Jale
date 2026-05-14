@@ -31,7 +31,7 @@ export class ApiStack extends cdk.Stack {
     super(scope, id, props);
 
     // ── Context values ──
-    const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'http://localhost:3000';
+    const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const stageName = this.node.tryGetContext('environment') ?? 'dev';
 

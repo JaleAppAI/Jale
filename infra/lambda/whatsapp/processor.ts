@@ -19,6 +19,7 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import { getDbPool, setRlsContext } from '../lib/db';
+import { listMatchedJobsForWorker } from '../lib/job-matching';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
 import { sendPendingOutbox } from './lib/outbox';
 import {
@@ -126,6 +127,36 @@ async function queueReply(
   vars?: Record<string, string>,
 ): Promise<void> {
   await queueText(client, inboundMessageSid, to, t(key, lang, vars));
+}
+
+async function queueJobTemplate(
+  client: PoolClient,
+  inboundMessageSid: string,
+  to: string,
+  lang: Lang,
+  job: { id: string; title: string; company: string; location: string; pay: string },
+): Promise<void> {
+  const whatsappNumber = to.replace(/^whatsapp:/, '');
+  const templateName = lang === 'en' ? 'job_alert_en' : 'job_alert_es';
+  const variables = {
+    '1': job.title,
+    '2': job.company,
+    '3': job.location,
+    '4': job.pay,
+    '5': `job-${job.id}`,
+  };
+  await client.query(
+    `INSERT INTO whatsapp_outbox
+        (inbound_message_sid, sequence, whatsapp_number, content_template, content_variables)
+     VALUES (
+       $1::varchar,
+       (SELECT COALESCE(MAX(sequence), 0) + 1
+          FROM whatsapp_outbox
+         WHERE inbound_message_sid = $1::varchar),
+       $2, $3, $4
+     )`,
+    [inboundMessageSid, whatsappNumber, templateName, variables],
+  );
 }
 
 // Thin facade so handler code reads `reply(client, msg, key, ...)` instead of
@@ -1927,24 +1958,23 @@ async function handleIdle(
   }
 
   if (isJobsKeyword(msg.body)) {
-    const jobs = await client.query<{
-      id: string; title: string; company: string; location: string; pay: string;
-    }>(
-      `SELECT id,
-              title,
-              COALESCE(company, 'Jale') AS company,
-              location,
-              COALESCE(pay, 'Pay not specified') AS pay
-         FROM jobs
-        WHERE status = 'active'
-        ORDER BY created_at DESC
-        LIMIT 5`,
+    if (!conv.user_id) {
+      await reply(client, msg, 'jobs_none', conv.language);
+      return;
+    }
+    await client.query(
+      `SELECT set_config('app.current_internal_user_id', $1, true)`,
+      [conv.user_id],
     );
-    if (jobs.rowCount === 0) {
+    const jobs = await listMatchedJobsForWorker(client, conv.user_id, {
+      limit: 5,
+      channel: 'whatsapp',
+    });
+    if (jobs.length === 0) {
       await reply(client, msg,'jobs_none', conv.language);
       return;
     }
-    const recentJobs = jobs.rows.map((j) => j.id);
+    const recentJobs = jobs.map((j) => j.id);
     await updateConversation(client, conv.id, {
       state_context: {
         ...conv.state_context,
@@ -1952,20 +1982,9 @@ async function handleIdle(
       },
       last_processed_message_sid: msg.messageSid,
     });
-    const lines = jobs.rows.map(
-      (j, i) => `${i + 1}. ${j.title}\n${j.company}\n${j.location}\n${j.pay}`,
-    );
-    const instructions = conv.language === 'es'
-      ? 'Responde con:\n1 aceptar - Aplicar\n1 info - Ver detalles\n1 no - Omitir'
-      : 'Reply with:\n1 accept - Apply\n1 info - See details\n1 no - Skip';
-    await queueText(
-      client,
-      msg.messageSid,
-      msg.from,
-      conv.language === 'es'
-        ? `Trabajos disponibles\n\n${lines.join('\n\n')}\n\n${instructions}`
-        : `Available jobs\n\n${lines.join('\n\n')}\n\n${instructions}`,
-    );
+    for (const job of jobs) {
+      await queueJobTemplate(client, msg.messageSid, msg.from, conv.language, job);
+    }
     return;
   }
 

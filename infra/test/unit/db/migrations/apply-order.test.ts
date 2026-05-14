@@ -20,6 +20,7 @@ const expectedBaselineMigrations = [
   '010_matching_write_semantics.sql',
   '011_ai_profile_media.sql',
   '012_ai_trust_assessment.sql',
+  '013_whatsapp_template_outbox.sql',
 ];
 
 function migrationFiles(): string[] {

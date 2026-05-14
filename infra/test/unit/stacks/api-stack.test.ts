@@ -48,6 +48,22 @@ describe('ApiStack', () => {
     });
   });
 
+  test('defaults API CORS and Lambda origin to production domain', () => {
+    template.hasResourceProperties('AWS::ApiGateway::GatewayResponse', {
+      ResponseParameters: Match.objectLike({
+        'gatewayresponse.header.Access-Control-Allow-Origin': "'https://jaleapp.ai'",
+      }),
+    });
+
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          ALLOWED_ORIGIN: 'https://jaleapp.ai',
+        }),
+      }),
+    });
+  });
+
   test('Three Cognito authorizers exist (worker, employer, dual)', () => {
     template.resourceCountIs('AWS::ApiGateway::Authorizer', 3);
   });

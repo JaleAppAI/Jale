@@ -63,6 +63,16 @@ describe('LegalStack', () => {
     });
   });
 
+  test('defaults legal Lambda origin to production domain', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          ALLOWED_ORIGIN: 'https://jaleapp.ai',
+        }),
+      }),
+    });
+  });
+
   // The /legal/accept method is added to ApiStack's API, so the Method resource
   // lives in ApiStack's template, not LegalStack's. Verify via the API template.
   test('POST /legal/accept is protected by Cognito authorizer (via ApiStack)', () => {
