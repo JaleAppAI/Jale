@@ -36,6 +36,7 @@ describe('database migrations', () => {
       '011',
       '012',
       '013',
+      '014',
     ]);
   });
 
@@ -70,6 +71,9 @@ describe('database migrations', () => {
       for (const file of expectedFiles) {
         expect(script).toContain(file);
       }
+      expect(script).toContain("starts_with(LogicalResourceId, 'JaleDatabaseStackDatabaseSecret')");
+      expect(script).toContain("starts_with(LogicalResourceId, 'MatchingDbSecret')");
+      expect(script).toContain('ALTER ROLE jale_matching WITH PASSWORD');
       expect(script).not.toContain('003_whatsapp.sql');
       expect(script).not.toContain('004_jobs.sql');
       expect(script).not.toContain('005_job_applications.sql');

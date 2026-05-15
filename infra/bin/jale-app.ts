@@ -65,6 +65,7 @@ const api = new ApiStack(app, 'JaleApiStack', {
   workerPool: auth.workerPool,
   employerPool: auth.employerPool,
   candidateMaterializationQueue: matching.candidateMaterializationQueue,
+  employerCandidateRerankQueue: matching.employerCandidateRerankQueue,
   // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
   // references this API. Enable cross-region exports.
   crossRegionReferences: true,

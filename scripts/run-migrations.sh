@@ -10,10 +10,12 @@
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→012
+#   - Resolves the jale_matching DB secret ARN from CloudFormation
+#   - Base64-encodes migrations 001→014
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
+#       * Sets the jale_matching role password from the CDK-generated secret
 #       * Generates a random password for jale_whatsapp
 #       * ALTERs the role password
 #       * Creates/updates jale/whatsapp/db secret
@@ -31,7 +33,7 @@ DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. Runs the full chain 001→006 against
+# Migration files in execution order. Runs the full chain 001→014 against
 # a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
 # is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
@@ -49,6 +51,7 @@ MIGRATIONS=(
   "011_ai_profile_media.sql"
   "012_ai_trust_assessment.sql"
   "013_whatsapp_template_outbox.sql"
+  "014_employer_candidate_rankings.sql"
 )
 
 echo ">> Using region: $REGION"
@@ -74,14 +77,27 @@ echo ">> Resolving jale_admin DB secret ARN..."
 DB_SECRET_ARN=$(aws cloudformation describe-stack-resources \
   --stack-name "$DATABASE_STACK" \
   --region "$REGION" \
-  --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret'].PhysicalResourceId" \
-  --output text | head -n 1)
+  --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'JaleDatabaseStackDatabaseSecret')].PhysicalResourceId | [0]" \
+  --output text)
 
-if [[ -z "$DB_SECRET_ARN" ]]; then
-  echo "!! Could not find DB secret in $DATABASE_STACK."
+if [[ -z "$DB_SECRET_ARN" || "$DB_SECRET_ARN" == "None" ]]; then
+  echo "!! Could not find jale_admin DB secret in $DATABASE_STACK."
   exit 1
 fi
 echo "   db-secret: $DB_SECRET_ARN"
+
+echo ">> Resolving jale_matching DB secret ARN..."
+MATCHING_SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "$DATABASE_STACK" \
+  --region "$REGION" \
+  --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'MatchingDbSecret')].PhysicalResourceId | [0]" \
+  --output text)
+
+if [[ -z "$MATCHING_SECRET_ARN" || "$MATCHING_SECRET_ARN" == "None" ]]; then
+  echo "!! Could not find jale_matching DB secret in $DATABASE_STACK."
+  exit 1
+fi
+echo "   matching-secret: $MATCHING_SECRET_ARN"
 
 # ---------------------------------------------------------------------------
 # Base64-encode each migration + prepare the remote script.
@@ -114,6 +130,7 @@ set -euo pipefail
 
 REGION="$REGION"
 DB_SECRET_ARN="$DB_SECRET_ARN"
+MATCHING_SECRET_ARN="$MATCHING_SECRET_ARN"
 WA_DB_SECRET_NAME="$WA_DB_SECRET_NAME"
 
 echo ">> Fetching jale_admin creds from \$DB_SECRET_ARN"
@@ -147,6 +164,14 @@ done
 
 echo ">> Migrations applied cleanly."
 
+echo ">> Setting jale_matching password from generated secret..."
+MATCHING_SECRET_JSON=\$(aws secretsmanager get-secret-value \
+  --secret-id "\$MATCHING_SECRET_ARN" \
+  --region "\$REGION" \
+  --query SecretString --output text)
+MATCHING_PW=\$(echo "\$MATCHING_SECRET_JSON" | jq -r .password)
+"\${PG_CMD[@]}" -c "ALTER ROLE jale_matching WITH PASSWORD '\$MATCHING_PW';"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 # 32 bytes base64 → strip =+/ → first 24 chars. URL-safe, no quoting issues
 # in SQL or JSON.
@@ -179,7 +204,7 @@ else
   echo "   created new secret"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING DB_PASS
+unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON
 echo ">> Done."
 REMOTE_EOF
 )

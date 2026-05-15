@@ -18,6 +18,7 @@ export interface ApiStackProps extends cdk.StackProps {
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly dbSecret: secretsmanager.ISecret;
   readonly candidateMaterializationQueue?: sqs.IQueue;
+  readonly employerCandidateRerankQueue?: sqs.IQueue;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -279,6 +280,24 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(workerJobsApplyLambda.function);
 
+    const employerJobCandidatesLambda = new JaleLambdaFunction(this, 'EmployerJobCandidatesLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-job-candidates.ts'),
+      description: 'Employer job candidates endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+        ...(props.employerCandidateRerankQueue
+          ? { EMPLOYER_CANDIDATE_RERANK_QUEUE_URL: props.employerCandidateRerankQueue.queueUrl }
+          : {}),
+      },
+      nodeModules: ['@aws-sdk/client-sqs'],
+    });
+    props.dbSecret.grantRead(employerJobCandidatesLambda.function);
+    props.employerCandidateRerankQueue?.grantSendMessages(employerJobCandidatesLambda.function);
+
     // Worker applications list — worker auth, DB access
     const workerApplicationsListLambda = new JaleLambdaFunction(this, 'WorkerApplicationsListLambda', {
       entry: path.join(__dirname, '../../lambda/api/worker-applications-list.ts'),
@@ -399,6 +418,12 @@ export class ApiStack extends cdk.Stack {
 
     const employerJobApplicantsResource = employerJobResource.addResource('applicants');
     employerJobApplicantsResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobApplicantsLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    const employerJobCandidatesResource = employerJobResource.addResource('candidates');
+    employerJobCandidatesResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobCandidatesLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

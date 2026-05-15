@@ -1,4 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
@@ -22,6 +23,7 @@ describe('ApiStack', () => {
       dbSecret: database.dbSecret,
       cognitoSmsRole: network.cognitoSmsRole,
     });
+    const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
       employerPool: auth.employerPool,
@@ -29,6 +31,7 @@ describe('ApiStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      employerCandidateRerankQueue,
     });
     // LegalStack must be created so the dual authorizer is attached to a method
     new LegalStack(app, 'TestLegalStack', {
@@ -147,6 +150,22 @@ describe('ApiStack', () => {
   test('Employer job applicants Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Employer job applicants endpoint',
+    });
+  });
+
+  test('Employer job candidates Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer job candidates endpoint',
+    });
+  });
+
+  test('GET /employer/jobs/{jobId}/candidates exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
     });
   });
 
