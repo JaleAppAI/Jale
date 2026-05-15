@@ -1314,6 +1314,7 @@ describe('awaiting_media_photo state', () => {
       Body: '',
       NumMedia: '1',
       MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
+      MediaSid0: 'MMtest-photo',
       MediaContentType0: 'image/jpeg',
     }), {} as any, {} as any);
 
@@ -1322,6 +1323,8 @@ describe('awaiting_media_photo state', () => {
       /INSERT INTO worker_profile_media/.test(sql)
     );
     expect(mediaInsert).toBeDefined();
+    expect(mediaInsert![1]).toEqual(expect.arrayContaining(['MMtest-photo', 'image/jpeg']));
+    expect((mediaInsert![1] as unknown[]).filter((value) => value === 'image/jpeg')).toHaveLength(1);
     const outboxInsert = mockQuery.mock.calls.find(([sql, params]) =>
       /INSERT INTO whatsapp_outbox/.test(sql as string)
       && /content_template/i.test(sql as string)
@@ -1513,10 +1516,17 @@ describe('awaiting_media_voice state', () => {
       Body: '',
       NumMedia: '1',
       MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
+      MediaSid0: 'MMtest-voice',
       MediaContentType0: 'audio/ogg',
     }), {} as any, {} as any);
 
     expect(mockSfnSend).toHaveBeenCalledTimes(1);
+    const mediaInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO worker_profile_media/.test(sql)
+    );
+    expect(mediaInsert).toBeDefined();
+    expect(mediaInsert![1]).toEqual(expect.arrayContaining(['MMtest-voice', 'audio/ogg']));
+    expect((mediaInsert![1] as unknown[]).filter((value) => value === 'audio/ogg')).toHaveLength(1);
     const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
       /UPDATE whatsapp_conversations SET/i.test(sql as string)
       && Array.isArray(params)

@@ -462,6 +462,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
     : 'none';
   const numMedia = parseInt(params.NumMedia ?? '0', 10);
   const mediaUrl = params.MediaUrl0;
+  const mediaSid = params.MediaSid0;
   const mediaContentType = params.MediaContentType0;
 
   if (!from || !messageSid) {
@@ -553,6 +554,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         from,
         numMedia,
         mediaUrl,
+        mediaSid,
         mediaContentType,
       });
 
@@ -599,6 +601,7 @@ interface IncomingMessage {
   from: string;
   numMedia: number;
   mediaUrl: string | undefined;
+  mediaSid: string | undefined;
   mediaContentType: string | undefined;
 }
 
@@ -650,7 +653,7 @@ async function handleAwaitingMediaPhoto(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<void> {
-  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+  const { numMedia, mediaUrl, mediaSid, mediaContentType, from, messageSid } = msg;
   const mediaPayload = parseMediaPayload(msg.interactivePayload);
 
   // If a photo was already received, we are waiting for the classification reply (1 or 2).
@@ -739,7 +742,7 @@ async function handleAwaitingMediaPhoto(
     `INSERT INTO worker_profile_media
        (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
      VALUES ($1, $2, 'profile_photo', $3, $4, $5)`,
-    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+    [mediaId, conv.user_id, s3Key, mediaSid ?? null, mediaContentType],
   );
 
   await updateConversation(client, conv.id, {
@@ -792,7 +795,7 @@ async function handleAwaitingMediaVoice(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<void> {
-  const { numMedia, mediaUrl, mediaContentType, from, messageSid } = msg;
+  const { numMedia, mediaUrl, mediaSid, mediaContentType, from, messageSid } = msg;
   const mediaPayload = parseMediaPayload(msg.interactivePayload);
 
   // Worker skipped or sent text — go straight to text questions
@@ -838,7 +841,7 @@ async function handleAwaitingMediaVoice(
     `INSERT INTO worker_profile_media
        (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
      VALUES ($1, $2, 'voice_message', $3, $4, $5)`,
-    [mediaId, conv.user_id, s3Key, mediaContentType, mediaContentType],
+    [mediaId, conv.user_id, s3Key, mediaSid ?? null, mediaContentType],
   );
 
   // Language code for Transcribe

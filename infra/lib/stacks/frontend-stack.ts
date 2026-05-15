@@ -71,10 +71,12 @@ export class FrontendStack extends cdk.Stack {
       hostedZoneId: props.hostedZoneId,
       zoneName: props.domainName,
     });
+    const wwwDomainName = `www.${props.domainName}`;
 
     // ── ACM certificate (us-east-1, validated by Route 53 DNS) ──────
     const certificate = new acm.Certificate(this, 'FrontendCertificate', {
       domainName: props.domainName,
+      subjectAlternativeNames: [wwwDomainName],
       validation: acm.CertificateValidation.fromDns(hostedZone),
     });
 
@@ -176,7 +178,7 @@ export class FrontendStack extends cdk.Stack {
     // ── CloudFront distribution ─────────────────────────────────────
     this.distribution = new cloudfront.Distribution(this, 'FrontendDistribution', {
       comment: 'Jale frontend (Next.js Lambda) + survey + API routing',
-      domainNames: [props.domainName],
+      domainNames: [props.domainName, wwwDomainName],
       certificate,
       defaultBehavior: {
         origin: lambdaOrigin,
@@ -206,6 +208,20 @@ export class FrontendStack extends cdk.Stack {
     new route53.AaaaRecord(this, 'FrontendAaaaRecord', {
       zone: hostedZone,
       recordName: props.domainName,
+      target: route53.RecordTarget.fromAlias(
+        new route53targets.CloudFrontTarget(this.distribution),
+      ),
+    });
+    new route53.ARecord(this, 'FrontendWwwARecord', {
+      zone: hostedZone,
+      recordName: wwwDomainName,
+      target: route53.RecordTarget.fromAlias(
+        new route53targets.CloudFrontTarget(this.distribution),
+      ),
+    });
+    new route53.AaaaRecord(this, 'FrontendWwwAaaaRecord', {
+      zone: hostedZone,
+      recordName: wwwDomainName,
       target: route53.RecordTarget.fromAlias(
         new route53targets.CloudFrontTarget(this.distribution),
       ),

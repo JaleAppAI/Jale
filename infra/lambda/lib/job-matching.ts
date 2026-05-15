@@ -388,7 +388,9 @@ export async function listMatchedJobsForWorker(
     filters.push(`j.job_type = $${params.length}`);
   }
 
-  params.push(Math.max(1, Math.min(options.limit, 100)));
+  const requestedLimit = Math.max(1, Math.min(options.limit, 100));
+  const candidateLimit = Math.max(requestedLimit, Math.min(requestedLimit * 10, 100));
+  params.push(candidateLimit);
 
   const jobCoordinates = await coordinateSelects(client, 'jobs', 'j');
   const jobsResult = await client.query<MatchableJobRow>(
@@ -414,6 +416,6 @@ export async function listMatchedJobsForWorker(
     .map((job) => scoreJobCandidate(worker, job))
     .filter((job) => !workerHasProfessionData(worker) || job.match_components.profession > 0)
     .sort((a, b) => b.match_score - a.match_score || new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id.localeCompare(a.id))
-    .slice(0, options.limit)
+    .slice(0, requestedLimit)
     .map(({ score, components, reasons, ...job }) => job);
 }

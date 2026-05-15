@@ -172,4 +172,63 @@ describe('job-matching pure scoring', () => {
     expect(result[0].title).toBe('Drywall Profile Match Crew');
     expect(result[0].match_components.profession).toBeGreaterThan(0);
   });
+
+  it('scores a wider candidate window before applying the requested limit', async () => {
+    const newerIrrelevantJobs = Array.from({ length: 5 }, (_, index) => ({
+      id: `job-plumber-${index}`,
+      title: `Plumber Helper ${index}`,
+      company: 'Pipe Co',
+      location: 'El Paso, TX 79928',
+      pay: '$22/hr',
+      job_type: 'full-time',
+      description: 'Pipe runs and fixture installs.',
+      required_docs: [],
+      created_at: new Date(now.getTime() - index * 1000),
+      latitude: null,
+      longitude: null,
+    }));
+    const olderRelevantJob = {
+      id: 'job-drywall-older',
+      title: 'Drywall Finisher',
+      company: 'Finish Builders',
+      location: 'El Paso, TX 79928',
+      pay: '$30/hr',
+      job_type: 'full-time',
+      description: 'Sheetrock hanging, taping, mud, and texture.',
+      required_docs: [],
+      created_at: new Date(now.getTime() - 10_000),
+      latitude: null,
+      longitude: null,
+    };
+
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'worker-1',
+          main_trade: 'other',
+          main_trade_other: 'Drywaller',
+          years_experience: '5-9',
+          availability: 'full_time',
+          city: '79928',
+          profile_location: '79928',
+          latitude: null,
+          longitude: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [...newerIrrelevantJobs, olderRelevantJob],
+      });
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(query.mock.calls[3][1]).toContain(50);
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('job-drywall-older');
+  });
 });

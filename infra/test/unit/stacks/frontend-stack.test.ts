@@ -79,7 +79,7 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       Match.objectLike({
         DistributionConfig: Match.objectLike({
           Enabled: true,
-          Aliases: ['example.com'],
+          Aliases: ['example.com', 'www.example.com'],
           IPV6Enabled: true,
         }),
       }),
@@ -138,11 +138,20 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       Type: 'AAAA',
       Name: 'example.com.',
     });
+    template.hasResourceProperties('AWS::Route53::RecordSet', {
+      Type: 'A',
+      Name: 'www.example.com.',
+    });
+    template.hasResourceProperties('AWS::Route53::RecordSet', {
+      Type: 'AAAA',
+      Name: 'www.example.com.',
+    });
   });
 
   test('creates ACM certificate with DNS validation', () => {
     template.hasResourceProperties('AWS::CertificateManager::Certificate', {
       DomainName: 'example.com',
+      SubjectAlternativeNames: ['www.example.com'],
       ValidationMethod: 'DNS',
     });
   });
