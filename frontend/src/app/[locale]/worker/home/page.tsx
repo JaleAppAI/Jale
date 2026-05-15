@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
@@ -28,22 +28,44 @@ export default function WorkerHomePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [jobType, setJobType] = useState<TypeFilter>('all');
+  const hasLoadedJobs = useRef(false);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedSearch(search.trim());
+    }, 300);
+
+    return () => window.clearTimeout(handle);
+  }, [search]);
 
   useEffect(() => {
     if (!idToken) return;
-    setLoading(true);
+    let ignore = false;
+    setLoading(!hasLoadedJobs.current);
     const filters: { search?: string; job_type?: string } = {};
-    if (search.trim()) filters.search = search.trim();
+    if (debouncedSearch) filters.search = debouncedSearch;
     if (jobType !== 'all') filters.job_type = jobType;
     getJobs(idToken, filters)
-      .then((res) => setJobs(res.jobs))
+      .then((res) => {
+        if (ignore) return;
+        hasLoadedJobs.current = true;
+        setJobs(res.jobs);
+      })
       .catch((err) => {
+        if (ignore) return;
         try { handleLegalWall(err, '/worker/home'); }
         catch { setError(tCommon('error')); }
       })
-      .finally(() => setLoading(false));
-  }, [idToken, search, jobType]);
+      .finally(() => {
+        if (!ignore) setLoading(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [idToken, debouncedSearch, jobType]);
 
   if (error) {
     return (
@@ -56,19 +78,13 @@ export default function WorkerHomePage() {
   return (
     <main className="mx-auto max-w-2xl px-4 py-8">
       {/* Header row */}
-      <div className="flex items-center justify-between mb-5">
+      <div className="mb-5">
         <h1
           className="font-semibold leading-tight"
           style={{ fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--jale-ink)' }}
         >
           {t('title')}
         </h1>
-        <span
-          className="avatar-initials"
-          style={{ width: 36, height: 36, fontSize: 13 }}
-        >
-          W
-        </span>
       </div>
 
       {/* Search */}
