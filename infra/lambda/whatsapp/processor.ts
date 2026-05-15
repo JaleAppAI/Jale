@@ -445,10 +445,21 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const from = params.From; // "whatsapp:+15125551234"
   const body = params.Body ?? '';
   const buttonPayload = params.ButtonPayload; // present on template button taps
+  // WhatsApp List Picker rows can arrive with their response value in Body
+  // rather than ButtonPayload/InteractiveData/ChannelMetadata. The 256-char
+  // cap bounds findKnownPayload's work on hostile inputs; real Twilio
+  // payloads are well under 50 chars.
   const interactivePayload =
     buttonPayload
     ?? extractInteractivePayload(params.InteractiveData)
-    ?? extractInteractivePayload(params.ChannelMetadata);
+    ?? extractInteractivePayload(params.ChannelMetadata)
+    ?? (body.length <= 256 ? findKnownPayload(body) : undefined);
+  const interactivePayloadSource: 'button' | 'interactive_data' | 'channel_metadata' | 'body' | 'none' =
+    buttonPayload ? 'button'
+    : extractInteractivePayload(params.InteractiveData) ? 'interactive_data'
+    : extractInteractivePayload(params.ChannelMetadata) ? 'channel_metadata'
+    : (body.length <= 256 && findKnownPayload(body)) ? 'body'
+    : 'none';
   const numMedia = parseInt(params.NumMedia ?? '0', 10);
   const mediaUrl = params.MediaUrl0;
   const mediaContentType = params.MediaContentType0;
@@ -527,6 +538,12 @@ async function processRecord(record: SQSRecord): Promise<void> {
         whatsappNumber,
         defaultLang,
       );
+
+      console.log('[processor] payload source', {
+        messageSid,
+        interactivePayloadSource,
+        hasInteractivePayload: !!interactivePayload,
+      });
 
       await routeMessage(client, conv, {
         body,
