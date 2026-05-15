@@ -54,7 +54,10 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   try {
-    const rawBody = event.body ?? '';
+    const encodedBody = event.body ?? '';
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(encodedBody, 'base64').toString('utf8')
+      : encodedBody;
     if (!rawBody) {
       return { statusCode: 400, body: 'empty body' };
     }
@@ -77,11 +80,18 @@ export const handler = async (
 
     if (!valid) {
       console.warn('[webhook] invalid signature', {
-        fullUrl,
         hasSignature: !!signature,
         messageSid: params.MessageSid,
       });
       return { statusCode: 403, body: 'invalid signature' };
+    }
+
+    if (!params.From || !params.MessageSid) {
+      console.warn('[webhook] malformed signed webhook body', {
+        hasFrom: !!params.From,
+        hasMessageSid: !!params.MessageSid,
+      });
+      return { statusCode: 400, body: 'malformed body' };
     }
 
     // 4. Push to SQS for async processing. Store raw body to preserve form
@@ -98,7 +108,7 @@ export const handler = async (
 
     console.log('[webhook] queued', {
       messageSid: params.MessageSid,
-      from: params.From,
+      hasFrom: true,
     });
 
     // 5. Return 200 — Twilio expects a 2xx response within a few seconds,

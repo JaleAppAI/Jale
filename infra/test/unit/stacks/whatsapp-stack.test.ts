@@ -111,6 +111,16 @@ describe('WhatsAppStack', () => {
     });
   });
 
+  test('defaults WhatsApp Lambda origin to production domain', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          ALLOWED_ORIGIN: 'https://jaleapp.ai',
+        }),
+      }),
+    });
+  });
+
   test('Processor Lambda has 60s timeout (for the new-user call chain)', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: Match.stringLikeRegexp('.*SQS processor.*'),

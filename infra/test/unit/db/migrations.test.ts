@@ -37,6 +37,8 @@ describe('database migrations', () => {
       '012',
       '013',
       '014',
+      '015',
+      '016',
     ]);
   });
 
@@ -84,11 +86,23 @@ describe('database migrations', () => {
       for (const file of expectedFiles) {
         expect(script).toContain(file);
       }
+      expect(script).toContain("starts_with(LogicalResourceId, 'JaleDatabaseStackDatabaseSecret')");
+      expect(script).toContain("starts_with(LogicalResourceId, 'MatchingDbSecret')");
+      expect(script).toContain('ALTER ROLE jale_matching WITH PASSWORD');
       expect(script).not.toContain('003_whatsapp.sql');
       expect(script).not.toContain('004_jobs.sql');
       expect(script).not.toContain('005_job_applications.sql');
       expect(script).not.toContain('006_whatsapp_reliability.sql');
       expect(script).not.toContain('007_trust_signal_layer.sql');
     }
+  });
+
+  it('keeps WhatsApp template outbox migration independent from matching materialization tables', () => {
+    const sql013 = fs.readFileSync(path.join(migrationsDir, '013_whatsapp_template_outbox.sql'), 'utf8');
+
+    expect(sql013).toContain('content_template');
+    expect(sql013).toContain('content_variables');
+    expect(sql013).toContain("to_regclass('public.job_candidates')");
+    expect(sql013).toContain('whatsapp_read_ranked_jobs');
   });
 });

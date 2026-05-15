@@ -51,7 +51,7 @@ describe('Webhook Lambda', () => {
   // Helper: build a signed API Gateway event that would pass validation
   const buildSignedEvent = (
     body: Record<string, string>,
-    opts: { tamper?: boolean; skipSignature?: boolean } = {},
+    opts: { tamper?: boolean; skipSignature?: boolean; base64?: boolean } = {},
   ): APIGatewayProxyEvent => {
     const rawBody = new URLSearchParams(body).toString();
     // Re-parse because URLSearchParams decodes percent-encoded values
@@ -63,7 +63,8 @@ describe('Webhook Lambda', () => {
     const finalSig = opts.tamper ? 'WRONG_SIGNATURE_VALUE_abc123' : sig;
 
     return {
-      body: rawBody,
+      body: opts.base64 ? Buffer.from(rawBody, 'utf8').toString('base64') : rawBody,
+      isBase64Encoded: opts.base64,
       headers: opts.skipSignature ? {} : { 'X-Twilio-Signature': finalSig },
       requestContext: {
         domainName: 'xxx.execute-api.us-east-2.amazonaws.com',
@@ -135,6 +136,45 @@ describe('Webhook Lambda', () => {
     expect(mockSqsSend).not.toHaveBeenCalled();
   });
 
+  it('returns 400 and does NOT queue validly signed malformed Twilio bodies', async () => {
+    const event = buildSignedEvent({
+      AccountSid: accountSid,
+      Body: 'Hola',
+      MessageSid: 'SM123',
+    });
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(400);
+    expect(mockSqsSend).not.toHaveBeenCalled();
+  });
+
+  it('decodes base64 API Gateway bodies before signature validation and queueing', async () => {
+    const event = buildSignedEvent({
+      AccountSid: accountSid,
+      From: 'whatsapp:+15125551234',
+      Body: 'Hola',
+      MessageSid: 'SM-base64',
+    }, { base64: true });
+    const rawBody = new URLSearchParams({
+      AccountSid: accountSid,
+      From: 'whatsapp:+15125551234',
+      Body: 'Hola',
+      MessageSid: 'SM-base64',
+    }).toString();
+
+    const result = await handler(event);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockSqsSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          MessageBody: rawBody,
+        }),
+      }),
+    );
+  });
+
   it('preserves the raw body when pushing to SQS (not a re-encoded version)', async () => {
     const rawBody =
       'AccountSid=AC1&From=whatsapp%3A%2B15125551234&Body=Hola%20%F0%9F%91%8B&MessageSid=SM9';
@@ -173,6 +213,7 @@ describe('Webhook Lambda', () => {
   it('accepts lowercase x-twilio-signature header', async () => {
     const event = buildSignedEvent({
       AccountSid: accountSid,
+      From: 'whatsapp:+15125551234',
       Body: 'Hola',
       MessageSid: 'SM123',
     });
@@ -190,7 +231,7 @@ describe('Webhook Lambda', () => {
 
   it('uses X-Forwarded-Host for URL reconstruction when present', async () => {
     // Twilio configured with a custom domain — signature must match that domain
-    const rawBody = 'MessageSid=SM123&Body=Hola';
+    const rawBody = 'From=whatsapp%3A%2B15125551234&MessageSid=SM123&Body=Hola';
     const params = Object.fromEntries(new URLSearchParams(rawBody));
     const fullUrl = 'https://api.jale.com/dev/whatsapp/webhook';
     const sig = createHmac('sha1', authToken)

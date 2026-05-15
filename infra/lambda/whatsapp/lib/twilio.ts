@@ -106,5 +106,23 @@ export interface TwilioSecret {
     profile_reminder_en?: string;
     welcome_es?: string;
     welcome_en?: string;
+    onboarding_legal_es?: string;
+    onboarding_legal_en?: string;
+    onboarding_trade_es?: string;
+    onboarding_trade_en?: string;
+    onboarding_experience_es?: string;
+    onboarding_experience_en?: string;
+    onboarding_transportation_es?: string;
+    onboarding_transportation_en?: string;
+    onboarding_availability_es?: string;
+    onboarding_availability_en?: string;
+    onboarding_photo_skip_es?: string;
+    onboarding_photo_skip_en?: string;
+    onboarding_photo_type_es?: string;
+    onboarding_photo_type_en?: string;
+    onboarding_voice_choice_es?: string;
+    onboarding_voice_choice_en?: string;
+    trust_choice_es?: string;
+    trust_choice_en?: string;
   };
 }

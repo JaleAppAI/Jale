@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { listMatchedJobsForWorker } from '../lib/job-matching';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -35,31 +36,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
-    const params: any[] = [];
-    const where: string[] = [];
-    if (search) {
-      params.push(`%${search}%`);
-      where.push(`(j.title ILIKE $${params.length} OR j.location ILIKE $${params.length})`);
-    }
-    if (jobType) {
-      params.push(jobType);
-      where.push(`j.job_type = $${params.length}`);
-    }
-    const whereClause = where.length > 0 ? `AND ${where.join(' AND ')}` : '';
-
-    const result = await client.query(
-      `SELECT j.id, j.title, j.location, j.job_type, j.required_docs, j.created_at,
-              u.full_name AS company_name
-       FROM jobs j
-       JOIN users u ON u.id = j.employer_id
-       WHERE j.status = 'active' ${whereClause}
-       ORDER BY j.created_at DESC
-       LIMIT 100`,
-      params,
+    const workerResult = await client.query<{ id: string }>(
+      `SELECT id FROM users WHERE cognito_sub = $1 AND user_type = 'worker'`,
+      [cognitoSub],
     );
+    const workerId = workerResult.rows[0]?.id;
+    if (!workerId) {
+      await client.query('COMMIT');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+    }
+
+    const jobs = await listMatchedJobsForWorker(client, workerId, {
+      limit: 100,
+      channel: 'api',
+      search,
+      jobType,
+    });
     await client.query('COMMIT');
 
-    return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify({ jobs: result.rows }) };
+    return {
+      statusCode: 200,
+      headers: CORS_HEADERS,
+      body: JSON.stringify({
+        jobs: jobs.map(({ match_components, ...job }) => job),
+      }),
+    };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }
     console.error('worker-jobs-list error:', errorMessage(err));

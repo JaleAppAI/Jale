@@ -103,7 +103,7 @@
     "vpcMaxAzs": 2,
     "dbInstanceClass": "t4g.micro",
     "deletionProtection": false,
-    "allowedOrigin": "http://localhost:3000",
+    "allowedOrigin": "https://jaleapp.ai",
     "requiredTosVersion": "1.0",
     "multiAz": false
   }

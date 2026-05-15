@@ -1,6 +1,6 @@
 -- ============================================================
--- 014_employer_profiles.sql
--- Run manually AFTER 013_application_status_alignment.sql
+-- 016_employer_profiles.sql
+-- Run manually AFTER 015_application_status_alignment.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --
 -- Dedicated employer profile rows for web account creation.

@@ -1,6 +1,6 @@
 -- ============================================================
--- 013_application_status_alignment.sql
--- Run manually AFTER 012_ai_trust_assessment.sql
+-- 015_application_status_alignment.sql
+-- Run manually AFTER 014_employer_candidate_rankings.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --
 -- Align job_applications.status to the canonical lifecycle:

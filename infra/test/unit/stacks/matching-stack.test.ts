@@ -26,8 +26,8 @@ describe('MatchingStack', () => {
     template = Template.fromStack(stack);
   });
 
-  it('creates materialization and rerank queues plus DLQs', () => {
-    template.resourceCountIs('AWS::SQS::Queue', 4);
+  it('creates materialization, worker rerank, and employer candidate rerank queues plus DLQs', () => {
+    template.resourceCountIs('AWS::SQS::Queue', 6);
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'jale-candidate-materialization.fifo',
       FifoQueue: true,
@@ -37,6 +37,36 @@ describe('MatchingStack', () => {
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'jale-worker-rerank',
       RedrivePolicy: Match.objectLike({ maxReceiveCount: 3 }),
+    });
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'jale-employer-candidate-rerank',
+      VisibilityTimeout: 360,
+      RedrivePolicy: Match.objectLike({ maxReceiveCount: 3 }),
+    });
+  });
+
+  it('creates employer candidate rerank worker with SQS event source', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Async employer candidate Bedrock reranker',
+    });
+    template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+      BatchSize: 1,
+      ScalingConfig: {
+        MaximumConcurrency: 3,
+      },
+    });
+  });
+
+  it('grants Bedrock invoke permission to employer rerank worker', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: 'bedrock:InvokeModel',
+            Effect: 'Allow',
+          }),
+        ]),
+      }),
     });
   });
 
@@ -48,7 +78,7 @@ describe('MatchingStack', () => {
   });
 
   it('alarms when either DLQ has visible messages', () => {
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 2);
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       Threshold: 1,
       EvaluationPeriods: 1,

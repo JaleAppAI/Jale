@@ -366,6 +366,61 @@ export function parseButtonPayload(payload: string): ButtonPayload | null {
   return { action: m[1] as ButtonPayload['action'], jobId: m[2] };
 }
 
+export function parseLegalReplyPayload(
+  payload: string | undefined,
+): 'accept' | 'decline' | null {
+  if (payload === 'legal:accept') return 'accept';
+  if (payload === 'legal:decline') return 'decline';
+  return null;
+}
+
+export function parseProfilePayloadAnswer(
+  field: ProfileField,
+  payload: string | undefined,
+): string | boolean | null {
+  if (!payload) return null;
+  const m = payload.match(/^profile:([a-z_]+):(.+)$/);
+  if (!m || m[1] !== field) return null;
+
+  const def = PROFILE_FIELDS.find((f) => f.field === field);
+  if (!def || def.type !== 'buttons' || !def.options) return null;
+
+  const rawValue = m[2];
+  const value = rawValue === 'true'
+    ? true
+    : rawValue === 'false'
+      ? false
+      : rawValue;
+
+  return def.options.includes(value) ? value : null;
+}
+
+export function parseTrustPayloadAnswer(
+  step: number,
+  trade: string,
+  payload: string | undefined,
+): TrustAnswer | null {
+  if (!payload) return null;
+  const m = payload.match(/^trust:(\d+):(\d+)$/);
+  if (!m) return null;
+
+  const payloadStep = parseInt(m[1], 10);
+  const optionIndex = parseInt(m[2], 10);
+  if (payloadStep !== step) return null;
+
+  const options = getTrustOptions(step, trade);
+  if (Number.isNaN(optionIndex) || optionIndex < 0 || optionIndex >= options.length) {
+    return null;
+  }
+
+  return {
+    questionKey: TRUST_STEPS[step] ?? TRUST_STEPS[0],
+    optionKey: `opt_${optionIndex}`,
+    label: options[optionIndex],
+    answeredAt: new Date().toISOString(),
+  };
+}
+
 // ── Profile answer parsing ──────────────────────────────────────
 
 /**
@@ -375,6 +430,27 @@ export function parseButtonPayload(payload: string): ButtonPayload | null {
  * For button fields, matches numeric choice ("1", "2", ...) to the corresponding
  * option slug. Returns null on invalid choice.
  */
+export type MediaPayload =
+  | { kind: 'photo'; value: 'skip' }
+  | { kind: 'photo_type'; value: 'profile_photo' | 'work_sample' }
+  | { kind: 'voice'; value: 'text' };
+
+export function parseMediaPayload(payload: string | undefined): MediaPayload | null {
+  if (payload === 'media:photo:skip') {
+    return { kind: 'photo', value: 'skip' };
+  }
+  if (payload === 'media:photo_type:profile_photo') {
+    return { kind: 'photo_type', value: 'profile_photo' };
+  }
+  if (payload === 'media:photo_type:work_sample') {
+    return { kind: 'photo_type', value: 'work_sample' };
+  }
+  if (payload === 'media:voice:text') {
+    return { kind: 'voice', value: 'text' };
+  }
+  return null;
+}
+
 export function parseProfileAnswer(
   field: ProfileField,
   answer: string,

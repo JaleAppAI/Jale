@@ -20,8 +20,10 @@ const expectedBaselineMigrations = [
   '010_matching_write_semantics.sql',
   '011_ai_profile_media.sql',
   '012_ai_trust_assessment.sql',
-  '013_application_status_alignment.sql',
-  '014_employer_profiles.sql',
+  '013_whatsapp_template_outbox.sql',
+  '014_employer_candidate_rankings.sql',
+  '015_application_status_alignment.sql',
+  '016_employer_profiles.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -75,7 +77,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-014 readiness baseline order', () => {
+  it('locks the 001-016 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -158,8 +160,8 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY users_ai_score_update');
   });
 
-  it('aligns application statuses in migration 013', () => {
-    const migration = readMigration('013_application_status_alignment.sql');
+  it('aligns application statuses in migration 015', () => {
+    const migration = readMigration('015_application_status_alignment.sql');
     const oldConstraintDropIndex = migration.indexOf('pg_get_constraintdef(con.oid) LIKE \'%submitted%\'');
     const namedConstraintDropIndex = migration.indexOf('DROP CONSTRAINT IF EXISTS job_applications_status_check');
     const statusUpdateIndex = migration.indexOf('UPDATE job_applications');
@@ -176,8 +178,22 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY applications_employer_update');
   });
 
-  it('adds employer profiles in migration 014', () => {
-    const migration = readMigration('014_employer_profiles.sql');
+  it('adds employer candidate ranking cache with matching writes and employer-scoped reads in migration 014', () => {
+    const migration = readMigration('014_employer_candidate_rankings.sql');
+
+    expectTable(migration, 'employer_candidate_rankings');
+    expect(migration).toContain('source_hash TEXT NOT NULL');
+    expect(migration).toContain('employer_candidate_rankings_job_rank_idx');
+    expect(migration).toContain('employer_candidate_rankings_job_hash_idx');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON employer_candidate_rankings TO jale_matching');
+    expect(migration).toContain('GRANT SELECT ON employer_candidate_rankings TO jale_admin');
+    expect(migration).toContain('ALTER TABLE employer_candidate_rankings FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('CREATE POLICY employer_candidate_rankings_matching_all');
+    expect(migration).toContain('CREATE POLICY employer_candidate_rankings_employer_read');
+  });
+
+  it('adds employer profiles in migration 016', () => {
+    const migration = readMigration('016_employer_profiles.sql');
 
     expectTable(migration, 'employer_profiles');
     expect(migration).toContain('company_name');
@@ -204,7 +220,7 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-014 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-016 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

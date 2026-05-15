@@ -6,10 +6,14 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseLegalReplyPayload,
+  parseMediaPayload,
   parseProfileAnswer,
+  parseProfilePayloadAnswer,
   getTrustOptions,
   buildTrustQuestion,
   parseTrustAnswer,
+  parseTrustPayloadAnswer,
   parseTypedJobAction,
   computeNextField,
   PROFILE_FIELDS,
@@ -104,6 +108,54 @@ describe('flows.ts — parseButtonPayload', () => {
   });
   it('rejects random text', () => {
     expect(parseButtonPayload('Hola')).toBeNull();
+  });
+});
+
+describe('flows.ts — rich onboarding payloads', () => {
+  it('parses legal quick reply payloads', () => {
+    expect(parseLegalReplyPayload('legal:accept')).toBe('accept');
+    expect(parseLegalReplyPayload('legal:decline')).toBe('decline');
+    expect(parseLegalReplyPayload('profile:main_trade:electrician')).toBeNull();
+    expect(parseLegalReplyPayload(undefined)).toBeNull();
+  });
+
+  it('maps matching profile payloads to canonical values', () => {
+    expect(parseProfilePayloadAnswer('main_trade', 'profile:main_trade:electrician')).toBe('electrician');
+    expect(parseProfilePayloadAnswer('years_experience', 'profile:years_experience:2-4')).toBe('2-4');
+    expect(parseProfilePayloadAnswer('has_transportation', 'profile:has_transportation:true')).toBe(true);
+    expect(parseProfilePayloadAnswer('has_transportation', 'profile:has_transportation:false')).toBe(false);
+    expect(parseProfilePayloadAnswer('availability', 'profile:availability:flexible')).toBe('flexible');
+  });
+
+  it('rejects stale or invalid profile payloads', () => {
+    expect(parseProfilePayloadAnswer('main_trade', 'profile:availability:flexible')).toBeNull();
+    expect(parseProfilePayloadAnswer('main_trade', 'profile:main_trade:welder')).toBeNull();
+    expect(parseProfilePayloadAnswer('full_name', 'profile:full_name:Juan')).toBeNull();
+    expect(parseProfilePayloadAnswer('has_transportation', 'profile:has_transportation:maybe')).toBeNull();
+  });
+
+  it('maps trust payloads only for the current step', () => {
+    expect(parseTrustPayloadAnswer(0, 'electrician', 'trust:0:1')).toMatchObject({
+      questionKey: 'specialization',
+      optionKey: 'opt_1',
+      label: 'Commercial',
+    });
+    expect(parseTrustPayloadAnswer(1, 'electrician', 'trust:0:1')).toBeNull();
+    expect(parseTrustPayloadAnswer(0, 'electrician', 'trust:0:9')).toBeNull();
+  });
+
+  it('parses media quick reply payloads', () => {
+    expect(parseMediaPayload('media:photo:skip')).toEqual({ kind: 'photo', value: 'skip' });
+    expect(parseMediaPayload('media:photo_type:profile_photo')).toEqual({
+      kind: 'photo_type',
+      value: 'profile_photo',
+    });
+    expect(parseMediaPayload('media:photo_type:work_sample')).toEqual({
+      kind: 'photo_type',
+      value: 'work_sample',
+    });
+    expect(parseMediaPayload('media:voice:text')).toEqual({ kind: 'voice', value: 'text' });
+    expect(parseMediaPayload('media:voice:bad')).toBeNull();
   });
 });
 

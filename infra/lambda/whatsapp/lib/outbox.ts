@@ -6,6 +6,7 @@ import {
 import type { TwilioSecret } from './twilio';
 
 const secretsManager = new SecretsManagerClient({});
+const FALLBACK_BODY_KEY = '__fallback_body';
 
 let cachedTwilio: TwilioSecret | null = null;
 let twilioCacheExp = 0;
@@ -26,14 +27,36 @@ async function getTwilioSecret(): Promise<TwilioSecret> {
   return cachedTwilio;
 }
 
-async function sendTwilioMessage(to: string, body: string): Promise<void> {
+async function sendTwilioMessage(to: string, row: {
+  body: string | null;
+  content_template: string | null;
+  content_variables: Record<string, string> | null;
+}): Promise<void> {
   const secret = await getTwilioSecret();
   const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
-  const form = new URLSearchParams({
+  const formValues: Record<string, string> = {
     MessagingServiceSid: secret.messagingServiceSid,
     To: to,
-    Body: body,
-  });
+  };
+
+  if (row.content_template) {
+    const contentSid = secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>];
+    if (!contentSid) {
+      const fallbackBody = row.content_variables?.[FALLBACK_BODY_KEY];
+      if (!fallbackBody) {
+        throw new Error(`Twilio template missing: ${row.content_template}`);
+      }
+      formValues.Body = fallbackBody;
+    } else {
+      const { [FALLBACK_BODY_KEY]: _fallback, ...contentVariables } = row.content_variables ?? {};
+      formValues.ContentSid = contentSid;
+      formValues.ContentVariables = JSON.stringify(contentVariables);
+    }
+  } else {
+    formValues.Body = row.body ?? '';
+  }
+
+  const form = new URLSearchParams(formValues);
   const auth = Buffer.from(`${secret.accountSid}:${secret.authToken}`).toString('base64');
   const res = await fetch(url, {
     method: 'POST',
@@ -61,9 +84,11 @@ export async function sendPendingOutbox(
     id: string;
     sequence: number;
     whatsapp_number: string;
-    body: string;
+    body: string | null;
+    content_template: string | null;
+    content_variables: Record<string, string> | null;
   }>(
-    `SELECT id, sequence, whatsapp_number, body
+    `SELECT id, sequence, whatsapp_number, body, content_template, content_variables
        FROM whatsapp_outbox
       WHERE inbound_message_sid = $1
         AND status IN ('pending', 'failed')
@@ -73,7 +98,7 @@ export async function sendPendingOutbox(
 
   for (const row of pending.rows) {
     try {
-      await sendTwilioMessage(`whatsapp:${row.whatsapp_number}`, row.body);
+      await sendTwilioMessage(`whatsapp:${row.whatsapp_number}`, row);
       await client.query(
         `UPDATE whatsapp_outbox
             SET status = 'sent', sent_at = now()
