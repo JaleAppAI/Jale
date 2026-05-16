@@ -57,7 +57,9 @@ async function callBedrock(profession: string): Promise<QuestionSet[]> {
 
   const userMessage =
     `Generate 3 assessment questions for a worker who says they are a "${profession}". ` +
-    'Questions should cover: specialization, seniority or experience level, and common tasks. ' +
+    'Questions should cover: specialization, independence/responsibility level, and common tasks. ' +
+    'Do not ask how many years of experience they have; that is already collected in the profile. ' +
+    'For the second question, ask what level they can work at, such as helper, independently, or lead. ' +
     'Keep language simple because workers may not be formally educated.';
 
   const response = await bedrock.send(

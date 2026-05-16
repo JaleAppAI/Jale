@@ -60,6 +60,12 @@ describe('generateAndCacheQuestions', () => {
     expect(result).toHaveLength(3);
     expect(result[0]).toHaveProperty('q_en');
     expect(result[0]).toHaveProperty('q_es');
+    const commandInput = mockBedrockSend.mock.calls[0][0];
+    const userText = commandInput.messages[0].content[0].text;
+    expect(userText).toContain('Do not ask how many years');
+    expect(userText).toContain('independently');
+    expect(userText).toContain('lead');
+    expect(userText).not.toContain('seniority or experience level');
     expect(mockDbQuery).toHaveBeenCalledTimes(2);
   });
 

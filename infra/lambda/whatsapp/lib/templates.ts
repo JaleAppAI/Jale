@@ -123,8 +123,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'How many years of experience do you have?\n\n1. 0-1 years\n2. 2-4 years\n3. 5-9 years\n4. 10+ years\n\nReply with 1, 2, 3, or 4.',
   },
   ask_transportation: {
-    es: 'Tienes transporte propio?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
-    en: 'Do you have your own transportation?\n\n1. Yes\n2. No\n\nReply with 1 or 2.',
+    es: 'Tienes transporte propio?',
+    en: 'Do you have your own transportation?',
   },
   ask_availability: {
     es: 'Cual es tu disponibilidad?\n\n1. Tiempo completo\n2. Medio tiempo\n3. Fines de semana\n4. Flexible\n\nResponde con 1, 2, 3 o 4.',
@@ -178,8 +178,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   },
 
   ask_media_photo: {
-    es: 'Perfil con foto\n\nManda una foto tuya o de tu trabajo. Es opcional.\n\nSi no tienes foto ahora, escribe "Saltar" para continuar.',
-    en: 'Profile with photo\n\nSend a photo of yourself or your work. This is optional.\n\nIf you do not have a photo right now, type "Skip" to continue.',
+    es: 'Foto para tu perfil\n\nPuedes usar una foto tuya para tu perfil o una foto de tu trabajo para mostrar experiencia.\n\nManda la foto ahora, o toca Saltar si quieres hacerlo despues.',
+    en: 'Profile photo\n\nYou can use a photo of yourself for your profile or a photo of your work to show job experience.\n\nSend the photo now, or tap Skip if you want to do this later.',
   },
   media_photo_invalid: {
     es: 'Ese archivo no se pudo guardar. Manda una foto en formato JPEG, PNG o WebP, o escribe "Saltar".',
@@ -190,8 +190,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Is this a profile photo or a work sample?\n1. Profile photo\n2. Work sample\n\nReply with the number.',
   },
   ask_media_voice: {
-    es: 'Como quieres crear tu perfil?\n\n1. Manda una nota de voz breve (15-30 segundos)\n2. Contestar preguntas por texto\n\nSi mandas voz, cuenta: tu oficio, anos de experiencia, ciudad, disponibilidad, transporte y herramientas o certificaciones.\n\nResponde "texto" o "2" para seguir por texto.',
-    en: 'How do you want to create your profile?\n\n1. Send a short voice note (15-30 seconds)\n2. Answer questions by text\n\nIf you send voice, tell us: your trade, years of experience, city, availability, transportation, and any tools or certifications.\n\nReply "text" or "2" to continue by text.',
+    es: 'Como quieres crear tu perfil?\n\nPuedes mandar una nota de voz ahora y nosotros llenamos tu perfil con lo que digas.\n\nEn la nota dinos: tu oficio, ciudad donde trabajas, anos de experiencia, si tienes transporte, tu disponibilidad, herramientas o certificaciones, y ejemplos de trabajos que has hecho.\n\nTambien puedes contestar por texto si prefieres.',
+    en: 'How do you want to create your profile?\n\nYou can send a voice note now and we will fill out your profile from what you say.\n\nIn the note, tell us: your trade, the city where you work, years of experience, whether you have transportation, your availability, tools or certifications, and examples of jobs you have done.\n\nYou can also answer by text if you prefer.',
   },
   media_voice_invalid: {
     es: 'Ese audio no se pudo guardar. Manda un mensaje de voz, o escribe "Saltar" para continuar con preguntas.',

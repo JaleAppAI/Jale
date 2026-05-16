@@ -197,14 +197,15 @@ export async function autoAdvanceProfileAfterAi(
   if (!await trustSignalColumnsAvailable(client)) {
     await client.query(
       `UPDATE whatsapp_conversations
-          SET conversation_state = 'idle',
-              state_context = '{}'::jsonb,
+          SET conversation_state = 'awaiting_media_photo',
+              state_context = '{"profile_completed": true}'::jsonb,
               last_processed_message_sid = $2,
               updated_at = NOW()
         WHERE id = $1`,
       [args.conversationId, args.inboundMessageSid],
     );
     await args.queueBody(t('profile_complete', args.language));
+    await args.queueBody(t('ask_media_photo', args.language));
     return;
   }
 
@@ -235,12 +236,13 @@ export async function autoAdvanceProfileAfterAi(
 
   await client.query(
     `UPDATE whatsapp_conversations
-        SET conversation_state = 'idle',
-            state_context = '{}'::jsonb,
+        SET conversation_state = 'awaiting_media_photo',
+            state_context = '{"profile_completed": true}'::jsonb,
             last_processed_message_sid = $2,
             updated_at = NOW()
       WHERE id = $1`,
     [args.conversationId, args.inboundMessageSid],
   );
   await args.queueBody(t('profile_complete', args.language));
+  await args.queueBody(t('ask_media_photo', args.language));
 }

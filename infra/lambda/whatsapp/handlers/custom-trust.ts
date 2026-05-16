@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import type { Lang } from '../lib/templates';
+import { t, type Lang } from '../lib/templates';
 import type { TwilioSecret } from '../lib/twilio';
 import {
   buildS3Key,
@@ -146,14 +146,13 @@ export async function handleBuildingCustomTrust(
   if (existing.rows.length > 0) {
     await client.query(
       `UPDATE whatsapp_conversations
-       SET conversation_state = 'idle', state_context = '{}'::jsonb
+       SET conversation_state = 'awaiting_media_photo',
+           state_context = '{"profile_completed": true}'::jsonb
        WHERE id = $1`,
       [conv.id],
     );
-    const confirmation = conv.language === 'es'
-      ? 'Gracias. Hemos registrado tu experiencia. Te avisaremos sobre trabajos que encajen.'
-      : "Thanks! We've noted your experience. We'll be in touch with matching jobs.";
-    await queueOutboxText(client, msg.messageSid, msg.from, confirmation);
+    await queueOutboxText(client, msg.messageSid, msg.from, t('profile_complete', conv.language));
+    await queueOutboxText(client, msg.messageSid, msg.from, t('ask_media_photo', conv.language));
     return;
   }
 
@@ -292,14 +291,13 @@ export async function handleBuildingCustomTrust(
     }),
   );
 
-  const confirmation = conv.language === 'es'
-    ? 'Gracias. Hemos registrado tu experiencia. Te avisaremos sobre trabajos que encajen.'
-    : "Thanks! We've noted your experience. We'll be in touch with matching jobs.";
   await client.query(
     `UPDATE whatsapp_conversations
-     SET conversation_state = 'idle', state_context = '{}'::jsonb
+     SET conversation_state = 'awaiting_media_photo',
+         state_context = '{"profile_completed": true}'::jsonb
      WHERE id = $1`,
     [conv.id],
   );
-  await queueOutboxText(client, msg.messageSid, msg.from, confirmation);
+  await queueOutboxText(client, msg.messageSid, msg.from, t('profile_complete', conv.language));
+  await queueOutboxText(client, msg.messageSid, msg.from, t('ask_media_photo', conv.language));
 }

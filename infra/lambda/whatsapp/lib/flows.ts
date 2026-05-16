@@ -129,6 +129,8 @@ export interface ProfileStateContext {
   ai_pipeline_execution_arn?: string;
   /** DB id of the worker_profile_media row for the pending photo (UUID). */
   pending_media_photo_id?: string;
+  /** True when optional photo upload is happening after profile completion. */
+  profile_completed?: boolean;
 }
 
 // -- Trust Signal Layer ----------------------------------------------------

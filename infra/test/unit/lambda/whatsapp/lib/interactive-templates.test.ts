@@ -39,6 +39,15 @@ describe('interactive onboarding templates', () => {
     });
   });
 
+  it('uses updated transportation yes/no fallback copy', () => {
+    const prompt = buildProfileInteractivePrompt('has_transportation', 'es');
+    expect(prompt).toMatchObject({
+      templateName: 'onboarding_transportation_es',
+      variables: {},
+    });
+    expect(prompt?.fallbackBody).toBe('Tienes transporte propio?');
+  });
+
   it('does not build rich prompts for open-ended profile fields', () => {
     expect(buildProfileInteractivePrompt('full_name', 'en')).toBeNull();
     expect(buildProfileInteractivePrompt('city', 'es')).toBeNull();
@@ -74,5 +83,20 @@ describe('interactive onboarding templates', () => {
       templateName: 'onboarding_voice_choice_en',
       variables: {},
     });
+  });
+
+  it('uses updated media fallback copy for voice and photo upload', () => {
+    expect(buildMediaInteractivePrompt('voice_choice', 'es').fallbackBody).toContain(
+      'Puedes mandar una nota de voz ahora',
+    );
+    expect(buildMediaInteractivePrompt('voice_choice', 'en').fallbackBody).toContain(
+      'You can send a voice note now',
+    );
+    expect(buildMediaInteractivePrompt('photo_skip', 'es').fallbackBody).toContain(
+      'Foto para tu perfil',
+    );
+    expect(buildMediaInteractivePrompt('photo_skip', 'en').fallbackBody).toContain(
+      'Profile photo',
+    );
   });
 });

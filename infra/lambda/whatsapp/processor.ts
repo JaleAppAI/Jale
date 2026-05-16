@@ -694,7 +694,16 @@ async function handleAwaitingMediaPhoto(
       await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_type');
       return;
     }
-    // Classification done — advance to voice step
+    if (conv.state_context?.profile_completed === true) {
+      await updateConversation(client, conv.id, {
+        state_context: {},
+        conversation_state: 'idle',
+        last_processed_message_sid: messageSid,
+      });
+      return;
+    }
+
+    // Classification done during early media flow — advance to voice step
     await updateConversation(client, conv.id, {
       state_context: { ...conv.state_context, pending_media_photo_id: undefined },
       conversation_state: 'awaiting_media_voice',
@@ -706,6 +715,15 @@ async function handleAwaitingMediaPhoto(
 
   // Worker skipped or sent text (no photo yet) — proceed to voice step
   if (mediaPayload?.kind === 'photo' || numMedia === 0 || isSkipKeyword(msg.body)) {
+    if (conv.state_context?.profile_completed === true) {
+      await updateConversation(client, conv.id, {
+        conversation_state: 'idle',
+        state_context: {},
+        last_processed_message_sid: messageSid,
+      });
+      return;
+    }
+
     await updateConversation(client, conv.id, {
       conversation_state: 'awaiting_media_voice',
       last_processed_message_sid: messageSid,
@@ -1452,14 +1470,13 @@ async function enterProfileBuilderOrIdle(
     );
     return;
   }
-  // Sprint 7: collect media before text questions
   await updateConversation(client, conv.id, {
-    conversation_state: 'awaiting_media_photo',
+    conversation_state: 'awaiting_media_voice',
     state_context: { collected: {}, field_sids: {} },
     last_processed_message_sid: messageSid,
   });
   await queueReply(client, messageSid, from, 'legal_accepted', conv.language);
-  await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_skip');
+  await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
 }
 
 interface WorkerProfileSummary {
@@ -1879,6 +1896,21 @@ async function flushProfileAndAdvance(
   );
 }
 
+async function enterOptionalPhotoUpload(
+  client: PoolClient,
+  conv: ConversationRow,
+  from: string,
+  messageSid: string,
+): Promise<void> {
+  await updateConversation(client, conv.id, {
+    conversation_state: 'awaiting_media_photo',
+    state_context: { ...conv.state_context, profile_completed: true },
+    last_processed_message_sid: messageSid,
+  });
+  await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+  await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_skip');
+}
+
 async function enterTrustSignalOrIdle(
   client: PoolClient,
   conv: ConversationRow,
@@ -1930,12 +1962,7 @@ async function enterTrustSignalOrIdle(
       }
     }
 
-    await updateConversation(client, conv.id, {
-      conversation_state: 'idle',
-      state_context: {},
-      last_processed_message_sid: messageSid,
-    });
-    await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+    await enterOptionalPhotoUpload(client, conv, from, messageSid);
     return;
   }
 
@@ -1943,12 +1970,7 @@ async function enterTrustSignalOrIdle(
     console.warn('[processor] trust signal columns missing; skipping trust flow', {
       userId: conv.user_id,
     });
-    await updateConversation(client, conv.id, {
-      conversation_state: 'idle',
-      state_context: {},
-      last_processed_message_sid: messageSid,
-    });
-    await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+    await enterOptionalPhotoUpload(client, conv, from, messageSid);
     return;
   }
 
@@ -1968,12 +1990,7 @@ async function enterTrustSignalOrIdle(
     return;
   }
 
-  await updateConversation(client, conv.id, {
-    conversation_state: 'idle',
-    state_context: {},
-    last_processed_message_sid: messageSid,
-  });
-  await queueReply(client, messageSid, from, 'profile_complete', conv.language);
+  await enterOptionalPhotoUpload(client, conv, from, messageSid);
 }
 
 async function handleBuildingTrustSignal(
@@ -1987,12 +2004,7 @@ async function handleBuildingTrustSignal(
     console.warn('[processor] trust signal columns missing during trust flow; completing profile without trust signals', {
       userId: conv.user_id,
     });
-    await updateConversation(client, conv.id, {
-      conversation_state: 'idle',
-      state_context: {},
-      last_processed_message_sid: msg.messageSid,
-    });
-    await reply(client, msg, 'profile_complete', conv.language);
+    await enterOptionalPhotoUpload(client, conv, msg.from, msg.messageSid);
     return;
   }
 
@@ -2081,12 +2093,7 @@ async function handleBuildingTrustSignal(
     console.log(JSON.stringify({ metric: 'AIKnownTradeQuestionsMissing', trade }));
   }
 
-  await updateConversation(client, conv.id, {
-    conversation_state: 'idle',
-    state_context: {},
-    last_processed_message_sid: msg.messageSid,
-  });
-  await reply(client, msg, 'profile_complete', conv.language);
+  await enterOptionalPhotoUpload(client, conv, msg.from, msg.messageSid);
 }
 
 // ── idle — handle Jobs keyword + button callbacks ───────────────

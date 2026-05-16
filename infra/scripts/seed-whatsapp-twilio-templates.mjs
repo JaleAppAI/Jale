@@ -4,16 +4,18 @@ const SECRET_ID = 'jale/whatsapp/twilio';
 const REGION = process.env.AWS_REGION ?? 'us-east-2';
 
 const NEW_TEMPLATES = {
-  onboarding_voice_choice_es: 'HX36b2374b031ed8fd6c2788b2c5640730',
-  onboarding_voice_choice_en: 'HX841b05e971ad21576fd4b0883b0e33c0',
+  onboarding_voice_choice_es: 'HXc5c30aac43f61d77aed3cb7578106947',
+  onboarding_voice_choice_en: 'HX5722c3b606311e688308320f2c9bdc0c',
   onboarding_photo_type_es: 'HXaf78fd6b485523fcf96d739da5f78320',
   onboarding_photo_type_en: 'HX6e1f86a6032b876b5b1c9359adf8a080',
-  onboarding_photo_skip_es: 'HX4d3f7c0a0b7e44d4087d029daae65ac4',
-  onboarding_photo_skip_en: 'HX03caa28c9f232995a8bb0d34e4d7ca70',
+  onboarding_photo_skip_es: 'HX6534a7132d334a5ad03bde8142d6961e',
+  onboarding_photo_skip_en: 'HXfc65b30cdada3cae815436b1f80b8ca5',
   onboarding_availability_es: 'HX07a3cb3d9a522a317bd0289c33457ee7',
   onboarding_availability_en: 'HX81a27a7572343576a46db4009f15cfc4',
   onboarding_experience_es: 'HX1ca983ca5d7975a122f9b26dbb27bac9',
   onboarding_experience_en: 'HXa85d15d0c553a72236886aa037da1501',
+  onboarding_transportation_es: 'HX532e5cbbc7ea076b584a2ad05f9a283e',
+  onboarding_transportation_en: 'HXd64cfab2b317e21c2461cd42b2983b6f',
   onboarding_trade_en: 'HX5de9da29c61f41a3580d8d4832cfad41',
   onboarding_trade_es: 'HXd2e03da923913d234e5a82d4949c8993',
   onboarding_legal_es: 'HX6e8f6ae97297c17176301919f705a840',

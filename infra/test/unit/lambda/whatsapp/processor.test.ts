@@ -566,9 +566,9 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT tos log
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT privacy log
         .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_photo
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_voice
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT legal_accepted
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_media_photo
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_media_voice
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
@@ -585,14 +585,14 @@ describe('Processor Lambda', () => {
       const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string)
         && Array.isArray(params)
-        && (params as unknown[]).includes('awaiting_media_photo')
+        && (params as unknown[]).includes('awaiting_media_voice')
       );
       expect(convUpdate).toBeDefined();
       const mediaPrompt = mockQuery.mock.calls.find(([sql, params]) =>
         /INSERT INTO whatsapp_outbox/i.test(sql as string)
         && /content_template/i.test(sql as string)
         && Array.isArray(params)
-        && (params as unknown[]).includes('onboarding_photo_skip_en')
+        && (params as unknown[]).includes('onboarding_voice_choice_en')
       );
       expect(mediaPrompt).toBeDefined();
     });
@@ -760,8 +760,10 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals_completed_at exists
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users trust_signals
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT seeded trade questions
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_photo
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox photo prompt
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
@@ -788,12 +790,12 @@ describe('Processor Lambda', () => {
       )?.[0] as string;
       expect(trustSql).not.toMatch(/updated_at/i);
 
-      const idleUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      const photoUpdate = mockQuery.mock.calls.find(([sql, params]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string)
         && Array.isArray(params)
-        && params.includes('idle'),
+        && params.includes('awaiting_media_photo'),
       );
-      expect(idleUpdate).toBeDefined();
+      expect(photoUpdate).toBeDefined();
     });
 
     it('skips trust questions if migration 006 columns are missing', async () => {
@@ -809,8 +811,9 @@ describe('Processor Lambda', () => {
           })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: false }] }) // users.trust_signals missing
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation idle
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_photo
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox photo prompt
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
@@ -827,12 +830,12 @@ describe('Processor Lambda', () => {
       );
 
       expect(findQueryByPattern(/UPDATE users\s+SET trust_signals/i)).toBeUndefined();
-      const idleUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+      const photoUpdate = mockQuery.mock.calls.find(([sql, params]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string)
         && Array.isArray(params)
-        && params.includes('idle'),
+        && params.includes('awaiting_media_photo'),
       );
-      expect(idleUpdate).toBeDefined();
+      expect(photoUpdate).toBeDefined();
     });
 
     it('returns the command menu when a worker sends help', async () => {
