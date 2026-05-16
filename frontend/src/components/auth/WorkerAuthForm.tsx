@@ -4,11 +4,14 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { workerConfirmSignUp, workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
+import { authErrorKey } from '@/lib/auth-errors';
+import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
 import type { WorkerAvailability, WorkerExperience, WorkerProfilePatch, WorkerTrade } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
+import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 
 const OTP_LENGTH = 6;
 const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
@@ -24,7 +27,8 @@ export default function WorkerAuthForm() {
     const { setTokens } = useAuth();
 
     const [step, setStep] = useState<Step>('login');
-    const [phone, setPhone] = useState('');
+    const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
+    const [phoneLocalNumber, setPhoneLocalNumber] = useState('');
     const [fullName, setFullName] = useState('');
     const [city, setCity] = useState('');
     const [mainTrade, setMainTrade] = useState<WorkerTrade>('electrician');
@@ -40,6 +44,8 @@ export default function WorkerAuthForm() {
 
     const resetDigits = () => setDigits(Array(OTP_LENGTH).fill(''));
     const code = digits.join('');
+    const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
+    const phoneReady = phoneLocalNumber.replace(/\D/g, '').length >= 7;
 
     const pendingProfile = (): WorkerProfilePatch => ({
         full_name: fullName.trim(),
@@ -60,8 +66,8 @@ export default function WorkerAuthForm() {
             resetDigits();
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
-        } catch {
-            setError(tCommon('error'));
+        } catch (err) {
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -79,8 +85,8 @@ export default function WorkerAuthForm() {
             resetDigits();
             setStep('confirm_signup');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
-        } catch {
-            setError(tCommon('error'));
+        } catch (err) {
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -96,8 +102,8 @@ export default function WorkerAuthForm() {
             resetDigits();
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
-        } catch {
-            setError(tCommon('error'));
+        } catch (err) {
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -111,8 +117,8 @@ export default function WorkerAuthForm() {
             const tokens = await workerVerifyOtp(user, code);
             setTokens(tokens, 'worker');
             router.push('/worker/profile');
-        } catch {
-            setError(tCommon('error'));
+        } catch (err) {
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -141,7 +147,7 @@ export default function WorkerAuthForm() {
     };
 
     const otpComplete = digits.every(Boolean);
-    const canCreate = fullName.trim() && phone.length >= 7 && city.trim() && (mainTrade !== 'other' || mainTradeOther.trim());
+    const canCreate = fullName.trim() && phoneReady && city.trim() && (mainTrade !== 'other' || mainTradeOther.trim());
 
     return (
         <div className={`w-full ${step === 'signup' ? 'max-w-md' : 'max-w-sm'} mx-auto px-6 py-10 flex flex-col`} style={{ minHeight: 'calc(100vh - 3.5rem)' }}>
@@ -151,10 +157,15 @@ export default function WorkerAuthForm() {
                 <div className="flex flex-col gap-5">
                     <AuthHeading title={t('title')} subtitle={t('phone_label')} />
                     <Field label={t('fields.phone')}>
-                        <Input type="tel" placeholder="+1 (555) 000-0000" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" autoComplete="tel" />
+                        <PhoneNumberField
+                            countryCode={phoneCountryCode}
+                            localNumber={phoneLocalNumber}
+                            onCountryCodeChange={setPhoneCountryCode}
+                            onLocalNumberChange={setPhoneLocalNumber}
+                        />
                     </Field>
                     {error && <ErrorText error={error} />}
-                    <Button className="w-full" size="lg" onClick={handleSendOtp} disabled={phone.length < 7 || isLoading}>
+                    <Button className="w-full" size="lg" onClick={handleSendOtp} disabled={!phoneReady || isLoading}>
                         {isLoading ? tCommon('loading') : t('send_otp')}
                     </Button>
                     <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setStep('signup'); }} />
@@ -165,8 +176,16 @@ export default function WorkerAuthForm() {
                 <div className="flex flex-col gap-4">
                     <BackButton onClick={() => { setError(null); setStep('login'); }} label={t('back')} />
                     <AuthHeading title={t('signup_title')} subtitle={t('signup_subtitle')} />
+                    <p className="text-xs leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('password_note')}</p>
                     <Field label={t('fields.full_name')}><Input value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" /></Field>
-                    <Field label={t('fields.phone')}><Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" autoComplete="tel" /></Field>
+                    <Field label={t('fields.phone')}>
+                        <PhoneNumberField
+                            countryCode={phoneCountryCode}
+                            localNumber={phoneLocalNumber}
+                            onCountryCodeChange={setPhoneCountryCode}
+                            onLocalNumberChange={setPhoneLocalNumber}
+                        />
+                    </Field>
                     <Field label={t('fields.city')}><Input value={city} onChange={(e) => setCity(e.target.value)} /></Field>
                     <Field label={t('fields.main_trade')}>
                         <Select value={mainTrade} onChange={(e) => setMainTrade(e.target.value as WorkerTrade)}>

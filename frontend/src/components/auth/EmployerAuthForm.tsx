@@ -4,12 +4,15 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp } from '@/lib/cognito';
+import { authErrorKey } from '@/lib/auth-errors';
+import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
+import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 
 const TRADES: EmployerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
 const JOB_TYPES: EmployerJobType[] = ['full-time', 'part-time', 'contract'];
@@ -30,7 +33,8 @@ export default function EmployerAuthForm() {
     const [confirmationCode, setConfirmationCode] = useState('');
     const [companyName, setCompanyName] = useState('');
     const [contactName, setContactName] = useState('');
-    const [phone, setPhone] = useState('');
+    const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
+    const [phoneLocalNumber, setPhoneLocalNumber] = useState('');
     const [city, setCity] = useState('');
     const [serviceArea, setServiceArea] = useState('');
     const [hiringTrades, setHiringTrades] = useState<EmployerTrade[]>([]);
@@ -39,6 +43,8 @@ export default function EmployerAuthForm() {
     const [companyDescription, setCompanyDescription] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
+    const phoneReady = phoneLocalNumber.replace(/\D/g, '').length >= 7;
 
     const pendingProfile = (): EmployerProfilePatch => ({
         company_name: companyName.trim(),
@@ -61,7 +67,7 @@ export default function EmployerAuthForm() {
             router.push('/employer/profile');
         } catch (err) {
             console.error('[EmployerAuth] sign-in error:', err);
-            setError(tCommon('error'));
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -80,7 +86,7 @@ export default function EmployerAuthForm() {
             setStep('confirm');
         } catch (err) {
             console.error('[EmployerAuth] sign-up error:', err);
-            setError(tCommon('error'));
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -97,7 +103,7 @@ export default function EmployerAuthForm() {
             router.push('/employer/profile');
         } catch (err) {
             console.error('[EmployerAuth] confirm error:', err);
-            setError(tCommon('error'));
+            setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
         }
@@ -110,7 +116,7 @@ export default function EmployerAuthForm() {
         setTypicalJobTypes((current) => current.includes(jobType) ? current.filter((item) => item !== jobType) : [...current, jobType]);
     };
 
-    const canCreate = companyName.trim() && contactName.trim() && email.trim() && password && passwordConfirm && phone.trim() &&
+    const canCreate = companyName.trim() && contactName.trim() && email.trim() && password && passwordConfirm && phoneReady &&
         city.trim() && serviceArea.trim() && hiringTrades.length > 0 && typicalJobTypes.length > 0;
 
     return (
@@ -147,7 +153,15 @@ export default function EmployerAuthForm() {
                         <Field label={t('fields.email')}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" /></Field>
                         <Field label={t('fields.password')}><Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" /></Field>
                         <Field label={t('fields.password_confirm')}><Input type="password" value={passwordConfirm} onChange={(e) => setPasswordConfirm(e.target.value)} autoComplete="new-password" /></Field>
-                        <Field label={t('fields.phone')}><Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" /></Field>
+                        <p className="text-xs leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('password_note')}</p>
+                        <Field label={t('fields.phone')}>
+                            <PhoneNumberField
+                                countryCode={phoneCountryCode}
+                                localNumber={phoneLocalNumber}
+                                onCountryCodeChange={setPhoneCountryCode}
+                                onLocalNumberChange={setPhoneLocalNumber}
+                            />
+                        </Field>
                         <Field label={t('fields.city')}><Input value={city} onChange={(e) => setCity(e.target.value)} /></Field>
                         <Field label={t('fields.service_area')}><Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} /></Field>
                         <CheckboxGroup label={t('fields.hiring_trades')}>

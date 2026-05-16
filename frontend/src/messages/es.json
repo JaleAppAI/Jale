@@ -35,6 +35,7 @@
             "code_sent": "Enviado a {phone}",
             "create_account": "Crear cuenta",
             "confirm_account": "Confirmar cuenta",
+            "password_note": "Los trabajadores no necesitan contrasena. Iniciaras sesion con tu telefono y un codigo de verificacion.",
             "yes": "Si",
             "no": "No",
             "fields": {
@@ -68,7 +69,18 @@
                 "flexible": "Flexible"
             },
             "errors": {
-                "trade_other_required": "Ingresa tu oficio."
+                "trade_other_required": "Ingresa tu oficio.",
+                "account_exists": "Ya existe una cuenta con este telefono. Vuelve e inicia sesion.",
+                "account_not_found": "No encontramos una cuenta con ese telefono. Crea una cuenta primero.",
+                "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
+                "invalid_code": "Ese codigo no es correcto. Revisalo e intenta de nuevo.",
+                "expired_code": "Ese codigo expiro. Pide un codigo nuevo e intenta de nuevo.",
+                "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
+                "invalid_credentials": "No pudimos iniciar sesion con ese telefono.",
+                "password_requirements": "La contrasena no cumple los requisitos.",
+                "invalid_email": "Ingresa un correo valido.",
+                "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
+                "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo."
             }
         },
         "employer": {
@@ -86,6 +98,7 @@
             "signin_prompt": "Ya tienes cuenta?",
             "signin_link": "Iniciar sesion",
             "back": "Volver",
+            "password_note": "La contrasena debe tener al menos 8 caracteres e incluir mayusculas, minusculas, un numero y un simbolo.",
             "panel_title": "contratacion mas rapida",
             "panel_body": "Los perfiles de empleador ayudan a los trabajadores a reconocer la empresa detras de cada oportunidad.",
             "fields": {
@@ -117,7 +130,18 @@
                 "contract": "Contrato"
             },
             "errors": {
-                "password_mismatch": "Las contrasenas no coinciden."
+                "password_mismatch": "Las contrasenas no coinciden.",
+                "account_exists": "Ya existe una cuenta con este correo. Inicia sesion o usa otro correo.",
+                "account_not_found": "No encontramos una cuenta con ese correo.",
+                "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
+                "invalid_email": "Ingresa un correo de trabajo valido.",
+                "password_requirements": "Usa una contrasena mas segura con mayuscula, minuscula, numero y simbolo.",
+                "invalid_code": "Ese codigo de confirmacion no es correcto.",
+                "expired_code": "Ese codigo de confirmacion expiro. Pide uno nuevo e intenta de nuevo.",
+                "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
+                "invalid_credentials": "El correo o la contrasena no son correctos.",
+                "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
+                "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo."
             }
         }
     },
@@ -174,6 +198,11 @@
             },
             "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
             "posted": "Publicado",
+            "details": "Detalles",
+            "posting_details": "Detalles de la publicacion",
+            "required_documents": "Documentos requeridos",
+            "no_description": "No se agrego descripcion.",
+            "no_required_documents": "No se requieren documentos para este empleo.",
             "search_placeholder": "Buscar por título o ubicación...",
             "back_to_dashboard": "← Volver al panel"
         },

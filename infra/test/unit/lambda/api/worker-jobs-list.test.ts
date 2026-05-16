@@ -65,6 +65,7 @@ describe('worker-jobs-list', () => {
         location: 'Houston',
         job_type: 'full-time',
         company: 'Acme',
+        company_name: 'Acme',
         pay: '$24/hr',
         required_docs: ['resume'],
         created_at: '2026-04-20T00:00:00Z',
@@ -78,6 +79,36 @@ describe('worker-jobs-list', () => {
       channel: 'api',
       search: '',
       jobType: undefined,
+    });
+  });
+
+  it('normalizes nullable matching fields for the frontend contract', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockListMatchedJobsForWorker.mockResolvedValue([{
+      id: 'j2',
+      title: 'Painter',
+      location: 'Austin',
+      job_type: 'contract',
+      company: 'Jale',
+      pay: 'Pay not specified',
+      required_docs: null,
+      created_at: '2026-04-21T00:00:00Z',
+      match_score: 42,
+      match_components: { profession: 32 },
+      match_reasons: ['profession_partial'],
+    }]);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('FROM users WHERE cognito_sub')) return Promise.resolve({ rows: [{ id: 'worker-1' }] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(baseEvent);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).jobs[0]).toMatchObject({
+      company: 'Jale',
+      company_name: 'Jale',
+      required_docs: [],
     });
   });
 

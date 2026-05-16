@@ -10,6 +10,11 @@ export type Job = {
   created_at: string;
 };
 
+export type EmployerJobDetail = Job & {
+  description: string | null;
+  required_docs: Array<'resume' | 'driver_license' | 'ssn'>;
+};
+
 export type ApplicationStatus = 'pending' | 'reviewed' | 'hired' | 'rejected';
 
 export type Applicant = {
@@ -100,6 +105,12 @@ export async function createJob(
     body: JSON.stringify(data),
   }, token);
   if (!res.ok) throw new Error('create_failed');
+  return res.json();
+}
+
+export async function getJob(token: string, jobId: string): Promise<EmployerJobDetail> {
+  const res = await apiFetch(`/employer/jobs/${jobId}`, {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
   return res.json();
 }
 

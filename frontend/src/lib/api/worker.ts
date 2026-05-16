@@ -76,9 +76,13 @@ export type Job = {
   title: string;
   location: string;
   job_type: 'full-time' | 'part-time' | 'contract';
+  company?: string;
   company_name: string;
+  pay?: string;
   required_docs: DocType[];
   created_at: string;
+  match_score?: number;
+  match_reasons?: string[];
 };
 
 export type JobDetail = Job & {

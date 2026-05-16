@@ -147,6 +147,22 @@ describe('ApiStack', () => {
     });
   });
 
+  test('Employer job detail Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer job detail endpoint',
+    });
+  });
+
+  test('GET /employer/jobs/{jobId} exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
   test('Employer job applicants Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Employer job applicants endpoint',

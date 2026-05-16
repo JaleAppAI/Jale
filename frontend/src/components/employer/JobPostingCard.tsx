@@ -21,52 +21,51 @@ export function JobPostingCard({ job, href, isLast }: Props) {
   });
 
   return (
-    <Link href={href}>
-      <div
-        className="grid px-5 py-4 items-center hover:bg-[var(--jale-blue-50)] transition-colors duration-100 cursor-pointer"
-        style={{
-          gridTemplateColumns: '2fr 1fr 1fr auto',
-          borderBottom: isLast ? 'none' : '1px solid var(--jale-divider)',
-        }}
-      >
-        {/* Job title + posted date */}
-        <div>
+    <div
+      className="grid grid-cols-1 gap-3 px-5 py-4 items-start hover:bg-[var(--jale-blue-50)] transition-colors duration-100 md:grid-cols-[minmax(0,2fr)_minmax(7rem,1fr)_minmax(7rem,1fr)_auto_auto] md:items-center"
+      style={{
+        borderBottom: isLast ? 'none' : '1px solid var(--jale-divider)',
+      }}
+    >
+      <div>
+        <Link href={href} className="inline-block hover:underline">
           <p className="font-semibold text-sm" style={{ color: 'var(--jale-ink)' }}>
             {job.title}
           </p>
-          <p className="text-xs mt-0.5" style={{ color: 'var(--jale-ink-2)' }}>
-            Posted {postedDate}
-          </p>
-        </div>
-
-        {/* Location */}
-        <p className="text-sm" style={{ color: 'var(--jale-ink-2)' }}>
-          {job.location}
+        </Link>
+        <p className="text-xs mt-0.5" style={{ color: 'var(--jale-ink-2)' }}>
+          {t('jobs.posted')} {postedDate}
         </p>
-
-        {/* Applicants */}
-        <p className="text-sm font-semibold" style={{ color: 'var(--jale-blue-600)' }}>
-          {job.applicant_count} {t('jobs.applicants_count', { count: job.applicant_count }).replace(String(job.applicant_count), '').trim() || ''}
-          <span className="font-normal ml-1 text-xs" style={{ color: 'var(--jale-ink-2)' }}>
-            {job.applicant_count === 1 ? 'applicant' : 'applicants'}
-          </span>
-        </p>
-
-        {/* Status pill */}
-        <span
-          className="pill"
-          style={isActive
-            ? { background: 'var(--jale-success-bg)', color: '#1f7a44' }
-            : { background: 'var(--jale-paper-2)', color: 'var(--jale-ink-2)', border: '1px solid var(--jale-divider)' }
-          }
-        >
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full"
-            style={{ background: isActive ? 'var(--jale-success)' : 'var(--jale-ink-2)', marginRight: 4 }}
-          />
-          {isActive ? t('jobs.active') : t('jobs.closed')}
-        </span>
       </div>
-    </Link>
+
+      <p className="text-sm" style={{ color: 'var(--jale-ink-2)' }}>
+        {job.location}
+      </p>
+
+      <p className="text-sm font-semibold" style={{ color: 'var(--jale-blue-600)' }}>
+        {t('jobs.applicants_count', { count: job.applicant_count })}
+      </p>
+
+      <span
+        className="pill"
+        style={isActive
+          ? { background: 'var(--jale-success-bg)', color: '#1f7a44' }
+          : { background: 'var(--jale-paper-2)', color: 'var(--jale-ink-2)', border: '1px solid var(--jale-divider)' }
+        }
+      >
+        <span
+          className="inline-block w-1.5 h-1.5 rounded-full"
+          style={{ background: isActive ? 'var(--jale-success)' : 'var(--jale-ink-2)', marginRight: 4 }}
+        />
+        {isActive ? t('jobs.active') : t('jobs.closed')}
+      </span>
+
+      <Link
+        href={href}
+        className="inline-flex h-9 items-center justify-center rounded-full border border-[var(--jale-divider)] bg-white px-4 text-xs font-semibold text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]"
+      >
+        {t('jobs.details')}
+      </Link>
+    </div>
   );
 }

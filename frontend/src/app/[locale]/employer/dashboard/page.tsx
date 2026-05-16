@@ -93,11 +93,12 @@ export default function EmployerDashboardPage() {
                         <p className="text-sm text-muted">{tCommon('loading')}</p>
                     ) : (
                         <div className="space-y-3">
-                            {filteredJobs.map(job => (
+                            {filteredJobs.map((job, index) => (
                                 <JobPostingCard
                                     key={job.id}
                                     job={job}
                                     href={`/employer/jobs/${job.id}`}
+                                    isLast={index === filteredJobs.length - 1}
                                 />
                             ))}
                         </div>

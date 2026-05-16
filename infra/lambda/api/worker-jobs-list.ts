@@ -58,7 +58,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       statusCode: 200,
       headers: CORS_HEADERS,
       body: JSON.stringify({
-        jobs: jobs.map(({ match_components, ...job }) => job),
+        jobs: jobs.map(({ company, required_docs, match_components, ...job }) => ({
+          ...job,
+          company,
+          company_name: company,
+          required_docs: required_docs ?? [],
+        })),
       }),
     };
   } catch (err) {

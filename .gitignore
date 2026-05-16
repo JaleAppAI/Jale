@@ -8,6 +8,7 @@ build/
 
 # CDK
 cdk.out/
+cdk.out.*/
 .cdk.staging/
 cdk.context.json
 
