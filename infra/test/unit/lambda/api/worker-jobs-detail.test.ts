@@ -66,4 +66,29 @@ describe('worker-jobs-detail', () => {
     expect(body.already_applied).toBe(true);
     expect(body.application_status).toBe('pending');
   });
+
+  it('normalizes nullable required_docs for the frontend contract', async () => {
+    const job = {
+      id: 'job-1',
+      title: 'T',
+      location: 'L',
+      job_type: 'full-time',
+      description: 'D',
+      required_docs: null,
+      created_at: 'ts',
+      company_name: 'Acme',
+    };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(baseEvent);
+    const body = JSON.parse(res.body);
+
+    expect(res.statusCode).toBe(200);
+    expect(body.required_docs).toEqual([]);
+    expect(body.missing_docs).toEqual([]);
+  });
 });

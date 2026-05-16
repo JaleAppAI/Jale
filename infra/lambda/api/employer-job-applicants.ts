@@ -93,7 +93,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          ARRAY(
            SELECT ws.skill
            FROM worker_skills ws
-           WHERE ws.worker_id = wp.user_id
+           WHERE ws.worker_id = ja.worker_id
            ORDER BY ws.skill
          ) AS skills,
          wp.availability,

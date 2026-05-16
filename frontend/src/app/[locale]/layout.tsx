@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Syne } from "next/font/google";
+import { Lexend } from "next/font/google";
 import "../globals.css";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages } from "next-intl/server";
@@ -7,11 +7,11 @@ import React from 'react';
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/contexts/AuthContext";
 
-const syne = Syne({
+const lexend = Lexend({
   subsets: ["latin"],
-  variable: "--font-syne",
+  variable: "--font-lexend",
   display: "swap",
-  weight: ["400", "500", "600", "700"],
+  weight: ["300", "400", "500", "600", "700", "800"],
 });
 
 export const metadata: Metadata = {
@@ -35,7 +35,7 @@ export default async function RootLayout({
 }>) {
   const messages = await getMessages();
   return (
-    <html lang={locale} className={syne.variable}>
+    <html lang={locale} className={lexend.variable}>
       <body>
         <NextIntlClientProvider locale={locale} messages={messages}>
           <AuthProvider locale={locale}>

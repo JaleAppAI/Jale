@@ -22,6 +22,8 @@ const expectedBaselineMigrations = [
   '012_ai_trust_assessment.sql',
   '013_whatsapp_template_outbox.sql',
   '014_employer_candidate_rankings.sql',
+  '015_application_status_alignment.sql',
+  '016_employer_profiles.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -75,7 +77,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-014 readiness baseline order', () => {
+  it('locks the 001-016 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -158,6 +160,24 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY users_ai_score_update');
   });
 
+  it('aligns application statuses in migration 015', () => {
+    const migration = readMigration('015_application_status_alignment.sql');
+    const oldConstraintDropIndex = migration.indexOf('pg_get_constraintdef(con.oid) LIKE \'%submitted%\'');
+    const namedConstraintDropIndex = migration.indexOf('DROP CONSTRAINT IF EXISTS job_applications_status_check');
+    const statusUpdateIndex = migration.indexOf('UPDATE job_applications');
+
+    expect(migration).toContain("WHEN 'submitted' THEN 'pending'");
+    expect(migration).toContain("WHEN 'viewed' THEN 'reviewed'");
+    expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
+    expect(oldConstraintDropIndex).toBeGreaterThanOrEqual(0);
+    expect(namedConstraintDropIndex).toBeGreaterThanOrEqual(0);
+    expect(statusUpdateIndex).toBeGreaterThan(namedConstraintDropIndex);
+    expect(migration).toContain("ALTER COLUMN status SET DEFAULT 'pending'");
+    expect(migration).toContain('idx_job_applications_status_pending');
+    expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
+    expect(migration).toContain('CREATE POLICY applications_employer_update');
+  });
+
   it('adds employer candidate ranking cache with matching writes and employer-scoped reads in migration 014', () => {
     const migration = readMigration('014_employer_candidate_rankings.sql');
 
@@ -170,6 +190,19 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('ALTER TABLE employer_candidate_rankings FORCE ROW LEVEL SECURITY');
     expect(migration).toContain('CREATE POLICY employer_candidate_rankings_matching_all');
     expect(migration).toContain('CREATE POLICY employer_candidate_rankings_employer_read');
+  });
+
+  it('adds employer profiles in migration 016', () => {
+    const migration = readMigration('016_employer_profiles.sql');
+
+    expectTable(migration, 'employer_profiles');
+    expect(migration).toContain('company_name');
+    expect(migration).toContain('contact_name');
+    expect(migration).toContain('hiring_trades');
+    expect(migration).toContain('typical_job_types');
+    expect(migration).toContain('company_size');
+    expect(migration).toContain('ALTER TABLE employer_profiles FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('CREATE POLICY employer_profiles_self');
   });
 
   it('documents canonical matching source fields in the architecture guide', () => {
@@ -187,7 +220,7 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-014 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-016 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

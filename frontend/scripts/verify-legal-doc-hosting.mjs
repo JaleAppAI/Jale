@@ -43,4 +43,36 @@ for (const marker of ['terms', 'privacy', '2026-05-15', 'application/pdf']) {
   }
 }
 
+const reviewRoutes = [
+  {
+    path: 'src/app/terms/route.ts',
+    markers: [
+      'text/html',
+      'JaleApp.AI SMS Terms',
+      'Reply HELP for help',
+      'Reply STOP to opt out',
+      'https://www.jaleapp.ai/privacypolicy',
+    ],
+  },
+  {
+    path: 'src/app/privacypolicy/route.ts',
+    markers: [
+      'text/html',
+      'JaleApp.AI Privacy Policy',
+      'SMS opt-in consent data',
+      'third parties or affiliates for marketing or promotional purposes',
+      'https://www.jaleapp.ai/terms',
+    ],
+  },
+];
+
+for (const route of reviewRoutes) {
+  const source = readFileSync(join(root, route.path), 'utf8');
+  for (const marker of route.markers) {
+    if (!source.includes(marker)) {
+      throw new Error(`${route.path} is missing public review marker: ${marker}`);
+    }
+  }
+}
+
 console.log('Legal document hosting contract is present.');

@@ -60,8 +60,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // 3. Insert application (UNIQUE constraint catches already-applied).
     try {
       const insertRes = await client.query(
-        `INSERT INTO job_applications (job_id, worker_id)
-         VALUES ($1, (SELECT id FROM users WHERE cognito_sub = $2))
+        `INSERT INTO job_applications (job_id, worker_id, status)
+         VALUES ($1, (SELECT id FROM users WHERE cognito_sub = $2), 'pending')
          RETURNING id, job_id, status, applied_at`,
         [jobId, cognitoSub],
       );

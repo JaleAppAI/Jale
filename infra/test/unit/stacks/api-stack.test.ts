@@ -147,9 +147,35 @@ describe('ApiStack', () => {
     });
   });
 
+  test('Employer job detail Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer job detail endpoint',
+    });
+  });
+
+  test('GET /employer/jobs/{jobId} exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
   test('Employer job applicants Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Employer job applicants endpoint',
+    });
+  });
+
+  test('PATCH /employer/profile is protected by EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'PATCH',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
     });
   });
 
@@ -169,6 +195,11 @@ describe('ApiStack', () => {
     });
   });
 
+  test('Employer application status update Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer application status update endpoint',
+    });
+  });
   // Task 12 — new worker marketplace route assertions
   test('Worker jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
@@ -228,5 +259,15 @@ describe('ApiStack', () => {
         Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
       }),
     });
+  });
+
+  test('Employer PATCH routes use EmployerAuthorizer', () => {
+    template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
+      HttpMethod: 'PATCH',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    }, 3);
   });
 });

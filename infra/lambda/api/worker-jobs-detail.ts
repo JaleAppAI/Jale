@@ -44,15 +44,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'job_not_found' }) };
     }
     const job = jobRes.rows[0];
+    const requiredDocs: string[] = Array.isArray(job.required_docs) ? job.required_docs : [];
 
-    const docsRes = await client.query(
-      `SELECT DISTINCT doc_type FROM worker_documents
-       WHERE worker_id = (SELECT id FROM users WHERE cognito_sub = $1)
-         AND doc_type = ANY($2::text[])`,
-      [cognitoSub, job.required_docs],
-    );
+    const docsRes = requiredDocs.length > 0
+      ? await client.query(
+        `SELECT DISTINCT doc_type FROM worker_documents
+         WHERE worker_id = (SELECT id FROM users WHERE cognito_sub = $1)
+           AND doc_type = ANY($2::text[])`,
+        [cognitoSub, requiredDocs],
+      )
+      : { rows: [] };
     const uploadedTypes = new Set(docsRes.rows.map((r: any) => r.doc_type));
-    const missing_docs = (job.required_docs as string[]).filter(d => !uploadedTypes.has(d));
+    const missing_docs = requiredDocs.filter(d => !uploadedTypes.has(d));
 
     const appRes = await client.query(
       `SELECT status FROM job_applications
@@ -65,7 +68,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('COMMIT');
     return {
       statusCode: 200, headers: CORS_HEADERS,
-      body: JSON.stringify({ ...job, already_applied, application_status, missing_docs }),
+      body: JSON.stringify({ ...job, required_docs: requiredDocs, already_applied, application_status, missing_docs }),
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch {} }

@@ -8,28 +8,68 @@ const DOC_LABELS: Record<string, string> = {
   ssn: 'SSN',
 };
 
+function jobTypeLabel(type: string) {
+  if (type === 'full-time') return '40 hrs/wk';
+  if (type === 'part-time') return 'Part-time';
+  return type.replace('-', ' ');
+}
+
+function getInitials(name: string) {
+  return name.split(/\s+/).map(w => w[0]).join('').toUpperCase().slice(0, 2);
+}
+
 export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
+  const initials = getInitials(job.company_name ?? 'JB');
+
   return (
     <Link href={href} className="block">
-      <Card className="p-4 hover:shadow-sm transition-shadow">
-        <div className="flex items-start justify-between gap-2 mb-1">
-          <div>
-            <p className="text-base font-semibold">{job.title}</p>
-            <p className="text-xs text-muted-foreground">{job.company_name} · {job.location}</p>
-          </div>
-          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs capitalize">
-            {job.job_type.replace('-', ' ')}
+      <Card
+        className="p-4 flex gap-3 items-start transition-shadow hover:shadow-md"
+        style={{ cursor: 'pointer' }}
+      >
+        {/* Company avatar */}
+        <span
+          className="avatar-initials square flex-shrink-0"
+          style={{ width: 44, height: 44, fontSize: 15, background: 'var(--jale-blue-50)', color: 'var(--jale-blue-700)', borderRadius: 12 }}
+        >
+          {initials}
+        </span>
+
+        {/* Main info */}
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold leading-snug" style={{ fontSize: 14, color: 'var(--jale-ink)' }}>
+            {job.title}
+          </p>
+          <p className="text-xs mt-0.5" style={{ color: 'var(--jale-ink-2)' }}>
+            {job.company_name}
+            {job.location ? ` · ${job.location}` : ''}
+          </p>
+
+          {/* Doc chips */}
+          {job.required_docs.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {job.required_docs.map((d) => (
+                <span
+                  key={d}
+                  className="pill pill-info"
+                  style={{ fontSize: 10, letterSpacing: '.06em', textTransform: 'uppercase' }}
+                >
+                  {DOC_LABELS[d] ?? d}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right side: type chip */}
+        <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          <span
+            className="rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize"
+            style={{ background: 'var(--jale-blue-50)', color: 'var(--jale-blue-700)' }}
+          >
+            {jobTypeLabel(job.job_type)}
           </span>
         </div>
-        {job.required_docs.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
-            {job.required_docs.map((d) => (
-              <span key={d} className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
-                {DOC_LABELS[d] ?? d}
-              </span>
-            ))}
-          </div>
-        )}
       </Card>
     </Link>
   );

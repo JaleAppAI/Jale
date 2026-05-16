@@ -8,6 +8,7 @@
         "language_toggle": "Español",
         "sign_out": "Sign out",
         "profile": "Profile",
+        "home": "Home",
         "worker_home": "Jobs",
         "my_applications": "My Applications"
     },
@@ -21,16 +22,127 @@
         "worker": {
             "title": "Sign in with your phone",
             "phone_label": "Phone number: +1 3463488162",
+            "signup_title": "Create your worker profile",
+            "signup_subtitle": "Answer the same questions we ask on WhatsApp so employers can match with you.",
+            "signup_prompt": "New to Jale?",
+            "signup_link": "Create an account",
+            "confirm_title": "Confirm your account",
+            "otp_title": "Enter the 6-digit code",
+            "code_sent": "Sent to {phone}",
+            "create_account": "Create account",
+            "confirm_account": "Confirm account",
+            "password_note": "Workers do not need a password. You will sign in with your phone number and a verification code.",
             "send_otp": "Send code",
             "otp_label": "Enter the code we sent you",
             "verify": "Verify",
-            "back": "Back"
+            "back": "Back",
+            "yes": "Yes",
+            "no": "No",
+            "fields": {
+                "full_name": "Full name",
+                "phone": "Phone number",
+                "city": "City or zip code",
+                "main_trade": "Main trade",
+                "main_trade_other": "Trade",
+                "years_experience": "Years of experience",
+                "has_transportation": "Own transportation",
+                "availability": "Availability"
+            },
+            "trades": {
+                "electrician": "Electrician",
+                "plumber": "Plumber",
+                "carpenter": "Carpenter",
+                "concrete": "Concrete",
+                "painting": "Painting",
+                "other": "Other"
+            },
+            "experience": {
+                "0-1": "0-1 years",
+                "2-4": "2-4 years",
+                "5-9": "5-9 years",
+                "10plus": "10+ years"
+            },
+            "availability": {
+                "full_time": "Full-time",
+                "part_time": "Part-time",
+                "weekends": "Weekends",
+                "flexible": "Flexible"
+            },
+            "errors": {
+                "trade_other_required": "Please enter your trade.",
+                "account_exists": "An account already exists for this phone number. Go back and sign in instead.",
+                "account_not_found": "We could not find an account for that phone number. Create an account first.",
+                "invalid_phone": "Enter a valid phone number, including the area code.",
+                "invalid_code": "That code is not correct. Check the code and try again.",
+                "expired_code": "That code expired. Request a new code and try again.",
+                "too_many_attempts": "Too many attempts. Wait a few minutes, then try again.",
+                "invalid_credentials": "We could not sign you in with that phone number.",
+                "password_requirements": "The password does not meet the requirements.",
+                "invalid_email": "Enter a valid email address.",
+                "invalid_signup": "Check the account details and try again.",
+                "signup_failed": "We could not create the account. Check the fields and try again."
+            }
         },
         "employer": {
+            "hero": "Hire skilled workers, fast.",
             "title": "Employer sign in",
+            "signup_title": "Create your employer profile",
+            "signup_subtitle": "Tell workers who you are and what roles you usually hire for.",
             "email_label": "Email",
             "password_label": "Password",
-            "sign_in": "Sign in"
+            "sign_in": "Sign in",
+            "create_account": "Create account",
+            "confirm_account": "Confirm account",
+            "signup_prompt": "New here?",
+            "signup_link": "Create an account",
+            "signin_prompt": "Already have an account?",
+            "signin_link": "Sign in",
+            "back": "Back",
+            "password_note": "Password must be at least 8 characters and include uppercase and lowercase letters, a number, and a symbol.",
+            "panel_title": "faster time-to-hire",
+            "panel_body": "Employer profiles help workers recognize the company behind each opportunity.",
+            "fields": {
+                "company_name": "Company name",
+                "contact_name": "Contact name",
+                "email": "Work email",
+                "password": "Password",
+                "password_confirm": "Confirm password",
+                "phone": "Phone",
+                "city": "City",
+                "service_area": "Service area",
+                "hiring_trades": "Hiring trades",
+                "typical_job_types": "Typical job types",
+                "company_size": "Company size",
+                "company_description": "Company description",
+                "confirmation_code": "Confirmation code"
+            },
+            "trades": {
+                "electrician": "Electrician",
+                "plumber": "Plumber",
+                "carpenter": "Carpenter",
+                "concrete": "Concrete",
+                "painting": "Painting",
+                "other": "Other"
+            },
+            "job_types": {
+                "full_time": "Full-time",
+                "part_time": "Part-time",
+                "contract": "Contract"
+            },
+            "errors": {
+                "password_mismatch": "Passwords do not match.",
+                "account_exists": "An account already exists for this email. Sign in instead or use a different email.",
+                "account_not_found": "We could not find an account for that email.",
+                "invalid_phone": "Enter a valid phone number, including the area code.",
+                "invalid_email": "Enter a valid work email address.",
+                "password_requirements": "Use a stronger password with uppercase, lowercase, a number, and a symbol.",
+                "invalid_code": "That confirmation code is not correct.",
+                "expired_code": "That confirmation code expired. Request a new code and try again.",
+                "too_many_attempts": "Too many attempts. Wait a few minutes, then try again.",
+                "invalid_credentials": "The email or password is incorrect.",
+                "invalid_signup": "Check the account details and try again.",
+                "signup_failed": "We could not create the account. Check the fields and try again."
+            }
         }
     },
     "legal": {
@@ -54,7 +166,20 @@
         "profile": {
             "title": "Employer Profile",
             "field_email": "Email",
-            "field_company": "Company"
+            "field_company": "Company",
+            "field_contact": "Contact",
+            "field_phone": "Phone",
+            "field_city": "City",
+            "field_service_area": "Service area",
+            "field_hiring_trades": "Hiring trades",
+            "field_job_types": "Job types",
+            "field_company_size": "Company size",
+            "field_description": "Description",
+            "fallback_company": "Employer profile",
+            "edit_button": "Edit",
+            "save": "Save",
+            "saving": "Saving...",
+            "cancel": "Cancel"
         }
     },
     "employer_dashboard": {
@@ -73,6 +198,11 @@
             },
             "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
             "posted": "Posted",
+            "details": "Details",
+            "posting_details": "Posting details",
+            "required_documents": "Required documents",
+            "no_description": "No description was added.",
+            "no_required_documents": "No documents are required for this job.",
             "search_placeholder": "Search by title or location...",
             "back_to_dashboard": "← Back to Dashboard"
         },
@@ -87,6 +217,10 @@
             "availability_immediate": "Immediate",
             "availability_2weeks": "2 Weeks",
             "availability_1month": "1 Month",
+            "availability_full_time": "Full-time",
+            "availability_part_time": "Part-time",
+            "availability_weekends": "Weekends",
+            "availability_flexible": "Flexible",
             "min_experience": "Min Experience (years)",
             "clear": "Clear Filters"
         },
@@ -131,7 +265,34 @@
             "save_status": "Save",
             "doc_resume": "Resume",
             "doc_driver_license": "Driver's License",
-            "doc_ssn": "SSN Card"
+            "doc_ssn": "SSN Card",
+            "phone": "Phone",
+            "location": "Location",
+            "skills": "Skills",
+            "availability_label": "Availability",
+            "applied": "Applied",
+            "saving_status": "Saving...",
+            "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}",
+            "fallback_name": "Unknown worker",
+            "fallback_phone": "Phone unavailable",
+            "fallback_location": "Location unavailable",
+            "fallback_experience": "Experience unavailable",
+            "fallback_availability": "Availability unavailable",
+            "fallback_skills": "No skills listed",
+            "fallback_applied": "Date unavailable",
+            "error_missing_job": "This worker profile needs a job id. Return to applicants and open it again.",
+            "error_load_profile": "Failed to load profile. Please try again.",
+            "error_create_link": "Failed to create upload link. Please try again.",
+            "error_save_status": "Failed to save status. Please try again.",
+            "availability": {
+                "immediate": "Immediate",
+                "2_weeks": "2 weeks",
+                "1_month": "1 month",
+                "full_time": "Full-time",
+                "part_time": "Part-time",
+                "weekends": "Weekends",
+                "flexible": "Flexible"
+            }
         },
         "post_job_docs": {
             "step_label": "Step 2 of 2",
@@ -227,9 +388,10 @@
             "full_name": "Full name",
             "skills_placeholder": "Skills (comma separated)",
             "availability": {
-                "immediate": "Immediately",
-                "2_weeks": "Within 2 weeks",
-                "1_month": "Within 1 month"
+                "full_time": "Full-time",
+                "part_time": "Part-time",
+                "weekends": "Weekends",
+                "flexible": "Flexible"
             },
             "years_experience": "Years of experience",
             "location": "Location",
@@ -243,9 +405,10 @@
             "full_name": "Full name",
             "skills_placeholder": "Skills (comma separated)",
             "availability": {
-                "immediate": "Immediately",
-                "2_weeks": "Within 2 weeks",
-                "1_month": "Within 1 month"
+                "full_time": "Full-time",
+                "part_time": "Part-time",
+                "weekends": "Weekends",
+                "flexible": "Flexible"
             },
             "years_experience": "Years of experience",
             "location": "Location",

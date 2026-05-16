@@ -33,6 +33,7 @@ describe('Employer Profile API Lambda', () => {
   });
 
   const mockEvent = {
+    httpMethod: 'GET',
     requestContext: {
       authorizer: {
         claims: {
@@ -93,7 +94,7 @@ describe('Employer Profile API Lambda', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     // Simulate empty result for user query
     mockQuery.mockImplementation((queryText) => {
-      if (queryText.includes('SELECT id, user_type')) {
+      if (queryText.includes('LEFT JOIN employer_profiles')) {
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({});
@@ -118,11 +119,19 @@ describe('Employer Profile API Lambda', () => {
       phone: '1234567890',
       full_name: 'Test Employer',
       tenant_id: 'tnt-123',
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
+      company_name: 'Test Employer',
+      contact_name: 'Test Contact',
+      city: 'Austin',
+      service_area: 'Austin metro',
+      hiring_trades: ['carpenter'],
+      typical_job_types: ['full-time'],
+      company_size: '1-10',
+      company_description: 'Builder'
     };
     
     mockQuery.mockImplementation((queryText) => {
-      if (queryText.includes('SELECT id, user_type')) {
+      if (queryText.includes('LEFT JOIN employer_profiles')) {
         return Promise.resolve({ rows: [mockUser] });
       }
       return Promise.resolve({});
@@ -134,6 +143,88 @@ describe('Employer Profile API Lambda', () => {
     expect(JSON.parse(response.body)).toEqual(mockUser);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('should upsert employer profile fields on PATCH and mirror company name to users.full_name', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    const updated = {
+      id: 'usr-123',
+      user_type: 'employer',
+      email: 'test@example.com',
+      phone: '+15551234567',
+      full_name: 'Acme Builders',
+      tenant_id: null,
+      created_at: 'ts',
+      company_name: 'Acme Builders',
+      contact_name: 'Ava Manager',
+      city: 'Austin',
+      service_area: 'Central Texas',
+      hiring_trades: ['electrician', 'plumber'],
+      typical_job_types: ['full-time', 'contract'],
+      company_size: '11-50',
+      company_description: 'Commercial contractor',
+    };
+    mockQuery.mockImplementation((queryText) => {
+      if (queryText.includes('LEFT JOIN employer_profiles')) {
+        return Promise.resolve({ rows: [updated] });
+      }
+      return Promise.resolve({});
+    });
+
+    const response = await handler({
+      ...mockEvent,
+      httpMethod: 'PATCH',
+      body: JSON.stringify({
+        company_name: 'Acme Builders',
+        contact_name: 'Ava Manager',
+        phone: '+15551234567',
+        city: 'Austin',
+        service_area: 'Central Texas',
+        hiring_trades: ['electrician', 'plumber'],
+        typical_job_types: ['full-time', 'contract'],
+        company_size: '11-50',
+        company_description: 'Commercial contractor',
+      }),
+    } as unknown as APIGatewayProxyEvent);
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual(updated);
+    expect(mockQuery).toHaveBeenCalledWith(
+      'UPDATE users SET full_name = $1, phone = COALESCE($2, phone) WHERE cognito_sub = $3',
+      ['Acme Builders', '+15551234567', 'test-user-sub'],
+    );
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO employer_profiles'),
+      [
+        'test-user-sub',
+        'Acme Builders',
+        'Ava Manager',
+        '+15551234567',
+        'Austin',
+        'Central Texas',
+        ['electrician', 'plumber'],
+        ['full-time', 'contract'],
+        '11-50',
+        'Commercial contractor',
+        true,
+        true,
+      ],
+    );
+  });
+
+  it('should reject invalid employer profile values before writing profile rows', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockQuery.mockResolvedValue({});
+
+    const response = await handler({
+      ...mockEvent,
+      httpMethod: 'PATCH',
+      body: JSON.stringify({ hiring_trades: ['roofer'] }),
+    } as unknown as APIGatewayProxyEvent);
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body).error).toBe('invalid_hiring_trades');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_profiles'), expect.anything());
   });
 
   it('should return 500 on internal errors and rollback', async () => {

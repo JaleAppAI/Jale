@@ -10,15 +10,22 @@ export type Job = {
   created_at: string;
 };
 
+export type EmployerJobDetail = Job & {
+  description: string | null;
+  required_docs: Array<'resume' | 'driver_license' | 'ssn'>;
+};
+
+export type ApplicationStatus = 'pending' | 'reviewed' | 'hired' | 'rejected';
+
 export type Applicant = {
   application_id: string;
   worker_id: string;
-  full_name: string;
-  phone: string;
-  status: 'pending' | 'reviewed' | 'hired' | 'rejected';
+  full_name: string | null;
+  phone: string | null;
+  status: ApplicationStatus;
   applied_at: string;
   skills: string[];
-  availability: 'immediate' | '2-weeks' | '1-month' | null;
+  availability: string | null;
   years_experience: number | null;
   location: string | null;
 };
@@ -29,6 +36,52 @@ export type ApplicantFilters = {
   availability?: string;
   min_experience?: number;
 };
+
+export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
+export type EmployerJobType = 'full-time' | 'part-time' | 'contract';
+export type CompanySize = '1-10' | '11-50' | '51-200' | '200+';
+
+export type EmployerProfileData = {
+  id: string;
+  user_type: 'employer';
+  email: string;
+  phone: string | null;
+  full_name: string | null;
+  tenant_id: string | null;
+  created_at: string;
+  company_name: string | null;
+  contact_name: string | null;
+  city: string | null;
+  service_area: string | null;
+  hiring_trades: EmployerTrade[];
+  typical_job_types: EmployerJobType[];
+  company_size: CompanySize | null;
+  company_description: string | null;
+};
+
+export type EmployerProfilePatch = Partial<Pick<EmployerProfileData,
+  'company_name' | 'contact_name' | 'phone' | 'city' | 'service_area' |
+  'hiring_trades' | 'typical_job_types' | 'company_size' | 'company_description'
+>>;
+
+export async function getEmployerProfile(token: string): Promise<EmployerProfileData> {
+  const res = await apiFetch('/employer/profile', {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  return res.json();
+}
+
+export async function updateEmployerProfile(
+  token: string,
+  patch: EmployerProfilePatch,
+): Promise<EmployerProfileData> {
+  const res = await apiFetch(
+    '/employer/profile',
+    { method: 'PATCH', body: JSON.stringify(patch) },
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_update_failed');
+  return res.json();
+}
 
 export async function getJobs(token: string): Promise<Job[]> {
   const res = await apiFetch('/employer/jobs', {}, token);
@@ -52,6 +105,12 @@ export async function createJob(
     body: JSON.stringify(data),
   }, token);
   if (!res.ok) throw new Error('create_failed');
+  return res.json();
+}
+
+export async function getJob(token: string, jobId: string): Promise<EmployerJobDetail> {
+  const res = await apiFetch(`/employer/jobs/${jobId}`, {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
   return res.json();
 }
 
@@ -101,14 +160,14 @@ export interface WorkerDocument {
 
 export interface WorkerProfile {
   worker_id: string;
-  full_name: string;
-  phone: string;
-  skills: string[];
-  availability: string;
-  years_experience: number;
-  location: string;
-  application_status: 'pending' | 'reviewed' | 'hired' | 'rejected';
-  applied_at: string;
+  full_name: string | null;
+  phone: string | null;
+  skills: string[] | null;
+  availability: string | null;
+  years_experience: number | null;
+  location: string | null;
+  application_status: ApplicationStatus;
+  applied_at: string | null;
 }
 
 export async function getWorkerProfile(
@@ -122,6 +181,24 @@ export async function getWorkerProfile(
     token,
   );
   if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  return res.json();
+}
+
+export async function updateApplicantStatus(
+  token: string,
+  jobId: string,
+  workerId: string,
+  status: ApplicationStatus,
+): Promise<{ status: ApplicationStatus }> {
+  const res = await apiFetch(
+    `/employer/jobs/${jobId}/applicants/${workerId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    },
+    token,
+  );
+  if (!res.ok) throw new Error((await res.json()).error ?? 'status_update_failed');
   return res.json();
 }
 

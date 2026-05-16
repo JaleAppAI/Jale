@@ -8,8 +8,7 @@ export function Card({
   return (
     <div
       className={[
-        "rounded-[14px] md:rounded-[var(--radius-card)]",
-        "border border-border/60 bg-card",
+        "rounded-[var(--radius-card)] bg-[var(--jale-card)]",
         "shadow-[var(--shadow-card)]",
         className,
       ].join(" ")}

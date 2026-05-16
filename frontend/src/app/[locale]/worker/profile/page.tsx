@@ -39,6 +39,20 @@ export default function WorkerProfilePage() {
       });
       const d = await getVaultDocuments(idToken);
       setDocs(d.documents);
+      const pending = sessionStorage.getItem('pendingWorkerProfile');
+      if (pending) {
+        await updateWorkerProfile(idToken, JSON.parse(pending));
+        sessionStorage.removeItem('pendingWorkerProfile');
+        const updated = await apiFetch('/worker/profile', {}, idToken);
+        if (updated.ok) {
+          const next = await updated.json();
+          setProfile({
+            id: next.id, phone: next.phone, full_name: next.full_name,
+            skills: next.skills ?? [], availability: next.availability,
+            years_experience: next.years_experience, location: next.location, bio: next.bio,
+          });
+        }
+      }
     } catch (err) {
       try { handleLegalWall(err, '/worker/profile'); }
       catch { setError(tCommon('error')); }

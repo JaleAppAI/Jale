@@ -184,7 +184,20 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerJobsCreateLambda.function);
 
-    // Employer jobs update — employer auth, DB access
+    // Employer job detail — employer auth, DB access
+    const employerJobsDetailLambda = new JaleLambdaFunction(this, 'EmployerJobsDetailLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-jobs-detail.ts'),
+      description: 'Employer job detail endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerJobsDetailLambda.function);
+
     const employerJobsUpdateLambda = new JaleLambdaFunction(this, 'EmployerJobsUpdateLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-jobs-update.ts'),
       description: 'Employer jobs update endpoint',
@@ -211,6 +224,20 @@ export class ApiStack extends cdk.Stack {
       },
     });
     props.dbSecret.grantRead(employerJobApplicantsLambda.function);
+
+    // Employer application status update — employer auth, DB access
+    const employerApplicationStatusUpdateLambda = new JaleLambdaFunction(this, 'EmployerApplicationStatusUpdateLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-application-status-update.ts'),
+      description: 'Employer application status update endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerApplicationStatusUpdateLambda.function);
 
     // Token refresh — no auth (refresh token is the credential), no DB
     const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
@@ -389,9 +416,14 @@ export class ApiStack extends cdk.Stack {
     });
 
     // GET /employer/profile
+    // PATCH /employer/profile
     const employerResource = this.api.root.addResource('employer');
     const employerProfileResource = employerResource.addResource('profile');
     employerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(employerProfileLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerProfileLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -408,9 +440,14 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
+    // GET /employer/jobs/{jobId} — job posting detail
     // PATCH /employer/jobs/{jobId} — toggle active/closed status
     // GET /employer/jobs/{jobId}/applicants — list applicants for a job
     const employerJobResource = employerJobsResource.addResource('{jobId}');
+    employerJobResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobsDetailLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
     employerJobResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerJobsUpdateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -418,6 +455,11 @@ export class ApiStack extends cdk.Stack {
 
     const employerJobApplicantsResource = employerJobResource.addResource('applicants');
     employerJobApplicantsResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobApplicantsLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const employerJobApplicantResource = employerJobApplicantsResource.addResource('{workerId}');
+    employerJobApplicantResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerApplicationStatusUpdateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
