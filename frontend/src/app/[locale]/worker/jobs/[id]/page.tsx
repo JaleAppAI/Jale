@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
@@ -35,7 +35,7 @@ export default function WorkerJobDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!idToken || !id) return;
     setLoading(true);
     try {
@@ -47,9 +47,9 @@ export default function WorkerJobDetailPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [idToken, id, handleLegalWall, tCommon]);
 
-  useEffect(() => { load(); }, [idToken, id, load]);
+  useEffect(() => { load(); }, [load]);
 
   async function profileIsComplete(): Promise<boolean> {
     if (!idToken) return false;

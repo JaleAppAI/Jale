@@ -1,5 +1,5 @@
 'use client';
-import { useEffect } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { LegalWallError } from '@/lib/api';
@@ -16,14 +16,16 @@ export function useRequireAuth() {
         }
     }, [isLoading, isAuthenticated, userType, router]);
 
-    return {
-        handleLegalWall: (err: unknown, returnUrl: string) => {
-            if (err instanceof LegalWallError) {
-                sessionStorage.setItem('legalReturnUrl', returnUrl);
-                router.replace('/legal/accept');
-            } else {
-                throw err;
-            }
+    const handleLegalWall = useCallback((err: unknown, returnUrl: string) => {
+        if (err instanceof LegalWallError) {
+            sessionStorage.setItem('legalReturnUrl', returnUrl);
+            router.replace('/legal/accept');
+        } else {
+            throw err;
         }
+    }, [router]);
+
+    return {
+        handleLegalWall,
     };
 }
