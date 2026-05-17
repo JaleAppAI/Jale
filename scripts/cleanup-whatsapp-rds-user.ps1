@@ -47,6 +47,47 @@ $PhoneSql = $Phone.Replace("'", "''")
 Write-Host ">> Using region: $Region"
 Write-Host ">> Cleaning worker data for: $Phone"
 
+function Get-CognitoWorkerUsersByPhone {
+  param(
+    [Parameter(Mandatory = $true)][string]$UserPoolId,
+    [Parameter(Mandatory = $true)][string]$PhoneNumber,
+    [Parameter(Mandatory = $true)][string]$AwsRegion
+  )
+
+  $matches = @()
+  $paginationToken = $null
+
+  do {
+    $args = @(
+      'cognito-idp',
+      'list-users',
+      '--region', $AwsRegion,
+      '--user-pool-id', $UserPoolId,
+      '--limit', '60',
+      '--output', 'json'
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($paginationToken)) {
+      $args += @('--pagination-token', $paginationToken)
+    }
+
+    $json = & aws @args
+    if ($LASTEXITCODE -ne 0) {
+      throw "Cognito worker lookup failed for $PhoneNumber."
+    }
+
+    $page = $json | ConvertFrom-Json
+    $matches += @($page.Users | Where-Object {
+      $_.Attributes | Where-Object {
+        $_.Name -eq 'phone_number' -and $_.Value -eq $PhoneNumber
+      }
+    })
+    $paginationToken = $page.PaginationToken
+  } while (-not [string]::IsNullOrWhiteSpace($paginationToken))
+
+  return @($matches)
+}
+
 if ([string]::IsNullOrWhiteSpace($WorkerPoolId)) {
   Write-Host ">> Resolving worker Cognito pool ID..."
   $WorkerPoolId = (aws cognito-idp list-user-pools `
@@ -389,21 +430,50 @@ aws ssm list-command-invocations `
   --query 'CommandInvocations[0].CommandPlugins[0].Output' `
   --output text
 
-Write-Host ">> Deleting Cognito worker user from pool $WorkerPoolId..."
-$cognitoDeleteOutput = & aws cognito-idp admin-delete-user `
-  --region $Region `
-  --user-pool-id $WorkerPoolId `
-  --username $Phone 2>&1
+Write-Host ">> Resolving Cognito worker username by phone_number..."
+$cognitoUsers = Get-CognitoWorkerUsersByPhone `
+  -UserPoolId $WorkerPoolId `
+  -PhoneNumber $Phone `
+  -AwsRegion $Region
 
-if ($LASTEXITCODE -eq 0) {
-  Write-Host ">> Cognito worker user deleted for $Phone."
+$cognitoUsernames = @($cognitoUsers | ForEach-Object { $_.Username } | Where-Object { $_ })
+if ($cognitoUsernames.Count -eq 0) {
+  Write-Host ">> No Cognito worker found by phone_number. Cognito worker user is already absent for $Phone."
 }
 else {
-  $message = ($cognitoDeleteOutput | Out-String).Trim()
-  if ($message -match 'UserNotFoundException') {
-    Write-Host ">> Cognito worker user was already absent for $Phone."
+  Write-Host "   found Cognito username(s): $($cognitoUsernames -join ', ')"
+}
+
+foreach ($cognitoUsername in $cognitoUsernames) {
+  Write-Host ">> Deleting Cognito worker user '$cognitoUsername' from pool $WorkerPoolId..."
+  $cognitoDeleteOutput = & aws cognito-idp admin-delete-user `
+    --region $Region `
+    --user-pool-id $WorkerPoolId `
+    --username $cognitoUsername 2>&1
+
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host ">> Cognito worker user deleted: $cognitoUsername."
   }
   else {
-    throw "Cognito worker delete failed for $Phone`: $message"
+    $message = ($cognitoDeleteOutput | Out-String).Trim()
+    if ($message -match 'UserNotFoundException') {
+      Write-Host ">> Cognito worker user was already absent: $cognitoUsername."
+    }
+    else {
+      throw "Cognito worker delete failed for $cognitoUsername`: $message"
+    }
   }
 }
+
+Write-Host ">> Verifying Cognito worker user is gone for $Phone..."
+$remainingUsers = @(Get-CognitoWorkerUsersByPhone `
+  -UserPoolId $WorkerPoolId `
+  -PhoneNumber $Phone `
+  -AwsRegion $Region)
+
+if ($remainingUsers.Count -gt 0) {
+  $remainingUsernames = @($remainingUsers | ForEach-Object { $_.Username } | Where-Object { $_ })
+  throw "Cognito worker cleanup did not remove every user with phone_number $Phone. Remaining username(s): $($remainingUsernames -join ', ')"
+}
+
+Write-Host ">> Cognito worker cleanup verified for $Phone."

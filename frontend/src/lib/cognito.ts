@@ -19,13 +19,6 @@ const employerPool = new CognitoUserPool({
     ClientId: process.env.NEXT_PUBLIC_EMPLOYER_CLIENT_ID!,
 });
 
-function randomPassword(): string {
-    const bytes = new Uint8Array(18);
-    crypto.getRandomValues(bytes);
-    const token = Array.from(bytes).map((b) => b.toString(36)).join('');
-    return `Jale!${token}9aA`;
-}
-
 function signUp(
     pool: CognitoUserPool,
     username: string,
@@ -55,12 +48,7 @@ function confirm(pool: CognitoUserPool, username: string, code: string): Promise
 }
 
 export function workerSignUp(input: { phone: string; fullName: string }): Promise<void> {
-    const phone = input.phone.trim();
-    return signUp(workerPool, phone, randomPassword(), {
-        phone_number: phone,
-        name: input.fullName.trim(),
-        'custom:user_type': 'worker',
-    });
+    return workerWebSignUp(input);
 }
 
 export function workerConfirmSignUp(phone: string, code: string): Promise<void> {
@@ -126,4 +114,32 @@ export function employerSignIn(email: string, password: string): Promise<AuthTok
             onFailure: reject,
         });
     });
+}
+
+async function workerWebSignUp(input: { phone: string; fullName: string }): Promise<void> {
+    const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/auth/worker/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            phone: input.phone.trim(),
+            fullName: input.fullName.trim(),
+        }),
+    });
+
+    if (res.ok) return;
+
+    let body: { error?: string; message?: string } = {};
+    try {
+        body = await res.json();
+    } catch {
+        // Keep the generic message below.
+    }
+
+    const err = new Error(body.message || 'Worker signup failed') as Error & { code?: string };
+    err.code =
+        body.error === 'account_exists' ? 'UsernameExistsException' :
+            body.error === 'invalid_phone' ? 'InvalidParameterException' :
+                body.error === 'too_many_attempts' ? 'TooManyRequestsException' :
+                    'WorkerSignupException';
+    throw err;
 }

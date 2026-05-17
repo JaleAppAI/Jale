@@ -41,8 +41,13 @@ describe('cleanup-whatsapp-rds-user.ps1', () => {
 
     expect(script).toContain('[string]$WorkerPoolId');
     expect(script).toContain('jale-worker-pool');
+    expect(script).toContain('list-users');
+    expect(script).toContain('Get-CognitoWorkerUsersByPhone');
+    expect(script).toContain('--pagination-token');
+    expect(script).toContain("Name -eq 'phone_number'");
     expect(script).toContain('admin-delete-user');
-    expect(script).toContain('--username $Phone');
+    expect(script).toContain('--username $cognitoUsername');
+    expect(script).toContain('Cognito worker cleanup verified');
     expect(script.indexOf('admin-delete-user')).toBeGreaterThan(script.indexOf('Final bastion stdout'));
     expect(script).toMatch(/UserNotFoundException/);
   });

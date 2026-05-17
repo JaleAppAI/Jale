@@ -29,6 +29,7 @@ describe('worker-jobs-detail', () => {
 
   it('returns 404 if job not found (RLS-filtered)', async () => {
     mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [] });
       return Promise.resolve({});
     });
@@ -40,6 +41,7 @@ describe('worker-jobs-detail', () => {
     const job = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
                   required_docs: ['resume', 'driver_license'], created_at: 'ts', company_name: 'Acme' };
     mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
       if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [{ doc_type: 'resume' }] });
       if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
@@ -50,12 +52,17 @@ describe('worker-jobs-detail', () => {
     const body = JSON.parse(res.body);
     expect(body.missing_docs).toEqual(['driver_license']);
     expect(body.already_applied).toBe(false);
+    expect(mockQuery).toHaveBeenCalledWith(
+      `SELECT set_config('app.current_internal_user_id', $1, true)`,
+      ['worker-id'],
+    );
   });
 
   it('returns already_applied=true when application exists', async () => {
     const job = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
                   required_docs: [], created_at: 'ts', company_name: 'Acme' };
     mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
       if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [] });
       if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [{ status: 'pending' }] });
@@ -79,6 +86,7 @@ describe('worker-jobs-detail', () => {
       company_name: 'Acme',
     };
     mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
       if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
       return Promise.resolve({});

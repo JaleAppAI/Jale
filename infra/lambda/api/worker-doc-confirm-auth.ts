@@ -48,7 +48,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const workerId: string = userRes.rows[0].id;
 
     // Switch to worker_documents RLS convention (user.id::text).
-    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [workerId]);
+    await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerId]);
 
     // Replace any existing vault row for (worker, doc_type, NULL).
     await client.query(

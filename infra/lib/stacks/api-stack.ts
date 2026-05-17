@@ -265,6 +265,20 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
+    // Worker web signup - no auth yet; creates/confirm worker then web login sends WhatsApp OTP
+    const workerWebSignupLambda = new JaleLambdaFunction(this, 'WorkerWebSignupLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/worker-web-signup.ts'),
+      description: 'Worker web signup endpoint - create confirmed worker before WhatsApp OTP login',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        WORKER_POOL_ID: props.workerPool.userPoolId,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerWebSignupLambda.function);
+
     // Worker jobs list — worker auth, DB access
     const workerJobsListLambda = new JaleLambdaFunction(this, 'WorkerJobsListLambda', {
       entry: path.join(__dirname, '../../lambda/api/worker-jobs-list.ts'),
@@ -370,6 +384,17 @@ export class ApiStack extends cdk.Stack {
       resources: poolArns,
     }));
 
+    workerWebSignupLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: [
+        'cognito-idp:AdminAddUserToGroup',
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminConfirmSignUp',
+        'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminSetUserPassword',
+      ],
+      resources: [props.workerPool.userPool.userPoolArn],
+    }));
+
     // ── Routes ──
 
     // GET /health
@@ -472,6 +497,10 @@ export class ApiStack extends cdk.Stack {
 
     // POST /auth/refresh — no auth (user's access token may be expired)
     const authResource = this.api.root.addResource('auth');
+    const authWorkerResource = authResource.addResource('worker');
+    const authWorkerSignupResource = authWorkerResource.addResource('signup');
+    authWorkerSignupResource.addMethod('POST', new apigateway.LambdaIntegration(workerWebSignupLambda.function));
+
     const refreshResource = authResource.addResource('refresh');
     refreshResource.addMethod('POST', new apigateway.LambdaIntegration(tokenRefreshLambda.function));
 

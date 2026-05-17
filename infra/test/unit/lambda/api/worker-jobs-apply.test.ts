@@ -29,6 +29,7 @@ describe('worker-jobs-apply', () => {
 
   it('returns 410 if job is closed or missing', async () => {
     mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes("FROM jobs")) return Promise.resolve({ rows: [] });
       return Promise.resolve({});
     });
@@ -38,6 +39,7 @@ describe('worker-jobs-apply', () => {
 
   it('returns 400 missing_documents when required docs not uploaded', async () => {
     mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [{ id: 'job-1', required_docs: ['resume', 'driver_license'] }] });
       if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [{ doc_type: 'resume' }] });
       return Promise.resolve({});
@@ -49,6 +51,7 @@ describe('worker-jobs-apply', () => {
 
   it('returns 409 if already applied', async () => {
     mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [{ id: 'job-1', required_docs: [] }] });
       if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [] });
       if (q.includes('INSERT INTO job_applications')) {
@@ -64,6 +67,7 @@ describe('worker-jobs-apply', () => {
     const calls: string[] = [];
     mockQuery.mockImplementation((q: string) => {
       calls.push(typeof q === 'string' ? q : '');
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [{ id: 'job-1', required_docs: ['resume'] }] });
       if (q.includes('FROM worker_documents') && q.includes('DISTINCT doc_type')) return Promise.resolve({ rows: [{ doc_type: 'resume' }] });
       if (q.includes('INSERT INTO job_applications')) {
@@ -79,6 +83,10 @@ describe('worker-jobs-apply', () => {
     const applicationInsert = calls.find(c => c.includes('INSERT INTO job_applications')) as string;
     expect(applicationInsert).toContain('(job_id, worker_id, status)');
     expect(applicationInsert).toContain("'pending'");
+    expect(mockQuery).toHaveBeenCalledWith(
+      `SELECT set_config('app.current_internal_user_id', $1, true)`,
+      ['worker-id'],
+    );
     expect(calls.some(c => c.includes('INSERT INTO worker_documents'))).toBe(true);
   });
 });

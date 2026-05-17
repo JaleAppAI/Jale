@@ -10,9 +10,9 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { ProfileCompleteModal, ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, LegalWallError } from '@/lib/api';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
-import type { JobDetail } from '@/lib/api/worker';
+import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,18 +54,29 @@ export default function WorkerJobDetailPage() {
   async function profileIsComplete(): Promise<boolean> {
     if (!idToken) return false;
     const res = await apiFetch('/worker/profile', {}, idToken);
-    if (!res.ok) return false;
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      const err = new Error(body.error ?? 'profile_check_failed') as WorkerApiError;
+      err.status = res.status;
+      err.code = body.error;
+      throw err;
+    }
     const p = await res.json();
     return !!(p.full_name && p.skills?.length > 0 && p.availability && p.location);
   }
 
   async function handleApplyClick() {
     if (!idToken || !id || !job) return;
-    if (!(await profileIsComplete())) {
-      setModalOpen(true);
-      return;
+    setError(null);
+    try {
+      if (!(await profileIsComplete())) {
+        setModalOpen(true);
+        return;
+      }
+      await doApply();
+    } catch (err) {
+      handleApplyError(err);
     }
-    await doApply();
   }
 
   async function doApply() {
@@ -74,18 +85,8 @@ export default function WorkerJobDetailPage() {
     try {
       await applyToJob(idToken, id);
       await load();
-    } catch (e) {
-      const err = e as Record<string, unknown>;
-      if (err.status === 400 && err.missing_docs) {
-        setError(t('errors.missing_docs', { docs: (err.missing_docs as string[]).map((d: string) => DOC_LABELS[d] ?? d).join(', ') }));
-      } else if (err.status === 409) {
-        await load();
-      } else if (err.status === 410) {
-        setError(t('errors.job_closed'));
-        await load();
-      } else {
-        setError(tCommon('error'));
-      }
+    } catch (err) {
+      await handleApplyError(err);
     } finally {
       setApplying(false);
     }
@@ -93,9 +94,58 @@ export default function WorkerJobDetailPage() {
 
   async function handleModalSubmit(values: ProfileCompleteValues) {
     if (!idToken) return;
-    await updateWorkerProfile(idToken, values);
-    setModalOpen(false);
-    await doApply();
+    setError(null);
+    setApplying(true);
+    try {
+      await updateWorkerProfile(idToken, values);
+      setModalOpen(false);
+      await doApply();
+    } catch (err) {
+      handleApplyError(err);
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  async function handleApplyError(err: unknown) {
+    if (err instanceof LegalWallError) {
+      try { handleLegalWall(err, `/worker/jobs/${id}`); } catch { setError(t('errors.legal_required')); }
+      return;
+    }
+
+    const applyErr = err as WorkerApiError;
+    if (applyErr.status === 400 && applyErr.missing_docs?.length) {
+      setError(t('errors.missing_docs', { docs: applyErr.missing_docs.map((d) => DOC_LABELS[d] ?? d).join(', ') }));
+      return;
+    }
+    if (applyErr.status === 400) {
+      setError(t('errors.profile_invalid'));
+      return;
+    }
+    if (applyErr.status === 401) {
+      setError(t('errors.not_signed_in'));
+      return;
+    }
+    if (applyErr.status === 403 || applyErr.code === 'legal_required') {
+      setError(t('errors.legal_required'));
+      return;
+    }
+    if (applyErr.status === 409) {
+      if (applyErr.code === 'user_not_provisioned') setError(t('errors.account_not_ready'));
+      else setError(t('errors.already_applied'));
+      await load();
+      return;
+    }
+    if (applyErr.status === 410 || applyErr.status === 404) {
+      setError(t('errors.job_closed'));
+      await load();
+      return;
+    }
+    if (applyErr.status && applyErr.status >= 500) {
+      setError(t('errors.server_error'));
+      return;
+    }
+    setError(t('errors.apply_failed'));
   }
 
   if (loading) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-muted">{tCommon('loading')}</p></main>;

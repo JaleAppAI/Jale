@@ -356,7 +356,14 @@
         "already_applied": "Ya postulaste",
         "errors": {
             "missing_docs": "Faltan documentos: {docs}",
-            "job_closed": "Este trabajo ya no acepta postulaciones."
+            "job_closed": "Este trabajo ya no acepta postulaciones.",
+            "profile_invalid": "Algunos datos de tu perfil faltan o no son validos. Revisa tu perfil e intenta de nuevo.",
+            "not_signed_in": "Tu sesion expiro. Inicia sesion de nuevo.",
+            "legal_required": "Acepta los terminos mas recientes antes de postularte.",
+            "account_not_ready": "Tu cuenta todavia se esta preparando. Cierra sesion, vuelve a iniciar sesion e intenta de nuevo.",
+            "already_applied": "Ya postulaste a este trabajo.",
+            "server_error": "No pudimos enviar esta postulacion ahora. Intenta de nuevo en unos minutos.",
+            "apply_failed": "No pudimos enviar esta postulacion. Revisa tu perfil y documentos, e intenta de nuevo."
         }
     },
     "worker_profile": {
