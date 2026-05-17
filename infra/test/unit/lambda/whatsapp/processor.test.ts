@@ -124,6 +124,14 @@ function countQueryByPattern(pattern: RegExp): number {
 function outboxBodies(): string[] {
   return mockQuery.mock.calls
     .filter(([sql]) => /INSERT INTO whatsapp_outbox/i.test(sql as string))
+    .filter(([sql]) => !/content_template/i.test(sql as string))
+    .map(([, params]) => (params as unknown[])[2] as string);
+}
+
+function outboxTemplates(): string[] {
+  return mockQuery.mock.calls
+    .filter(([sql]) => /INSERT INTO whatsapp_outbox/i.test(sql as string))
+    .filter(([sql]) => /content_template/i.test(sql as string))
     .map(([, params]) => (params as unknown[])[2] as string);
 }
 
@@ -567,7 +575,6 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT privacy log
         .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_voice
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT legal_accepted
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_media_voice
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -595,6 +602,8 @@ describe('Processor Lambda', () => {
         && (params as unknown[]).includes('onboarding_voice_choice_en')
       );
       expect(mediaPrompt).toBeDefined();
+      expect(outboxTemplates()).toEqual(['onboarding_voice_choice_en']);
+      expect(outboxBodies()).toEqual([]);
     });
 
     it('re-prompts legal terms as a rich quick-reply prompt', async () => {
@@ -1404,7 +1413,6 @@ describe('awaiting_media_voice state', () => {
       })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_intro
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_name
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -1434,8 +1442,9 @@ describe('awaiting_media_voice state', () => {
     });
 
     const outboxBodiesForSkip = outboxBodies();
-    expect(outboxBodiesForSkip.length).toBeGreaterThanOrEqual(2);
+    expect(outboxBodiesForSkip).toHaveLength(1);
     expect(outboxBodiesForSkip.join('\n').toLowerCase()).toContain('full name');
+    expect(outboxBodiesForSkip.join('\n').toLowerCase()).not.toContain("let's build your profile");
   });
 
   test('spanish text choice transitions to text profile and asks first question in spanish', async () => {
@@ -1455,7 +1464,6 @@ describe('awaiting_media_voice state', () => {
       })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_intro
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_name
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -1483,8 +1491,9 @@ describe('awaiting_media_voice state', () => {
     });
 
     const outboxBodiesForTextChoice = outboxBodies();
-    expect(outboxBodiesForTextChoice.length).toBeGreaterThanOrEqual(2);
+    expect(outboxBodiesForTextChoice).toHaveLength(1);
     expect(outboxBodiesForTextChoice.join('\n').toLowerCase()).toContain('nombre completo');
+    expect(outboxBodiesForTextChoice.join('\n').toLowerCase()).not.toContain('vamos a crear tu perfil');
   });
 
   test('valid voice message starts Step Functions execution and transitions to processing_ai', async () => {

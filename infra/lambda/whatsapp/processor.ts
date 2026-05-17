@@ -804,7 +804,6 @@ async function enterTextProfileFromVoiceChoice(
     },
     last_processed_message_sid: msg.messageSid,
   });
-  await queueReply(client, msg.messageSid, msg.from, 'profile_intro', conv.language);
   await askProfileQuestion(client, msg.messageSid, msg.from, next, conv.language);
 }
 
@@ -1475,7 +1474,6 @@ async function enterProfileBuilderOrIdle(
     state_context: { collected: {}, field_sids: {} },
     last_processed_message_sid: messageSid,
   });
-  await queueReply(client, messageSid, from, 'legal_accepted', conv.language);
   await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
 }
 

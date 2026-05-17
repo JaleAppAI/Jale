@@ -351,17 +351,18 @@ test('when AI fills all profile fields, handler upserts worker profile and compl
     /INSERT INTO worker_profiles/.test(sql)
   );
   expect(workerProfileUpsert).toBeDefined();
-  const idleUpdate = mockQuery.mock.calls.find(([sql, params]: [string, unknown[]]) =>
+  const mediaPhotoUpdate = mockQuery.mock.calls.find(([sql, params]: [string, unknown[]]) =>
     /UPDATE whatsapp_conversations/.test(sql)
     && Array.isArray(params)
     && params.includes('MMvoice-complete')
-    && /conversation_state = 'idle'/.test(sql)
+    && /conversation_state = 'awaiting_media_photo'/.test(sql)
   );
-  expect(idleUpdate).toBeDefined();
+  expect(mediaPhotoUpdate).toBeDefined();
   const outboxCalls = outboxInserts();
-  expect(outboxCalls).toHaveLength(2);
+  expect(outboxCalls).toHaveLength(3);
   expect(outboxCalls[0][1][3]).toContain('Profile created');
   expect(outboxCalls[1][1][3]).toContain('Your profile is ready');
+  expect(outboxCalls[2][1][3]).toContain('Profile photo');
 });
 
 test('spanish voice profile with custom trade generates questions and asks first custom question', async () => {

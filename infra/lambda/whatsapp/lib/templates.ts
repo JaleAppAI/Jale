@@ -20,10 +20,8 @@ export type TemplateKey =
   | 'otp_expired_retry'
   // Legal
   | 'legal_prompt'
-  | 'legal_accepted'
   | 'legal_declined'
   // Profile builder
-  | 'profile_intro'
   | 'ask_name'
   | 'ask_city'
   | 'ask_trade'
@@ -89,19 +87,11 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     es: 'Cuenta verificada.\n\nAntes de enviarte trabajos, acepta los terminos:\n{{tos_url}}\n\nResponde "Acepto" o "No acepto".',
     en: 'Account verified.\n\nBefore we send jobs, accept the terms:\n{{tos_url}}\n\nReply "Accept" or "Decline".',
   },
-  legal_accepted: {
-    es: 'Listo. Vamos a crear tu perfil para enviarte mejores trabajos.',
-    en: 'Done. Let\'s build your profile so we can send better jobs.',
-  },
   legal_declined: {
     es: 'Entendido. No podemos enviarte trabajos hasta que aceptes los terminos.\n\nEnvia "Hola" cuando quieras empezar de nuevo.',
     en: 'Understood. We cannot send jobs until you accept the terms.\n\nSend "Hi" when you want to start again.',
   },
 
-  profile_intro: {
-    es: 'Vamos a crear tu perfil para enviarte mejores trabajos.',
-    en: 'Let\'s build your profile so we can send better jobs.',
-  },
   ask_name: {
     es: 'Para empezar, cual es tu nombre completo?',
     en: 'To get started, what is your full name?',
@@ -123,8 +113,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'How many years of experience do you have?\n\n1. 0-1 years\n2. 2-4 years\n3. 5-9 years\n4. 10+ years\n\nReply with 1, 2, 3, or 4.',
   },
   ask_transportation: {
-    es: 'Tienes transporte propio?',
-    en: 'Do you have your own transportation?',
+    es: 'Tienes transporte propio?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
+    en: 'Do you have your own transportation?\n\n1. Yes\n2. No\n\nReply with 1 or 2.',
   },
   ask_availability: {
     es: 'Cual es tu disponibilidad?\n\n1. Tiempo completo\n2. Medio tiempo\n3. Fines de semana\n4. Flexible\n\nResponde con 1, 2, 3 o 4.',

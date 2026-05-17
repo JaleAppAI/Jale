@@ -45,7 +45,8 @@ describe('interactive onboarding templates', () => {
       templateName: 'onboarding_transportation_es',
       variables: {},
     });
-    expect(prompt?.fallbackBody).toBe('Tienes transporte propio?');
+    expect(prompt?.fallbackBody).toContain('Tienes transporte propio?');
+    expect(prompt?.fallbackBody).toContain('Responde con 1 o 2.');
   });
 
   it('does not build rich prompts for open-ended profile fields', () => {

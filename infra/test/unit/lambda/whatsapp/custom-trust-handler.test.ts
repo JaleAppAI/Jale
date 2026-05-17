@@ -106,7 +106,7 @@ describe('handleBuildingCustomTrust', () => {
     await handleBuildingCustomTrust(client, conv, msg);
 
     const updateCall = mockDbQuery.mock.calls.find(([sql]) =>
-      String(sql).includes("conversation_state = 'idle'"));
+      String(sql).includes("conversation_state = 'awaiting_media_photo'"));
     expect(updateCall).toBeDefined();
   });
 
