@@ -21,6 +21,7 @@ export default function WorkerUploadPage() {
   const token = params.token as string;
 
   const [uploads, setUploads] = useState<Partial<Record<DocType, UploadedDoc>>>({});
+  const [confirmedDocs, setConfirmedDocs] = useState<Partial<Record<DocType, boolean>>>({});
   const [errors, setErrors] = useState<Partial<Record<DocType, string>>>({});
   const [uploadingDocs, setUploadingDocs] = useState<Partial<Record<DocType, boolean>>>({});
   const [submitting, setSubmitting] = useState(false);
@@ -50,6 +51,7 @@ export default function WorkerUploadPage() {
       const { url, s3_key } = await getUploadUrl(token, doc_type, file.type);
       await uploadFileToS3(url, file);
       setUploads(prev => ({ ...prev, [doc_type]: { file, s3_key } }));
+      setConfirmedDocs(prev => ({ ...prev, [doc_type]: false }));
     } catch {
       setErrors(prev => ({ ...prev, [doc_type]: 'Upload failed. Please try again.' }));
     } finally {
@@ -63,8 +65,9 @@ export default function WorkerUploadPage() {
     try {
       for (const doc_type of DOC_TYPES) {
         const uploaded = uploads[doc_type];
-        if (uploaded) {
+        if (uploaded && !confirmedDocs[doc_type]) {
           await confirmUpload(token, uploaded.s3_key, doc_type, uploaded.file);
+          setConfirmedDocs(prev => ({ ...prev, [doc_type]: true }));
         }
       }
       await submitUpload(token);

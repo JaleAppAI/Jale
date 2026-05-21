@@ -24,6 +24,7 @@ const expectedBaselineMigrations = [
   '014_employer_candidate_rankings.sql',
   '015_application_status_alignment.sql',
   '016_employer_profiles.sql',
+  '017_document_upload_token_hardening.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -94,6 +95,7 @@ describe('migration apply order baseline', () => {
       'whatsapp_processed_messages',
       'whatsapp_outbox',
       'document_upload_tokens',
+      'document_upload_token_slots',
     ]) {
       expectTable(sql, tableName);
     }
@@ -205,6 +207,17 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY employer_profiles_self');
   });
 
+  it('adds hardened tokenized document upload slots in migration 017', () => {
+    const migration = readMigration('017_document_upload_token_hardening.sql');
+
+    expectTable(migration, 'document_upload_token_slots');
+    expect(migration).toContain('used_at TIMESTAMPTZ');
+    expect(migration).toContain('s3_version_id TEXT');
+    expect(migration).toContain('PRIMARY KEY (token_hash, doc_type)');
+    expect(migration).toContain('UNIQUE (issued_s3_key)');
+    expect(migration).toContain('worker_documents_worker_update');
+  });
+
   it('documents canonical matching source fields in the architecture guide', () => {
     const architecture = fs.readFileSync(architecturePath, 'utf8');
 
@@ -220,11 +233,13 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-016 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-017 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
     expect(columns.get('worker_profiles')?.get('years_experience')).toBe('integer');
     expect(columns.get('jobs')?.get('required_docs')).toBe('_text');
+    expect(columns.get('document_upload_tokens')?.get('used_at')).toBe('timestamp with time zone');
+    expect(columns.get('document_upload_token_slots')?.get('issued_s3_key')).toBe('text');
   });
 });

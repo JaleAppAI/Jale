@@ -77,7 +77,7 @@ export const handler = async (
     }
 
     const docsResult = await client.query(
-      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at
+      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id
        FROM worker_documents WHERE worker_id = $1 AND job_id = $2`,
       [workerId, jobId],
     );
@@ -91,6 +91,7 @@ export const handler = async (
           new GetObjectCommand({
             Bucket: process.env.DOCUMENTS_BUCKET!,
             Key: doc.s3_key,
+            ...(doc.s3_version_id ? { VersionId: doc.s3_version_id } : {}),
           }),
           { expiresIn: 900 },
         );

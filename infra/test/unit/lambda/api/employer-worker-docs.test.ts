@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-worker-docs';
 import { getDbPool } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
@@ -55,6 +56,7 @@ describe('employer-worker-docs Lambda', () => {
             file_name: 'resume.pdf',
             file_size: 1024,
             uploaded_at: new Date().toISOString(),
+            s3_version_id: 'version-1',
           },
         ],
       }) // docs query
@@ -66,6 +68,11 @@ describe('employer-worker-docs Lambda', () => {
     expect(body.documents).toHaveLength(1);
     expect(body.documents[0].url).toBe('https://s3.example.com/presigned-get');
     expect(body.documents[0].doc_type).toBe('resume');
+    expect(GetObjectCommand).toHaveBeenCalledWith({
+      Bucket: 'test-bucket',
+      Key: 'documents/j1/w1/resume/uuid.pdf',
+      VersionId: 'version-1',
+    });
     expect(mockRelease).toHaveBeenCalled();
   });
 });

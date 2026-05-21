@@ -147,6 +147,7 @@ export class DocumentsStack extends cdk.Stack {
 
     // Grant S3 + KMS permissions
     docsBucket.grantPut(uploadUrlFn.function); // kms:GenerateDataKey
+    docsBucket.grantRead(confirmFn.function); // HeadObject verification
     docsBucket.grantRead(workerDocsFn.function); // kms:Decrypt
     props.dbSecret.grantRead(uploadUrlFn.function);
     props.dbSecret.grantRead(confirmFn.function);

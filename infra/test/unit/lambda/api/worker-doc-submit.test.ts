@@ -26,15 +26,31 @@ describe('worker-doc-submit Lambda', () => {
   });
 
   it('returns 401 if token is invalid or already used', async () => {
-    mockQuery.mockResolvedValueOnce({}).mockResolvedValue({ rows: [], rowCount: 0 });
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // UPDATE
+      .mockResolvedValueOnce({ rows: [] }) // token state
+      .mockResolvedValueOnce({}); // ROLLBACK
     const res = await handler(makeEvent({ token: 'bad' }));
     expect(res.statusCode).toBe(401);
   });
 
-  it('returns 200 and marks token used on valid token', async () => {
+  it('returns 400 if token has no confirmed documents', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1 }) // UPDATE used = true
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // UPDATE
+      .mockResolvedValueOnce({ rows: [{ used: false, unexpired: true }] }) // token state
+      .mockResolvedValueOnce({}); // ROLLBACK
+
+    const res = await handler(makeEvent({ token: 'valid-token' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('no_confirmed_documents');
+  });
+
+  it('returns 200 and marks token used on valid token with confirmed slots', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ token_hash: 'hash' }] }) // UPDATE used = true
       .mockResolvedValueOnce({}); // COMMIT
 
     const res = await handler(makeEvent({ token: 'valid-token' }));
@@ -42,5 +58,18 @@ describe('worker-doc-submit Lambda', () => {
     expect(JSON.parse(res.body)).toEqual({ success: true });
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('returns success idempotently if token is already complete', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // UPDATE
+      .mockResolvedValueOnce({ rows: [{ used: true, unexpired: true }] }) // token state
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const res = await handler(makeEvent({ token: 'valid-token' }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 });

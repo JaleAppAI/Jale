@@ -37,12 +37,47 @@ export const handler = async (
     await client.query('BEGIN');
 
     const result = await client.query(
-      `UPDATE document_upload_tokens SET used = true
-       WHERE token_hash = $1 AND used = false AND expires_at > now()`,
+      `UPDATE document_upload_tokens token
+       SET used = true, used_at = now()
+       WHERE token_hash = $1
+         AND used = false
+         AND expires_at > now()
+         AND EXISTS (
+           SELECT 1
+           FROM document_upload_token_slots slots
+           WHERE slots.token_hash = token.token_hash
+             AND slots.confirmed_at IS NOT NULL
+         )
+       RETURNING token_hash`,
       [tokenHash],
     );
 
     if (result.rowCount === 0) {
+      const tokenState = await client.query(
+        `SELECT used, expires_at > now() AS unexpired
+         FROM document_upload_tokens
+         WHERE token_hash = $1`,
+        [tokenHash],
+      );
+
+      if (tokenState.rows[0]?.used === true) {
+        await client.query('COMMIT');
+        return {
+          statusCode: 200,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ success: true }),
+        };
+      }
+
+      if (tokenState.rows[0]?.unexpired === true) {
+        await client.query('ROLLBACK');
+        return {
+          statusCode: 400,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'no_confirmed_documents' }),
+        };
+      }
+
       await client.query('ROLLBACK');
       return {
         statusCode: 401,

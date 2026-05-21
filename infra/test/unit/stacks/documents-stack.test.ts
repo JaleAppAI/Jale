@@ -164,6 +164,14 @@ describe('DocumentsStack', () => {
     });
   });
 
+  it('worker-doc-confirm Lambda can read S3 objects for HeadObject verification', () => {
+    const policies = Object.values(template.toJSON().Resources)
+      .filter((resource: any) => resource.Type === 'AWS::IAM::Policy')
+      .filter((resource: any) => JSON.stringify(resource.Properties.Roles).includes('WorkerDocConfirm'));
+
+    expect(JSON.stringify(policies)).toContain('s3:GetObject');
+  });
+
   it('worker-doc-delete Lambda exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'worker-doc-delete',

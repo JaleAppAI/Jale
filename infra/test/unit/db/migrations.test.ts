@@ -39,6 +39,7 @@ describe('database migrations', () => {
       '014',
       '015',
       '016',
+      '017',
     ]);
   });
 
@@ -104,5 +105,16 @@ describe('database migrations', () => {
     expect(sql013).toContain('content_variables');
     expect(sql013).toContain("to_regclass('public.job_candidates')");
     expect(sql013).toContain('whatsapp_read_ranked_jobs');
+  });
+
+  it('adds hardened tokenized document upload slots in migration 017', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '017_document_upload_token_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS s3_version_id TEXT');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS document_upload_token_slots');
+    expect(migration).toContain('PRIMARY KEY (token_hash, doc_type)');
+    expect(migration).toContain('UNIQUE (issued_s3_key)');
+    expect(migration).toContain('worker_documents_worker_update');
   });
 });
