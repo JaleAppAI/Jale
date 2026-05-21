@@ -124,7 +124,8 @@ export default function JobDetailPage() {
                     variant="outline"
                     size="sm"
                     onClick={handleToggleStatus}
-                    disabled={togglingStatus}
+                    loading={togglingStatus}
+                    loadingLabel={tCommon('loading')}
                   >
                     {job.status === 'active' ? t('jobs.toggle.close') : t('jobs.toggle.activate')}
                   </Button>

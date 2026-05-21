@@ -13,6 +13,7 @@ export function ProfileEditForm(props: {
   onSave: (patch: Partial<WorkerProfileData>) => Promise<void>;
 }) {
   const t = useTranslations('worker_profile.edit');
+  const tCommon = useTranslations('common');
   const [fullName, setFullName] = useState(props.initial.full_name ?? '');
   const [skills, setSkills] = useState((props.initial.skills ?? []).join(', '));
   const [availability, setAvailability] = useState<string>(props.initial.availability ?? 'full_time');
@@ -49,7 +50,7 @@ export function ProfileEditForm(props: {
       <textarea className="w-full rounded border px-3 py-2 text-sm" rows={3} placeholder={t('bio')} value={bio} onChange={(e) => setBio(e.target.value)} />
       <div className="flex gap-2 justify-end">
         <Button variant="outline" onClick={props.onCancel} disabled={saving}>{t('cancel')}</Button>
-        <Button onClick={save} disabled={saving}>{t('save')}</Button>
+        <Button onClick={save} loading={saving} loadingLabel={tCommon('loading')}>{t('save')}</Button>
       </div>
     </div>
   );

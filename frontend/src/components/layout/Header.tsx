@@ -1,4 +1,5 @@
 'use client';
+import { useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -8,8 +9,10 @@ export function Header() {
     const locale = useLocale();
     const pathname = usePathname();
     const t = useTranslations('header');
+    const tCommon = useTranslations('common');
     const otherLocale = locale === 'en' ? 'es' : 'en';
     const { isAuthenticated, logout, userType } = useAuth();
+    const [signingOut, setSigningOut] = useState(false);
 
     const homeHref = !isAuthenticated
         ? '/'
@@ -18,6 +21,15 @@ export function Header() {
             : userType === 'employer'
                 ? '/employer/dashboard'
                 : '/';
+
+    const handleSignOut = async () => {
+        setSigningOut(true);
+        try {
+            await logout();
+        } finally {
+            setSigningOut(false);
+        }
+    };
 
     return (
         <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/90 backdrop-blur-md">
@@ -86,7 +98,7 @@ export function Header() {
                             >
                                 {userType === 'worker' ? 'W' : 'E'}
                             </Link>
-                            <Button variant="outline" size="sm" onClick={logout}>
+                            <Button variant="outline" size="sm" onClick={handleSignOut} loading={signingOut} loadingLabel={tCommon('loading')}>
                                 {t('sign_out')}
                             </Button>
                         </>

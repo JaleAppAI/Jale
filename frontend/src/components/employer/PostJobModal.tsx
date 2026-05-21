@@ -17,6 +17,7 @@ interface Props {
 
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
+  const tCommon = useTranslations('common');
   const { idToken } = useAuth();
 
   const [step, setStep] = useState<1 | 2>(1);
@@ -195,11 +196,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             {error && <p className="text-sm mb-3" style={{ color: 'var(--jale-danger)' }}>{error}</p>}
 
             <div className="flex gap-2 mt-6">
-              <Button variant="ghost" onClick={() => setStep(1)} className="flex-1">
+              <Button variant="ghost" onClick={() => setStep(1)} disabled={loading} className="flex-1">
                 {t('post_job_docs.back')}
               </Button>
-              <Button variant="deep" disabled={loading} onClick={handleSubmit} className="flex-1">
-                {loading ? '...' : t('post_job_docs.submit')}
+              <Button variant="deep" onClick={handleSubmit} loading={loading} loadingLabel={tCommon('loading')} className="flex-1">
+                {t('post_job_docs.submit')}
               </Button>
             </div>
           </>

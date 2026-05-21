@@ -5,6 +5,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { Button } from '@/components/ui/button';
 import {
   getWorkerProfile, getWorkerDocuments, createUploadToken, updateApplicantStatus,
   WorkerProfile, WorkerDocument, ApplicationStatus,
@@ -33,6 +34,7 @@ export default function WorkerProfilePage() {
   const [status, setStatus] = useState<ApplicationStatus>('pending');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sharingLink, setSharingLink] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const handleLegalWallRef = useRef(handleLegalWall);
@@ -80,6 +82,7 @@ export default function WorkerProfilePage() {
 
   const handleShareLink = async () => {
     if (!idToken || !workerId || !jobId) return;
+    setSharingLink(true);
     try {
       const { upload_url } = await createUploadToken(idToken, jobId, workerId);
       await navigator.clipboard.writeText(upload_url);
@@ -91,6 +94,8 @@ export default function WorkerProfilePage() {
       } catch {
         setError(t('worker_profile.error_create_link'));
       }
+    } finally {
+      setSharingLink(false);
     }
   };
 
@@ -201,13 +206,17 @@ export default function WorkerProfilePage() {
           <div className="bg-white border rounded-xl p-4">
             <div className="flex justify-between items-center mb-4">
               <p className="font-semibold text-sm">{t('worker_profile.documents')}</p>
-              <button
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={handleShareLink}
                 disabled={!idToken || !workerId || !jobId}
-                className="border border-blue-900 text-blue-900 text-xs px-3 py-1.5 rounded-lg disabled:opacity-50"
+                loading={sharingLink}
+                loadingLabel={tCommon('loading')}
+                className="h-8 border-blue-900 text-blue-900"
               >
                 {copied ? t('worker_profile.link_copied') : t('worker_profile.share_upload_link')}
-              </button>
+              </Button>
             </div>
             <div className="space-y-3">
               {ALL_DOC_TYPES.map(type => {
@@ -232,13 +241,17 @@ export default function WorkerProfilePage() {
                           </a>
                         </div>
                       ) : (
-                        <button
+                        <Button
+                          variant="outline"
+                          size="sm"
                           onClick={handleShareLink}
                           disabled={!idToken || !workerId || !jobId}
-                          className="border border-red-400 text-red-500 text-xs px-3 py-1.5 rounded-lg disabled:opacity-50"
+                          loading={sharingLink}
+                          loadingLabel={tCommon('loading')}
+                          className="h-8 border-red-400 text-red-500 hover:bg-red-50"
                         >
                           {t('worker_profile.request')}
-                        </button>
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -261,9 +274,9 @@ export default function WorkerProfilePage() {
               <option key={s} value={s}>{t(`applicants.status.${s}`)}</option>
             ))}
           </select>
-          <button onClick={handleSaveStatus} disabled={saveDisabled} className="bg-blue-900 text-white text-sm px-4 py-1.5 rounded-lg disabled:opacity-50">
-            {saving ? t('worker_profile.saving_status') : t('worker_profile.save_status')}
-          </button>
+          <Button onClick={handleSaveStatus} disabled={saveDisabled} loading={saving} loadingLabel={t('worker_profile.saving_status')} className="h-9 rounded-lg bg-blue-900 px-4 text-sm text-white shadow-none hover:bg-blue-950">
+            {t('worker_profile.save_status')}
+          </Button>
         </div>
       </div>
     </div>
