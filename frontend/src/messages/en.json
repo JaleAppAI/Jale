@@ -356,7 +356,14 @@
         "already_applied": "Already applied",
         "errors": {
             "missing_docs": "Missing documents: {docs}",
-            "job_closed": "This job is no longer accepting applications."
+            "job_closed": "This job is no longer accepting applications.",
+            "profile_invalid": "Some profile details are missing or invalid. Please review your profile and try again.",
+            "not_signed_in": "Your session expired. Please sign in again.",
+            "legal_required": "Please accept the latest terms before applying.",
+            "account_not_ready": "Your account is still being prepared. Please sign out, sign back in, and try again.",
+            "already_applied": "You already applied to this job.",
+            "server_error": "We could not submit this application right now. Please try again in a few minutes.",
+            "apply_failed": "We could not submit this application. Please check your profile and documents, then try again."
         }
     },
     "worker_profile": {

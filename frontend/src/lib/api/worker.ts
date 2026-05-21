@@ -133,6 +133,20 @@ export type WorkerProfilePatch = Partial<Omit<WorkerProfileData, 'id' | 'phone' 
   years_experience: number | WorkerExperience | null;
 }>;
 
+export type WorkerApiError = Error & {
+  status?: number;
+  code?: string;
+  missing_docs?: string[];
+};
+
+async function readErrorBody(res: Response): Promise<{ error?: string; missing_docs?: string[] }> {
+  try {
+    return await res.json();
+  } catch {
+    return {};
+  }
+}
+
 export async function getJobs(
   token: string,
   filters?: { search?: string; job_type?: string },
@@ -155,9 +169,10 @@ export async function getJob(token: string, id: string): Promise<JobDetail> {
 export async function applyToJob(token: string, id: string): Promise<Application> {
   const res = await apiFetch(`/worker/jobs/${id}/apply`, { method: 'POST' }, token);
   if (!res.ok) {
-    const body = await res.json();
-    const err = new Error(body.error ?? 'apply_failed') as Error & { status?: number; missing_docs?: string[] };
+    const body = await readErrorBody(res);
+    const err = new Error(body.error ?? 'apply_failed') as WorkerApiError;
     err.status = res.status;
+    err.code = body.error;
     err.missing_docs = body.missing_docs;
     throw err;
   }

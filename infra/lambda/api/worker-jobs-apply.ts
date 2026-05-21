@@ -32,6 +32,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
+    const workerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
+    if (workerRes.rows.length === 0) {
+      await client.query('COMMIT');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+    }
+    const workerId: string = workerRes.rows[0].id;
+    await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerId]);
+
     // 1. Re-check job is active.
     const jobRes = await client.query(
       `SELECT id, required_docs FROM jobs WHERE id = $1 AND status = 'active'`,
@@ -44,12 +52,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const requiredDocs: string[] = jobRes.rows[0].required_docs ?? [];
 
     // 2. Re-check missing_docs.
-    const docsRes = await client.query(
-      `SELECT DISTINCT doc_type FROM worker_documents
-       WHERE worker_id = (SELECT id FROM users WHERE cognito_sub = $1)
-         AND doc_type = ANY($2::text[])`,
-      [cognitoSub, requiredDocs],
-    );
+    const docsRes = requiredDocs.length > 0
+      ? await client.query(
+        `SELECT DISTINCT doc_type FROM worker_documents
+         WHERE worker_id = $1
+           AND doc_type = ANY($2::text[])`,
+        [workerId, requiredDocs],
+      )
+      : { rows: [] };
     const uploaded = new Set(docsRes.rows.map((r: any) => r.doc_type));
     const missing_docs = requiredDocs.filter(d => !uploaded.has(d));
     if (missing_docs.length > 0) {
@@ -61,10 +71,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     try {
       const insertRes = await client.query(
         `INSERT INTO job_applications (job_id, worker_id, status)
-         VALUES ($1, (SELECT id FROM users WHERE cognito_sub = $2), 'pending')
+         VALUES ($1, $2, 'pending')
          RETURNING id, job_id, status, applied_at`,
-        [jobId, cognitoSub],
+        [jobId, workerId],
       );
+
+      if (insertRes.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'apply_forbidden' }) };
+      }
 
       // 4. Copy each required doc into a per-job row for employer visibility.
       //    Prefer vault row, fall back to any other per-job row.
@@ -73,11 +88,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type)
            SELECT DISTINCT ON (doc_type) worker_id, $1::uuid, doc_type, s3_key, file_name, file_size, mime_type
            FROM worker_documents
-           WHERE worker_id = (SELECT id FROM users WHERE cognito_sub = $2)
+           WHERE worker_id = $2
              AND doc_type = ANY($3::text[])
            ORDER BY doc_type, (job_id IS NULL) DESC, uploaded_at DESC
            ON CONFLICT DO NOTHING`,
-          [jobId, cognitoSub, requiredDocs],
+          [jobId, workerId, requiredDocs],
         );
       }
 
@@ -87,6 +102,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (insertErr?.code === '23505') {
         await client.query('ROLLBACK');
         return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'already_applied' }) };
+      }
+      if (insertErr?.code === '42501') {
+        await client.query('ROLLBACK');
+        return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'apply_forbidden' }) };
       }
       throw insertErr;
     }

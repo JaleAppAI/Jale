@@ -19,6 +19,12 @@ export function splitPhoneNumber(phone: string): { countryCode: PhoneCountryCode
 }
 
 export function formatPhoneNumber(countryCode: PhoneCountryCode, localNumber: string): string {
-  const digits = localNumber.replace(/[^\d]/g, '');
+  let digits = localNumber.replace(/[^\d]/g, '');
+  const countryDigits = countryCode.replace(/[^\d]/g, '');
+
+  if (digits.startsWith(countryDigits) && digits.length > 10) {
+    digits = digits.slice(countryDigits.length);
+  }
+
   return digits ? `${countryCode}${digits}` : '';
 }

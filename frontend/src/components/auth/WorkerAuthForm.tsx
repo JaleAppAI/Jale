@@ -3,7 +3,7 @@ import { useState, useRef, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { workerConfirmSignUp, workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
+import { workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
@@ -18,7 +18,7 @@ const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete'
 const EXPERIENCE: WorkerExperience[] = ['0-1', '2-4', '5-9', '10+'];
 const AVAILABILITY: WorkerAvailability[] = ['full_time', 'part_time', 'weekends', 'flexible'];
 
-type Step = 'login' | 'signup' | 'confirm_signup' | 'otp';
+type Step = 'login' | 'signup' | 'otp';
 
 export default function WorkerAuthForm() {
     const router = useRouter();
@@ -82,21 +82,6 @@ export default function WorkerAuthForm() {
         setIsLoading(true);
         try {
             await workerSignUp({ phone, fullName });
-            resetDigits();
-            setStep('confirm_signup');
-            setTimeout(() => inputRefs.current[0]?.focus(), 50);
-        } catch (err) {
-            setError(t(authErrorKey(err)));
-        } finally {
-            setIsLoading(false);
-        }
-    };
-
-    const handleConfirmSignUp = async () => {
-        setError(null);
-        setIsLoading(true);
-        try {
-            await workerConfirmSignUp(phone, code);
             sessionStorage.setItem('pendingWorkerProfile', JSON.stringify(pendingProfile()));
             setUser(await workerSignIn(phone));
             resetDigits();
@@ -218,23 +203,23 @@ export default function WorkerAuthForm() {
                 </div>
             )}
 
-            {(step === 'confirm_signup' || step === 'otp') && (
+            {step === 'otp' && (
                 <OtpStep
-                    title={step === 'confirm_signup' ? t('confirm_title') : t('otp_title')}
+                    title={t('otp_title')}
                     subtitle={t('code_sent', { phone })}
                     backLabel={t('back')}
-                    onBack={() => { setError(null); resetDigits(); setStep(step === 'confirm_signup' ? 'signup' : 'login'); }}
+                    onBack={() => { setError(null); resetDigits(); setStep('login'); }}
                     digits={digits}
                     inputRefs={inputRefs}
                     onChange={handleDigitChange}
                     onKeyDown={handleDigitKeyDown}
                     onPaste={handleDigitPaste}
                     error={error}
-                    buttonLabel={step === 'confirm_signup' ? t('confirm_account') : t('verify')}
+                    buttonLabel={t('verify')}
                     isLoading={isLoading}
                     loadingLabel={tCommon('loading')}
                     disabled={!otpComplete || isLoading}
-                    onSubmit={step === 'confirm_signup' ? handleConfirmSignUp : handleVerifyOtp}
+                    onSubmit={handleVerifyOtp}
                 />
             )}
         </div>

@@ -101,6 +101,12 @@ describe('ApiStack', () => {
     });
   });
 
+  test('Worker web signup Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker web signup endpoint - create confirmed worker before WhatsApp OTP login',
+    });
+  });
+
   // Task 2.2 — per-route authorizer verification
   test('GET /worker/profile is protected by WorkerAuthorizer', () => {
     template.hasResourceProperties('AWS::ApiGateway::Method', {

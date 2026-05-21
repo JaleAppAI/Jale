@@ -39,5 +39,9 @@ describe('worker-doc-confirm-auth', () => {
     const calls = mockQuery.mock.calls.map(c => c[0]);
     expect(calls.some((c: string) => c.includes('DELETE FROM worker_documents'))).toBe(true);
     expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(true);
+    expect(mockQuery).toHaveBeenCalledWith(
+      `SELECT set_config('app.current_internal_user_id', $1, true)`,
+      ['u1'],
+    );
   });
 });
