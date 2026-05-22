@@ -44,7 +44,7 @@ jobs:
       contents: read
     with:
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
-      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
 
   detect-changes:
     name: Select production stack scope
@@ -119,7 +119,7 @@ jobs:
     secrets: inherit
     with:
       github-environment: production
-      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
       deploy-stacks: ${{ needs.detect-changes.outputs.deploy-stacks }}
       cdk-extra-args: ${{ needs.detect-changes.outputs.cdk-extra-args }}
