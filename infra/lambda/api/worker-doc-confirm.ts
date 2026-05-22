@@ -21,6 +21,7 @@ export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
   let client;
+  let transactionStarted = false;
   try {
     let body: {
       token?: string;
@@ -60,33 +61,29 @@ export const handler = async (
     const pool = await getDbPool();
     client = await pool.connect();
 
-    await client.query('BEGIN');
-
     const slotResult = await client.query(
-      `UPDATE document_upload_token_slots slots
-       SET confirmed_at = now()
+      `SELECT token.worker_id,
+              token.job_id,
+              slots.doc_type,
+              slots.issued_s3_key,
+              slots.expected_mime_type,
+              slots.max_file_size
        FROM document_upload_tokens token
+       JOIN document_upload_token_slots slots
+         ON slots.token_hash = token.token_hash
        JOIN job_applications ja
          ON ja.job_id = token.job_id
         AND ja.worker_id = token.worker_id
-       WHERE slots.token_hash = token.token_hash
-         AND slots.token_hash = $1
+       WHERE token.token_hash = $1
          AND slots.doc_type = $2
          AND slots.issued_s3_key = $3
          AND slots.expected_mime_type = $4
          AND slots.confirmed_at IS NULL
          AND token.used = false
-         AND token.expires_at > now()
-       RETURNING token.worker_id,
-                 token.job_id,
-                 slots.doc_type,
-                 slots.issued_s3_key,
-                 slots.expected_mime_type,
-                 slots.max_file_size`,
+         AND token.expires_at > now()`,
       [tokenHash, doc_type, s3_key, mime_type],
     );
     if (slotResult.rows.length === 0) {
-      await client.query('ROLLBACK');
       return {
         statusCode: 409,
         headers: CORS_HEADERS,
@@ -104,7 +101,6 @@ export const handler = async (
         }),
       );
     } catch {
-      await client.query('ROLLBACK');
       return {
         statusCode: 400,
         headers: CORS_HEADERS,
@@ -117,7 +113,6 @@ export const handler = async (
       head.ContentLength <= 0 ||
       head.ContentLength > Number(slot.max_file_size)
     ) {
-      await client.query('ROLLBACK');
       return {
         statusCode: 400,
         headers: CORS_HEADERS,
@@ -126,7 +121,6 @@ export const handler = async (
     }
 
     if (head.ContentType !== slot.expected_mime_type) {
-      await client.query('ROLLBACK');
       return {
         statusCode: 400,
         headers: CORS_HEADERS,
@@ -135,7 +129,6 @@ export const handler = async (
     }
 
     if (!head.ServerSideEncryption) {
-      await client.query('ROLLBACK');
       return {
         statusCode: 400,
         headers: CORS_HEADERS,
@@ -146,46 +139,88 @@ export const handler = async (
     const safeFileName = sanitizeFileName(file_name) || `${doc_type}.${mime_type.split('/')[1] ?? 'file'}`;
     const s3VersionId = head.VersionId ?? null;
 
-    await client.query(
-      `UPDATE document_upload_token_slots
-       SET s3_version_id = $3
-       WHERE token_hash = $1 AND doc_type = $2`,
-      [tokenHash, doc_type, s3VersionId],
-    );
+    const { worker_id } = slot;
+    await client.query('BEGIN');
+    transactionStarted = true;
 
-    const { worker_id, job_id } = slot;
     // Set token-auth context to the worker's internal UUID. Cognito-sub RLS
     // uses app.current_user_id; internal UUID flows use this separate setting.
     await client.query("SELECT set_config('app.current_internal_user_id', $1, true)", [worker_id]);
 
-    await client.query(
-      `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, s3_version_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    const confirmResult = await client.query(
+      `WITH consumed_token AS (
+         UPDATE document_upload_tokens token
+         SET used = true, used_at = now()
+         WHERE token.token_hash = $1
+           AND token.used = false
+           AND token.expires_at > now()
+           AND EXISTS (
+             SELECT 1
+             FROM job_applications ja
+             WHERE ja.job_id = token.job_id
+               AND ja.worker_id = token.worker_id
+           )
+         RETURNING token.worker_id, token.job_id
+       ),
+       confirmed_slot AS (
+         UPDATE document_upload_token_slots slots
+         SET confirmed_at = now(),
+             s3_version_id = $6
+         FROM consumed_token token
+         WHERE slots.token_hash = $1
+           AND slots.doc_type = $2
+           AND slots.issued_s3_key = $3
+           AND slots.expected_mime_type = $4
+           AND slots.max_file_size = $5
+           AND slots.confirmed_at IS NULL
+         RETURNING token.worker_id,
+                   token.job_id,
+                   slots.doc_type,
+                   slots.issued_s3_key,
+                   slots.expected_mime_type
+       )
+       INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, s3_version_id)
+       SELECT worker_id, job_id, doc_type, issued_s3_key, $7, $8, expected_mime_type, $6
+       FROM confirmed_slot
        ON CONFLICT (worker_id, job_id, doc_type) WHERE job_id IS NOT NULL DO UPDATE
-         SET s3_key = EXCLUDED.s3_key, file_name = EXCLUDED.file_name,
-             file_size = EXCLUDED.file_size, mime_type = EXCLUDED.mime_type,
+         SET s3_key = EXCLUDED.s3_key,
+             file_name = EXCLUDED.file_name,
+             file_size = EXCLUDED.file_size,
+             mime_type = EXCLUDED.mime_type,
              s3_version_id = EXCLUDED.s3_version_id,
-             uploaded_at = now()`,
+             uploaded_at = now()
+       RETURNING id`,
       [
-        worker_id,
-        job_id,
+        tokenHash,
         doc_type,
         slot.issued_s3_key,
+        slot.expected_mime_type,
+        Number(slot.max_file_size),
+        s3VersionId,
         safeFileName,
         head.ContentLength,
-        slot.expected_mime_type,
-        s3VersionId,
       ],
     );
 
+    if (confirmResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'invalid_or_confirmed_upload' }),
+      };
+    }
+
     await client.query('COMMIT');
+    transactionStarted = false;
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
       body: JSON.stringify({ success: true }),
     };
   } catch (err) {
-    if (client) {
+    if (client && transactionStarted) {
       try {
         await client.query('ROLLBACK');
       } catch {

@@ -55,6 +55,24 @@ describe('worker-doc-upload-url Lambda', () => {
     expect(JSON.parse(res.body).error).toBe('invalid_token');
   });
 
+  it('returns 401 for already-used tokens and keeps the lookup guarded by used=false', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // used token is filtered out by lookup
+      .mockResolvedValueOnce({}); // ROLLBACK
+
+    const res = await handler(
+      makeEvent({ token: 'used-token', doc_type: 'resume', mime_type: 'application/pdf' }),
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body).error).toBe('invalid_token');
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('AND t.used = false'),
+      expect.any(Array),
+    );
+  });
+
   it('returns 200 with presigned URL on valid token', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
