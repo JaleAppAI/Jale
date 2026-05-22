@@ -63,6 +63,7 @@ requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'Re
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'cancel-in-progress: false');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'id-token: write');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, '_reusable-deploy.yml');
+requireIncludes('.github/workflows/deploy-production.yml', deployProduction, "grep -Ev '^infra/package(-lock)?\\.json$'");
 
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run build');
