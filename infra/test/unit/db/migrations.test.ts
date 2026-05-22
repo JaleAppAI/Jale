@@ -42,6 +42,9 @@ describe('database migrations', () => {
       '017',
       '018',
       '019',
+      '020',
+      '021',
+      '022',
     ]);
   });
 
@@ -146,5 +149,43 @@ describe('database migrations', () => {
     expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
     expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
     expect(migration).toContain('DROP TRIGGER IF EXISTS job_applications_updated_at');
+  });
+
+  it('hardens worker PII RLS in migration 020', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '020_worker_pii_rls_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_profiles_employer_read');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_skills_employer_read');
+    expect(migration).toContain('CREATE POLICY users_employer_applicant_read');
+    expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('j.employer_id::text');
+    expect(migration).not.toContain("user_type = 'employer'");
+    expect(migration).not.toContain('job_candidates');
+    expect(migration).not.toContain('employer_candidate_rankings');
+    expect(migration).toContain('REVOKE SELECT ON worker_profiles FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_skills FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_documents FROM jale_matching');
+    expect(migration).toContain('information_schema.columns');
+    expect(migration).toContain('matching_profile_columns');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
+  });
+
+  it('adds WhatsApp document access support in migration 021', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '021_whatsapp_required_docs_apply_support.sql'), 'utf8');
+
+    expect(migration).toContain('GRANT SELECT, INSERT ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('UPDATE ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('DELETE ON worker_documents TO jale_whatsapp');
+  });
+
+  it('guards direct application inserts in migration 022', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '022_job_application_required_docs_guard.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION enforce_job_application_required_docs');
+    expect(migration).toContain('FROM worker_documents wd');
+    expect(migration).toContain('wd.job_id IS NULL OR wd.job_id = NEW.job_id');
+    expect(migration).toContain('RAISE EXCEPTION');
+    expect(migration).toContain('CREATE TRIGGER job_applications_required_docs_guard');
   });
 });

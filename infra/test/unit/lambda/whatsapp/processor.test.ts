@@ -61,6 +61,8 @@ const mockConnect = jest.fn();
 jest.mock('../../../../lambda/lib/db', () => ({
   getDbPool: jest.fn(() => Promise.resolve({ connect: mockConnect })),
   setRlsContext: jest.fn(),
+  setInternalUserRlsContext: jest.fn((client: any, userId: string) =>
+    client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [userId])),
 }));
 
 const mockListMatchedJobsForWorker = jest.fn();
@@ -1213,7 +1215,9 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
         })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT job application
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: [] }] }) // helper job check
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox accepted
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -1232,6 +1236,47 @@ describe('Processor Lambda', () => {
 
       const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
       expect(applicationInsert).toEqual(['job-1', 'user-1']);
+    });
+
+    it('typed accept with missing required docs sends document-required reply without applying', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-missing-docs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: { recent_jobs: ['job-1'] },
+          })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume'] }] }) // helper job check
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missing required docs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox missing docs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-missing-docs',
+          From: 'whatsapp:+15125551234',
+          Body: '1 accept',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(findQueryByPattern(/INSERT INTO job_applications/i)).toBeUndefined();
+      expect(outboxBodies()[0]).toContain('Resume');
+      expect(outboxBodies()[0]).toContain('requires these documents');
     });
   });
 });

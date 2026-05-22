@@ -27,6 +27,9 @@ const expectedBaselineMigrations = [
   '017_document_upload_token_hardening.sql',
   '018_document_vault_rls_hardening.sql',
   '019_application_status_constraint_repair.sql',
+  '020_worker_pii_rls_hardening.sql',
+  '021_whatsapp_required_docs_apply_support.sql',
+  '022_job_application_required_docs_guard.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -80,7 +83,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-019 readiness baseline order', () => {
+  it('locks the 001-022 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -263,7 +266,45 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('DROP TRIGGER IF EXISTS job_applications_updated_at');
   });
 
-  maybeIt('applies migrations 001-019 against a local Postgres database', async () => {
+  it('hardens worker PII RLS in migration 020', () => {
+    const migration = readMigration('020_worker_pii_rls_hardening.sql');
+
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_profiles_employer_read');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_skills_employer_read');
+    expect(migration).toContain('CREATE POLICY users_employer_applicant_read');
+    expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('j.employer_id::text');
+    expect(migration).not.toContain("user_type = 'employer'");
+    expect(migration).not.toContain('job_candidates');
+    expect(migration).not.toContain('employer_candidate_rankings');
+    expect(migration).toContain('REVOKE SELECT ON worker_profiles FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_skills FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_documents FROM jale_matching');
+    expect(migration).toContain('information_schema.columns');
+    expect(migration).toContain('matching_profile_columns');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
+  });
+
+  it('adds WhatsApp document access support in migration 021', () => {
+    const migration = readMigration('021_whatsapp_required_docs_apply_support.sql');
+
+    expect(migration).toContain('GRANT SELECT, INSERT ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('UPDATE ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('DELETE ON worker_documents TO jale_whatsapp');
+  });
+
+  it('guards direct application inserts in migration 022', () => {
+    const migration = readMigration('022_job_application_required_docs_guard.sql');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION enforce_job_application_required_docs');
+    expect(migration).toContain('FROM worker_documents wd');
+    expect(migration).toContain('wd.job_id IS NULL OR wd.job_id = NEW.job_id');
+    expect(migration).toContain('RAISE EXCEPTION');
+    expect(migration).toContain('CREATE TRIGGER job_applications_required_docs_guard');
+  });
+
+  maybeIt('applies migrations 001-022 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

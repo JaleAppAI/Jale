@@ -14,7 +14,7 @@ describe('employer candidate ranking', () => {
     expect(scoreBandForMatch(44)).toBe('fair');
   });
 
-  it('ranks applied workers by trust score, relevant skills, and profile keywords', async () => {
+  it('ranks applied workers by trust score and relevant skills', async () => {
     const query = jest.fn()
       .mockResolvedValueOnce({
         rows: [{
@@ -117,6 +117,33 @@ describe('employer candidate ranking', () => {
     expect(sql).not.toContain('trust_signals');
     expect(sql).not.toContain('score_rationale');
     expect(sql).not.toContain('answers');
+  });
+
+  it('does not select applicant contact fields or raw bio unless explicitly requested', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'job-1',
+          title: 'Electrician',
+          location: 'Houston',
+          job_type: 'full-time',
+          description: 'panels',
+          required_docs: [],
+          created_at: '2026-05-10T00:00:00.000Z',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await listEmployerCandidates(makeClient(query), 'job-1', { limit: 10 });
+
+    const candidateSql = String(query.mock.calls[1][0]);
+    expect(candidateSql).toContain('NULL::text AS full_name');
+    expect(candidateSql).toContain('NULL::text AS phone');
+    expect(candidateSql).not.toContain('COALESCE(wp.full_name');
+    expect(candidateSql).not.toContain('COALESCE(wp.phone');
+    expect(candidateSql).not.toMatch(/\bwp\.bio\b/);
+    expect(candidateSql).not.toContain('worker_documents');
   });
 
   it('changes source hash when candidate skills change', () => {

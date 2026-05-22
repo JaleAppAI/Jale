@@ -64,6 +64,7 @@ describe('employer-job-candidates Lambda', () => {
   it('returns 403 when RLS ownership check cannot see the job', async () => {
     mockQuery
       .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({});
 
@@ -88,6 +89,7 @@ describe('employer-job-candidates Lambda', () => {
   it('returns candidates and enqueues rerank after commit when cache is stale', async () => {
     mockQuery
       .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
       .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }], rowCount: 1 })
       .mockResolvedValueOnce({});
     mockListEmployerCandidates.mockResolvedValue({
@@ -106,7 +108,7 @@ describe('employer-job-candidates Lambda', () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).ranking_status).toBe('deterministic');
-    expect(mockListEmployerCandidates).toHaveBeenCalledWith(expect.any(Object), 'job-uuid', { limit: 25 });
+    expect(mockListEmployerCandidates).toHaveBeenCalledWith(expect.any(Object), 'job-uuid', { limit: 25, includeContact: true });
     expect(mockSqsSend).toHaveBeenCalledWith(expect.any(SendMessageCommand));
     expect(mockQuery.mock.calls.map(([q]) => q)).toContain('COMMIT');
   });
@@ -114,6 +116,7 @@ describe('employer-job-candidates Lambda', () => {
   it('does not enqueue rerank when cache is fresh', async () => {
     mockQuery
       .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
       .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }], rowCount: 1 })
       .mockResolvedValueOnce({});
     mockListEmployerCandidates.mockResolvedValue({

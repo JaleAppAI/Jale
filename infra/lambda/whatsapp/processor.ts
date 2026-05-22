@@ -18,6 +18,7 @@ import {
   SFNClient,
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
+import { applyWorkerToJob } from '../lib/applications';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { listMatchedJobsForWorker } from '../lib/job-matching';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
@@ -2197,13 +2198,23 @@ async function handleJobAction(
   }
 
   if (action === 'accept') {
-    await client.query(
-      `INSERT INTO job_applications (job_id, worker_id, status)
-       VALUES ($1, $2, 'pending')
-       ON CONFLICT (job_id, worker_id) DO NOTHING`,
-      [jobId, conv.user_id],
-    );
-    await queueReply(client, inboundMessageSid, from, 'job_accepted', conv.language);
+    const applyResult = await applyWorkerToJob(client, {
+      workerId: conv.user_id,
+      jobId,
+      surface: 'whatsapp',
+    });
+
+    if (applyResult.status === 'applied') {
+      await queueReply(client, inboundMessageSid, from, 'job_accepted', conv.language);
+    } else if (applyResult.status === 'already_applied') {
+      await queueReply(client, inboundMessageSid, from, 'job_already_applied', conv.language);
+    } else if (applyResult.status === 'missing_documents') {
+      await queueReply(client, inboundMessageSid, from, 'job_documents_required', conv.language, {
+        missing_docs: localizeDocList(applyResult.missing_docs, conv.language),
+      });
+    } else {
+      await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
+    }
   } else if (action === 'decline') {
     await queueReply(client, inboundMessageSid, from, 'job_declined', conv.language);
   } else {
@@ -2219,4 +2230,13 @@ async function handleJobAction(
         : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${r.pay}\n\nReply "${commandIndex} accept" to apply.`,
     );
   }
+}
+
+function localizeDocList(docTypes: string[], lang: Lang): string {
+  const labels: Record<string, Record<Lang, string>> = {
+    resume: { en: 'Resume', es: 'Resume' },
+    driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
+    ssn: { en: 'SSN card / ITIN', es: 'Tarjeta SSN / ITIN' },
+  };
+  return docTypes.map((docType) => labels[docType]?.[lang] ?? docType).join(', ');
 }

@@ -57,6 +57,9 @@ MIGRATIONS=(
   "017_document_upload_token_hardening.sql"
   "018_document_vault_rls_hardening.sql"
   "019_application_status_constraint_repair.sql"
+  "020_worker_pii_rls_hardening.sql"
+  "021_whatsapp_required_docs_apply_support.sql"
+  "022_job_application_required_docs_guard.sql"
 )
 
 echo ">> Using region: $REGION"

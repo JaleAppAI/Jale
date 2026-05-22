@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -63,10 +63,22 @@ export const handler = async (
       };
     }
 
+    const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
+    const employerId: string | undefined = employerRes.rows[0]?.id;
+    if (!employerId) {
+      await client.query('COMMIT');
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'user_not_provisioned' }),
+      };
+    }
+    await setInternalUserRlsContext(client, employerId);
+
     // Verify employer owns the job
     const jobCheck = await client.query(
-      `SELECT id FROM jobs WHERE id = $1 AND employer_id = (SELECT id FROM users WHERE cognito_sub = $2)`,
-      [jobId, cognitoSub],
+      `SELECT id FROM jobs WHERE id = $1 AND employer_id = $2`,
+      [jobId, employerId],
     );
     if (jobCheck.rows.length === 0) {
       await client.query('COMMIT');
@@ -88,10 +100,11 @@ export const handler = async (
               wp.availability,
               wp.years_experience, wp.location, ja.status AS application_status, ja.applied_at
        FROM job_applications ja
+       JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id
        LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
-       WHERE ja.job_id = $1 AND ja.worker_id = $2`,
-      [jobId, workerId],
+       WHERE ja.job_id = $1 AND ja.worker_id = $2 AND j.employer_id = $3`,
+      [jobId, workerId, employerId],
     );
 
     await client.query('COMMIT');

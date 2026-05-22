@@ -44,27 +44,6 @@ $WaDbSecretName = 'jale/whatsapp/db'
 
 # Migration files in execution order. Full chain against a fresh RDS.
 $MigrationFiles = @(
-    '001_initial_schema.sql',
-    '002_rls_policies.sql',
-    '003_jobs_and_applications.sql',
-    '004_whatsapp.sql',
-    '005_document_vault.sql',
-    '006_trust_signal_layer.sql',
-    '007_worker_marketplace.sql',
-    '008_worker_skills.sql',
-    '009_location_foundation.sql',
-    '010_matching_write_semantics.sql',
-    '011_ai_profile_media.sql',
-    '012_ai_trust_assessment.sql',
-    '013_whatsapp_template_outbox.sql',
-    '014_employer_candidate_rankings.sql',
-    '015_application_status_alignment.sql',
-    '016_employer_profiles.sql',
-    '017_document_upload_token_hardening.sql',
-    '018_document_vault_rls_hardening.sql',
-    '019_application_status_constraint_repair.sql',
-    '020_worker_pii_rls_hardening.sql',
-    '021_whatsapp_required_docs_apply_support.sql',
     '022_job_application_required_docs_guard.sql'
 )
 
