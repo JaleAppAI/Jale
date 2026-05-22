@@ -29,15 +29,21 @@ AGENTS.md
 *~
 
 # OS
+*.png
 .DS_Store
 Thumbs.db
 desktop.ini
 
 # Claude Code
+.agents/
 .claude/
 .superpowers/
 docs/
 cloudshell-db-psql.md
+.playwright/
+skills-lock.json
+dogfood-output/
+
 
 # Git worktrees
 .worktrees/

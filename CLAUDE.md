@@ -589,6 +589,7 @@ npx cdk destroy JaleBastionStack    # destroy after use, with approval
 
 ## Non-Negotiable Rules
 
+- Never write documentation, plans, analysis, or reviews to the root directory or codebase folders (like infra/ or frontend/); always save them in the docs/ folder to keep the codebase clean.
 - Never run `cdk deploy`, `cdk destroy`, or migration scripts against AWS without explicit user approval.
 - Never hardcode AWS account IDs, credentials, API tokens, Twilio secrets, Cognito IDs from a live environment, or DB passwords.
 - Never read, print, summarize, screenshot, paste, or copy secret-bearing files such as `.env`, `.env.*`, AWS credential files, private keys, exported shell env dumps, or Secrets Manager payloads. If a task appears to require them, stop and ask for a redacted shape/schema instead.
