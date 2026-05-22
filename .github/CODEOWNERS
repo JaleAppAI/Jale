@@ -1,0 +1,7 @@
+# CI/CD and infrastructure changes require operator review.
+.github/ @luisjaleapp
+infra/ @luisjaleapp
+infra/db/migrations/ @luisjaleapp
+scripts/run-migrations* @luisjaleapp
+docs/deployment-ci-cd-runbook.md @luisjaleapp
+docs/ci-cd-pipeline-spec.md @luisjaleapp

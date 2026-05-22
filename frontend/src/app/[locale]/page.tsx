@@ -11,7 +11,7 @@ export default function Home() {
         <div className="text-center max-w-2xl">
           {/* Eyebrow */}
           <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-widest bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)] mb-6">
-            Blue-collar hiring, reimagined
+            Blue-collar hiring, built for today
           </span>
 
           <h1

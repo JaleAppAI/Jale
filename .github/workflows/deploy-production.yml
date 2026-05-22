@@ -1,0 +1,124 @@
+name: deploy-production
+
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+    inputs:
+      deploy_scope:
+        description: Stacks to deploy.
+        required: true
+        type: choice
+        default: frontend
+        options:
+          - frontend
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  guard-ref:
+    name: Require prod branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject non-prod dispatch
+        if: github.ref != 'refs/heads/prod'
+        run: |
+          echo "::error::Production deployment must run from refs/heads/prod."
+          exit 1
+
+      - name: Confirm production branch
+        if: github.ref == 'refs/heads/prod'
+        run: echo "Deploying from ${GITHUB_REF}."
+
+  validate:
+    name: Validate before production deploy
+    needs: guard-ref
+    uses: ./.github/workflows/_reusable-validate.yml
+    permissions:
+      contents: read
+    with:
+      cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+  detect-changes:
+    name: Select production stack scope
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      deploy-stacks: ${{ steps.scope.outputs.deploy-stacks }}
+      cdk-extra-args: ${{ steps.scope.outputs.cdk-extra-args }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select stacks
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleFrontendStack"
+          frontend_stack_list="JaleFrontendStack"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${{ inputs.deploy_scope }}" == "all" ]]; then
+              echo "deploy-stacks=${full_stack_list}" >> "$GITHUB_OUTPUT"
+              echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
+            else
+              echo "deploy-stacks=${frontend_stack_list}" >> "$GITHUB_OUTPUT"
+              echo "cdk-extra-args=--exclusively" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          before="${{ github.event.before }}"
+          if [[ "$before" == "0000000000000000000000000000000000000000" ]]; then
+            before="$(git rev-parse "${GITHUB_SHA}^")"
+          fi
+
+          git diff --name-only "$before" "$GITHUB_SHA" | tee changed-files.txt
+
+          if grep -q '^infra/db/migrations/' changed-files.txt; then
+            echo "::error::Production deploy includes migration changes. Apply migrations through the manual migration runbook until a ledger exists."
+            exit 1
+          fi
+
+          if grep -q '^infra/' changed-files.txt; then
+            echo "deploy-stacks=${full_stack_list}" >> "$GITHUB_OUTPUT"
+            echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy-stacks=${frontend_stack_list}" >> "$GITHUB_OUTPUT"
+            echo "cdk-extra-args=--exclusively" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload changed file list
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-changed-files
+          path: changed-files.txt
+          if-no-files-found: ignore
+
+  deploy:
+    name: Deploy production
+    needs:
+      - validate
+      - detect-changes
+    uses: ./.github/workflows/_reusable-deploy.yml
+    permissions:
+      contents: read
+      id-token: write
+    secrets: inherit
+    with:
+      github-environment: production
+      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
+      deploy-stacks: ${{ needs.detect-changes.outputs.deploy-stacks }}
+      cdk-extra-args: ${{ needs.detect-changes.outputs.cdk-extra-args }}
