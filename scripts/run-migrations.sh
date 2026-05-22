@@ -11,7 +11,7 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→017
+#   - Base64-encodes migrations 001→019
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -33,7 +33,7 @@ DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. Runs the full chain 001→017 against
+# Migration files in execution order. Runs the full chain 001→019 against
 # a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
 # is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
@@ -55,6 +55,8 @@ MIGRATIONS=(
   "015_application_status_alignment.sql"
   "016_employer_profiles.sql"
   "017_document_upload_token_hardening.sql"
+  "018_document_vault_rls_hardening.sql"
+  "019_application_status_constraint_repair.sql"
 )
 
 echo ">> Using region: $REGION"
@@ -267,4 +269,4 @@ aws ssm list-command-invocations \
 echo
 echo ">> All done. Next:"
 echo "   cd infra && npx cdk destroy JaleBastionStack    # cost hygiene"
-echo "   cd infra && npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack"
+echo "   cd infra && npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack"

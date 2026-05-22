@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -32,7 +32,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (userRes.rows.length === 0) { await client.query('COMMIT'); return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_found' }) }; }
     const workerId: string = userRes.rows[0].id;
 
-    await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [workerId]);
+    await setInternalUserRlsContext(client, workerId);
 
     const docsRes = await client.query(
       `SELECT doc_type, s3_key, file_name, file_size, uploaded_at

@@ -65,6 +65,20 @@ export async function setRlsContext(
   );
 }
 
+/**
+ * Sets the RLS session variable for tables that key policies on users.id.
+ * Keep this separate from setRlsContext(), which uses Cognito sub values.
+ */
+export async function setInternalUserRlsContext(
+  client: Client | PoolClient,
+  userId: string,
+): Promise<void> {
+  await client.query(
+    `SELECT set_config('app.current_internal_user_id', $1, true)`,
+    [userId],
+  );
+}
+
 // ── Connection pool ──
 // pg.Pool with max:1 reuses one TCP connection across warm Lambda invocations,
 // avoiding the 50-100ms TLS handshake penalty per invocation. The pool handles

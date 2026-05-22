@@ -11,7 +11,7 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→017
+#   - Base64-encodes migrations 001→019
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -60,7 +60,9 @@ $MigrationFiles = @(
     '014_employer_candidate_rankings.sql',
     '015_application_status_alignment.sql',
     '016_employer_profiles.sql',
-    '017_document_upload_token_hardening.sql'
+    '017_document_upload_token_hardening.sql',
+    '018_document_vault_rls_hardening.sql',
+    '019_application_status_constraint_repair.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -336,4 +338,4 @@ aws ssm list-command-invocations `
 Write-Host ""
 Write-Host ">> All done. Next:"
 Write-Host "   cd infra; npx cdk destroy JaleBastionStack    # cost hygiene"
-Write-Host "   cd infra; npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack"
+Write-Host "   cd infra; npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack"

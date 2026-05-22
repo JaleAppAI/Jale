@@ -40,6 +40,8 @@ describe('database migrations', () => {
       '015',
       '016',
       '017',
+      '018',
+      '019',
     ]);
   });
 
@@ -116,5 +118,33 @@ describe('database migrations', () => {
     expect(migration).toContain('PRIMARY KEY (token_hash, doc_type)');
     expect(migration).toContain('UNIQUE (issued_s3_key)');
     expect(migration).toContain('worker_documents_worker_update');
+  });
+
+  it('hardens document vault RLS in migration 018', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '018_document_vault_rls_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('ALTER TABLE worker_documents ENABLE ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE worker_documents FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON worker_documents TO jale_admin');
+    expect(migration).toContain('worker_documents_worker_delete');
+    expect(migration).toContain('worker_documents_worker_update');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('CREATE POLICY worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('worker_documents.job_id IS NOT NULL');
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('ja.worker_id = worker_documents.worker_id');
+    expect(migration).toContain('ja.job_id = worker_documents.job_id');
+  });
+
+  it('repairs live application status constraints in migration 019', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '019_application_status_constraint_repair.sql'), 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ');
+    expect(migration).toContain('pg_get_constraintdef(con.oid) ILIKE');
+    expect(migration).toContain('ALTER TABLE job_applications DROP CONSTRAINT %I');
+    expect(migration).toContain("WHEN 'viewed' THEN 'reviewed'");
+    expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
+    expect(migration).toContain('DROP TRIGGER IF EXISTS job_applications_updated_at');
   });
 });

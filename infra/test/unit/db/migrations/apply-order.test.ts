@@ -25,6 +25,8 @@ const expectedBaselineMigrations = [
   '015_application_status_alignment.sql',
   '016_employer_profiles.sql',
   '017_document_upload_token_hardening.sql',
+  '018_document_vault_rls_hardening.sql',
+  '019_application_status_constraint_repair.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -78,7 +80,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-016 readiness baseline order', () => {
+  it('locks the 001-019 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -233,7 +235,35 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-017 against a local Postgres database', async () => {
+  it('hardens document vault RLS in migration 018', () => {
+    const migration = readMigration('018_document_vault_rls_hardening.sql');
+
+    expect(migration).toContain('ALTER TABLE worker_documents ENABLE ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE worker_documents FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON worker_documents TO jale_admin');
+    expect(migration).toContain('worker_documents_worker_delete');
+    expect(migration).toContain('worker_documents_worker_update');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('CREATE POLICY worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('worker_documents.job_id IS NOT NULL');
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('ja.worker_id = worker_documents.worker_id');
+    expect(migration).toContain('ja.job_id = worker_documents.job_id');
+  });
+
+  it('repairs live application status constraints in migration 019', () => {
+    const migration = readMigration('019_application_status_constraint_repair.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ');
+    expect(migration).toContain('pg_get_constraintdef(con.oid) ILIKE');
+    expect(migration).toContain('ALTER TABLE job_applications DROP CONSTRAINT %I');
+    expect(migration).toContain("WHEN 'viewed' THEN 'reviewed'");
+    expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
+    expect(migration).toContain('DROP TRIGGER IF EXISTS job_applications_updated_at');
+  });
+
+  maybeIt('applies migrations 001-019 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

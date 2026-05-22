@@ -6,10 +6,12 @@ jest.mock('@aws-sdk/client-s3', () => {
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 import { handler } from '../../../../lambda/api/worker-doc-delete';
-import { getDbPool } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -39,6 +41,14 @@ describe('worker-doc-delete', () => {
     });
     const res = await handler(mkEv('resume'));
     expect(res.statusCode).toBe(404);
+    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'w');
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
+    const deleteSql = mockQuery.mock.calls.find(([q]) => String(q).includes('DELETE FROM worker_documents'))?.[0];
+    expect(deleteSql).toContain('job_id IS NULL');
+    expect(mockQuery).not.toHaveBeenCalledWith(
+      `SELECT set_config('app.current_user_id', $1, true)`,
+      ['u1'],
+    );
   });
 
   it('returns 204 on success', async () => {
@@ -49,5 +59,6 @@ describe('worker-doc-delete', () => {
     });
     const res = await handler(mkEv('resume'));
     expect(res.statusCode).toBe(204);
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
   });
 });
