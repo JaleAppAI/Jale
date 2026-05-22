@@ -155,9 +155,16 @@ const ctx = (key: string, envVar?: string): string =>
   app.node.tryGetContext(key) ?? (envVar ? process.env[envVar] : undefined) ?? '';
 
 if (!skipFrontend) {
+  const apiOriginDomainName = ctx('apiOriginDomainName', 'JALE_API_ORIGIN_DOMAIN_NAME')
+    || `${api.api.restApiId}.execute-api.${env.region}.amazonaws.com`;
+  const apiStageName = ctx('apiStageName', 'JALE_API_STAGE_NAME')
+    || app.node.tryGetContext('environment')
+    || 'dev';
+
   const frontend = new FrontendStack(app, 'JaleFrontendStack', {
     env: { account: env.account, region: 'us-east-1' },
-    api: api.api,
+    apiOriginDomainName,
+    apiStageName,
     domainName: app.node.tryGetContext('domainName') ?? 'jaleapp.ai',
     hostedZoneId: app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3',
     surveyOriginDomain: app.node.tryGetContext('surveyOriginDomain'),
@@ -165,9 +172,6 @@ if (!skipFrontend) {
     workerClientId: ctx('workerClientId', 'JALE_WORKER_CLIENT_ID'),
     employerPoolId: ctx('employerPoolId', 'JALE_EMPLOYER_POOL_ID'),
     employerClientId: ctx('employerClientId', 'JALE_EMPLOYER_CLIENT_ID'),
-    // ApiStack is in another region; allow cross-region references for the
-    // CloudFront /api/* origin (RestApiOrigin reads stage URL at synth time).
     crossRegionReferences: true,
   });
-  frontend.addDependency(api);
 }

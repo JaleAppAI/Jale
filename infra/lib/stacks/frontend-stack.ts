@@ -6,15 +6,16 @@ import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
-import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
-  /** Existing API Gateway REST API (backend routes) */
-  readonly api: apigateway.RestApi;
+  /** API Gateway origin domain, without protocol or stage path. */
+  readonly apiOriginDomainName: string;
+  /** API Gateway stage path used as CloudFront originPath, without leading slash. */
+  readonly apiStageName: string;
   /** Custom domain (e.g., 'jaleapp.ai') */
   readonly domainName: string;
   /** Route 53 hosted zone ID for domainName */
@@ -185,7 +186,10 @@ function handler(event) {
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {
       // Backend API → existing API Gateway
       '/api/*': {
-        origin: new origins.RestApiOrigin(props.api),
+        origin: new origins.HttpOrigin(props.apiOriginDomainName, {
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+          originPath: `/${props.apiStageName}`,
+        }),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,

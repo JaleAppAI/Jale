@@ -92,6 +92,13 @@ jobs:
               --output text
           }
 
+          resolve_api_url() {
+            aws cloudformation describe-stacks \
+              --stack-name JaleApiStack \
+              --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
+              --output text
+          }
+
           worker_pool_id="${JALE_WORKER_POOL_ID:-$(resolve_pool_id jale-worker-pool)}"
           employer_pool_id="${JALE_EMPLOYER_POOL_ID:-$(resolve_pool_id jale-employer-pool)}"
           worker_client_id="${JALE_WORKER_CLIENT_ID:-$(resolve_client_id "$worker_pool_id")}"
@@ -104,11 +111,27 @@ jobs:
             fi
           done
 
+          api_url="$(resolve_api_url)"
+          if [[ -z "$api_url" || "$api_url" == "None" ]]; then
+            echo "::error::Unable to resolve JaleApiStack ApiUrl output for frontend API origin."
+            exit 1
+          fi
+          api_url="${api_url%/}"
+          api_without_scheme="${api_url#https://}"
+          api_origin_domain="${api_without_scheme%%/*}"
+          api_stage_name="${api_without_scheme#*/}"
+          if [[ -z "$api_origin_domain" || -z "$api_stage_name" || "$api_stage_name" == "$api_without_scheme" ]]; then
+            echo "::error::Unexpected JaleApiStack ApiUrl format: $api_url"
+            exit 1
+          fi
+
           {
             echo "JALE_WORKER_POOL_ID=$worker_pool_id"
             echo "JALE_EMPLOYER_POOL_ID=$employer_pool_id"
             echo "JALE_WORKER_CLIENT_ID=$worker_client_id"
             echo "JALE_EMPLOYER_CLIENT_ID=$employer_client_id"
+            echo "JALE_API_ORIGIN_DOMAIN_NAME=$api_origin_domain"
+            echo "JALE_API_STAGE_NAME=$api_stage_name"
           } >> "$GITHUB_ENV"
 
       - name: Run production CDK synth and diff
@@ -191,6 +214,13 @@ jobs:
               --output text
           }
 
+          resolve_api_url() {
+            aws cloudformation describe-stacks \
+              --stack-name JaleApiStack \
+              --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
+              --output text
+          }
+
           worker_pool_id="${JALE_WORKER_POOL_ID:-$(resolve_pool_id jale-worker-pool)}"
           employer_pool_id="${JALE_EMPLOYER_POOL_ID:-$(resolve_pool_id jale-employer-pool)}"
           worker_client_id="${JALE_WORKER_CLIENT_ID:-$(resolve_client_id "$worker_pool_id")}"
@@ -203,11 +233,27 @@ jobs:
             fi
           done
 
+          api_url="$(resolve_api_url)"
+          if [[ -z "$api_url" || "$api_url" == "None" ]]; then
+            echo "::error::Unable to resolve JaleApiStack ApiUrl output for frontend API origin."
+            exit 1
+          fi
+          api_url="${api_url%/}"
+          api_without_scheme="${api_url#https://}"
+          api_origin_domain="${api_without_scheme%%/*}"
+          api_stage_name="${api_without_scheme#*/}"
+          if [[ -z "$api_origin_domain" || -z "$api_stage_name" || "$api_stage_name" == "$api_without_scheme" ]]; then
+            echo "::error::Unexpected JaleApiStack ApiUrl format: $api_url"
+            exit 1
+          fi
+
           {
             echo "JALE_WORKER_POOL_ID=$worker_pool_id"
             echo "JALE_EMPLOYER_POOL_ID=$employer_pool_id"
             echo "JALE_WORKER_CLIENT_ID=$worker_client_id"
             echo "JALE_EMPLOYER_CLIENT_ID=$employer_client_id"
+            echo "JALE_API_ORIGIN_DOMAIN_NAME=$api_origin_domain"
+            echo "JALE_API_STAGE_NAME=$api_stage_name"
           } >> "$GITHUB_ENV"
 
       - name: Check CloudFormation stack status
