@@ -61,6 +61,18 @@ export default function Home() {
               </div>
             ))}
           </div>
+
+          <div className="mt-10 text-center">
+            <p className="text-sm leading-6" style={{ color: 'var(--jale-ink-2)' }}>
+              {t('landing.survey_prompt')}
+            </p>
+            <a
+              href="/survey"
+              className="mt-2 inline-flex text-sm font-semibold text-[var(--jale-blue-700)] underline-offset-4 hover:underline"
+            >
+              {t('landing.survey_cta')}
+            </a>
+          </div>
         </div>
       </main>
     </div>
