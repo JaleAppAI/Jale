@@ -16,7 +16,9 @@
         "headline": "Find work. Find workers.",
         "subheadline": "Jale connects workers with employers in the construction industry.",
         "worker_cta": "I'm looking for work",
-        "employer_cta": "I'm hiring"
+        "employer_cta": "I'm hiring",
+        "survey_prompt": "Tell us what would make finding work or hiring workers easier.",
+        "survey_cta": "Share your thoughts"
     },
     "auth": {
         "worker": {

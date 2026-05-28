@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-jobs-detail';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 jest.mock('../../../../lambda/lib/db');
@@ -8,6 +8,7 @@ jest.mock('../../../../lambda/legal/check-compliance');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -52,10 +53,9 @@ describe('worker-jobs-detail', () => {
     const body = JSON.parse(res.body);
     expect(body.missing_docs).toEqual(['driver_license']);
     expect(body.already_applied).toBe(false);
-    expect(mockQuery).toHaveBeenCalledWith(
-      `SELECT set_config('app.current_internal_user_id', $1, true)`,
-      ['worker-id'],
-    );
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.any(Object), 'worker-id');
+    const docsSql = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM worker_documents'))?.[0];
+    expect(docsSql).toContain('AND (job_id IS NULL OR job_id = $3::uuid)');
   });
 
   it('returns already_applied=true when application exists', async () => {

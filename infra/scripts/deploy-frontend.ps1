@@ -22,6 +22,18 @@ param(
     [string]$SurveyOriginDomain = "",
 
     [Parameter(Mandatory=$false)]
+    [string]$WorkerPoolId = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$WorkerClientId = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$EmployerPoolId = "",
+
+    [Parameter(Mandatory=$false)]
+    [string]$EmployerClientId = "",
+
+    [Parameter(Mandatory=$false)]
     [switch]$SkipInvalidation
 )
 
@@ -37,6 +49,23 @@ function Invoke-Aws {
     }
 
     aws @ArgsWithProfile
+}
+
+function Invoke-Cdk {
+    param([string[]]$Arguments)
+
+    if (Get-Command npx -ErrorAction SilentlyContinue) {
+        npx cdk @Arguments
+        return
+    }
+
+    $LocalCdk = Join-Path $RepoRoot "infra\node_modules\.bin\cdk.cmd"
+    if (Test-Path $LocalCdk) {
+        & $LocalCdk @Arguments
+        return
+    }
+
+    throw "CDK CLI not found. Install npm/npx or run npm install in infra."
 }
 
 function Get-AuthLabel {
@@ -66,6 +95,33 @@ if ($SurveyOriginDomain) {
     $ctxArgs += "surveyOriginDomain=$SurveyOriginDomain"
 }
 
+$frontendConfig = @{
+    workerPoolId = if ($WorkerPoolId) { $WorkerPoolId } else { $env:JALE_WORKER_POOL_ID }
+    workerClientId = if ($WorkerClientId) { $WorkerClientId } else { $env:JALE_WORKER_CLIENT_ID }
+    employerPoolId = if ($EmployerPoolId) { $EmployerPoolId } else { $env:JALE_EMPLOYER_POOL_ID }
+    employerClientId = if ($EmployerClientId) { $EmployerClientId } else { $env:JALE_EMPLOYER_CLIENT_ID }
+}
+
+$missingFrontendConfig = @(
+    if ([string]::IsNullOrWhiteSpace($frontendConfig.workerPoolId)) { "workerPoolId / JALE_WORKER_POOL_ID" }
+    if ([string]::IsNullOrWhiteSpace($frontendConfig.workerClientId)) { "workerClientId / JALE_WORKER_CLIENT_ID" }
+    if ([string]::IsNullOrWhiteSpace($frontendConfig.employerPoolId)) { "employerPoolId / JALE_EMPLOYER_POOL_ID" }
+    if ([string]::IsNullOrWhiteSpace($frontendConfig.employerClientId)) { "employerClientId / JALE_EMPLOYER_CLIENT_ID" }
+)
+
+if ($missingFrontendConfig.Count -gt 0) {
+    Write-Host "Missing frontend Cognito build config:" -ForegroundColor Red
+    $missingFrontendConfig | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }
+    Write-Host ""
+    Write-Host "Pass these as script parameters or set the matching JALE_* environment variables." -ForegroundColor Yellow
+    exit 1
+}
+
+foreach ($item in $frontendConfig.GetEnumerator()) {
+    $ctxArgs += "-c"
+    $ctxArgs += "$($item.Key)=$($item.Value)"
+}
+
 $profileArgs = @()
 if (-not [string]::IsNullOrWhiteSpace($Profile)) {
     $profileArgs += "--profile"
@@ -73,21 +129,27 @@ if (-not [string]::IsNullOrWhiteSpace($Profile)) {
 }
 
 Push-Location (Join-Path $RepoRoot "infra")
+$CdkOutputDir = Join-Path ([System.IO.Path]::GetTempPath()) ("jale-cdk.out-" + [guid]::NewGuid().ToString("N"))
 try {
     Write-Host ""
     Write-Host "Running cdk deploy JaleFrontendStack..." -ForegroundColor Cyan
     Write-Host "CDK builds Docker image, pushes to ECR, and updates Lambda."
 
-    npx cdk deploy JaleFrontendStack `
-        @profileArgs `
-        --require-approval=never `
-        @ctxArgs
+    $cdkArgs = @("deploy", "JaleFrontendStack") + $profileArgs + @("--require-approval=never", "--output", $CdkOutputDir) + $ctxArgs
+    Invoke-Cdk $cdkArgs
 
     if ($LASTEXITCODE -ne 0) {
         throw "cdk deploy failed (exit code $LASTEXITCODE)"
     }
 } finally {
     Pop-Location
+    if (Test-Path $CdkOutputDir) {
+        try {
+            Remove-Item -LiteralPath $CdkOutputDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "Warning: could not remove temporary CDK output at $CdkOutputDir" -ForegroundColor Yellow
+        }
+    }
 }
 
 if (-not $SkipInvalidation -and $DistributionId) {

@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { listEmployerCandidates } from '../lib/employer-candidate-ranking';
 import { checkCompliance } from '../legal/check-compliance';
@@ -68,13 +68,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1', [jobId]);
+    const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
+    const employerId: string | undefined = employerRes.rows[0]?.id;
+    if (!employerId) {
+      await client.query('COMMIT');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+    }
+    await setInternalUserRlsContext(client, employerId);
+
+    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1 AND employer_id = $2', [jobId, employerId]);
     if (jobCheck.rowCount === 0) {
       await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
 
-    const ranked = await listEmployerCandidates(client, jobId, { limit });
+    const ranked = await listEmployerCandidates(client, jobId, { limit, includeContact: true });
     if (ranked.shouldEnqueueRerank) {
       rerankRequest = { jobId, requestedLimit: limit, sourceHash: ranked.sourceHash };
     }

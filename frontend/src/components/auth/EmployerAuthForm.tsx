@@ -139,8 +139,8 @@ export default function EmployerAuthForm() {
                             <Input type="password" placeholder={t('password_label')} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
                         </Field>
                         {error && <ErrorText error={error} />}
-                        <Button className="w-full mt-1" size="lg" onClick={handleSignIn} disabled={!email || !password || isLoading}>
-                            {isLoading ? tCommon('loading') : t('sign_in')}
+                        <Button className="w-full mt-1" size="lg" onClick={handleSignIn} disabled={!email || !password} loading={isLoading} loadingLabel={tCommon('loading')}>
+                            {t('sign_in')}
                         </Button>
                         <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setStep('signup'); }} />
                     </div>
@@ -179,8 +179,8 @@ export default function EmployerAuthForm() {
                             <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
                         </Field>
                         {error && <ErrorText error={error} />}
-                        <Button className="w-full mt-1" size="lg" onClick={handleCreateAccount} disabled={!canCreate || isLoading}>
-                            {isLoading ? tCommon('loading') : t('create_account')}
+                        <Button className="w-full mt-1" size="lg" onClick={handleCreateAccount} disabled={!canCreate} loading={isLoading} loadingLabel={tCommon('loading')}>
+                            {t('create_account')}
                         </Button>
                         <SwitchPrompt text={t('signin_prompt')} action={t('signin_link')} onClick={() => { setError(null); setStep('login'); }} />
                     </div>
@@ -193,8 +193,8 @@ export default function EmployerAuthForm() {
                         </button>
                         <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" /></Field>
                         {error && <ErrorText error={error} />}
-                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4 || isLoading}>
-                            {isLoading ? tCommon('loading') : t('confirm_account')}
+                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4} loading={isLoading} loadingLabel={tCommon('loading')}>
+                            {t('confirm_account')}
                         </Button>
                     </div>
                 )}

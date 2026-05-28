@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -40,8 +40,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    const employerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
+    const employerId: string | undefined = employerRes.rows[0]?.id;
+    if (!employerId) {
+      await client.query('COMMIT');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+    }
+    await setInternalUserRlsContext(client, employerId);
+
     // Verify this job belongs to the caller (RLS returns no rows if not)
-    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1', [jobId]);
+    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1 AND employer_id = $2', [jobId, employerId]);
     if (jobCheck.rowCount === 0) {
       await client.query('COMMIT');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
@@ -49,9 +57,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Build applicant query with optional filters
     const qs = event.queryStringParameters ?? {};
-    const conditions: string[] = ['ja.job_id = $1'];
-    const params: (string | number | string[])[] = [jobId];
-    let idx = 2;
+    const conditions: string[] = ['ja.job_id = $1', 'j.employer_id = $2'];
+    const params: (string | number | string[])[] = [jobId, employerId];
+    let idx = 3;
 
     if (qs.status) {
       conditions.push(`ja.status = $${idx++}`);
@@ -100,6 +108,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          wp.years_experience,
          wp.location
        FROM job_applications ja
+       JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id
        LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
        WHERE ${conditions.join(' AND ')}

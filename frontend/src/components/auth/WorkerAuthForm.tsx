@@ -150,8 +150,8 @@ export default function WorkerAuthForm() {
                         />
                     </Field>
                     {error && <ErrorText error={error} />}
-                    <Button className="w-full" size="lg" onClick={handleSendOtp} disabled={!phoneReady || isLoading}>
-                        {isLoading ? tCommon('loading') : t('send_otp')}
+                    <Button className="w-full" size="lg" onClick={handleSendOtp} disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        {t('send_otp')}
                     </Button>
                     <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setStep('signup'); }} />
                 </div>
@@ -197,8 +197,8 @@ export default function WorkerAuthForm() {
                         </Select>
                     </Field>
                     {error && <ErrorText error={error} />}
-                    <Button className="w-full" size="lg" onClick={handleCreateAccount} disabled={!canCreate || isLoading}>
-                        {isLoading ? tCommon('loading') : t('create_account')}
+                    <Button className="w-full" size="lg" onClick={handleCreateAccount} disabled={!canCreate} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        {t('create_account')}
                     </Button>
                 </div>
             )}
@@ -309,8 +309,8 @@ function OtpStep(props: {
                 ))}
             </div>
             {props.error && <ErrorText error={props.error} />}
-            <Button className="w-full" size="lg" onClick={props.onSubmit} disabled={props.disabled}>
-                {props.isLoading ? props.loadingLabel : props.buttonLabel}
+            <Button className="w-full" size="lg" onClick={props.onSubmit} disabled={props.disabled} loading={props.isLoading} loadingLabel={props.loadingLabel}>
+                {props.buttonLabel}
             </Button>
         </div>
     );

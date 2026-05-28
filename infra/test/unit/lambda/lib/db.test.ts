@@ -24,6 +24,7 @@ describe('DB Utility', () => {
   let getDbSecret: any;
   let getDbPool: any;
   let clearSecretCache: any;
+  let setInternalUserRlsContext: any;
 
   const mockSecret = {
     host: 'db.example.com',
@@ -44,6 +45,7 @@ describe('DB Utility', () => {
       getDbSecret = db.getDbSecret;
       getDbPool = db.getDbPool;
       clearSecretCache = db.clearSecretCache;
+      setInternalUserRlsContext = db.setInternalUserRlsContext;
       clearSecretCache();
     });
   });
@@ -175,6 +177,17 @@ describe('DB Utility', () => {
           ca: 'MOCK_CA_CERT',
         }),
       }),
+    );
+  });
+
+  it('sets the internal user UUID RLS context with a parameterized query', async () => {
+    const client = { query: jest.fn().mockResolvedValue({}) };
+
+    await setInternalUserRlsContext(client, 'worker-id');
+
+    expect(client.query).toHaveBeenCalledWith(
+      `SELECT set_config('app.current_internal_user_id', $1, true)`,
+      ['worker-id'],
     );
   });
 });

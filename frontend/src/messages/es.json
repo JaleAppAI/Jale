@@ -16,7 +16,9 @@
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
         "subheadline": "Jale conecta trabajadores con empleadores en la industria de la construcción.",
         "worker_cta": "Estoy buscando trabajo",
-        "employer_cta": "Estoy contratando"
+        "employer_cta": "Estoy contratando",
+        "survey_prompt": "Cuentanos que haria mas facil encontrar trabajo o contratar trabajadores.",
+        "survey_cta": "Comparte tu opinion"
     },
     "auth": {
         "worker": {

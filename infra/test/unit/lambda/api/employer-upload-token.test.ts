@@ -34,7 +34,7 @@ describe('employer-upload-token Lambda', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('returns 403 if employer does not own the job', async () => {
+  it('returns 403 if employer does not own the job or worker is not an applicant', async () => {
     mockQuery.mockResolvedValueOnce({}).mockResolvedValue({ rows: [] });
     const res = await handler(makeEvent({ job_id: 'j1', worker_id: 'w1' }));
     expect(res.statusCode).toBe(403);
@@ -43,7 +43,7 @@ describe('employer-upload-token Lambda', () => {
   it('returns 201 with upload link on success', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'j1' }] }) // job ownership
+      .mockResolvedValueOnce({ rows: [{ job_id: 'j1', worker_id: 'w1' }] }) // applicant relationship
       .mockResolvedValueOnce({}) // INSERT token
       .mockResolvedValueOnce({}); // COMMIT
 

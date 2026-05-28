@@ -68,6 +68,7 @@ export default function WorkerJobDetailPage() {
   async function handleApplyClick() {
     if (!idToken || !id || !job) return;
     setError(null);
+    setApplying(true);
     try {
       if (!(await profileIsComplete())) {
         setModalOpen(true);
@@ -75,7 +76,9 @@ export default function WorkerJobDetailPage() {
       }
       await doApply();
     } catch (err) {
-      handleApplyError(err);
+      await handleApplyError(err);
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -200,8 +203,8 @@ export default function WorkerJobDetailPage() {
             <ApplicationStatusChip status={job.application_status ?? 'pending'} />
           </div>
         ) : (
-          <Button onClick={handleApplyClick} disabled={!canApply || applying}>
-            {applying ? tCommon('loading') : t('apply')}
+          <Button onClick={handleApplyClick} disabled={!canApply} loading={applying} loadingLabel={tCommon('loading')}>
+            {t('apply')}
           </Button>
         )}
       </div>

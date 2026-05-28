@@ -37,7 +37,7 @@ describe('templates.ts — t()', () => {
       'ask_experience', 'ask_transportation', 'ask_availability',
       'profile_complete', 'profile_reprompt', 'profile_jobs_blocked',
       'idle_help', 'help_menu', 'profile_not_ready',
-      'jobs_none', 'job_accepted', 'job_declined', 'job_not_found',
+      'jobs_none', 'job_accepted', 'job_already_applied', 'job_documents_required', 'job_declined', 'job_not_found',
       'unknown_message',
       'ask_media_photo', 'media_photo_invalid', 'ask_media_photo_type',
       'ask_media_voice', 'media_voice_invalid',
@@ -107,6 +107,12 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('use the buttons');
     expect(help).toContain('[number] accept');
     expect(help).not.toContain('1 accept');
+  });
+
+  it('job_documents_required interpolates the missing document list', () => {
+    const body = t('job_documents_required', 'en', { missing_docs: 'Resume, SSN card / ITIN' });
+    expect(body).toContain('Resume, SSN card / ITIN');
+    expect(body).not.toContain('{{missing_docs}}');
   });
 });
 

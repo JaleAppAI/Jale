@@ -114,8 +114,8 @@ export default function LegalWall() {
 
                 {submitError && <p className="text-sm text-error">{t('error_submit')}</p>}
 
-                <Button className="w-full" onClick={handleAccept} disabled={!checked || isSubmitting}>
-                    {isSubmitting ? tCommon('loading') : t('accept_cta')}
+                <Button className="w-full" onClick={handleAccept} disabled={!checked} loading={isSubmitting} loadingLabel={tCommon('loading')}>
+                    {t('accept_cta')}
                 </Button>
             </Card>
         </main>

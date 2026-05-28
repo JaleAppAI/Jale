@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-doc-upload-url';
 import { getDbPool } from '../../../../lambda/lib/db';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('@aws-sdk/client-s3', () => ({
@@ -54,10 +55,29 @@ describe('worker-doc-upload-url Lambda', () => {
     expect(JSON.parse(res.body).error).toBe('invalid_token');
   });
 
+  it('returns 401 for already-used tokens and keeps the lookup guarded by used=false', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [] }) // used token is filtered out by lookup
+      .mockResolvedValueOnce({}); // ROLLBACK
+
+    const res = await handler(
+      makeEvent({ token: 'used-token', doc_type: 'resume', mime_type: 'application/pdf' }),
+    );
+
+    expect(res.statusCode).toBe(401);
+    expect(JSON.parse(res.body).error).toBe('invalid_token');
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('AND t.used = false'),
+      expect.any(Array),
+    );
+  });
+
   it('returns 200 with presigned URL on valid token', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-uuid', job_id: 'job-uuid' }] })
+      .mockResolvedValueOnce({ rows: [{ issued_s3_key: 'documents/job-uuid/worker-uuid/resume/uuid.pdf' }] })
       .mockResolvedValueOnce({}); // COMMIT
     const res = await handler(
       makeEvent({ token: 'valid-token', doc_type: 'resume', mime_type: 'application/pdf' }),
@@ -66,6 +86,28 @@ describe('worker-doc-upload-url Lambda', () => {
     const body = JSON.parse(res.body);
     expect(body.url).toBe('https://s3.example.com/presigned-put');
     expect(body.s3_key).toMatch(/^documents\/job-uuid\/worker-uuid\/resume\/.+\.pdf$/);
+    expect(PutObjectCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        Bucket: 'test-bucket',
+        ContentType: 'application/pdf',
+        Key: expect.stringMatching(/^documents\/job-uuid\/worker-uuid\/resume\/.+\.pdf$/),
+      }),
+    );
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('returns 409 if a document slot was already confirmed', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'worker-uuid', job_id: 'job-uuid' }] })
+      .mockResolvedValueOnce({ rows: [] }) // slot upsert skipped by confirmed_at guard
+      .mockResolvedValueOnce({}); // ROLLBACK
+
+    const res = await handler(
+      makeEvent({ token: 'valid-token', doc_type: 'resume', mime_type: 'application/pdf' }),
+    );
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('document_already_confirmed');
     expect(mockRelease).toHaveBeenCalled();
   });
 });

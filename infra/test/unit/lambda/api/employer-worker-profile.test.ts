@@ -50,7 +50,8 @@ describe('employer-worker-profile Lambda', () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [] }); // job ownership check — no rows
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
+      .mockResolvedValueOnce({ rows: [] }); // job ownership check
     const res = await handler(makeEvent('employer-sub'));
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('forbidden');
@@ -71,6 +72,7 @@ describe('employer-worker-profile Lambda', () => {
     };
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] }) // job ownership
       .mockResolvedValueOnce({ rows: [mockProfile] }) // profile query
       .mockResolvedValueOnce({}); // COMMIT
@@ -80,6 +82,7 @@ describe('employer-worker-profile Lambda', () => {
     const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
     expect(profileQuery).toContain('FROM worker_skills ws');
     expect(profileQuery).toContain('WHERE ws.worker_id = ja.worker_id');
+    expect(profileQuery).toContain('j.employer_id = $3');
     expect(profileQuery).not.toContain('wp.skills');
     expect(mockRelease).toHaveBeenCalled();
   });

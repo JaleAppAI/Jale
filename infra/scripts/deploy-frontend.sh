@@ -17,6 +17,10 @@ PROFILE="${PROFILE:-}"
 DISTRIBUTION_ID="${DISTRIBUTION_ID:-}"
 SURVEY_ORIGIN_DOMAIN="${SURVEY_ORIGIN_DOMAIN:-}"
 SKIP_INVALIDATION="${SKIP_INVALIDATION:-0}"
+JALE_WORKER_POOL_ID="${JALE_WORKER_POOL_ID:-}"
+JALE_WORKER_CLIENT_ID="${JALE_WORKER_CLIENT_ID:-}"
+JALE_EMPLOYER_POOL_ID="${JALE_EMPLOYER_POOL_ID:-}"
+JALE_EMPLOYER_CLIENT_ID="${JALE_EMPLOYER_CLIENT_ID:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -25,6 +29,17 @@ aws_cli() {
         aws "$@" --profile "$PROFILE"
     else
         aws "$@"
+    fi
+}
+
+cdk_cli() {
+    if command -v npx >/dev/null 2>&1; then
+        npx cdk "$@"
+    elif [[ -x "$REPO_ROOT/infra/node_modules/.bin/cdk" ]]; then
+        "$REPO_ROOT/infra/node_modules/.bin/cdk" "$@"
+    else
+        echo "CDK CLI not found. Install npm/npx or run npm install in infra." >&2
+        return 1
     fi
 }
 
@@ -51,19 +66,43 @@ if [[ -n "$SURVEY_ORIGIN_DOMAIN" ]]; then
     ctx_args+=( -c "surveyOriginDomain=$SURVEY_ORIGIN_DOMAIN" )
 fi
 
+missing_frontend_config=()
+[[ -n "$JALE_WORKER_POOL_ID" ]] || missing_frontend_config+=( "JALE_WORKER_POOL_ID" )
+[[ -n "$JALE_WORKER_CLIENT_ID" ]] || missing_frontend_config+=( "JALE_WORKER_CLIENT_ID" )
+[[ -n "$JALE_EMPLOYER_POOL_ID" ]] || missing_frontend_config+=( "JALE_EMPLOYER_POOL_ID" )
+[[ -n "$JALE_EMPLOYER_CLIENT_ID" ]] || missing_frontend_config+=( "JALE_EMPLOYER_CLIENT_ID" )
+
+if [[ "${#missing_frontend_config[@]}" -gt 0 ]]; then
+    echo "Missing frontend Cognito build config:"
+    printf '  - %s\n' "${missing_frontend_config[@]}"
+    echo ""
+    echo "Set these environment variables before running this script."
+    exit 1
+fi
+
+ctx_args+=(
+    -c "workerPoolId=$JALE_WORKER_POOL_ID"
+    -c "workerClientId=$JALE_WORKER_CLIENT_ID"
+    -c "employerPoolId=$JALE_EMPLOYER_POOL_ID"
+    -c "employerClientId=$JALE_EMPLOYER_CLIENT_ID"
+)
+
 profile_args=()
 if [[ -n "$PROFILE" ]]; then
     profile_args+=( --profile "$PROFILE" )
 fi
 
 cd "$REPO_ROOT/infra"
+CDK_OUTPUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jale-cdk.out.XXXXXX")"
+trap 'rm -rf "$CDK_OUTPUT_DIR"' EXIT
 
 echo ""
 echo "Running cdk deploy JaleFrontendStack..."
 echo "CDK builds Docker image, pushes to ECR, and updates Lambda."
-npx cdk deploy JaleFrontendStack \
+cdk_cli deploy JaleFrontendStack \
     "${profile_args[@]}" \
     --require-approval=never \
+    --output "$CDK_OUTPUT_DIR" \
     "${ctx_args[@]}"
 
 if [[ "$SKIP_INVALIDATION" != "1" && -n "$DISTRIBUTION_ID" ]]; then

@@ -2,10 +2,11 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 import { handler } from '../../../../lambda/api/worker-doc-confirm-auth';
-import { getDbPool } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -39,9 +40,23 @@ describe('worker-doc-confirm-auth', () => {
     const calls = mockQuery.mock.calls.map(c => c[0]);
     expect(calls.some((c: string) => c.includes('DELETE FROM worker_documents'))).toBe(true);
     expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(true);
-    expect(mockQuery).toHaveBeenCalledWith(
-      `SELECT set_config('app.current_internal_user_id', $1, true)`,
-      ['u1'],
-    );
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
+  });
+
+  it('rolls back if insert fails after deleting the previous vault row', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 1 });
+      if (q.includes('INSERT INTO worker_documents')) return Promise.reject(new Error('insert failed'));
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'resume', s3_key: 'k', file_name: 'f', file_size: 1, mime_type: 'application/pdf' }));
+
+    expect(res.statusCode).toBe(500);
+    const calls = mockQuery.mock.calls.map(c => c[0]);
+    expect(calls.some((c: string) => c.includes('DELETE FROM worker_documents'))).toBe(true);
+    expect(calls).toContain('ROLLBACK');
+    expect(calls).not.toContain('COMMIT');
   });
 });

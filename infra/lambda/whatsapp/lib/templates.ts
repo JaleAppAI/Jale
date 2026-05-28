@@ -38,6 +38,8 @@ export type TemplateKey =
   | 'profile_not_ready'
   | 'jobs_none'
   | 'job_accepted'
+  | 'job_already_applied'
+  | 'job_documents_required'
   | 'job_declined'
   | 'job_not_found'
   // Errors
@@ -152,6 +154,14 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   job_accepted: {
     es: 'Aplicacion enviada.\n\nEl empleador recibira tu informacion.',
     en: 'Application sent.\n\nThe employer will receive your information.',
+  },
+  job_already_applied: {
+    es: 'Ya aplicaste a este trabajo.\n\nTe avisaremos cuando el empleador actualice tu solicitud.',
+    en: 'You already applied to this job.\n\nWe will let you know when the employer updates your application.',
+  },
+  job_documents_required: {
+    es: 'Este trabajo requiere estos documentos antes de aplicar: {{missing_docs}}.\n\nSubelos en Jale y vuelve a intentar.',
+    en: 'This job requires these documents before you can apply: {{missing_docs}}.\n\nUpload them in Jale and try again.',
   },
   job_declined: {
     es: 'Entendido. Seguiremos buscando trabajos para ti.',

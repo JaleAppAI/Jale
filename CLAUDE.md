@@ -300,11 +300,12 @@ new → awaiting_otp → awaiting_legal → building_profile → building_trust_
 
 ### Document Vault
 
-**Upload flow (unauthenticated — worker may not have active Cognito session):**
+**Upload flow (unauthenticated - worker may not have active Cognito session):**
 1. Employer (or API) creates an upload token: `POST /employer/upload-tokens`
-2. Worker calls `POST /worker/documents/upload-url` with token → presigned S3 PUT URL (short TTL)
+2. Worker calls `POST /worker/documents/upload-url` with token -> presigned S3 PUT URL (short TTL)
 3. Worker PUTs file directly to S3 (bypasses Lambda)
-4. Worker calls `POST /worker/documents/confirm` with token → Lambda validates hash, inserts `worker_documents` metadata row, marks token used
+4. Worker calls `POST /worker/documents/confirm` with token -> Lambda validates hash, verifies the issued S3 object, inserts `worker_documents` metadata row, and atomically marks the token used
+5. `POST /worker/documents/submit` is retained only as a legacy compatibility route; it does not consume tokens
 
 **Key design decisions:**
 - Token hash in DB (not raw token): single-use credential; hash prevents value exposure even on DB read (ADR-D03)

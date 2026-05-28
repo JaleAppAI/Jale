@@ -8,6 +8,7 @@ import { corsHeaders, errorMessage } from '../lib/http';
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
 const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
@@ -67,8 +68,14 @@ export const handler = async (
     await client.query('BEGIN');
 
     const tokenResult = await client.query(
-      `SELECT worker_id, job_id FROM document_upload_tokens
-       WHERE token_hash = $1 AND used = false AND expires_at > now()`,
+      `SELECT t.worker_id, t.job_id
+       FROM document_upload_tokens t
+       JOIN job_applications ja
+         ON ja.job_id = t.job_id
+        AND ja.worker_id = t.worker_id
+       WHERE t.token_hash = $1
+         AND t.used = false
+         AND t.expires_at > now()`,
       [tokenHash],
     );
 
@@ -84,11 +91,37 @@ export const handler = async (
     const { worker_id, job_id } = tokenResult.rows[0];
     const s3Key = `documents/${job_id}/${worker_id}/${doc_type}/${randomUUID()}.${ext}`;
 
+    const slotResult = await client.query(
+      `INSERT INTO document_upload_token_slots (
+         token_hash, doc_type, issued_s3_key, expected_mime_type, max_file_size, requested_at
+       )
+       VALUES ($1, $2, $3, $4, $5, now())
+       ON CONFLICT (token_hash, doc_type) DO UPDATE
+         SET issued_s3_key = EXCLUDED.issued_s3_key,
+             expected_mime_type = EXCLUDED.expected_mime_type,
+             max_file_size = EXCLUDED.max_file_size,
+             requested_at = now(),
+             s3_version_id = NULL
+       WHERE document_upload_token_slots.confirmed_at IS NULL
+       RETURNING issued_s3_key`,
+      [tokenHash, doc_type, s3Key, mime_type, MAX_FILE_SIZE],
+    );
+
+    if (slotResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'document_already_confirmed' }),
+      };
+    }
+
     const url = await getSignedUrl(
       s3,
       new PutObjectCommand({
         Bucket: process.env.DOCUMENTS_BUCKET!,
         Key: s3Key,
+        ContentType: mime_type,
       }),
       { expiresIn: 900 },
     );

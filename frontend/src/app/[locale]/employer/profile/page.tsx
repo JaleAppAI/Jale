@@ -102,6 +102,7 @@ function EmployerProfileForm(props: {
 }) {
     const t = useTranslations('employer.profile');
     const tAuth = useTranslations('auth.employer');
+    const tCommon = useTranslations('common');
     const [companyName, setCompanyName] = useState(props.initial.company_name ?? props.initial.full_name ?? '');
     const [contactName, setContactName] = useState(props.initial.contact_name ?? '');
     const [phone, setPhone] = useState(props.initial.phone ?? '');
@@ -178,7 +179,7 @@ function EmployerProfileForm(props: {
             </div>
             <div className="md:col-span-2 flex gap-2 justify-end">
                 <Button variant="outline" onClick={props.onCancel} disabled={saving}>{t('cancel')}</Button>
-                <Button onClick={save} disabled={saving}>{saving ? t('saving') : t('save')}</Button>
+                <Button onClick={save} loading={saving} loadingLabel={tCommon('loading')}>{t('save')}</Button>
             </div>
         </div>
     );
