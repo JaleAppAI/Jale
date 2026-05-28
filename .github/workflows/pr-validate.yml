@@ -24,4 +24,4 @@ jobs:
       contents: read
     with:
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
-      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}

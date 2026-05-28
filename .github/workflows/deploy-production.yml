@@ -26,10 +26,18 @@ jobs:
     name: Require prod branch
     runs-on: ubuntu-latest
     steps:
+      - name: Show dispatch ref
+        run: |
+          echo "Event: ${GITHUB_EVENT_NAME}"
+          echo "Ref: ${GITHUB_REF}"
+          echo "Ref name: ${GITHUB_REF_NAME}"
+          echo "SHA: ${GITHUB_SHA}"
+
       - name: Reject non-prod dispatch
         if: github.ref != 'refs/heads/prod'
         run: |
           echo "::error::Production deployment must run from refs/heads/prod."
+          echo "::error::This run is using ${GITHUB_REF}. Start a new deploy-production workflow run and choose the prod branch; rerunning a workflow that was originally dispatched from another branch will keep the old ref."
           exit 1
 
       - name: Confirm production branch
@@ -44,7 +52,7 @@ jobs:
       contents: read
     with:
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
-      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
 
   detect-changes:
     name: Select production stack scope
@@ -119,7 +127,7 @@ jobs:
     secrets: inherit
     with:
       github-environment: production
-      aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}
       cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
       deploy-stacks: ${{ needs.detect-changes.outputs.deploy-stacks }}
       cdk-extra-args: ${{ needs.detect-changes.outputs.cdk-extra-args }}
