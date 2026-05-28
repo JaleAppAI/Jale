@@ -49,8 +49,8 @@ const reviewRoutes = [
     markers: [
       'text/html',
       'JaleApp.AI SMS Terms',
-      'Reply HELP for help',
-      'Reply STOP to opt out',
+      '<strong>HELP</strong>',
+      '<strong>STOP</strong>',
       'https://www.jaleapp.ai/privacypolicy',
     ],
   },
