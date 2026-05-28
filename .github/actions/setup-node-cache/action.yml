@@ -1,0 +1,26 @@
+name: Setup Node with npm cache
+description: Configure Node.js, restore npm cache, and install dependencies with npm ci.
+
+inputs:
+  node-version:
+    description: Node.js version to install.
+    required: false
+    default: '20'
+  working-directory:
+    description: Directory containing package-lock.json.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: npm ci

@@ -1,0 +1,27 @@
+name: pr-validate
+
+on:
+  pull_request:
+    branches: [prod, main]
+  push:
+    branches: [dev, main]
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate repository
+    uses: ./.github/workflows/_reusable-validate.yml
+    permissions:
+      contents: read
+    with:
+      cdk-environment: ${{ vars.CDK_CONTEXT_ENVIRONMENT || 'dev' }}
+      aws-region: ${{ vars.AWS_REGION || 'us-east-2' }}

@@ -1,0 +1,159 @@
+name: reusable-validate
+
+on:
+  workflow_call:
+    inputs:
+      cdk-environment:
+        description: CDK context environment value.
+        required: false
+        type: string
+        default: dev
+      aws-region:
+        description: Region used for deterministic CDK synth.
+        required: false
+        type: string
+        default: us-east-2
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-guard:
+    name: Workflow guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate GitHub workflow contract
+        run: node scripts/validate-github-workflows.mjs
+
+  scripts:
+    name: Script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate shell scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          scripts=(scripts/*.sh)
+          if (( ${#scripts[@]} > 0 )); then
+            bash -n "${scripts[@]}"
+          fi
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $parseErrors = @()
+          Get-ChildItem scripts -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw $_.FullName), [ref]$errors)
+            if ($errors) {
+              $parseErrors += $errors
+            }
+          }
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | Format-List
+            exit 1
+          }
+
+  infra:
+    name: Infra build, test, synth
+    runs-on: ubuntu-latest
+    env:
+      CDK_DEFAULT_ACCOUNT: '111111111111'
+      CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup infra dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: infra
+
+      - name: Build infra TypeScript
+        working-directory: infra
+        run: npm run build
+
+      - name: Run infra unit tests
+        working-directory: infra
+        run: npm test -- --runInBand
+
+      - name: CDK synth backend stacks
+        working-directory: infra
+        run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true --output "$RUNNER_TEMP/jale-cdk-synth-backend"
+
+      - name: Upload backend synth artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-cdk-synth
+          path: ${{ runner.temp }}/jale-cdk-synth-backend
+          if-no-files-found: error
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:3000/api
+      NEXT_PUBLIC_WORKER_POOL_ID: us-east-1_placeholder
+      NEXT_PUBLIC_WORKER_CLIENT_ID: placeholder
+      NEXT_PUBLIC_EMPLOYER_POOL_ID: us-east-1_placeholder
+      NEXT_PUBLIC_EMPLOYER_CLIENT_ID: placeholder
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup frontend dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: frontend
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan tracked files for obvious secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git grep -n -E '(AWS_SECRET_ACCESS_KEY\s*=|aws_secret_access_key\s*=|TWILIO_AUTH_TOKEN\s*=|ANTHROPIC_API_KEY\s*=|-----BEGIN [A-Z ]*PRIVATE KEY-----)' -- . ':!package-lock.json' ':!frontend/package-lock.json' ':!infra/package-lock.json'; then
+            echo "::error::Potential secret found in tracked files."
+            exit 1
+          fi
+
+      - name: Setup infra dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: infra
+
+      - name: Audit infra dependencies
+        working-directory: infra
+        run: npm audit --audit-level=high
+
+      - name: Setup frontend dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: frontend
+
+      - name: Audit frontend dependencies
+        working-directory: frontend
+        # TODO: upgrade Next.js to 15.x to resolve high-severity CVEs (GHSA-9g9p, GHSA-h25m, et al.)
+        # Lowered to critical until that upgrade is scheduled.
+        run: npm audit --audit-level=critical

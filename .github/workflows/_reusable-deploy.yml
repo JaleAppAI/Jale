@@ -1,0 +1,327 @@
+name: reusable-deploy
+
+on:
+  workflow_call:
+    inputs:
+      github-environment:
+        description: GitHub Environment that gates deployment.
+        required: true
+        type: string
+      aws-region:
+        description: AWS region for backend stacks.
+        required: true
+        type: string
+      cdk-environment:
+        description: CDK context environment value.
+        required: true
+        type: string
+      deploy-stacks:
+        description: Space-delimited CDK stack names to deploy.
+        required: true
+        type: string
+      cdk-extra-args:
+        description: Extra CDK args, such as --exclusively for frontend-only deploys.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      AWS_PLAN_ROLE_ARN:
+        required: false
+      AWS_ROLE_ARN:
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  plan:
+    name: Production plan
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ inputs.aws-region }}
+      AWS_PLAN_ROLE_ARN: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+      DEPLOY_STACKS: ${{ inputs.deploy-stacks }}
+      CDK_EXTRA_ARGS: ${{ inputs.cdk-extra-args }}
+      CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      JALE_WORKER_POOL_ID: ${{ vars.JALE_WORKER_POOL_ID }}
+      JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
+      JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
+      JALE_EMPLOYER_CLIENT_ID: ${{ vars.JALE_EMPLOYER_CLIENT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup infra dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: infra
+
+      - name: Skip AWS plan when no plan role is configured
+        if: env.AWS_PLAN_ROLE_ARN == ''
+        run: |
+          echo "::warning::AWS_PLAN_ROLE_ARN is not configured. Deployment will still run cdk diff after production approval."
+
+      - name: Configure AWS plan credentials
+        if: env.AWS_PLAN_ROLE_ARN != ''
+        uses: ./.github/actions/aws-oidc-login
+        with:
+          role-to-assume: ${{ env.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve frontend configuration for plan
+        if: env.AWS_PLAN_ROLE_ARN != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          resolve_pool_id() {
+            local pool_name="$1"
+            aws cognito-idp list-user-pools \
+              --max-results 60 \
+              --query "UserPools[?Name=='${pool_name}'].Id | [0]" \
+              --output text
+          }
+
+          resolve_client_id() {
+            local pool_id="$1"
+            aws cognito-idp list-user-pool-clients \
+              --user-pool-id "$pool_id" \
+              --max-results 60 \
+              --query 'UserPoolClients[0].ClientId' \
+              --output text
+          }
+
+          resolve_api_url() {
+            aws cloudformation describe-stacks \
+              --stack-name JaleApiStack \
+              --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
+              --output text
+          }
+
+          worker_pool_id="${JALE_WORKER_POOL_ID:-$(resolve_pool_id jale-worker-pool)}"
+          employer_pool_id="${JALE_EMPLOYER_POOL_ID:-$(resolve_pool_id jale-employer-pool)}"
+          worker_client_id="${JALE_WORKER_CLIENT_ID:-$(resolve_client_id "$worker_pool_id")}"
+          employer_client_id="${JALE_EMPLOYER_CLIENT_ID:-$(resolve_client_id "$employer_pool_id")}"
+
+          for value in "$worker_pool_id" "$employer_pool_id" "$worker_client_id" "$employer_client_id"; do
+            if [[ -z "$value" || "$value" == "None" ]]; then
+              echo "::error::Unable to resolve Cognito frontend configuration."
+              exit 1
+            fi
+          done
+
+          if ! api_url="$(resolve_api_url 2>&1)"; then
+            echo "$api_url"
+            echo "::error::Unable to read JaleApiStack.ApiUrl. Grant cloudformation:DescribeStacks on JaleApiStack to AWS_PLAN_ROLE_ARN's role."
+            exit 1
+          fi
+          if [[ -z "$api_url" || "$api_url" == "None" ]]; then
+            echo "::error::Unable to resolve JaleApiStack ApiUrl output for frontend API origin."
+            exit 1
+          fi
+          api_url="${api_url%/}"
+          api_without_scheme="${api_url#https://}"
+          api_origin_domain="${api_without_scheme%%/*}"
+          api_stage_name="${api_without_scheme#*/}"
+          if [[ -z "$api_origin_domain" || -z "$api_stage_name" || "$api_stage_name" == "$api_without_scheme" ]]; then
+            echo "::error::Unexpected JaleApiStack ApiUrl format: $api_url"
+            exit 1
+          fi
+
+          {
+            echo "JALE_WORKER_POOL_ID=$worker_pool_id"
+            echo "JALE_EMPLOYER_POOL_ID=$employer_pool_id"
+            echo "JALE_WORKER_CLIENT_ID=$worker_client_id"
+            echo "JALE_EMPLOYER_CLIENT_ID=$employer_client_id"
+            echo "JALE_API_ORIGIN_DOMAIN_NAME=$api_origin_domain"
+            echo "JALE_API_STAGE_NAME=$api_stage_name"
+          } >> "$GITHUB_ENV"
+
+      - name: Run production CDK synth and diff
+        if: env.AWS_PLAN_ROLE_ARN != ''
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} --output "$RUNNER_TEMP/jale-cdk-synth-production"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
+
+      - name: Upload production plan artifacts
+        if: env.AWS_PLAN_ROLE_ARN != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-cdk-plan
+          path: |
+            ${{ runner.temp }}/jale-cdk-synth-production
+            ${{ runner.temp }}/jale-cdk-diff.txt
+          if-no-files-found: error
+
+  deploy:
+    name: Production deploy
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github-environment }}
+    env:
+      AWS_REGION: ${{ inputs.aws-region }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      DEPLOY_STACKS: ${{ inputs.deploy-stacks }}
+      CDK_EXTRA_ARGS: ${{ inputs.cdk-extra-args }}
+      CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      JALE_WORKER_POOL_ID: ${{ vars.JALE_WORKER_POOL_ID }}
+      JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
+      JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
+      JALE_EMPLOYER_CLIENT_ID: ${{ vars.JALE_EMPLOYER_CLIENT_ID }}
+    steps:
+      - name: Require AWS deploy role
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$AWS_ROLE_ARN" ]]; then
+            echo "::error::AWS_ROLE_ARN must be configured as a production Environment secret."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS deploy credentials
+        uses: ./.github/actions/aws-oidc-login
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup infra dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: infra
+
+      - name: Resolve frontend configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          resolve_pool_id() {
+            local pool_name="$1"
+            aws cognito-idp list-user-pools \
+              --max-results 60 \
+              --query "UserPools[?Name=='${pool_name}'].Id | [0]" \
+              --output text
+          }
+
+          resolve_client_id() {
+            local pool_id="$1"
+            aws cognito-idp list-user-pool-clients \
+              --user-pool-id "$pool_id" \
+              --max-results 60 \
+              --query 'UserPoolClients[0].ClientId' \
+              --output text
+          }
+
+          resolve_api_url() {
+            aws cloudformation describe-stacks \
+              --stack-name JaleApiStack \
+              --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
+              --output text
+          }
+
+          worker_pool_id="${JALE_WORKER_POOL_ID:-$(resolve_pool_id jale-worker-pool)}"
+          employer_pool_id="${JALE_EMPLOYER_POOL_ID:-$(resolve_pool_id jale-employer-pool)}"
+          worker_client_id="${JALE_WORKER_CLIENT_ID:-$(resolve_client_id "$worker_pool_id")}"
+          employer_client_id="${JALE_EMPLOYER_CLIENT_ID:-$(resolve_client_id "$employer_pool_id")}"
+
+          for value in "$worker_pool_id" "$employer_pool_id" "$worker_client_id" "$employer_client_id"; do
+            if [[ -z "$value" || "$value" == "None" ]]; then
+              echo "::error::Unable to resolve Cognito frontend configuration."
+              exit 1
+            fi
+          done
+
+          if ! api_url="$(resolve_api_url 2>&1)"; then
+            echo "$api_url"
+            echo "::error::Unable to read JaleApiStack.ApiUrl. Grant cloudformation:DescribeStacks on JaleApiStack to AWS_ROLE_ARN's role."
+            exit 1
+          fi
+          if [[ -z "$api_url" || "$api_url" == "None" ]]; then
+            echo "::error::Unable to resolve JaleApiStack ApiUrl output for frontend API origin."
+            exit 1
+          fi
+          api_url="${api_url%/}"
+          api_without_scheme="${api_url#https://}"
+          api_origin_domain="${api_without_scheme%%/*}"
+          api_stage_name="${api_without_scheme#*/}"
+          if [[ -z "$api_origin_domain" || -z "$api_stage_name" || "$api_stage_name" == "$api_without_scheme" ]]; then
+            echo "::error::Unexpected JaleApiStack ApiUrl format: $api_url"
+            exit 1
+          fi
+
+          {
+            echo "JALE_WORKER_POOL_ID=$worker_pool_id"
+            echo "JALE_EMPLOYER_POOL_ID=$employer_pool_id"
+            echo "JALE_WORKER_CLIENT_ID=$worker_client_id"
+            echo "JALE_EMPLOYER_CLIENT_ID=$employer_client_id"
+            echo "JALE_API_ORIGIN_DOMAIN_NAME=$api_origin_domain"
+            echo "JALE_API_STAGE_NAME=$api_stage_name"
+          } >> "$GITHUB_ENV"
+
+      - name: Check CloudFormation stack status
+        shell: bash
+        run: |
+          set -euo pipefail
+          for stack in $DEPLOY_STACKS; do
+            status="$(aws cloudformation describe-stacks --stack-name "$stack" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+            if [[ -n "$status" ]]; then
+              echo "$stack: $status"
+              case "$status" in
+                *_IN_PROGRESS|ROLLBACK_COMPLETE|UPDATE_ROLLBACK_FAILED)
+                  echo "::error::$stack is in $status and is not safe to deploy automatically."
+                  exit 1
+                  ;;
+              esac
+            else
+              echo "$stack: not found; CDK may create it."
+            fi
+          done
+
+      - name: Check Lambda account concurrency
+        run: aws lambda get-account-settings
+
+      - name: Run CDK diff after approval
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
+
+      - name: Deploy CDK stacks
+        working-directory: infra
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
+
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-deploy-artifacts
+          path: |
+            ${{ runner.temp }}/jale-cdk-diff-approved.txt
+            ${{ runner.temp }}/jale-cdk-deploy.log
+            ${{ runner.temp }}/jale-cdk-outputs.json
+          if-no-files-found: ignore
+
+      - name: Deployment summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Production Deployment"
+            echo ""
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Region: \`${AWS_REGION}\`"
+            echo "- CDK context environment: \`${{ inputs.cdk-environment }}\`"
+            echo "- Stacks: \`${DEPLOY_STACKS}\`"
+            echo "- Extra CDK args: \`${CDK_EXTRA_ARGS:-none}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
