@@ -252,6 +252,15 @@ const html = `<!doctype html>
             <h2>Consent to receive SMS messages</h2>
             <p>Workers consent to receive JaleApp.AI authentication text messages when they enter their mobile phone number during worker account creation, sign-in, or account verification and request a one-time passcode.</p>
             <p>JaleApp.AI sends a text message only after the user initiates the verification or sign-in flow.</p>
+            <p>SMS opt-in consent is collected directly for JaleApp.AI account verification messages. Consent to receive SMS messages is not bundled with consent for marketing or third-party messages.</p>
+          </section>
+
+          <section>
+            <h2>Mobile information and consent sharing</h2>
+            <div class="notice">
+              <p><strong>Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.</strong></p>
+              <p>JaleApp.AI does not sell, rent, or share mobile phone numbers or SMS opt-in consent data with third parties or affiliates for marketing or promotional purposes.</p>
+            </div>
           </section>
 
           <section>

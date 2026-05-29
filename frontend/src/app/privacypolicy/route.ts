@@ -262,8 +262,9 @@ const html = `<!doctype html>
           <section>
             <h2>SMS consent and data sharing</h2>
             <div class="notice">
+              <p><strong>Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.</strong></p>
               <p><strong>JaleApp.AI does not sell, rent, or share mobile phone numbers or SMS opt-in consent data with third parties or affiliates for marketing or promotional purposes.</strong></p>
-              <p>Text messaging originator opt-in data and consent will not be shared with any third parties except as necessary to provide messaging services requested by the user.</p>
+              <p>Text messaging originator opt-in data and consent will not be shared with third parties or affiliates for marketing or promotional purposes.</p>
             </div>
           </section>
 
