@@ -41,9 +41,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         j.id,
         j.title,
         j.location,
+        j.pay,
         j.job_type,
         j.status,
         j.created_at,
+        j.pay_min,
+        j.pay_max,
+        j.start_date,
+        j.expected_duration,
+        j.shift_schedule,
+        j.transportation_required,
+        j.language_preference,
+        j.number_of_workers_needed,
+        j.workers_hired AS hired_count,
+        GREATEST(j.number_of_workers_needed - j.workers_hired, 0) AS open_count,
+        j.trade_category,
+        j.required_experience_years,
+        j.certifications,
         (
           SELECT COUNT(*)::int
           FROM job_applications ja

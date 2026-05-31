@@ -22,6 +22,18 @@ export interface MatchableJobRow {
   description: string | null;
   required_docs?: string[] | null;
   created_at: string | Date;
+  pay_min?: string | number | null;
+  pay_max?: string | number | null;
+  start_date?: string | Date | null;
+  expected_duration?: string | null;
+  shift_schedule?: string | null;
+  transportation_required?: boolean | null;
+  language_preference?: string[] | null;
+  number_of_workers_needed?: string | number | null;
+  workers_hired?: string | number | null;
+  trade_category?: string | null;
+  required_experience_years?: string | number | null;
+  certifications?: string[] | null;
   latitude: string | number | null;
   longitude: string | number | null;
 }
@@ -43,6 +55,19 @@ export interface MatchedJob {
   job_type: string;
   required_docs?: string[] | null;
   created_at: string | Date;
+  pay_min?: string | number | null;
+  pay_max?: string | number | null;
+  start_date?: string | Date | null;
+  expected_duration?: string | null;
+  shift_schedule?: string | null;
+  transportation_required?: boolean | null;
+  language_preference?: string[] | null;
+  number_of_workers_needed?: string | number | null;
+  hired_count?: string | number | null;
+  open_count?: number;
+  trade_category?: string | null;
+  required_experience_years?: string | number | null;
+  certifications?: string[] | null;
   match_score: number;
   match_components: MatchComponents;
   match_reasons: string[];
@@ -124,7 +149,7 @@ function scoreProfession(worker: WorkerMatchProfile, job: MatchableJobRow, reaso
     return 0;
   }
 
-  const jobText = normalizeProfessionText(`${job.title} ${job.description ?? ''}`);
+  const jobText = normalizeProfessionText(`${job.title} ${job.trade_category ?? ''} ${job.description ?? ''}`);
   const hits = terms.filter((term) => jobText.includes(term));
   if (hits.length >= 2) {
     reasons.push('profession_exact_or_alias');
@@ -137,8 +162,8 @@ function scoreProfession(worker: WorkerMatchProfile, job: MatchableJobRow, reaso
   return 0;
 }
 
-function toNumber(value: string | number | null): number | null {
-  if (value === null) {
+function toNumber(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) {
     return null;
   }
   const n = typeof value === 'number' ? value : Number(value);
@@ -222,6 +247,11 @@ function workerYears(value: string | number | null): number | null {
 }
 
 function requiredYears(job: MatchableJobRow): number | null {
+  const explicitRequired = toNumber(job.required_experience_years);
+  if (explicitRequired !== null) {
+    return explicitRequired;
+  }
+
   const text = cleanText(`${job.title} ${job.description ?? ''}`);
   const match = text.match(/\b(\d{1,2})\s*\+?\s*(?:years|yrs|anos|anios)\b/);
   return match ? Number(match[1]) : null;
@@ -301,6 +331,19 @@ export function scoreJobCandidate(
     job_type: job.job_type,
     required_docs: job.required_docs ?? null,
     created_at: job.created_at,
+    pay_min: job.pay_min,
+    pay_max: job.pay_max,
+    start_date: job.start_date,
+    expected_duration: job.expected_duration,
+    shift_schedule: job.shift_schedule,
+    transportation_required: job.transportation_required,
+    language_preference: job.language_preference,
+    number_of_workers_needed: job.number_of_workers_needed,
+    hired_count: job.workers_hired,
+    open_count: Math.max(0, Number(job.number_of_workers_needed ?? 0) - Number(job.workers_hired ?? 0)),
+    trade_category: job.trade_category,
+    required_experience_years: job.required_experience_years,
+    certifications: job.certifications,
     match_score: matchScore,
     match_components: components,
     match_reasons: reasons,
@@ -403,6 +446,18 @@ export async function listMatchedJobsForWorker(
             j.description,
             j.required_docs,
             j.created_at,
+            j.pay_min,
+            j.pay_max,
+            j.start_date,
+            j.expected_duration,
+            j.shift_schedule,
+            j.transportation_required,
+            j.language_preference,
+            j.number_of_workers_needed,
+            j.workers_hired,
+            j.trade_category,
+            j.required_experience_years,
+            j.certifications,
             ${jobCoordinates.latitude} AS latitude,
             ${jobCoordinates.longitude} AS longitude
        FROM jobs j

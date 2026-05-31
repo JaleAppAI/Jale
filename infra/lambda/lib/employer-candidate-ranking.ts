@@ -178,7 +178,7 @@ function scoreCandidate(job: EmployerCandidateJob, row: AppliedCandidateRow): Em
     score += 2;
   }
 
-  if (['submitted', 'viewed', 'contacted'].includes(row.status)) {
+  if (['contacted', 'talking', 'hired'].includes(row.status)) {
     score += 3;
   }
 

@@ -21,6 +21,7 @@ const makeEvent = (body: Record<string, unknown>) => ({
     title: 'Concrete Finisher',
     location: 'Columbus, OH',
     job_type: 'contract',
+    trade_category: 'concrete',
     ...body,
   }),
 } as unknown as APIGatewayProxyEvent);
@@ -38,7 +39,29 @@ describe('employer-jobs-create', () => {
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO jobs')) {
         return Promise.resolve({
-          rows: [{ id: 'job-1', title: 'Concrete Finisher', location: 'Columbus, OH', job_type: 'contract', status: 'active', required_docs: [], created_at: 'now' }],
+          rows: [{
+            id: 'job-1',
+            title: 'Concrete Finisher',
+            location: 'Columbus, OH',
+            pay: null,
+            job_type: 'contract',
+            status: 'active',
+            required_docs: [],
+            created_at: 'now',
+            pay_min: null,
+            pay_max: null,
+            start_date: null,
+            expected_duration: null,
+            shift_schedule: null,
+            transportation_required: false,
+            language_preference: ['any'],
+            number_of_workers_needed: 1,
+            hired_count: 0,
+            open_count: 1,
+            trade_category: 'concrete',
+            required_experience_years: null,
+            certifications: [],
+          }],
         });
       }
       return Promise.resolve({});
@@ -67,5 +90,13 @@ describe('employer-jobs-create', () => {
     expect(res.statusCode).toBe(201);
     expect(mockSetJobCoordinates).toHaveBeenCalledWith(expect.any(Object), 'job-1', 39.961176, -82.998794, 'manual');
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects invalid pay ranges before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ pay_min: 30, pay_max: 20 }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_pay_range');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 });

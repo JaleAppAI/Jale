@@ -1,13 +1,56 @@
 'use client';
+import type React from 'react';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { createJob, Job } from '@/lib/api/employer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 
 type DocType = 'resume' | 'driver_license' | 'ssn';
 const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
+const LANGUAGE_OPTIONS = ['any', 'en', 'es'] as const;
+const TRADE_CATEGORIES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'drywall', 'general_labor', 'other'] as const;
+
+type JobForm = {
+  title: string;
+  location: string;
+  job_type: 'full-time' | 'part-time' | 'contract';
+  description: string;
+  pay_min: string;
+  pay_max: string;
+  start_date: string;
+  expected_duration: string;
+  shift_schedule: string;
+  transportation_required: boolean;
+  language_preference: Array<'any' | 'en' | 'es'>;
+  number_of_workers_needed: string;
+  trade_category: typeof TRADE_CATEGORIES[number] | '';
+  required_experience_years: string;
+  certifications: string;
+  required_docs: Record<DocType, boolean>;
+};
+
+const initialForm: JobForm = {
+  title: '',
+  location: '',
+  job_type: 'full-time',
+  description: '',
+  pay_min: '',
+  pay_max: '',
+  start_date: '',
+  expected_duration: '',
+  shift_schedule: '',
+  transportation_required: false,
+  language_preference: ['any'],
+  number_of_workers_needed: '1',
+  trade_category: '',
+  required_experience_years: '',
+  certifications: '',
+  required_docs: { resume: false, driver_license: false, ssn: false },
+};
 
 interface Props {
   open: boolean;
@@ -15,38 +58,117 @@ interface Props {
   onJobCreated: (job: Job) => void;
 }
 
+function parseOptionalNumber(value: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function splitCertifications(value: string): string[] {
+  return Array.from(new Set(value.split(',').map((item) => item.trim()).filter(Boolean)));
+}
+
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const { idToken } = useAuth();
 
-  const [step, setStep] = useState<1 | 2>(1);
-  const [title, setTitle] = useState('');
-  const [location, setLocation] = useState('');
-  const [jobType, setJobType] = useState('full-time');
-  const [description, setDescription] = useState('');
-  const [requiredDocs, setRequiredDocs] = useState<Record<DocType, boolean>>({
-    resume: false, driver_license: false, ssn: false,
-  });
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [form, setForm] = useState<JobForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   if (!open) return null;
 
-  const handleClose = () => {
-    setStep(1); setTitle(''); setLocation(''); setJobType('full-time');
-    setDescription(''); setRequiredDocs({ resume: false, driver_license: false, ssn: false });
-    setError(''); onClose();
+  const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
+    setForm((current) => ({ ...current, [key]: value }));
   };
 
-  const toggleDoc = (doc: DocType) =>
-    setRequiredDocs(prev => ({ ...prev, [doc]: !prev[doc] }));
+  const handleClose = () => {
+    setStep(1);
+    setForm(initialForm);
+    setError('');
+    onClose();
+  };
+
+  const toggleDoc = (doc: DocType) => {
+    setForm((current) => ({
+      ...current,
+      required_docs: { ...current.required_docs, [doc]: !current.required_docs[doc] },
+    }));
+  };
+
+  const toggleLanguage = (value: 'any' | 'en' | 'es') => {
+    setForm((current) => {
+      if (value === 'any') return { ...current, language_preference: ['any'] };
+      const withoutAny = current.language_preference.filter((item) => item !== 'any');
+      const next = withoutAny.includes(value)
+        ? withoutAny.filter((item) => item !== value)
+        : [...withoutAny, value];
+      return { ...current, language_preference: next.length > 0 ? next : ['any'] };
+    });
+  };
+
+  const validateCurrentStep = (): string | null => {
+    if (step === 1) {
+      if (!form.title.trim() || !form.location.trim() || !form.trade_category) return t('modal.validation_required');
+      return null;
+    }
+    if (step === 2) {
+      const payMin = parseOptionalNumber(form.pay_min);
+      const payMax = parseOptionalNumber(form.pay_max);
+      const workersNeeded = Number(form.number_of_workers_needed);
+      const experience = parseOptionalNumber(form.required_experience_years);
+      if (Number.isNaN(payMin) || Number.isNaN(payMax) || Number.isNaN(experience)) return t('modal.validation_number');
+      if ((payMin !== null && payMin < 0) || (payMax !== null && payMax < 0)) return t('modal.validation_number');
+      if (payMin !== null && payMax !== null && payMin > payMax) return t('modal.validation_pay_range');
+      if (!Number.isInteger(workersNeeded) || workersNeeded < 1) return t('modal.validation_headcount');
+      if (experience !== null && experience < 0) return t('modal.validation_number');
+    }
+    return null;
+  };
+
+  const nextStep = () => {
+    const validationError = validateCurrentStep();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setError('');
+    setStep((current) => current === 1 ? 2 : 3);
+  };
 
   const handleSubmit = async () => {
-    setLoading(true); setError('');
+    const validationError = validateCurrentStep();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setLoading(true);
+    setError('');
     try {
-      const required_docs = DOC_TYPES.filter(d => requiredDocs[d]);
-      const job = await createJob(idToken!, { title, location, job_type: jobType, description, required_docs });
+      const pay_min = parseOptionalNumber(form.pay_min);
+      const pay_max = parseOptionalNumber(form.pay_max);
+      const required_experience_years = parseOptionalNumber(form.required_experience_years);
+      const required_docs = DOC_TYPES.filter((doc) => form.required_docs[doc]);
+      const job = await createJob(idToken!, {
+        title: form.title.trim(),
+        location: form.location.trim(),
+        job_type: form.job_type,
+        description: form.description.trim() || undefined,
+        required_docs,
+        pay_min,
+        pay_max,
+        start_date: form.start_date || null,
+        expected_duration: form.expected_duration.trim() || null,
+        shift_schedule: form.shift_schedule.trim() || null,
+        transportation_required: form.transportation_required,
+        language_preference: form.language_preference,
+        number_of_workers_needed: Number(form.number_of_workers_needed),
+        trade_category: form.trade_category,
+        required_experience_years,
+        certifications: splitCertifications(form.certifications),
+      });
       onJobCreated(job);
       handleClose();
     } catch {
@@ -64,148 +186,182 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center px-3 py-4"
       style={{ background: 'rgba(24,24,85,.45)' }}
       onClick={handleClose}
     >
       <div
-        className="w-full max-w-md rounded-[var(--radius-card)] bg-white p-7"
+        className="flex max-h-[92vh] w-full max-w-2xl flex-col rounded-[var(--radius-card)] bg-white"
         style={{ boxShadow: 'var(--shadow-modal)' }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal header */}
-        <div className="flex items-center justify-between mb-1">
-          <h2
-            className="font-semibold"
-            style={{ fontSize: '1.05rem', color: 'var(--jale-ink)', letterSpacing: '-0.02em' }}
-          >
-            {t('modal.title')}
-          </h2>
+        <div className="flex items-start justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+          <div>
+            <h2 className="text-base font-semibold text-[var(--jale-ink)]">{t('modal.title')}</h2>
+            <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
+              {t('modal.step_label', { current: step, total: 3 })}
+            </p>
+          </div>
           <button
             onClick={handleClose}
-            className="flex items-center justify-center w-7 h-7 rounded-full hover:bg-[var(--jale-paper-2)] transition-colors"
+            className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[var(--jale-paper-2)]"
             style={{ border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--jale-ink-2)' }}
+            aria-label={t('modal.close')}
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 6 6 18M6 6l12 12"/>
-            </svg>
+            x
           </button>
         </div>
-        <p className="text-xs font-semibold uppercase tracking-wider mb-5" style={{ color: 'var(--jale-ink-2)' }}>
-          Step {step} of 2
-        </p>
 
-        {step === 1 ? (
-          <>
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-                  {t('modal.job_title')} *
-                </label>
-                <Input placeholder="e.g. Forklift operator — Day shift" value={title} onChange={e => setTitle(e.target.value)} />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-                    {t('modal.location')} *
-                  </label>
-                  <Input placeholder="Hayward, CA" value={location} onChange={e => setLocation(e.target.value)} />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-                    {t('modal.job_type')}
-                  </label>
-                  <select
-                    className="w-full min-h-[44px] rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] px-3.5 text-sm font-medium text-[var(--jale-ink)] focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)] transition-all duration-150"
-                    value={jobType}
-                    onChange={e => setJobType(e.target.value)}
-                  >
+        <div className="overflow-y-auto px-5 py-5">
+          {step === 1 && (
+            <div className="grid gap-4">
+              <Field label={t('modal.job_title')} required>
+                <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
+              </Field>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label={t('modal.location')} required>
+                  <Input value={form.location} onChange={(e) => update('location', e.target.value)} placeholder={t('modal.location_placeholder')} />
+                </Field>
+                <Field label={t('modal.job_type')}>
+                  <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
                     <option value="full-time">{t('modal.job_type_fulltime')}</option>
                     <option value="part-time">{t('modal.job_type_parttime')}</option>
                     <option value="contract">{t('modal.job_type_contract')}</option>
-                  </select>
-                </div>
+                  </Select>
+                </Field>
               </div>
+              <Field label={t('modal.trade_category')} required>
+                <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
+                  <option value="">{t('modal.select_placeholder')}</option>
+                  {TRADE_CATEGORIES.map((trade) => (
+                    <option key={trade} value={trade}>{t(`modal.trade.${trade}`)}</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label={t('modal.job_description')}>
+                <Textarea rows={4} value={form.description} onChange={(e) => update('description', e.target.value)} placeholder={t('modal.description_placeholder')} />
+              </Field>
+            </div>
+          )}
 
-              <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-                  {t('modal.job_description')}
-                </label>
-                <textarea
-                  className="w-full rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] px-3.5 py-2.5 text-sm font-medium text-[var(--jale-ink)] placeholder:text-[var(--jale-placeholder)] focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)] transition-all duration-150 resize-none"
-                  rows={4}
-                  placeholder="What does the job involve? What experience is required?"
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                />
+          {step === 2 && (
+            <div className="grid gap-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label={t('modal.pay_min')}>
+                  <Input type="number" min={0} value={form.pay_min} onChange={(e) => update('pay_min', e.target.value)} />
+                </Field>
+                <Field label={t('modal.pay_max')}>
+                  <Input type="number" min={0} value={form.pay_max} onChange={(e) => update('pay_max', e.target.value)} />
+                </Field>
               </div>
-            </div>
-
-            <div className="flex gap-2 mt-6">
-              <Button variant="ghost" onClick={handleClose} className="flex-1">{t('modal.cancel')}</Button>
-              <Button
-                variant="deep"
-                disabled={!title.trim() || !location.trim()}
-                onClick={() => setStep(2)}
-                className="flex-1"
-              >
-                {t('post_job_docs.next')} →
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="text-sm mb-4" style={{ color: 'var(--jale-ink-2)' }}>
-              {t('post_job_docs.subtitle')}
-            </p>
-
-            <div className="flex flex-col gap-2.5 mb-4">
-              {DOC_TYPES.map(doc => (
-                <div
-                  key={doc}
-                  className="flex items-center justify-between rounded-[10px] px-4 py-3 border transition-all"
-                  style={{
-                    background:   requiredDocs[doc] ? 'var(--jale-blue-50)' : 'var(--jale-paper-2)',
-                    borderColor:  requiredDocs[doc] ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
-                  }}
-                >
-                  <span className="text-sm font-medium" style={{ color: 'var(--jale-ink)' }}>{docLabel[doc]}</span>
-                  <div className="flex items-center gap-2 text-xs">
-                    <span style={{ color: requiredDocs[doc] ? 'var(--jale-ink-2)' : 'var(--jale-blue-700)', fontWeight: 600 }}>
-                      {t('post_job_docs.optional_label')}
-                    </span>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label={t('modal.start_date')}>
+                  <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
+                </Field>
+                <Field label={t('modal.expected_duration')}>
+                  <Input value={form.expected_duration} onChange={(e) => update('expected_duration', e.target.value)} placeholder={t('modal.duration_placeholder')} />
+                </Field>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label={t('modal.shift_schedule')}>
+                  <Input value={form.shift_schedule} onChange={(e) => update('shift_schedule', e.target.value)} placeholder={t('modal.shift_placeholder')} />
+                </Field>
+                <Field label={t('modal.number_of_workers_needed')} required>
+                  <Input type="number" min={1} value={form.number_of_workers_needed} onChange={(e) => update('number_of_workers_needed', e.target.value)} />
+                </Field>
+              </div>
+              <Field label={t('modal.required_experience_years')}>
+                <Input type="number" min={0} value={form.required_experience_years} onChange={(e) => update('required_experience_years', e.target.value)} />
+              </Field>
+              <Field label={t('modal.language_preference')}>
+                <div className="flex flex-wrap gap-2">
+                  {LANGUAGE_OPTIONS.map((lang) => (
                     <button
-                      onClick={() => toggleDoc(doc)}
-                      className="w-9 h-5 rounded-full relative transition-colors"
-                      style={{ background: requiredDocs[doc] ? 'var(--jale-blue-500)' : 'var(--jale-divider)', border: 0, cursor: 'pointer' }}
+                      key={lang}
+                      type="button"
+                      onClick={() => toggleLanguage(lang)}
+                      className="rounded-full border px-3 py-2 text-xs font-semibold"
+                      style={{
+                        borderColor: form.language_preference.includes(lang) ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
+                        background: form.language_preference.includes(lang) ? 'var(--jale-blue-50)' : 'white',
+                        color: form.language_preference.includes(lang) ? 'var(--jale-blue-700)' : 'var(--jale-ink)',
+                      }}
                     >
-                      <span
-                        className="absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all"
-                        style={{ left: requiredDocs[doc] ? 'calc(100% - 18px)' : 2 }}
-                      />
+                      {t(`modal.language.${lang}`)}
                     </button>
-                    <span style={{ color: requiredDocs[doc] ? 'var(--jale-blue-700)' : 'var(--jale-ink-2)', fontWeight: 600 }}>
-                      {t('post_job_docs.required_label')}
-                    </span>
-                  </div>
+                  ))}
                 </div>
-              ))}
+              </Field>
+              <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
+                <input
+                  type="checkbox"
+                  checked={form.transportation_required}
+                  onChange={(e) => update('transportation_required', e.target.checked)}
+                />
+                {t('modal.transportation_required')}
+              </label>
+              <Field label={t('modal.certifications')}>
+                <Input value={form.certifications} onChange={(e) => update('certifications', e.target.value)} placeholder={t('modal.certifications_placeholder')} />
+              </Field>
             </div>
+          )}
 
-            {error && <p className="text-sm mb-3" style={{ color: 'var(--jale-danger)' }}>{error}</p>}
-
-            <div className="flex gap-2 mt-6">
-              <Button variant="ghost" onClick={() => setStep(1)} disabled={loading} className="flex-1">
-                {t('post_job_docs.back')}
-              </Button>
-              <Button variant="deep" onClick={handleSubmit} loading={loading} loadingLabel={tCommon('loading')} className="flex-1">
-                {t('post_job_docs.submit')}
-              </Button>
+          {step === 3 && (
+            <div>
+              <p className="mb-4 text-sm text-[var(--jale-ink-2)]">{t('post_job_docs.subtitle')}</p>
+              <div className="flex flex-col gap-2.5">
+                {DOC_TYPES.map((doc) => (
+                  <button
+                    key={doc}
+                    type="button"
+                    onClick={() => toggleDoc(doc)}
+                    className="flex items-center justify-between rounded-[10px] border px-4 py-3 text-left transition-all"
+                    style={{
+                      background: form.required_docs[doc] ? 'var(--jale-blue-50)' : 'var(--jale-paper-2)',
+                      borderColor: form.required_docs[doc] ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
+                    }}
+                  >
+                    <span className="text-sm font-medium text-[var(--jale-ink)]">{docLabel[doc]}</span>
+                    <span className="text-xs font-semibold text-[var(--jale-blue-700)]">
+                      {form.required_docs[doc] ? t('post_job_docs.required_label') : t('post_job_docs.optional_label')}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
-          </>
-        )}
+          )}
+
+          {error && <p className="mt-4 text-sm text-[var(--jale-danger)]">{error}</p>}
+        </div>
+
+        <div className="flex gap-2 border-t border-[var(--jale-divider)] px-5 py-4">
+          {step === 1 ? (
+            <Button variant="ghost" onClick={handleClose} className="flex-1">{t('modal.cancel')}</Button>
+          ) : (
+            <Button variant="ghost" onClick={() => setStep((current) => current === 3 ? 2 : 1)} disabled={loading} className="flex-1">
+              {t('post_job_docs.back')}
+            </Button>
+          )}
+          {step < 3 ? (
+            <Button variant="deep" onClick={nextStep} className="flex-1">{t('modal.next')}</Button>
+          ) : (
+            <Button variant="deep" onClick={handleSubmit} loading={loading} loadingLabel={tCommon('loading')} className="flex-1">
+              {t('post_job_docs.submit')}
+            </Button>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
+        {label}{required ? ' *' : ''}
+      </label>
+      {children}
     </div>
   );
 }

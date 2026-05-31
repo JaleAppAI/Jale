@@ -30,6 +30,7 @@ const expectedBaselineMigrations = [
   '020_worker_pii_rls_hardening.sql',
   '021_whatsapp_required_docs_apply_support.sql',
   '022_job_application_required_docs_guard.sql',
+  '023_job_fields_and_statuses_mvp.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -83,7 +84,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-022 readiness baseline order', () => {
+  it('locks the 001-023 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -304,12 +305,28 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE TRIGGER job_applications_required_docs_guard');
   });
 
-  maybeIt('applies migrations 001-022 against a local Postgres database', async () => {
+  it('adds MVP job fields and lifecycle statuses in migration 023', () => {
+    const migration = readMigration('023_job_fields_and_statuses_mvp.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_min INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS number_of_workers_needed INTEGER NOT NULL DEFAULT 1');
+    expect(migration).toContain("CHECK (status IN ('active', 'paused', 'filled', 'closed'))");
+    expect(migration).toContain("WHEN 'reviewed' THEN 'contacted'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts');
+    expect(migration).toContain("IF TG_OP = 'DELETE' THEN");
+    expect(migration).toContain('target_job_id := OLD.job_id');
+    expect(migration).toContain('target_job_id := NEW.job_id');
+  });
+
+  maybeIt('applies migrations 001-023 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
     expect(columns.get('worker_profiles')?.get('years_experience')).toBe('integer');
     expect(columns.get('jobs')?.get('required_docs')).toBe('_text');
+    expect(columns.get('jobs')?.get('pay_min')).toBe('integer');
+    expect(columns.get('jobs')?.get('language_preference')).toBe('_text');
     expect(columns.get('document_upload_tokens')?.get('used_at')).toBe('timestamp with time zone');
     expect(columns.get('document_upload_token_slots')?.get('issued_s3_key')).toBe('text');
   });

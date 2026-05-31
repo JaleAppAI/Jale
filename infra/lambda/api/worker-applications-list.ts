@@ -29,7 +29,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `SELECT a.id AS application_id, a.job_id, a.status, a.applied_at,
+      `SELECT a.id AS application_id, a.job_id,
+              CASE a.status
+                WHEN 'reviewed' THEN 'contacted'
+                WHEN 'rejected' THEN 'not_interested'
+                ELSE a.status
+              END AS status,
+              a.applied_at,
               j.title AS job_title, u.full_name AS company_name
        FROM job_applications a
        JOIN jobs j ON j.id = a.job_id

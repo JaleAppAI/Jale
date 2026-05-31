@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -28,8 +29,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const { status } = body;
-    if (!status || !['active', 'closed'].includes(status)) {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_status', valid: ['active', 'closed'] }) };
+    if (!status || !WRITABLE_JOB_STATUSES.includes(status as any)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_status', valid: WRITABLE_JOB_STATUSES }) };
     }
 
     const pool = await getDbPool();
@@ -54,14 +55,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const result = await client.query(
       `UPDATE jobs SET status = $1 WHERE id = $2
-       RETURNING id, title, location, job_type, status, created_at,
+       RETURNING id, title, location, pay, job_type, status, created_at,
+         pay_min, pay_max, start_date, expected_duration, shift_schedule,
+         transportation_required, language_preference, number_of_workers_needed,
+         workers_hired AS hired_count,
+         GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
+         trade_category, required_experience_years, certifications,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
       [status, jobId],
     );
 
     await client.query('COMMIT');
 
-    // RLS blocks updates to jobs not owned by this employer — rowCount === 0 means forbidden
+    // RLS blocks updates to jobs not owned by this employer; rowCount === 0 means forbidden.
     if (result.rowCount === 0) {
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }

@@ -45,6 +45,7 @@ describe('database migrations', () => {
       '020',
       '021',
       '022',
+      '023',
     ]);
   });
 
@@ -187,5 +188,23 @@ describe('database migrations', () => {
     expect(migration).toContain('wd.job_id IS NULL OR wd.job_id = NEW.job_id');
     expect(migration).toContain('RAISE EXCEPTION');
     expect(migration).toContain('CREATE TRIGGER job_applications_required_docs_guard');
+  });
+
+  it('adds MVP job fields and lifecycle statuses in migration 023', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '023_job_fields_and_statuses_mvp.sql'), 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_min INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_max INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS number_of_workers_needed INTEGER NOT NULL DEFAULT 1');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS workers_hired INTEGER NOT NULL DEFAULT 0');
+    expect(migration).toContain("CHECK (status IN ('active', 'paused', 'filled', 'closed'))");
+    expect(migration).toContain("WHEN 'reviewed' THEN 'contacted'");
+    expect(migration).toContain("WHEN 'rejected' THEN 'not_interested'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts');
+    expect(migration).toContain("IF TG_OP = 'DELETE' THEN");
+    expect(migration).toContain('target_job_id := OLD.job_id');
+    expect(migration).toContain('target_job_id := NEW.job_id');
+    expect(migration).toContain('CREATE TRIGGER job_applications_hired_count_sync');
   });
 });

@@ -10,12 +10,13 @@ import {
   getWorkerProfile, getWorkerDocuments, createUploadToken, updateApplicantStatus,
   WorkerProfile, WorkerDocument, ApplicationStatus,
 } from '@/lib/api/employer';
+import { applicationStatusTone, normalizeApplicationStatus } from '@/lib/status';
 
 export const dynamic = 'force-dynamic';
 
 type DocType = 'resume' | 'driver_license' | 'ssn';
 const ALL_DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
-const APPLICATION_STATUSES: ApplicationStatus[] = ['pending', 'reviewed', 'hired', 'rejected'];
+const APPLICATION_STATUSES: ApplicationStatus[] = ['pending', 'contacted', 'talking', 'hired', 'not_interested'];
 
 export default function WorkerProfilePage() {
   const t = useTranslations('employer_dashboard');
@@ -68,7 +69,7 @@ export default function WorkerProfilePage() {
       .then(([p, { documents: docs }]) => {
         setProfile(p);
         setDocuments(docs);
-        setStatus(p.application_status);
+        setStatus(normalizeApplicationStatus(p.application_status));
       })
       .catch((err) => {
         try {
@@ -130,13 +131,6 @@ export default function WorkerProfilePage() {
 
   const saveDisabled = saving || !idToken || !workerId || !jobId || !profile || status === profile.application_status;
 
-  const statusClass = (value: ApplicationStatus) => (
-    value === 'hired' ? 'bg-green-100 text-green-800' :
-    value === 'rejected' ? 'bg-red-100 text-red-800' :
-    value === 'reviewed' ? 'bg-blue-100 text-blue-800' :
-    'bg-yellow-100 text-yellow-800'
-  );
-
   const availabilityLabel = (value: WorkerProfile['availability']) => {
     if (!value) return t('worker_profile.fallback_availability');
     const key = value.replaceAll('-', '_');
@@ -172,8 +166,14 @@ export default function WorkerProfilePage() {
                 </div>
                 <div>
                   <p className="font-bold text-base">{displayName}</p>
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${statusClass(profile.application_status)}`}>
-                    {t(`applicants.status.${profile.application_status}`)}
+                  <span
+                    className="text-xs px-2 py-0.5 rounded-full font-medium"
+                    style={{
+                      background: applicationStatusTone(normalizeApplicationStatus(profile.application_status)).bg,
+                      color: applicationStatusTone(normalizeApplicationStatus(profile.application_status)).color,
+                    }}
+                  >
+                    {t(`applicants.status.${normalizeApplicationStatus(profile.application_status)}`)}
                   </span>
                 </div>
               </div>

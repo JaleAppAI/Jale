@@ -187,6 +187,8 @@
     "employer_dashboard": {
         "stats": {
             "active_jobs": "Empleos activos",
+            "paused_jobs": "Empleos pausados",
+            "filled_jobs": "Empleos llenos",
             "total_applicants": "Total de candidatos"
         },
         "jobs": {
@@ -194,11 +196,27 @@
             "post_job": "Publicar empleo",
             "active": "Activo",
             "closed": "Cerrado",
+            "status": {
+                "all": "Todos",
+                "active": "Activo",
+                "paused": "Pausado",
+                "filled": "Lleno",
+                "closed": "Cerrado"
+            },
             "toggle": {
                 "activate": "Marcar como activo",
+                "pause": "Pausar",
                 "close": "Marcar como cerrado"
             },
             "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
+            "openings_count": "{open}/{total} abiertos",
+            "pay_range": "Rango de pago",
+            "pay_range_value": "${min}-${max}",
+            "hired_progress": "Progreso de contratación",
+            "hired_progress_value": "{hired}/{total} contratados, {open} abiertos",
+            "not_specified": "No especificado",
+            "yes": "Sí",
+            "no": "No",
             "posted": "Publicado",
             "details": "Detalles",
             "posting_details": "Detalles de la publicacion",
@@ -233,24 +251,65 @@
             "phone": "Teléfono",
             "empty": "Ningún candidato coincide con los filtros.",
             "status": {
-                "pending": "Pendiente",
-                "reviewed": "Revisado",
+                "pending": "Nuevo",
+                "contacted": "Contactado",
+                "talking": "En conversación",
                 "hired": "Contratado",
-                "rejected": "Rechazado"
+                "not_interested": "No seleccionado"
             }
         },
         "modal": {
             "title": "Publicar un empleo",
+            "step_label": "Paso {current} de {total}",
+            "close": "Cerrar",
             "job_title": "Título del puesto",
+            "job_title_placeholder": "ej. Operador de montacargas",
             "location": "Ubicación",
+            "location_placeholder": "Hayward, CA",
             "job_type": "Tipo de empleo",
             "job_type_fulltime": "Tiempo completo",
             "job_type_parttime": "Medio tiempo",
             "job_type_contract": "Contrato",
             "submit": "Publicar empleo",
             "cancel": "Cancelar",
+            "next": "Siguiente",
             "error": "Error al publicar el empleo. Inténtalo de nuevo.",
-            "job_description": "Descripción del empleo"
+            "job_description": "Descripción del empleo",
+            "description_placeholder": "¿Qué incluye el trabajo? ¿Qué experiencia se requiere?",
+            "select_placeholder": "Seleccionar...",
+            "trade_category": "Oficio",
+            "trade": {
+                "electrician": "Electricista",
+                "plumber": "Plomero",
+                "carpenter": "Carpintero",
+                "concrete": "Concreto",
+                "painting": "Pintura",
+                "drywall": "Drywall",
+                "general_labor": "Ayudante general",
+                "other": "Otro"
+            },
+            "pay_min": "Pago mínimo",
+            "pay_max": "Pago máximo",
+            "start_date": "Fecha de inicio",
+            "expected_duration": "Duración esperada",
+            "duration_placeholder": "ej. 2 semanas",
+            "shift_schedule": "Horario",
+            "shift_placeholder": "ej. Lun-Vie turno de día",
+            "number_of_workers_needed": "Trabajadores necesarios",
+            "required_experience_years": "Experiencia requerida",
+            "language_preference": "Idioma preferido",
+            "language": {
+                "any": "Cualquiera",
+                "en": "Inglés",
+                "es": "Español"
+            },
+            "transportation_required": "Requiere transporte",
+            "certifications": "Certificaciones",
+            "certifications_placeholder": "OSHA 10, montacargas, CDL",
+            "validation_required": "Completa los campos requeridos.",
+            "validation_number": "Ingresa números válidos y no negativos.",
+            "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
+            "validation_headcount": "Trabajadores necesarios debe ser al menos 1."
         },
         "worker_profile": {
             "back": "Volver a postulantes",
@@ -332,10 +391,11 @@
         "empty": "Aún no has postulado a ningún trabajo.",
         "empty_cta": "Buscar trabajos",
         "status": {
-            "pending": "Pendiente",
-            "reviewed": "Revisado",
+            "pending": "Aplicado",
+            "contacted": "Empleador contactó",
+            "talking": "En conversación",
             "hired": "Contratado",
-            "rejected": "Rechazado"
+            "not_interested": "No seleccionado"
         }
     },
     "worker_home": {
@@ -347,11 +407,18 @@
             "part_time": "Medio tiempo",
             "contract": "Contrato"
         },
+        "openings_count": "{open}/{total} disponibles",
         "empty": "No hay trabajos activos en este momento."
     },
     "worker_job_detail": {
         "back": "← Volver a trabajos",
         "required_docs": "Documentos requeridos",
+        "pay_range": "Rango de pago",
+        "start_date": "Fecha de inicio",
+        "expected_duration": "Duración",
+        "shift_schedule": "Horario",
+        "openings": "Vacantes",
+        "required_experience": "Experiencia",
         "upload_prompt": "Sube los documentos faltantes en tu perfil.",
         "upload_link": "Ir al perfil",
         "apply": "Postularse",

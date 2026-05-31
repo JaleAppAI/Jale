@@ -11,6 +11,8 @@ import { Button } from '@/components/ui/button';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
 import { getJob, getJobApplicants, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
+import { applicationStatusTone, jobStatusTone } from '@/lib/status';
+import type { WritableJobStatus } from '@/lib/status';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,11 +65,11 @@ export default function JobDetailPage() {
       .finally(() => setLoadingApplicants(false));
   }, [idToken, id, filters]);
 
-  async function handleToggleStatus() {
+  async function handleSetJobStatus(status: WritableJobStatus) {
     if (!idToken || !job) return;
     setTogglingStatus(true);
     try {
-      const updated = await updateJobStatus(idToken, job.id, job.status === 'active' ? 'closed' : 'active');
+      const updated = await updateJobStatus(idToken, job.id, status);
       setJob((current) => current ? { ...current, ...updated } : null);
     } finally {
       setTogglingStatus(false);
@@ -84,6 +86,7 @@ export default function JobDetailPage() {
 
   const pendingCount = applicants.filter((a) => a.status === 'pending').length;
   const hiredCount = applicants.filter((a) => a.status === 'hired').length;
+  const openCount = job ? job.open_count ?? Math.max(0, job.number_of_workers_needed - job.hired_count) : 0;
   const docLabels: Record<string, string> = {
     resume: t('worker_profile.doc_resume'),
     driver_license: t('worker_profile.doc_driver_license'),
@@ -94,6 +97,7 @@ export default function JobDetailPage() {
     'part-time': t('modal.job_type_parttime'),
     contract: t('modal.job_type_contract'),
   };
+  const jobStatus = job ? jobStatusTone(job.status) : null;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-10">
@@ -114,21 +118,37 @@ export default function JobDetailPage() {
                   <p className="text-sm text-muted-foreground mt-1">{job.location}</p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className={[
-                    'rounded-full px-2 py-0.5 text-xs font-medium',
-                    job.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500',
-                  ].join(' ')}>
-                    {job.status === 'active' ? t('jobs.active') : t('jobs.closed')}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleToggleStatus}
-                    loading={togglingStatus}
-                    loadingLabel={tCommon('loading')}
+                  <span
+                    className="rounded-full px-2 py-0.5 text-xs font-medium"
+                    style={{ background: jobStatus?.bg, color: jobStatus?.color }}
                   >
-                    {job.status === 'active' ? t('jobs.toggle.close') : t('jobs.toggle.activate')}
-                  </Button>
+                    {t(`jobs.status.${job.status}`)}
+                  </span>
+                  {job.status === 'active' && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('paused')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
+                        {t('jobs.toggle.pause')}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
+                        {t('jobs.toggle.close')}
+                      </Button>
+                    </>
+                  )}
+                  {job.status === 'paused' && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('active')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
+                        {t('jobs.toggle.activate')}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
+                        {t('jobs.toggle.close')}
+                      </Button>
+                    </>
+                  )}
+                  {job.status === 'closed' && (
+                    <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('active')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
+                      {t('jobs.toggle.activate')}
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -136,7 +156,28 @@ export default function JobDetailPage() {
                 <DetailField label={t('modal.job_title')} value={job.title} />
                 <DetailField label={t('modal.location')} value={job.location} />
                 <DetailField label={t('modal.job_type')} value={jobTypeLabels[job.job_type] ?? job.job_type} />
+                <DetailField label={t('modal.trade_category')} value={job.trade_category ? t(`modal.trade.${job.trade_category}`) : t('jobs.not_specified')} />
+                <DetailField label={t('jobs.pay_range')} value={job.pay ?? t('jobs.not_specified')} />
+                <DetailField label={t('modal.start_date')} value={job.start_date ?? t('jobs.not_specified')} />
+                <DetailField label={t('modal.expected_duration')} value={job.expected_duration ?? t('jobs.not_specified')} />
+                <DetailField label={t('modal.shift_schedule')} value={job.shift_schedule ?? t('jobs.not_specified')} />
+                <DetailField label={t('modal.transportation_required')} value={job.transportation_required ? t('jobs.yes') : t('jobs.no')} />
+                <DetailField label={t('modal.language_preference')} value={job.language_preference.map((lang) => t(`modal.language.${lang}`)).join(', ')} />
+                <DetailField label={t('modal.number_of_workers_needed')} value={String(job.number_of_workers_needed)} />
+                <DetailField label={t('jobs.hired_progress')} value={t('jobs.hired_progress_value', { hired: job.hired_count, total: job.number_of_workers_needed, open: openCount })} />
+                <DetailField label={t('modal.required_experience_years')} value={job.required_experience_years === null ? t('jobs.not_specified') : String(job.required_experience_years)} />
               </div>
+
+              {job.certifications.length > 0 && (
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('modal.certifications')}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {job.certifications.map((cert) => (
+                      <span key={cert} className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{cert}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('modal.job_description')}</p>
@@ -189,13 +230,13 @@ export default function JobDetailPage() {
                 <Card key={applicant.application_id} className="p-4 flex flex-col gap-2">
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-base font-semibold">{applicant.full_name}</p>
-                    <span className={[
-                      'rounded-full px-2 py-0.5 text-xs font-medium shrink-0',
-                      applicant.status === 'hired' ? 'bg-green-100 text-green-700'
-                        : applicant.status === 'rejected' ? 'bg-red-100 text-red-600'
-                        : applicant.status === 'reviewed' ? 'bg-blue-100 text-blue-700'
-                        : 'bg-gray-100 text-gray-500',
-                    ].join(' ')}>
+                    <span
+                      className="rounded-full px-2 py-0.5 text-xs font-medium shrink-0"
+                      style={{
+                        background: applicationStatusTone(applicant.status).bg,
+                        color: applicationStatusTone(applicant.status).color,
+                      }}
+                    >
                       {t(`applicants.status.${applicant.status}`)}
                     </span>
                   </div>

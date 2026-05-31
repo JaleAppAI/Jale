@@ -16,7 +16,7 @@ function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayPro
   return {
     requestContext: { authorizer: { claims: { sub: 'e-sub' } } },
     pathParameters: { jobId: 'job-1', workerId: 'worker-1' },
-    body: JSON.stringify({ status: 'reviewed' }),
+    body: JSON.stringify({ status: 'contacted' }),
     ...overrides,
   } as unknown as APIGatewayProxyEvent;
 }
@@ -34,13 +34,13 @@ describe('employer-application-status-update', () => {
   afterAll(() => { process.env = env; });
 
   it('rejects invalid statuses before opening a DB transaction', async () => {
-    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'contacted' }) }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'reviewed' }) }));
 
     expect(res.statusCode).toBe(400);
     expect(mockGetDbPool).not.toHaveBeenCalled();
     expect(JSON.parse(res.body)).toEqual({
       error: 'invalid_status',
-      valid: ['pending', 'reviewed', 'hired', 'rejected'],
+      valid: ['pending', 'contacted', 'talking', 'hired', 'not_interested'],
     });
   });
 
@@ -78,7 +78,7 @@ describe('employer-application-status-update', () => {
       if (q.includes('UPDATE job_applications')) {
         return Promise.resolve({
           rowCount: 1,
-          rows: [{ application_id: 'app-1', job_id: 'job-1', worker_id: 'worker-1', status: 'reviewed', applied_at: 'ts', updated_at: 'ts2' }],
+          rows: [{ application_id: 'app-1', job_id: 'job-1', worker_id: 'worker-1', status: 'contacted', applied_at: 'ts', updated_at: 'ts2' }],
         });
       }
       return Promise.resolve({});
@@ -87,12 +87,12 @@ describe('employer-application-status-update', () => {
     const res = await handler(makeEvent());
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).status).toBe('reviewed');
+    expect(JSON.parse(res.body).status).toBe('contacted');
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
     expect(mockCheckCompliance).toHaveBeenCalledWith(expect.anything(), 'e-sub', 'v1.0');
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('UPDATE job_applications'),
-      ['reviewed', 'job-1', 'worker-1'],
+      ['contacted', 'job-1', 'worker-1'],
     );
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();

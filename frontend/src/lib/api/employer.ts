@@ -1,12 +1,28 @@
 import { apiFetch } from '../api';
+import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
+export type { ApplicationStatus } from '../status';
 
 export type Job = {
   id: string;
   title: string;
   location: string;
+  pay: string | null;
   job_type: 'full-time' | 'part-time' | 'contract';
-  status: 'active' | 'closed';
+  status: JobStatus;
   applicant_count: number;
+  hired_count: number;
+  open_count: number;
+  pay_min: number | null;
+  pay_max: number | null;
+  start_date: string | null;
+  expected_duration: string | null;
+  shift_schedule: string | null;
+  transportation_required: boolean;
+  language_preference: Array<'any' | 'en' | 'es'>;
+  number_of_workers_needed: number;
+  trade_category: 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'drywall' | 'general_labor' | 'other' | null;
+  required_experience_years: number | null;
+  certifications: string[];
   created_at: string;
 };
 
@@ -14,8 +30,6 @@ export type EmployerJobDetail = Job & {
   description: string | null;
   required_docs: Array<'resume' | 'driver_license' | 'ssn'>;
 };
-
-export type ApplicationStatus = 'pending' | 'reviewed' | 'hired' | 'rejected';
 
 export type Applicant = {
   application_id: string;
@@ -98,6 +112,17 @@ export async function createJob(
     job_type: string;
     description?: string;
     required_docs?: string[];
+    pay_min?: number | null;
+    pay_max?: number | null;
+    start_date?: string | null;
+    expected_duration?: string | null;
+    shift_schedule?: string | null;
+    transportation_required?: boolean;
+    language_preference?: Array<'any' | 'en' | 'es'>;
+    number_of_workers_needed?: number;
+    trade_category: string;
+    required_experience_years?: number | null;
+    certifications?: string[];
   }
 ): Promise<Job> {
   const res = await apiFetch('/employer/jobs', {
@@ -117,7 +142,7 @@ export async function getJob(token: string, jobId: string): Promise<EmployerJobD
 export async function updateJobStatus(
   token: string,
   jobId: string,
-  status: 'active' | 'closed'
+  status: WritableJobStatus
 ): Promise<Job> {
   const res = await apiFetch(`/employer/jobs/${jobId}`, {
     method: 'PATCH',

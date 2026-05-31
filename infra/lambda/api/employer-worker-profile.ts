@@ -98,7 +98,13 @@ export const handler = async (
                 ORDER BY ws.skill
               ) AS skills,
               wp.availability,
-              wp.years_experience, wp.location, ja.status AS application_status, ja.applied_at
+              wp.years_experience, wp.location,
+              CASE ja.status
+                WHEN 'reviewed' THEN 'contacted'
+                WHEN 'rejected' THEN 'not_interested'
+                ELSE ja.status
+              END AS application_status,
+              ja.applied_at
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id

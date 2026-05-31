@@ -187,6 +187,8 @@
     "employer_dashboard": {
         "stats": {
             "active_jobs": "Active Jobs",
+            "paused_jobs": "Paused Jobs",
+            "filled_jobs": "Filled Jobs",
             "total_applicants": "Total Applicants"
         },
         "jobs": {
@@ -194,11 +196,27 @@
             "post_job": "Post Job",
             "active": "Active",
             "closed": "Closed",
+            "status": {
+                "all": "All",
+                "active": "Active",
+                "paused": "Paused",
+                "filled": "Filled",
+                "closed": "Closed"
+            },
             "toggle": {
                 "activate": "Mark Active",
+                "pause": "Pause",
                 "close": "Mark Closed"
             },
             "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
+            "openings_count": "{open}/{total} open",
+            "pay_range": "Pay range",
+            "pay_range_value": "${min}-${max}",
+            "hired_progress": "Hiring progress",
+            "hired_progress_value": "{hired}/{total} hired, {open} open",
+            "not_specified": "Not specified",
+            "yes": "Yes",
+            "no": "No",
             "posted": "Posted",
             "details": "Details",
             "posting_details": "Posting details",
@@ -233,24 +251,65 @@
             "phone": "Phone",
             "empty": "No applicants match your filters.",
             "status": {
-                "pending": "Pending",
-                "reviewed": "Reviewed",
+                "pending": "New",
+                "contacted": "Contacted",
+                "talking": "In conversation",
                 "hired": "Hired",
-                "rejected": "Rejected"
+                "not_interested": "Not selected"
             }
         },
         "modal": {
             "title": "Post a Job",
+            "step_label": "Step {current} of {total}",
+            "close": "Close",
             "job_title": "Job Title",
+            "job_title_placeholder": "e.g. Forklift operator",
             "location": "Location",
+            "location_placeholder": "Hayward, CA",
             "job_type": "Job Type",
             "job_type_fulltime": "Full-time",
             "job_type_parttime": "Part-time",
             "job_type_contract": "Contract",
             "submit": "Post Job",
             "cancel": "Cancel",
+            "next": "Next",
             "error": "Failed to post job. Please try again.",
-            "job_description": "Job Description"
+            "job_description": "Job Description",
+            "description_placeholder": "What does the job involve? What experience is required?",
+            "select_placeholder": "Select...",
+            "trade_category": "Trade",
+            "trade": {
+                "electrician": "Electrician",
+                "plumber": "Plumber",
+                "carpenter": "Carpenter",
+                "concrete": "Concrete",
+                "painting": "Painting",
+                "drywall": "Drywall",
+                "general_labor": "General labor",
+                "other": "Other"
+            },
+            "pay_min": "Pay Min",
+            "pay_max": "Pay Max",
+            "start_date": "Start Date",
+            "expected_duration": "Expected Duration",
+            "duration_placeholder": "e.g. 2 weeks",
+            "shift_schedule": "Shift Schedule",
+            "shift_placeholder": "e.g. Mon-Fri day shift",
+            "number_of_workers_needed": "Workers Needed",
+            "required_experience_years": "Required Experience",
+            "language_preference": "Language Preference",
+            "language": {
+                "any": "Any",
+                "en": "English",
+                "es": "Spanish"
+            },
+            "transportation_required": "Transportation required",
+            "certifications": "Certifications",
+            "certifications_placeholder": "OSHA 10, forklift, CDL",
+            "validation_required": "Complete the required fields.",
+            "validation_number": "Enter valid non-negative numbers.",
+            "validation_pay_range": "Pay min cannot be greater than pay max.",
+            "validation_headcount": "Workers needed must be at least 1."
         },
         "worker_profile": {
             "back": "Back to applicants",
@@ -332,10 +391,11 @@
         "empty": "You haven't applied to any jobs yet.",
         "empty_cta": "Browse jobs",
         "status": {
-            "pending": "Pending",
-            "reviewed": "Reviewed",
+            "pending": "Applied",
+            "contacted": "Employer contacted",
+            "talking": "In conversation",
             "hired": "Hired",
-            "rejected": "Rejected"
+            "not_interested": "Not selected"
         }
     },
     "worker_home": {
@@ -347,11 +407,18 @@
             "part_time": "Part-time",
             "contract": "Contract"
         },
+        "openings_count": "{open}/{total} open",
         "empty": "No active jobs right now."
     },
     "worker_job_detail": {
         "back": "← Back to jobs",
         "required_docs": "Required documents",
+        "pay_range": "Pay range",
+        "start_date": "Start date",
+        "expected_duration": "Duration",
+        "shift_schedule": "Shift",
+        "openings": "Openings",
+        "required_experience": "Experience",
         "upload_prompt": "Upload missing documents in your profile.",
         "upload_link": "Go to profile",
         "apply": "Apply",
