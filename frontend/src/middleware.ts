@@ -6,6 +6,7 @@ const PUBLIC_PATTERNS = [
   /^\/[a-z]{2}\/upload\//,
   /^\/terms\/?$/,
   /^\/privacypolicy\/?$/,
+  /^\/sms-opt-in\/?$/,
   /^\/legal\/terms(?:\/[^/]+)?\/?$/,
   /^\/legal\/privacy(?:\/[^/]+)?\/?$/,
 ];
@@ -18,6 +19,7 @@ export default function middleware(request: NextRequest): NextResponse {
     if (
       pathname === '/terms'
       || pathname === '/privacypolicy'
+      || pathname === '/sms-opt-in'
       || pathname.startsWith('/legal/terms')
       || pathname.startsWith('/legal/privacy')
     ) {
