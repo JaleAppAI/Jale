@@ -13,6 +13,7 @@ const requiredFiles = [
   'src/app/legal/privacy/[version]/route.ts',
   'src/app/terms/route.ts',
   'src/app/privacypolicy/route.ts',
+  'src/app/sms-opt-in/route.ts',
   'src/lib/legal-documents.ts',
 ];
 
@@ -30,7 +31,7 @@ for (const pdfPath of requiredFiles.filter((file) => file.endsWith('.pdf'))) {
 }
 
 const middleware = readFileSync(join(root, 'src/middleware.ts'), 'utf8');
-for (const publicPath of ['/legal/terms', '/legal/privacy', '/terms', '/privacypolicy']) {
+for (const publicPath of ['/legal/terms', '/legal/privacy', '/terms', '/privacypolicy', '/sms-opt-in']) {
   if (!middleware.includes(publicPath)) {
     throw new Error(`middleware does not explicitly preserve ${publicPath}`);
   }
@@ -65,6 +66,20 @@ const reviewRoutes = [
       'Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.',
       'third parties or affiliates for marketing or promotional purposes',
       'https://www.jaleapp.ai/terms',
+    ],
+  },
+  {
+    path: 'src/app/sms-opt-in/route.ts',
+    markers: [
+      'text/html',
+      'JaleApp.AI SMS Opt-In',
+      'Workers opt in to receive JaleApp.AI SMS authentication messages when they actively request a one-time passcode.',
+      'Web account verification',
+      'WhatsApp onboarding',
+      'Message frequency varies by account activity.',
+      'Message and data rates may apply.',
+      'https://www.jaleapp.ai/terms',
+      'https://www.jaleapp.ai/privacypolicy',
     ],
   },
 ];
