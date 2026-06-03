@@ -11,11 +11,12 @@ const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
     requestContext: { authorizer: { claims: { sub: 'e-sub' } } },
-    pathParameters: { jobId: 'job-1' },
+    pathParameters: { jobId: JOB_ID },
     body: JSON.stringify({ status: 'paused' }),
     ...overrides,
   } as unknown as APIGatewayProxyEvent;
@@ -43,6 +44,39 @@ describe('employer-jobs-update', () => {
       error: 'invalid_status',
       valid: ['active', 'paused', 'closed'],
     });
+  });
+
+  it('returns 401 when the caller is not authenticated', async () => {
+    const res = await handler(makeEvent({
+      requestContext: { authorizer: { claims: {} } },
+    } as unknown as Partial<APIGatewayProxyEvent>));
+
+    expect(res.statusCode).toBe(401);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when jobId is missing', async () => {
+    const res = await handler(makeEvent({ pathParameters: {} }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'missing_job_id' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 when jobId is malformed', async () => {
+    const res = await handler(makeEvent({ pathParameters: { jobId: 'job-1' } }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_job_id' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for invalid JSON', async () => {
+    const res = await handler(makeEvent({ body: '{' }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_json' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
   it('updates a writable job status and returns headcount fields', async () => {
@@ -89,8 +123,49 @@ describe('employer-jobs-update', () => {
     });
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
     expect(mockCheckCompliance).toHaveBeenCalledWith(expect.anything(), 'e-sub', 'v1.0');
-    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE jobs SET status = $1'), ['paused', 'job-1']);
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('JOIN users u ON u.id = jobs.employer_id'),
+      ['paused', JOB_ID, 'e-sub'],
+    );
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('rolls back instead of committing when legal acceptance is missing', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: true });
+    mockQuery.mockResolvedValue({});
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('legal_required');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back when the employer user is not provisioned', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: false });
+    mockQuery.mockResolvedValue({});
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({ error: 'user_not_provisioned' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rolls back when the employer does not own the job', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('UPDATE jobs')) return Promise.resolve({ rowCount: 0, rows: [] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body)).toEqual({ error: 'forbidden' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 });

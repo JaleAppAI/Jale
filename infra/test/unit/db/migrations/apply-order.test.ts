@@ -31,6 +31,7 @@ const expectedBaselineMigrations = [
   '021_whatsapp_required_docs_apply_support.sql',
   '022_job_application_required_docs_guard.sql',
   '023_job_fields_and_statuses_mvp.sql',
+  '024_sprint11_hiring_flow_hardening.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -84,7 +85,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-023 readiness baseline order', () => {
+  it('locks the 001-024 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -319,7 +320,29 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('target_job_id := NEW.job_id');
   });
 
-  maybeIt('applies migrations 001-023 against a local Postgres database', async () => {
+  it('hardens Sprint 11 hiring flow fields in migration 024', () => {
+    const migration = readMigration('024_sprint11_hiring_flow_hardening.sql');
+
+    expect(migration).toContain('sprint11_unexpected_application_status');
+    expect(migration).toContain('DISABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain('ENABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('NOT VALID');
+    expect(migration).toContain('VALIDATE CONSTRAINT job_applications_status_check');
+    expect(migration).toContain('idx_job_applications_status_talking');
+    expect(migration).toContain('idx_job_applications_status_hired');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_pay_range_check');
+    expect(migration).toContain('jobs_pay_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_pay_bounds_check');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_headcount_check');
+    expect(migration).toContain('jobs_headcount_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_headcount_bounds_check');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_required_experience_check');
+    expect(migration).toContain('jobs_required_experience_years_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
+  });
+
+  maybeIt('applies migrations 001-024 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

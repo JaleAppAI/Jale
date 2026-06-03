@@ -5,6 +5,7 @@ import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -19,6 +20,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const workerId = event.pathParameters?.workerId;
     if (!jobId || !workerId) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_params', required: ['jobId', 'workerId'] }) };
+    }
+    if (!UUID_REGEX.test(jobId)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_id' }) };
+    }
+    if (!UUID_REGEX.test(workerId)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_worker_id' }) };
     }
 
     let body: { status?: string };
@@ -41,11 +48,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
     if (!compliance.userExists) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     if (!compliance.compliant) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return {
         statusCode: 403,
         headers: CORS_HEADERS,
@@ -53,10 +60,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1', [jobId]);
+    const jobCheck = await client.query(
+      `SELECT jobs.id, jobs.number_of_workers_needed, jobs.workers_hired
+       FROM jobs
+       JOIN users u ON u.id = jobs.employer_id
+       WHERE jobs.id = $1 AND u.cognito_sub = $2
+       FOR UPDATE OF jobs`,
+      [jobId, cognitoSub],
+    );
     if (jobCheck.rowCount === 0) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
+    }
+
+    const application = await client.query(
+      `SELECT id, status
+       FROM job_applications
+       WHERE job_id = $1 AND worker_id = $2
+       FOR UPDATE`,
+      [jobId, workerId],
+    );
+    if (application.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'not_found' }) };
+    }
+
+    const job = jobCheck.rows[0];
+    const currentStatus = application.rows[0].status;
+    if (status === 'hired' && currentStatus !== 'hired' && job.workers_hired >= job.number_of_workers_needed) {
+      await client.query('ROLLBACK');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'headcount_full' }) };
     }
 
     const result = await client.query(
@@ -67,11 +100,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       [status, jobId, workerId],
     );
 
-    await client.query('COMMIT');
-
     if (result.rowCount === 0) {
-      return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'not_found' }) };
+      await client.query('ROLLBACK');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'concurrent_modification' }) };
     }
+
+    await client.query('COMMIT');
 
     return {
       statusCode: 200,

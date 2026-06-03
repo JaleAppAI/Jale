@@ -46,6 +46,7 @@ describe('database migrations', () => {
       '021',
       '022',
       '023',
+      '024',
     ]);
   });
 
@@ -206,5 +207,32 @@ describe('database migrations', () => {
     expect(migration).toContain('target_job_id := OLD.job_id');
     expect(migration).toContain('target_job_id := NEW.job_id');
     expect(migration).toContain('CREATE TRIGGER job_applications_hired_count_sync');
+  });
+
+  it('hardens Sprint 11 hiring flow fields in migration 024', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '024_sprint11_hiring_flow_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('sprint11_unexpected_application_status');
+    expect(migration).toContain('DISABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain('ENABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('NOT VALID');
+    expect(migration).toContain('VALIDATE CONSTRAINT job_applications_status_check');
+    expect(migration).toContain('idx_job_applications_status_talking');
+    expect(migration).toContain('idx_job_applications_status_hired');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_pay_range_check');
+    expect(migration).toContain('jobs_pay_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_pay_bounds_check');
+    expect(migration).toContain('pay_min <= 9999');
+    expect(migration).toContain('pay_max <= 9999');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_headcount_check');
+    expect(migration).toContain('jobs_headcount_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_headcount_bounds_check');
+    expect(migration).toContain('number_of_workers_needed BETWEEN 1 AND 500');
+    expect(migration).toContain('workers_hired <= number_of_workers_needed');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_required_experience_check');
+    expect(migration).toContain('jobs_required_experience_years_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
+    expect(migration).toContain('required_experience_years BETWEEN 0 AND 80');
   });
 });

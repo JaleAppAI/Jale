@@ -93,11 +93,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
     if (!compliance.userExists) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     if (!compliance.compliant) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return {
         statusCode: 403,
         headers: CORS_HEADERS,

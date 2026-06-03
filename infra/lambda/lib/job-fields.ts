@@ -49,16 +49,29 @@ function optionalString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function optionalInteger(value: unknown, fieldName: string): { ok: true; value: number | null } | { ok: false; error: string } {
+const MAX_PAY_DOLLARS = 9999;
+const MAX_WORKERS_NEEDED = 500;
+const MAX_REQUIRED_EXPERIENCE_YEARS = 80;
+const MAX_CERTIFICATIONS = 20;
+const MAX_CERTIFICATION_LENGTH = 200;
+
+function optionalInteger(value: unknown, fieldName: string, maxValue?: number): { ok: true; value: number | null } | { ok: false; error: string } {
   if (value === undefined || value === null || value === '') return { ok: true, value: null };
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || (maxValue !== undefined && value > maxValue)) {
     return { ok: false, error: `invalid_${fieldName}` };
   }
   return { ok: true, value };
 }
 
+function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
 function normalizeStringArray(value: unknown, valid: readonly string[], fieldName: string): { ok: true; value: string[] } | { ok: false; error: string; valid: readonly string[] } {
-  if (!Array.isArray(value)) return { ok: false, error: `invalid_${fieldName}`, valid };
+  if (!Array.isArray(value) || value.length > valid.length * 2) return { ok: false, error: `invalid_${fieldName}`, valid };
   const normalized = Array.from(new Set(value.map((item) => typeof item === 'string' ? item.trim() : '').filter(Boolean)));
   if (normalized.length === 0 || normalized.some((item) => !valid.includes(item))) {
     return { ok: false, error: `invalid_${fieldName}`, valid };
@@ -66,8 +79,9 @@ function normalizeStringArray(value: unknown, valid: readonly string[], fieldNam
   return { ok: true, value: normalized };
 }
 
-export function normalizeApplicationStatus(status: string): ApplicationStatus {
-  return LEGACY_APPLICATION_STATUS_MAP[status] ?? (status as ApplicationStatus);
+export function normalizeApplicationStatus(status: string): ApplicationStatus | null {
+  const mapped = LEGACY_APPLICATION_STATUS_MAP[status] ?? status;
+  return APPLICATION_STATUSES.includes(mapped as ApplicationStatus) ? (mapped as ApplicationStatus) : null;
 }
 
 export function parseRequiredDocs(value: unknown): { ok: true; value: string[] } | { ok: false; error: string; valid: readonly string[] } {
@@ -79,16 +93,16 @@ export function parseRequiredDocs(value: unknown): { ok: true; value: string[] }
 }
 
 export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsResult {
-  const payMin = optionalInteger(body.pay_min, 'pay_min');
+  const payMin = optionalInteger(body.pay_min, 'pay_min', MAX_PAY_DOLLARS);
   if (!payMin.ok) return payMin;
-  const payMax = optionalInteger(body.pay_max, 'pay_max');
+  const payMax = optionalInteger(body.pay_max, 'pay_max', MAX_PAY_DOLLARS);
   if (!payMax.ok) return payMax;
   if (payMin.value !== null && payMax.value !== null && payMin.value > payMax.value) {
     return { ok: false, error: 'invalid_pay_range' };
   }
 
   const startDate = optionalString(body.start_date);
-  if (startDate !== null && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) {
+  if (startDate !== null && !isValidIsoDate(startDate)) {
     return { ok: false, error: 'invalid_start_date' };
   }
 
@@ -104,7 +118,7 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
   }
 
   const workersNeeded = body.number_of_workers_needed ?? 1;
-  if (typeof workersNeeded !== 'number' || !Number.isInteger(workersNeeded) || workersNeeded < 1) {
+  if (typeof workersNeeded !== 'number' || !Number.isInteger(workersNeeded) || workersNeeded < 1 || workersNeeded > MAX_WORKERS_NEEDED) {
     return { ok: false, error: 'invalid_number_of_workers_needed' };
   }
 
@@ -113,14 +127,19 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
     return { ok: false, error: 'invalid_trade_category', valid: TRADE_CATEGORIES };
   }
 
-  const requiredExperience = optionalInteger(body.required_experience_years, 'required_experience_years');
+  const requiredExperience = optionalInteger(body.required_experience_years, 'required_experience_years', MAX_REQUIRED_EXPERIENCE_YEARS);
   if (!requiredExperience.ok) return requiredExperience;
 
-  const certifications = Array.isArray(body.certifications)
-    ? Array.from(new Set(body.certifications.map((item) => typeof item === 'string' ? item.trim() : '').filter(Boolean)))
-    : [];
-  if (body.certifications !== undefined && !Array.isArray(body.certifications)) {
-    return { ok: false, error: 'invalid_certifications' };
+  let certifications: string[] = [];
+  if (body.certifications !== undefined) {
+    if (
+      !Array.isArray(body.certifications) ||
+      body.certifications.length > MAX_CERTIFICATIONS ||
+      body.certifications.some((item) => typeof item !== 'string' || item.trim().length === 0 || item.trim().length > MAX_CERTIFICATION_LENGTH)
+    ) {
+      return { ok: false, error: 'invalid_certifications' };
+    }
+    certifications = Array.from(new Set(body.certifications.map((item) => item.trim())));
   }
 
   return {

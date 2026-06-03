@@ -67,7 +67,7 @@ export async function applyWorkerToJob(
   await setInternalUserRlsContext(client, workerId);
 
   const jobRes = await client.query<{ id: string; required_docs: string[] | null }>(
-    `SELECT id, required_docs FROM jobs WHERE id = $1 AND status = 'active'`,
+    `SELECT id, required_docs FROM jobs WHERE id = $1 AND status = 'active' FOR UPDATE`,
     [jobId],
   );
   if (jobRes.rows.length === 0) {

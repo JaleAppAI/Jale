@@ -5,6 +5,7 @@ import { WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -19,6 +20,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const jobId = event.pathParameters?.jobId;
     if (!jobId) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_job_id' }) };
+    }
+    if (!UUID_REGEX.test(jobId)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_id' }) };
     }
 
     let body: { status?: string };
@@ -41,11 +45,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
     if (!compliance.userExists) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     if (!compliance.compliant) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return {
         statusCode: 403,
         headers: CORS_HEADERS,
@@ -54,23 +58,32 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `UPDATE jobs SET status = $1 WHERE id = $2
-       RETURNING id, title, location, pay, job_type, status, created_at,
-         pay_min, pay_max, start_date, expected_duration, shift_schedule,
-         transportation_required, language_preference, number_of_workers_needed,
-         workers_hired AS hired_count,
-         GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
-         trade_category, required_experience_years, certifications,
+      `WITH employer_job AS (
+         SELECT jobs.id
+         FROM jobs
+         JOIN users u ON u.id = jobs.employer_id
+         WHERE jobs.id = $2 AND u.cognito_sub = $3
+       )
+       UPDATE jobs SET status = $1
+       FROM employer_job
+       WHERE jobs.id = employer_job.id
+       RETURNING jobs.id, jobs.title, jobs.location, jobs.pay, jobs.job_type, jobs.status, jobs.created_at,
+         jobs.pay_min, jobs.pay_max, jobs.start_date, jobs.expected_duration, jobs.shift_schedule,
+         jobs.transportation_required, jobs.language_preference, jobs.number_of_workers_needed,
+         jobs.workers_hired AS hired_count,
+         GREATEST(jobs.number_of_workers_needed - jobs.workers_hired, 0) AS open_count,
+         jobs.trade_category, jobs.required_experience_years, jobs.certifications,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
-      [status, jobId],
+      [status, jobId, cognitoSub],
     );
 
-    await client.query('COMMIT');
-
-    // RLS blocks updates to jobs not owned by this employer; rowCount === 0 means forbidden.
+    // Ownership is enforced by the users join above; rowCount === 0 means forbidden.
     if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
+
+    await client.query('COMMIT');
 
     return {
       statusCode: 200,
