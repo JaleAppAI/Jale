@@ -13,6 +13,7 @@ const requiredFiles = [
   'src/app/legal/privacy/[version]/route.ts',
   'src/app/terms/route.ts',
   'src/app/privacypolicy/route.ts',
+  'src/app/sms-opt-in/route.ts',
   'src/lib/legal-documents.ts',
 ];
 
@@ -30,7 +31,7 @@ for (const pdfPath of requiredFiles.filter((file) => file.endsWith('.pdf'))) {
 }
 
 const middleware = readFileSync(join(root, 'src/middleware.ts'), 'utf8');
-for (const publicPath of ['/legal/terms', '/legal/privacy', '/terms', '/privacypolicy']) {
+for (const publicPath of ['/legal/terms', '/legal/privacy', '/terms', '/privacypolicy', '/sms-opt-in']) {
   if (!middleware.includes(publicPath)) {
     throw new Error(`middleware does not explicitly preserve ${publicPath}`);
   }
@@ -49,6 +50,8 @@ const reviewRoutes = [
     markers: [
       'text/html',
       'JaleApp.AI SMS Terms',
+      'Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.',
+      'SMS opt-in consent is collected directly for JaleApp.AI account verification messages.',
       '<strong>HELP</strong>',
       '<strong>STOP</strong>',
       'https://www.jaleapp.ai/privacypolicy',
@@ -60,8 +63,23 @@ const reviewRoutes = [
       'text/html',
       'JaleApp.AI Privacy Policy',
       'SMS opt-in consent data',
+      'Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.',
       'third parties or affiliates for marketing or promotional purposes',
       'https://www.jaleapp.ai/terms',
+    ],
+  },
+  {
+    path: 'src/app/sms-opt-in/route.ts',
+    markers: [
+      'text/html',
+      'JaleApp.AI SMS Opt-In',
+      'Workers opt in to receive JaleApp.AI SMS authentication messages when they actively request a one-time passcode.',
+      'Web account verification',
+      'WhatsApp onboarding',
+      'Message frequency varies by account activity.',
+      'Message and data rates may apply.',
+      'https://www.jaleapp.ai/terms',
+      'https://www.jaleapp.ai/privacypolicy',
     ],
   },
 ];
@@ -73,6 +91,11 @@ for (const route of reviewRoutes) {
       throw new Error(`${route.path} is missing public review marker: ${marker}`);
     }
   }
+}
+
+const privacySource = readFileSync(join(root, 'src/app/privacypolicy/route.ts'), 'utf8');
+if (privacySource.includes('except as necessary')) {
+  throw new Error('privacy policy contains ambiguous SMS consent sharing carveout: except as necessary');
 }
 
 console.log('Legal document hosting contract is present.');

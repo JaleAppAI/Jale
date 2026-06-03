@@ -5,14 +5,13 @@ const html = `<!doctype html>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>JaleApp.AI SMS Terms</title>
+    <title>JaleApp.AI SMS Opt-In</title>
     <style>
       :root {
         --jale-blue-50: #eaf2ff;
         --jale-blue-500: #0179ff;
         --jale-blue-600: #0064d6;
         --jale-blue-900: #181855;
-        --jale-teal-500: #21c3a4;
         --jale-paper: #e3eaf2;
         --jale-paper-2: #f4f6fa;
         --jale-card: #fbfcff;
@@ -136,7 +135,7 @@ const html = `<!doctype html>
       }
 
       section {
-        max-width: 760px;
+        max-width: 790px;
       }
 
       h2 {
@@ -150,6 +149,7 @@ const html = `<!doctype html>
         margin: 0 0 10px;
       }
 
+      ol,
       ul {
         margin: 10px 0 0;
         padding-left: 1.15rem;
@@ -217,12 +217,12 @@ const html = `<!doctype html>
     <main class="shell">
       <div class="topbar">
         <a class="wordmark" href="https://www.jaleapp.ai/" aria-label="Go to JaleApp.AI home">Jale</a>
-        <div class="badge">SMS terms for JaleApp.AI</div>
+        <div class="badge">SMS opt-in for JaleApp.AI</div>
       </div>
 
       <div class="hero">
-        <h1>SMS terms and conditions</h1>
-        <p class="lead">JaleApp.AI sends authentication messages to workers who request account verification or sign-in access.</p>
+        <h1>SMS opt-in</h1>
+        <p class="lead">This page shows how workers consent to receive JaleApp.AI SMS account verification messages.</p>
       </div>
 
       <article class="panel">
@@ -236,59 +236,65 @@ const html = `<!doctype html>
             <strong>One-time passcodes and sign-in codes</strong>
           </div>
           <div>
-            <span>Frequency</span>
-            <strong>Varies by account activity</strong>
+            <span>Consent</span>
+            <strong>User-requested authentication only</strong>
           </div>
         </div>
 
         <div class="content">
           <section>
-            <h2>Program description</h2>
-            <p>JaleApp.AI SMS messages are used for account verification and authentication, including one-time passcodes and sign-in verification codes for JaleApp.AI worker accounts.</p>
-            <p>These messages are transactional security messages. They are not marketing or promotional messages.</p>
+            <h2>Call to action</h2>
+            <p>Workers opt in to receive JaleApp.AI SMS authentication messages when they actively request a one-time passcode.</p>
+            <p>JaleApp.AI sends SMS account verification messages only after the worker initiates account creation, sign-in, account verification, or WhatsApp onboarding and requests a verification code.</p>
           </section>
 
           <section>
-            <h2>Consent to receive SMS messages</h2>
-            <p>Workers consent to receive JaleApp.AI authentication text messages when they enter their mobile phone number during worker account creation, sign-in, or account verification and request a one-time passcode.</p>
-            <p>JaleApp.AI sends a text message only after the user initiates the verification or sign-in flow.</p>
-            <p>SMS opt-in consent is collected directly for JaleApp.AI account verification messages. Consent to receive SMS messages is not bundled with consent for marketing or third-party messages.</p>
+            <h2>Web account verification</h2>
+            <ol>
+              <li>The worker enters their mobile phone number during JaleApp.AI worker account creation, sign-in, or account verification.</li>
+              <li>Before requesting the code, the worker is informed that JaleApp.AI sends SMS account verification messages, message frequency varies by account activity, and message and data rates may apply.</li>
+              <li>The worker actively requests a one-time passcode.</li>
+              <li>JaleApp.AI sends the SMS verification code for account authentication.</li>
+            </ol>
           </section>
 
           <section>
-            <h2>Mobile information and consent sharing</h2>
+            <h2>WhatsApp onboarding</h2>
+            <ol>
+              <li>The worker starts onboarding by sending "Hello" or "Hola" to JaleApp.AI on WhatsApp.</li>
+              <li>During onboarding, the worker provides their mobile phone number and requests account verification.</li>
+              <li>JaleApp.AI sends the SMS one-time passcode only after the worker initiates authentication.</li>
+            </ol>
+          </section>
+
+          <section>
+            <h2>SMS disclosures</h2>
             <div class="notice">
-              <p><strong>Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.</strong></p>
-              <p>JaleApp.AI does not sell, rent, or share mobile phone numbers or SMS opt-in consent data with third parties or affiliates for marketing or promotional purposes.</p>
-            </div>
-          </section>
-
-          <section>
-            <h2>Message frequency and charges</h2>
-            <p>Message frequency varies based on account activity. A worker may receive one or more messages when requesting account verification or signing in.</p>
-            <p><strong>Message and data rates may apply.</strong> Carriers are not liable for delayed or undelivered messages.</p>
-          </section>
-
-          <section>
-            <h2>Help and opt-out instructions</h2>
-            <div class="notice">
+              <p>Message frequency varies by account activity.</p>
+              <p><strong>Message and data rates may apply.</strong></p>
               <p>Reply <strong>HELP</strong> for help.</p>
-              <p>Reply <strong>STOP</strong> to opt out of SMS messages.</p>
-              <p>For support, contact <a href="mailto:support@jaleapp.ai">support@jaleapp.ai</a>.</p>
+              <p>Reply <strong>STOP</strong> to opt out.</p>
             </div>
+          </section>
+
+          <section>
+            <h2>Consent scope</h2>
+            <p>SMS consent is collected directly for JaleApp.AI account verification messages and is not bundled with marketing consent.</p>
+            <p>JaleApp.AI does not send marketing or promotional SMS under this account verification campaign.</p>
+            <p><strong>Mobile information will not be shared with third parties or affiliates for marketing or promotional purposes.</strong></p>
           </section>
 
           <section>
             <h2>Related documents</h2>
             <div class="links">
-              <a class="link-button" href="https://www.jaleapp.ai/privacypolicy">Privacy Policy</a>
-              <a class="link-button secondary" href="https://www.jaleapp.ai/legal/terms">Full Terms and Conditions PDF</a>
+              <a class="link-button" href="https://www.jaleapp.ai/terms">SMS Terms</a>
+              <a class="link-button secondary" href="https://www.jaleapp.ai/privacypolicy">Privacy Policy</a>
             </div>
           </section>
         </div>
       </article>
 
-      <p class="footer">JaleApp.AI is a bilingual job platform for workers and employers. These SMS terms apply to account verification and authentication messages.</p>
+      <p class="footer">JaleApp.AI is a bilingual job platform for workers and employers. This page is public so SMS campaign reviewers can verify the opt-in call to action.</p>
     </main>
   </body>
 </html>`;
