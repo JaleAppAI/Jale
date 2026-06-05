@@ -73,7 +73,13 @@ export function Header() {
                                 href="/employer/dashboard"
                                 className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
                             >
-                                Jobs
+                                {t('employer_jobs')}
+                            </Link>
+                            <Link
+                                href="/employer/conversations"
+                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
+                            >
+                                {t('messages')}
                             </Link>
                         </nav>
                     )}

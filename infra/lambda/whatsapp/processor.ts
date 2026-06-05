@@ -19,8 +19,12 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { listMatchedJobsForWorker } from '../lib/job-matching';
+import {
+  recordWorkerConversationReply,
+  sendPendingJobMessageOutbox,
+} from '../lib/job-messaging';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
 import { sendPendingOutbox } from './lib/outbox';
 import {
@@ -476,6 +480,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
 
   const pool = await getDbPool();
   const client = await pool.connect();
+  let jobOutboxActorUserId: string | null = null;
   try {
     // ── Claim + side-effects transaction (Fix Plan v3, 2026-04-17) ────────
     //
@@ -519,6 +524,14 @@ async function processRecord(record: SQSRecord): Promise<void> {
           // the outbox without re-executing any state mutations.
           console.log('[processor] resuming db_committed claim', { messageSid });
           await sendPendingOutbox(client, messageSid);
+          const actor = await client.query<{ user_id: string | null }>(
+            `SELECT user_id FROM whatsapp_conversations WHERE whatsapp_number = $1`,
+            [whatsappNumber],
+          );
+          const actorUserId = actor.rows[0]?.user_id;
+          if (actorUserId) {
+            await sendPendingJobMessageOutbox(client, { actorUserId });
+          }
           await markCompleted(client, messageSid);
           return;
         }
@@ -540,6 +553,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         whatsappNumber,
         defaultLang,
       );
+      jobOutboxActorUserId = conv.user_id;
 
       console.log('[processor] payload source', {
         messageSid,
@@ -587,6 +601,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
     // retry resumes from 'db_committed'. No DB rollback: the state is
     // already durably committed.
     await sendPendingOutbox(client, messageSid);
+    if (jobOutboxActorUserId) {
+      await sendPendingJobMessageOutbox(client, { actorUserId: jobOutboxActorUserId });
+    }
     await markCompleted(client, messageSid);
   } finally {
     client.release();
@@ -2149,6 +2166,18 @@ async function handleIdle(
       await queueJobTemplate(client, msg.messageSid, msg.from, conv.language, job);
     }
     return;
+  }
+
+  if (conv.user_id && msg.body.trim()) {
+    await setInternalUserRlsContext(client, conv.user_id);
+    const routedToEmployer = await recordWorkerConversationReply(
+      client,
+      conv.user_id,
+      msg.body,
+      msg.from,
+      msg.messageSid,
+    );
+    if (routedToEmployer) return;
   }
 
   await reply(client, msg,'idle_help', conv.language);

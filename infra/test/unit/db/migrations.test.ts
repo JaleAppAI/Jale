@@ -47,6 +47,7 @@ describe('database migrations', () => {
       '022',
       '023',
       '024',
+      '025',
     ]);
   });
 
@@ -234,5 +235,22 @@ describe('database migrations', () => {
     expect(migration).toContain('jobs_required_experience_years_bounds_check');
     expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
     expect(migration).toContain('required_experience_years BETWEEN 0 AND 80');
+  });
+
+  it('adds applicant-scoped job messaging in migration 025', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '025_job_messaging.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS job_conversations');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS job_conversation_messages');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS job_message_outbox');
+    expect(migration).toContain('job_conversations_open_unique');
+    expect(migration).toContain("CHECK (sender_type IN ('employer', 'worker', 'system'))");
+    expect(migration).toContain("CHECK (send_kind IN ('template', 'freeform'))");
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE ON job_conversations TO jale_admin');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE ON job_conversations TO jale_whatsapp');
+    expect(migration).toContain('ALTER TABLE job_conversations FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
+    expect(migration).toContain('job_conversations_employer_all');
+    expect(migration).toContain('job_conversations_worker_all');
   });
 });

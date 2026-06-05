@@ -32,6 +32,7 @@ const expectedBaselineMigrations = [
   '022_job_application_required_docs_guard.sql',
   '023_job_fields_and_statuses_mvp.sql',
   '024_sprint11_hiring_flow_hardening.sql',
+  '025_job_messaging.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -85,7 +86,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-024 readiness baseline order', () => {
+  it('locks the 001-025 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -103,6 +104,9 @@ describe('migration apply order baseline', () => {
       'whatsapp_outbox',
       'document_upload_tokens',
       'document_upload_token_slots',
+      'job_conversations',
+      'job_conversation_messages',
+      'job_message_outbox',
     ]) {
       expectTable(sql, tableName);
     }
@@ -342,7 +346,20 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
   });
 
-  maybeIt('applies migrations 001-024 against a local Postgres database', async () => {
+  it('adds applicant-scoped job messaging in migration 025', () => {
+    const migration = readMigration('025_job_messaging.sql');
+
+    expectTable(migration, 'job_conversations');
+    expectTable(migration, 'job_conversation_messages');
+    expectTable(migration, 'job_message_outbox');
+    expect(migration).toContain('job_conversations_open_unique');
+    expect(migration).toContain("CHECK (status IN ('open', 'closed'))");
+    expect(migration).toContain("CHECK (status IN ('queued', 'waiting_worker_reply', 'sent', 'delivered', 'failed', 'received'))");
+    expect(migration).toContain('job_conversations_employer_all');
+    expect(migration).toContain('job_conversations_worker_all');
+  });
+
+  maybeIt('applies migrations 001-025 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
@@ -352,5 +369,7 @@ describe('migration apply order baseline', () => {
     expect(columns.get('jobs')?.get('language_preference')).toBe('_text');
     expect(columns.get('document_upload_tokens')?.get('used_at')).toBe('timestamp with time zone');
     expect(columns.get('document_upload_token_slots')?.get('issued_s3_key')).toBe('text');
+    expect(columns.get('job_conversations')?.get('last_worker_message_at')).toBe('timestamp with time zone');
+    expect(columns.get('job_message_outbox')?.get('send_kind')).toBe('text');
   });
 });

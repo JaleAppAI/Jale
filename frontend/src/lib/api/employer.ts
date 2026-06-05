@@ -1,4 +1,5 @@
 import { apiFetch } from '../api';
+import type { ScoreBand } from '../match';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
 export type { ApplicationStatus } from '../status';
 
@@ -49,6 +50,68 @@ export type ApplicantFilters = {
   skills?: string;
   availability?: string;
   min_experience?: number;
+};
+
+export type RankingStatus = 'deterministic' | 'llm_cached';
+export type RankingVersion = 'sql-v1' | 'llm-v1';
+
+export type EmployerCandidate = {
+  application_id: string;
+  worker_id: string;
+  display_name: string;
+  phone: string | null;
+  status: string;
+  applied_at: string;
+  skills: string[];
+  availability: string | null;
+  years_experience: number | string | null;
+  location: string | null;
+  trust_score: number | null;
+  match_score: number;
+  score_band: ScoreBand;
+  match_reasons: string[];
+};
+
+export type EmployerCandidatesResponse = {
+  ranking_status: RankingStatus;
+  ranking_version: RankingVersion;
+  candidates: EmployerCandidate[];
+  total: number;
+  computed_at: string;
+};
+
+export type EmployerConversationStatus = 'open' | 'closed';
+
+export type EmployerConversationSummary = {
+  id: string;
+  job_id: string;
+  job_title: string;
+  worker_id: string;
+  worker_name: string | null;
+  status: EmployerConversationStatus;
+  last_message_at: string | null;
+  last_worker_message_at: string | null;
+  last_message_preview: string | null;
+  updated_at: string;
+};
+
+export type EmployerConversationDetail = EmployerConversationSummary & {
+  application_id: string;
+};
+
+export type EmployerConversationMessage = {
+  id: string;
+  sender_type: 'employer' | 'worker' | 'system';
+  direction: 'outbound' | 'inbound';
+  body: string;
+  status: 'queued' | 'waiting_worker_reply' | 'sent' | 'delivered' | 'failed' | 'received';
+  created_at: string;
+  sent_at: string | null;
+};
+
+export type EmployerConversationResponse = {
+  conversation: EmployerConversationDetail;
+  messages: EmployerConversationMessage[];
 };
 
 export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
@@ -171,6 +234,78 @@ export async function getJobApplicants(
     token
   );
   if (!res.ok) throw new Error('fetch_failed');
+  return res.json();
+}
+
+export async function getJobCandidates(
+  token: string,
+  jobId: string,
+  limit = 100,
+): Promise<EmployerCandidatesResponse> {
+  const params = new URLSearchParams();
+  const safeLimit = Number.isFinite(limit) ? Math.trunc(limit) : 100;
+  params.set('limit', String(Math.max(1, Math.min(safeLimit, 100))));
+  const res = await apiFetch(`/employer/jobs/${jobId}/candidates?${params.toString()}`, {}, token);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const err = new Error(body.error ?? 'fetch_failed') as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+export async function getConversations(
+  token: string,
+): Promise<{ conversations: EmployerConversationSummary[] }> {
+  const res = await apiFetch('/employer/conversations', {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'conversations_fetch_failed');
+  return res.json();
+}
+
+export async function getConversation(
+  token: string,
+  conversationId: string,
+): Promise<EmployerConversationResponse> {
+  const res = await apiFetch(`/employer/conversations/${conversationId}`, {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'conversation_fetch_failed');
+  return res.json();
+}
+
+export async function startConversation(
+  token: string,
+  data: { job_id: string; worker_id: string; initial_message: string },
+): Promise<EmployerConversationResponse> {
+  const res = await apiFetch('/employer/conversations', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'conversation_create_failed');
+  return res.json();
+}
+
+export async function sendConversationMessage(
+  token: string,
+  conversationId: string,
+  body: string,
+): Promise<EmployerConversationResponse> {
+  const res = await apiFetch(`/employer/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ body }),
+  }, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'message_send_failed');
+  return res.json();
+}
+
+export async function closeConversation(
+  token: string,
+  conversationId: string,
+): Promise<EmployerConversationResponse> {
+  const res = await apiFetch(`/employer/conversations/${conversationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'closed' }),
+  }, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'conversation_close_failed');
   return res.json();
 }
 

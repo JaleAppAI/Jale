@@ -4,13 +4,37 @@
         "error": "Something went wrong",
         "retry": "Try again"
     },
+    "match": {
+        "score_bands": {
+            "strong": "Strong match",
+            "good": "Good match",
+            "fair": "Fair match"
+        },
+        "reasons": {
+            "profession_exact_or_alias": "Trade matches",
+            "profession_partial": "Related trade",
+            "distance_under_5_miles": "Within 5 miles",
+            "distance_under_15_miles": "Within 15 miles",
+            "distance_under_30_miles": "Within 30 miles",
+            "distance_under_50_miles": "Within 50 miles",
+            "zip_exact": "Same zip code",
+            "location_text_match": "Location match",
+            "experience_meets_requirement": "Experience fits",
+            "availability_flexible": "Flexible availability",
+            "availability_matches_job_type": "Availability fits",
+            "availability_adjacent": "Schedule is close",
+            "fresh_posting": "New posting"
+        }
+    },
     "header": {
         "language_toggle": "Español",
         "sign_out": "Sign out",
         "profile": "Profile",
         "home": "Home",
         "worker_home": "Jobs",
-        "my_applications": "My Applications"
+        "my_applications": "My Applications",
+        "employer_jobs": "Jobs",
+        "messages": "Messages"
     },
     "landing": {
         "headline": "Find work. Find workers.",
@@ -182,6 +206,37 @@
             "save": "Save",
             "saving": "Saving...",
             "cancel": "Cancel"
+        }
+    },
+    "employer_messages": {
+        "title": "Messages",
+        "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
+        "threads": "Conversations",
+        "drawer_button": "Messages",
+        "hide": "Hide",
+        "empty": "No open conversations yet.",
+        "empty_select": "Select a conversation.",
+        "no_messages": "No messages yet.",
+        "unknown_worker": "Unknown worker",
+        "status_open": "Open",
+        "status_closed": "Closed",
+        "close": "Close",
+        "closed_hint": "This conversation is closed.",
+        "composer_placeholder": "Write a message...",
+        "send": "Send",
+        "from_worker": "Worker",
+        "message_worker": "Message Worker",
+        "starting": "Starting...",
+        "message_start_failed": "Could not start the conversation.",
+        "worker_whatsapp_unavailable": "This worker does not have a WhatsApp number yet.",
+        "default_initial_message": "Hi, I am reaching out about your application. Reply here when you are available.",
+        "message_status": {
+            "queued": "Queued",
+            "waiting_worker_reply": "Waiting for worker reply",
+            "sent": "Sent",
+            "delivered": "Delivered",
+            "failed": "Failed",
+            "received": "Received"
         }
     },
     "employer_dashboard": {

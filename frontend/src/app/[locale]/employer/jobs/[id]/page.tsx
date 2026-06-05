@@ -5,16 +5,27 @@ import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { useRouter } from '@/i18n/navigation';
+import { LegalWallError } from '@/lib/api';
 import { Link } from '@/i18n/navigation';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
-import { getJob, getJobApplicants, updateJobStatus } from '@/lib/api/employer';
+import { getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
+import type { ScoreBand } from '@/lib/match';
+import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import { applicationStatusTone, jobStatusTone } from '@/lib/status';
 import type { WritableJobStatus } from '@/lib/status';
 
 export const dynamic = 'force-dynamic';
+
+type ApplicantMatch = {
+  match_score: number;
+  score_band: ScoreBand;
+  match_reasons: string[];
+};
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
@@ -22,9 +33,11 @@ export default function JobDetailPage() {
   const { handleLegalWall } = useRequireAuth();
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
+  const tMatch = useTranslations('match');
 
   const [job, setJob] = useState<EmployerJobDetail | null>(null);
   const [applicants, setApplicants] = useState<Applicant[]>([]);
+  const [candidateMatches, setCandidateMatches] = useState<Map<string, ApplicantMatch>>(new Map());
   const [total, setTotal] = useState(0);
   const [filters, setFilters] = useState<ApplicantFilters>({});
   const [loadingJob, setLoadingJob] = useState(true);
@@ -49,20 +62,49 @@ export default function JobDetailPage() {
 
   useEffect(() => {
     if (!idToken || !id) return;
-    setLoadingApplicants(true);
-    getJobApplicants(idToken, id, filters)
-      .then((res) => {
+    let active = true;
+
+    async function loadApplicantsAndMatches() {
+      setLoadingApplicants(true);
+      setCandidateMatches(new Map());
+
+      try {
+        const res = await getJobApplicants(idToken!, id, filters);
+        if (!active) return;
         setApplicants(res.applicants);
         setTotal(res.total);
-      })
-      .catch((err) => {
+        setLoadingApplicants(false);
+
+        try {
+          const ranked = await getJobCandidates(idToken!, id, 100);
+          if (!active) return;
+          setCandidateMatches(buildCandidateMatchMap(ranked.candidates));
+        } catch (err) {
+          if (!active) return;
+          const status = (err as { status?: number }).status;
+          if (err instanceof LegalWallError || status === 401 || status === 403) {
+            try {
+              handleLegalWall(err, `/employer/jobs/${id}`);
+            } catch {
+              setError(tCommon('error'));
+            }
+          } else {
+            setCandidateMatches(new Map());
+          }
+        }
+      } catch (err) {
+        if (!active) return;
         try {
           handleLegalWall(err, `/employer/jobs/${id}`);
         } catch {
           setError(tCommon('error'));
         }
-      })
-      .finally(() => setLoadingApplicants(false));
+        setLoadingApplicants(false);
+      }
+    }
+
+    loadApplicantsAndMatches();
+    return () => { active = false; };
   }, [idToken, id, filters]);
 
   async function handleSetJobStatus(status: WritableJobStatus) {
@@ -227,49 +269,14 @@ export default function JobDetailPage() {
           ) : (
             <div className="space-y-3">
               {applicants.map((applicant) => (
-                <Card key={applicant.application_id} className="p-4 flex flex-col gap-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-base font-semibold">{applicant.full_name}</p>
-                    <span
-                      className="rounded-full px-2 py-0.5 text-xs font-medium shrink-0"
-                      style={{
-                        background: applicationStatusTone(applicant.status).bg,
-                        color: applicationStatusTone(applicant.status).color,
-                      }}
-                    >
-                      {t(`applicants.status.${applicant.status}`)}
-                    </span>
-                  </div>
-
-                  <p className="text-xs text-muted-foreground">{t('applicants.phone')}: {applicant.phone}</p>
-
-                  {applicant.skills.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {applicant.skills.map((skill) => (
-                        <span key={skill} className="rounded-full bg-muted px-2 py-0.5 text-xs">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                    {applicant.availability && (
-                      <span>{t(`filter.availability_${applicant.availability.replace('-', '')}`)}</span>
-                    )}
-                    {applicant.years_experience !== null && (
-                      <span>{applicant.years_experience}y exp</span>
-                    )}
-                    <span>{t('applicants.applied')}: {new Date(applicant.applied_at).toLocaleDateString()}</span>
-                  </div>
-
-                  <Link
-                    href={`/employer/workers/${applicant.worker_id}?job_id=${job.id}`}
-                    className="self-start mt-1 text-xs bg-blue-900 text-white px-3 py-1.5 rounded-lg"
-                  >
-                    {t('applicants.view_profile')}
-                  </Link>
-                </Card>
+                <ApplicantCard
+                  key={applicant.application_id}
+                  applicant={applicant}
+                  match={candidateMatches.get(applicant.application_id) ?? candidateMatches.get(applicant.worker_id)}
+                  jobId={job.id}
+                  t={t}
+                  tMatch={tMatch}
+                />
               ))}
             </div>
           )}
@@ -288,4 +295,151 @@ function DetailField({ label, value }: { label: string; value: string }) {
       <p className="text-sm font-medium">{value}</p>
     </div>
   );
+}
+
+function ApplicantCard({
+  applicant,
+  match,
+  jobId,
+  t,
+  tMatch,
+}: {
+  applicant: Applicant;
+  match?: ApplicantMatch;
+  jobId: string;
+  t: ReturnType<typeof useTranslations>;
+  tMatch: ReturnType<typeof useTranslations>;
+}) {
+  const { idToken } = useAuth();
+  const router = useRouter();
+  const tMessages = useTranslations('employer_messages');
+  const [startingConversation, setStartingConversation] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+
+  async function handleMessageWorker() {
+    if (!idToken) return;
+    setStartingConversation(true);
+    setMessageError(null);
+    try {
+      const response = await startConversation(idToken, {
+        job_id: jobId,
+        worker_id: applicant.worker_id,
+        initial_message: tMessages('default_initial_message'),
+      });
+      router.push(`/employer/conversations?conversation_id=${response.conversation.id}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'message_start_failed';
+      setMessageError(
+        message === 'worker_whatsapp_unavailable'
+          ? tMessages('worker_whatsapp_unavailable')
+          : tMessages('message_start_failed'),
+      );
+    } finally {
+      setStartingConversation(false);
+    }
+  }
+
+  return (
+    <Card className="p-4 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-base font-semibold">{applicant.full_name}</p>
+          {match && (
+            <div className="mt-1">
+              <MatchScoreBadge
+                score={match.match_score}
+                band={match.score_band}
+                label={tMatch(`score_bands.${match.score_band}`)}
+              />
+            </div>
+          )}
+        </div>
+        <span
+          className="rounded-full px-2 py-0.5 text-xs font-medium shrink-0 self-start"
+          style={{
+            background: applicationStatusTone(applicant.status).bg,
+            color: applicationStatusTone(applicant.status).color,
+          }}
+        >
+          {t(`applicants.status.${applicant.status}`)}
+        </span>
+      </div>
+
+      {match && match.match_reasons.length > 0 && (
+        <MatchReasonChips reasons={match.match_reasons} />
+      )}
+
+      <p className="text-xs text-muted-foreground">{t('applicants.phone')}: {applicant.phone}</p>
+
+      {applicant.skills.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {applicant.skills.map((skill) => (
+            <span key={skill} className="rounded-full bg-muted px-2 py-0.5 text-xs">
+              {skill}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {applicant.availability && (
+          <span>{t(`filter.availability_${applicant.availability.replace('-', '')}`)}</span>
+        )}
+        {applicant.years_experience !== null && (
+          <span>{applicant.years_experience}y exp</span>
+        )}
+        <span>{t('applicants.applied')}: {new Date(applicant.applied_at).toLocaleDateString()}</span>
+      </div>
+
+      {messageError && <p className="text-xs text-error">{messageError}</p>}
+
+      <div className="mt-1 flex flex-wrap gap-2">
+        <Link
+          href={`/employer/workers/${applicant.worker_id}?job_id=${jobId}`}
+          className="self-start rounded-lg bg-blue-900 px-3 py-1.5 text-xs text-white"
+        >
+          {t('applicants.view_profile')}
+        </Link>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={handleMessageWorker}
+          loading={startingConversation}
+          loadingLabel={tMessages('starting')}
+        >
+          {tMessages('message_worker')}
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+function buildCandidateMatchMap(candidates: Array<{
+  application_id?: string | null;
+  worker_id: string;
+  match_score: number;
+  score_band: ScoreBand;
+  match_reasons?: string[];
+}>): Map<string, ApplicantMatch> {
+  const matches = new Map<string, ApplicantMatch>();
+
+  for (const candidate of candidates) {
+    const score = normalizeMatchScore(candidate.match_score);
+    if (score === null) continue;
+
+    const match: ApplicantMatch = {
+      match_score: score,
+      score_band: normalizeScoreBand(candidate.score_band, score),
+      match_reasons: (candidate.match_reasons ?? [])
+        .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+        .slice(0, 3)
+        .map((reason) => truncateMatchReason(reason)),
+    };
+
+    if (candidate.application_id) matches.set(candidate.application_id, match);
+    matches.set(candidate.worker_id, match);
+  }
+
+  return matches;
 }

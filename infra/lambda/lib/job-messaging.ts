@@ -1,0 +1,580 @@
+import type { PoolClient } from 'pg';
+import { sendTwilioWhatsAppMessage } from '../whatsapp/lib/outbox';
+
+const FALLBACK_BODY_KEY = '__fallback_body';
+const WORKER_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const MAX_MESSAGE_LENGTH = 2000;
+
+type ConversationAccessRow = {
+  id: string;
+  job_id: string;
+  employer_id: string;
+  worker_id: string;
+  application_id: string;
+  status: 'open' | 'closed';
+  worker_phone: string | null;
+  worker_language: string | null;
+  company_name: string | null;
+  job_title: string | null;
+  last_worker_message_at: Date | string | null;
+};
+
+export type ConversationSummary = {
+  id: string;
+  job_id: string;
+  job_title: string;
+  worker_id: string;
+  worker_name: string | null;
+  status: 'open' | 'closed';
+  last_message_at: string | null;
+  last_worker_message_at: string | null;
+  last_message_preview: string | null;
+  updated_at: string;
+};
+
+export type ConversationDetail = ConversationSummary & {
+  application_id: string;
+};
+
+export type ConversationMessage = {
+  id: string;
+  sender_type: 'employer' | 'worker' | 'system';
+  direction: 'outbound' | 'inbound';
+  body: string;
+  status: 'queued' | 'waiting_worker_reply' | 'sent' | 'delivered' | 'failed' | 'received';
+  created_at: string;
+  sent_at: string | null;
+};
+
+export function normalizeMessageBody(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const body = value.trim();
+  if (!body || body.length > MAX_MESSAGE_LENGTH) return null;
+  return body;
+}
+
+function normalizeWhatsappNumber(value: string | null | undefined): string | null {
+  const cleaned = value?.trim().replace(/^whatsapp:/i, '') ?? '';
+  if (!cleaned) return null;
+  return cleaned;
+}
+
+function isWorkerReplyWindowOpen(value: Date | string | null): boolean {
+  if (!value) return false;
+  const at = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(at) && Date.now() - at < WORKER_REPLY_WINDOW_MS;
+}
+
+function templateLang(value: string | null | undefined): 'en' | 'es' {
+  return value === 'en' ? 'en' : 'es';
+}
+
+function inviteTemplateName(lang: string | null | undefined): string {
+  return `employer_message_invite_${templateLang(lang)}`;
+}
+
+function resumeTemplateName(lang: string | null | undefined): string {
+  return `employer_message_resume_${templateLang(lang)}`;
+}
+
+function buildInviteFallback(companyName: string, jobTitle: string, lang: string | null | undefined): string {
+  return templateLang(lang) === 'en'
+    ? `${companyName} sent you a message about ${jobTitle}. Reply here to open the conversation.`
+    : `${companyName} te envio un mensaje sobre ${jobTitle}. Responde aqui para abrir la conversacion.`;
+}
+
+async function setSessionInternalUser(client: PoolClient, userId: string): Promise<void> {
+  await client.query(`SELECT set_config('app.current_internal_user_id', $1, false)`, [userId]);
+}
+
+async function clearSessionInternalUser(client: PoolClient): Promise<void> {
+  await client.query(`SELECT set_config('app.current_internal_user_id', '', false)`);
+}
+
+async function loadConversationForEmployer(
+  client: PoolClient,
+  conversationId: string,
+  employerId: string,
+): Promise<ConversationAccessRow | null> {
+  const result = await client.query<ConversationAccessRow>(
+    `SELECT
+       jc.id,
+       jc.job_id,
+       jc.employer_id,
+       jc.worker_id,
+       jc.application_id,
+       jc.status,
+       COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
+       wc.language AS worker_language,
+       COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
+       j.title AS job_title,
+       jc.last_worker_message_at
+     FROM job_conversations jc
+     JOIN jobs j ON j.id = jc.job_id
+     JOIN users employer ON employer.id = jc.employer_id
+     JOIN users u ON u.id = jc.worker_id
+     LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
+     LEFT JOIN employer_profiles ep ON ep.user_id = jc.employer_id
+     LEFT JOIN whatsapp_conversations wc ON wc.user_id = jc.worker_id
+     WHERE jc.id = $1
+       AND jc.employer_id = $2`,
+    [conversationId, employerId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function queueWorkerInviteTemplate(
+  client: PoolClient,
+  conversation: ConversationAccessRow,
+  templateName: string,
+): Promise<void> {
+  const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
+  if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
+
+  const companyName = conversation.company_name ?? 'Jale';
+  const jobTitle = conversation.job_title ?? 'this job';
+  await client.query(
+    `INSERT INTO job_message_outbox
+        (conversation_id, whatsapp_number, send_kind, content_template, content_variables)
+     VALUES ($1, $2, 'template', $3, $4::jsonb)`,
+    [
+      conversation.id,
+      whatsappNumber,
+      templateName,
+      JSON.stringify({
+        '1': companyName,
+        '2': jobTitle,
+        [FALLBACK_BODY_KEY]: buildInviteFallback(companyName, jobTitle, conversation.worker_language),
+      }),
+    ],
+  );
+}
+
+async function queueEmployerFreeformMessage(
+  client: PoolClient,
+  conversation: ConversationAccessRow,
+  messageId: string,
+  body: string,
+): Promise<void> {
+  const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
+  if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
+
+  await client.query(
+    `INSERT INTO job_message_outbox
+        (conversation_id, message_id, whatsapp_number, send_kind, body)
+     VALUES ($1, $2, $3, 'freeform', $4)`,
+    [conversation.id, messageId, whatsappNumber, body],
+  );
+}
+
+export async function listEmployerConversations(
+  client: PoolClient,
+  employerId: string,
+): Promise<ConversationSummary[]> {
+  const result = await client.query<ConversationSummary>(
+    `SELECT
+       jc.id,
+       jc.job_id,
+       j.title AS job_title,
+       jc.worker_id,
+       COALESCE(wp.full_name, u.full_name) AS worker_name,
+       jc.status,
+       jc.last_message_at,
+       jc.last_worker_message_at,
+       last_msg.body AS last_message_preview,
+       jc.updated_at
+     FROM job_conversations jc
+     JOIN jobs j ON j.id = jc.job_id
+     JOIN users u ON u.id = jc.worker_id
+     LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
+     LEFT JOIN LATERAL (
+       SELECT body
+       FROM job_conversation_messages jcm
+       WHERE jcm.conversation_id = jc.id
+       ORDER BY jcm.created_at DESC
+       LIMIT 1
+     ) last_msg ON true
+     WHERE jc.employer_id = $1
+     ORDER BY COALESCE(jc.last_message_at, jc.created_at) DESC
+     LIMIT 100`,
+    [employerId],
+  );
+  return result.rows;
+}
+
+export async function getEmployerConversationDetail(
+  client: PoolClient,
+  conversationId: string,
+  employerId: string,
+): Promise<{ conversation: ConversationDetail; messages: ConversationMessage[] } | null> {
+  const conversation = await client.query<ConversationDetail>(
+    `SELECT
+       jc.id,
+       jc.job_id,
+       jc.application_id,
+       j.title AS job_title,
+       jc.worker_id,
+       COALESCE(wp.full_name, u.full_name) AS worker_name,
+       jc.status,
+       jc.last_message_at,
+       jc.last_worker_message_at,
+       last_msg.body AS last_message_preview,
+       jc.updated_at
+     FROM job_conversations jc
+     JOIN jobs j ON j.id = jc.job_id
+     JOIN users u ON u.id = jc.worker_id
+     LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
+     LEFT JOIN LATERAL (
+       SELECT body
+       FROM job_conversation_messages jcm
+       WHERE jcm.conversation_id = jc.id
+       ORDER BY jcm.created_at DESC
+       LIMIT 1
+     ) last_msg ON true
+     WHERE jc.id = $1
+       AND jc.employer_id = $2`,
+    [conversationId, employerId],
+  );
+
+  if (conversation.rowCount === 0) return null;
+
+  const messages = await client.query<ConversationMessage>(
+    `SELECT id, sender_type, direction, body, status, created_at, sent_at
+     FROM job_conversation_messages
+     WHERE conversation_id = $1
+     ORDER BY created_at ASC
+     LIMIT 200`,
+    [conversationId],
+  );
+
+  return { conversation: conversation.rows[0], messages: messages.rows };
+}
+
+export async function createApplicantConversation(
+  client: PoolClient,
+  employerId: string,
+  jobId: string,
+  workerId: string,
+  initialMessage: string,
+): Promise<{ conversationId: string }> {
+  const access = await client.query<ConversationAccessRow>(
+    `SELECT
+       j.id AS job_id,
+       j.employer_id,
+       ja.worker_id,
+       ja.id AS application_id,
+       COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
+       wc.language AS worker_language,
+       COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
+       j.title AS job_title
+     FROM jobs j
+     JOIN job_applications ja ON ja.job_id = j.id
+     JOIN users employer ON employer.id = j.employer_id
+     JOIN users u ON u.id = ja.worker_id
+     LEFT JOIN worker_profiles wp ON wp.user_id = ja.worker_id
+     LEFT JOIN employer_profiles ep ON ep.user_id = j.employer_id
+     LEFT JOIN whatsapp_conversations wc ON wc.user_id = ja.worker_id
+     WHERE j.id = $1
+       AND j.employer_id = $2
+       AND ja.worker_id = $3`,
+    [jobId, employerId, workerId],
+  );
+
+  const row = access.rows[0];
+  if (!row) throw new Error('applicant_not_found');
+  if (!normalizeWhatsappNumber(row.worker_phone)) throw new Error('worker_whatsapp_unavailable');
+
+  let conversation = await client.query<ConversationAccessRow>(
+    `SELECT
+       jc.id,
+       jc.job_id,
+       jc.employer_id,
+       jc.worker_id,
+       jc.application_id,
+       jc.status,
+       COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, ''), NULLIF(wp.phone, '')) AS worker_phone,
+       wc.language AS worker_language,
+       COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
+       j.title AS job_title,
+       jc.last_worker_message_at
+     FROM job_conversations jc
+     JOIN jobs j ON j.id = jc.job_id
+     JOIN users employer ON employer.id = jc.employer_id
+     JOIN users u ON u.id = jc.worker_id
+     LEFT JOIN worker_profiles wp ON wp.user_id = jc.worker_id
+     LEFT JOIN employer_profiles ep ON ep.user_id = jc.employer_id
+     LEFT JOIN whatsapp_conversations wc ON wc.user_id = jc.worker_id
+     WHERE jc.job_id = $1
+       AND jc.employer_id = $2
+       AND jc.worker_id = $3
+       AND jc.status = 'open'
+     LIMIT 1`,
+    [jobId, employerId, workerId],
+  );
+
+  if (conversation.rowCount === 0) {
+    const created = await client.query<{ id: string }>(
+      `INSERT INTO job_conversations (job_id, employer_id, worker_id, application_id, last_message_at)
+       VALUES ($1, $2, $3, $4, now())
+       RETURNING id`,
+      [jobId, employerId, workerId, row.application_id],
+    );
+
+    conversation = await client.query<ConversationAccessRow>(
+      `SELECT
+         $1::uuid AS id,
+         $2::uuid AS job_id,
+         $3::uuid AS employer_id,
+         $4::uuid AS worker_id,
+         $5::uuid AS application_id,
+         'open'::text AS status,
+         $6::text AS worker_phone,
+         $7::text AS worker_language,
+         $8::text AS company_name,
+         $9::text AS job_title,
+         NULL::timestamptz AS last_worker_message_at`,
+      [
+        created.rows[0].id,
+        row.job_id,
+        employerId,
+        workerId,
+        row.application_id,
+        row.worker_phone,
+        row.worker_language,
+        row.company_name,
+        row.job_title,
+      ],
+    );
+  }
+
+  await queueConversationMessageFromEmployer(
+    client,
+    conversation.rows[0].id,
+    employerId,
+    initialMessage,
+    inviteTemplateName(conversation.rows[0].worker_language),
+  );
+
+  return { conversationId: conversation.rows[0].id };
+}
+
+export async function queueConversationMessageFromEmployer(
+  client: PoolClient,
+  conversationId: string,
+  employerId: string,
+  body: string,
+  closedWindowTemplateName?: string,
+): Promise<{ messageId: string; queuedAsTemplate: boolean }> {
+  const conversation = await loadConversationForEmployer(client, conversationId, employerId);
+  if (!conversation || conversation.status !== 'open') throw new Error('conversation_not_found');
+
+  const canSendFreeform = isWorkerReplyWindowOpen(conversation.last_worker_message_at);
+  const message = await client.query<{ id: string }>(
+    `INSERT INTO job_conversation_messages
+       (conversation_id, sender_type, direction, body, status)
+     VALUES ($1, 'employer', 'outbound', $2, $3)
+     RETURNING id`,
+    [conversation.id, body, canSendFreeform ? 'queued' : 'waiting_worker_reply'],
+  );
+
+  if (canSendFreeform) {
+    await queueEmployerFreeformMessage(client, conversation, message.rows[0].id, body);
+  } else {
+    await queueWorkerInviteTemplate(
+      client,
+      conversation,
+      closedWindowTemplateName ?? resumeTemplateName(conversation.worker_language),
+    );
+  }
+
+  await client.query(
+    `UPDATE job_conversations
+        SET last_message_at = now()
+      WHERE id = $1`,
+    [conversation.id],
+  );
+  await client.query(
+    `UPDATE job_applications
+        SET status = 'contacted',
+            updated_at = now()
+      WHERE id = $1
+        AND status = 'pending'`,
+    [conversation.application_id],
+  );
+
+  return { messageId: message.rows[0].id, queuedAsTemplate: !canSendFreeform };
+}
+
+export async function closeEmployerConversation(
+  client: PoolClient,
+  conversationId: string,
+  employerId: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE job_conversations
+        SET status = 'closed',
+            closed_at = now()
+      WHERE id = $1
+        AND employer_id = $2
+        AND status = 'open'`,
+    [conversationId, employerId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function recordWorkerConversationReply(
+  client: PoolClient,
+  workerId: string,
+  body: string,
+  from: string,
+  messageSid: string,
+): Promise<boolean> {
+  const conversation = await client.query<{
+    id: string;
+    application_id: string;
+  }>(
+    `SELECT id, application_id
+     FROM job_conversations
+     WHERE worker_id = $1
+       AND status = 'open'
+     ORDER BY COALESCE(last_message_at, created_at) DESC
+     LIMIT 1
+     FOR UPDATE`,
+    [workerId],
+  );
+
+  const row = conversation.rows[0];
+  if (!row) return false;
+
+  await client.query(
+    `INSERT INTO job_conversation_messages
+       (conversation_id, sender_type, direction, body, status, twilio_message_sid, twilio_from)
+     VALUES ($1, 'worker', 'inbound', $2, 'received', $3, $4)`,
+    [row.id, body, messageSid, from],
+  );
+
+  await client.query(
+    `UPDATE job_conversations
+        SET last_message_at = now(),
+            last_worker_message_at = now()
+      WHERE id = $1`,
+    [row.id],
+  );
+  await client.query(
+    `UPDATE job_applications
+        SET status = 'talking',
+            updated_at = now()
+      WHERE id = $1
+        AND status IN ('pending', 'contacted')`,
+    [row.application_id],
+  );
+
+  const pending = await client.query<{ id: string; body: string }>(
+    `SELECT id, body
+     FROM job_conversation_messages
+     WHERE conversation_id = $1
+       AND sender_type = 'employer'
+       AND status = 'waiting_worker_reply'
+     ORDER BY created_at ASC`,
+    [row.id],
+  );
+
+  const whatsappNumber = normalizeWhatsappNumber(from);
+  if (!whatsappNumber) return true;
+
+  for (const message of pending.rows) {
+    await client.query(
+      `INSERT INTO job_message_outbox
+          (conversation_id, message_id, whatsapp_number, send_kind, body)
+       VALUES ($1, $2, $3, 'freeform', $4)`,
+      [row.id, message.id, whatsappNumber, message.body],
+    );
+    await client.query(
+      `UPDATE job_conversation_messages
+          SET status = 'queued'
+        WHERE id = $1`,
+      [message.id],
+    );
+  }
+
+  return true;
+}
+
+export async function sendPendingJobMessageOutbox(
+  client: PoolClient,
+  options: { conversationId?: string; actorUserId: string },
+): Promise<void> {
+  await setSessionInternalUser(client, options.actorUserId);
+  try {
+    const params: string[] = [];
+    let conversationFilter = '';
+    if (options.conversationId) {
+      params.push(options.conversationId);
+      conversationFilter = `AND conversation_id = $${params.length}`;
+    }
+
+    const pending = await client.query<{
+      id: string;
+      message_id: string | null;
+      whatsapp_number: string;
+      body: string | null;
+      content_template: string | null;
+      content_variables: Record<string, string> | null;
+    }>(
+      `SELECT id, message_id, whatsapp_number, body, content_template, content_variables
+       FROM job_message_outbox
+       WHERE status IN ('pending', 'failed')
+         ${conversationFilter}
+       ORDER BY created_at ASC
+       LIMIT 10`,
+      params,
+    );
+
+    for (const row of pending.rows) {
+      try {
+        const twilioMessageSid = await sendTwilioWhatsAppMessage(
+          `whatsapp:${row.whatsapp_number}`,
+          row,
+        );
+        await client.query(
+          `UPDATE job_message_outbox
+              SET status = 'sent',
+                  sent_at = now(),
+                  twilio_message_sid = COALESCE($2, twilio_message_sid)
+            WHERE id = $1`,
+          [row.id, twilioMessageSid],
+        );
+        if (row.message_id) {
+          await client.query(
+            `UPDATE job_conversation_messages
+                SET status = 'sent',
+                    sent_at = now(),
+                    twilio_message_sid = COALESCE($2, twilio_message_sid)
+              WHERE id = $1`,
+            [row.message_id, twilioMessageSid],
+          );
+        }
+      } catch (err) {
+        await client.query(
+          `UPDATE job_message_outbox
+              SET status = 'failed',
+                  attempt_count = attempt_count + 1,
+                  last_error = $1
+            WHERE id = $2`,
+          [(err as Error).message, row.id],
+        );
+        if (row.message_id) {
+          await client.query(
+            `UPDATE job_conversation_messages
+                SET status = 'failed'
+              WHERE id = $1`,
+            [row.message_id],
+          );
+        }
+        throw err;
+      }
+    }
+  } finally {
+    await clearSessionInternalUser(client);
+  }
+}

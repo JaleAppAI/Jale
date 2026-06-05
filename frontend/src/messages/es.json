@@ -4,13 +4,37 @@
         "error": "Algo salió mal",
         "retry": "Intente de nuevo"
     },
+    "match": {
+        "score_bands": {
+            "strong": "Muy buen match",
+            "good": "Buen match",
+            "fair": "Match posible"
+        },
+        "reasons": {
+            "profession_exact_or_alias": "Oficio coincide",
+            "profession_partial": "Oficio relacionado",
+            "distance_under_5_miles": "A menos de 5 millas",
+            "distance_under_15_miles": "A menos de 15 millas",
+            "distance_under_30_miles": "A menos de 30 millas",
+            "distance_under_50_miles": "A menos de 50 millas",
+            "zip_exact": "Mismo codigo postal",
+            "location_text_match": "Ubicacion coincide",
+            "experience_meets_requirement": "Experiencia adecuada",
+            "availability_flexible": "Disponibilidad flexible",
+            "availability_matches_job_type": "Disponibilidad adecuada",
+            "availability_adjacent": "Horario cercano",
+            "fresh_posting": "Publicacion nueva"
+        }
+    },
     "header": {
         "language_toggle": "English",
         "sign_out": "Cerrar sesión",
         "profile": "Perfil",
         "home": "Inicio",
         "worker_home": "Trabajos",
-        "my_applications": "Mis aplicaciones"
+        "my_applications": "Mis aplicaciones",
+        "employer_jobs": "Trabajos",
+        "messages": "Mensajes"
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
@@ -182,6 +206,37 @@
             "save": "Guardar",
             "saving": "Guardando...",
             "cancel": "Cancelar"
+        }
+    },
+    "employer_messages": {
+        "title": "Mensajes",
+        "subtitle": "Mensajea a candidatos por WhatsApp manteniendo la conversacion vinculada al trabajo.",
+        "threads": "Conversaciones",
+        "drawer_button": "Mensajes",
+        "hide": "Ocultar",
+        "empty": "Todavia no hay conversaciones abiertas.",
+        "empty_select": "Selecciona una conversacion.",
+        "no_messages": "Todavia no hay mensajes.",
+        "unknown_worker": "Trabajador desconocido",
+        "status_open": "Abierta",
+        "status_closed": "Cerrada",
+        "close": "Cerrar",
+        "closed_hint": "Esta conversacion esta cerrada.",
+        "composer_placeholder": "Escribe un mensaje...",
+        "send": "Enviar",
+        "from_worker": "Trabajador",
+        "message_worker": "Mensaje",
+        "starting": "Iniciando...",
+        "message_start_failed": "No se pudo iniciar la conversacion.",
+        "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
+        "default_initial_message": "Hola, te escribo sobre tu aplicacion. Responde aqui cuando estes disponible.",
+        "message_status": {
+            "queued": "En cola",
+            "waiting_worker_reply": "Esperando respuesta del trabajador",
+            "sent": "Enviado",
+            "delivered": "Entregado",
+            "failed": "Fallido",
+            "received": "Recibido"
         }
     },
     "employer_dashboard": {
