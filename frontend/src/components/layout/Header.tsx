@@ -14,6 +14,10 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
     const [signingOut, setSigningOut] = useState(false);
 
+    if (pathname === '/employer/dashboard' || pathname.endsWith('/employer/dashboard')) {
+        return null;
+    }
+
     const homeHref = !isAuthenticated
         ? '/'
         : userType === 'worker'
