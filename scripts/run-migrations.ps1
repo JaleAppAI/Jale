@@ -11,7 +11,7 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→019
+#   - Base64-encodes migrations 001→025
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -67,7 +67,8 @@ $MigrationFiles = @(
     # '021_whatsapp_required_docs_apply_support.sql',
     # '022_job_application_required_docs_guard.sql',
     '023_job_fields_and_statuses_mvp.sql',
-    '024_sprint11_hiring_flow_hardening.sql'
+    '024_sprint11_hiring_flow_hardening.sql',
+    '025_admin_panel.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -127,6 +128,22 @@ if ([string]::IsNullOrEmpty($matchingSecretArn) -or $matchingSecretArn -eq 'None
 Write-Host "   matching-secret: $matchingSecretArn"
 
 # ---------------------------------------------------------------------------
+# Resolve jale_admin_console DB secret ARN.
+# ---------------------------------------------------------------------------
+Write-Host ">> Resolving jale_admin_console DB secret ARN..."
+$adminConsoleSecretArn = (aws cloudformation describe-stack-resources `
+        --stack-name $DatabaseStack `
+        --region $Region `
+        --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'AdminConsoleDbSecret')].PhysicalResourceId | [0]" `
+        --output text).Trim()
+
+if ([string]::IsNullOrEmpty($adminConsoleSecretArn) -or $adminConsoleSecretArn -eq 'None') {
+    Write-Host "!! Could not find jale_admin_console DB secret in $DatabaseStack." -ForegroundColor Red
+    exit 1
+}
+Write-Host "   admin-console-secret: $adminConsoleSecretArn"
+
+# ---------------------------------------------------------------------------
 # Verify migration files + base64-encode.
 # ---------------------------------------------------------------------------
 $migrationsB64 = [ordered]@{}
@@ -154,6 +171,7 @@ set -euo pipefail
 REGION="__REGION__"
 DB_SECRET_ARN="__DB_SECRET_ARN__"
 MATCHING_SECRET_ARN="__MATCHING_SECRET_ARN__"
+ADMIN_CONSOLE_SECRET_ARN="__ADMIN_CONSOLE_SECRET_ARN__"
 WA_DB_SECRET_NAME="__WA_DB_SECRET_NAME__"
 
 echo ">> Fetching jale_admin creds from $DB_SECRET_ARN"
@@ -193,6 +211,14 @@ MATCHING_SECRET_JSON=$(aws secretsmanager get-secret-value \
 MATCHING_PW=$(echo "$MATCHING_SECRET_JSON" | jq -r .password)
 "${PG_CMD[@]}" -c "ALTER ROLE jale_matching WITH PASSWORD '$MATCHING_PW';"
 
+echo ">> Setting jale_admin_console password from generated secret..."
+ADMIN_CONSOLE_SECRET_JSON=$(aws secretsmanager get-secret-value \
+  --secret-id "$ADMIN_CONSOLE_SECRET_ARN" \
+  --region "$REGION" \
+  --query SecretString --output text)
+ADMIN_CONSOLE_PW=$(echo "$ADMIN_CONSOLE_SECRET_JSON" | jq -r .password)
+"${PG_CMD[@]}" -c "ALTER ROLE jale_admin_console WITH PASSWORD '$ADMIN_CONSOLE_PW';"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 WA_PW=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-24)
 "${PG_CMD[@]}" -c "ALTER ROLE jale_whatsapp WITH PASSWORD '$WA_PW';"
@@ -223,7 +249,7 @@ else
   echo "   created new secret"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON
+unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON
 echo ">> Done."
 '@
 
@@ -244,6 +270,7 @@ $b64Assignments = $assignLines -join "`n"
 # double any '$' in dbSecretArn just in case ARN format evolves.
 $dbSecretArnSafe = $dbSecretArn -replace '\$', '$$$$'
 $matchingSecretArnSafe = $matchingSecretArn -replace '\$', '$$$$'
+$adminConsoleSecretArnSafe = $adminConsoleSecretArn -replace '\$', '$$$$'
 $regionSafe = $Region -replace '\$', '$$$$'
 $waDbSecretNameSafe = $WaDbSecretName -replace '\$', '$$$$'
 $fileArrayLiteralSafe = $fileArrayLiteral -replace '\$', '$$$$'
@@ -253,6 +280,7 @@ $remoteScript = $remoteTemplate `
     -replace '__REGION__', $regionSafe `
     -replace '__DB_SECRET_ARN__', $dbSecretArnSafe `
     -replace '__MATCHING_SECRET_ARN__', $matchingSecretArnSafe `
+    -replace '__ADMIN_CONSOLE_SECRET_ARN__', $adminConsoleSecretArnSafe `
     -replace '__WA_DB_SECRET_NAME__', $waDbSecretNameSafe `
     -replace '__MIGRATION_FILES_ARRAY__', $fileArrayLiteralSafe `
     -replace '__MIGRATION_B64_ASSIGNMENTS__', $b64AssignmentsSafe

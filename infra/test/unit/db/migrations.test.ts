@@ -47,6 +47,7 @@ describe('database migrations', () => {
       '022',
       '023',
       '024',
+      '025',
     ]);
   });
 
@@ -234,5 +235,19 @@ describe('database migrations', () => {
     expect(migration).toContain('jobs_required_experience_years_bounds_check');
     expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
     expect(migration).toContain('required_experience_years BETWEEN 0 AND 80');
+  });
+
+  it('adds an append-only audited admin panel schema in migration 025', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '025_admin_panel.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_users');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_cases');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_case_events');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_audit_log');
+    expect(migration).toContain("CHECK (role IN ('admin_readonly', 'admin_ops', 'admin_superadmin'))");
+    expect(migration).toContain("CHECK (case_type IN ('help_request', 'verification_blocker', 'outbound_failure', 'conversation_stuck'))");
+    expect(migration).toContain('ALTER TABLE admin_audit_log FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT ON admin_audit_log TO jale_admin');
+    expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON admin_audit_log TO jale_admin');
   });
 });

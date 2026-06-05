@@ -27,8 +27,9 @@ describe('DatabaseStack', () => {
     });
   });
 
-  test('Secrets Manager secrets exist for admin, matching, and AI DB credentials', () => {
-    template.resourceCountIs('AWS::SecretsManager::Secret', 3);
+  test('Secrets Manager secrets exist for admin, matching, AI, and admin-console DB credentials', () => {
+    // RDS-generated jale_admin secret + matching + ai + admin-console = 4.
+    template.resourceCountIs('AWS::SecretsManager::Secret', 4);
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'jale/matching/db',
       Description: 'jale_matching role DB credentials for matching engine reads/writes',
@@ -37,6 +38,26 @@ describe('DatabaseStack', () => {
       Name: 'jale/ai/db',
       Description: 'jale_ai role DB credentials for AI trust assessment service writes',
     });
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'jale/admin-console/db',
+      Description: 'jale_admin_console role DB credentials for the admin Next.js Lambda',
+      // SecretStringTemplate is an Fn::Join (it embeds the RDS endpoint token),
+      // so assert the stable generation settings here and the embedded
+      // jale_admin_console username via the serialized template below.
+      GenerateSecretString: Match.objectLike({
+        GenerateStringKey: 'password',
+        ExcludePunctuation: true,
+      }),
+    });
+
+    // The generated secret must declare the jale_admin_console username so the
+    // admin Lambda's db.ts role guard (EXPECTED_ADMIN_DB_USER) is satisfied.
+    const secrets = template.findResources('AWS::SecretsManager::Secret');
+    const adminConsole = Object.values(secrets).find(
+      (r) => r.Properties?.Name === 'jale/admin-console/db',
+    );
+    expect(JSON.stringify(adminConsole?.Properties?.GenerateSecretString?.SecretStringTemplate))
+      .toContain('jale_admin_console');
   });
 
   test('Backup retention is 7 days', () => {
