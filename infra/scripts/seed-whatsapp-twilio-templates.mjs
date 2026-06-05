@@ -20,10 +20,10 @@ const NEW_TEMPLATES = {
   onboarding_trade_es: 'HXd2e03da923913d234e5a82d4949c8993',
   onboarding_legal_es: 'HX6e8f6ae97297c17176301919f705a840',
   onboarding_legal_en: 'HX30852732ef43c3c67d0901667f74b965',
-  employer_message_invite_en: 'HXc1c5168320a6b0d8ae4ce3984637fbfb',
-  employer_message_invite_es: 'HX6dcad88131b9a6fa227a555ce5857f14',
-  employer_message_resume_en: 'HX297837b6add7eb1aa8e5b103c44fd95d',
-  employer_message_resume_es: 'HX707483285390dd11ac3e51517d961941',
+  employer_message_invite_en: 'HX2202c5aa257fb7b37a00aff87cd69716',
+  employer_message_invite_es: 'HXee0809459e3a3be33e4a4a56d587894a',
+  employer_message_resume_en: 'HXd6660cd0c6b92116c683061eeba369cd',
+  employer_message_resume_es: 'HX4f3e6b6c4b3e882c73bdac86d13ecae4',
 };
 
 function parseSecret(secretString) {

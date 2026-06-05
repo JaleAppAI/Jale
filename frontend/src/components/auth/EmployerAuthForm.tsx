@@ -1,5 +1,5 @@
 'use client';
-import { useState, type ReactNode } from 'react';
+import { useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -30,6 +30,8 @@ export default function EmployerAuthForm() {
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [passwordConfirm, setPasswordConfirm] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
+    const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
     const [confirmationCode, setConfirmationCode] = useState('');
     const [companyName, setCompanyName] = useState('');
     const [contactName, setContactName] = useState('');
@@ -136,7 +138,16 @@ export default function EmployerAuthForm() {
                             <Input type="email" placeholder={t('email_label')} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
                         <Field label={t('fields.password')}>
-                            <Input type="password" placeholder={t('password_label')} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+                            <PasswordInput
+                                placeholder={t('password_label')}
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                autoComplete="current-password"
+                                visible={showPassword}
+                                onToggle={() => setShowPassword((value) => !value)}
+                                showLabel={t('show_password')}
+                                hideLabel={t('hide_password')}
+                            />
                         </Field>
                         {error && <ErrorText error={error} />}
                         <Button className="w-full mt-1" size="lg" onClick={handleSignIn} disabled={!email || !password} loading={isLoading} loadingLabel={tCommon('loading')}>
@@ -151,8 +162,28 @@ export default function EmployerAuthForm() {
                         <Field label={t('fields.company_name')}><Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} /></Field>
                         <Field label={t('fields.contact_name')}><Input value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" /></Field>
                         <Field label={t('fields.email')}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" /></Field>
-                        <Field label={t('fields.password')}><Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" /></Field>
-                        <Field label={t('fields.password_confirm')}><Input type="password" value={passwordConfirm} onChange={(e) => setPasswordConfirm(e.target.value)} autoComplete="new-password" /></Field>
+                        <Field label={t('fields.password')}>
+                            <PasswordInput
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                autoComplete="new-password"
+                                visible={showPassword}
+                                onToggle={() => setShowPassword((value) => !value)}
+                                showLabel={t('show_password')}
+                                hideLabel={t('hide_password')}
+                            />
+                        </Field>
+                        <Field label={t('fields.password_confirm')}>
+                            <PasswordInput
+                                value={passwordConfirm}
+                                onChange={(e) => setPasswordConfirm(e.target.value)}
+                                autoComplete="new-password"
+                                visible={showPasswordConfirm}
+                                onToggle={() => setShowPasswordConfirm((value) => !value)}
+                                showLabel={t('show_password')}
+                                hideLabel={t('hide_password')}
+                            />
+                        </Field>
                         <p className="text-xs leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('password_note')}</p>
                         <Field label={t('fields.phone')}>
                             <PhoneNumberField
@@ -231,6 +262,59 @@ function CheckboxGroup({ label, children }: { label: string; children: ReactNode
 
 function ErrorText({ error }: { error: string }) {
     return <p className="text-sm" style={{ color: 'var(--jale-danger)' }}>{error}</p>;
+}
+
+function PasswordInput({
+    visible,
+    onToggle,
+    showLabel,
+    hideLabel,
+    className = '',
+    ...props
+}: InputHTMLAttributes<HTMLInputElement> & {
+    visible: boolean;
+    onToggle: () => void;
+    showLabel: string;
+    hideLabel: string;
+}) {
+    return (
+        <div className="relative">
+            <Input
+                {...props}
+                type={visible ? 'text' : 'password'}
+                className={`pr-12 ${className}`}
+            />
+            <button
+                type="button"
+                onClick={onToggle}
+                aria-label={visible ? hideLabel : showLabel}
+                title={visible ? hideLabel : showLabel}
+                className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] focus:outline-none focus:ring-2 focus:ring-[var(--jale-blue-500)]"
+            >
+                {visible ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+        </div>
+    );
+}
+
+function EyeIcon() {
+    return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z" />
+            <circle cx="12" cy="12" r="2.7" />
+        </svg>
+    );
+}
+
+function EyeOffIcon() {
+    return (
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 3l18 18" />
+            <path d="M10.6 10.6a2.7 2.7 0 0 0 3.8 3.8" />
+            <path d="M7.4 7.7C4.5 9.4 2.5 12 2.5 12s3.5 6 9.5 6c1.7 0 3.2-.5 4.5-1.2" />
+            <path d="M13.8 6.2C18.7 7.1 21.5 12 21.5 12s-.9 1.5-2.4 3" />
+        </svg>
+    );
 }
 
 function SwitchPrompt({ text, action, onClick }: { text: string; action: string; onClick: () => void }) {

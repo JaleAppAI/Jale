@@ -14,7 +14,21 @@ interface AuthState {
     refreshTokens: () => Promise<void>;
 }
 
+type UserType = 'worker' | 'employer';
+
 const AuthContext = createContext<AuthState | null>(null);
+
+function parseUserType(value: string | null): UserType | null {
+    return value === 'worker' || value === 'employer' ? value : null;
+}
+
+function inferUserTypeFromPath(): UserType | null {
+    if (typeof window === 'undefined') return null;
+    const pathname = window.location.pathname;
+    if (pathname.includes('/employer')) return 'employer';
+    if (pathname.includes('/worker')) return 'worker';
+    return null;
+}
 
 export function AuthProvider({ children, locale }: { children: React.ReactNode; locale: string }) {
     const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -25,9 +39,9 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
 
     useEffect(() => {
         const rt = sessionStorage.getItem('refreshToken');
-        const raw = sessionStorage.getItem('userType');
-        const ut = raw === 'worker' || raw === 'employer' ? raw : null;
+        const ut = parseUserType(sessionStorage.getItem('userType')) ?? inferUserTypeFromPath();
         if (rt) {
+            if (ut) sessionStorage.setItem('userType', ut);
             setRefreshToken(rt);
             setUserType(ut);
             apiFetch('/auth/refresh', {

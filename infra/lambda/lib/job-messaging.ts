@@ -46,6 +46,12 @@ export type ConversationMessage = {
   sent_at: string | null;
 };
 
+type WorkerConversationActionResult = {
+  found: boolean;
+  queuedMessages: number;
+  conversationId?: string;
+};
+
 export function normalizeMessageBody(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const body = value.trim();
@@ -144,6 +150,8 @@ async function queueWorkerInviteTemplate(
       JSON.stringify({
         '1': companyName,
         '2': jobTitle,
+        '5': `conversation:open:${conversation.id}`,
+        '6': `conversation:decline:${conversation.id}`,
         [FALLBACK_BODY_KEY]: buildInviteFallback(companyName, jobTitle, conversation.worker_language),
       }),
     ],
@@ -428,20 +436,32 @@ export async function recordWorkerConversationReply(
   body: string,
   from: string,
   messageSid: string,
+  conversationId?: string,
 ): Promise<boolean> {
-  const conversation = await client.query<{
-    id: string;
-    application_id: string;
-  }>(
-    `SELECT id, application_id
-     FROM job_conversations
-     WHERE worker_id = $1
-       AND status = 'open'
-     ORDER BY COALESCE(last_message_at, created_at) DESC
-     LIMIT 1
-     FOR UPDATE`,
-    [workerId],
-  );
+  const loadConversation = async (preferredConversationId?: string) => {
+    const params = preferredConversationId ? [preferredConversationId, workerId] : [workerId];
+    const filter = preferredConversationId
+      ? 'id = $1 AND worker_id = $2'
+      : 'worker_id = $1';
+    return client.query<{
+      id: string;
+      application_id: string;
+    }>(
+      `SELECT id, application_id
+       FROM job_conversations
+       WHERE ${filter}
+         AND status = 'open'
+       ORDER BY COALESCE(last_message_at, created_at) DESC
+       LIMIT 1
+       FOR UPDATE`,
+      params,
+    );
+  };
+
+  let conversation = await loadConversation(conversationId);
+  if (conversation.rowCount === 0 && conversationId) {
+    conversation = await loadConversation();
+  }
 
   const row = conversation.rows[0];
   if (!row) return false;
@@ -470,24 +490,39 @@ export async function recordWorkerConversationReply(
   );
 
   const pending = await client.query<{ id: string; body: string }>(
-    `SELECT id, body
-     FROM job_conversation_messages
-     WHERE conversation_id = $1
-       AND sender_type = 'employer'
-       AND status = 'waiting_worker_reply'
-     ORDER BY created_at ASC`,
+    pendingEmployerMessagesSql(),
     [row.id],
   );
 
   const whatsappNumber = normalizeWhatsappNumber(from);
   if (!whatsappNumber) return true;
 
-  for (const message of pending.rows) {
+  await queueWaitingEmployerMessages(client, row.id, whatsappNumber, pending.rows);
+
+  return true;
+}
+
+function pendingEmployerMessagesSql(): string {
+  return `SELECT id, body
+     FROM job_conversation_messages
+     WHERE conversation_id = $1
+       AND sender_type = 'employer'
+       AND status = 'waiting_worker_reply'
+     ORDER BY created_at ASC`;
+}
+
+async function queueWaitingEmployerMessages(
+  client: PoolClient,
+  conversationId: string,
+  whatsappNumber: string,
+  messages: { id: string; body: string }[],
+): Promise<number> {
+  for (const message of messages) {
     await client.query(
       `INSERT INTO job_message_outbox
           (conversation_id, message_id, whatsapp_number, send_kind, body)
        VALUES ($1, $2, $3, 'freeform', $4)`,
-      [row.id, message.id, whatsappNumber, message.body],
+      [conversationId, message.id, whatsappNumber, message.body],
     );
     await client.query(
       `UPDATE job_conversation_messages
@@ -496,8 +531,119 @@ export async function recordWorkerConversationReply(
       [message.id],
     );
   }
+  return messages.length;
+}
 
-  return true;
+export async function openWorkerConversationFromButton(
+  client: PoolClient,
+  workerId: string,
+  conversationId: string,
+  from: string,
+): Promise<WorkerConversationActionResult> {
+  return openWorkerConversation(client, workerId, from, conversationId);
+}
+
+export async function openLatestWorkerConversationFromButtonText(
+  client: PoolClient,
+  workerId: string,
+  from: string,
+): Promise<WorkerConversationActionResult> {
+  return openWorkerConversation(client, workerId, from);
+}
+
+async function openWorkerConversation(
+  client: PoolClient,
+  workerId: string,
+  from: string,
+  conversationId?: string,
+): Promise<WorkerConversationActionResult> {
+  const params = conversationId ? [conversationId, workerId] : [workerId];
+  const filter = conversationId
+    ? 'id = $1 AND worker_id = $2'
+    : 'worker_id = $1';
+  const conversation = await client.query<{
+    id: string;
+    application_id: string;
+  }>(
+    `SELECT id, application_id
+     FROM job_conversations
+     WHERE ${filter}
+       AND status = 'open'
+     ORDER BY COALESCE(last_message_at, created_at) DESC
+     LIMIT 1
+     FOR UPDATE`,
+    params,
+  );
+
+  const row = conversation.rows[0];
+  if (!row) return { found: false, queuedMessages: 0 };
+
+  await client.query(
+    `UPDATE job_conversations
+        SET last_worker_message_at = now()
+      WHERE id = $1`,
+    [row.id],
+  );
+  await client.query(
+    `UPDATE job_applications
+        SET status = 'talking',
+            updated_at = now()
+      WHERE id = $1
+        AND status IN ('pending', 'contacted')`,
+    [row.application_id],
+  );
+
+  const whatsappNumber = normalizeWhatsappNumber(from);
+  if (!whatsappNumber) return { found: true, queuedMessages: 0, conversationId: row.id };
+
+  const pending = await client.query<{ id: string; body: string }>(
+    pendingEmployerMessagesSql(),
+    [row.id],
+  );
+  const queuedMessages = await queueWaitingEmployerMessages(client, row.id, whatsappNumber, pending.rows);
+
+  return { found: true, queuedMessages, conversationId: row.id };
+}
+
+export async function declineWorkerConversationFromButton(
+  client: PoolClient,
+  workerId: string,
+  conversationId: string,
+): Promise<boolean> {
+  return declineWorkerConversation(client, workerId, conversationId);
+}
+
+export async function declineLatestWorkerConversationFromButtonText(
+  client: PoolClient,
+  workerId: string,
+): Promise<boolean> {
+  return declineWorkerConversation(client, workerId);
+}
+
+async function declineWorkerConversation(
+  client: PoolClient,
+  workerId: string,
+  conversationId?: string,
+): Promise<boolean> {
+  const params = conversationId ? [conversationId, workerId] : [workerId];
+  const filter = conversationId
+    ? 'id = $1 AND worker_id = $2'
+    : 'worker_id = $1';
+  const result = await client.query(
+    `UPDATE job_conversations jc
+        SET status = 'closed',
+            closed_at = now()
+      WHERE jc.id = (
+        SELECT id
+        FROM job_conversations
+        WHERE ${filter}
+          AND status = 'open'
+        ORDER BY COALESCE(last_message_at, created_at) DESC
+        LIMIT 1
+      )`,
+    params,
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function sendPendingJobMessageOutbox(

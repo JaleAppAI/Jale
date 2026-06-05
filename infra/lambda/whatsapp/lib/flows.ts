@@ -125,6 +125,8 @@ export interface ProfileStateContext {
   custom_trust_assessment_id?: string;
   processing_ai_type?: 'profile' | 'trust';
   recent_jobs?: string[];
+  /** Job conversation the worker most recently opened from an employer WhatsApp invite. */
+  active_job_conversation_id?: string;
   /** ARN of the running Step Functions execution for the AI pipeline. */
   ai_pipeline_execution_arn?: string;
   /** DB id of the worker_profile_media row for the pending photo (UUID). */
@@ -356,6 +358,11 @@ export interface ButtonPayload {
   jobId: string;
 }
 
+export interface EmployerConversationButtonPayload {
+  action: 'open' | 'decline';
+  conversationId: string;
+}
+
 /**
  * Parse a self-identifying job alert button payload like "accept:job-abc-123".
  * Used when a worker taps a button on a Twilio template job alert.
@@ -366,6 +373,17 @@ export function parseButtonPayload(payload: string): ButtonPayload | null {
   const m = payload.match(/^(accept|decline|info):(job-[\w-]+)$/);
   if (!m) return null;
   return { action: m[1] as ButtonPayload['action'], jobId: m[2] };
+}
+
+export function parseEmployerConversationButtonPayload(
+  payload: string,
+): EmployerConversationButtonPayload | null {
+  const m = payload.match(/^conversation:(open|decline):([0-9a-fA-F-]{36})$/);
+  if (!m) return null;
+  return {
+    action: m[1] as EmployerConversationButtonPayload['action'],
+    conversationId: m[2],
+  };
 }
 
 export function parseLegalReplyPayload(
