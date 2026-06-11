@@ -30,7 +30,7 @@
             "signup_link": "Create an account",
             "confirm_title": "Confirm your account",
             "otp_title": "Enter the 6-digit code",
-            "code_sent": "Sent to {phone}",
+            "code_sent": "SMS sent to {phone}",
             "create_account": "Create account",
             "confirm_account": "Confirm account",
             "password_note": "Workers do not need a password. You will sign in with your phone number and a verification code.",

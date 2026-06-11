@@ -5,27 +5,10 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 
 /**
- * CreateAuthChallenge: Generates a 6-digit OTP, sends it via Twilio to the
- * user's phone, and stores the OTP in privateChallengeParameters (server-side only).
- *
- * Cognito passes privateChallengeParameters to VerifyAuthChallenge during the
- * user's RespondToAuthChallenge call. The OTP is never sent to the client.
- *
- * publicChallengeParameters carries a UI-safe hint only ("WhatsApp sent to +1***1234").
- *
- * Twilio credentials are loaded from Secrets Manager (`jale/whatsapp/otp-twilio`),
- * not from plaintext Lambda environment variables. The secret JSON shape is:
- *   { accountSid, authToken, messagingServiceSid }
- * The auth-stack sets TWILIO_SECRET_ARN on the Lambda and grants read via IAM.
- * The Messaging Service is shared with the WhatsApp secret — it carries both an
- * SMS-capable sender and a WhatsApp sender on the same number.
- *
- * Temporary dev transport: U.S. SMS from the +1 long code is blocked until the
- * number is attached to an approved A2P 10DLC campaign. For now, send the OTP
- * over the user-initiated WhatsApp conversation instead of SMS so the worker
- * signup flow can be tested end-to-end without changing the Cognito trigger
- * contract. Before production, revisit this and choose the final verified SMS,
- * Twilio Verify, or WhatsApp-template path.
+ * Generates a six-digit Cognito custom-auth challenge and sends it by SMS from
+ * the dedicated A2P-approved Twilio number. Only accountSid/authToken are read
+ * from `jale/whatsapp/otp-twilio`; TWILIO_FROM_NUMBER selects the SMS sender.
+ * WhatsApp credentials and addressing are not used by this Lambda.
  */
 
 // ── Module-level Secrets Manager client + 5-minute cache ──────────────────
@@ -35,7 +18,6 @@ import {
 interface OtpTwilioSecret {
   accountSid: string;
   authToken: string;
-  messagingServiceSid: string;
 }
 
 const secretsManager = new SecretsManagerClient({});
@@ -61,9 +43,9 @@ async function getOtpTwilioSecret(): Promise<OtpTwilioSecret> {
     throw new Error('TWILIO_SECRET_ARN secret has no SecretString');
   }
   const parsed = JSON.parse(resp.SecretString) as Partial<OtpTwilioSecret>;
-  if (!parsed.accountSid || !parsed.authToken || !parsed.messagingServiceSid) {
+  if (!parsed.accountSid || !parsed.authToken) {
     throw new Error(
-      'jale/whatsapp/otp-twilio secret missing required fields accountSid/authToken/messagingServiceSid',
+      'jale/whatsapp/otp-twilio secret missing required fields accountSid/authToken',
     );
   }
   cachedSecret = parsed as OtpTwilioSecret;
@@ -87,13 +69,13 @@ export const handler = async (
     // Generate a new 6-digit OTP using crypto.randomInt (cryptographically secure)
     otp = generateOtp();
 
-    // Send OTP via Twilio WhatsApp to the user's phone.
+    // Send OTP via the dedicated Twilio SMS number.
     const phoneNumber = event.request.userAttributes.phone_number;
     if (!phoneNumber) {
       throw new Error('Missing phone_number attribute on user');
     }
 
-    await sendTwilioWhatsAppOtp(phoneNumber, `Jale verification code: ${otp}\n\nReply with this code to continue.`);
+    await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
   }
 
   // Mask the phone number for display (e.g. "+1***1234")
@@ -101,7 +83,7 @@ export const handler = async (
   const phoneHint = maskPhone(phone);
 
   event.response.publicChallengeParameters = {
-    hint: `WhatsApp sent to ${phoneHint}`,
+    hint: `SMS sent to ${phoneHint}`,
   };
   event.response.privateChallengeParameters = {
     otp,
@@ -112,14 +94,18 @@ export const handler = async (
   return event;
 };
 
-async function sendTwilioWhatsAppOtp(to: string, body: string): Promise<void> {
-  const { accountSid, authToken, messagingServiceSid } = await getOtpTwilioSecret();
+async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
+  const { accountSid, authToken } = await getOtpTwilioSecret();
+  const from = process.env.TWILIO_FROM_NUMBER;
+  if (!from || !/^\+[1-9]\d{7,14}$/.test(from)) {
+    throw new Error('Missing or invalid TWILIO_FROM_NUMBER');
+  }
 
   const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
   const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
   const body_ = new URLSearchParams({
-    To: `whatsapp:${to}`,
-    MessagingServiceSid: messagingServiceSid,
+    To: to,
+    From: from,
     Body: body,
   });
 
@@ -135,7 +121,7 @@ async function sendTwilioWhatsAppOtp(to: string, body: string): Promise<void> {
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { message?: string; code?: number };
     const detail = data.message ?? `HTTP ${response.status}`;
-    throw new Error(`Twilio WhatsApp OTP send failed: ${detail}`);
+    throw new Error(`Twilio SMS OTP send failed: ${detail}`);
   }
 }
 

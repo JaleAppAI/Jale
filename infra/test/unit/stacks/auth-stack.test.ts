@@ -18,7 +18,6 @@ describe('AuthStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
-      cognitoSmsRole: network.cognitoSmsRole,
     });
     template = Template.fromStack(auth);
   });
@@ -27,10 +26,10 @@ describe('AuthStack', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 2);
   });
 
-  test('Worker pool has MFA required', () => {
+  test('Worker pool uses only the custom OTP challenge, with Cognito MFA disabled', () => {
     template.hasResourceProperties('AWS::Cognito::UserPool', {
       UserPoolName: 'jale-worker-pool',
-      MfaConfiguration: 'ON',
+      MfaConfiguration: 'OFF',
     });
   });
 
@@ -157,6 +156,7 @@ describe('AuthStack', () => {
       Environment: Match.objectLike({
         Variables: Match.objectLike({
           TWILIO_SECRET_ARN: 'jale/whatsapp/otp-twilio',
+          TWILIO_FROM_NUMBER: '+13252210992',
         }),
       }),
     });
@@ -197,6 +197,5 @@ describe('AuthStack', () => {
     const templateJson = JSON.stringify(template.toJSON());
     expect(templateJson).not.toContain('TWILIO_ACCOUNT_SID');
     expect(templateJson).not.toContain('TWILIO_AUTH_TOKEN');
-    expect(templateJson).not.toContain('TWILIO_FROM_NUMBER');
   });
 });

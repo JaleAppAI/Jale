@@ -40,6 +40,7 @@ describe('CreateAuthChallenge Lambda', () => {
 
     // Default: TWILIO_SECRET_ARN env var set to the secret name; secret returns the full payload.
     process.env.TWILIO_SECRET_ARN = 'jale/whatsapp/otp-twilio';
+    process.env.TWILIO_FROM_NUMBER = '+13252210992';
     mockSecretsSend.mockReset();
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -54,9 +55,10 @@ describe('CreateAuthChallenge Lambda', () => {
   afterEach(() => {
     jest.resetAllMocks();
     delete process.env.TWILIO_SECRET_ARN;
+    delete process.env.TWILIO_FROM_NUMBER;
   });
 
-  it('generates a 6-digit OTP and sends via Twilio WhatsApp on first call', async () => {
+  it('generates a 6-digit OTP and sends SMS from the dedicated Jale number on first call', async () => {
     const event = baseEvent([]);
     const result = await handler(event);
 
@@ -76,13 +78,14 @@ describe('CreateAuthChallenge Lambda', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(expectedAuth);
 
     // Form body contains recipient WhatsApp address, Messaging Service SID from secret, and OTP.
-    // Twilio Messages API rejects requests that specify both From and MessagingServiceSid —
-    // assert From is absent to catch regressions if someone re-adds it.
+    // Twilio Messages API rejects requests that specify both From and MessagingServiceSid.
+    // OTP delivery must use the dedicated From number, never the WhatsApp service.
     const body = init.body as URLSearchParams;
-    expect(body.get('To')).toBe('whatsapp:+15125551234');
-    expect(body.get('MessagingServiceSid')).toBe('MGtest1234567890');
-    expect(body.get('From')).toBeNull();
+    expect(body.get('To')).toBe('+15125551234');
+    expect(body.get('From')).toBe('+13252210992');
+    expect(body.get('MessagingServiceSid')).toBeNull();
     expect(body.get('Body')).toContain(otp!);
+    expect(body.get('Body')).not.toContain('Reply');
 
     // challengeMetadata carries the OTP forward for retry reuse
     expect(result.response.challengeMetadata).toBe(otp);
@@ -97,7 +100,7 @@ describe('CreateAuthChallenge Lambda', () => {
     expect(mockSecretsSend).toHaveBeenCalledTimes(1);
   });
 
-  it('reuses the existing OTP on retry (does not regenerate or re-send WhatsApp)', async () => {
+  it('reuses the existing OTP on retry (does not regenerate or re-send SMS)', async () => {
     const existingOtp = '654321';
     const event = baseEvent([
       {
@@ -121,7 +124,7 @@ describe('CreateAuthChallenge Lambda', () => {
     const result = await handler(event);
 
     expect(result.response.publicChallengeParameters?.hint).toMatch(
-      /WhatsApp sent to \+1\*\*\*1234/,
+      /SMS sent to \+1\*\*\*1234/,
     );
   });
 
@@ -149,7 +152,7 @@ describe('CreateAuthChallenge Lambda', () => {
     });
     const event = baseEvent([]);
     await expect(handler(event)).rejects.toThrow(
-      /Twilio WhatsApp OTP send failed.*Authenticate/,
+      /Twilio SMS OTP send failed.*Authenticate/,
     );
   });
 
@@ -163,12 +166,12 @@ describe('CreateAuthChallenge Lambda', () => {
     mockSecretsSend.mockResolvedValueOnce({
       SecretString: JSON.stringify({
         accountSid: 'ACtest',
-        // authToken + messagingServiceSid missing
+        // authToken missing
       }),
     });
     const event = baseEvent([]);
     await expect(handler(event)).rejects.toThrow(
-      /missing required fields accountSid\/authToken\/messagingServiceSid/,
+      /missing required fields accountSid\/authToken/,
     );
   });
 

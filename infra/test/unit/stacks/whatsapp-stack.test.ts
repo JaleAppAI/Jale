@@ -21,7 +21,6 @@ describe('WhatsAppStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
-      cognitoSmsRole: network.cognitoSmsRole,
     });
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
@@ -149,10 +148,10 @@ describe('WhatsAppStack', () => {
     });
   });
 
-  test('Processor Lambda has Cognito permissions (AdminConfirmSignUp + InitiateAuth + SignUp + RespondToAuthChallenge)', () => {
+  test('Processor Lambda has suppressed account creation and custom auth permissions', () => {
     const expectedActions = [
-      'cognito-idp:SignUp',
-      'cognito-idp:AdminConfirmSignUp',
+      'cognito-idp:AdminCreateUser',
+      'cognito-idp:AdminSetUserPassword',
       'cognito-idp:InitiateAuth',
       'cognito-idp:RespondToAuthChallenge',
     ];

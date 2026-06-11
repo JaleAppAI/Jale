@@ -21,7 +21,6 @@ describe('ApiStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
-      cognitoSmsRole: network.cognitoSmsRole,
     });
     const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
     const api = new ApiStack(app, 'TestApiStack', {
@@ -103,7 +102,7 @@ describe('ApiStack', () => {
 
   test('Worker web signup Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Worker web signup endpoint - create confirmed worker before WhatsApp OTP login',
+      Description: 'Worker web signup endpoint - create confirmed worker before SMS OTP login',
     });
   });
 

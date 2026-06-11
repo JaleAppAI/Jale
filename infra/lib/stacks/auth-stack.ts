@@ -14,7 +14,6 @@ export interface AuthStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly dbSecret: secretsmanager.ISecret;
-  readonly cognitoSmsRole: iam.IRole;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -49,11 +48,6 @@ export class AuthStack extends cdk.Stack {
     dlq.grantSendMessages(postConfirmationLambda.function);
     this.postConfirmationLambda = postConfirmationLambda;
 
-    // ── SMS IAM Role for Worker Pool MFA ──
-    // Role is pre-created in NetworkStack to ensure IAM propagation completes
-    // before Cognito validates SNS permissions at UserPool creation time.
-    const smsRole = props.cognitoSmsRole;
-
     // ── Custom Auth Challenge Lambdas (Worker Pool — passwordless OTP) ──
     // DefineAuthChallenge: routes the challenge flow (first attempt, success, retry, fail).
     const defineAuthChallengeLambda = new JaleLambdaFunction(this, 'DefineAuthChallengeLambda', {
@@ -85,6 +79,7 @@ export class AuthStack extends cdk.Stack {
         // partial ARN as secretArn; Secrets Manager's runtime auth path has
         // denied that partial ARN even when IAM simulation says allowed.
         TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
+        TWILIO_FROM_NUMBER: '+13252210992',
       },
     });
     otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
@@ -109,10 +104,8 @@ export class AuthStack extends cdk.Stack {
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
       signInAliases: { phone: true },
-      mfa: isProd ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
+      mfa: cognito.Mfa.OFF,
       adminUserPassword: !isProd,
-      smsRole,
-      smsExternalId: 'jale-worker-sms',
       passwordPolicy: {
         minLength: 12,
         requireLowercase: false,
@@ -123,8 +116,7 @@ export class AuthStack extends cdk.Stack {
       customAttributes: {
         user_type: new cognito.StringAttribute({ mutable: false }),
       },
-      selfSignUp: true,
-      autoVerify: { phone: true },
+      selfSignUp: false,
       lambdaTriggers: {
         postConfirmation: postConfirmationLambda.function,
         defineAuthChallenge: defineAuthChallengeLambda.function,
