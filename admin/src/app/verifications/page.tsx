@@ -10,7 +10,7 @@ export default async function VerificationsPage() {
     <main className="stack-gap">
       <section className="hero">
         <div className="meta">
-          <span className="badge open">Verifications</span>
+          <span className="badge verification">Verifications</span>
         </div>
         <h1>Verification queue</h1>
       </section>
@@ -29,7 +29,7 @@ export default async function VerificationsPage() {
               <span className="muted">Step {item.step}</span>
             </div>
             <div className="stack">
-              <span className="muted">PII</span>
+              <span className="muted">Contact</span>
               <span>{item.maskedPhone ?? item.maskedEmail ?? 'Masked'}</span>
               <span className="muted">Updated {new Date(item.updatedAt).toLocaleString()}</span>
             </div>

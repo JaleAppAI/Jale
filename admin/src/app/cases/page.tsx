@@ -18,7 +18,7 @@ export default async function CasesPage() {
     <main className="stack-gap">
       <section className="hero">
         <div className="meta">
-          <span className="badge open">Cases</span>
+          <span className="badge verification">Cases</span>
         </div>
         <h1>Cases</h1>
       </section>

@@ -9,7 +9,7 @@ export default async function AuditPage() {
     <main className="stack-gap">
       <section className="hero">
         <div className="meta">
-          <span className="badge open">Audit log</span>
+          <span className="badge verification">Audit log</span>
         </div>
         <h1>Operational audit trail</h1>
       </section>

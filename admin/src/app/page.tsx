@@ -20,11 +20,7 @@ export default async function AdminDashboardPage() {
     <main className="stack-gap">
       <section className="hero">
         <h1>Admin dashboard</h1>
-        <div className="nav" style={{ marginTop: 16 }}>
-          <Link className="button" href="/cases">Open cases</Link>
-          <Link className="button" href="/verifications">Review verifications</Link>
-          <Link className="button" href="/audit">Inspect audit log</Link>
-        </div>
+        <p className="muted" style={{ marginTop: 6 }}>Queue health at a glance</p>
       </section>
 
       <section className="grid three">
@@ -53,7 +49,7 @@ export default async function AdminDashboardPage() {
           </div>
           <div className="list">
             {openCases.slice(0, 3).map((item) => (
-              <div className="row" key={item.id}>
+              <div className="case-row" key={item.id}>
                 <div className="stack">
                   <strong>{item.summary}</strong>
                   <span className="muted">{item.workerName} · {item.maskedPhone}</span>
@@ -81,7 +77,7 @@ export default async function AdminDashboardPage() {
           </div>
           <div className="list">
             {pendingVerifications.slice(0, 3).map((item) => (
-              <div className="row" key={item.id}>
+              <div className="verification-row" key={item.id}>
                 <div className="stack">
                   <strong>{item.subjectName}</strong>
                   <span className="muted">{item.reason}</span>
