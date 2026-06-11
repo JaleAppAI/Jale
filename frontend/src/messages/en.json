@@ -4,13 +4,37 @@
         "error": "Something went wrong",
         "retry": "Try again"
     },
+    "match": {
+        "score_bands": {
+            "strong": "Strong match",
+            "good": "Good match",
+            "fair": "Fair match"
+        },
+        "reasons": {
+            "profession_exact_or_alias": "Trade matches",
+            "profession_partial": "Related trade",
+            "distance_under_5_miles": "Within 5 miles",
+            "distance_under_15_miles": "Within 15 miles",
+            "distance_under_30_miles": "Within 30 miles",
+            "distance_under_50_miles": "Within 50 miles",
+            "zip_exact": "Same zip code",
+            "location_text_match": "Location match",
+            "experience_meets_requirement": "Experience fits",
+            "availability_flexible": "Flexible availability",
+            "availability_matches_job_type": "Availability fits",
+            "availability_adjacent": "Schedule is close",
+            "fresh_posting": "New posting"
+        }
+    },
     "header": {
         "language_toggle": "Español",
         "sign_out": "Sign out",
         "profile": "Profile",
         "home": "Home",
         "worker_home": "Jobs",
-        "my_applications": "My Applications"
+        "my_applications": "My Applications",
+        "employer_jobs": "Jobs",
+        "messages": "Messages"
     },
     "landing": {
         "headline": "Find work. Find workers.",
@@ -92,6 +116,8 @@
             "signup_subtitle": "Tell workers who you are and what roles you usually hire for.",
             "email_label": "Email",
             "password_label": "Password",
+            "show_password": "Show password",
+            "hide_password": "Hide password",
             "sign_in": "Sign in",
             "create_account": "Create account",
             "confirm_account": "Confirm account",
@@ -184,12 +210,127 @@
             "cancel": "Cancel"
         }
     },
+    "employer_messages": {
+        "title": "Messages",
+        "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
+        "threads": "Conversations",
+        "drawer_button": "Messages",
+        "hide": "Hide",
+        "empty": "No open conversations yet.",
+        "empty_select": "Select a conversation.",
+        "no_messages": "No messages yet.",
+        "unknown_worker": "Unknown worker",
+        "status_open": "Open",
+        "status_closed": "Closed",
+        "waiting": "Waiting",
+        "active": "Active",
+        "worker_replied": "Worker replied",
+        "reply_window_open": "24h reply window open",
+        "waiting_reply": "Waiting reply",
+        "template_invite_sent": "Template invite sent",
+        "archived_conversations": "Archived conversations",
+        "whatsapp_linked": "WhatsApp linked conversations",
+        "thread_status": "Thread status",
+        "current_handoff": "Current WhatsApp handoff",
+        "conversation": "Conversation",
+        "worker_reply": "Worker reply",
+        "received": "Received",
+        "channel": "Channel",
+        "latest_message": "Latest message",
+        "close": "Close",
+        "closed_hint": "This conversation is closed.",
+        "composer_placeholder": "Write a message...",
+        "send": "Send",
+        "from_worker": "Worker",
+        "message_worker": "Message Worker",
+        "starting": "Starting...",
+        "message_start_failed": "Could not start the conversation.",
+        "worker_whatsapp_unavailable": "This worker does not have a WhatsApp number yet.",
+        "default_initial_message": "Hi, I am reaching out about your application. Reply here when you are available.",
+        "message_status": {
+            "queued": "Queued",
+            "waiting_worker_reply": "Waiting for worker reply",
+            "sent": "Sent",
+            "delivered": "Delivered",
+            "failed": "Failed",
+            "received": "Received"
+        }
+    },
     "employer_dashboard": {
         "stats": {
             "active_jobs": "Active Jobs",
             "paused_jobs": "Paused Jobs",
             "filled_jobs": "Filled Jobs",
-            "total_applicants": "Total Applicants"
+            "total_applicants": "Total Applicants",
+            "workers_hired": "Workers Hired",
+            "paused_closed": "Paused / Closed",
+            "active_hint": "Open roles ready for applicants",
+            "applicants_hint": "{count} avg per active job",
+            "hired_hint": "{count} openings still available",
+            "paused_closed_hint": "{paused} paused, {filled} filled, {closed} closed"
+        },
+        "shell": {
+            "title": "Dashboard",
+            "employer_workspace": "Employer workspace",
+            "company_fallback": "Employer team",
+            "plan_label": "Jale Growth",
+            "plan_title": "Jale Growth",
+            "plan_body": "Prototype-only growth tools will unlock here as the hiring workflow expands.",
+            "upgrade": "Upgrade",
+            "alerts": "Alerts",
+            "search_workers": "Search workers"
+        },
+        "nav": {
+            "main": "Main",
+            "hiring": "Hiring",
+            "account": "Account",
+            "dashboard": "Dashboard",
+            "jobs": "My Jobs",
+            "messages": "Messages",
+            "workers": "Workers",
+            "interviews": "Interviews",
+            "search_workers": "Search Workers",
+            "boost_job": "Boost a Job",
+            "jale_direct": "Jale Direct",
+            "analytics": "Analytics",
+            "billing": "Billing",
+            "settings": "Settings",
+            "soon": "Soon"
+        },
+        "hero": {
+            "eyebrow": "Got Jale?",
+            "title": "Keep every job, applicant, and WhatsApp handoff in one place.",
+            "body": "This dashboard uses your live job postings today and reserves space for the upcoming matching, interviews, and growth tools from the prototype.",
+            "primary_cta": "Post un trabajo",
+            "secondary_cta": "Open messages"
+        },
+        "quick_post": {
+            "title": "Quick post",
+            "body": "Create a new job from the same flow employers already use.",
+            "hint": "The prototype's instant templates are not live yet, so this opens the current post-job modal.",
+            "cta": "Post a job"
+        },
+        "panels": {
+            "applicants_title": "Applicants preview",
+            "applicants_body": "Global applicant preview is coming soon. Open a job to see real applicants.",
+            "applicant_stub_1": "New applicants",
+            "applicant_stub_2": "Ready to contact",
+            "applicant_stub_3": "Documents pending",
+            "trust_title": "Trust Match",
+            "trust_body": "Match quality is available inside job details today. Dashboard-wide recommendations are reserved for the proactive matching backend.",
+            "hiring_progress": "Hiring progress",
+            "open_roles": "Open roles",
+            "applicant_flow": "Applicant flow",
+            "whatsapp_title": "WhatsApp thread",
+            "whatsapp_body": "Employer messages are live. Worker replies continue through WhatsApp and stay tied to the job conversation.",
+            "open_messages": "Open messages",
+            "no_recent_job": "No recent job yet",
+            "hiring_status_title": "Hiring status"
+        },
+        "disabled": {
+            "label": "Preview",
+            "preview": "Preview",
+            "coming_soon": "Coming soon"
         },
         "jobs": {
             "title": "Job Postings",
@@ -223,8 +364,10 @@
             "required_documents": "Required documents",
             "no_description": "No description was added.",
             "no_required_documents": "No documents are required for this job.",
-            "search_placeholder": "Search by title or location...",
-            "back_to_dashboard": "← Back to Dashboard"
+            "search_placeholder": "Search by title, location, or trade...",
+            "back_to_dashboard": "← Back to Dashboard",
+            "empty_title": "No jobs found",
+            "empty_body": "Post a job or clear the filters to bring your hiring board back."
         },
         "filter": {
             "title": "Filter Applicants",

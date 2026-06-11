@@ -86,11 +86,11 @@ export default function WorkerProfilePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Field label={t('field_phone')} value={profile.phone} />
             <Field label={t('field_name')} value={profile.full_name} />
-            <Field label={t('field_skills')} value={profile.skills.join(', ') || '—'} />
-            <Field label={t('field_availability')} value={profile.availability ?? '—'} />
-            <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '—'} />
-            <Field label={t('field_location')} value={profile.location ?? '—'} />
-            <div className="md:col-span-2"><Field label={t('field_bio')} value={profile.bio ?? '—'} /></div>
+            <SkillsField label={t('field_skills')} skills={profile.skills} />
+            <Field label={t('field_availability')} value={profile.availability ?? '-'} />
+            <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
+            <Field label={t('field_location')} value={profile.location ?? '-'} />
+            <div className="md:col-span-2"><Field label={t('field_bio')} value={profile.bio ?? '-'} /></div>
           </div>
         )}
       </Card>
@@ -118,7 +118,26 @@ function Field({ label, value }: { label: string; value: string | null }) {
   return (
     <div>
       <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
-      <p className="text-sm">{value ?? '—'}</p>
+      <p className="text-sm">{value ?? '-'}</p>
+    </div>
+  );
+}
+
+function SkillsField({ label, skills }: { label: string; skills: string[] }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
+      {skills.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {skills.map((skill) => (
+            <span key={skill} className="pill pill-info" style={{ fontSize: 10, textTransform: 'none' }}>
+              {skill}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm">-</p>
+      )}
     </div>
   );
 }

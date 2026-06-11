@@ -6,6 +6,7 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseEmployerConversationButtonPayload,
   parseLegalReplyPayload,
   parseMediaPayload,
   parseProfileAnswer,
@@ -108,6 +109,25 @@ describe('flows.ts — parseButtonPayload', () => {
   });
   it('rejects random text', () => {
     expect(parseButtonPayload('Hola')).toBeNull();
+  });
+});
+describe('flows.ts - parseEmployerConversationButtonPayload', () => {
+  const conversationId = '11111111-2222-3333-4444-555555555555';
+
+  it('parses open and decline payloads', () => {
+    expect(parseEmployerConversationButtonPayload(`conversation:open:${conversationId}`)).toEqual({
+      action: 'open',
+      conversationId,
+    });
+    expect(parseEmployerConversationButtonPayload(`conversation:decline:${conversationId}`)).toEqual({
+      action: 'decline',
+      conversationId,
+    });
+  });
+
+  it('rejects malformed payloads', () => {
+    expect(parseEmployerConversationButtonPayload('conversation:open:not-a-uuid')).toBeNull();
+    expect(parseEmployerConversationButtonPayload(`conversation:accept:${conversationId}`)).toBeNull();
   });
 });
 

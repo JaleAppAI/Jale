@@ -7,6 +7,22 @@ import type { WorkerProfileData } from '@/lib/api/worker';
 
 const AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 
+function normalizeSkillsInput(value: string): string[] {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const rawSkill of value.split(',')) {
+    const skill = rawSkill.trim();
+    const key = skill.toLowerCase();
+    if (skill && !seen.has(key)) {
+      seen.add(key);
+      normalized.push(skill);
+    }
+  }
+
+  return normalized;
+}
+
 export function ProfileEditForm(props: {
   initial: WorkerProfileData;
   onCancel: () => void;
@@ -27,7 +43,7 @@ export function ProfileEditForm(props: {
     try {
       await props.onSave({
         full_name: fullName.trim() || null,
-        skills: skills.split(',').map(s => s.trim()).filter(Boolean),
+        skills: normalizeSkillsInput(skills),
         availability: availability as WorkerProfileData['availability'],
         years_experience: Number(yearsExp) || 0,
         location: location.trim() || null,

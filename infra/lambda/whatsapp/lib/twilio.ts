@@ -124,5 +124,9 @@ export interface TwilioSecret {
     onboarding_voice_choice_en?: string;
     trust_choice_es?: string;
     trust_choice_en?: string;
+    employer_message_invite_es?: string;
+    employer_message_invite_en?: string;
+    employer_message_resume_es?: string;
+    employer_message_resume_en?: string;
   };
 }

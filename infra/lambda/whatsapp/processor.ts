@@ -19,8 +19,16 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { listMatchedJobsForWorker } from '../lib/job-matching';
+import {
+  declineLatestWorkerConversationFromButtonText,
+  declineWorkerConversationFromButton,
+  openLatestWorkerConversationFromButtonText,
+  openWorkerConversationFromButton,
+  recordWorkerConversationReply,
+  sendPendingJobMessageOutbox,
+} from '../lib/job-messaging';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
 import { sendPendingOutbox } from './lib/outbox';
 import {
@@ -53,6 +61,7 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseEmployerConversationButtonPayload,
   parseLegalReplyPayload,
   parseMediaPayload,
   parseProfilePayloadAnswer,
@@ -476,6 +485,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
 
   const pool = await getDbPool();
   const client = await pool.connect();
+  let jobOutboxActorUserId: string | null = null;
   try {
     // ── Claim + side-effects transaction (Fix Plan v3, 2026-04-17) ────────
     //
@@ -519,6 +529,14 @@ async function processRecord(record: SQSRecord): Promise<void> {
           // the outbox without re-executing any state mutations.
           console.log('[processor] resuming db_committed claim', { messageSid });
           await sendPendingOutbox(client, messageSid);
+          const actor = await client.query<{ user_id: string | null }>(
+            `SELECT user_id FROM whatsapp_conversations WHERE whatsapp_number = $1`,
+            [whatsappNumber],
+          );
+          const actorUserId = actor.rows[0]?.user_id;
+          if (actorUserId) {
+            await sendPendingJobMessageOutbox(client, { actorUserId });
+          }
           await markCompleted(client, messageSid);
           return;
         }
@@ -547,7 +565,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         hasInteractivePayload: !!interactivePayload,
       });
 
-      await routeMessage(client, conv, {
+      const routedWorkerId = await routeMessage(client, conv, {
         body,
         buttonPayload,
         interactivePayload,
@@ -558,6 +576,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         mediaSid,
         mediaContentType,
       });
+      jobOutboxActorUserId = routedWorkerId ?? jobOutboxActorUserId;
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
       // retries re-enter via the conflict branch above and resume from the
@@ -587,6 +606,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
     // retry resumes from 'db_committed'. No DB rollback: the state is
     // already durably committed.
     await sendPendingOutbox(client, messageSid);
+    if (jobOutboxActorUserId) {
+      await sendPendingJobMessageOutbox(client, { actorUserId: jobOutboxActorUserId });
+    }
     await markCompleted(client, messageSid);
   } finally {
     client.release();
@@ -617,7 +639,7 @@ function extractInteractivePayload(raw: string | undefined): string | undefined 
 
 function findKnownPayload(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return /^(legal|profile|trust|media):/.test(value) ? value : undefined;
+    return /^(legal|profile|trust|media|conversation):/.test(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -919,27 +941,42 @@ async function routeMessage(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
-): Promise<void> {
+): Promise<string | null> {
   const from = msg.from;
 
   // Button-payload taps on job alerts are self-identifying. Route them first
   // — they can arrive in any state except onboarding (worker must be linked).
   if (msg.buttonPayload) {
+    const conversationPayload = parseEmployerConversationButtonPayload(msg.buttonPayload);
+    if (conversationPayload) {
+      return await handleEmployerConversationButton(client, conv, msg, conversationPayload);
+    }
+
     const parsed = parseButtonPayload(msg.buttonPayload);
     if (parsed && (conv.conversation_state === 'idle' || conv.user_id)) {
       await handleJobButton(client, conv, parsed, from, msg.messageSid);
-      return;
+      return null;
     }
   }
 
   if (isHelpCommand(msg.body)) {
     await reply(client, msg, 'help_menu', conv.language);
-    return;
+    return null;
   }
 
   if (isProfileCommand(msg.body)) {
     await handleProfileCommand(client, conv, msg);
-    return;
+    return null;
+  }
+
+  const textConversationAction = parseEmployerConversationTextAction(msg.body);
+  if (textConversationAction) {
+    return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction);
+  }
+
+  const routedWorkerId = await routeEmployerConversationReplyOverride(client, conv, msg);
+  if (routedWorkerId) {
+    return routedWorkerId;
   }
 
   switch (conv.conversation_state) {
@@ -949,7 +986,7 @@ async function routeMessage(
       } else {
         await reply(client, msg, 'start_prompt', detectLanguage(msg.body));
       }
-      return;
+      return null;
 
     case 'otp_timeout':
     case 'legal_declined':
@@ -959,44 +996,253 @@ async function routeMessage(
       } else {
         await reply(client, msg, 'start_prompt', conv.language);
       }
-      return;
+      return null;
 
     case 'awaiting_otp':
       await handleAwaitingOtp(client, conv, msg);
-      return;
+      return null;
 
     case 'awaiting_legal':
       await handleAwaitingLegal(client, conv, msg);
-      return;
+      return null;
 
     case 'awaiting_media_photo':
       await handleAwaitingMediaPhoto(client, conv, msg);
-      return;
+      return null;
 
     case 'awaiting_media_voice':
       await handleAwaitingMediaVoice(client, conv, msg);
-      return;
+      return null;
 
     case 'processing_ai':
       await handleProcessingAi(client, conv, msg);
-      return;
+      return null;
 
     case 'building_profile':
       await handleBuildingProfile(client, conv, msg);
-      return;
+      return null;
 
     case 'building_trust_signal':
       await handleBuildingTrustSignal(client, conv, msg);
-      return;
+      return null;
 
     case 'building_custom_trust':
       await handleBuildingCustomTrust(client, conv, msg);
-      return;
+      return null;
 
     case 'idle':
-      await handleIdle(client, conv, msg);
-      return;
+      return await handleIdle(client, conv, msg);
   }
+
+  return null;
+}
+
+function isLikelyOtpCode(body: string): boolean {
+  return /^\s*\d{6}\s*$/.test(body);
+}
+
+function parseEmployerConversationTextAction(body: string): 'open' | 'decline' | null {
+  const normalized = body.trim().toLowerCase();
+  if (['abrir', 'abrir conversacion', 'open', 'open conversation', 'accept'].includes(normalized)) {
+    return 'open';
+  }
+  if (['rechazar', 'no me interesa', 'decline', 'not interested'].includes(normalized)) {
+    return 'decline';
+  }
+  return null;
+}
+
+async function resolveWorkerIdForWhatsappNumber(
+  client: PoolClient,
+  whatsappNumber: string,
+): Promise<string | null> {
+  const normalized = whatsappNumber.replace(/^whatsapp:/, '');
+  const result = await client.query<{ id: string }>(
+    `SELECT u.id
+       FROM users u
+       LEFT JOIN worker_profiles wp ON wp.user_id = u.id
+      WHERE u.user_type = 'worker'
+        AND (
+          u.whatsapp_number = $1
+          OR u.phone = $1
+          OR wp.phone = $1
+        )
+      ORDER BY
+        CASE
+          WHEN u.whatsapp_number = $1 THEN 0
+          WHEN u.phone = $1 THEN 1
+          ELSE 2
+        END
+      LIMIT 1`,
+    [normalized],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+async function routeEmployerConversationReplyOverride(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<string | null> {
+  if (conv.conversation_state !== 'awaiting_otp') return null;
+  if (!msg.body.trim() || isLikelyOtpCode(msg.body)) return null;
+
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) return null;
+
+  await setInternalUserRlsContext(client, workerId);
+  const routedToEmployer = await recordWorkerConversationReply(
+    client,
+    workerId,
+    msg.body,
+    msg.from,
+    msg.messageSid,
+    conv.state_context?.active_job_conversation_id,
+  );
+  if (!routedToEmployer) return null;
+
+  await updateConversation(client, conv.id, {
+    user_id: workerId,
+    conversation_state: 'idle',
+    state_context: {},
+    otp_attempts: 0,
+    otp_expires_at: null,
+    last_processed_message_sid: msg.messageSid,
+  });
+  conv.user_id = workerId;
+  conv.conversation_state = 'idle';
+  conv.state_context = {};
+  conv.otp_attempts = 0;
+  conv.otp_expires_at = null;
+
+  return workerId;
+}
+
+async function resetWhatsappConversationToIdle(
+  client: PoolClient,
+  conv: ConversationRow,
+  workerId: string,
+  messageSid: string,
+  stateContext: ProfileStateContext = {},
+): Promise<void> {
+  await updateConversation(client, conv.id, {
+    user_id: workerId,
+    conversation_state: 'idle',
+    state_context: stateContext,
+    otp_attempts: 0,
+    otp_expires_at: null,
+    last_processed_message_sid: messageSid,
+  });
+  conv.user_id = workerId;
+  conv.conversation_state = 'idle';
+  conv.state_context = stateContext;
+  conv.otp_attempts = 0;
+  conv.otp_expires_at = null;
+}
+
+async function handleEmployerConversationButton(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  payload: { action: 'open' | 'decline'; conversationId: string },
+): Promise<string | null> {
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) {
+    await reply(client, msg, 'start_prompt', detectLanguage(msg.body));
+    return null;
+  }
+
+  await setInternalUserRlsContext(client, workerId);
+
+  if (payload.action === 'decline') {
+    const declined = await declineWorkerConversationFromButton(
+      client,
+      workerId,
+      payload.conversationId,
+    );
+    if (declined) {
+      await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid);
+      await queueText(
+        client,
+        msg.messageSid,
+        msg.from,
+        conv.language === 'en'
+          ? 'Conversation closed. You can keep using Jale here.'
+          : 'Conversacion cerrada. Puedes seguir usando Jale aqui.',
+      );
+    }
+    return null;
+  }
+
+  const opened = await openWorkerConversationFromButton(
+    client,
+    workerId,
+    payload.conversationId,
+    msg.from,
+  );
+  if (!opened.found) return null;
+
+  await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {
+    active_job_conversation_id: opened.conversationId ?? payload.conversationId,
+  });
+  if (opened.queuedMessages === 0) {
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Conversation opened. Reply here to message the employer.'
+        : 'Conversacion abierta. Responde aqui para escribirle al empleador.',
+    );
+  }
+
+  return workerId;
+}
+
+async function handleEmployerConversationTextAction(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  action: 'open' | 'decline',
+): Promise<string | null> {
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) return null;
+
+  await setInternalUserRlsContext(client, workerId);
+
+  if (action === 'decline') {
+    const declined = await declineLatestWorkerConversationFromButtonText(client, workerId);
+    if (!declined) return null;
+    await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid);
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Conversation closed. You can keep using Jale here.'
+        : 'Conversacion cerrada. Puedes seguir usando Jale aqui.',
+    );
+    return null;
+  }
+
+  const opened = await openLatestWorkerConversationFromButtonText(client, workerId, msg.from);
+  if (!opened.found) return null;
+
+  await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {
+    active_job_conversation_id: opened.conversationId,
+  });
+  if (opened.queuedMessages === 0) {
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Conversation opened. Reply here to message the employer.'
+        : 'Conversacion abierta. Responde aqui para escribirle al empleador.',
+    );
+  }
+
+  return workerId;
 }
 
 // ── new / restart — SignUp + InitiateAuth(CUSTOM_AUTH) ──────────
@@ -2100,14 +2346,14 @@ async function handleIdle(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
-): Promise<void> {
+): Promise<string | null> {
   const typedAction = parseTypedJobAction(msg.body);
   if (typedAction) {
     const recentJobs = conv.state_context?.recent_jobs ?? [];
     const jobId = recentJobs[typedAction.index];
     if (!jobId) {
       await reply(client, msg, 'job_not_found', conv.language);
-      return;
+      return null;
     }
     await handleJobAction(
       client,
@@ -2117,13 +2363,13 @@ async function handleIdle(
       msg.from,
       msg.messageSid,
     );
-    return;
+    return null;
   }
 
   if (isJobsKeyword(msg.body)) {
     if (!conv.user_id) {
       await reply(client, msg, 'jobs_none', conv.language);
-      return;
+      return null;
     }
     await client.query(
       `SELECT set_config('app.current_internal_user_id', $1, true)`,
@@ -2135,7 +2381,7 @@ async function handleIdle(
     });
     if (jobs.length === 0) {
       await reply(client, msg,'jobs_none', conv.language);
-      return;
+      return null;
     }
     const recentJobs = jobs.map((j) => j.id);
     await updateConversation(client, conv.id, {
@@ -2148,10 +2394,24 @@ async function handleIdle(
     for (const job of jobs) {
       await queueJobTemplate(client, msg.messageSid, msg.from, conv.language, job);
     }
-    return;
+    return null;
+  }
+
+  if (conv.user_id && msg.body.trim()) {
+    await setInternalUserRlsContext(client, conv.user_id);
+    const routedToEmployer = await recordWorkerConversationReply(
+      client,
+      conv.user_id,
+      msg.body,
+      msg.from,
+      msg.messageSid,
+      conv.state_context?.active_job_conversation_id,
+    );
+    if (routedToEmployer) return conv.user_id;
   }
 
   await reply(client, msg,'idle_help', conv.language);
+  return null;
 }
 
 async function handleJobButton(

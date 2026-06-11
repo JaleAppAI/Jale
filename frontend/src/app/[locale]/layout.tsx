@@ -6,6 +6,7 @@ import { getMessages } from "next-intl/server";
 import React from 'react';
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/contexts/AuthContext";
+import { ConversationDrawer } from "@/components/employer/ConversationDrawer";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -41,6 +42,7 @@ export default async function RootLayout({
           <AuthProvider locale={locale}>
             <Header />
             {children}
+            <ConversationDrawer />
           </AuthProvider>
         </NextIntlClientProvider>
       </body>

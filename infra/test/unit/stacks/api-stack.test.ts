@@ -206,6 +206,18 @@ describe('ApiStack', () => {
       Description: 'Employer application status update endpoint',
     });
   });
+
+  test('Employer messaging Lambda functions exist', () => {
+    for (const description of [
+      'Employer conversations list endpoint',
+      'Employer conversations detail endpoint',
+      'Employer conversations create endpoint',
+      'Employer conversations send endpoint',
+      'Employer conversations update endpoint',
+    ]) {
+      template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
+    }
+  });
   // Task 12 — new worker marketplace route assertions
   test('Worker jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
@@ -274,6 +286,6 @@ describe('ApiStack', () => {
       AuthorizerId: Match.objectLike({
         Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
       }),
-    }, 3);
+    }, 4);
   });
 });

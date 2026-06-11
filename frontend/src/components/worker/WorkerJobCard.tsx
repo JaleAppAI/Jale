@@ -2,8 +2,26 @@
 
 import { useTranslations } from 'next-intl';
 import { Card } from '@/components/ui/card';
+import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { Link } from '@/i18n/navigation';
 import type { Job } from '@/lib/api/worker';
+import { humanizeReasonCode, normalizeMatchScore, scoreBandForScore, truncateMatchReason } from '@/lib/match';
+
+const WORKER_REASON_KEYS = new Set([
+  'profession_exact_or_alias',
+  'profession_partial',
+  'distance_under_5_miles',
+  'distance_under_15_miles',
+  'distance_under_30_miles',
+  'distance_under_50_miles',
+  'zip_exact',
+  'location_text_match',
+  'experience_meets_requirement',
+  'availability_flexible',
+  'availability_matches_job_type',
+  'availability_adjacent',
+  'fresh_posting',
+]);
 
 const DOC_LABELS: Record<string, string> = {
   resume: 'Resume',
@@ -23,8 +41,17 @@ function getInitials(name: string) {
 
 export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
   const t = useTranslations('worker_home');
+  const tMatch = useTranslations('match');
   const initials = getInitials(job.company_name ?? 'JB');
   const pay = job.pay && job.pay !== 'Pay not specified' ? job.pay : null;
+  const matchScore = normalizeMatchScore(job.match_score);
+  const scoreBand = matchScore === null ? null : scoreBandForScore(matchScore);
+  const matchReasons = (job.match_reasons ?? [])
+    .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+    .slice(0, 3)
+    .map((reason) => truncateMatchReason(
+      WORKER_REASON_KEYS.has(reason) ? tMatch(`reasons.${reason}`) : humanizeReasonCode(reason),
+    ));
 
   return (
     <Link href={href} className="block">
@@ -70,9 +97,22 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
               ))}
             </div>
           )}
+
+          {matchReasons.length > 0 && (
+            <div className="mt-2">
+              <MatchReasonChips reasons={matchReasons} />
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col items-end gap-1 flex-shrink-0">
+          {matchScore !== null && scoreBand && (
+            <MatchScoreBadge
+              score={matchScore}
+              band={scoreBand}
+              label={tMatch(`score_bands.${scoreBand}`)}
+            />
+          )}
           <span
             className="rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize"
             style={{ background: 'var(--jale-blue-50)', color: 'var(--jale-blue-700)' }}

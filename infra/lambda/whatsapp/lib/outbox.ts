@@ -27,11 +27,11 @@ async function getTwilioSecret(): Promise<TwilioSecret> {
   return cachedTwilio;
 }
 
-async function sendTwilioMessage(to: string, row: {
+export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
   content_variables: Record<string, string> | null;
-}): Promise<void> {
+}): Promise<string | null> {
   const secret = await getTwilioSecret();
   const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
   const formValues: Record<string, string> = {
@@ -42,6 +42,9 @@ async function sendTwilioMessage(to: string, row: {
   if (row.content_template) {
     const contentSid = secret.templates?.[row.content_template as keyof NonNullable<TwilioSecret['templates']>];
     if (!contentSid) {
+      if (row.content_template.startsWith('employer_message_')) {
+        throw new Error(`Twilio template missing: ${row.content_template}`);
+      }
       const fallbackBody = row.content_variables?.[FALLBACK_BODY_KEY];
       if (!fallbackBody) {
         throw new Error(`Twilio template missing: ${row.content_template}`);
@@ -70,6 +73,13 @@ async function sendTwilioMessage(to: string, row: {
     const text = await res.text();
     throw new Error(`Twilio send failed ${res.status}: ${text}`);
   }
+  let responseBody: { sid?: string } | null = null;
+  try {
+    responseBody = await res.json() as { sid?: string };
+  } catch {
+    responseBody = null;
+  }
+  return responseBody?.sid ?? null;
 }
 
 /**
@@ -98,12 +108,14 @@ export async function sendPendingOutbox(
 
   for (const row of pending.rows) {
     try {
-      await sendTwilioMessage(`whatsapp:${row.whatsapp_number}`, row);
+      const twilioMessageSid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
       await client.query(
         `UPDATE whatsapp_outbox
-            SET status = 'sent', sent_at = now()
+            SET status = 'sent',
+                sent_at = now(),
+                twilio_message_sid = COALESCE($2, twilio_message_sid)
           WHERE id = $1`,
-        [row.id],
+        [row.id, twilioMessageSid],
       );
     } catch (err) {
       await client.query(

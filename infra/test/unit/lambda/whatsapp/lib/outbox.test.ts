@@ -25,7 +25,7 @@ describe('whatsapp outbox templates', () => {
         templates: { job_alert_en: 'HX_job_en' },
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM_sent' }) });
   });
 
   afterAll(() => {
@@ -57,7 +57,7 @@ describe('whatsapp outbox templates', () => {
     );
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('ContentVariables=');
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1']);
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1', 'SM_sent']);
   });
 
   it('falls back to text when an in-session template SID is not configured', async () => {
@@ -81,6 +81,6 @@ describe('whatsapp outbox templates', () => {
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('Body=What+is+your+main+trade');
     expect(sentBody).not.toContain('ContentSid=');
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2']);
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2', 'SM_sent']);
   });
 });
