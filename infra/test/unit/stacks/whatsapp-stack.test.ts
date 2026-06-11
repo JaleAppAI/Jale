@@ -92,8 +92,14 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 5 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 5);
+  test('Stack creates 6 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver + outbox-sweeper)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 6);
+  });
+
+  test('job message outbox sweeper runs on a 5-minute schedule', () => {
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(5 minutes)',
+    });
   });
 
   test('Webhook Lambda has TWILIO_SECRET_ARN + SQS_QUEUE_URL env vars', () => {

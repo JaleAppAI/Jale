@@ -19,14 +19,13 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
-import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
+import { getDbPool, setRlsContext } from '../lib/db';
 import { listMatchedJobsForWorker } from '../lib/job-matching';
 import {
   declineLatestWorkerConversationFromButtonText,
   declineWorkerConversationFromButton,
   openLatestWorkerConversationFromButtonText,
   openWorkerConversationFromButton,
-  recordWorkerConversationReply,
   sendPendingJobMessageOutbox,
 } from '../lib/job-messaging';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
@@ -37,7 +36,7 @@ import {
   parseEmployerConversationTextAction,
   handleEmployerConversationButton,
   handleEmployerConversationTextAction,
-  routeEmployerConversationReplyOverride,
+  tryConversationRelay,
   parseDisambiguationPick,
   handleDisambiguationPick,
   type ConversationRow,
@@ -957,9 +956,9 @@ async function routeMessage(
     return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction, routerDeps);
   }
 
-  const routedWorkerId = await routeEmployerConversationReplyOverride(client, conv, msg, routerDeps);
-  if (routedWorkerId) {
-    return routedWorkerId;
+  const relayedWorkerId = await tryConversationRelay(client, conv, msg, routerDeps);
+  if (relayedWorkerId) {
+    return relayedWorkerId;
   }
 
   switch (conv.conversation_state) {
@@ -2175,19 +2174,9 @@ async function handleIdle(
     return null;
   }
 
-  if (conv.user_id && msg.body.trim()) {
-    await setInternalUserRlsContext(client, conv.user_id);
-    const result = await recordWorkerConversationReply(
-      client,
-      conv.user_id,
-      msg.body,
-      msg.from,
-      msg.messageSid,
-      conv.state_context?.active_job_conversation_id,
-    );
-    if (result.status === 'routed') return conv.user_id;
-  }
-
+  // Conversation relay now runs in routeMessage (tryConversationRelay) before
+  // handleIdle is reached. Reserved keywords (JOBS) and typed job actions fall
+  // through to here; everything else is the idle help fallback.
   await reply(client, msg,'idle_help', conv.language);
   return null;
 }

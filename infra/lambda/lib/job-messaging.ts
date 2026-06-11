@@ -348,11 +348,16 @@ export async function createApplicantConversation(
   );
 
   if (conversation.rowCount === 0) {
+    const threadNumber = await client.query<{ n: number }>(
+      `SELECT assign_worker_thread_number($1) AS n`,
+      [workerId],
+    );
     const created = await client.query<{ id: string }>(
-      `INSERT INTO job_conversations (job_id, employer_id, worker_id, application_id, last_message_at)
-       VALUES ($1, $2, $3, $4, now())
+      `INSERT INTO job_conversations
+          (job_id, employer_id, worker_id, application_id, last_message_at, worker_thread_number)
+       VALUES ($1, $2, $3, $4, now(), $5)
        RETURNING id`,
-      [jobId, employerId, workerId, row.application_id],
+      [jobId, employerId, workerId, row.application_id, threadNumber.rows[0].n],
     );
 
     conversation = await client.query<ConversationAccessRow>(
@@ -415,11 +420,28 @@ export async function queueConversationMessageFromEmployer(
   if (canSendFreeform) {
     await queueEmployerFreeformMessage(client, conversation, message.rows[0].id, body);
   } else {
-    await queueWorkerInviteTemplate(
-      client,
-      conversation,
-      closedWindowTemplateName ?? resumeTemplateName(conversation.worker_language),
+    // R7 dedupe: one un-actioned invite/resume template at a time. A new
+    // template is queued only when none has been sent since the worker's
+    // last action (acceptance or last reply) on this conversation.
+    const pendingInvite = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM job_message_outbox
+          WHERE conversation_id = $1
+            AND send_kind = 'template'
+            AND created_at > COALESCE(
+                  (SELECT GREATEST(jc.accepted_at, jc.last_worker_message_at)
+                     FROM job_conversations jc WHERE jc.id = $1),
+                  '-infinity'::timestamptz)
+       ) AS exists`,
+      [conversation.id],
     );
+    if (!pendingInvite.rows[0]?.exists) {
+      await queueWorkerInviteTemplate(
+        client,
+        conversation,
+        closedWindowTemplateName ?? resumeTemplateName(conversation.worker_language),
+      );
+    }
   }
 
   await client.query(
@@ -692,22 +714,28 @@ export async function sendPendingJobMessageOutbox(
 
     const pending = await client.query<{
       id: string;
+      conversation_id: string;
       message_id: string | null;
       whatsapp_number: string;
       body: string | null;
       content_template: string | null;
       content_variables: Record<string, string> | null;
     }>(
-      `SELECT id, message_id, whatsapp_number, body, content_template, content_variables
+      `SELECT id, conversation_id, message_id, whatsapp_number, body, content_template, content_variables
        FROM job_message_outbox
        WHERE status IN ('pending', 'failed')
+         AND attempt_count < 5
          ${conversationFilter}
-       ORDER BY created_at ASC
+       ORDER BY conversation_id, created_at ASC
        LIMIT 10`,
       params,
     );
 
+    const failedConversations = new Set<string>();
+    let lastError: Error | null = null;
+
     for (const row of pending.rows) {
+      if (failedConversations.has(row.conversation_id)) continue; // preserve in-conversation order
       try {
         const twilioMessageSid = await sendTwilioWhatsAppMessage(
           `whatsapp:${row.whatsapp_number}`,
@@ -732,6 +760,9 @@ export async function sendPendingJobMessageOutbox(
           );
         }
       } catch (err) {
+        failedConversations.add(row.conversation_id);
+        lastError = err as Error;
+        console.log(JSON.stringify({ metric: 'JobMessageOutboxSendFailed', outboxId: row.id }));
         await client.query(
           `UPDATE job_message_outbox
               SET status = 'failed',
@@ -748,8 +779,17 @@ export async function sendPendingJobMessageOutbox(
             [row.message_id],
           );
         }
-        throw err;
+        // Do not rethrow here; skip remaining rows for this conversation and continue others.
       }
+    }
+
+    // Surface failure only when nothing succeeded and something failed (total outage).
+    if (
+      lastError &&
+      pending.rows.length > 0 &&
+      pending.rows.every((r) => failedConversations.has(r.conversation_id))
+    ) {
+      throw lastError;
     }
   } finally {
     await clearSessionInternalUser(client);

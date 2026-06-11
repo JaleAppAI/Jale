@@ -18,6 +18,7 @@ import {
 } from '../../lib/job-messaging';
 import { queueOutboxText } from './outbox';
 import { detectLanguage, t, type Lang } from './templates';
+import { isJobsKeyword, parseTypedJobAction } from './flows';
 import type { ConversationState, ProfileStateContext } from './flows';
 
 // ── Conversation row shape (subset of the DB columns) ───────────
@@ -119,67 +120,76 @@ export async function resolveWorkerIdForWhatsappNumber(
   return result.rows[0]?.id ?? null;
 }
 
-export async function routeEmployerConversationReplyOverride(
+const RELAY_FIRST_STATES = new Set(['idle', 'new', 'otp_timeout', 'legal_declined']);
+
+/**
+ * Try conversation relay before built-in state handling. Returns workerId
+ * when handled (routed / ambiguous-prompt / legal-hold), null to fall through
+ * to the onboarding state machine or handleIdle's command handling.
+ *
+ * NEVER binds user_id or mutates conversation_state (V2 plan §4.2a): relay is
+ * conversation-scoped; account access still requires a completed OTP. Replaces
+ * the old awaiting_otp-only override which bound identity on relay.
+ */
+export async function tryConversationRelay(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
   deps: RouterDeps,
 ): Promise<string | null> {
-  if (conv.conversation_state !== 'awaiting_otp') return null;
-  if (!msg.body.trim() || isLikelyOtpCode(msg.body)) return null;
+  if (!msg.body.trim()) return null;
 
-  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (conv.conversation_state === 'awaiting_otp') {
+    // OTP codes always go to the OTP handler.
+    if (isLikelyOtpCode(msg.body)) return null;
+  } else if (!RELAY_FIRST_STATES.has(conv.conversation_state)) {
+    return null; // structured-input states keep precedence (§4.2 rule 2)
+  }
+
+  // Reserved keywords and typed job actions keep precedence over relay
+  // (§4.1.7 / §4.2 rule 4) — let them fall through to handleIdle.
+  // (help/profile/bare-word actions are already handled earlier in routeMessage.)
+  if (isJobsKeyword(msg.body) || parseTypedJobAction(msg.body)) return null;
+
+  const workerId = conv.user_id
+    ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
   if (!workerId) return null;
 
-  await setInternalUserRlsContext(client, workerId);
-  const result = await recordWorkerConversationReply(
-    client,
-    workerId,
-    msg.body,
-    msg.from,
-    msg.messageSid,
-    conv.state_context?.active_job_conversation_id,
-  );
-  if (result.status !== 'routed') return null;
-
-  await deps.updateConversation(client, conv.id, {
-    user_id: workerId,
-    conversation_state: 'idle',
-    state_context: {},
-    otp_attempts: 0,
-    otp_expires_at: null,
-    last_processed_message_sid: msg.messageSid,
-  });
-  conv.user_id = workerId;
-  conv.conversation_state = 'idle';
-  conv.state_context = {};
-  conv.otp_attempts = 0;
-  conv.otp_expires_at = null;
-
-  return workerId;
+  if (conv.user_id === null) {
+    console.log(JSON.stringify({ metric: 'ConversationRelayPhoneMatch', workerId }));
+  }
+  return await relayWorkerFreeText(client, conv, msg, workerId, deps);
 }
 
-export async function resetWhatsappConversationToIdle(
+/**
+ * Set (or clear) the focused employer thread on the conversation row.
+ *
+ * R10 fix: conversation open/decline actions must NOT reset onboarding —
+ * they only touch the `focused_job_conversation_id` COLUMN (which relay reads),
+ * never `conversation_state`, `state_context`, or `user_id`. A worker mid-
+ * onboarding who taps "open" keeps their collected answers; once they finish
+ * onboarding and reach idle, relay routes free text to the focused thread.
+ */
+async function setFocusedConversation(
   client: PoolClient,
   conv: ConversationRow,
-  workerId: string,
+  conversationId: string | null,
   messageSid: string,
-  stateContext: ProfileStateContext,
   deps: RouterDeps,
 ): Promise<void> {
   await deps.updateConversation(client, conv.id, {
-    user_id: workerId,
-    conversation_state: 'idle',
-    state_context: stateContext,
-    otp_attempts: 0,
-    otp_expires_at: null,
+    focused_job_conversation_id: conversationId,
     last_processed_message_sid: messageSid,
   });
-  conv.user_id = workerId;
-  conv.conversation_state = 'idle';
-  conv.state_context = stateContext;
-  conv.otp_attempts = 0;
-  conv.otp_expires_at = null;
+  conv.focused_job_conversation_id = conversationId;
+}
+
+// R6: an open/decline targeting a closed/missing conversation must not silently
+// no-op — reply with an actionable message instead of leaving the tap dead.
+function conversationUnavailableText(lang: Lang): string {
+  return lang === 'en'
+    ? 'That conversation is no longer available. Send AYUDA to see your options.'
+    : 'Esa conversación ya no está disponible. Envía AYUDA para ver tus opciones.';
 }
 
 export async function handleEmployerConversationButton(
@@ -204,7 +214,7 @@ export async function handleEmployerConversationButton(
       payload.conversationId,
     );
     if (declined) {
-      await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {}, deps);
+      await setFocusedConversation(client, conv, null, msg.messageSid, deps);
       await queueOutboxText(
         client,
         msg.messageSid,
@@ -213,6 +223,9 @@ export async function handleEmployerConversationButton(
           ? 'Conversation closed. You can keep using Jale here.'
           : 'Conversacion cerrada. Puedes seguir usando Jale aqui.',
       );
+    } else {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conversationUnavailableText(conv.language));
     }
     return null;
   }
@@ -232,11 +245,14 @@ export async function handleEmployerConversationButton(
     payload.conversationId,
     msg.from,
   );
-  if (!opened.found) return null;
+  if (!opened.found) {
+    await queueOutboxText(client, msg.messageSid, msg.from,
+      conversationUnavailableText(conv.language));
+    return null;
+  }
 
-  await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {
-    active_job_conversation_id: opened.conversationId ?? payload.conversationId,
-  }, deps);
+  await setFocusedConversation(
+    client, conv, opened.conversationId ?? payload.conversationId, msg.messageSid, deps);
   if (opened.queuedMessages === 0) {
     await queueOutboxText(
       client,
@@ -265,8 +281,12 @@ export async function handleEmployerConversationTextAction(
 
   if (action === 'decline') {
     const declined = await declineLatestWorkerConversationFromButtonText(client, workerId);
-    if (!declined) return null;
-    await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {}, deps);
+    if (!declined) {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conversationUnavailableText(conv.language));
+      return null;
+    }
+    await setFocusedConversation(client, conv, null, msg.messageSid, deps);
     await queueOutboxText(
       client,
       msg.messageSid,
@@ -287,11 +307,13 @@ export async function handleEmployerConversationTextAction(
   }
 
   const opened = await openLatestWorkerConversationFromButtonText(client, workerId, msg.from);
-  if (!opened.found) return null;
+  if (!opened.found) {
+    await queueOutboxText(client, msg.messageSid, msg.from,
+      conversationUnavailableText(conv.language));
+    return null;
+  }
 
-  await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {
-    active_job_conversation_id: opened.conversationId,
-  }, deps);
+  await setFocusedConversation(client, conv, opened.conversationId ?? null, msg.messageSid, deps);
   if (opened.queuedMessages === 0) {
     await queueOutboxText(
       client,

@@ -63,8 +63,12 @@ describe('resolveWorkerIdForWhatsappNumber', () => {
 
 import {
   relayWorkerFreeText, handleDisambiguationPick, parseDisambiguationPick,
+  tryConversationRelay, handleEmployerConversationButton,
 } from '../../../../../lambda/whatsapp/lib/conversation-router';
-import { recordWorkerConversationReply } from '../../../../../lambda/lib/job-messaging';
+import {
+  recordWorkerConversationReply,
+  openWorkerConversationFromButton,
+} from '../../../../../lambda/lib/job-messaging';
 import { queueOutboxText } from '../../../../../lambda/whatsapp/lib/outbox';
 
 const WORKER = 'aaaaaaaa-0000-0000-0000-000000000001';
@@ -153,5 +157,116 @@ describe('legal-wall gate', () => {
     const routed = await relayWorkerFreeText(client, baseConv, msg, WORKER, deps);
     expect(routed).toBe(WORKER);
     expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('tryConversationRelay', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  // Helper: assert no updateConversation call ever bound identity or state.
+  function assertNoIdentityBinding() {
+    for (const call of (deps.updateConversation as jest.Mock).mock.calls) {
+      const fields = call[2];
+      expect(fields).not.toHaveProperty('user_id');
+      expect(fields).not.toHaveProperty('conversation_state');
+    }
+  }
+
+  it('relays for the `new` state via phone resolution without binding identity', async () => {
+    // 1) resolve worker by phone (user_id is null), 2) tos-gate SELECT.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: WORKER }], rowCount: 1 })   // resolve
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // tos gate
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
+      { status: 'routed', conversationId: CONV_A });
+
+    const conv = { ...baseConv, conversation_state: 'new', user_id: null };
+    const routed = await tryConversationRelay(client, conv, msg, deps);
+
+    expect(routed).toBe(WORKER);
+    expect(recordWorkerConversationReply).toHaveBeenCalled();
+    // Relay must only touch the focus column, never identity/state.
+    assertNoIdentityBinding();
+    const fields = (deps.updateConversation as jest.Mock).mock.calls[0]?.[2];
+    if (fields) expect(fields).toHaveProperty('focused_job_conversation_id');
+  });
+
+  it('does NOT relay a 6-digit OTP code while awaiting_otp (falls through)', async () => {
+    const conv = { ...baseConv, conversation_state: 'awaiting_otp' };
+    const otpMsg = { ...msg, body: '123456' };
+    const routed = await tryConversationRelay(client, conv, otpMsg, deps);
+    expect(routed).toBeNull();
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+  });
+
+  it('relays non-OTP text while awaiting_otp WITHOUT binding identity (§4.2a)', async () => {
+    // user_id is set, so no resolve query — only the tos-gate SELECT.
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
+      { status: 'routed', conversationId: CONV_A });
+
+    const conv = {
+      ...baseConv,
+      conversation_state: 'awaiting_otp',
+      state_context: { cognito_session: 'sess-123' },
+    };
+    const routed = await tryConversationRelay(client, conv, msg, deps);
+
+    expect(routed).toBe(WORKER);
+    expect(recordWorkerConversationReply).toHaveBeenCalled();
+    assertNoIdentityBinding();
+  });
+
+  it('skips relay for structured-input states (building_profile)', async () => {
+    const conv = { ...baseConv, conversation_state: 'building_profile' };
+    const routed = await tryConversationRelay(client, conv, msg, deps);
+    expect(routed).toBeNull();
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('falls through for the JOBS keyword (reserved-keyword precedence)', async () => {
+    const conv = { ...baseConv, conversation_state: 'idle' };
+    const routed = await tryConversationRelay(client, conv, { ...msg, body: 'TRABAJOS' }, deps);
+    expect(routed).toBeNull();
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+  });
+
+  it('falls through for a typed job action ("1 aceptar")', async () => {
+    const conv = { ...baseConv, conversation_state: 'idle' };
+    const routed = await tryConversationRelay(client, conv, { ...msg, body: '1 aceptar' }, deps);
+    expect(routed).toBeNull();
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+  });
+});
+
+describe('conversation actions preserve onboarding state (R10) + actionable no-ops (R6)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('open button mid-building_profile preserves state and collected answers', async () => {
+    const conv = { ...baseConv, conversation_state: 'building_profile',
+      state_context: { collected: { city: 'Austin' } } };
+    // legal gate (tos accepted) -> open succeeds
+    mockQuery.mockResolvedValue({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
+    (openWorkerConversationFromButton as jest.Mock).mockResolvedValueOnce(
+      { found: true, queuedMessages: 0, conversationId: CONV_A });
+    await handleEmployerConversationButton(
+      client, conv, { ...msg, buttonPayload: `conversation:open:${CONV_A}` },
+      { action: 'open', conversationId: CONV_A }, deps);
+    const fields = (deps.updateConversation as jest.Mock).mock.calls[0][2];
+    expect(fields.conversation_state).toBeUndefined();   // state untouched
+    expect(fields.state_context).toBeUndefined();         // collected answers untouched
+    expect(fields.user_id).toBeUndefined();               // no identity binding
+    expect(fields.focused_job_conversation_id).toBe(CONV_A);
+  });
+
+  it('open button on a closed/missing conversation replies something actionable (R6)', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
+    (openWorkerConversationFromButton as jest.Mock).mockResolvedValueOnce(
+      { found: false, queuedMessages: 0 });
+    await handleEmployerConversationButton(
+      client, baseConv, msg, { action: 'open', conversationId: CONV_A }, deps);
+    expect(queueOutboxText).toHaveBeenCalled();
+    expect((queueOutboxText as jest.Mock).mock.calls[0][3]).toMatch(/ya no está disponible/);
   });
 });
