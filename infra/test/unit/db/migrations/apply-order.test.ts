@@ -33,6 +33,7 @@ const expectedBaselineMigrations = [
   '023_job_fields_and_statuses_mvp.sql',
   '024_sprint11_hiring_flow_hardening.sql',
   '025_job_messaging.sql',
+  '026_job_messaging_hardening.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -86,7 +87,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-025 readiness baseline order', () => {
+  it('locks the 001-026 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -359,7 +360,25 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('job_conversations_worker_all');
   });
 
-  maybeIt('applies migrations 001-025 against a local Postgres database', async () => {
+  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 026', () => {
+    const migration = readMigration('026_job_messaging_hardening.sql');
+
+    expect(migration).toContain('GRANT UPDATE (status, updated_at) ON job_applications TO jale_whatsapp');
+    expect(migration).toContain('DROP POLICY IF EXISTS jobapp_whatsapp_all ON job_applications');
+    expect(migration).toContain('CREATE POLICY jobapp_whatsapp_update ON job_applications');
+    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ');
+    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS worker_thread_number INTEGER');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_thread_counters');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION assign_worker_thread_number');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('focused_job_conversation_id');
+    expect(migration).toContain("CHECK (status IN ('queued', 'waiting_worker_reply', 'sent', 'delivered',");
+    expect(migration).toContain('idx_job_messages_twilio_sid');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION record_twilio_status');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION list_stale_job_outbox_workers');
+  });
+
+  maybeIt('applies migrations 001-026 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

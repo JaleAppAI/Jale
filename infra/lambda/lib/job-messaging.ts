@@ -52,6 +52,33 @@ type WorkerConversationActionResult = {
   conversationId?: string;
 };
 
+export type ThreadOption = {
+  conversationId: string;
+  jobTitle: string;
+  companyName: string;
+  threadNumber: number | null;
+};
+
+export type WorkerReplyRouteResult =
+  | { status: 'routed'; conversationId: string }
+  | { status: 'no_conversation' }
+  | { status: 'ambiguous'; threads: ThreadOption[] };
+
+type OpenThreadRow = {
+  id: string;
+  application_id: string;
+  job_title: string;
+  company: string;
+  worker_thread_number: number | null;
+};
+
+const OPEN_THREAD_SELECT = `
+  SELECT jc.id, jc.application_id, jc.worker_thread_number,
+         j.title AS job_title,
+         COALESCE(NULLIF(j.company, ''), 'Empleador') AS company
+    FROM job_conversations jc
+    JOIN jobs j ON j.id = jc.job_id`;
+
 export function normalizeMessageBody(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const body = value.trim();
@@ -436,70 +463,73 @@ export async function recordWorkerConversationReply(
   body: string,
   from: string,
   messageSid: string,
-  conversationId?: string,
-): Promise<boolean> {
-  const loadConversation = async (preferredConversationId?: string) => {
-    const params = preferredConversationId ? [preferredConversationId, workerId] : [workerId];
-    const filter = preferredConversationId
-      ? 'id = $1 AND worker_id = $2'
-      : 'worker_id = $1';
-    return client.query<{
-      id: string;
-      application_id: string;
-    }>(
-      `SELECT id, application_id
-       FROM job_conversations
-       WHERE ${filter}
-         AND status = 'open'
-       ORDER BY COALESCE(last_message_at, created_at) DESC
-       LIMIT 1
-       FOR UPDATE`,
-      params,
+  focusedConversationId?: string | null,
+): Promise<WorkerReplyRouteResult> {
+  let target: OpenThreadRow | null = null;
+  if (focusedConversationId) {
+    const focused = await client.query<OpenThreadRow>(
+      `${OPEN_THREAD_SELECT}
+        WHERE jc.id = $1 AND jc.worker_id = $2 AND jc.status = 'open'
+        FOR UPDATE OF jc`,
+      [focusedConversationId, workerId],
     );
-  };
-
-  let conversation = await loadConversation(conversationId);
-  if (conversation.rowCount === 0 && conversationId) {
-    conversation = await loadConversation();
+    target = focused.rows[0] ?? null;
   }
 
-  const row = conversation.rows[0];
-  if (!row) return false;
+  if (!target) {
+    const open = await client.query<OpenThreadRow>(
+      `${OPEN_THREAD_SELECT}
+        WHERE jc.worker_id = $1 AND jc.status = 'open'
+          AND jc.accepted_at IS NOT NULL
+        ORDER BY jc.worker_thread_number NULLS LAST, jc.created_at
+        LIMIT 10
+        FOR UPDATE OF jc`,
+      [workerId],
+    );
+    if (open.rowCount === 0) return { status: 'no_conversation' };
+    if ((open.rowCount ?? 0) > 1) {
+      return {
+        status: 'ambiguous',
+        threads: open.rows.map((r) => ({
+          conversationId: r.id,
+          jobTitle: r.job_title,
+          companyName: r.company,
+          threadNumber: r.worker_thread_number,
+        })),
+      };
+    }
+    target = open.rows[0];
+  }
 
   await client.query(
     `INSERT INTO job_conversation_messages
        (conversation_id, sender_type, direction, body, status, twilio_message_sid, twilio_from)
      VALUES ($1, 'worker', 'inbound', $2, 'received', $3, $4)`,
-    [row.id, body, messageSid, from],
+    [target.id, body, messageSid, from],
   );
-
   await client.query(
     `UPDATE job_conversations
         SET last_message_at = now(),
-            last_worker_message_at = now()
+            last_worker_message_at = now(),
+            accepted_at = COALESCE(accepted_at, now())
       WHERE id = $1`,
-    [row.id],
+    [target.id],
   );
   await client.query(
     `UPDATE job_applications
-        SET status = 'talking',
-            updated_at = now()
-      WHERE id = $1
-        AND status IN ('pending', 'contacted')`,
-    [row.application_id],
+        SET status = 'talking', updated_at = now()
+      WHERE id = $1 AND status IN ('pending', 'contacted')`,
+    [target.application_id],
   );
 
   const pending = await client.query<{ id: string; body: string }>(
-    pendingEmployerMessagesSql(),
-    [row.id],
+    pendingEmployerMessagesSql(), [target.id],
   );
-
   const whatsappNumber = normalizeWhatsappNumber(from);
-  if (!whatsappNumber) return true;
-
-  await queueWaitingEmployerMessages(client, row.id, whatsappNumber, pending.rows);
-
-  return true;
+  if (whatsappNumber) {
+    await queueWaitingEmployerMessages(client, target.id, whatsappNumber, pending.rows);
+  }
+  return { status: 'routed', conversationId: target.id };
 }
 
 function pendingEmployerMessagesSql(): string {
@@ -580,7 +610,8 @@ async function openWorkerConversation(
 
   await client.query(
     `UPDATE job_conversations
-        SET last_worker_message_at = now()
+        SET last_worker_message_at = now(),
+            accepted_at = COALESCE(accepted_at, now())
       WHERE id = $1`,
     [row.id],
   );

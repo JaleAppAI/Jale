@@ -1312,6 +1312,7 @@ describe('Processor Lambda', () => {
           })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
@@ -1391,6 +1392,7 @@ describe('Processor Lambda', () => {
           })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // latest open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status

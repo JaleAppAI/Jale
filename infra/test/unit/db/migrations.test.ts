@@ -48,6 +48,7 @@ describe('database migrations', () => {
       '023',
       '024',
       '025',
+      '026',
     ]);
   });
 
@@ -252,5 +253,32 @@ describe('database migrations', () => {
     expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
     expect(migration).toContain('job_conversations_employer_all');
     expect(migration).toContain('job_conversations_worker_all');
+  });
+
+  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 026', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '026_job_messaging_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('GRANT UPDATE (status, updated_at) ON job_applications TO jale_whatsapp');
+    expect(migration).toContain('DROP POLICY IF EXISTS jobapp_whatsapp_all ON job_applications');
+    expect(migration).toContain('CREATE POLICY jobapp_whatsapp_select ON job_applications');
+    expect(migration).toContain('CREATE POLICY jobapp_whatsapp_insert ON job_applications');
+    expect(migration).toContain('CREATE POLICY jobapp_whatsapp_update ON job_applications');
+    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ');
+    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS employer_last_read_at TIMESTAMPTZ');
+    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS worker_thread_number INTEGER');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_thread_counters');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION assign_worker_thread_number');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('ALTER TABLE whatsapp_conversations');
+    expect(migration).toContain('focused_job_conversation_id');
+    expect(migration).toContain('ALTER TABLE job_conversation_messages');
+    expect(migration).toContain("CHECK (status IN ('queued', 'waiting_worker_reply', 'sent', 'delivered',");
+    expect(migration).toContain('ALTER TABLE job_conversation_messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ');
+    expect(migration).toContain('idx_job_messages_twilio_sid');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION record_twilio_status');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION list_stale_job_outbox_workers');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION assign_worker_thread_number');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION record_twilio_status');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION list_stale_job_outbox_workers');
   });
 });

@@ -133,6 +133,10 @@ export interface ProfileStateContext {
   pending_media_photo_id?: string;
   /** True when optional photo upload is happening after profile completion. */
   profile_completed?: boolean;
+  conversation_disambiguation?: {
+    threads: { conversationId: string; jobTitle: string; companyName: string; threadNumber: number | null }[];
+    pending: { body: string; messageSid: string; ts: number } | null;
+  };
 }
 
 // -- Trust Signal Layer ----------------------------------------------------
