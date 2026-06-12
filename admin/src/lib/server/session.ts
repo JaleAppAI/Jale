@@ -57,7 +57,11 @@ export async function getCurrentAdminSession(): Promise<AdminSession | undefined
     }
   }
 
-  if (isLocalPreviewAllowed(process.env.NODE_ENV, process.env.ADMIN_PREVIEW_ROLE)) {
+  if (isLocalPreviewAllowed(
+    process.env.NODE_ENV,
+    process.env.ADMIN_PREVIEW_ROLE,
+    process.env.ADMIN_ALLOW_LOCAL_PREVIEW,
+  )) {
     return {
       sub: 'local-preview-admin',
       email: 'local-preview@jaleapp.ai',

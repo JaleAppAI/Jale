@@ -38,7 +38,7 @@ export function buildCaseMutation(actionId: AdminActionRequest['actionId'], inpu
 
   if (actionId === 'resolve_case') {
     return {
-      sql: `UPDATE admin_cases SET status = $2, resolved_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      sql: `UPDATE admin_cases SET status = $2, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND status <> 'resolved'`,
       params: ['case-id', 'resolved'],
     };
   }
@@ -53,14 +53,14 @@ export function buildCaseMutation(actionId: AdminActionRequest['actionId'], inpu
 export function buildVerificationMutation(actionId: AdminActionRequest['actionId'], input: MutationInput): MutationSpec | undefined {
   if (actionId === 'approve_verification') {
     return {
-      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker'`,
+      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
       params: ['verification-id', 'resolved', JSON.stringify({ verificationStatus: 'approved' })],
     };
   }
 
   if (actionId === 'reject_verification') {
     return {
-      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker'`,
+      sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
       params: ['verification-id', 'dismissed', JSON.stringify({
         verificationStatus: 'rejected',
         rejectionReason: input.justification ?? input.note ?? '',
@@ -205,6 +205,7 @@ async function executeMutation(
   const pool = await getAdminDbPool();
   const client = await pool.connect();
 
+  let released = false;
   try {
     await client.query('BEGIN');
     // Audit insert and reveal read run in ONE transaction: PII is only returned
@@ -214,7 +215,19 @@ async function executeMutation(
     await insertAudit(client, session, request);
 
     if (mutation) {
-      await client.query(mutation.sql, mutation.params);
+      const result = await client.query(mutation.sql, mutation.params);
+      if (result.rowCount === 0) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // The finally block still releases the connection.
+        }
+        return {
+          ok: false,
+          status: 409,
+          message: 'This item was already updated by another operator. Refresh and try again.',
+        };
+      }
     }
 
     const revealed = reveal ? await reveal(client as unknown as DbClient) : undefined;
@@ -227,9 +240,16 @@ async function executeMutation(
       ...(revealed ? { revealed } : {}),
     };
   } catch (error) {
-    await client.query('ROLLBACK');
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      client.release(rollbackError as Error);
+      released = true;
+    }
     throw error;
   } finally {
-    client.release();
+    if (!released) {
+      client.release();
+    }
   }
 }

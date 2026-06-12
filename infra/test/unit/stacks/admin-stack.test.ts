@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { AdminStack } from '../../../lib/stacks/admin-stack';
@@ -17,6 +18,11 @@ describeIfDocker('AdminStack', () => {
     const vpc = new ec2.Vpc(support, 'Vpc', { maxAzs: 2 });
     const lambdaSg = new ec2.SecurityGroup(support, 'LambdaSg', { vpc });
     const adminDbSecret = new secretsmanager.Secret(support, 'AdminDbSecret');
+    const certificate = acm.Certificate.fromCertificateArn(
+      support,
+      'AdminCert',
+      'arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-0000-0000-000000000000',
+    );
 
     const stack = new AdminStack(app, 'TestAdminStack', {
       env: { account: '111111111111', region: 'us-east-1' },
@@ -26,6 +32,8 @@ describeIfDocker('AdminStack', () => {
       privateSubnets: vpc.selectSubnets({ subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }).subnets,
       lambdaSg,
       adminDbSecret,
+      certificate,
+      webAclArn: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
     });
 
     template = Template.fromStack(stack);
@@ -88,6 +96,7 @@ describeIfDocker('AdminStack', () => {
         DistributionConfig: Match.objectLike({
           Aliases: ['admin.example.com'],
           Enabled: true,
+          WebACLId: 'arn:aws:wafv2:us-east-1:111111111111:global/webacl/admin/00000000-0000-0000-0000-000000000000',
         }),
       }),
     );
@@ -100,6 +109,13 @@ describeIfDocker('AdminStack', () => {
       Type: 'AAAA',
       Name: 'admin.example.com.',
     });
+  });
+
+  test('creates access logging and operational alarms', () => {
+    template.hasResourceProperties('AWS::S3::Bucket', {
+      LifecycleConfiguration: Match.anyValue(),
+    });
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
   });
 
   test('outputs the admin url and Cognito identifiers', () => {

@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
@@ -10,6 +11,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
 
@@ -25,6 +27,10 @@ export interface AdminStackProps extends cdk.StackProps {
    * role with column-scoped cross-user read of `users` (migration 025).
    */
   readonly adminDbSecret: secretsmanager.ISecret;
+  /** CloudFront certificate for admin.<domain>, created in us-east-1. */
+  readonly certificate: acm.ICertificate;
+  /** CloudFront-scoped WAF web ACL created in us-east-1. */
+  readonly webAclArn: string;
 }
 
 export class AdminStack extends cdk.Stack {
@@ -41,10 +47,13 @@ export class AdminStack extends cdk.Stack {
     });
     const adminDomain = `admin.${props.domainName}`;
 
-    const certificate = new acm.Certificate(this, 'AdminCertificate', {
-      domainName: adminDomain,
-      validation: acm.CertificateValidation.fromDns(hostedZone),
-    });
+    const certificate = props.certificate;
+
+    const environment = this.node.tryGetContext('environment') ?? 'dev';
+    const poolRemovalPolicy =
+      environment === 'dev' ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
+    const durableRemovalPolicy =
+      environment === 'dev' ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
 
     this.adminPool = new cognito.UserPool(this, 'AdminUserPool', {
       userPoolName: 'jale-admin-pool',
@@ -61,7 +70,7 @@ export class AdminStack extends cdk.Stack {
         requireDigits: true,
         requireSymbols: true,
       },
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      removalPolicy: poolRemovalPolicy,
     });
 
     this.adminClient = this.adminPool.addClient('AdminUserPoolClient', {
@@ -98,7 +107,17 @@ export class AdminStack extends cdk.Stack {
     const adminLogGroup = new logs.LogGroup(this, 'AdminNextLogGroup', {
       logGroupName: '/aws/lambda/jale-admin-nextjs',
       retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      removalPolicy: durableRemovalPolicy,
+    });
+
+    const accessLogsBucket = new s3.Bucket(this, 'AdminAccessLogsBucket', {
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+      lifecycleRules: [{ expiration: cdk.Duration.days(90) }],
+      removalPolicy: durableRemovalPolicy,
+      autoDeleteObjects: environment === 'dev',
     });
 
     const adminDir = path.resolve(__dirname, '..', '..', '..', 'admin');
@@ -194,6 +213,10 @@ function handler(event) {
       },
       domainNames: [adminDomain],
       certificate,
+      webAclId: props.webAclArn,
+      logBucket: accessLogsBucket,
+      logFilePrefix: 'cloudfront/',
+      logIncludesCookies: false,
       enableIpv6: true,
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
     });
@@ -207,6 +230,39 @@ function handler(event) {
       zone: hostedZone,
       recordName: adminDomain,
       target: route53.RecordTarget.fromAlias(new route53targets.CloudFrontTarget(this.distribution)),
+    });
+
+    new cloudwatch.Alarm(this, 'AdminLambdaErrorsAlarm', {
+      alarmName: 'jale-admin-lambda-errors',
+      metric: adminFunction.metricErrors({
+        period: cdk.Duration.minutes(5),
+        statistic: 'sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'AdminLambdaThrottlesAlarm', {
+      alarmName: 'jale-admin-lambda-throttles',
+      metric: adminFunction.metricThrottles({
+        period: cdk.Duration.minutes(5),
+        statistic: 'sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
+    new cloudwatch.Alarm(this, 'AdminCloudFront5xxAlarm', {
+      alarmName: 'jale-admin-cloudfront-5xx',
+      metric: this.distribution.metric5xxErrorRate({
+        period: cdk.Duration.minutes(5),
+        statistic: 'average',
+      }),
+      threshold: 5,
+      evaluationPeriods: 2,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
     new cdk.CfnOutput(this, 'AdminUrl', {

@@ -122,6 +122,37 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  admin:
+    name: Admin build and contract checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup admin dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: admin
+
+      - name: Typecheck admin
+        working-directory: admin
+        run: npm run typecheck
+
+      - name: Check admin server contracts
+        working-directory: admin
+        run: |
+          npm run test:policy
+          npm run test:server-db
+          npm run test:session
+          npm run test:read-models
+          npm run test:dispatch
+          npm run test:safe-redirect
+          npm run test:ui
+
+      - name: Build admin
+        working-directory: admin
+        run: npm run build
+
   security:
     name: Security checks
     runs-on: ubuntu-latest
@@ -156,4 +187,13 @@ jobs:
         working-directory: frontend
         # TODO: upgrade Next.js to 15.x to resolve high-severity CVEs (GHSA-9g9p, GHSA-h25m, et al.)
         # Lowered to critical until that upgrade is scheduled.
+        run: npm audit --audit-level=critical
+
+      - name: Setup admin dependencies
+        uses: ./.github/actions/setup-node-cache
+        with:
+          working-directory: admin
+
+      - name: Audit admin dependencies
+        working-directory: admin
         run: npm audit --audit-level=critical

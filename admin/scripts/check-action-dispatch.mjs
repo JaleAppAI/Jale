@@ -77,19 +77,19 @@ assert.deepEqual(dispatch.buildCaseMutation('request_more_info', { note: 'Need r
 });
 
 assert.deepEqual(dispatch.buildCaseMutation('resolve_case', {}), {
-  sql: `UPDATE admin_cases SET status = $2, resolved_at = NOW(), updated_at = NOW() WHERE id = $1`,
+  sql: `UPDATE admin_cases SET status = $2, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND status <> 'resolved'`,
   params: ['case-id', 'resolved'],
 });
 
 assert.equal(dispatch.buildCaseMutation('reply_whatsapp', {}), undefined);
 
 assert.deepEqual(dispatch.buildVerificationMutation('approve_verification', {}), {
-  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker'`,
+  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
   params: ['verification-id', 'resolved', JSON.stringify({ verificationStatus: 'approved' })],
 });
 
 assert.deepEqual(dispatch.buildVerificationMutation('reject_verification', { justification: 'Docs do not match.' }), {
-  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker'`,
+  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, resolved_at = NOW(), updated_at = NOW() WHERE id = $1 AND case_type = 'verification_blocker' AND status NOT IN ('resolved', 'dismissed')`,
   params: ['verification-id', 'dismissed', JSON.stringify({ verificationStatus: 'rejected', rejectionReason: 'Docs do not match.' })],
 });
 

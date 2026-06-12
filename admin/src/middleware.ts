@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { ADMIN_SESSION_COOKIE } from '@/lib/session-cookie';
 import { safeNextPath } from '@/lib/safe-redirect';
+import { isLocalPreviewAllowed } from '@/lib/server/session-claims';
 
 const PUBLIC_PREFIXES = [
   '/login',
@@ -23,8 +24,11 @@ export function middleware(request: NextRequest) {
   }
 
   const hasSessionCookie = Boolean(request.cookies.get(ADMIN_SESSION_COOKIE)?.value);
-  const hasLocalPreviewRole = process.env.NODE_ENV !== 'production'
-    && ['admin_readonly', 'admin_ops', 'admin_superadmin'].includes(process.env.ADMIN_PREVIEW_ROLE ?? '');
+  const hasLocalPreviewRole = isLocalPreviewAllowed(
+    process.env.NODE_ENV,
+    process.env.ADMIN_PREVIEW_ROLE,
+    process.env.ADMIN_ALLOW_LOCAL_PREVIEW,
+  );
 
   if (!hasSessionCookie && !hasLocalPreviewRole) {
     const loginUrl = request.nextUrl.clone();
