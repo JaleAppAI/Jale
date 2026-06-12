@@ -1,4 +1,5 @@
 import type { VerifyAuthChallengeResponseTriggerEvent } from 'aws-lambda';
+import { timingSafeEqual } from 'node:crypto';
 
 /**
  * VerifyAuthChallenge: Compares the user's submitted answer against the
@@ -18,11 +19,9 @@ export const handler = async (
     return event;
   }
 
-  // Constant-time comparison not strictly necessary here since the OTP is
-  // 6 digits and the attacker would gain nothing from timing analysis (the
-  // DefineAuthChallenge 3-attempt limit is the real rate control). But use
-  // a simple equality check — matches the security posture of similar AWS
-  // custom-auth examples.
-  event.response.answerCorrect = userAnswer === expectedOtp;
+  const expected = Buffer.from(expectedOtp);
+  const actual = Buffer.from(userAnswer ?? '');
+  event.response.answerCorrect =
+    expected.length === actual.length && timingSafeEqual(expected, actual);
   return event;
 };

@@ -8,7 +8,14 @@ describe('AuthStack', () => {
   let template: Template;
 
   beforeAll(() => {
-    const app = new cdk.App({ context: { environment: 'prod' } });
+    const app = new cdk.App({
+      context: {
+        environment: 'prod',
+        otpSmsFromNumber: '+15125550123',
+        otpSmsRequestTimeoutMs: 3500,
+        otpSmsValidityPeriodSeconds: 180,
+      },
+    });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', {
       network,
@@ -156,9 +163,20 @@ describe('AuthStack', () => {
       Environment: Match.objectLike({
         Variables: Match.objectLike({
           TWILIO_SECRET_ARN: 'jale/whatsapp/otp-twilio',
-          TWILIO_FROM_NUMBER: '+13252210992',
+          TWILIO_FROM_NUMBER: '+15125550123',
+          TWILIO_REQUEST_TIMEOUT_MS: '3500',
+          TWILIO_VALIDITY_PERIOD_SECONDS: '180',
         }),
       }),
+    });
+  });
+
+  test('CreateAuthChallenge errors raise a CloudWatch alarm', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'WorkerOtpSendErrors',
+      MetricName: 'Errors',
+      Namespace: 'AWS/Lambda',
+      Threshold: 1,
     });
   });
 

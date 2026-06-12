@@ -104,6 +104,9 @@
     "dbInstanceClass": "t4g.micro",
     "deletionProtection": false,
     "allowedOrigin": "https://jaleapp.ai",
+    "otpSmsFromNumber": "+13252210992",
+    "otpSmsRequestTimeoutMs": 3500,
+    "otpSmsValidityPeriodSeconds": 180,
     "requiredTosVersion": "1.0",
     "multiAz": false
   }

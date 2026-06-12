@@ -13,7 +13,9 @@ describe('WhatsAppStack', () => {
   let apiTemplate: Template;
 
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = new cdk.App({
+      context: { otpSmsFromNumber: '+13252210992' },
+    });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', { network });
     const auth = new AuthStack(app, 'TestAuthStack', {

@@ -416,7 +416,8 @@ Rationale: Adding to a populated table later requires a migration + backfill. Fr
 **ADR-009: OTP via Twilio SMS (SUPERSEDES original "SNS for OTP" decision)**
 Original decision: AWS SNS sandbox for OTP — simpler, no external account, 10 test numbers.
 Superseded when: Twilio was added for WhatsApp. Migrating OTP to Twilio unifies messaging on one service, removes the 10-number sandbox limit, and enables production-ready SMS.
-Current: Worker custom auth Lambdas (`create-auth-challenge`) call Twilio via `jale/whatsapp/otp-twilio` secret.
+Current: Worker custom auth Lambdas (`create-auth-challenge`) call Twilio via the `jale/whatsapp/otp-twilio` credential secret and the dedicated A2P-approved sender configured by `otpSmsFromNumber`. Cognito SMS MFA/SNS publishing is disabled, and WhatsApp senders are never used for OTP delivery.
+Operational controls: keep Twilio Geo Permissions restricted to supported countries, enable SMS Pumping Protection and account spend alerts, and monitor the `WorkerOtpSendErrors` CloudWatch alarm. A durable per-phone/IP issuance throttle or migration to Twilio Verify remains required before high-volume public launch.
 
 **ADR-010: CORS locked to configured origin (not `*`)**
 Decision: CORS origin parameterized via `tryGetContext('allowedOrigin')`; default `http://localhost:3000`.
@@ -454,7 +455,7 @@ Decision: Per-trade question sets and answer options are constants in `infra/lam
 Rationale: The taxonomy is small, curated, and changes infrequently. A DB-driven taxonomy adds a table, RLS policies, and a migration for every taxonomy edit — unnecessary overhead at V1.
 
 **ADR-W07: OTP via Twilio SMS (not SNS)**
-See ADR-009. Applied specifically to WhatsApp stack context: both OTP SMS and WhatsApp messaging use the same Twilio account and service.
+See ADR-009. Applied specifically to WhatsApp onboarding: the conversation remains on WhatsApp, but the OTP is delivered only through the dedicated SMS sender. The WhatsApp Messaging Service is not an OTP fallback.
 
 ---
 

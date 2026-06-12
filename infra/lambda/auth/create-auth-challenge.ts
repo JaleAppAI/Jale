@@ -100,6 +100,18 @@ async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
   if (!from || !/^\+[1-9]\d{7,14}$/.test(from)) {
     throw new Error('Missing or invalid TWILIO_FROM_NUMBER');
   }
+  const timeoutMs = parseBoundedInteger(
+    'TWILIO_REQUEST_TIMEOUT_MS',
+    process.env.TWILIO_REQUEST_TIMEOUT_MS,
+    500,
+    4000,
+  );
+  const validityPeriodSeconds = parseBoundedInteger(
+    'TWILIO_VALIDITY_PERIOD_SECONDS',
+    process.env.TWILIO_VALIDITY_PERIOD_SECONDS,
+    6,
+    36000,
+  );
 
   const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
   const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
@@ -107,22 +119,45 @@ async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
     To: to,
     From: from,
     Body: body,
+    ValidityPeriod: String(validityPeriodSeconds),
   });
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: body_,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: body_,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+      throw new Error(`Twilio SMS OTP request timed out after ${timeoutMs}ms`);
+    }
+    throw err;
+  }
 
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { message?: string; code?: number };
     const detail = data.message ?? `HTTP ${response.status}`;
     throw new Error(`Twilio SMS OTP send failed: ${detail}`);
   }
+}
+
+function parseBoundedInteger(
+  name: string,
+  raw: string | undefined,
+  min: number,
+  max: number,
+): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be between ${min} and ${max}`);
+  }
+  return value;
 }
 
 function generateOtp(): string {

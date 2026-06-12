@@ -1,7 +1,6 @@
 import {
   AdminAddUserToGroupCommand,
   AdminCreateUserCommand,
-  AdminConfirmSignUpCommand,
   AdminGetUserCommand,
   AdminSetUserPasswordCommand,
   CognitoIdentityProviderClient,
@@ -62,18 +61,9 @@ export const handler = async (
       }));
     } catch (err: any) {
       if (err?.name !== 'UsernameExistsException') throw err;
-
-      const existing = await cognito.send(new AdminGetUserCommand({
-        UserPoolId: userPoolId,
-        Username: phone,
-      }));
-
-      if (existing.UserStatus === 'UNCONFIRMED') {
-        await cognito.send(new AdminConfirmSignUpCommand({
-          UserPoolId: userPoolId,
-          Username: phone,
-        }));
-      }
+      // This endpoint is unauthenticated. Never change Cognito or profile data
+      // for an existing phone number until the caller proves ownership by OTP.
+      return json(200, { ok: true });
     }
 
     await cognito.send(new AdminSetUserPasswordCommand({

@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -68,6 +69,31 @@ export class AuthStack extends cdk.Stack {
       'OtpTwilioSecret',
       'jale/whatsapp/otp-twilio',
     );
+    const otpSmsFromNumber = String(this.node.tryGetContext('otpSmsFromNumber') ?? '');
+    const otpSmsRequestTimeoutMs = Number(
+      this.node.tryGetContext('otpSmsRequestTimeoutMs') ?? 3500,
+    );
+    const otpSmsValidityPeriodSeconds = Number(
+      this.node.tryGetContext('otpSmsValidityPeriodSeconds') ?? 180,
+    );
+
+    if (!/^\+[1-9]\d{7,14}$/.test(otpSmsFromNumber)) {
+      throw new Error('otpSmsFromNumber must be a valid E.164 phone number');
+    }
+    if (
+      !Number.isInteger(otpSmsRequestTimeoutMs)
+      || otpSmsRequestTimeoutMs < 500
+      || otpSmsRequestTimeoutMs > 4000
+    ) {
+      throw new Error('otpSmsRequestTimeoutMs must be between 500 and 4000');
+    }
+    if (
+      !Number.isInteger(otpSmsValidityPeriodSeconds)
+      || otpSmsValidityPeriodSeconds < 6
+      || otpSmsValidityPeriodSeconds > 36000
+    ) {
+      throw new Error('otpSmsValidityPeriodSeconds must be between 6 and 36000');
+    }
 
     const createAuthChallengeLambda = new JaleLambdaFunction(this, 'CreateAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/create-auth-challenge.ts'),
@@ -79,7 +105,9 @@ export class AuthStack extends cdk.Stack {
         // partial ARN as secretArn; Secrets Manager's runtime auth path has
         // denied that partial ARN even when IAM simulation says allowed.
         TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
-        TWILIO_FROM_NUMBER: '+13252210992',
+        TWILIO_FROM_NUMBER: otpSmsFromNumber,
+        TWILIO_REQUEST_TIMEOUT_MS: String(otpSmsRequestTimeoutMs),
+        TWILIO_VALIDITY_PERIOD_SECONDS: String(otpSmsValidityPeriodSeconds),
       },
     });
     otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
@@ -90,6 +118,17 @@ export class AuthStack extends cdk.Stack {
       actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
       resources: [otpTwilioSecret.secretArn],
     }));
+    new cloudwatch.Alarm(this, 'WorkerOtpSendErrorAlarm', {
+      alarmName: 'WorkerOtpSendErrors',
+      alarmDescription: 'Worker OTP CreateAuthChallenge Lambda reported an error',
+      metric: createAuthChallengeLambda.function.metricErrors({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
 
     // VerifyAuthChallenge: compares user answer to stored OTP. Stateless.
     const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {

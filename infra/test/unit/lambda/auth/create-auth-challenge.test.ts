@@ -41,6 +41,8 @@ describe('CreateAuthChallenge Lambda', () => {
     // Default: TWILIO_SECRET_ARN env var set to the secret name; secret returns the full payload.
     process.env.TWILIO_SECRET_ARN = 'jale/whatsapp/otp-twilio';
     process.env.TWILIO_FROM_NUMBER = '+13252210992';
+    process.env.TWILIO_REQUEST_TIMEOUT_MS = '3500';
+    process.env.TWILIO_VALIDITY_PERIOD_SECONDS = '180';
     mockSecretsSend.mockReset();
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -56,6 +58,8 @@ describe('CreateAuthChallenge Lambda', () => {
     jest.resetAllMocks();
     delete process.env.TWILIO_SECRET_ARN;
     delete process.env.TWILIO_FROM_NUMBER;
+    delete process.env.TWILIO_REQUEST_TIMEOUT_MS;
+    delete process.env.TWILIO_VALIDITY_PERIOD_SECONDS;
   });
 
   it('generates a 6-digit OTP and sends SMS from the dedicated Jale number on first call', async () => {
@@ -86,6 +90,8 @@ describe('CreateAuthChallenge Lambda', () => {
     expect(body.get('MessagingServiceSid')).toBeNull();
     expect(body.get('Body')).toContain(otp!);
     expect(body.get('Body')).not.toContain('Reply');
+    expect(body.get('ValidityPeriod')).toBe('180');
+    expect(init.signal).toBeInstanceOf(AbortSignal);
 
     // challengeMetadata carries the OTP forward for retry reuse
     expect(result.response.challengeMetadata).toBe(otp);
@@ -153,6 +159,23 @@ describe('CreateAuthChallenge Lambda', () => {
     const event = baseEvent([]);
     await expect(handler(event)).rejects.toThrow(
       /Twilio SMS OTP send failed.*Authenticate/,
+    );
+  });
+
+  it('uses a bounded Twilio request timeout below Cognito trigger timeout', async () => {
+    const timeoutSpy = jest.spyOn(AbortSignal, 'timeout');
+
+    await handler(baseEvent([]));
+
+    expect(timeoutSpy).toHaveBeenCalledWith(3500);
+    timeoutSpy.mockRestore();
+  });
+
+  it('rejects invalid Twilio timeout configuration', async () => {
+    process.env.TWILIO_REQUEST_TIMEOUT_MS = '5000';
+
+    await expect(handler(baseEvent([]))).rejects.toThrow(
+      /TWILIO_REQUEST_TIMEOUT_MS must be between 500 and 4000/,
     );
   });
 
