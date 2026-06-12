@@ -76,7 +76,7 @@ rm -f /tmp/026_admin_panel.sql
 
 ADMIN_JSON=$(aws secretsmanager get-secret-value --region "$REGION" --secret-id "$ADMIN_SECRET_ARN" --query SecretString --output text)
 ADMIN_PASSWORD=$(echo "$ADMIN_JSON" | jq -r .password)
-"${PG[@]}" -v admin_password="$ADMIN_PASSWORD" -c "ALTER ROLE jale_admin_console WITH PASSWORD :'admin_password';"
+"${PG[@]}" -c "ALTER ROLE jale_admin_console WITH PASSWORD '$ADMIN_PASSWORD';"
 
 echo "Verifying admin schema and role..."
 "${PG[@]}" -Atc "
