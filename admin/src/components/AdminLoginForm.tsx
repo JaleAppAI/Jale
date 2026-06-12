@@ -98,9 +98,10 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
         });
       },
       onFailure: (err) => handleAuthFailure(err, 'Sign-in failed.'),
-      newPasswordRequired: (userAttributes) => {
+      newPasswordRequired: (userAttributes, requiredAttributeNames) => {
+        const requiredAttributeSet = new Set(requiredAttributeNames ?? []);
         const acceptedAttributes = Object.fromEntries(
-          Object.entries(userAttributes ?? {}).filter(([key]) => !key.endsWith('_verified')),
+          Object.entries(userAttributes ?? {}).filter(([key]) => requiredAttributeSet.has(key)),
         );
 
         setPendingUser(user);
