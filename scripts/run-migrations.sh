@@ -64,6 +64,7 @@ MIGRATIONS=(
   "024_sprint11_hiring_flow_hardening.sql"
   "025_job_messaging.sql"
   "026_job_messaging_hardening.sql"
+  "027_hired_count_trigger_security_definer.sql"
 )
 
 echo ">> Using region: $REGION"

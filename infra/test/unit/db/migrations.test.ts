@@ -49,6 +49,7 @@ describe('database migrations', () => {
       '024',
       '025',
       '026',
+      '027',
     ]);
   });
 
@@ -280,5 +281,18 @@ describe('database migrations', () => {
     expect(migration).toContain('GRANT EXECUTE ON FUNCTION assign_worker_thread_number');
     expect(migration).toContain('GRANT EXECUTE ON FUNCTION record_twilio_status');
     expect(migration).toContain('GRANT EXECUTE ON FUNCTION list_stale_job_outbox_workers');
+  });
+
+  it('makes sync_job_hired_counts SECURITY DEFINER in migration 027 so jale_whatsapp replies do not hit permission denied on jobs', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '027_hired_count_trigger_security_definer.sql'),
+      'utf8',
+    );
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts()');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('SET search_path = public');
+    // Trigger binding is preserved via CREATE OR REPLACE — must NOT recreate it.
+    expect(migration).not.toContain('CREATE TRIGGER');
   });
 });

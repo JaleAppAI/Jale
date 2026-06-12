@@ -34,6 +34,7 @@ const expectedBaselineMigrations = [
   '024_sprint11_hiring_flow_hardening.sql',
   '025_job_messaging.sql',
   '026_job_messaging_hardening.sql',
+  '027_hired_count_trigger_security_definer.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -376,6 +377,15 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('idx_job_messages_twilio_sid');
     expect(migration).toContain('CREATE OR REPLACE FUNCTION record_twilio_status');
     expect(migration).toContain('CREATE OR REPLACE FUNCTION list_stale_job_outbox_workers');
+  });
+
+  it('recreates sync_job_hired_counts as SECURITY DEFINER in migration 027 (worker-reply jobs-cascade fix)', () => {
+    const migration = readMigration('027_hired_count_trigger_security_definer.sql');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts()');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('SET search_path = public');
+    expect(migration).not.toContain('CREATE TRIGGER');
   });
 
   maybeIt('applies migrations 001-026 against a local Postgres database', async () => {
