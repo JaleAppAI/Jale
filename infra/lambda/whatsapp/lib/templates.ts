@@ -61,12 +61,12 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Send "Hola" or "Hello" to get started.',
   },
   welcome_new_user: {
-    es: 'Bienvenido a Jale.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
-    en: 'Welcome to Jale.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
+    es: 'Bienvenido a Jale.\n\nTe enviamos un codigo de verificacion por SMS. Revisa los mensajes de texto de tu telefono y responde aqui con el codigo.',
+    en: 'Welcome to Jale.\n\nWe sent you a verification code by SMS. Check your phone text messages and reply here with the code.',
   },
   welcome_existing_user: {
-    es: 'Hola de nuevo.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
-    en: 'Welcome back.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
+    es: 'Hola de nuevo.\n\nTe enviamos un codigo de verificacion por SMS. Revisa los mensajes de texto de tu telefono y responde aqui con el codigo.',
+    en: 'Welcome back.\n\nWe sent you a verification code by SMS. Check your phone text messages and reply here with the code.',
   },
   otp_retry: {
     es: 'Ese codigo no funciono. Intenta de nuevo.',
@@ -81,8 +81,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Your code expired.\n\nSend "Hi" to receive a new one.',
   },
   otp_expired_retry: {
-    es: 'Tu codigo expiro.\n\nTe enviamos uno nuevo por WhatsApp. Responde aqui con el codigo.',
-    en: 'Your code expired.\n\nWe sent a new one on WhatsApp. Reply here with the code.',
+    es: 'Tu codigo expiro.\n\nTe enviamos uno nuevo por SMS. Revisa los mensajes de texto de tu telefono y responde aqui con el codigo.',
+    en: 'Your code expired.\n\nWe sent a new one by SMS. Check your phone text messages and reply here with the code.',
   },
 
   legal_prompt: {

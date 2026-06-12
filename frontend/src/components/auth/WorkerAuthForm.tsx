@@ -110,11 +110,19 @@ export default function WorkerAuthForm() {
     };
 
     const handleDigitChange = (index: number, value: string) => {
+        const numeric = value.replace(/\D/g, '').slice(0, OTP_LENGTH);
+        if (numeric.length > 1) {
+            const next = Array(OTP_LENGTH).fill('');
+            numeric.split('').forEach((digit, digitIndex) => { next[digitIndex] = digit; });
+            setDigits(next);
+            inputRefs.current[Math.min(numeric.length, OTP_LENGTH) - 1]?.focus();
+            return;
+        }
         if (!/^\d?$/.test(value)) return;
         const next = [...digits];
-        next[index] = value;
+        next[index] = numeric;
         setDigits(next);
-        if (value && index < OTP_LENGTH - 1) inputRefs.current[index + 1]?.focus();
+        if (numeric && index < OTP_LENGTH - 1) inputRefs.current[index + 1]?.focus();
     };
 
     const handleDigitKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -298,7 +306,8 @@ function OtpStep(props: {
                         ref={(el) => { props.inputRefs.current[i] = el; }}
                         type="text"
                         inputMode="numeric"
-                        maxLength={1}
+                        autoComplete={i === 0 ? 'one-time-code' : 'off'}
+                        maxLength={i === 0 ? OTP_LENGTH : 1}
                         value={d}
                         onChange={(e) => props.onChange(i, e.target.value)}
                         onKeyDown={(e) => props.onKeyDown(i, e)}

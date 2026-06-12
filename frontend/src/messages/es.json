@@ -58,7 +58,7 @@
             "signup_link": "Crea una cuenta",
             "confirm_title": "Confirma tu cuenta",
             "otp_title": "Ingresa el codigo de 6 digitos",
-            "code_sent": "Enviado a {phone}",
+            "code_sent": "SMS enviado a {phone}",
             "create_account": "Crear cuenta",
             "confirm_account": "Confirmar cuenta",
             "password_note": "Los trabajadores no necesitan contrasena. Iniciaras sesion con tu telefono y un codigo de verificacion.",

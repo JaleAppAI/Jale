@@ -22,7 +22,7 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly lambdaSg: ec2.ISecurityGroup;
   /** jale_admin DB secret (NOT used by WhatsApp Lambdas — they use their own) */
   readonly dbSecret: secretsmanager.ISecret;
-  /** Worker Cognito pool — for SignUp / AdminConfirmSignUp / InitiateAuth */
+  /** Worker Cognito pool used for admin creation and CUSTOM_AUTH */
   readonly workerPool: JaleCognitoPool;
   /** Existing API Gateway (from ApiStack) — webhook route added here */
   readonly api: apigateway.RestApi;
@@ -83,8 +83,8 @@ export class WhatsAppStack extends cdk.Stack {
 
     // Main queue — visibility timeout 360s (6x the processor Lambda timeout of 60s,
     // per AWS recommendation). Matches worst-case processor call chain:
-    // SecretsMgr → DB → SignUp → AdminConfirmSignUp → defensive INSERT →
-    // InitiateAuth → SNS → Twilio → DB update.
+    // SecretsMgr → DB → AdminCreateUser → AdminSetUserPassword →
+    // defensive INSERT → InitiateAuth → Twilio SMS → DB update.
     this.inboundQueue = new sqs.Queue(this, 'WhatsAppInboundQueue', {
       queueName: 'whatsapp-inbound-queue',
       encryption: sqs.QueueEncryption.KMS_MANAGED,
@@ -156,14 +156,14 @@ export class WhatsAppStack extends cdk.Stack {
       }),
     );
 
-    // Cognito permissions — SignUp / AdminConfirmSignUp / InitiateAuth /
-    // RespondToAuthChallenge. Scoped to all pools in the account/region to
+    // Cognito permissions for suppressed admin creation and CUSTOM_AUTH.
+    // Scoped to all pools in the account/region to
     // avoid the circular dependency pattern documented in auth-stack.ts:125-136.
     this.processorLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
-          'cognito-idp:SignUp',
-          'cognito-idp:AdminConfirmSignUp',
+          'cognito-idp:AdminCreateUser',
+          'cognito-idp:AdminSetUserPassword',
           'cognito-idp:InitiateAuth',
           'cognito-idp:RespondToAuthChallenge',
           'cognito-idp:AdminGetUser',

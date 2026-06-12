@@ -2,7 +2,6 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import {
   AdminAddUserToGroupCommand,
   AdminCreateUserCommand,
-  AdminConfirmSignUpCommand,
   AdminGetUserCommand,
   AdminSetUserPasswordCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
@@ -18,9 +17,6 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => {
   class AdminCreateUserCommand {
     constructor(public input: any) {}
   }
-  class AdminConfirmSignUpCommand {
-    constructor(public input: any) {}
-  }
   class AdminGetUserCommand {
     constructor(public input: any) {}
   }
@@ -34,7 +30,6 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => {
     })),
     AdminAddUserToGroupCommand,
     AdminCreateUserCommand,
-    AdminConfirmSignUpCommand,
     AdminGetUserCommand,
     AdminSetUserPasswordCommand,
   };
@@ -127,56 +122,27 @@ describe('worker-web-signup', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
-  it('repairs and seeds an existing confirmed worker user', async () => {
+  it('does not mutate an existing confirmed worker before OTP ownership proof', async () => {
     mockSend
       .mockRejectedValueOnce({ name: 'UsernameExistsException' })
-      .mockResolvedValueOnce({
-        UserStatus: 'CONFIRMED',
-        UserAttributes: [{ Name: 'sub', Value: 'existing-sub' }],
-      })
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({
-        UserAttributes: [{ Name: 'sub', Value: 'existing-sub' }],
-      })
       .mockResolvedValueOnce({});
 
-    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
+    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Attacker Rename' }));
 
     expect(res.statusCode).toBe(200);
-    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AdminGetUserCommand);
-    expect(mockSend.mock.calls[1][0].input).toEqual({
-      UserPoolId: 'worker-pool',
-      Username: '+19152272188',
-    });
-    expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminSetUserPasswordCommand);
-    expect(mockSend.mock.calls[4][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
-    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'existing-sub');
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+    expect(mockSetRlsContext).not.toHaveBeenCalled();
   });
 
-  it('confirms and seeds a stale unconfirmed worker user', async () => {
+  it('does not repair a stale unconfirmed worker through the unauthenticated endpoint', async () => {
     mockSend
-      .mockRejectedValueOnce({ name: 'UsernameExistsException' })
-      .mockResolvedValueOnce({
-        UserStatus: 'UNCONFIRMED',
-        UserAttributes: [{ Name: 'sub', Value: 'stale-sub' }],
-      })
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({
-        UserAttributes: [{ Name: 'sub', Value: 'stale-sub' }],
-      })
-      .mockResolvedValueOnce({});
+      .mockRejectedValueOnce({ name: 'UsernameExistsException' });
 
     const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
 
     expect(res.statusCode).toBe(200);
-    expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminConfirmSignUpCommand);
-    expect(mockSend.mock.calls[2][0].input).toEqual({
-      UserPoolId: 'worker-pool',
-      Username: '+19152272188',
-    });
-    expect(mockSend.mock.calls[3][0]).toBeInstanceOf(AdminSetUserPasswordCommand);
-    expect(mockSend.mock.calls[5][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
-    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'stale-sub');
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 });

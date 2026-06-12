@@ -3,8 +3,8 @@ import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
   CognitoIdentityProviderClient,
-  SignUpCommand,
-  AdminConfirmSignUpCommand,
+  AdminCreateUserCommand,
+  AdminSetUserPasswordCommand,
   InitiateAuthCommand,
   RespondToAuthChallengeCommand,
   AuthFlowType,
@@ -1254,7 +1254,7 @@ async function handleNewOrRestart(
   const lang = detectLanguage(msg.body);
   const whatsappNumber = conv.whatsapp_number;
 
-  // Try SignUp — if user already exists, Cognito returns UsernameExistsException.
+  // Create the user without Cognito sending its own verification message.
   const clientId = process.env.WORKER_CLIENT_ID;
   if (!clientId) throw new Error('WORKER_CLIENT_ID not set');
   const poolId = process.env.WORKER_POOL_ID;
@@ -1263,24 +1263,27 @@ async function handleNewOrRestart(
   let isNewUser = true;
   try {
     // Password is random — we never use it. Custom auth does passwordless OTP.
-    const randomPassword =
-      'Jale!' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    await cognito.send(new SignUpCommand({
-      ClientId: clientId,
+    const randomPassword = `Jale!${randomUUID()}9aA`;
+    await cognito.send(new AdminCreateUserCommand({
+      UserPoolId: poolId,
       Username: whatsappNumber,
-      Password: randomPassword,
+      MessageAction: 'SUPPRESS',
+      TemporaryPassword: randomPassword,
       UserAttributes: [
         { Name: 'phone_number', Value: whatsappNumber },
+        { Name: 'phone_number_verified', Value: 'true' },
         { Name: 'custom:user_type', Value: 'worker' },
       ],
     }));
 
-    // Confirm immediately via admin API — custom auth needs a CONFIRMED user.
-    // AdminConfirmSignUp does NOT fire PostConfirmation, but we defensively
-    // insert the DB row in the processor regardless (Codex Door-2 fix).
-    await cognito.send(new AdminConfirmSignUpCommand({
+    // Set a permanent password so the account is ready for CUSTOM_AUTH.
+    // AdminCreateUser does not fire PostConfirmation, so the processor
+    // defensively inserts the DB row below.
+    await cognito.send(new AdminSetUserPasswordCommand({
       UserPoolId: poolId,
       Username: whatsappNumber,
+      Password: randomPassword,
+      Permanent: true,
     }));
   } catch (err: any) {
     if (err?.name === 'UsernameExistsException') {
@@ -1307,7 +1310,7 @@ async function handleNewOrRestart(
   );
 
   // InitiateAuth with CUSTOM_AUTH — triggers DefineAuthChallenge → CreateAuthChallenge.
-  // CreateAuthChallenge sends the 6-digit OTP via Twilio WhatsApp in dev and returns a
+  // CreateAuthChallenge sends the 6-digit OTP via Twilio SMS and returns a
   // Cognito Session containing challengeMetadata. We PERSIST that Session on
   // the conversation row and reuse it in handleAwaitingOtp (Fix 1, 2026-04-17)
   // so subsequent webhook deliveries don't trigger fresh Twilio sends that
@@ -1507,7 +1510,7 @@ async function recordWrongOtp(
 
 /**
  * Cognito session expired or missing. Fire a fresh InitiateAuth (which
- * triggers CreateAuthChallenge → new Twilio WhatsApp OTP in dev), persist the new Session,
+ * triggers CreateAuthChallenge → new Twilio SMS OTP), persist the new Session,
  * reply `otp_expired_retry`. Does NOT increment otp_attempts.
  */
 async function reissueOtp(

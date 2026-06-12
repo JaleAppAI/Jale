@@ -11,7 +11,9 @@ describe('ApiStack', () => {
   let template: Template;
 
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = new cdk.App({
+      context: { otpSmsFromNumber: '+13252210992' },
+    });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', {
       network,
@@ -21,7 +23,6 @@ describe('ApiStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
-      cognitoSmsRole: network.cognitoSmsRole,
     });
     const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
     const api = new ApiStack(app, 'TestApiStack', {
@@ -103,7 +104,7 @@ describe('ApiStack', () => {
 
   test('Worker web signup Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Worker web signup endpoint - create confirmed worker before WhatsApp OTP login',
+      Description: 'Worker web signup endpoint - create confirmed worker before SMS OTP login',
     });
   });
 

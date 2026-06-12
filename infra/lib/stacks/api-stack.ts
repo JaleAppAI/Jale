@@ -339,10 +339,10 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
-    // Worker web signup - no auth yet; creates/confirm worker then web login sends WhatsApp OTP
+    // Worker web signup - no auth yet; creates/confirms worker, then custom auth sends SMS OTP
     const workerWebSignupLambda = new JaleLambdaFunction(this, 'WorkerWebSignupLambda', {
       entry: path.join(__dirname, '../../lambda/auth/worker-web-signup.ts'),
-      description: 'Worker web signup endpoint - create confirmed worker before WhatsApp OTP login',
+      description: 'Worker web signup endpoint - create confirmed worker before SMS OTP login',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
