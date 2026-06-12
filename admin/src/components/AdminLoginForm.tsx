@@ -5,12 +5,13 @@ import {
   AuthenticationDetails,
   CognitoUser,
   CognitoUserPool,
+  type IAuthenticationCallback,
   type CognitoUserSession,
 } from 'amazon-cognito-identity-js';
 import type { AdminAuthConfig } from '@/lib/auth';
 import { safeNextPath } from '@/lib/safe-redirect';
 
-type LoginStep = 'credentials' | 'mfa';
+type LoginStep = 'credentials' | 'new-password' | 'mfa-setup' | 'mfa';
 
 type AdminLoginFormProps = {
   config: AdminAuthConfig;
@@ -23,7 +24,11 @@ function getIdToken(session: CognitoUserSession): string {
 export function AdminLoginForm({ config }: AdminLoginFormProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [mfaCode, setMfaCode] = useState('');
+  const [totpSecret, setTotpSecret] = useState('');
+  const [requiredAttributes, setRequiredAttributes] = useState<Record<string, unknown>>({});
   const [step, setStep] = useState<LoginStep>('credentials');
   const [pendingUser, setPendingUser] = useState<CognitoUser | undefined>();
   const [status, setStatus] = useState<string | undefined>();
@@ -65,6 +70,60 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
       : 'Enter your MFA code.');
   }
 
+  function handleAuthFailure(err: unknown, fallback: string) {
+    setError(err instanceof Error ? err.message : fallback);
+    setIsSubmitting(false);
+  }
+
+  function beginSoftwareTokenSetup(user: CognitoUser) {
+    setPendingUser(user);
+    setIsSubmitting(false);
+    setStatus('Add Jale Admin to your authenticator app, then enter the six-digit code.');
+
+    user.associateSoftwareToken({
+      associateSecretCode: (secretCode) => {
+        setTotpSecret(secretCode);
+        setMfaCode('');
+        setStep('mfa-setup');
+      },
+      onFailure: (err) => handleAuthFailure(err, 'Authenticator setup could not be started.'),
+    });
+  }
+
+  function authenticationCallbacks(user: CognitoUser): IAuthenticationCallback {
+    return {
+      onSuccess: (session) => {
+        void establishSession(session).catch((err: unknown) => {
+          handleAuthFailure(err, 'Sign-in failed.');
+        });
+      },
+      onFailure: (err) => handleAuthFailure(err, 'Sign-in failed.'),
+      newPasswordRequired: (userAttributes) => {
+        const acceptedAttributes = Object.fromEntries(
+          Object.entries(userAttributes ?? {}).filter(([key]) => !key.endsWith('_verified')),
+        );
+
+        setPendingUser(user);
+        setRequiredAttributes(acceptedAttributes);
+        setNewPassword('');
+        setConfirmNewPassword('');
+        setError(undefined);
+        setStatus('Replace the temporary password to continue.');
+        setStep('new-password');
+        setIsSubmitting(false);
+      },
+      mfaRequired: () => {
+        setIsSubmitting(false);
+        handleChallenge(user, 'MFA');
+      },
+      totpRequired: () => {
+        setIsSubmitting(false);
+        handleChallenge(user, 'SOFTWARE_TOKEN_MFA');
+      },
+      mfaSetup: () => beginSoftwareTokenSetup(user),
+    };
+  }
+
   async function submitCredentials(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(undefined);
@@ -80,25 +139,50 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
     user.authenticateUser(new AuthenticationDetails({
       Username: email.trim(),
       Password: password,
-    }), {
+    }), authenticationCallbacks(user));
+  }
+
+  async function submitNewPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(undefined);
+
+    if (!pendingUser) {
+      setError('Start sign-in again before replacing the temporary password.');
+      setStep('credentials');
+      return;
+    }
+
+    if (newPassword !== confirmNewPassword) {
+      setError('The new passwords do not match.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    pendingUser.completeNewPasswordChallenge(
+      newPassword,
+      requiredAttributes,
+      authenticationCallbacks(pendingUser),
+    );
+  }
+
+  async function submitTotpSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(undefined);
+
+    if (!pendingUser || !totpSecret) {
+      setError('Restart sign-in before setting up the authenticator.');
+      setStep('credentials');
+      return;
+    }
+
+    setIsSubmitting(true);
+    pendingUser.verifySoftwareToken(mfaCode.trim(), 'Jale Admin', {
       onSuccess: (session) => {
         void establishSession(session).catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : 'Sign-in failed.');
-          setIsSubmitting(false);
+          handleAuthFailure(err, 'Authenticator setup failed.');
         });
       },
-      onFailure: (err) => {
-        setError(err.message ?? 'Sign-in failed.');
-        setIsSubmitting(false);
-      },
-      mfaRequired: (_challengeName, _challengeParameters) => {
-        setIsSubmitting(false);
-        handleChallenge(user, 'MFA');
-      },
-      totpRequired: (_challengeName, _challengeParameters) => {
-        setIsSubmitting(false);
-        handleChallenge(user, 'SOFTWARE_TOKEN_MFA');
-      },
+      onFailure: (err) => handleAuthFailure(err, 'Authenticator setup failed.'),
     });
   }
 
@@ -113,24 +197,100 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
     }
 
     setIsSubmitting(true);
-    pendingUser.sendMFACode(mfaCode.trim(), {
-      onSuccess: (session) => {
-        void establishSession(session).catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : 'Sign-in failed.');
-          setIsSubmitting(false);
-        });
-      },
-      onFailure: (err) => {
-        setError(err.message ?? 'MFA verification failed.');
-        setIsSubmitting(false);
-      },
-    }, 'SOFTWARE_TOKEN_MFA');
+    pendingUser.sendMFACode(
+      mfaCode.trim(),
+      authenticationCallbacks(pendingUser),
+      'SOFTWARE_TOKEN_MFA',
+    );
+  }
+
+  function restartSignIn() {
+    setPendingUser(undefined);
+    setRequiredAttributes({});
+    setTotpSecret('');
+    setMfaCode('');
+    setNewPassword('');
+    setConfirmNewPassword('');
+    setStatus(undefined);
+    setError(undefined);
+    setIsSubmitting(false);
+    setStep('credentials');
+  }
+
+  if (step === 'new-password') {
+    return (
+      <form className="stack-gap" onSubmit={submitNewPassword}>
+        {status ? <p aria-live="polite" className="muted" role="status">{status}</p> : null}
+        <label className="field">
+          <span>New password</span>
+          <input
+            autoComplete="new-password"
+            minLength={14}
+            onChange={(event) => setNewPassword(event.target.value)}
+            required
+            type="password"
+            value={newPassword}
+          />
+        </label>
+        <label className="field">
+          <span>Confirm new password</span>
+          <input
+            autoComplete="new-password"
+            minLength={14}
+            onChange={(event) => setConfirmNewPassword(event.target.value)}
+            required
+            type="password"
+            value={confirmNewPassword}
+          />
+        </label>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        <button className="button" disabled={isSubmitting} type="submit">
+          {isSubmitting ? 'Updating password...' : 'Set new password'}
+        </button>
+        <button className="button secondary" onClick={restartSignIn} type="button">
+          Back to sign in
+        </button>
+      </form>
+    );
+  }
+
+  if (step === 'mfa-setup') {
+    return (
+      <form className="stack-gap" onSubmit={submitTotpSetup}>
+        {status ? <p aria-live="polite" className="muted" role="status">{status}</p> : null}
+        <div className="setup-code" aria-label="Authenticator setup key">
+          <span className="muted">Setup key</span>
+          <code>{totpSecret}</code>
+        </div>
+        <label className="field">
+          <span>Authenticator code</span>
+          <input
+            autoComplete="one-time-code"
+            inputMode="numeric"
+            maxLength={6}
+            name="totp"
+            onChange={(event) => setMfaCode(event.target.value)}
+            pattern="[0-9]{6}"
+            required
+            type="text"
+            value={mfaCode}
+          />
+        </label>
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        <button className="button" disabled={isSubmitting} type="submit">
+          {isSubmitting ? 'Verifying...' : 'Finish authenticator setup'}
+        </button>
+        <button className="button secondary" onClick={restartSignIn} type="button">
+          Back to sign in
+        </button>
+      </form>
+    );
   }
 
   if (step === 'mfa') {
     return (
       <form className="stack-gap" onSubmit={submitMfa}>
-        {status ? <p className="muted">{status}</p> : null}
+        {status ? <p aria-live="polite" className="muted" role="status">{status}</p> : null}
         <label className="field">
           <span>MFA code</span>
           <input
@@ -143,12 +303,12 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
             value={mfaCode}
           />
         </label>
-        {error ? <p className="form-error">{error}</p> : null}
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
         <button className="button" disabled={isSubmitting} type="submit">
           {isSubmitting ? 'Verifying...' : 'Verify MFA'}
         </button>
-        <button className="button ghost" onClick={() => setStep('credentials')} type="button">
-          Back
+        <button className="button secondary" onClick={restartSignIn} type="button">
+          Back to sign in
         </button>
       </form>
     );
@@ -180,7 +340,7 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
           />
         </label>
       </div>
-      {error ? <p className="form-error">{error}</p> : null}
+      {error ? <p className="form-error" role="alert">{error}</p> : null}
       <button className="button" disabled={isSubmitting} type="submit">
         {isSubmitting ? 'Signing in...' : 'Sign in'}
       </button>

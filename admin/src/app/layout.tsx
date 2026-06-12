@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { getAdminAuthConfig } from '@/lib/auth';
+import { getCurrentAdminSession } from '@/lib/server/session';
+import { AdminNav } from '@/components/AdminNav';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -8,15 +11,10 @@ export const metadata: Metadata = {
   description: 'Jale admin console',
 };
 
-const links = [
-  { href: '/', label: 'Dashboard' },
-  { href: '/cases', label: 'Cases' },
-  { href: '/verifications', label: 'Verifications' },
-  { href: '/audit', label: 'Audit' },
-  { href: '/login', label: 'Login' },
-];
+export default async function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
+  const session = await getCurrentAdminSession();
+  const config = getAdminAuthConfig();
 
-export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
     <html lang="en">
       <body>
@@ -26,13 +24,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
               <strong>Jale</strong>
               <span>Admin</span>
             </Link>
-            <nav className="nav" aria-label="Primary navigation">
-              {links.map((link) => (
-                <Link key={link.href} href={link.href}>
-                  {link.label}
-                </Link>
-              ))}
-            </nav>
+            <AdminNav isLoggedIn={Boolean(session)} config={config} />
           </header>
           {children}
         </div>

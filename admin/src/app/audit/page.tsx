@@ -3,7 +3,7 @@ import { requireAdminSession } from '@/lib/server/session';
 
 export default async function AuditPage() {
   await requireAdminSession();
-  const auditEvents = await listAuditEvents();
+  const { rows: auditEvents, totalCount } = await listAuditEvents();
 
   return (
     <main className="stack-gap">
@@ -38,6 +38,9 @@ export default async function AuditPage() {
           </div>
         ))}
         {auditEvents.length === 0 ? <p className="muted">No audit events found.</p> : null}
+        {totalCount > auditEvents.length ? (
+          <p className="muted">Showing {auditEvents.length} of {totalCount}</p>
+        ) : null}
       </section>
     </main>
   );

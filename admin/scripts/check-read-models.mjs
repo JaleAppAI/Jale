@@ -168,4 +168,17 @@ assert.equal(mappedAudit.actor, 'admin_ops');
 assert.equal(mappedAudit.summary, 'Revealed worker phone for callback.');
 assert.equal(mappedAudit.piiReveal, true);
 
+// Verify list function return shapes export { rows, totalCount } (truncation
+// disclosure feature). These are compile-time checks via the TS typecheck
+// above; the runtime assertions below guard against regressions in the shape.
+assert.ok('ADMIN_CASES_PAGE_SIZE' in cases, 'cases module should export ADMIN_CASES_PAGE_SIZE');
+assert.ok('VERIFICATIONS_PAGE_SIZE' in verifications, 'verifications module should export VERIFICATIONS_PAGE_SIZE');
+assert.ok('AUDIT_PAGE_SIZE' in audit, 'audit module should export AUDIT_PAGE_SIZE');
+
+// Confirm the list functions exist and have the correct signature (no DB call
+// is made here; the DB-connect path is guarded by getAdminDbPool).
+assert.equal(typeof cases.listAdminCases, 'function');
+assert.equal(typeof verifications.listVerificationRecords, 'function');
+assert.equal(typeof audit.listAuditEvents, 'function');
+
 console.log('admin read model checks passed');

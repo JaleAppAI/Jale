@@ -36,15 +36,33 @@ export function mapAuditEventRow(row: AuditEventRow): AuditEvent {
   };
 }
 
-export async function listAuditEvents(): Promise<AuditEvent[]> {
-  const pool = await getAdminDbPool();
-  const result = await pool.query<AuditEventRow>(
-    `SELECT id, created_at, actor_email, actor_role, action, target_type,
-            target_id, pii_reveal, metadata
-       FROM admin_audit_log
-      ORDER BY created_at DESC
-      LIMIT 200`,
-  );
+// Default page size for audit log reads, matching the pattern used in
+// admin-cases and admin-verifications.
+export const AUDIT_PAGE_SIZE = 200;
 
-  return result.rows.map(mapAuditEventRow);
+export type AuditEventList = {
+  rows: AuditEvent[];
+  totalCount: number;
+};
+
+export async function listAuditEvents(limit: number = AUDIT_PAGE_SIZE): Promise<AuditEventList> {
+  const pool = await getAdminDbPool();
+  const [result, countResult] = await Promise.all([
+    pool.query<AuditEventRow>(
+      `SELECT id, created_at, actor_email, actor_role, action, target_type,
+              target_id, pii_reveal, metadata
+         FROM admin_audit_log
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [limit],
+    ),
+    pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM admin_audit_log`,
+    ),
+  ]);
+
+  return {
+    rows: result.rows.map(mapAuditEventRow),
+    totalCount: parseInt(countResult.rows[0]?.count ?? '0', 10),
+  };
 }

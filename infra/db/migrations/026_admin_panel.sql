@@ -1,5 +1,5 @@
 -- ============================================================
--- 025_admin_panel.sql
+-- 026_admin_panel.sql
 -- Admin support console schema for Sprint 12
 -- Connect as: jale_admin (NOT the RDS master user)
 --

@@ -12,7 +12,8 @@
     "test:session": "node scripts/check-session-helpers.mjs",
     "test:read-models": "node scripts/check-read-models.mjs",
     "test:dispatch": "node scripts/check-action-dispatch.mjs",
-    "test:safe-redirect": "node scripts/check-safe-redirect.mjs"
+    "test:safe-redirect": "node scripts/check-safe-redirect.mjs",
+    "test:ui": "node scripts/check-ui-contract.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1062.0",

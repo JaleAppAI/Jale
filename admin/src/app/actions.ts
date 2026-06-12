@@ -40,11 +40,11 @@ export async function submitAdminActionState(
   const session = await requireAdminSession();
   const result = await dispatchAdminAction(session, parsed.value);
 
-  revalidateAdminRoutes(parsed.value.targetType, parsed.value.targetId);
-
   if (!result.ok) {
     return { status: 'error', message: result.message, actionId: parsed.value.actionId };
   }
+
+  revalidateAdminRoutes(parsed.value.targetType, parsed.value.targetId);
 
   return {
     status: 'ok',

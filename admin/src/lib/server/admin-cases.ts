@@ -157,29 +157,42 @@ async function listEventsForCases(caseIds: string[]): Promise<Map<string, AdminC
 // queue stays responsive as admin_cases grows; detail pages load single rows.
 export const ADMIN_CASES_PAGE_SIZE = 200;
 
-export async function listAdminCases(limit: number = ADMIN_CASES_PAGE_SIZE): Promise<AdminCase[]> {
+export type AdminCaseList = {
+  rows: AdminCase[];
+  totalCount: number;
+};
+
+export async function listAdminCases(limit: number = ADMIN_CASES_PAGE_SIZE): Promise<AdminCaseList> {
   const pool = await getAdminDbPool();
   // The queue list and dashboard render case metadata only — never the
   // timeline — so we do NOT fetch admin_case_events here (only getAdminCase
   // does). Bounded by LIMIT to avoid unbounded scans at scale.
-  const result = await pool.query<AdminCaseRow>(
-    `SELECT c.id, c.case_type, c.status, c.priority, c.user_id, c.conversation_id,
-            c.employer_id, c.summary, c.details, c.created_at, c.updated_at,
-            au.admin_email AS assigned_admin_email,
-            u.full_name AS user_name,
-            u.phone AS user_phone,
-            u.email AS user_email,
-            employer.full_name AS employer_name
-       FROM admin_cases c
-       LEFT JOIN admin_users au ON au.id = c.assigned_admin_id
-       LEFT JOIN users u ON u.id = c.user_id
-       LEFT JOIN users employer ON employer.id = c.employer_id
-      ORDER BY c.status, c.priority DESC, c.created_at DESC
-      LIMIT $1`,
-    [limit],
-  );
+  const [result, countResult] = await Promise.all([
+    pool.query<AdminCaseRow>(
+      `SELECT c.id, c.case_type, c.status, c.priority, c.user_id, c.conversation_id,
+              c.employer_id, c.summary, c.details, c.created_at, c.updated_at,
+              au.admin_email AS assigned_admin_email,
+              u.full_name AS user_name,
+              u.phone AS user_phone,
+              u.email AS user_email,
+              employer.full_name AS employer_name
+         FROM admin_cases c
+         LEFT JOIN admin_users au ON au.id = c.assigned_admin_id
+         LEFT JOIN users u ON u.id = c.user_id
+         LEFT JOIN users employer ON employer.id = c.employer_id
+        ORDER BY c.status, c.priority DESC, c.created_at DESC
+        LIMIT $1`,
+      [limit],
+    ),
+    pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM admin_cases`,
+    ),
+  ]);
 
-  return result.rows.map((row) => mapAdminCaseRow(row));
+  return {
+    rows: result.rows.map((row) => mapAdminCaseRow(row)),
+    totalCount: parseInt(countResult.rows[0]?.count ?? '0', 10),
+  };
 }
 
 export async function getAdminCase(id: string): Promise<AdminCase | undefined> {

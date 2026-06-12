@@ -12,7 +12,7 @@ const statusTone: Record<string, string> = {
 
 export default async function CasesPage() {
   await requireAdminSession();
-  const adminCases = await listAdminCases();
+  const { rows: adminCases, totalCount } = await listAdminCases();
 
   return (
     <main className="stack-gap">
@@ -48,6 +48,9 @@ export default async function CasesPage() {
           </div>
         ))}
         {adminCases.length === 0 ? <p className="muted">No admin cases found.</p> : null}
+        {totalCount > adminCases.length ? (
+          <p className="muted">Showing {adminCases.length} of {totalCount}</p>
+        ) : null}
       </section>
     </main>
   );

@@ -4,7 +4,7 @@ import { requireAdminSession } from '@/lib/server/session';
 
 export default async function VerificationsPage() {
   await requireAdminSession();
-  const verificationRecords = await listVerificationRecords();
+  const { rows: verificationRecords, totalCount } = await listVerificationRecords();
 
   return (
     <main className="stack-gap">
@@ -37,6 +37,9 @@ export default async function VerificationsPage() {
           </div>
         ))}
         {verificationRecords.length === 0 ? <p className="muted">No verification records found.</p> : null}
+        {totalCount > verificationRecords.length ? (
+          <p className="muted">Showing {verificationRecords.length} of {totalCount}</p>
+        ) : null}
       </section>
     </main>
   );

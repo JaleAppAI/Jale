@@ -70,24 +70,37 @@ export function mapVerificationCaseRow(row: VerificationCaseRow): VerificationRe
 // idx_admin_cases_verification_queue (migration 025).
 export const VERIFICATIONS_PAGE_SIZE = 200;
 
-export async function listVerificationRecords(limit: number = VERIFICATIONS_PAGE_SIZE): Promise<VerificationRecord[]> {
-  const pool = await getAdminDbPool();
-  const result = await pool.query<VerificationCaseRow>(
-    `SELECT c.id, c.status, c.summary, c.details, c.updated_at,
-            au.admin_email AS assigned_admin_email,
-            u.full_name AS user_name,
-            u.phone AS user_phone,
-            u.email AS user_email
-       FROM admin_cases c
-       LEFT JOIN admin_users au ON au.id = c.assigned_admin_id
-       LEFT JOIN users u ON u.id = COALESCE(c.user_id, c.employer_id)
-      WHERE c.case_type = 'verification_blocker'
-      ORDER BY c.status, c.priority DESC, c.updated_at DESC
-      LIMIT $1`,
-    [limit],
-  );
+export type VerificationRecordList = {
+  rows: VerificationRecord[];
+  totalCount: number;
+};
 
-  return result.rows.map(mapVerificationCaseRow);
+export async function listVerificationRecords(limit: number = VERIFICATIONS_PAGE_SIZE): Promise<VerificationRecordList> {
+  const pool = await getAdminDbPool();
+  const [result, countResult] = await Promise.all([
+    pool.query<VerificationCaseRow>(
+      `SELECT c.id, c.status, c.summary, c.details, c.updated_at,
+              au.admin_email AS assigned_admin_email,
+              u.full_name AS user_name,
+              u.phone AS user_phone,
+              u.email AS user_email
+         FROM admin_cases c
+         LEFT JOIN admin_users au ON au.id = c.assigned_admin_id
+         LEFT JOIN users u ON u.id = COALESCE(c.user_id, c.employer_id)
+        WHERE c.case_type = 'verification_blocker'
+        ORDER BY c.status, c.priority DESC, c.updated_at DESC
+        LIMIT $1`,
+      [limit],
+    ),
+    pool.query<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM admin_cases WHERE case_type = 'verification_blocker'`,
+    ),
+  ]);
+
+  return {
+    rows: result.rows.map(mapVerificationCaseRow),
+    totalCount: parseInt(countResult.rows[0]?.count ?? '0', 10),
+  };
 }
 
 export async function getVerificationRecord(id: string): Promise<VerificationRecord | undefined> {

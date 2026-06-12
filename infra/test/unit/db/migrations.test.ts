@@ -47,7 +47,9 @@ describe('database migrations', () => {
       '022',
       '023',
       '024',
-      '025',
+      // '025' is reserved by origin/ivan/sprint12 (025_job_messaging.sql) and
+      // will appear here once that branch merges; this branch skips to 026.
+      '026',
     ]);
   });
 
@@ -237,8 +239,8 @@ describe('database migrations', () => {
     expect(migration).toContain('required_experience_years BETWEEN 0 AND 80');
   });
 
-  it('adds an append-only audited admin panel schema in migration 025', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '025_admin_panel.sql'), 'utf8');
+  it('adds an append-only audited admin panel schema in migration 026', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '026_admin_panel.sql'), 'utf8');
 
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_users');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_cases');

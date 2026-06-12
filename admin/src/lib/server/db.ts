@@ -76,9 +76,14 @@ export function getAdminDbPool(): Promise<Pool> {
     const config = buildAdminPoolConfig(secret);
     const newPool = new Pool(config);
 
+    // Capture the promise reference created just above so that a stale pool's
+    // late 'error' event cannot clear a newer poolPromise that has replaced it.
+    const owner = poolPromise;
     newPool.on('error', (err) => {
       console.error('Unexpected error on idle admin pg client:', err instanceof Error ? err.message : String(err));
-      poolPromise = undefined;
+      if (poolPromise === owner) {
+        poolPromise = undefined;
+      }
       void newPool.end().catch(() => undefined);
     });
 

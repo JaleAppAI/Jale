@@ -151,7 +151,7 @@ Do **not** add broad auth frameworks until the session design is explicitly chos
 - Use `pg.Pool`.
 - Reuse one pool per Lambda runtime.
 - Set SSL consistently with existing backend DB helpers.
-- Use the admin DB role introduced by migration `025_admin_panel.sql`, not an overpowered owner role.
+- Use the admin DB role introduced by migration `026_admin_panel.sql`, not an overpowered owner role.
 - Do not expose raw query helpers to client components.
 
 **Verification:**
@@ -252,7 +252,7 @@ Recommended MVP: **Next.js-managed Cognito session cookies**, because the admin 
 **Security:**
 
 - No raw PII unless a PII reveal action is explicitly performed.
-- RLS should use the admin DB role and admin-specific policies from migration `025_admin_panel.sql`.
+- RLS should use the admin DB role and admin-specific policies from migration `026_admin_panel.sql`.
 
 ---
 

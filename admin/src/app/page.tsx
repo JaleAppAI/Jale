@@ -6,7 +6,7 @@ import { requireAdminSession } from '@/lib/server/session';
 
 export default async function AdminDashboardPage() {
   await requireAdminSession();
-  const [adminCases, auditEvents, verificationRecords] = await Promise.all([
+  const [{ rows: adminCases }, { rows: auditEvents }, { rows: verificationRecords }] = await Promise.all([
     listAdminCases(),
     listAuditEvents(),
     listVerificationRecords(),

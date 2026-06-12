@@ -91,7 +91,7 @@ The current working tree has the admin-panel changes staged. No commit has been 
 - Wired the admin stack into the CDK app:
   - `infra/bin/jale-app.ts`
 - Added admin migration:
-  - `infra/db/migrations/025_admin_panel.sql`
+  - `infra/db/migrations/026_admin_panel.sql`
 - Updated migration scripts/tests to include the admin migration.
 - Added admin stack unit tests:
   - `infra/test/unit/stacks/admin-stack.test.ts`
@@ -140,7 +140,7 @@ The final `npm --prefix admin run build` rerun after the Dockerfile/cert cleanup
 Primary staged paths:
 
 - `admin/`
-- `infra/db/migrations/025_admin_panel.sql`
+- `infra/db/migrations/026_admin_panel.sql`
 - `infra/lib/stacks/admin-stack.ts`
 - `infra/bin/jale-app.ts`
 - `infra/test/unit/stacks/admin-stack.test.ts`
@@ -166,7 +166,7 @@ not work.
 Fixed by introducing a dedicated least-privilege login role (mirrors ADR-W05 /
 `jale_whatsapp`):
 
-- `infra/db/migrations/025_admin_panel.sql`: creates `jale_admin_console`, grants it
+- `infra/db/migrations/026_admin_panel.sql`: creates `jale_admin_console`, grants it
   read+insert+update on `admin_cases`, read+insert on `admin_case_events`, append-only
   (read+insert) on `admin_audit_log`, read on `admin_users`, and a **column-scoped**
   `GRANT SELECT (id, full_name, phone, email, user_type, whatsapp_number) ON users`
@@ -201,12 +201,12 @@ Fixed by introducing a dedicated least-privilege login role (mirrors ADR-W05 /
 
 - `listAdminCases` / `listVerificationRecords`: bounded with `LIMIT` (default 200);
   the cases list no longer fetches `admin_case_events` it never rendered.
-- Migration 025: partial index `idx_admin_cases_verification_queue` on
+- Migration 026: partial index `idx_admin_cases_verification_queue` on
   `(status, priority DESC, updated_at DESC) WHERE case_type='verification_blocker'`.
 
 ### Security hardening
 
-- Migration 025: `admin_audit_log` is append-only via separate `FOR SELECT` + `FOR
+- Migration 026: `admin_audit_log` is append-only via separate `FOR SELECT` + `FOR
   INSERT` policies (never `FOR ALL`) **and** a SELECT/INSERT-only grant.
 - `admin/src/lib/safe-redirect.ts`: `safeNextPath` guard; applied where `?next=` is
   written (middleware) and consumed (login redirect) to block open redirects.
@@ -265,7 +265,7 @@ Fixed in this pass:
   transaction (no PII without a committed audit row; a reveal failure rolls back both).
 - **M1:** documented in `middleware.ts` that it is a UX redirect layer only; the auth
   boundary is `requireAdminSession()` in every page/action.
-- **L2:** documented the audit-log trust boundary in migration 025 (append-only binds
+- **L2:** documented the audit-log trust boundary in migration 026 (append-only binds
   the app role; `jale_admin` owner retains DDL).
 
 Remaining hardening follow-ups (non-blocking, consistent with the existing risk register):
@@ -290,9 +290,9 @@ path — so this review was done as an independent code review instead.
 > **designed-correct and locally consistent, not yet live-verified.**
 
 1. Deploy `JaleDatabaseStack` (creates the `jale/admin-console/db` secret).
-2. Run migration 025 via the bastion (`scripts/run-migrations.*`) — this creates the
+2. Run migration 026 via the bastion (`scripts/run-migrations.*`) — this creates the
    `jale_admin_console` role and sets its password from the generated secret.
-3. **Run migration 025's VERIFICATION block** — this is the literal proof B1 works:
+3. **Run migration 026's VERIFICATION block** — this is the literal proof B1 works:
    ```sql
    SET ROLE jale_admin_console;
    SELECT id, full_name FROM users LIMIT 1;   -- must return a row (not 0 rows / not NULL)

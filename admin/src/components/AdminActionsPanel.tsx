@@ -76,14 +76,22 @@ function RevealedContactCard({ state }: { state: AdminActionFormState }) {
 
 export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
   const [state, setState] = useState<AdminActionFormState>(INITIAL_STATE);
-  const [isPending, setIsPending] = useState(false);
+  const [pendingActionId, setPendingActionId] = useState<string>();
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isPending) return;
+    if (pendingActionId) return;
 
     const formData = new FormData(event.currentTarget);
-    setIsPending(true);
+    const actionId = formData.get('actionId');
+    if (typeof actionId !== 'string') return;
+
+    const matchedAction = actions.find((a) => a.id === actionId);
+    if (matchedAction?.dangerous) {
+      const confirmed = window.confirm(`${matchedAction.label} cannot be undone. Continue?`);
+      if (!confirmed) return;
+    }
+    setPendingActionId(actionId);
     try {
       // Server action invoked as an RPC from a client event handler — works on
       // React 18.3 / Next 14 without the React 19-only useActionState hook.
@@ -92,7 +100,7 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
     } catch {
       setState({ status: 'error', message: 'The action could not be completed. Please retry.' });
     } finally {
-      setIsPending(false);
+      setPendingActionId(undefined);
     }
   }
 
@@ -107,39 +115,50 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
       ) : null}
 
       <div className="action-form-grid">
-        {actions.map((adminAction) => (
-          <form className="action-form" key={adminAction.id} onSubmit={handleSubmit}>
-            <input name="actionId" type="hidden" value={adminAction.id} />
-            <TargetHiddenInputs target={target} />
-            <button
-              aria-describedby={`${adminAction.id}-description`}
-              className={`button${adminAction.dangerous ? ' danger' : ''}`}
-              disabled={adminAction.disabled || isPending}
-              title={adminAction.reason}
-              type="submit"
+        {actions.map((adminAction) => {
+          const isCurrentActionPending = pendingActionId === adminAction.id;
+          const isAnyActionPending = Boolean(pendingActionId);
+
+          return (
+            <form
+              aria-busy={isCurrentActionPending || undefined}
+              className="action-form"
+              key={adminAction.id}
+              onSubmit={handleSubmit}
             >
-              {adminAction.label}
-            </button>
-            {adminAction.piiReveal ? (
-              <textarea
-                aria-label={`${adminAction.label} justification`}
-                disabled={adminAction.disabled || isPending}
-                minLength={20}
-                name="justification"
-                placeholder="Required PII reveal justification"
-                required
-              />
-            ) : (
-              <input
-                aria-label={`${adminAction.label} note`}
-                disabled={adminAction.disabled || isPending}
-                name="note"
-                placeholder="Optional audit note"
-                type="text"
-              />
-            )}
-          </form>
-        ))}
+              <input name="actionId" type="hidden" value={adminAction.id} />
+              <TargetHiddenInputs target={target} />
+              <button
+                aria-describedby={`${adminAction.id}-description`}
+                aria-busy={isCurrentActionPending || undefined}
+                className={`button${adminAction.dangerous ? ' danger' : ''}`}
+                disabled={adminAction.disabled || isAnyActionPending}
+                title={adminAction.reason}
+                type="submit"
+              >
+                {isCurrentActionPending ? 'Processing...' : adminAction.label}
+              </button>
+              {adminAction.piiReveal ? (
+                <textarea
+                  aria-label={`${adminAction.label} justification`}
+                  disabled={adminAction.disabled || isAnyActionPending}
+                  minLength={20}
+                  name="justification"
+                  placeholder="Required PII reveal justification"
+                  required
+                />
+              ) : (
+                <input
+                  aria-label={`${adminAction.label} note`}
+                  disabled={adminAction.disabled || isAnyActionPending}
+                  name="note"
+                  placeholder="Optional audit note"
+                  type="text"
+                />
+              )}
+            </form>
+          );
+        })}
       </div>
     </>
   );
