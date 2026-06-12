@@ -29,8 +29,13 @@ if (-not $poolId -or $poolId -eq 'None') {
     throw "AdminUserPoolId is missing from $AdminStack."
 }
 
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 aws cognito-idp admin-get-user --region $Region --user-pool-id $poolId --username $Email *> $null
-if ($LASTEXITCODE -ne 0) {
+$userExists = $LASTEXITCODE -eq 0
+$ErrorActionPreference = $previousErrorActionPreference
+
+if (-not $userExists) {
     aws cognito-idp admin-create-user `
         --region $Region `
         --user-pool-id $poolId `
@@ -47,11 +52,13 @@ if ($LASTEXITCODE -ne 0) {
 
 foreach ($group in @('admin_readonly', 'admin_ops', 'admin_superadmin')) {
     if ($group -ne $Role) {
+        $ErrorActionPreference = 'Continue'
         aws cognito-idp admin-remove-user-from-group `
             --region $Region `
             --user-pool-id $poolId `
             --username $Email `
             --group-name $group 2>$null
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 }
 
@@ -111,14 +118,15 @@ DB_NAME=$(echo "$DB_JSON" | jq -r '.dbname // "jale"')
 DB_USER=$(echo "$DB_JSON" | jq -r .username)
 
 psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-  -v admin_email="$EMAIL" -v cognito_sub="$COGNITO_SUB" -v admin_role="$ADMIN_ROLE" \
-  -c "INSERT INTO admin_users (cognito_sub, admin_email, role, active)
-      VALUES (:'cognito_sub', :'admin_email', :'admin_role', true)
-      ON CONFLICT (admin_email) DO UPDATE
-      SET cognito_sub = EXCLUDED.cognito_sub,
-          role = EXCLUDED.role,
-          active = true,
-          updated_at = NOW();"
+  -v admin_email="$EMAIL" -v cognito_sub="$COGNITO_SUB" -v admin_role="$ADMIN_ROLE" <<'SQL'
+INSERT INTO admin_users (cognito_sub, admin_email, role, active)
+VALUES (:'cognito_sub', :'admin_email', :'admin_role', true)
+ON CONFLICT (admin_email) DO UPDATE
+SET cognito_sub = EXCLUDED.cognito_sub,
+    role = EXCLUDED.role,
+    active = true,
+    updated_at = NOW();
+SQL
 
 unset PGPASSWORD DB_JSON
 '@
