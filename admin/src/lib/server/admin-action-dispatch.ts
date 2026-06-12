@@ -5,6 +5,7 @@ import type { AdminSession } from './session-claims';
 import { getAdminCase, revealCaseContact, type RevealedContact } from './admin-cases';
 import { getVerificationRecord } from './admin-verifications';
 import { getAdminDbPool } from './db';
+import { sendAdminWhatsAppMessage } from './twilio';
 
 export type AdminActionDispatchResult =
   | { ok: true; message: string; revealed?: RevealedContact }
@@ -133,7 +134,7 @@ async function insertAudit(client: { query: (sql: string, params?: unknown[]) =>
 }
 
 export async function dispatchAdminAction(session: AdminSession, request: AdminActionRequest): Promise<AdminActionDispatchResult> {
-  if (request.targetType === 'whatsapp_outbox' || request.actionId === 'reply_whatsapp' || request.actionId === 'resend_outbound') {
+  if (request.targetType === 'whatsapp_outbox' || request.actionId === 'resend_outbound') {
     return {
       ok: false,
       status: 501,
@@ -159,6 +160,10 @@ export async function dispatchAdminAction(session: AdminSession, request: AdminA
 
     if (!validation.ok) {
       return { ok: false, status: validation.status, message: validation.message };
+    }
+
+    if (request.actionId === 'reply_whatsapp') {
+      return sendCaseWhatsAppReply(session, request);
     }
 
     const reveal: RevealFn | undefined = request.actionId === 'reveal_pii'
@@ -194,6 +199,86 @@ export async function dispatchAdminAction(session: AdminSession, request: AdminA
   }
 
   return { ok: false, status: 400, message: 'Unsupported admin action target.' };
+}
+
+async function sendCaseWhatsAppReply(
+  session: AdminSession,
+  request: AdminActionRequest,
+): Promise<AdminActionDispatchResult> {
+  const message = request.note?.trim();
+  if (!message || message.length > 1000) {
+    return { ok: false, status: 400, message: 'Enter a WhatsApp reply of 1 to 1000 characters.' };
+  }
+
+  const pool = await getAdminDbPool();
+  const recipient = await pool.query<{ whatsapp_number: string | null }>(
+    `SELECT COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, '')) AS whatsapp_number
+       FROM admin_cases c
+       JOIN users u ON u.id = c.user_id
+      WHERE c.id = $1
+        AND c.conversation_id IS NOT NULL
+      LIMIT 1`,
+    [request.targetId],
+  );
+  const phone = recipient.rows[0]?.whatsapp_number;
+  if (!phone) {
+    return { ok: false, status: 409, message: 'This case is not linked to a WhatsApp worker conversation.' };
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await insertAudit(client, session, request);
+    await client.query(
+      `INSERT INTO admin_case_events (case_id, event_type, actor_type, actor_id, payload)
+       VALUES ($1, 'admin_reply_requested', 'admin', $2, $3::jsonb)`,
+      [
+        request.targetId,
+        session.email ?? session.sub,
+        JSON.stringify({ title: 'Admin reply requested', detail: message }),
+      ],
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  try {
+    const twilioMessageSid = await sendAdminWhatsAppMessage(phone, message);
+    await pool.query(
+      `WITH event_insert AS (
+         INSERT INTO admin_case_events (case_id, event_type, actor_type, actor_id, payload)
+         VALUES ($1, 'admin_reply_sent', 'admin', $2, $3::jsonb)
+       )
+       UPDATE admin_cases
+          SET status = 'pending_worker',
+              details = details || $4::jsonb,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [
+        request.targetId,
+        session.email ?? session.sub,
+        JSON.stringify({ title: 'WhatsApp reply sent', detail: message, twilioMessageSid }),
+        JSON.stringify({ lastAdminNote: message, lastOutboundTwilioSid: twilioMessageSid }),
+      ],
+    );
+    return { ok: true, message: 'WhatsApp reply sent to the worker.' };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Unknown Twilio error';
+    await pool.query(
+      `INSERT INTO admin_case_events (case_id, event_type, actor_type, actor_id, payload)
+       VALUES ($1, 'admin_reply_failed', 'system', 'twilio', $2::jsonb)`,
+      [request.targetId, JSON.stringify({ title: 'WhatsApp reply failed', detail })],
+    );
+    return {
+      ok: false,
+      status: 409,
+      message: `${detail} Send HELP from the worker first, then retry within 24 hours.`,
+    };
+  }
 }
 
 async function executeMutation(

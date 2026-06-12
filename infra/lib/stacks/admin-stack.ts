@@ -121,6 +121,11 @@ export class AdminStack extends cdk.Stack {
     });
 
     const adminDir = path.resolve(__dirname, '..', '..', '..', 'admin');
+    const twilioSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      'AdminTwilioSecret',
+      'jale/whatsapp/twilio',
+    );
     const adminFunction = new lambda.DockerImageFunction(this, 'AdminNextjsFunction', {
       functionName: 'jale-admin-nextjs',
       code: lambda.DockerImageCode.fromImageAsset(adminDir, {
@@ -141,6 +146,7 @@ export class AdminStack extends cdk.Stack {
         AWS_LAMBDA_EXEC_WRAPPER: '/opt/extensions/lambda-adapter',
         AWS_LWA_INVOKE_MODE: 'response_stream',
         DB_SECRET_ARN: props.adminDbSecret.secretArn,
+        TWILIO_SECRET_ARN: twilioSecret.secretArn,
         NEXT_PUBLIC_ADMIN_USER_POOL_ID: this.adminPool.userPoolId,
         NEXT_PUBLIC_ADMIN_CLIENT_ID: this.adminClient.userPoolClientId,
         NEXT_PUBLIC_ADMIN_REGION: cdk.Stack.of(this).region,
@@ -149,6 +155,7 @@ export class AdminStack extends cdk.Stack {
     });
 
     props.adminDbSecret.grantRead(adminFunction);
+    twilioSecret.grantRead(adminFunction);
 
     const functionUrl = adminFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,

@@ -20,6 +20,7 @@ export type AdminActionRequestError =
   | 'invalid_target_type'
   | 'target_id_required'
   | 'target_action_mismatch'
+  | 'message_required'
   | 'pii_justification_required';
 
 export type ParseAdminActionRequestResult =
@@ -118,6 +119,11 @@ export function parseAdminActionRequest(input: unknown): ParseAdminActionRequest
   }
 
   const justification = stringField(input.justification);
+  const note = stringField(input.note);
+  if (actionId === 'reply_whatsapp' && (!note || note.length > 1000)) {
+    return { ok: false, error: 'message_required' };
+  }
+
   if (requiresPiiJustification(actionId) && (!justification || justification.length < 20)) {
     return { ok: false, error: 'pii_justification_required' };
   }
@@ -129,7 +135,7 @@ export function parseAdminActionRequest(input: unknown): ParseAdminActionRequest
       targetType,
       targetId,
       justification,
-      note: stringField(input.note),
+      note,
     },
   };
 }
