@@ -4,6 +4,9 @@ import { sendTwilioWhatsAppMessage } from '../whatsapp/lib/outbox';
 const FALLBACK_BODY_KEY = '__fallback_body';
 const WORKER_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const MAX_MESSAGE_LENGTH = 2000;
+// Outbox rows stop auto-retrying at this attempt count (R8). The R7 template
+// dedupe must treat rows at the cap as dead, so the two queries share it.
+const MAX_SEND_ATTEMPTS = 5;
 
 type ConversationAccessRow = {
   id: string;
@@ -423,11 +426,14 @@ export async function queueConversationMessageFromEmployer(
     // R7 dedupe: one un-actioned invite/resume template at a time. A new
     // template is queued only when none has been sent since the worker's
     // last action (acceptance or last reply) on this conversation.
+    // Permanently-failed templates (attempt cap reached, never delivered)
+    // are excluded — a dead invite must not suppress new ones forever.
     const pendingInvite = await client.query<{ exists: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM job_message_outbox
           WHERE conversation_id = $1
             AND send_kind = 'template'
+            AND NOT (status = 'failed' AND attempt_count >= ${MAX_SEND_ATTEMPTS})
             AND created_at > COALESCE(
                   (SELECT GREATEST(jc.accepted_at, jc.last_worker_message_at)
                      FROM job_conversations jc WHERE jc.id = $1),
@@ -724,7 +730,7 @@ export async function sendPendingJobMessageOutbox(
       `SELECT id, conversation_id, message_id, whatsapp_number, body, content_template, content_variables
        FROM job_message_outbox
        WHERE status IN ('pending', 'failed')
-         AND attempt_count < 5
+         AND attempt_count < ${MAX_SEND_ATTEMPTS}
          ${conversationFilter}
        ORDER BY conversation_id, created_at ASC
        LIMIT 10`,

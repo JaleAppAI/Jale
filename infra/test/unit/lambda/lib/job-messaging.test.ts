@@ -159,6 +159,22 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
       /INSERT INTO job_message_outbox/.test(sql) && /'template'/.test(sql));
     expect(queuedTemplate).toBe(true);
   });
+
+  it('ignores permanently-failed templates in the dedupe check (dead invites must not suppress new ones)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // load
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })          // dedupe EXISTS
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'msg after dead template');
+    const dedupeSql = mockQuery.mock.calls
+      .map(([sql]) => sql as string)
+      .find((sql) => /send_kind = 'template'/.test(sql) && /SELECT EXISTS/.test(sql));
+    expect(dedupeSql).toBeDefined();
+    // A template that exhausted its send attempts was never delivered — it is
+    // not an "un-actioned invite" and must not suppress queueing a new one.
+    expect(dedupeSql!).toMatch(/NOT \(status = 'failed' AND attempt_count >= 5\)/);
+  });
 });
 
 describe('createApplicantConversation thread-number assignment', () => {
