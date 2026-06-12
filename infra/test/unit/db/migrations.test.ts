@@ -48,6 +48,7 @@ describe('database migrations', () => {
       '023',
       '024',
       '025',
+      '026',
     ]);
   });
 
@@ -252,5 +253,19 @@ describe('database migrations', () => {
     expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
     expect(migration).toContain('job_conversations_employer_all');
     expect(migration).toContain('job_conversations_worker_all');
+  });
+
+  it('adds an append-only audited admin panel schema in migration 026', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '026_admin_panel.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_users');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_cases');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_case_events');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_audit_log');
+    expect(migration).toContain("CHECK (role IN ('admin_readonly', 'admin_ops', 'admin_superadmin'))");
+    expect(migration).toContain("CHECK (case_type IN ('help_request', 'verification_blocker', 'outbound_failure', 'conversation_stuck'))");
+    expect(migration).toContain('ALTER TABLE admin_audit_log FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT ON admin_audit_log TO jale_admin');
+    expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON admin_audit_log TO jale_admin');
   });
 });

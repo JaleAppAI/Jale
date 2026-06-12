@@ -10,5 +10,6 @@ describe('cdk app entrypoint', () => {
     expect(app).toContain("tryGetContext('skipFrontend')");
     expect(app).toContain('if (!skipFrontend)');
     expect(app).toContain("new FrontendStack(app, 'JaleFrontendStack'");
+    expect(app).toContain("new AdminStack(app, 'JaleAdminStack'");
   });
 });

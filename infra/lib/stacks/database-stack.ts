@@ -15,6 +15,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly dbSecret: secretsmanager.ISecret;
   public readonly matchingDbSecret: secretsmanager.ISecret;
   public readonly aiDbSecret: secretsmanager.ISecret;
+  public readonly adminConsoleDbSecret: secretsmanager.ISecret;
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
 
@@ -75,6 +76,20 @@ export class DatabaseStack extends cdk.Stack {
       generateSecretString: {
         secretStringTemplate: JSON.stringify({
           username: 'jale_ai',
+          host: this.dbInstance.dbInstanceEndpointAddress,
+          port: 5432,
+          dbname: 'jale',
+        }),
+        generateStringKey: 'password',
+        excludePunctuation: true,
+      },
+    });
+    this.adminConsoleDbSecret = new secretsmanager.Secret(this, 'AdminConsoleDbSecret', {
+      secretName: 'jale/admin-console/db',
+      description: 'jale_admin_console role DB credentials for the admin Next.js Lambda',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          username: 'jale_admin_console',
           host: this.dbInstance.dbInstanceEndpointAddress,
           port: 5432,
           dbname: 'jale',
