@@ -221,6 +221,14 @@ function handler(event) {
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
     });
 
+    new lambda.CfnPermission(this, 'AllowCloudFrontInvokeAdminFunction', {
+      action: 'lambda:InvokeFunction',
+      functionName: adminFunction.functionArn,
+      principal: 'cloudfront.amazonaws.com',
+      sourceArn: `arn:${cdk.Aws.PARTITION}:cloudfront::${cdk.Aws.ACCOUNT_ID}:distribution/${this.distribution.distributionId}`,
+      invokedViaFunctionUrl: true,
+    });
+
     new route53.ARecord(this, 'AdminAliasRecordA', {
       zone: hostedZone,
       recordName: adminDomain,
