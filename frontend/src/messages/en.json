@@ -96,8 +96,8 @@
             },
             "errors": {
                 "trade_other_required": "Please enter your trade.",
-                "account_exists": "An account already exists for this phone number. Go back and sign in instead.",
-                "account_not_found": "We could not find an account for that phone number. Create an account first.",
+                "account_exists": "We could not continue with that phone number. Check it and try again.",
+                "account_not_found": "We could not continue with that phone number. Check it and try again.",
                 "invalid_phone": "Enter a valid phone number, including the area code.",
                 "invalid_code": "That code is not correct. Check the code and try again.",
                 "expired_code": "That code expired. Request a new code and try again.",

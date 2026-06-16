@@ -69,7 +69,8 @@ $MigrationFiles = @(
     # '023_job_fields_and_statuses_mvp.sql',
     # '024_sprint11_hiring_flow_hardening.sql',
     '025_job_messaging.sql',
-    '026_admin_panel.sql'
+    '026_admin_panel.sql',
+    '027_admin_security_hardening.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

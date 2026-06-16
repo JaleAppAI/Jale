@@ -19,6 +19,7 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
+import { reconcileWorkerCognitoAccount } from '../auth/lib/worker-cognito-reconciliation';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { listMatchedJobsForWorker } from '../lib/job-matching';
 import {
@@ -1261,6 +1262,7 @@ async function handleNewOrRestart(
   if (!poolId) throw new Error('WORKER_POOL_ID not set');
 
   let isNewUser = true;
+  let existingIdentity: { cognitoSub: string; storedName?: string } | undefined;
   try {
     // Password is random — we never use it. Custom auth does passwordless OTP.
     const randomPassword = `Jale!${randomUUID()}9aA`;
@@ -1288,6 +1290,11 @@ async function handleNewOrRestart(
   } catch (err: any) {
     if (err?.name === 'UsernameExistsException') {
       isNewUser = false;
+      existingIdentity = await reconcileWorkerCognitoAccount({
+        client: cognito,
+        userPoolId: poolId,
+        phone: whatsappNumber,
+      });
     } else {
       throw err;
     }
@@ -1308,6 +1315,12 @@ async function handleNewOrRestart(
       whatsappNumber,
     ],
   );
+  if (existingIdentity) {
+    await client.query(
+      'SELECT reconcile_worker_signup($1, $2, $3)',
+      [existingIdentity.cognitoSub, whatsappNumber, existingIdentity.storedName ?? ''],
+    );
+  }
 
   // InitiateAuth with CUSTOM_AUTH — triggers DefineAuthChallenge → CreateAuthChallenge.
   // CreateAuthChallenge sends the 6-digit OTP via Twilio SMS and returns a

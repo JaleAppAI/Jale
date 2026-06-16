@@ -11,6 +11,7 @@ export type AdminActionRequest = {
   actionId: AdminActionId;
   targetType: AdminAuditTargetType;
   targetId: string;
+  requestId?: string;
   justification?: string;
   note?: string;
 };
@@ -20,6 +21,7 @@ export type AdminActionRequestError =
   | 'invalid_target_type'
   | 'target_id_required'
   | 'target_action_mismatch'
+  | 'request_id_required'
   | 'message_required'
   | 'pii_justification_required';
 
@@ -77,6 +79,7 @@ const VERIFICATION_ACTIONS = new Set<AdminActionId>([
 ]);
 const ALL_ACTIONS = new Set<AdminActionId>([...CASE_ACTIONS, ...VERIFICATION_ACTIONS]);
 const TARGET_TYPES = new Set<AdminAuditTargetType>(['admin_case', 'verification', 'whatsapp_outbox']);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function stringField(value: unknown): string | undefined {
   return typeof value === 'string' ? value.trim() || undefined : undefined;
@@ -120,8 +123,12 @@ export function parseAdminActionRequest(input: unknown): ParseAdminActionRequest
 
   const justification = stringField(input.justification);
   const note = stringField(input.note);
+  const requestId = stringField(input.requestId);
   if (actionId === 'reply_whatsapp' && (!note || note.length > 1000)) {
     return { ok: false, error: 'message_required' };
+  }
+  if (actionId === 'reply_whatsapp' && (!requestId || !UUID_PATTERN.test(requestId))) {
+    return { ok: false, error: 'request_id_required' };
   }
 
   if (requiresPiiJustification(actionId) && (!justification || justification.length < 20)) {
@@ -134,6 +141,7 @@ export function parseAdminActionRequest(input: unknown): ParseAdminActionRequest
       actionId,
       targetType,
       targetId,
+      requestId,
       justification,
       note,
     },
@@ -145,6 +153,7 @@ export function formDataToAdminActionRequest(formData: FormData): ParseAdminActi
     actionId: formData.get('actionId'),
     targetType: formData.get('targetType'),
     targetId: formData.get('targetId'),
+    requestId: formData.get('requestId'),
     justification: formData.get('justification'),
     note: formData.get('note'),
   });

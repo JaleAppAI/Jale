@@ -3,6 +3,7 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import { checkOtpRateLimit } from './lib/otp-rate-limit';
 
 /**
  * Generates a six-digit Cognito custom-auth challenge and sends it by SMS from
@@ -75,7 +76,18 @@ export const handler = async (
       throw new Error('Missing phone_number attribute on user');
     }
 
-    await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
+    const decision = await checkOtpRateLimit(phoneNumber);
+    if (!decision.allowed) {
+      emitOtpMetric('WorkerOtpSendThrottled', { reason: decision.reason });
+      throw new Error('Unable to send a verification code right now.');
+    }
+    emitOtpMetric('WorkerOtpSendAllowed');
+    try {
+      await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
+    } catch (error) {
+      emitOtpMetric('WorkerOtpTwilioFailure');
+      throw error;
+    }
   }
 
   // Mask the phone number for display (e.g. "+1***1234")
@@ -171,6 +183,21 @@ function maskPhone(phone: string): string {
   // E.164 format like +15125551234 → "+1***1234"
   if (phone.length < 4) return '***';
   return phone.slice(0, 2) + '***' + phone.slice(-4);
+}
+
+function emitOtpMetric(metricName: string, dimensions: Record<string, string> = {}): void {
+  console.log(JSON.stringify({
+    _aws: {
+      Timestamp: Date.now(),
+      CloudWatchMetrics: [{
+        Namespace: 'Jale/OTP',
+        Dimensions: [Object.keys(dimensions)],
+        Metrics: [{ Name: metricName, Unit: 'Count' }],
+      }],
+    },
+    ...dimensions,
+    [metricName]: 1,
+  }));
 }
 
 // Exported only for tests — clear the module-level cache between scenarios.

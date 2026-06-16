@@ -3,7 +3,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import { AdminStack } from '../../../lib/stacks/admin-stack';
+import { AdminStack, getAdminDurability } from '../../../lib/stacks/admin-stack';
 
 const describeIfDocker = process.env.SKIP_DOCKER_TESTS ? describe.skip : describe;
 
@@ -11,7 +11,7 @@ describeIfDocker('AdminStack', () => {
   let template: Template;
 
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = new cdk.App({ context: { environment: 'prod' } });
     const support = new cdk.Stack(app, 'AdminSupportStack', {
       env: { account: '111111111111', region: 'us-east-1' },
     });
@@ -116,6 +116,36 @@ describeIfDocker('AdminStack', () => {
       LifecycleConfiguration: Match.anyValue(),
     });
     template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+  });
+
+  test('retains production identity, logs, and access-log storage for 90 days', () => {
+    const resources = template.toJSON().Resources;
+    const retainedTypes = new Set([
+      'AWS::Cognito::UserPool',
+      'AWS::Logs::LogGroup',
+      'AWS::S3::Bucket',
+    ]);
+    for (const resource of Object.values(resources) as any[]) {
+      if (!retainedTypes.has(resource.Type)) continue;
+      expect(resource.DeletionPolicy).toBe('Retain');
+      expect(resource.UpdateReplacePolicy).toBe('Retain');
+    }
+    template.hasResourceProperties('AWS::Logs::LogGroup', {
+      RetentionInDays: 90,
+    });
+  });
+
+  test('development durability remains disposable', () => {
+    expect(getAdminDurability('dev')).toEqual({
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      logRetention: expect.anything(),
+      autoDeleteObjects: true,
+    });
+    expect(getAdminDurability('prod')).toEqual({
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      logRetention: expect.anything(),
+      autoDeleteObjects: false,
+    });
   });
 
   test('outputs the admin url and Cognito identifiers', () => {

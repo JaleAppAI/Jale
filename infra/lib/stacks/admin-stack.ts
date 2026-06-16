@@ -33,6 +33,15 @@ export interface AdminStackProps extends cdk.StackProps {
   readonly webAclArn: string;
 }
 
+export function getAdminDurability(environment: string) {
+  const isDevelopment = environment === 'dev';
+  return {
+    removalPolicy: isDevelopment ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN,
+    logRetention: isDevelopment ? logs.RetentionDays.ONE_WEEK : logs.RetentionDays.THREE_MONTHS,
+    autoDeleteObjects: isDevelopment,
+  };
+}
+
 export class AdminStack extends cdk.Stack {
   public readonly adminPool: cognito.UserPool;
   public readonly adminClient: cognito.UserPoolClient;
@@ -50,10 +59,7 @@ export class AdminStack extends cdk.Stack {
     const certificate = props.certificate;
 
     const environment = this.node.tryGetContext('environment') ?? 'dev';
-    const poolRemovalPolicy =
-      environment === 'dev' ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
-    const durableRemovalPolicy =
-      environment === 'dev' ? cdk.RemovalPolicy.DESTROY : cdk.RemovalPolicy.RETAIN;
+    const durability = getAdminDurability(environment);
 
     this.adminPool = new cognito.UserPool(this, 'AdminUserPool', {
       userPoolName: 'jale-admin-pool',
@@ -70,7 +76,7 @@ export class AdminStack extends cdk.Stack {
         requireDigits: true,
         requireSymbols: true,
       },
-      removalPolicy: poolRemovalPolicy,
+      removalPolicy: durability.removalPolicy,
     });
 
     this.adminClient = this.adminPool.addClient('AdminUserPoolClient', {
@@ -106,8 +112,8 @@ export class AdminStack extends cdk.Stack {
 
     const adminLogGroup = new logs.LogGroup(this, 'AdminNextLogGroup', {
       logGroupName: '/aws/lambda/jale-admin-nextjs',
-      retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: durableRemovalPolicy,
+      retention: durability.logRetention,
+      removalPolicy: durability.removalPolicy,
     });
 
     const accessLogsBucket = new s3.Bucket(this, 'AdminAccessLogsBucket', {
@@ -116,16 +122,11 @@ export class AdminStack extends cdk.Stack {
       enforceSSL: true,
       objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
       lifecycleRules: [{ expiration: cdk.Duration.days(90) }],
-      removalPolicy: durableRemovalPolicy,
-      autoDeleteObjects: environment === 'dev',
+      removalPolicy: durability.removalPolicy,
+      autoDeleteObjects: durability.autoDeleteObjects,
     });
 
     const adminDir = path.resolve(__dirname, '..', '..', '..', 'admin');
-    const twilioSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      'AdminTwilioSecret',
-      'jale/whatsapp/twilio',
-    );
     const adminFunction = new lambda.DockerImageFunction(this, 'AdminNextjsFunction', {
       functionName: 'jale-admin-nextjs',
       code: lambda.DockerImageCode.fromImageAsset(adminDir, {
@@ -146,7 +147,6 @@ export class AdminStack extends cdk.Stack {
         AWS_LAMBDA_EXEC_WRAPPER: '/opt/extensions/lambda-adapter',
         AWS_LWA_INVOKE_MODE: 'response_stream',
         DB_SECRET_ARN: props.adminDbSecret.secretArn,
-        TWILIO_SECRET_ARN: twilioSecret.secretArn,
         NEXT_PUBLIC_ADMIN_USER_POOL_ID: this.adminPool.userPoolId,
         NEXT_PUBLIC_ADMIN_CLIENT_ID: this.adminClient.userPoolClientId,
         NEXT_PUBLIC_ADMIN_REGION: cdk.Stack.of(this).region,
@@ -155,7 +155,6 @@ export class AdminStack extends cdk.Stack {
     });
 
     props.adminDbSecret.grantRead(adminFunction);
-    twilioSecret.grantRead(adminFunction);
 
     const functionUrl = adminFunction.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.AWS_IAM,

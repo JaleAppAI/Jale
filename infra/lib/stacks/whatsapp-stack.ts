@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -47,6 +49,7 @@ export class WhatsAppStack extends cdk.Stack {
   public readonly webhookLambda: JaleLambdaFunction;
   public readonly processorLambda: JaleLambdaFunction;
   public readonly jobAlertLambda: JaleLambdaFunction;
+  public readonly adminOutboxDispatcherLambda: JaleLambdaFunction;
 
   constructor(scope: Construct, id: string, props: WhatsAppStackProps) {
     super(scope, id, props);
@@ -139,6 +142,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName, // alias: getDbPool() reads this
         TWILIO_SECRET_ARN: twilioSecret.secretName,
+        TWILIO_REQUEST_TIMEOUT_MS: '4000',
         WORKER_POOL_ID: props.workerPool.userPoolId,
         WORKER_CLIENT_ID: props.workerPool.clientId,
         REQUIRED_TOS_VERSION: tosVersion,
@@ -167,6 +171,13 @@ export class WhatsAppStack extends cdk.Stack {
           'cognito-idp:InitiateAuth',
           'cognito-idp:RespondToAuthChallenge',
           'cognito-idp:AdminGetUser',
+          // C4: the processor calls reconcileWorkerCognitoAccount() (processor.ts),
+          // which also needs to repair attributes, re-enable, and (re)add to the
+          // Workers group. Without these three the existing-account heal path
+          // throws AccessDenied at runtime.
+          'cognito-idp:AdminUpdateUserAttributes',
+          'cognito-idp:AdminEnableUser',
+          'cognito-idp:AdminAddUserToGroup',
         ],
         resources: [
           `arn:aws:cognito-idp:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:userpool/*`,
@@ -186,11 +197,31 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TWILIO_SECRET_ARN: twilioSecret.secretName,
+        TWILIO_REQUEST_TIMEOUT_MS: '4000',
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     whatsappDbSecret.grantRead(this.jobAlertLambda.function);
     twilioSecret.grantRead(this.jobAlertLambda.function);
+
+    this.adminOutboxDispatcherLambda = new JaleLambdaFunction(this, 'AdminOutboxDispatcherLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/admin-outbox-dispatcher.ts'),
+      description: 'WhatsApp admin outbox dispatcher',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
+        TWILIO_REQUEST_TIMEOUT_MS: '4000',
+      },
+    });
+    whatsappDbSecret.grantRead(this.adminOutboxDispatcherLambda.function);
+    twilioSecret.grantRead(this.adminOutboxDispatcherLambda.function);
+
+    new events.Rule(this, 'AdminOutboxDispatchSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new eventTargets.LambdaFunction(this.adminOutboxDispatcherLambda.function)],
+    });
 
     // ── Media S3 Bucket ──────────────────────────────────────────
     const mediaBucket = new s3.Bucket(this, 'WorkerMediaBucket', {
@@ -211,6 +242,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TWILIO_SECRET_ARN: twilioSecret.secretName,
+        TWILIO_REQUEST_TIMEOUT_MS: '4000',
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
         BEDROCK_MODEL_ID: 'us.amazon.nova-lite-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',

@@ -458,12 +458,18 @@ export class ApiStack extends cdk.Stack {
       resources: poolArns,
     }));
 
+    // C4: this set must cover every Cognito call the signup flow makes,
+    // including reconcileWorkerCognitoAccount() on the UsernameExists path:
+    // AdminGetUser, AdminUpdateUserAttributes, AdminEnableUser,
+    // AdminSetUserPassword, AdminAddUserToGroup. AdminConfirmSignUp was unused
+    // (the flow uses AdminCreateUser + SUPPRESS) and is dropped for least-privilege.
     workerWebSignupLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'cognito-idp:AdminAddUserToGroup',
         'cognito-idp:AdminCreateUser',
-        'cognito-idp:AdminConfirmSignUp',
         'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminUpdateUserAttributes',
+        'cognito-idp:AdminEnableUser',
         'cognito-idp:AdminSetUserPassword',
       ],
       resources: [props.workerPool.userPool.userPoolArn],

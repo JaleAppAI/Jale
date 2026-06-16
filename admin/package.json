@@ -10,6 +10,7 @@
     "test:policy": "node scripts/check-action-policy.mjs",
     "test:server-db": "node scripts/check-server-db-helpers.mjs",
     "test:session": "node scripts/check-session-helpers.mjs",
+    "test:session-store": "node scripts/check-admin-session-store.mjs",
     "test:read-models": "node scripts/check-read-models.mjs",
     "test:dispatch": "node scripts/check-action-dispatch.mjs",
     "test:safe-redirect": "node scripts/check-safe-redirect.mjs",

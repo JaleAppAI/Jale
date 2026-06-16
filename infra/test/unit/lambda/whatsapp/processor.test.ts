@@ -21,7 +21,11 @@ const mockCognitoSend = jest.fn();
 jest.mock('@aws-sdk/client-cognito-identity-provider', () => ({
   CognitoIdentityProviderClient: jest.fn(() => ({ send: mockCognitoSend })),
   AdminCreateUserCommand: jest.fn((args) => ({ input: args, __type: 'AdminCreateUser' })),
+  AdminAddUserToGroupCommand: jest.fn((args) => ({ input: args, __type: 'AdminAddUserToGroup' })),
+  AdminEnableUserCommand: jest.fn((args) => ({ input: args, __type: 'AdminEnableUser' })),
+  AdminGetUserCommand: jest.fn((args) => ({ input: args, __type: 'AdminGetUser' })),
   AdminSetUserPasswordCommand: jest.fn((args) => ({ input: args, __type: 'AdminSetUserPassword' })),
+  AdminUpdateUserAttributesCommand: jest.fn((args) => ({ input: args, __type: 'AdminUpdateUserAttributes' })),
   InitiateAuthCommand: jest.fn((args) => ({ input: args, __type: 'InitiateAuth' })),
   RespondToAuthChallengeCommand: jest.fn((args) => ({ input: args, __type: 'RespondToAuthChallenge' })),
   AuthFlowType: { CUSTOM_AUTH: 'CUSTOM_AUTH' },
@@ -437,9 +441,13 @@ describe('Processor Lambda', () => {
 
       // The outbox row was marked 'failed' with an incremented attempt_count.
       const failedUpd = findQueryByPattern(
-        /UPDATE whatsapp_outbox\s+SET status = 'failed'/i,
+        /UPDATE whatsapp_outbox\s+SET status = \$1/i,
       );
       expect(failedUpd).toBeDefined();
+      expect(mockQuery.mock.calls.some(([sql, params]) => (
+        /UPDATE whatsapp_outbox\s+SET status = \$1/i.test(sql)
+        && params?.[0] === 'failed'
+      ))).toBe(true);
       // markCompleted was NOT called (no UPDATE status='completed' in mockQuery calls)
       expect(
         countQueryByPattern(/UPDATE whatsapp_processed_messages\s+SET status = 'completed'/i),

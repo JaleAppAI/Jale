@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AdminActionFormState } from '@/app/actions';
 import type { AdminAction } from '@/lib/action-policy';
@@ -79,6 +79,7 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
   const router = useRouter();
   const [state, setState] = useState<AdminActionFormState>(INITIAL_STATE);
   const [pendingActionId, setPendingActionId] = useState<string>();
+  const requestIds = useRef(new Map<string, string>());
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -87,6 +88,12 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
     const formData = new FormData(event.currentTarget);
     const actionId = formData.get('actionId');
     if (typeof actionId !== 'string') return;
+    const requestKey = `${target.targetType}:${target.targetId}:${actionId}`;
+    if (actionId === 'reply_whatsapp') {
+      const requestId = requestIds.current.get(requestKey) ?? crypto.randomUUID();
+      requestIds.current.set(requestKey, requestId);
+      formData.set('requestId', requestId);
+    }
 
     const matchedAction = actions.find((a) => a.id === actionId);
     if (matchedAction?.dangerous) {
@@ -118,7 +125,10 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
       setState(result.ok
         ? { status: 'ok', message: result.message, actionId, revealed: result.revealed }
         : { status: 'error', message: result.message ?? 'The action could not be completed.', actionId });
-      if (result.ok) router.refresh();
+      if (result.ok) {
+        requestIds.current.delete(requestKey);
+        router.refresh();
+      }
     } catch {
       setState({ status: 'error', message: 'The action could not be completed. Please retry.' });
     } finally {

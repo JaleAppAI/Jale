@@ -71,8 +71,29 @@ program.emit(undefined, (fileName, data) => {
 
 const dispatch = await import(pathToFileURL(resolve(outDir, 'admin-action-dispatch.mjs')));
 
+assert.deepEqual(dispatch.buildAdminReplyOutboxInsert({
+  targetId: 'case-1',
+  requestId: '11111111-1111-4111-8111-111111111111',
+  message: 'Please send the missing document.',
+  whatsappNumber: '+15125551234',
+}), {
+  sql: expectSql(`
+    INSERT INTO whatsapp_outbox
+      (inbound_message_sid, sequence, whatsapp_number, body, status, source_type, source_id, idempotency_key)
+    VALUES (NULL, 0, $1, $2, 'pending', 'admin_case', $3, $4)
+    ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+    RETURNING id
+  `),
+  params: [
+    '+15125551234',
+    'Please send the missing document.',
+    'case-1',
+    'admin-reply:11111111-1111-4111-8111-111111111111',
+  ],
+});
+
 assert.deepEqual(dispatch.buildCaseMutation('request_more_info', { note: 'Need registration.' }), {
-  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, updated_at = NOW() WHERE id = $1`,
+  sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, updated_at = NOW() WHERE id = $1 AND status NOT IN ('resolved', 'dismissed')`,
   params: ['case-id', 'pending_worker', JSON.stringify({ lastAdminNote: 'Need registration.' })],
 });
 
@@ -93,4 +114,17 @@ assert.deepEqual(dispatch.buildVerificationMutation('reject_verification', { jus
   params: ['verification-id', 'dismissed', JSON.stringify({ verificationStatus: 'rejected', rejectionReason: 'Docs do not match.' })],
 });
 
+assert.match(
+  dispatch.buildVerificationMutation('request_more_info', {})?.sql ?? '',
+  /status NOT IN \('resolved', 'dismissed'\)/,
+);
+assert.match(
+  dispatch.buildVerificationMutation('reset_verification_step', {})?.sql ?? '',
+  /status NOT IN \('resolved', 'dismissed'\)/,
+);
+
 console.log('admin action dispatch checks passed');
+
+function expectSql(sql) {
+  return sql.trim().replace(/\s+/g, ' ');
+}
