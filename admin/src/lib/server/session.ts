@@ -9,6 +9,8 @@ import {
   type AdminSession,
   type AdminTokenClaims,
 } from './session-claims';
+import { AdminSessionStore } from './admin-session-store';
+import { getAdminDbPool } from './db';
 
 let verifier: ReturnType<typeof CognitoJwtVerifier.create> | undefined;
 
@@ -47,17 +49,22 @@ export async function verifyAdminIdToken(idToken: string): Promise<AdminSession>
 }
 
 export async function getCurrentAdminSession(): Promise<AdminSession | undefined> {
-  const idToken = cookies().get(ADMIN_SESSION_COOKIE)?.value;
+  const rawToken = cookies().get(ADMIN_SESSION_COOKIE)?.value;
 
-  if (idToken) {
+  if (rawToken) {
     try {
-      return await verifyAdminIdToken(idToken);
+      const pool = await getAdminDbPool();
+      return await new AdminSessionStore(pool).resolve(rawToken);
     } catch {
       return undefined;
     }
   }
 
-  if (isLocalPreviewAllowed(process.env.NODE_ENV, process.env.ADMIN_PREVIEW_ROLE)) {
+  if (isLocalPreviewAllowed(
+    process.env.NODE_ENV,
+    process.env.ADMIN_PREVIEW_ROLE,
+    process.env.ADMIN_ALLOW_LOCAL_PREVIEW,
+  )) {
     return {
       sub: 'local-preview-admin',
       email: 'local-preview@jaleapp.ai',

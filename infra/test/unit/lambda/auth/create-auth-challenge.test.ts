@@ -10,6 +10,12 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
   GetSecretValueCommand: jest.fn((args) => ({ input: args, __type: 'GetSecretValue' })),
 }));
 
+const mockDynamoSend = jest.fn();
+jest.mock('@aws-sdk/client-dynamodb', () => ({
+  DynamoDBClient: jest.fn(() => ({ send: mockDynamoSend })),
+  TransactWriteItemsCommand: jest.fn((input) => ({ input, __type: 'TransactWriteItems' })),
+}));
+
 import { handler, _clearSecretCacheForTests } from '../../../../lambda/auth/create-auth-challenge';
 
 describe('CreateAuthChallenge Lambda', () => {
@@ -43,6 +49,9 @@ describe('CreateAuthChallenge Lambda', () => {
     process.env.TWILIO_FROM_NUMBER = '+13252210992';
     process.env.TWILIO_REQUEST_TIMEOUT_MS = '3500';
     process.env.TWILIO_VALIDITY_PERIOD_SECONDS = '180';
+    process.env.OTP_RATE_LIMIT_TABLE_NAME = 'otp-rate-limit';
+    mockDynamoSend.mockReset();
+    mockDynamoSend.mockResolvedValue({});
     mockSecretsSend.mockReset();
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -60,6 +69,7 @@ describe('CreateAuthChallenge Lambda', () => {
     delete process.env.TWILIO_FROM_NUMBER;
     delete process.env.TWILIO_REQUEST_TIMEOUT_MS;
     delete process.env.TWILIO_VALIDITY_PERIOD_SECONDS;
+    delete process.env.OTP_RATE_LIMIT_TABLE_NAME;
   });
 
   it('generates a 6-digit OTP and sends SMS from the dedicated Jale number on first call', async () => {
@@ -72,6 +82,7 @@ describe('CreateAuthChallenge Lambda', () => {
 
     // Twilio fetch was called exactly once
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mockDynamoSend).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages.json');
@@ -123,6 +134,18 @@ describe('CreateAuthChallenge Lambda', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     // No Secrets Manager call either on retry (OTP reused, Twilio not invoked).
     expect(mockSecretsSend).not.toHaveBeenCalled();
+    expect(mockDynamoSend).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch credentials or send SMS when the shared quota is exhausted', async () => {
+    mockDynamoSend.mockRejectedValueOnce(Object.assign(new Error('transaction cancelled'), {
+      name: 'TransactionCanceledException',
+      CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }, { Code: 'None' }],
+    }));
+
+    await expect(handler(baseEvent([]))).rejects.toThrow('Unable to send a verification code right now.');
+    expect(mockSecretsSend).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('masks the phone in the public hint', async () => {

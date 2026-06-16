@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
-import { submitAdminActionState, type AdminActionFormState } from '@/app/actions';
+import { useRef, useState, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
+import type { AdminActionFormState } from '@/app/actions';
 import type { AdminAction } from '@/lib/action-policy';
 
 type CaseTarget = {
@@ -75,8 +76,10 @@ function RevealedContactCard({ state }: { state: AdminActionFormState }) {
 }
 
 export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
+  const router = useRouter();
   const [state, setState] = useState<AdminActionFormState>(INITIAL_STATE);
   const [pendingActionId, setPendingActionId] = useState<string>();
+  const requestIds = useRef(new Map<string, string>());
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -85,6 +88,12 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
     const formData = new FormData(event.currentTarget);
     const actionId = formData.get('actionId');
     if (typeof actionId !== 'string') return;
+    const requestKey = `${target.targetType}:${target.targetId}:${actionId}`;
+    if (actionId === 'reply_whatsapp') {
+      const requestId = requestIds.current.get(requestKey) ?? crypto.randomUUID();
+      requestIds.current.set(requestKey, requestId);
+      formData.set('requestId', requestId);
+    }
 
     const matchedAction = actions.find((a) => a.id === actionId);
     if (matchedAction?.dangerous) {
@@ -95,8 +104,31 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
     try {
       // Server action invoked as an RPC from a client event handler — works on
       // React 18.3 / Next 14 without the React 19-only useActionState hook.
-      const next = await submitAdminActionState(state, formData);
-      setState(next);
+      const body = JSON.stringify(Object.fromEntries(formData.entries()));
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
+      const payloadHash = Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('');
+      const response = await fetch('/api/admin-actions', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-amz-content-sha256': payloadHash,
+        },
+        body,
+      });
+      const result = await response.json() as {
+        ok?: boolean;
+        message?: string;
+        revealed?: AdminActionFormState['revealed'];
+      };
+      setState(result.ok
+        ? { status: 'ok', message: result.message, actionId, revealed: result.revealed }
+        : { status: 'error', message: result.message ?? 'The action could not be completed.', actionId });
+      if (result.ok) {
+        requestIds.current.delete(requestKey);
+        router.refresh();
+      }
     } catch {
       setState({ status: 'error', message: 'The action could not be completed. Please retry.' });
     } finally {
@@ -151,8 +183,10 @@ export function AdminActionsPanel({ actions, target }: AdminActionsPanelProps) {
                 <input
                   aria-label={`${adminAction.label} note`}
                   disabled={adminAction.disabled || isAnyActionPending}
+                  maxLength={adminAction.id === 'reply_whatsapp' ? 1000 : undefined}
                   name="note"
-                  placeholder="Optional audit note"
+                  placeholder={adminAction.id === 'reply_whatsapp' ? 'Message to send to the worker' : 'Optional audit note'}
+                  required={adminAction.id === 'reply_whatsapp'}
                   type="text"
                 />
               )}

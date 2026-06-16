@@ -49,6 +49,7 @@ describe('database migrations', () => {
       '024',
       '025',
       '026',
+      '027',
     ]);
   });
 
@@ -267,5 +268,18 @@ describe('database migrations', () => {
     expect(migration).toContain('ALTER TABLE admin_audit_log FORCE ROW LEVEL SECURITY');
     expect(migration).toContain('GRANT SELECT, INSERT ON admin_audit_log TO jale_admin');
     expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON admin_audit_log TO jale_admin');
+  });
+
+  it('adds revocable admin sessions and a durable admin reply outbox in migration 027', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '027_admin_security_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_sessions');
+    expect(migration).toContain('token_hash CHAR(64) NOT NULL UNIQUE');
+    expect(migration).toContain('idx_whatsapp_outbox_idempotency');
+    expect(migration).toContain("CHECK (status IN ('pending', 'sent', 'failed', 'send_unknown'))");
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION record_admin_whatsapp_delivery');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT) TO jale_whatsapp');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION reconcile_worker_signup');
+    expect(migration).toContain('pg_advisory_xact_lock');
   });
 });

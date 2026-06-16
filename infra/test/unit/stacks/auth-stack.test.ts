@@ -166,8 +166,29 @@ describe('AuthStack', () => {
           TWILIO_FROM_NUMBER: '+15125550123',
           TWILIO_REQUEST_TIMEOUT_MS: '3500',
           TWILIO_VALIDITY_PERIOD_SECONDS: '180',
+          OTP_RATE_LIMIT_TABLE_NAME: Match.anyValue(),
         }),
       }),
+    });
+  });
+
+  test('UserPoolClients suppress username-existence errors', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      PreventUserExistenceErrors: 'ENABLED',
+    });
+  });
+
+  test('OTP rate limits use a TTL-enabled on-demand DynamoDB table', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'subject', KeyType: 'HASH' },
+        { AttributeName: 'window', KeyType: 'RANGE' },
+      ],
+      TimeToLiveSpecification: {
+        AttributeName: 'expiresAt',
+        Enabled: true,
+      },
     });
   });
 

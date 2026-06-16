@@ -55,6 +55,10 @@ export function buildAdminSessionFromClaims(claims: AdminTokenClaims): AdminSess
   };
 }
 
-export function isLocalPreviewAllowed(nodeEnv: string | undefined, role: string | undefined): boolean {
-  return nodeEnv !== 'production' && isAdminRole(role);
+export function isLocalPreviewAllowed(
+  nodeEnv: string | undefined,
+  role: string | undefined,
+  allowFlag: string | undefined,
+): boolean {
+  return nodeEnv === 'development' && allowFlag === 'true' && isAdminRole(role);
 }

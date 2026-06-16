@@ -96,8 +96,8 @@
             },
             "errors": {
                 "trade_other_required": "Ingresa tu oficio.",
-                "account_exists": "Ya existe una cuenta con este telefono. Vuelve e inicia sesion.",
-                "account_not_found": "No encontramos una cuenta con ese telefono. Crea una cuenta primero.",
+                "account_exists": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
+                "account_not_found": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
                 "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
                 "invalid_code": "Ese codigo no es correcto. Revisalo e intenta de nuevo.",
                 "expired_code": "Ese codigo expiro. Pide un codigo nuevo e intenta de nuevo.",

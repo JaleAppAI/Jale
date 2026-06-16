@@ -13,6 +13,7 @@ import { WhatsAppStack } from '../lib/stacks/whatsapp-stack';
 import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
 import { AdminStack } from '../lib/stacks/admin-stack';
+import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
 
 const app = new cdk.App();
@@ -144,15 +145,32 @@ new DocumentsStack(app, 'JaleDocumentsStack', {
   requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
 });
 
-// AdminStack — secure internal ops console at admin.jaleapp.ai.
-new AdminStack(app, 'JaleAdminStack', {
+// AdminStack - secure internal ops console at admin.jaleapp.ai.
+//
+// The admin Lambda joins the shared VPC and reaches RDS, so AdminStack runs in
+// the main region. CloudFront requires its ACM certificate in us-east-1, so a
+// certificate-only stack owns it and passes the ARN across regions.
+const adminDomainName = app.node.tryGetContext('domainName') ?? 'jaleapp.ai';
+const adminHostedZoneId = app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3';
+
+const adminCert = new AdminCertStack(app, 'JaleAdminCertStack', {
   env: { account: env.account, region: 'us-east-1' },
-  domainName: app.node.tryGetContext('domainName') ?? 'jaleapp.ai',
-  hostedZoneId: app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3',
+  crossRegionReferences: true,
+  domainName: adminDomainName,
+  hostedZoneId: adminHostedZoneId,
+});
+
+new AdminStack(app, 'JaleAdminStack', {
+  env,
+  crossRegionReferences: true,
+  domainName: adminDomainName,
+  hostedZoneId: adminHostedZoneId,
   vpc: network.vpc,
   privateSubnets: network.privateSubnets,
   lambdaSg: network.lambdaSg,
   adminDbSecret: database.adminConsoleDbSecret,
+  certificate: adminCert.certificate,
+  webAclArn: adminCert.webAclArn,
 });
 
 // FrontendStack — Lambda + CloudFront + Route 53 for jaleapp.ai

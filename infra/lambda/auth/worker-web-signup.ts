@@ -7,8 +7,9 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { randomInt } from 'node:crypto';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { reconcileWorkerCognitoAccount } from './lib/worker-cognito-reconciliation';
 
 const cognito = new CognitoIdentityProviderClient({});
 const CORS_HEADERS = corsHeaders();
@@ -61,17 +62,14 @@ export const handler = async (
       }));
     } catch (err: any) {
       if (err?.name !== 'UsernameExistsException') throw err;
-      // This endpoint is unauthenticated. Never change Cognito or profile data
-      // for an existing phone number until the caller proves ownership by OTP.
+      const repaired = await reconcileWorkerCognitoAccount({
+        client: cognito,
+        userPoolId,
+        phone,
+      });
+      await seedWorkerUser(repaired.cognitoSub, phone, repaired.storedName ?? '');
       return json(200, { ok: true });
     }
-
-    await cognito.send(new AdminSetUserPasswordCommand({
-      UserPoolId: userPoolId,
-      Username: phone,
-      Password: randomPassword(),
-      Permanent: true,
-    }));
 
     const confirmed = await cognito.send(new AdminGetUserCommand({
       UserPoolId: userPoolId,
@@ -83,8 +81,15 @@ export const handler = async (
       throw new Error('Unable to resolve Cognito sub for worker signup.');
     }
 
-    await ensureWorkerGroup(userPoolId, phone);
     await seedWorkerUser(cognitoSub, phone, fullName);
+    await ensureWorkerGroup(userPoolId, phone);
+
+    await cognito.send(new AdminSetUserPasswordCommand({
+      UserPoolId: userPoolId,
+      Username: phone,
+      Password: randomPassword(),
+      Permanent: true,
+    }));
 
     return json(200, { ok: true });
   } catch (err: any) {
@@ -120,13 +125,8 @@ async function seedWorkerUser(cognitoSub: string, phone: string, fullName: strin
 
   try {
     await client.query('BEGIN');
-    await setRlsContext(client, cognitoSub);
     await client.query(
-      `INSERT INTO users (cognito_sub, user_type, phone, full_name)
-       VALUES ($1, 'worker', $2, $3)
-       ON CONFLICT (cognito_sub) DO UPDATE
-       SET phone = EXCLUDED.phone,
-           full_name = EXCLUDED.full_name`,
+      'SELECT reconcile_worker_signup($1, $2, $3)',
       [cognitoSub, phone, fullName],
     );
     await client.query('COMMIT');

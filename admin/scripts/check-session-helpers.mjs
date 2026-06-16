@@ -70,8 +70,12 @@ assert.throws(
   /Admin token does not include an admin group/,
 );
 
-assert.equal(session.isLocalPreviewAllowed('development', 'admin_ops'), true);
-assert.equal(session.isLocalPreviewAllowed('production', 'admin_ops'), false);
-assert.equal(session.isLocalPreviewAllowed('development', 'not_admin'), false);
+assert.equal(session.isLocalPreviewAllowed('development', 'admin_ops', 'true'), true);
+assert.equal(session.isLocalPreviewAllowed('development', 'admin_ops', undefined), false);
+assert.equal(session.isLocalPreviewAllowed('development', 'admin_ops', 'false'), false);
+assert.equal(session.isLocalPreviewAllowed('production', 'admin_ops', 'true'), false);
+assert.equal(session.isLocalPreviewAllowed('staging', 'admin_ops', 'true'), false);
+assert.equal(session.isLocalPreviewAllowed(undefined, 'admin_ops', 'true'), false);
+assert.equal(session.isLocalPreviewAllowed('development', 'not_admin', 'true'), false);
 
 console.log('admin session helper checks passed');

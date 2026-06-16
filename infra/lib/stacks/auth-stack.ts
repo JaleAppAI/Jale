@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -76,6 +77,14 @@ export class AuthStack extends cdk.Stack {
     const otpSmsValidityPeriodSeconds = Number(
       this.node.tryGetContext('otpSmsValidityPeriodSeconds') ?? 180,
     );
+    const otpRateLimitTable = new dynamodb.Table(this, 'OtpRateLimitTable', {
+      partitionKey: { name: 'subject', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'window', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     if (!/^\+[1-9]\d{7,14}$/.test(otpSmsFromNumber)) {
       throw new Error('otpSmsFromNumber must be a valid E.164 phone number');
@@ -108,8 +117,10 @@ export class AuthStack extends cdk.Stack {
         TWILIO_FROM_NUMBER: otpSmsFromNumber,
         TWILIO_REQUEST_TIMEOUT_MS: String(otpSmsRequestTimeoutMs),
         TWILIO_VALIDITY_PERIOD_SECONDS: String(otpSmsValidityPeriodSeconds),
+        OTP_RATE_LIMIT_TABLE_NAME: otpRateLimitTable.tableName,
       },
     });
+    otpRateLimitTable.grantReadWriteData(createAuthChallengeLambda.function);
     otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
     // Keep an explicit partial-ARN allow for compatibility with any deployed
     // code/config that still passes the imported secretArn as SecretId.
@@ -127,6 +138,30 @@ export class AuthStack extends cdk.Stack {
       threshold: 1,
       evaluationPeriods: 1,
       datapointsToAlarm: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'WorkerOtpThrottleAlarm', {
+      alarmName: 'WorkerOtpSendThrottled',
+      metric: new cloudwatch.Metric({
+        namespace: 'Jale/OTP',
+        metricName: 'WorkerOtpSendThrottled',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 20,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'WorkerOtpTwilioFailureAlarm', {
+      alarmName: 'WorkerOtpTwilioFailures',
+      metric: new cloudwatch.Metric({
+        namespace: 'Jale/OTP',
+        metricName: 'WorkerOtpTwilioFailure',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 

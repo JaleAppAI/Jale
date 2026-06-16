@@ -93,8 +93,24 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 5 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 5);
+  test('Stack creates 6 Lambda functions including the admin outbox dispatcher', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 6);
+  });
+
+  test('Admin outbox dispatcher runs on a one-minute schedule', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('.*admin.*outbox.*'),
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          DB_SECRET_ARN: Match.anyValue(),
+          TWILIO_SECRET_ARN: Match.anyValue(),
+        }),
+      }),
+    });
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(1 minute)',
+      State: 'ENABLED',
+    });
   });
 
   test('Webhook Lambda has TWILIO_SECRET_ARN + SQS_QUEUE_URL env vars', () => {
@@ -156,6 +172,10 @@ describe('WhatsAppStack', () => {
       'cognito-idp:AdminSetUserPassword',
       'cognito-idp:InitiateAuth',
       'cognito-idp:RespondToAuthChallenge',
+      // C4: reconcileWorkerCognitoAccount() repair actions must stay granted.
+      'cognito-idp:AdminUpdateUserAttributes',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminAddUserToGroup',
     ];
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: Match.objectLike({

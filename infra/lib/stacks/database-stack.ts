@@ -98,6 +98,7 @@ export class DatabaseStack extends cdk.Stack {
         excludePunctuation: true,
       },
     });
+    this.adminConsoleDbSecret.applyRemovalPolicy(removalPolicy);
     this.dbEndpoint = this.dbInstance.dbInstanceEndpointAddress;
     this.dbPort = this.dbInstance.dbInstanceEndpointPort;
   }

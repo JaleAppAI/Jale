@@ -2,11 +2,13 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import {
   AdminAddUserToGroupCommand,
   AdminCreateUserCommand,
+  AdminEnableUserCommand,
   AdminGetUserCommand,
   AdminSetUserPasswordCommand,
+  AdminUpdateUserAttributesCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { handler } from '../../../../lambda/auth/worker-web-signup';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool } from '../../../../lambda/lib/db';
 
 const mockSend = jest.fn();
 
@@ -20,7 +22,13 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => {
   class AdminGetUserCommand {
     constructor(public input: any) {}
   }
+  class AdminEnableUserCommand {
+    constructor(public input: any) {}
+  }
   class AdminSetUserPasswordCommand {
+    constructor(public input: any) {}
+  }
+  class AdminUpdateUserAttributesCommand {
     constructor(public input: any) {}
   }
 
@@ -30,15 +38,16 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => {
     })),
     AdminAddUserToGroupCommand,
     AdminCreateUserCommand,
+    AdminEnableUserCommand,
     AdminGetUserCommand,
     AdminSetUserPasswordCommand,
+    AdminUpdateUserAttributesCommand,
   };
 });
 
 jest.mock('../../../../lambda/lib/db');
 
 const mockGetDbPool = getDbPool as jest.Mock;
-const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -78,10 +87,10 @@ describe('worker-web-signup', () => {
   it('creates, confirms, and seeds a worker user', async () => {
     mockSend
       .mockResolvedValueOnce({})
-      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({
         UserAttributes: [{ Name: 'sub', Value: 'worker-sub' }],
       })
+      .mockResolvedValueOnce({})
       .mockResolvedValueOnce({});
 
     const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
@@ -99,50 +108,69 @@ describe('worker-web-signup', () => {
         { Name: 'custom:user_type', Value: 'worker' },
       ]),
     }));
-    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AdminSetUserPasswordCommand);
-    expect(mockSend.mock.calls[1][0].input).toEqual({
+    expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AdminGetUserCommand);
+    expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
+    expect(mockSend.mock.calls[2][0].input).toEqual({
+      UserPoolId: 'worker-pool',
+      Username: '+19152272188',
+      GroupName: 'Workers',
+    });
+    expect(mockSend.mock.calls[3][0]).toBeInstanceOf(AdminSetUserPasswordCommand);
+    expect(mockSend.mock.calls[3][0].input).toEqual({
       UserPoolId: 'worker-pool',
       Username: '+19152272188',
       Password: expect.any(String),
       Permanent: true,
     });
-    expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminGetUserCommand);
-    expect(mockSend.mock.calls[3][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
-    expect(mockSend.mock.calls[3][0].input).toEqual({
-      UserPoolId: 'worker-pool',
-      Username: '+19152272188',
-      GroupName: 'Workers',
-    });
-    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'worker-sub');
-    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO users'), [
+    expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
       'Ivan Worker',
     ]);
+    expect(mockQuery.mock.invocationCallOrder[1]).toBeLessThan(mockSend.mock.invocationCallOrder[3]);
     expect(mockRelease).toHaveBeenCalled();
   });
 
-  it('does not mutate an existing confirmed worker before OTP ownership proof', async () => {
+  it('repairs an existing worker using Cognito-stored identity data', async () => {
     mockSend
       .mockRejectedValueOnce({ name: 'UsernameExistsException' })
+      .mockResolvedValueOnce({
+        Enabled: true,
+        UserStatus: 'CONFIRMED',
+        UserAttributes: [
+          { Name: 'sub', Value: 'worker-sub' },
+          { Name: 'phone_number', Value: '+19152272188' },
+          { Name: 'phone_number_verified', Value: 'true' },
+          { Name: 'custom:user_type', Value: 'worker' },
+          { Name: 'name', Value: 'Stored Worker' },
+        ],
+      })
       .mockResolvedValueOnce({});
 
     const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Attacker Rename' }));
 
     expect(res.statusCode).toBe(200);
-    expect(mockSend).toHaveBeenCalledTimes(1);
-    expect(mockGetDbPool).not.toHaveBeenCalled();
-    expect(mockSetRlsContext).not.toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalledTimes(3);
+    expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
+      'worker-sub',
+      '+19152272188',
+      'Stored Worker',
+    ]);
   });
 
-  it('does not repair a stale unconfirmed worker through the unauthenticated endpoint', async () => {
+  it('returns a generic retryable error when existing-account inspection fails', async () => {
     mockSend
-      .mockRejectedValueOnce({ name: 'UsernameExistsException' });
+      .mockRejectedValueOnce({ name: 'UsernameExistsException' })
+      .mockRejectedValueOnce(new Error('temporary Cognito failure'));
 
     const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
 
-    expect(res.statusCode).toBe(200);
-    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'signup_failed',
+      message: 'Worker signup failed.',
+    });
+    expect(mockSend).toHaveBeenCalledTimes(2);
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 });

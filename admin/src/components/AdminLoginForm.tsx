@@ -21,6 +21,17 @@ function getIdToken(session: CognitoUserSession): string {
   return session.getIdToken().getJwtToken();
 }
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 export function AdminLoginForm({ config }: AdminLoginFormProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -36,10 +47,14 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   async function establishSession(session: CognitoUserSession) {
+    const body = JSON.stringify({ idToken: getIdToken(session) });
     const response = await fetch('/api/session', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idToken: getIdToken(session) }),
+      headers: {
+        'content-type': 'application/json',
+        'x-amz-content-sha256': await sha256Hex(body),
+      },
+      body,
     });
 
     if (!response.ok) {
@@ -98,9 +113,10 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
         });
       },
       onFailure: (err) => handleAuthFailure(err, 'Sign-in failed.'),
-      newPasswordRequired: (userAttributes) => {
+      newPasswordRequired: (userAttributes, requiredAttributeNames) => {
+        const requiredAttributeSet = new Set(requiredAttributeNames ?? []);
         const acceptedAttributes = Object.fromEntries(
-          Object.entries(userAttributes ?? {}).filter(([key]) => !key.endsWith('_verified')),
+          Object.entries(userAttributes ?? {}).filter(([key]) => requiredAttributeSet.has(key)),
         );
 
         setPendingUser(user);
