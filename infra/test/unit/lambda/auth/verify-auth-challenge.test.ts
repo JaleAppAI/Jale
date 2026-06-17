@@ -1,5 +1,7 @@
 import { handler } from '../../../../lambda/auth/verify-auth-challenge';
 import type { VerifyAuthChallengeResponseTriggerEvent } from 'aws-lambda';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 describe('VerifyAuthChallenge Lambda', () => {
   const baseEvent = (
@@ -46,5 +48,13 @@ describe('VerifyAuthChallenge Lambda', () => {
     const r2 = await handler(baseEvent('123456', '123456 '));
     expect(r1.response.answerCorrect).toBe(false);
     expect(r2.response.answerCorrect).toBe(false);
+  });
+
+  it('uses a constant-time OTP comparison', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, '../../../../lambda/auth/verify-auth-challenge.ts'),
+      'utf8',
+    );
+    expect(source).toContain('timingSafeEqual');
   });
 });

@@ -111,7 +111,11 @@ jobs:
             fi
           done
 
-          api_url="$(resolve_api_url)"
+          if ! api_url="$(resolve_api_url 2>&1)"; then
+            echo "$api_url"
+            echo "::error::Unable to read JaleApiStack.ApiUrl. Grant cloudformation:DescribeStacks on JaleApiStack to AWS_PLAN_ROLE_ARN's role."
+            exit 1
+          fi
           if [[ -z "$api_url" || "$api_url" == "None" ]]; then
             echo "::error::Unable to resolve JaleApiStack ApiUrl output for frontend API origin."
             exit 1
@@ -140,8 +144,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} --output "$RUNNER_TEMP/jale-cdk-synth-production"
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
+          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true --output "$RUNNER_TEMP/jale-cdk-synth-production"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
 
       - name: Upload production plan artifacts
         if: env.AWS_PLAN_ROLE_ARN != ''
@@ -233,7 +237,11 @@ jobs:
             fi
           done
 
-          api_url="$(resolve_api_url)"
+          if ! api_url="$(resolve_api_url 2>&1)"; then
+            echo "$api_url"
+            echo "::error::Unable to read JaleApiStack.ApiUrl. Grant cloudformation:DescribeStacks on JaleApiStack to AWS_ROLE_ARN's role."
+            exit 1
+          fi
           if [[ -z "$api_url" || "$api_url" == "None" ]]; then
             echo "::error::Unable to resolve JaleApiStack ApiUrl output for frontend API origin."
             exit 1
@@ -283,14 +291,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
 
       - name: Deploy CDK stacks
         working-directory: infra
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
+          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
 
       - name: Upload deployment artifacts
         if: always()

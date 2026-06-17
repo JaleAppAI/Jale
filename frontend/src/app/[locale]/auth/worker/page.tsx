@@ -7,14 +7,14 @@ import WorkerAuthForm from '@/components/auth/WorkerAuthForm';
 export const dynamic = 'force-dynamic';
 
 export default function WorkerAuthPage() {
-    const { isAuthenticated, isLoading } = useAuth();
+    const { isAuthenticated, isLoading, userType } = useAuth();
     const router = useRouter();
 
     useEffect(() => {
         if (!isLoading && isAuthenticated) {
-            router.replace('/worker/home');
+            router.replace(userType === 'employer' ? '/employer/dashboard' : '/worker/home');
         }
-    }, [isLoading, isAuthenticated]);
+    }, [isLoading, isAuthenticated, userType, router]);
 
     if (isLoading || isAuthenticated) return null;
 

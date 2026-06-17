@@ -89,21 +89,10 @@ describe('NetworkStack', () => {
     });
   });
 
-  test('Cognito SMS IAM role exists with cognito-idp trust and inline SNS policy', () => {
-    template.hasResourceProperties('AWS::IAM::Role', {
-      AssumeRolePolicyDocument: Match.objectLike({
-        Statement: Match.arrayWith([
-          Match.objectLike({
-            Principal: { Service: 'cognito-idp.amazonaws.com' },
-          }),
-        ]),
-      }),
-      Policies: Match.arrayWith([
-        Match.objectLike({
-          PolicyName: 'SnsPublish',
-        }),
-      ]),
-    });
+  test('Cognito has no SNS publishing role for worker OTP delivery', () => {
+    const templateJson = JSON.stringify(template.toJSON());
+    expect(templateJson).not.toContain('cognito-idp.amazonaws.com');
+    expect(templateJson).not.toContain('sns:Publish');
   });
 
   // ── Phase 3: NAT Gateway (needed for Twilio API egress) ─────────

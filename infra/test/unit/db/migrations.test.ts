@@ -39,6 +39,17 @@ describe('database migrations', () => {
       '014',
       '015',
       '016',
+      '017',
+      '018',
+      '019',
+      '020',
+      '021',
+      '022',
+      '023',
+      '024',
+      '025',
+      '026',
+      '027',
     ]);
   });
 
@@ -104,5 +115,171 @@ describe('database migrations', () => {
     expect(sql013).toContain('content_variables');
     expect(sql013).toContain("to_regclass('public.job_candidates')");
     expect(sql013).toContain('whatsapp_read_ranked_jobs');
+  });
+
+  it('adds hardened tokenized document upload slots in migration 017', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '017_document_upload_token_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS used_at TIMESTAMPTZ');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS s3_version_id TEXT');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS document_upload_token_slots');
+    expect(migration).toContain('PRIMARY KEY (token_hash, doc_type)');
+    expect(migration).toContain('UNIQUE (issued_s3_key)');
+    expect(migration).toContain('worker_documents_worker_update');
+  });
+
+  it('hardens document vault RLS in migration 018', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '018_document_vault_rls_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('ALTER TABLE worker_documents ENABLE ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE worker_documents FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON worker_documents TO jale_admin');
+    expect(migration).toContain('worker_documents_worker_delete');
+    expect(migration).toContain('worker_documents_worker_update');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('CREATE POLICY worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('worker_documents.job_id IS NOT NULL');
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('ja.worker_id = worker_documents.worker_id');
+    expect(migration).toContain('ja.job_id = worker_documents.job_id');
+  });
+
+  it('repairs live application status constraints in migration 019', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '019_application_status_constraint_repair.sql'), 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ');
+    expect(migration).toContain('pg_get_constraintdef(con.oid) ILIKE');
+    expect(migration).toContain('ALTER TABLE job_applications DROP CONSTRAINT %I');
+    expect(migration).toContain("WHEN 'viewed' THEN 'reviewed'");
+    expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
+    expect(migration).toContain('DROP TRIGGER IF EXISTS job_applications_updated_at');
+  });
+
+  it('hardens worker PII RLS in migration 020', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '020_worker_pii_rls_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_profiles_employer_read');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_skills_employer_read');
+    expect(migration).toContain('CREATE POLICY users_employer_applicant_read');
+    expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('j.employer_id::text');
+    expect(migration).not.toContain("user_type = 'employer'");
+    expect(migration).not.toContain('job_candidates');
+    expect(migration).not.toContain('employer_candidate_rankings');
+    expect(migration).toContain('REVOKE SELECT ON worker_profiles FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_skills FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_documents FROM jale_matching');
+    expect(migration).toContain('information_schema.columns');
+    expect(migration).toContain('matching_profile_columns');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
+  });
+
+  it('adds WhatsApp document access support in migration 021', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '021_whatsapp_required_docs_apply_support.sql'), 'utf8');
+
+    expect(migration).toContain('GRANT SELECT, INSERT ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('UPDATE ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('DELETE ON worker_documents TO jale_whatsapp');
+  });
+
+  it('guards direct application inserts in migration 022', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '022_job_application_required_docs_guard.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION enforce_job_application_required_docs');
+    expect(migration).toContain('FROM worker_documents wd');
+    expect(migration).toContain('wd.job_id IS NULL OR wd.job_id = NEW.job_id');
+    expect(migration).toContain('RAISE EXCEPTION');
+    expect(migration).toContain('CREATE TRIGGER job_applications_required_docs_guard');
+  });
+
+  it('adds MVP job fields and lifecycle statuses in migration 023', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '023_job_fields_and_statuses_mvp.sql'), 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_min INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_max INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS number_of_workers_needed INTEGER NOT NULL DEFAULT 1');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS workers_hired INTEGER NOT NULL DEFAULT 0');
+    expect(migration).toContain("CHECK (status IN ('active', 'paused', 'filled', 'closed'))");
+    expect(migration).toContain("WHEN 'reviewed' THEN 'contacted'");
+    expect(migration).toContain("WHEN 'rejected' THEN 'not_interested'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts');
+    expect(migration).toContain("IF TG_OP = 'DELETE' THEN");
+    expect(migration).toContain('target_job_id := OLD.job_id');
+    expect(migration).toContain('target_job_id := NEW.job_id');
+    expect(migration).toContain('CREATE TRIGGER job_applications_hired_count_sync');
+  });
+
+  it('hardens Sprint 11 hiring flow fields in migration 024', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '024_sprint11_hiring_flow_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('sprint11_unexpected_application_status');
+    expect(migration).toContain('DISABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain('ENABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('NOT VALID');
+    expect(migration).toContain('VALIDATE CONSTRAINT job_applications_status_check');
+    expect(migration).toContain('idx_job_applications_status_talking');
+    expect(migration).toContain('idx_job_applications_status_hired');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_pay_range_check');
+    expect(migration).toContain('jobs_pay_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_pay_bounds_check');
+    expect(migration).toContain('pay_min <= 9999');
+    expect(migration).toContain('pay_max <= 9999');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_headcount_check');
+    expect(migration).toContain('jobs_headcount_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_headcount_bounds_check');
+    expect(migration).toContain('number_of_workers_needed BETWEEN 1 AND 500');
+    expect(migration).toContain('workers_hired <= number_of_workers_needed');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_required_experience_check');
+    expect(migration).toContain('jobs_required_experience_years_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
+    expect(migration).toContain('required_experience_years BETWEEN 0 AND 80');
+  });
+
+  it('adds applicant-scoped job messaging in migration 025', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '025_job_messaging.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS job_conversations');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS job_conversation_messages');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS job_message_outbox');
+    expect(migration).toContain('job_conversations_open_unique');
+    expect(migration).toContain("CHECK (sender_type IN ('employer', 'worker', 'system'))");
+    expect(migration).toContain("CHECK (send_kind IN ('template', 'freeform'))");
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE ON job_conversations TO jale_admin');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE ON job_conversations TO jale_whatsapp');
+    expect(migration).toContain('ALTER TABLE job_conversations FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
+    expect(migration).toContain('job_conversations_employer_all');
+    expect(migration).toContain('job_conversations_worker_all');
+  });
+
+  it('adds an append-only audited admin panel schema in migration 026', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '026_admin_panel.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_users');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_cases');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_case_events');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_audit_log');
+    expect(migration).toContain("CHECK (role IN ('admin_readonly', 'admin_ops', 'admin_superadmin'))");
+    expect(migration).toContain("CHECK (case_type IN ('help_request', 'verification_blocker', 'outbound_failure', 'conversation_stuck'))");
+    expect(migration).toContain('ALTER TABLE admin_audit_log FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT ON admin_audit_log TO jale_admin');
+    expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON admin_audit_log TO jale_admin');
+  });
+
+  it('adds revocable admin sessions and a durable admin reply outbox in migration 027', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '027_admin_security_hardening.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS admin_sessions');
+    expect(migration).toContain('token_hash CHAR(64) NOT NULL UNIQUE');
+    expect(migration).toContain('idx_whatsapp_outbox_idempotency');
+    expect(migration).toContain("CHECK (status IN ('pending', 'sent', 'failed', 'send_unknown'))");
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION record_admin_whatsapp_delivery');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT) TO jale_whatsapp');
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION reconcile_worker_signup');
+    expect(migration).toContain('pg_advisory_xact_lock');
   });
 });

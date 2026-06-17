@@ -12,6 +12,8 @@ import { AiStack } from '../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../lib/stacks/whatsapp-stack';
 import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
+import { AdminStack } from '../lib/stacks/admin-stack';
+import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
 
 const app = new cdk.App();
@@ -36,7 +38,6 @@ const auth = new AuthStack(app, 'JaleAuthStack', {
   privateSubnets: network.privateSubnets,
   lambdaSg: network.lambdaSg,
   dbSecret: database.dbSecret,
-  cognitoSmsRole: network.cognitoSmsRole,
 });
 
 const ai = new AiStack(app, 'JaleAiStack', {
@@ -113,6 +114,7 @@ const bastion = new BastionStack(app, 'JaleBastionStack', {
 database.dbSecret.grantRead(bastion.bastionHost.instance.role);
 database.matchingDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.aiDbSecret.grantRead(bastion.bastionHost.instance.role);
+database.adminConsoleDbSecret.grantRead(bastion.bastionHost.instance.role);
 
 // Bastion needs scoped access to internal DB role secrets used by migration and
 // runbook operations. The WhatsApp migration script creates/updates its secret;
@@ -129,6 +131,7 @@ bastion.bastionHost.instance.role.addToPrincipalPolicy(
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/whatsapp/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/matching/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/ai/db*`,
+      `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/admin-console/db*`,
     ],
   }),
 );
@@ -140,6 +143,34 @@ new DocumentsStack(app, 'JaleDocumentsStack', {
   dbSecret: database.dbSecret,
   allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
   requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
+});
+
+// AdminStack - secure internal ops console at admin.jaleapp.ai.
+//
+// The admin Lambda joins the shared VPC and reaches RDS, so AdminStack runs in
+// the main region. CloudFront requires its ACM certificate in us-east-1, so a
+// certificate-only stack owns it and passes the ARN across regions.
+const adminDomainName = app.node.tryGetContext('domainName') ?? 'jaleapp.ai';
+const adminHostedZoneId = app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3';
+
+const adminCert = new AdminCertStack(app, 'JaleAdminCertStack', {
+  env: { account: env.account, region: 'us-east-1' },
+  crossRegionReferences: true,
+  domainName: adminDomainName,
+  hostedZoneId: adminHostedZoneId,
+});
+
+new AdminStack(app, 'JaleAdminStack', {
+  env,
+  crossRegionReferences: true,
+  domainName: adminDomainName,
+  hostedZoneId: adminHostedZoneId,
+  vpc: network.vpc,
+  privateSubnets: network.privateSubnets,
+  lambdaSg: network.lambdaSg,
+  adminDbSecret: database.adminConsoleDbSecret,
+  certificate: adminCert.certificate,
+  webAclArn: adminCert.webAclArn,
 });
 
 // FrontendStack — Lambda + CloudFront + Route 53 for jaleapp.ai

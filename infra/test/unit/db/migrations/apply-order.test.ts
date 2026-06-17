@@ -24,6 +24,17 @@ const expectedBaselineMigrations = [
   '014_employer_candidate_rankings.sql',
   '015_application_status_alignment.sql',
   '016_employer_profiles.sql',
+  '017_document_upload_token_hardening.sql',
+  '018_document_vault_rls_hardening.sql',
+  '019_application_status_constraint_repair.sql',
+  '020_worker_pii_rls_hardening.sql',
+  '021_whatsapp_required_docs_apply_support.sql',
+  '022_job_application_required_docs_guard.sql',
+  '023_job_fields_and_statuses_mvp.sql',
+  '024_sprint11_hiring_flow_hardening.sql',
+  '025_job_messaging.sql',
+  '026_admin_panel.sql',
+  '027_admin_security_hardening.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -77,7 +88,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-016 readiness baseline order', () => {
+  it('locks the 001-027 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -94,6 +105,10 @@ describe('migration apply order baseline', () => {
       'whatsapp_processed_messages',
       'whatsapp_outbox',
       'document_upload_tokens',
+      'document_upload_token_slots',
+      'job_conversations',
+      'job_conversation_messages',
+      'job_message_outbox',
     ]) {
       expectTable(sql, tableName);
     }
@@ -205,6 +220,17 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE POLICY employer_profiles_self');
   });
 
+  it('adds hardened tokenized document upload slots in migration 017', () => {
+    const migration = readMigration('017_document_upload_token_hardening.sql');
+
+    expectTable(migration, 'document_upload_token_slots');
+    expect(migration).toContain('used_at TIMESTAMPTZ');
+    expect(migration).toContain('s3_version_id TEXT');
+    expect(migration).toContain('PRIMARY KEY (token_hash, doc_type)');
+    expect(migration).toContain('UNIQUE (issued_s3_key)');
+    expect(migration).toContain('worker_documents_worker_update');
+  });
+
   it('documents canonical matching source fields in the architecture guide', () => {
     const architecture = fs.readFileSync(architecturePath, 'utf8');
 
@@ -220,11 +246,132 @@ describe('migration apply order baseline', () => {
   const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
   const maybeIt = databaseUrl ? it : it.skip;
 
-  maybeIt('applies migrations 001-016 against a local Postgres database', async () => {
+  it('hardens document vault RLS in migration 018', () => {
+    const migration = readMigration('018_document_vault_rls_hardening.sql');
+
+    expect(migration).toContain('ALTER TABLE worker_documents ENABLE ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE worker_documents FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON worker_documents TO jale_admin');
+    expect(migration).toContain('worker_documents_worker_delete');
+    expect(migration).toContain('worker_documents_worker_update');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('CREATE POLICY worker_documents_employer_select ON worker_documents');
+    expect(migration).toContain('worker_documents.job_id IS NOT NULL');
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('ja.worker_id = worker_documents.worker_id');
+    expect(migration).toContain('ja.job_id = worker_documents.job_id');
+  });
+
+  it('repairs live application status constraints in migration 019', () => {
+    const migration = readMigration('019_application_status_constraint_repair.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ');
+    expect(migration).toContain('pg_get_constraintdef(con.oid) ILIKE');
+    expect(migration).toContain('ALTER TABLE job_applications DROP CONSTRAINT %I');
+    expect(migration).toContain("WHEN 'viewed' THEN 'reviewed'");
+    expect(migration).toContain("WHEN 'contacted' THEN 'reviewed'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'reviewed', 'hired', 'rejected'))");
+    expect(migration).toContain('DROP TRIGGER IF EXISTS job_applications_updated_at');
+  });
+
+  it('hardens worker PII RLS in migration 020', () => {
+    const migration = readMigration('020_worker_pii_rls_hardening.sql');
+
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_profiles_employer_read');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_skills_employer_read');
+    expect(migration).toContain('CREATE POLICY users_employer_applicant_read');
+    expect(migration).toContain("current_setting('app.current_internal_user_id', true)");
+    expect(migration).toContain('FROM job_applications ja');
+    expect(migration).toContain('j.employer_id::text');
+    expect(migration).not.toContain("user_type = 'employer'");
+    expect(migration).not.toContain('job_candidates');
+    expect(migration).not.toContain('employer_candidate_rankings');
+    expect(migration).toContain('REVOKE SELECT ON worker_profiles FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_skills FROM jale_matching');
+    expect(migration).toContain('REVOKE SELECT ON worker_documents FROM jale_matching');
+    expect(migration).toContain('information_schema.columns');
+    expect(migration).toContain('matching_profile_columns');
+    expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
+  });
+
+  it('adds WhatsApp document access support in migration 021', () => {
+    const migration = readMigration('021_whatsapp_required_docs_apply_support.sql');
+
+    expect(migration).toContain('GRANT SELECT, INSERT ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('UPDATE ON worker_documents TO jale_whatsapp');
+    expect(migration).not.toContain('DELETE ON worker_documents TO jale_whatsapp');
+  });
+
+  it('guards direct application inserts in migration 022', () => {
+    const migration = readMigration('022_job_application_required_docs_guard.sql');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION enforce_job_application_required_docs');
+    expect(migration).toContain('FROM worker_documents wd');
+    expect(migration).toContain('wd.job_id IS NULL OR wd.job_id = NEW.job_id');
+    expect(migration).toContain('RAISE EXCEPTION');
+    expect(migration).toContain('CREATE TRIGGER job_applications_required_docs_guard');
+  });
+
+  it('adds MVP job fields and lifecycle statuses in migration 023', () => {
+    const migration = readMigration('023_job_fields_and_statuses_mvp.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_min INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS number_of_workers_needed INTEGER NOT NULL DEFAULT 1');
+    expect(migration).toContain("CHECK (status IN ('active', 'paused', 'filled', 'closed'))");
+    expect(migration).toContain("WHEN 'reviewed' THEN 'contacted'");
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts');
+    expect(migration).toContain("IF TG_OP = 'DELETE' THEN");
+    expect(migration).toContain('target_job_id := OLD.job_id');
+    expect(migration).toContain('target_job_id := NEW.job_id');
+  });
+
+  it('hardens Sprint 11 hiring flow fields in migration 024', () => {
+    const migration = readMigration('024_sprint11_hiring_flow_hardening.sql');
+
+    expect(migration).toContain('sprint11_unexpected_application_status');
+    expect(migration).toContain('DISABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain('ENABLE TRIGGER job_applications_hired_count_sync');
+    expect(migration).toContain("CHECK (status IN ('pending', 'contacted', 'talking', 'hired', 'not_interested'))");
+    expect(migration).toContain('NOT VALID');
+    expect(migration).toContain('VALIDATE CONSTRAINT job_applications_status_check');
+    expect(migration).toContain('idx_job_applications_status_talking');
+    expect(migration).toContain('idx_job_applications_status_hired');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_pay_range_check');
+    expect(migration).toContain('jobs_pay_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_pay_bounds_check');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_headcount_check');
+    expect(migration).toContain('jobs_headcount_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_headcount_bounds_check');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS jobs_required_experience_check');
+    expect(migration).toContain('jobs_required_experience_years_bounds_check');
+    expect(migration).toContain('VALIDATE CONSTRAINT jobs_required_experience_years_bounds_check');
+  });
+
+  it('adds applicant-scoped job messaging in migration 025', () => {
+    const migration = readMigration('025_job_messaging.sql');
+
+    expectTable(migration, 'job_conversations');
+    expectTable(migration, 'job_conversation_messages');
+    expectTable(migration, 'job_message_outbox');
+    expect(migration).toContain('job_conversations_open_unique');
+    expect(migration).toContain("CHECK (status IN ('open', 'closed'))");
+    expect(migration).toContain("CHECK (status IN ('queued', 'waiting_worker_reply', 'sent', 'delivered', 'failed', 'received'))");
+    expect(migration).toContain('job_conversations_employer_all');
+    expect(migration).toContain('job_conversations_worker_all');
+  });
+
+  maybeIt('applies migrations 001-025 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
     expect(columns.get('worker_profiles')?.get('years_experience')).toBe('integer');
     expect(columns.get('jobs')?.get('required_docs')).toBe('_text');
+    expect(columns.get('jobs')?.get('pay_min')).toBe('integer');
+    expect(columns.get('jobs')?.get('language_preference')).toBe('_text');
+    expect(columns.get('document_upload_tokens')?.get('used_at')).toBe('timestamp with time zone');
+    expect(columns.get('document_upload_token_slots')?.get('issued_s3_key')).toBe('text');
+    expect(columns.get('job_conversations')?.get('last_worker_message_at')).toBe('timestamp with time zone');
+    expect(columns.get('job_message_outbox')?.get('send_kind')).toBe('text');
   });
 });

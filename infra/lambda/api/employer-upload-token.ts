@@ -74,11 +74,17 @@ export const handler = async (
       };
     }
 
-    const jobCheck = await client.query(
-      `SELECT id FROM jobs WHERE id = $1 AND employer_id = (SELECT id FROM users WHERE cognito_sub = $2)`,
-      [job_id, cognitoSub],
+    const applicantCheck = await client.query(
+      `SELECT ja.worker_id, ja.job_id
+       FROM job_applications ja
+       JOIN jobs j ON j.id = ja.job_id
+       JOIN users employer ON employer.id = j.employer_id
+       WHERE ja.job_id = $1
+         AND ja.worker_id = $2
+         AND employer.cognito_sub = $3`,
+      [job_id, worker_id, cognitoSub],
     );
-    if (jobCheck.rows.length === 0) {
+    if (applicantCheck.rows.length === 0) {
       await client.query('COMMIT');
       return {
         statusCode: 403,

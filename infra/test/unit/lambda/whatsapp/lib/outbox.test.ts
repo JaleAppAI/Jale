@@ -7,7 +7,11 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
-import { sendPendingOutbox, _clearOutboxTwilioSecretCacheForTests } from '../../../../../lambda/whatsapp/lib/outbox';
+import {
+  sendPendingAdminOutbox,
+  sendPendingOutbox,
+  _clearOutboxTwilioSecretCacheForTests,
+} from '../../../../../lambda/whatsapp/lib/outbox';
 
 describe('whatsapp outbox templates', () => {
   const originalEnv = process.env;
@@ -15,8 +19,10 @@ describe('whatsapp outbox templates', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    query.mockReset();
     _clearOutboxTwilioSecretCacheForTests();
     process.env = { ...originalEnv, TWILIO_SECRET_ARN: 'arn:twilio' };
+    process.env.TWILIO_REQUEST_TIMEOUT_MS = '4000';
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
         accountSid: 'AC_test',
@@ -25,7 +31,7 @@ describe('whatsapp outbox templates', () => {
         templates: { job_alert_en: 'HX_job_en' },
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM_sent' }) });
   });
 
   afterAll(() => {
@@ -57,7 +63,7 @@ describe('whatsapp outbox templates', () => {
     );
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('ContentVariables=');
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1']);
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1', 'SM_sent']);
   });
 
   it('falls back to text when an in-session template SID is not configured', async () => {
@@ -81,6 +87,118 @@ describe('whatsapp outbox templates', () => {
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('Body=What+is+your+main+trade');
     expect(sentBody).not.toContain('ContentSid=');
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2']);
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2', 'SM_sent']);
+  });
+
+  it('drains admin-originated rows independently of inbound message rows', async () => {
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM whatsapp_outbox')) {
+        if (query.mock.calls.filter(([callSql]) => String(callSql).includes('FROM whatsapp_outbox')).length === 1) {
+          return { rows: [{
+          id: 'outbox-admin-1',
+          sequence: 0,
+          whatsapp_number: '+15125551234',
+          body: 'Admin follow-up',
+          content_template: null,
+          content_variables: null,
+          }] };
+        }
+        return { rows: [] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    await sendPendingAdminOutbox({ query } as any);
+
+    expect(query).toHaveBeenCalledWith('BEGIN');
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("source_type = 'admin_case'"),
+      [5],
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'sent'"),
+      ['outbox-admin-1', 'SM_sent'],
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('record_admin_whatsapp_delivery'),
+      ['outbox-admin-1', 'SM_sent'],
+    );
+  });
+
+  it('records an ambiguous state instead of retryable failure when Twilio times out', async () => {
+    mockFetch.mockRejectedValueOnce(Object.assign(new Error('timed out'), { name: 'TimeoutError' }));
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM whatsapp_outbox')) {
+        if (query.mock.calls.filter(([callSql]) => String(callSql).includes('FROM whatsapp_outbox')).length === 1) {
+          return { rows: [{
+          id: 'outbox-admin-timeout',
+          sequence: 0,
+          whatsapp_number: '+15125551234',
+          body: 'Admin follow-up',
+          content_template: null,
+          content_variables: null,
+          }] };
+        }
+        return { rows: [] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    await sendPendingAdminOutbox({ query } as any);
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('SET status = $1'),
+      ['send_unknown', expect.stringContaining('delivery state unknown'), 'outbox-admin-timeout'],
+    );
+  });
+
+  it('commits each admin outbox row independently', async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM_first' }) })
+      .mockRejectedValueOnce(new Error('Twilio 500'));
+    const rows = [
+      {
+        id: 'outbox-admin-first',
+        sequence: 0,
+        whatsapp_number: '+15125551234',
+        body: 'First admin follow-up',
+        content_template: null,
+        content_variables: null,
+      },
+      {
+        id: 'outbox-admin-second',
+        sequence: 0,
+        whatsapp_number: '+15125554321',
+        body: 'Second admin follow-up',
+        content_template: null,
+        content_variables: null,
+      },
+    ];
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM whatsapp_outbox')) {
+        const row = rows.shift();
+        return { rows: row ? [row] : [] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    await sendPendingAdminOutbox({ query } as any);
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements.filter((sql) => sql === 'BEGIN')).toHaveLength(3);
+    expect(statements.filter((sql) => sql === 'COMMIT')).toHaveLength(3);
+    const firstCommitIndex = statements.indexOf('COMMIT');
+    const secondFailureIndex = query.mock.calls.findIndex(([, params]) =>
+      Array.isArray(params) && params.includes('outbox-admin-second'));
+    expect(firstCommitIndex).toBeLessThan(secondFailureIndex);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'sent'"),
+      ['outbox-admin-first', 'SM_first'],
+    );
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('SET status = $1'),
+      ['failed', 'Twilio 500', 'outbox-admin-second'],
+    );
   });
 });

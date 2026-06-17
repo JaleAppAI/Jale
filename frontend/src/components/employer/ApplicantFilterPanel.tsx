@@ -43,9 +43,10 @@ export function ApplicantFilterPanel({ filters, onChange }: Props) {
         >
           <option value="">{t('filter.status_all')}</option>
           <option value="pending">{t('applicants.status.pending')}</option>
-          <option value="reviewed">{t('applicants.status.reviewed')}</option>
+          <option value="contacted">{t('applicants.status.contacted')}</option>
+          <option value="talking">{t('applicants.status.talking')}</option>
           <option value="hired">{t('applicants.status.hired')}</option>
-          <option value="rejected">{t('applicants.status.rejected')}</option>
+          <option value="not_interested">{t('applicants.status.not_interested')}</option>
         </select>
       </div>
 

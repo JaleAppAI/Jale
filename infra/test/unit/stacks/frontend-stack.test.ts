@@ -125,13 +125,40 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     );
   });
 
-  test('CloudFront has /survey/* behavior when surveyOriginDomain provided', () => {
+  test('CloudFront has survey behaviors when surveyOriginDomain provided', () => {
     template.hasResourceProperties(
       'AWS::CloudFront::Distribution',
       Match.objectLike({
         DistributionConfig: Match.objectLike({
           CacheBehaviors: Match.arrayWith([
+            Match.objectLike({ PathPattern: '/survey' }),
             Match.objectLike({ PathPattern: '/survey/*' }),
+            Match.objectLike({ PathPattern: '/assets/*' }),
+            Match.objectLike({ PathPattern: '/JaleLogo.png' }),
+            Match.objectLike({ PathPattern: '/jale-logo-light.png' }),
+            Match.objectLike({ PathPattern: '/jale-logo-dark.png' }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  test('strips /survey prefix before forwarding to the survey origin', () => {
+    template.hasResourceProperties('AWS::CloudFront::Function', {
+      Name: 'jale-rewrite-survey-prefix',
+      FunctionCode: Match.stringLikeRegexp('request\\.uri\\.replace'),
+    });
+    template.hasResourceProperties(
+      'AWS::CloudFront::Distribution',
+      Match.objectLike({
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/survey/*',
+              FunctionAssociations: Match.arrayWith([
+                Match.objectLike({ EventType: 'viewer-request' }),
+              ]),
+            }),
           ]),
         }),
       }),
@@ -246,11 +273,20 @@ describeIfDocker('FrontendStack without survey origin', () => {
 
     const tpl = Template.fromStack(stack);
 
-    // CacheBehaviors should not contain /survey/*
+    // CacheBehaviors should not contain survey routing when no origin is configured.
     const distros = tpl.findResources('AWS::CloudFront::Distribution');
     const distro = Object.values(distros)[0] as { Properties: { DistributionConfig: { CacheBehaviors?: Array<{ PathPattern: string }> } } };
     const behaviors = distro.Properties.DistributionConfig.CacheBehaviors ?? [];
-    const hasSurvey = behaviors.some((b) => b.PathPattern === '/survey/*');
+    const hasSurvey = behaviors.some((b) =>
+      [
+        '/survey',
+        '/survey/*',
+        '/assets/*',
+        '/JaleLogo.png',
+        '/jale-logo-light.png',
+        '/jale-logo-dark.png',
+      ].includes(b.PathPattern),
+    );
     expect(hasSurvey).toBe(false);
   });
 });

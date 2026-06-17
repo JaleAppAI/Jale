@@ -21,6 +21,7 @@ export function ProfileCompleteModal(props: {
   onSubmit: (values: ProfileCompleteValues) => Promise<void>;
 }) {
   const t = useTranslations('worker_profile.complete_modal');
+  const tCommon = useTranslations('common');
   const [fullName, setFullName] = useState('');
   const [skills, setSkills] = useState('');
   const [availability, setAvailability] = useState<Availability>('full_time');
@@ -68,7 +69,7 @@ export function ProfileCompleteModal(props: {
 
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={props.onClose} disabled={submitting}>{t('cancel')}</Button>
-          <Button onClick={submit} disabled={submitting || !fullName.trim() || !location.trim()}>{t('submit')}</Button>
+          <Button onClick={submit} disabled={!fullName.trim() || !location.trim()} loading={submitting} loadingLabel={tCommon('loading')}>{t('submit')}</Button>
         </div>
       </div>
     </div>

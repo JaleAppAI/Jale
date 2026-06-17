@@ -41,7 +41,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `SELECT id, title, location, job_type, status, description, required_docs, created_at,
+      `SELECT id, title, location, pay, job_type, status, description, required_docs, created_at,
+         pay_min, pay_max, start_date, expected_duration, shift_schedule,
+         transportation_required, language_preference, number_of_workers_needed,
+         workers_hired AS hired_count,
+         GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
+         trade_category, required_experience_years, certifications,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $1) AS applicant_count
        FROM jobs
        WHERE id = $1

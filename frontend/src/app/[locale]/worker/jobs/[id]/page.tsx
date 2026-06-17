@@ -68,6 +68,7 @@ export default function WorkerJobDetailPage() {
   async function handleApplyClick() {
     if (!idToken || !id || !job) return;
     setError(null);
+    setApplying(true);
     try {
       if (!(await profileIsComplete())) {
         setModalOpen(true);
@@ -75,7 +76,9 @@ export default function WorkerJobDetailPage() {
       }
       await doApply();
     } catch (err) {
-      handleApplyError(err);
+      await handleApplyError(err);
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -163,12 +166,25 @@ export default function WorkerJobDetailPage() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold">{job.title}</h1>
-            <p className="text-sm text-muted-foreground mt-1">{job.company_name} · {job.location}</p>
-            <p className="text-xs text-muted-foreground mt-1 capitalize">{job.job_type.replace('-', ' ')} · {new Date(job.created_at).toLocaleDateString()}</p>
+            <p className="text-sm text-muted-foreground mt-1">{job.company_name} - {job.location}</p>
+            <p className="text-xs text-muted-foreground mt-1 capitalize">{job.job_type.replace('-', ' ')} - {new Date(job.created_at).toLocaleDateString()}</p>
           </div>
         </div>
 
         {job.description && <p className="text-sm whitespace-pre-wrap">{job.description}</p>}
+
+        <div className="grid gap-3 text-sm md:grid-cols-3">
+          {job.pay && job.pay !== 'Pay not specified' && <Detail label={t('pay_range')} value={job.pay} />}
+          {job.start_date && <Detail label={t('start_date')} value={job.start_date} />}
+          {job.expected_duration && <Detail label={t('expected_duration')} value={job.expected_duration} />}
+          {job.shift_schedule && <Detail label={t('shift_schedule')} value={job.shift_schedule} />}
+          {job.number_of_workers_needed !== undefined && (
+            <Detail label={t('openings')} value={`${job.open_count ?? 0}/${job.number_of_workers_needed}`} />
+          )}
+          {job.required_experience_years !== undefined && job.required_experience_years !== null && (
+            <Detail label={t('required_experience')} value={`${job.required_experience_years}`} />
+          )}
+        </div>
 
         {job.required_docs.length > 0 && (
           <div>
@@ -178,7 +194,7 @@ export default function WorkerJobDetailPage() {
                 const missing = job.missing_docs.includes(d);
                 return (
                   <li key={d} className="text-sm flex items-center gap-2">
-                    <span className={missing ? 'text-error' : 'text-green-700'}>{missing ? '✗' : '✓'}</span>
+                    <span className={missing ? 'text-error' : 'text-green-700'}>{missing ? 'x' : 'OK'}</span>
                     <span>{DOC_LABELS[d] ?? d}</span>
                   </li>
                 );
@@ -200,8 +216,8 @@ export default function WorkerJobDetailPage() {
             <ApplicationStatusChip status={job.application_status ?? 'pending'} />
           </div>
         ) : (
-          <Button onClick={handleApplyClick} disabled={!canApply || applying}>
-            {applying ? tCommon('loading') : t('apply')}
+          <Button onClick={handleApplyClick} disabled={!canApply} loading={applying} loadingLabel={tCommon('loading')}>
+            {t('apply')}
           </Button>
         )}
       </div>
@@ -214,5 +230,14 @@ export default function WorkerJobDetailPage() {
         onSubmit={handleModalSubmit}
       />
     </main>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
+      <p>{value}</p>
+    </div>
   );
 }

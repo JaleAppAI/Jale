@@ -1,4 +1,5 @@
 import { apiFetch } from '../api';
+import type { ApplicationStatus, JobStatus } from '../status';
 
 export interface UploadUrlResponse {
   url: string;
@@ -69,7 +70,7 @@ export async function submitUpload(token: string): Promise<void> {
   if (!res.ok) throw new Error((await res.json()).error ?? 'submit_failed');
 }
 
-// ── Authenticated marketplace helpers ──────────────────────────────────────
+// Authenticated marketplace helpers
 
 export type Job = {
   id: string;
@@ -79,6 +80,19 @@ export type Job = {
   company?: string;
   company_name: string;
   pay?: string;
+  pay_min?: number | null;
+  pay_max?: number | null;
+  start_date?: string | null;
+  expected_duration?: string | null;
+  shift_schedule?: string | null;
+  transportation_required?: boolean | null;
+  language_preference?: Array<'any' | 'en' | 'es'> | null;
+  number_of_workers_needed?: number | null;
+  hired_count?: number | null;
+  open_count?: number | null;
+  trade_category?: string | null;
+  required_experience_years?: number | null;
+  certifications?: string[] | null;
   required_docs: DocType[];
   created_at: string;
   match_score?: number;
@@ -87,8 +101,9 @@ export type Job = {
 
 export type JobDetail = Job & {
   description: string | null;
+  status?: JobStatus;
   already_applied: boolean;
-  application_status: 'pending' | 'reviewed' | 'hired' | 'rejected' | null;
+  application_status: ApplicationStatus | null;
   missing_docs: DocType[];
 };
 
@@ -97,7 +112,7 @@ export type Application = {
   job_id: string;
   job_title: string;
   company_name: string;
-  status: 'pending' | 'reviewed' | 'hired' | 'rejected';
+  status: ApplicationStatus;
   applied_at: string;
 };
 

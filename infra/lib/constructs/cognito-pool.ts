@@ -95,6 +95,7 @@ export class CognitoPool extends Construct {
       userPool: this.userPool,
       generateSecret: false,
       authFlows,
+      preventUserExistenceErrors: true,
     });
 
     this.userPoolId = this.userPool.userPoolId;

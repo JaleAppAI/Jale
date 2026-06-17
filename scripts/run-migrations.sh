@@ -11,7 +11,7 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→016
+#   - Base64-encodes migrations 001→026
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -33,7 +33,7 @@ DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. Runs the full chain 001→016 against
+# Migration files in execution order. Runs the full chain 001→019 against
 # a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
 # is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
@@ -54,6 +54,17 @@ MIGRATIONS=(
   "014_employer_candidate_rankings.sql"
   "015_application_status_alignment.sql"
   "016_employer_profiles.sql"
+  "017_document_upload_token_hardening.sql"
+  "018_document_vault_rls_hardening.sql"
+  "019_application_status_constraint_repair.sql"
+  "020_worker_pii_rls_hardening.sql"
+  "021_whatsapp_required_docs_apply_support.sql"
+  "022_job_application_required_docs_guard.sql"
+  "023_job_fields_and_statuses_mvp.sql"
+  "024_sprint11_hiring_flow_hardening.sql"
+  "025_job_messaging.sql"
+  "026_admin_panel.sql"
+  "027_admin_security_hardening.sql"
 )
 
 echo ">> Using region: $REGION"
@@ -101,6 +112,19 @@ if [[ -z "$MATCHING_SECRET_ARN" || "$MATCHING_SECRET_ARN" == "None" ]]; then
 fi
 echo "   matching-secret: $MATCHING_SECRET_ARN"
 
+echo ">> Resolving jale_admin_console DB secret ARN..."
+ADMIN_CONSOLE_SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "$DATABASE_STACK" \
+  --region "$REGION" \
+  --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'AdminConsoleDbSecret')].PhysicalResourceId | [0]" \
+  --output text)
+
+if [[ -z "$ADMIN_CONSOLE_SECRET_ARN" || "$ADMIN_CONSOLE_SECRET_ARN" == "None" ]]; then
+  echo "!! Could not find jale_admin_console DB secret in $DATABASE_STACK."
+  exit 1
+fi
+echo "   admin-console-secret: $ADMIN_CONSOLE_SECRET_ARN"
+
 # ---------------------------------------------------------------------------
 # Base64-encode each migration + prepare the remote script.
 # ---------------------------------------------------------------------------
@@ -133,6 +157,7 @@ set -euo pipefail
 REGION="$REGION"
 DB_SECRET_ARN="$DB_SECRET_ARN"
 MATCHING_SECRET_ARN="$MATCHING_SECRET_ARN"
+ADMIN_CONSOLE_SECRET_ARN="$ADMIN_CONSOLE_SECRET_ARN"
 WA_DB_SECRET_NAME="$WA_DB_SECRET_NAME"
 
 echo ">> Fetching jale_admin creds from \$DB_SECRET_ARN"
@@ -174,6 +199,14 @@ MATCHING_SECRET_JSON=\$(aws secretsmanager get-secret-value \
 MATCHING_PW=\$(echo "\$MATCHING_SECRET_JSON" | jq -r .password)
 "\${PG_CMD[@]}" -c "ALTER ROLE jale_matching WITH PASSWORD '\$MATCHING_PW';"
 
+echo ">> Setting jale_admin_console password from generated secret..."
+ADMIN_CONSOLE_SECRET_JSON=\$(aws secretsmanager get-secret-value \
+  --secret-id "\$ADMIN_CONSOLE_SECRET_ARN" \
+  --region "\$REGION" \
+  --query SecretString --output text)
+ADMIN_CONSOLE_PW=\$(echo "\$ADMIN_CONSOLE_SECRET_JSON" | jq -r .password)
+"\${PG_CMD[@]}" -c "ALTER ROLE jale_admin_console WITH PASSWORD '\$ADMIN_CONSOLE_PW';"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 # 32 bytes base64 → strip =+/ → first 24 chars. URL-safe, no quoting issues
 # in SQL or JSON.
@@ -206,7 +239,7 @@ else
   echo "   created new secret"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON
+unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON
 echo ">> Done."
 REMOTE_EOF
 )
@@ -266,4 +299,4 @@ aws ssm list-command-invocations \
 echo
 echo ">> All done. Next:"
 echo "   cd infra && npx cdk destroy JaleBastionStack    # cost hygiene"
-echo "   cd infra && npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack"
+echo "   cd infra && npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack"

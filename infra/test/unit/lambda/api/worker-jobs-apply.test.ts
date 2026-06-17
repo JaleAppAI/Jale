@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-jobs-apply';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 jest.mock('../../../../lambda/lib/db');
@@ -8,6 +8,7 @@ jest.mock('../../../../lambda/legal/check-compliance');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -55,7 +56,10 @@ describe('worker-jobs-apply', () => {
       if (q.includes('FROM jobs')) return Promise.resolve({ rows: [{ id: 'job-1', required_docs: [] }] });
       if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [] });
       if (q.includes('INSERT INTO job_applications')) {
-        const err: any = new Error('dup'); err.code = '23505'; throw err;
+        return Promise.resolve({ rows: [] });
+      }
+      if (q.includes('FROM job_applications')) {
+        return Promise.resolve({ rows: [{ id: 'a1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] });
       }
       return Promise.resolve({});
     });
@@ -83,10 +87,9 @@ describe('worker-jobs-apply', () => {
     const applicationInsert = calls.find(c => c.includes('INSERT INTO job_applications')) as string;
     expect(applicationInsert).toContain('(job_id, worker_id, status)');
     expect(applicationInsert).toContain("'pending'");
-    expect(mockQuery).toHaveBeenCalledWith(
-      `SELECT set_config('app.current_internal_user_id', $1, true)`,
-      ['worker-id'],
-    );
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.any(Object), 'worker-id');
     expect(calls.some(c => c.includes('INSERT INTO worker_documents'))).toBe(true);
+    const docCopy = calls.find(c => c.includes('INSERT INTO worker_documents')) as string;
+    expect(docCopy).toContain('s3_version_id');
   });
 });

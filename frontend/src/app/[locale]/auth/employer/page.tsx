@@ -7,14 +7,14 @@ import EmployerAuthForm from '@/components/auth/EmployerAuthForm';
 export const dynamic = 'force-dynamic';
 
 export default function EmployerAuthPage() {
-    const { isAuthenticated, isLoading } = useAuth();
+    const { isAuthenticated, isLoading, userType } = useAuth();
     const router = useRouter();
 
     useEffect(() => {
         if (!isLoading && isAuthenticated) {
-            router.replace('/employer/dashboard');
+            router.replace(userType === 'worker' ? '/worker/home' : '/employer/dashboard');
         }
-    }, [isLoading, isAuthenticated]);
+    }, [isLoading, isAuthenticated, userType, router]);
 
     if (isLoading || isAuthenticated) return null;
 

@@ -4,19 +4,45 @@
         "error": "Something went wrong",
         "retry": "Try again"
     },
+    "match": {
+        "score_bands": {
+            "strong": "Strong match",
+            "good": "Good match",
+            "fair": "Fair match"
+        },
+        "reasons": {
+            "profession_exact_or_alias": "Trade matches",
+            "profession_partial": "Related trade",
+            "distance_under_5_miles": "Within 5 miles",
+            "distance_under_15_miles": "Within 15 miles",
+            "distance_under_30_miles": "Within 30 miles",
+            "distance_under_50_miles": "Within 50 miles",
+            "zip_exact": "Same zip code",
+            "location_text_match": "Location match",
+            "experience_meets_requirement": "Experience fits",
+            "availability_flexible": "Flexible availability",
+            "availability_matches_job_type": "Availability fits",
+            "availability_adjacent": "Schedule is close",
+            "fresh_posting": "New posting"
+        }
+    },
     "header": {
         "language_toggle": "Español",
         "sign_out": "Sign out",
         "profile": "Profile",
         "home": "Home",
         "worker_home": "Jobs",
-        "my_applications": "My Applications"
+        "my_applications": "My Applications",
+        "employer_jobs": "Jobs",
+        "messages": "Messages"
     },
     "landing": {
         "headline": "Find work. Find workers.",
         "subheadline": "Jale connects workers with employers in the construction industry.",
         "worker_cta": "I'm looking for work",
-        "employer_cta": "I'm hiring"
+        "employer_cta": "I'm hiring",
+        "survey_prompt": "Tell us what would make finding work or hiring workers easier.",
+        "survey_cta": "Share your thoughts"
     },
     "auth": {
         "worker": {
@@ -28,7 +54,7 @@
             "signup_link": "Create an account",
             "confirm_title": "Confirm your account",
             "otp_title": "Enter the 6-digit code",
-            "code_sent": "Sent to {phone}",
+            "code_sent": "SMS sent to {phone}",
             "create_account": "Create account",
             "confirm_account": "Confirm account",
             "password_note": "Workers do not need a password. You will sign in with your phone number and a verification code.",
@@ -70,8 +96,8 @@
             },
             "errors": {
                 "trade_other_required": "Please enter your trade.",
-                "account_exists": "An account already exists for this phone number. Go back and sign in instead.",
-                "account_not_found": "We could not find an account for that phone number. Create an account first.",
+                "account_exists": "We could not continue with that phone number. Check it and try again.",
+                "account_not_found": "We could not continue with that phone number. Check it and try again.",
                 "invalid_phone": "Enter a valid phone number, including the area code.",
                 "invalid_code": "That code is not correct. Check the code and try again.",
                 "expired_code": "That code expired. Request a new code and try again.",
@@ -90,6 +116,8 @@
             "signup_subtitle": "Tell workers who you are and what roles you usually hire for.",
             "email_label": "Email",
             "password_label": "Password",
+            "show_password": "Show password",
+            "hide_password": "Hide password",
             "sign_in": "Sign in",
             "create_account": "Create account",
             "confirm_account": "Confirm account",
@@ -182,29 +210,164 @@
             "cancel": "Cancel"
         }
     },
+    "employer_messages": {
+        "title": "Messages",
+        "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
+        "threads": "Conversations",
+        "drawer_button": "Messages",
+        "hide": "Hide",
+        "empty": "No open conversations yet.",
+        "empty_select": "Select a conversation.",
+        "no_messages": "No messages yet.",
+        "unknown_worker": "Unknown worker",
+        "status_open": "Open",
+        "status_closed": "Closed",
+        "waiting": "Waiting",
+        "active": "Active",
+        "worker_replied": "Worker replied",
+        "reply_window_open": "24h reply window open",
+        "waiting_reply": "Waiting reply",
+        "template_invite_sent": "Template invite sent",
+        "archived_conversations": "Archived conversations",
+        "whatsapp_linked": "WhatsApp linked conversations",
+        "thread_status": "Thread status",
+        "current_handoff": "Current WhatsApp handoff",
+        "conversation": "Conversation",
+        "worker_reply": "Worker reply",
+        "received": "Received",
+        "channel": "Channel",
+        "latest_message": "Latest message",
+        "close": "Close",
+        "closed_hint": "This conversation is closed.",
+        "composer_placeholder": "Write a message...",
+        "send": "Send",
+        "from_worker": "Worker",
+        "message_worker": "Message Worker",
+        "starting": "Starting...",
+        "message_start_failed": "Could not start the conversation.",
+        "worker_whatsapp_unavailable": "This worker does not have a WhatsApp number yet.",
+        "default_initial_message": "Hi, I am reaching out about your application. Reply here when you are available.",
+        "message_status": {
+            "queued": "Queued",
+            "waiting_worker_reply": "Waiting for worker reply",
+            "sent": "Sent",
+            "delivered": "Delivered",
+            "failed": "Failed",
+            "received": "Received"
+        }
+    },
     "employer_dashboard": {
         "stats": {
             "active_jobs": "Active Jobs",
-            "total_applicants": "Total Applicants"
+            "paused_jobs": "Paused Jobs",
+            "filled_jobs": "Filled Jobs",
+            "total_applicants": "Total Applicants",
+            "workers_hired": "Workers Hired",
+            "paused_closed": "Paused / Closed",
+            "active_hint": "Open roles ready for applicants",
+            "applicants_hint": "{count} avg per active job",
+            "hired_hint": "{count} openings still available",
+            "paused_closed_hint": "{paused} paused, {filled} filled, {closed} closed"
+        },
+        "shell": {
+            "title": "Dashboard",
+            "employer_workspace": "Employer workspace",
+            "company_fallback": "Employer team",
+            "plan_label": "Jale Growth",
+            "plan_title": "Jale Growth",
+            "plan_body": "Prototype-only growth tools will unlock here as the hiring workflow expands.",
+            "upgrade": "Upgrade",
+            "alerts": "Alerts",
+            "search_workers": "Search workers"
+        },
+        "nav": {
+            "main": "Main",
+            "hiring": "Hiring",
+            "account": "Account",
+            "dashboard": "Dashboard",
+            "jobs": "My Jobs",
+            "messages": "Messages",
+            "workers": "Workers",
+            "interviews": "Interviews",
+            "search_workers": "Search Workers",
+            "boost_job": "Boost a Job",
+            "jale_direct": "Jale Direct",
+            "analytics": "Analytics",
+            "billing": "Billing",
+            "settings": "Settings",
+            "soon": "Soon"
+        },
+        "hero": {
+            "eyebrow": "Got Jale?",
+            "title": "Keep every job, applicant, and WhatsApp handoff in one place.",
+            "body": "This dashboard uses your live job postings today and reserves space for the upcoming matching, interviews, and growth tools from the prototype.",
+            "primary_cta": "Post un trabajo",
+            "secondary_cta": "Open messages"
+        },
+        "quick_post": {
+            "title": "Quick post",
+            "body": "Create a new job from the same flow employers already use.",
+            "hint": "The prototype's instant templates are not live yet, so this opens the current post-job modal.",
+            "cta": "Post a job"
+        },
+        "panels": {
+            "applicants_title": "Applicants preview",
+            "applicants_body": "Global applicant preview is coming soon. Open a job to see real applicants.",
+            "applicant_stub_1": "New applicants",
+            "applicant_stub_2": "Ready to contact",
+            "applicant_stub_3": "Documents pending",
+            "trust_title": "Trust Match",
+            "trust_body": "Match quality is available inside job details today. Dashboard-wide recommendations are reserved for the proactive matching backend.",
+            "hiring_progress": "Hiring progress",
+            "open_roles": "Open roles",
+            "applicant_flow": "Applicant flow",
+            "whatsapp_title": "WhatsApp thread",
+            "whatsapp_body": "Employer messages are live. Worker replies continue through WhatsApp and stay tied to the job conversation.",
+            "open_messages": "Open messages",
+            "no_recent_job": "No recent job yet",
+            "hiring_status_title": "Hiring status"
+        },
+        "disabled": {
+            "label": "Preview",
+            "preview": "Preview",
+            "coming_soon": "Coming soon"
         },
         "jobs": {
             "title": "Job Postings",
             "post_job": "Post Job",
             "active": "Active",
             "closed": "Closed",
+            "status": {
+                "all": "All",
+                "active": "Active",
+                "paused": "Paused",
+                "filled": "Filled",
+                "closed": "Closed"
+            },
             "toggle": {
                 "activate": "Mark Active",
+                "pause": "Pause",
                 "close": "Mark Closed"
             },
             "applicants_count": "{count, plural, one {# applicant} other {# applicants}}",
+            "openings_count": "{open}/{total} open",
+            "pay_range": "Pay range",
+            "pay_range_value": "${min}-${max}",
+            "hired_progress": "Hiring progress",
+            "hired_progress_value": "{hired}/{total} hired, {open} open",
+            "not_specified": "Not specified",
+            "yes": "Yes",
+            "no": "No",
             "posted": "Posted",
             "details": "Details",
             "posting_details": "Posting details",
             "required_documents": "Required documents",
             "no_description": "No description was added.",
             "no_required_documents": "No documents are required for this job.",
-            "search_placeholder": "Search by title or location...",
-            "back_to_dashboard": "← Back to Dashboard"
+            "search_placeholder": "Search by title, location, or trade...",
+            "back_to_dashboard": "← Back to Dashboard",
+            "empty_title": "No jobs found",
+            "empty_body": "Post a job or clear the filters to bring your hiring board back."
         },
         "filter": {
             "title": "Filter Applicants",
@@ -231,24 +394,65 @@
             "phone": "Phone",
             "empty": "No applicants match your filters.",
             "status": {
-                "pending": "Pending",
-                "reviewed": "Reviewed",
+                "pending": "New",
+                "contacted": "Contacted",
+                "talking": "In conversation",
                 "hired": "Hired",
-                "rejected": "Rejected"
+                "not_interested": "Not selected"
             }
         },
         "modal": {
             "title": "Post a Job",
+            "step_label": "Step {current} of {total}",
+            "close": "Close",
             "job_title": "Job Title",
+            "job_title_placeholder": "e.g. Forklift operator",
             "location": "Location",
+            "location_placeholder": "Hayward, CA",
             "job_type": "Job Type",
             "job_type_fulltime": "Full-time",
             "job_type_parttime": "Part-time",
             "job_type_contract": "Contract",
             "submit": "Post Job",
             "cancel": "Cancel",
+            "next": "Next",
             "error": "Failed to post job. Please try again.",
-            "job_description": "Job Description"
+            "job_description": "Job Description",
+            "description_placeholder": "What does the job involve? What experience is required?",
+            "select_placeholder": "Select...",
+            "trade_category": "Trade",
+            "trade": {
+                "electrician": "Electrician",
+                "plumber": "Plumber",
+                "carpenter": "Carpenter",
+                "concrete": "Concrete",
+                "painting": "Painting",
+                "drywall": "Drywall",
+                "general_labor": "General labor",
+                "other": "Other"
+            },
+            "pay_min": "Pay Min",
+            "pay_max": "Pay Max",
+            "start_date": "Start Date",
+            "expected_duration": "Expected Duration",
+            "duration_placeholder": "e.g. 2 weeks",
+            "shift_schedule": "Shift Schedule",
+            "shift_placeholder": "e.g. Mon-Fri day shift",
+            "number_of_workers_needed": "Workers Needed",
+            "required_experience_years": "Required Experience",
+            "language_preference": "Language Preference",
+            "language": {
+                "any": "Any",
+                "en": "English",
+                "es": "Spanish"
+            },
+            "transportation_required": "Transportation required",
+            "certifications": "Certifications",
+            "certifications_placeholder": "OSHA 10, forklift, CDL",
+            "validation_required": "Complete the required fields.",
+            "validation_number": "Enter valid non-negative numbers.",
+            "validation_pay_range": "Pay min cannot be greater than pay max.",
+            "validation_headcount": "Workers needed must be at least 1."
         },
         "worker_profile": {
             "back": "Back to applicants",
@@ -330,10 +534,11 @@
         "empty": "You haven't applied to any jobs yet.",
         "empty_cta": "Browse jobs",
         "status": {
-            "pending": "Pending",
-            "reviewed": "Reviewed",
+            "pending": "Applied",
+            "contacted": "Employer contacted",
+            "talking": "In conversation",
             "hired": "Hired",
-            "rejected": "Rejected"
+            "not_interested": "Not selected"
         }
     },
     "worker_home": {
@@ -345,11 +550,18 @@
             "part_time": "Part-time",
             "contract": "Contract"
         },
+        "openings_count": "{open}/{total} open",
         "empty": "No active jobs right now."
     },
     "worker_job_detail": {
         "back": "← Back to jobs",
         "required_docs": "Required documents",
+        "pay_range": "Pay range",
+        "start_date": "Start date",
+        "expected_duration": "Duration",
+        "shift_schedule": "Shift",
+        "openings": "Openings",
+        "required_experience": "Experience",
         "upload_prompt": "Upload missing documents in your profile.",
         "upload_link": "Go to profile",
         "apply": "Apply",

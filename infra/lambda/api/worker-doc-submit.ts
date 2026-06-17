@@ -34,16 +34,21 @@ export const handler = async (
     const pool = await getDbPool();
     client = await pool.connect();
 
-    await client.query('BEGIN');
-
-    const result = await client.query(
-      `UPDATE document_upload_tokens SET used = true
-       WHERE token_hash = $1 AND used = false AND expires_at > now()`,
+    const tokenState = await client.query(
+      `SELECT token.used,
+              token.expires_at > now() AS unexpired,
+              EXISTS (
+                SELECT 1
+                FROM document_upload_token_slots slots
+                WHERE slots.token_hash = token.token_hash
+                  AND slots.confirmed_at IS NOT NULL
+              ) AS has_confirmed_documents
+       FROM document_upload_tokens token
+       WHERE token.token_hash = $1`,
       [tokenHash],
     );
 
-    if (result.rowCount === 0) {
-      await client.query('ROLLBACK');
+    if (tokenState.rows.length === 0 || tokenState.rows[0].unexpired !== true) {
       return {
         statusCode: 401,
         headers: CORS_HEADERS,
@@ -51,20 +56,21 @@ export const handler = async (
       };
     }
 
-    await client.query('COMMIT');
+    const state = tokenState.rows[0];
+    if (state.used === true && state.has_confirmed_documents === true) {
+      return {
+        statusCode: 200,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ success: true }),
+      };
+    }
+
     return {
-      statusCode: 200,
+      statusCode: 409,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ success: true }),
+      body: JSON.stringify({ error: 'confirm_required' }),
     };
   } catch (err) {
-    if (client) {
-      try {
-        await client.query('ROLLBACK');
-      } catch {
-        // ignore rollback errors
-      }
-    }
     console.error('worker-doc-submit error:', errorMessage(err));
     return {
       statusCode: 500,

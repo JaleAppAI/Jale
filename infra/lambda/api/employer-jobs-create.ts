@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -24,6 +25,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       required_docs?: string[];
       latitude?: number;
       longitude?: number;
+      pay_min?: number | null;
+      pay_max?: number | null;
+      start_date?: string | null;
+      expected_duration?: string | null;
+      shift_schedule?: string | null;
+      transportation_required?: boolean;
+      language_preference?: string[];
+      number_of_workers_needed?: number;
+      trade_category?: string;
+      required_experience_years?: number | null;
+      certifications?: string[];
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -36,21 +48,26 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_fields', required: ['title', 'location', 'job_type'] }) };
     }
 
-    const validTypes = ['full-time', 'part-time', 'contract'];
-    if (!validTypes.includes(job_type)) {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_type', valid: validTypes }) };
+    if (!JOB_TYPES.includes(job_type as any)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_type', valid: JOB_TYPES }) };
     }
 
-    const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'];
-    const required_docs = body.required_docs ?? [];
-    if (
-      !Array.isArray(required_docs) ||
-      required_docs.some((d) => !VALID_DOC_TYPES.includes(d))
-    ) {
+    const requiredDocsResult = parseRequiredDocs(body.required_docs);
+    if (!requiredDocsResult.ok) {
       return {
         statusCode: 400,
         headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'invalid_required_docs', valid: VALID_DOC_TYPES }),
+        body: JSON.stringify({ error: requiredDocsResult.error, valid: requiredDocsResult.valid }),
+      };
+    }
+    const required_docs = requiredDocsResult.value;
+
+    const jobFields = parseJobFields(body as Record<string, unknown>);
+    if (!jobFields.ok) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: jobFields.error, ...(jobFields.valid ? { valid: jobFields.valid } : {}) }),
       };
     }
 
@@ -76,11 +93,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
     if (!compliance.userExists) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     if (!compliance.compliant) {
-      await client.query('COMMIT');
+      await client.query('ROLLBACK');
       return {
         statusCode: 403,
         headers: CORS_HEADERS,
@@ -89,13 +106,56 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `INSERT INTO jobs (employer_id, title, location, job_type, description, required_docs)
+      `INSERT INTO jobs (
+         employer_id,
+         title,
+         location,
+         pay,
+         job_type,
+         description,
+         required_docs,
+         pay_min,
+         pay_max,
+         start_date,
+         expected_duration,
+         shift_schedule,
+         transportation_required,
+         language_preference,
+         number_of_workers_needed,
+         trade_category,
+         required_experience_years,
+         certifications
+       )
        VALUES (
          (SELECT id FROM users WHERE cognito_sub = $1),
-         $2, $3, $4, $5, $6
+         $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12, $13, $14, $15, $16, $17, $18
        )
-       RETURNING id, title, location, job_type, status, required_docs, created_at`,
-      [cognitoSub, title.trim(), location.trim(), job_type, description ?? null, required_docs],
+       RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
+         pay_min, pay_max, start_date, expected_duration, shift_schedule,
+         transportation_required, language_preference, number_of_workers_needed,
+         workers_hired AS hired_count,
+         GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
+         trade_category, required_experience_years, certifications`,
+      [
+        cognitoSub,
+        title.trim(),
+        location.trim(),
+        formatPayRange(jobFields.value.pay_min, jobFields.value.pay_max),
+        job_type,
+        description ?? null,
+        required_docs,
+        jobFields.value.pay_min,
+        jobFields.value.pay_max,
+        jobFields.value.start_date,
+        jobFields.value.expected_duration,
+        jobFields.value.shift_schedule,
+        jobFields.value.transportation_required,
+        jobFields.value.language_preference,
+        jobFields.value.number_of_workers_needed,
+        jobFields.value.trade_category,
+        jobFields.value.required_experience_years,
+        jobFields.value.certifications,
+      ],
     );
     const job = result.rows[0];
 

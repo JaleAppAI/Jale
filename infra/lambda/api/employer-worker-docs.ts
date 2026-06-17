@@ -7,6 +7,7 @@ import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const handler = async (
   event: APIGatewayProxyEvent,
@@ -29,6 +30,13 @@ export const handler = async (
         statusCode: 400,
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'missing_params' }),
+      };
+    }
+    if (!UUID_RE.test(workerId) || !UUID_RE.test(jobId)) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'invalid_params' }),
       };
     }
 
@@ -63,11 +71,18 @@ export const handler = async (
       };
     }
 
-    const jobCheck = await client.query(
-      `SELECT id FROM jobs WHERE id = $1 AND employer_id = (SELECT id FROM users WHERE cognito_sub = $2)`,
-      [jobId, cognitoSub],
+    const applicantCheck = await client.query(
+      `SELECT 1
+       FROM job_applications ja
+       JOIN jobs j ON j.id = ja.job_id
+       JOIN users employer ON employer.id = j.employer_id
+       WHERE ja.worker_id = $1
+         AND ja.job_id = $2
+         AND employer.cognito_sub = $3
+       LIMIT 1`,
+      [workerId, jobId, cognitoSub],
     );
-    if (jobCheck.rows.length === 0) {
+    if (applicantCheck.rows.length === 0) {
       await client.query('COMMIT');
       return {
         statusCode: 403,
@@ -77,9 +92,15 @@ export const handler = async (
     }
 
     const docsResult = await client.query(
-      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at
-       FROM worker_documents WHERE worker_id = $1 AND job_id = $2`,
-      [workerId, jobId],
+      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id
+       FROM worker_documents wd
+       JOIN job_applications ja ON ja.worker_id = wd.worker_id AND ja.job_id = wd.job_id
+       JOIN jobs j ON j.id = ja.job_id
+       JOIN users employer ON employer.id = j.employer_id
+       WHERE wd.worker_id = $1
+         AND wd.job_id = $2
+         AND employer.cognito_sub = $3`,
+      [workerId, jobId, cognitoSub],
     );
 
     await client.query('COMMIT');
@@ -91,6 +112,7 @@ export const handler = async (
           new GetObjectCommand({
             Bucket: process.env.DOCUMENTS_BUCKET!,
             Key: doc.s3_key,
+            ...(doc.s3_version_id ? { VersionId: doc.s3_version_id } : {}),
           }),
           { expiresIn: 900 },
         );

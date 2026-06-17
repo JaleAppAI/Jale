@@ -38,6 +38,8 @@ export type TemplateKey =
   | 'profile_not_ready'
   | 'jobs_none'
   | 'job_accepted'
+  | 'job_already_applied'
+  | 'job_documents_required'
   | 'job_declined'
   | 'job_not_found'
   // Errors
@@ -59,12 +61,12 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Send "Hola" or "Hello" to get started.',
   },
   welcome_new_user: {
-    es: 'Bienvenido a Jale.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
-    en: 'Welcome to Jale.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
+    es: 'Bienvenido a Jale.\n\nTe enviamos un codigo de verificacion por SMS. Revisa los mensajes de texto de tu telefono y responde aqui con el codigo.',
+    en: 'Welcome to Jale.\n\nWe sent you a verification code by SMS. Check your phone text messages and reply here with the code.',
   },
   welcome_existing_user: {
-    es: 'Hola de nuevo.\n\nTe enviamos un codigo de verificacion por WhatsApp. Responde aqui con el codigo.',
-    en: 'Welcome back.\n\nWe sent you a verification code on WhatsApp. Reply here with the code.',
+    es: 'Hola de nuevo.\n\nTe enviamos un codigo de verificacion por SMS. Revisa los mensajes de texto de tu telefono y responde aqui con el codigo.',
+    en: 'Welcome back.\n\nWe sent you a verification code by SMS. Check your phone text messages and reply here with the code.',
   },
   otp_retry: {
     es: 'Ese codigo no funciono. Intenta de nuevo.',
@@ -79,8 +81,8 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     en: 'Your code expired.\n\nSend "Hi" to receive a new one.',
   },
   otp_expired_retry: {
-    es: 'Tu codigo expiro.\n\nTe enviamos uno nuevo por WhatsApp. Responde aqui con el codigo.',
-    en: 'Your code expired.\n\nWe sent a new one on WhatsApp. Reply here with the code.',
+    es: 'Tu codigo expiro.\n\nTe enviamos uno nuevo por SMS. Revisa los mensajes de texto de tu telefono y responde aqui con el codigo.',
+    en: 'Your code expired.\n\nWe sent a new one by SMS. Check your phone text messages and reply here with the code.',
   },
 
   legal_prompt: {
@@ -152,6 +154,14 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   job_accepted: {
     es: 'Aplicacion enviada.\n\nEl empleador recibira tu informacion.',
     en: 'Application sent.\n\nThe employer will receive your information.',
+  },
+  job_already_applied: {
+    es: 'Ya aplicaste a este trabajo.\n\nTe avisaremos cuando el empleador actualice tu solicitud.',
+    en: 'You already applied to this job.\n\nWe will let you know when the employer updates your application.',
+  },
+  job_documents_required: {
+    es: 'Este trabajo requiere estos documentos antes de aplicar: {{missing_docs}}.\n\nSubelos en Jale y vuelve a intentar.',
+    en: 'This job requires these documents before you can apply: {{missing_docs}}.\n\nUpload them in Jale and try again.',
   },
   job_declined: {
     es: 'Entendido. Seguiremos buscando trabajos para ti.',

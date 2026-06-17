@@ -4,19 +4,45 @@
         "error": "Algo salió mal",
         "retry": "Intente de nuevo"
     },
+    "match": {
+        "score_bands": {
+            "strong": "Muy buen match",
+            "good": "Buen match",
+            "fair": "Match posible"
+        },
+        "reasons": {
+            "profession_exact_or_alias": "Oficio coincide",
+            "profession_partial": "Oficio relacionado",
+            "distance_under_5_miles": "A menos de 5 millas",
+            "distance_under_15_miles": "A menos de 15 millas",
+            "distance_under_30_miles": "A menos de 30 millas",
+            "distance_under_50_miles": "A menos de 50 millas",
+            "zip_exact": "Mismo codigo postal",
+            "location_text_match": "Ubicacion coincide",
+            "experience_meets_requirement": "Experiencia adecuada",
+            "availability_flexible": "Disponibilidad flexible",
+            "availability_matches_job_type": "Disponibilidad adecuada",
+            "availability_adjacent": "Horario cercano",
+            "fresh_posting": "Publicacion nueva"
+        }
+    },
     "header": {
         "language_toggle": "English",
         "sign_out": "Cerrar sesión",
         "profile": "Perfil",
         "home": "Inicio",
         "worker_home": "Trabajos",
-        "my_applications": "Mis aplicaciones"
+        "my_applications": "Mis aplicaciones",
+        "employer_jobs": "Trabajos",
+        "messages": "Mensajes"
     },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
         "subheadline": "Jale conecta trabajadores con empleadores en la industria de la construcción.",
         "worker_cta": "Estoy buscando trabajo",
-        "employer_cta": "Estoy contratando"
+        "employer_cta": "Estoy contratando",
+        "survey_prompt": "Cuentanos que haria mas facil encontrar trabajo o contratar trabajadores.",
+        "survey_cta": "Comparte tu opinion"
     },
     "auth": {
         "worker": {
@@ -32,7 +58,7 @@
             "signup_link": "Crea una cuenta",
             "confirm_title": "Confirma tu cuenta",
             "otp_title": "Ingresa el codigo de 6 digitos",
-            "code_sent": "Enviado a {phone}",
+            "code_sent": "SMS enviado a {phone}",
             "create_account": "Crear cuenta",
             "confirm_account": "Confirmar cuenta",
             "password_note": "Los trabajadores no necesitan contrasena. Iniciaras sesion con tu telefono y un codigo de verificacion.",
@@ -70,8 +96,8 @@
             },
             "errors": {
                 "trade_other_required": "Ingresa tu oficio.",
-                "account_exists": "Ya existe una cuenta con este telefono. Vuelve e inicia sesion.",
-                "account_not_found": "No encontramos una cuenta con ese telefono. Crea una cuenta primero.",
+                "account_exists": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
+                "account_not_found": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
                 "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
                 "invalid_code": "Ese codigo no es correcto. Revisalo e intenta de nuevo.",
                 "expired_code": "Ese codigo expiro. Pide un codigo nuevo e intenta de nuevo.",
@@ -87,6 +113,8 @@
             "title": "Inicio de sesión para empleadores",
             "email_label": "Correo electrónico",
             "password_label": "Contraseña",
+            "show_password": "Mostrar contraseña",
+            "hide_password": "Ocultar contraseña",
             "sign_in": "Iniciar sesión",
             "hero": "Contrata trabajadores calificados rapido.",
             "signup_title": "Crea tu perfil de empleador",
@@ -182,29 +210,164 @@
             "cancel": "Cancelar"
         }
     },
+    "employer_messages": {
+        "title": "Mensajes",
+        "subtitle": "Mensajea a candidatos por WhatsApp manteniendo la conversacion vinculada al trabajo.",
+        "threads": "Conversaciones",
+        "drawer_button": "Mensajes",
+        "hide": "Ocultar",
+        "empty": "Todavia no hay conversaciones abiertas.",
+        "empty_select": "Selecciona una conversacion.",
+        "no_messages": "Todavia no hay mensajes.",
+        "unknown_worker": "Trabajador desconocido",
+        "status_open": "Abierta",
+        "status_closed": "Cerrada",
+        "waiting": "Esperando",
+        "active": "Activas",
+        "worker_replied": "Trabajador respondio",
+        "reply_window_open": "Ventana de 24h abierta",
+        "waiting_reply": "Esperando respuesta",
+        "template_invite_sent": "Invitacion enviada",
+        "archived_conversations": "Conversaciones archivadas",
+        "whatsapp_linked": "Conversaciones conectadas a WhatsApp",
+        "thread_status": "Estado del hilo",
+        "current_handoff": "Conexion actual por WhatsApp",
+        "conversation": "Conversacion",
+        "worker_reply": "Respuesta del trabajador",
+        "received": "Recibida",
+        "channel": "Canal",
+        "latest_message": "Ultimo mensaje",
+        "close": "Cerrar",
+        "closed_hint": "Esta conversacion esta cerrada.",
+        "composer_placeholder": "Escribe un mensaje...",
+        "send": "Enviar",
+        "from_worker": "Trabajador",
+        "message_worker": "Mensaje",
+        "starting": "Iniciando...",
+        "message_start_failed": "No se pudo iniciar la conversacion.",
+        "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
+        "default_initial_message": "Hola, te escribo sobre tu aplicacion. Responde aqui cuando estes disponible.",
+        "message_status": {
+            "queued": "En cola",
+            "waiting_worker_reply": "Esperando respuesta del trabajador",
+            "sent": "Enviado",
+            "delivered": "Entregado",
+            "failed": "Fallido",
+            "received": "Recibido"
+        }
+    },
     "employer_dashboard": {
         "stats": {
             "active_jobs": "Empleos activos",
-            "total_applicants": "Total de candidatos"
+            "paused_jobs": "Empleos pausados",
+            "filled_jobs": "Empleos llenos",
+            "total_applicants": "Total de candidatos",
+            "workers_hired": "Trabajadores contratados",
+            "paused_closed": "Pausados / Cerrados",
+            "active_hint": "Puestos abiertos listos para candidatos",
+            "applicants_hint": "{count} promedio por empleo activo",
+            "hired_hint": "{count} puestos aun disponibles",
+            "paused_closed_hint": "{paused} pausados, {filled} llenos, {closed} cerrados"
+        },
+        "shell": {
+            "title": "Panel",
+            "employer_workspace": "Espacio de empleador",
+            "company_fallback": "Equipo empleador",
+            "plan_label": "Jale Growth",
+            "plan_title": "Jale Growth",
+            "plan_body": "Las herramientas de crecimiento del prototipo apareceran aqui cuando el flujo de contratacion crezca.",
+            "upgrade": "Mejorar",
+            "alerts": "Alertas",
+            "search_workers": "Buscar workers"
+        },
+        "nav": {
+            "main": "Principal",
+            "hiring": "Contratar",
+            "account": "Cuenta",
+            "dashboard": "Panel",
+            "jobs": "Mis trabajos",
+            "messages": "Mensajes",
+            "workers": "Workers",
+            "interviews": "Entrevistas",
+            "search_workers": "Buscar workers",
+            "boost_job": "Boost un trabajo",
+            "jale_direct": "Jale Directo",
+            "analytics": "Analytics",
+            "billing": "Billing",
+            "settings": "Settings",
+            "soon": "Pronto"
+        },
+        "hero": {
+            "eyebrow": "Got Jale?",
+            "title": "Manten cada trabajo, candidato y conversacion de WhatsApp en un solo lugar.",
+            "body": "Este panel usa tus publicaciones reales hoy y reserva espacio para las herramientas futuras de matching, entrevistas y crecimiento del prototipo.",
+            "primary_cta": "Post un trabajo",
+            "secondary_cta": "Abrir mensajes"
+        },
+        "quick_post": {
+            "title": "Post rapido",
+            "body": "Crea un trabajo nuevo con el mismo flujo que ya usan los empleadores.",
+            "hint": "Las plantillas instantaneas del prototipo aun no estan activas, asi que esto abre el modal actual.",
+            "cta": "Publicar empleo"
+        },
+        "panels": {
+            "applicants_title": "Vista de candidatos",
+            "applicants_body": "La vista global de candidatos viene pronto. Abre un empleo para ver candidatos reales.",
+            "applicant_stub_1": "Candidatos nuevos",
+            "applicant_stub_2": "Listos para contactar",
+            "applicant_stub_3": "Documentos pendientes",
+            "trust_title": "Trust Match",
+            "trust_body": "La calidad del match ya aparece dentro de detalles del trabajo. Las recomendaciones globales dependen del backend proactivo.",
+            "hiring_progress": "Progreso de contratacion",
+            "open_roles": "Puestos abiertos",
+            "applicant_flow": "Flujo de candidatos",
+            "whatsapp_title": "Hilo de WhatsApp",
+            "whatsapp_body": "Los mensajes del empleador ya funcionan. Las respuestas del trabajador siguen por WhatsApp y quedan conectadas al trabajo.",
+            "open_messages": "Abrir mensajes",
+            "no_recent_job": "Aun no hay trabajo reciente",
+            "hiring_status_title": "Estado de contratacion"
+        },
+        "disabled": {
+            "label": "Preview",
+            "preview": "Preview",
+            "coming_soon": "Pronto"
         },
         "jobs": {
             "title": "Publicaciones de empleo",
             "post_job": "Publicar empleo",
             "active": "Activo",
             "closed": "Cerrado",
+            "status": {
+                "all": "Todos",
+                "active": "Activo",
+                "paused": "Pausado",
+                "filled": "Lleno",
+                "closed": "Cerrado"
+            },
             "toggle": {
                 "activate": "Marcar como activo",
+                "pause": "Pausar",
                 "close": "Marcar como cerrado"
             },
             "applicants_count": "{count, plural, one {# candidato} other {# candidatos}}",
+            "openings_count": "{open}/{total} abiertos",
+            "pay_range": "Rango de pago",
+            "pay_range_value": "${min}-${max}",
+            "hired_progress": "Progreso de contratación",
+            "hired_progress_value": "{hired}/{total} contratados, {open} abiertos",
+            "not_specified": "No especificado",
+            "yes": "Sí",
+            "no": "No",
             "posted": "Publicado",
             "details": "Detalles",
             "posting_details": "Detalles de la publicacion",
             "required_documents": "Documentos requeridos",
             "no_description": "No se agrego descripcion.",
             "no_required_documents": "No se requieren documentos para este empleo.",
-            "search_placeholder": "Buscar por título o ubicación...",
-            "back_to_dashboard": "← Volver al panel"
+            "search_placeholder": "Buscar por titulo, ubicacion u oficio...",
+            "back_to_dashboard": "← Volver al panel",
+            "empty_title": "No se encontraron trabajos",
+            "empty_body": "Publica un empleo o limpia los filtros para volver a ver tu tablero."
         },
         "filter": {
             "title": "Filtrar candidatos",
@@ -231,24 +394,65 @@
             "phone": "Teléfono",
             "empty": "Ningún candidato coincide con los filtros.",
             "status": {
-                "pending": "Pendiente",
-                "reviewed": "Revisado",
+                "pending": "Nuevo",
+                "contacted": "Contactado",
+                "talking": "En conversación",
                 "hired": "Contratado",
-                "rejected": "Rechazado"
+                "not_interested": "No seleccionado"
             }
         },
         "modal": {
             "title": "Publicar un empleo",
+            "step_label": "Paso {current} de {total}",
+            "close": "Cerrar",
             "job_title": "Título del puesto",
+            "job_title_placeholder": "ej. Operador de montacargas",
             "location": "Ubicación",
+            "location_placeholder": "Hayward, CA",
             "job_type": "Tipo de empleo",
             "job_type_fulltime": "Tiempo completo",
             "job_type_parttime": "Medio tiempo",
             "job_type_contract": "Contrato",
             "submit": "Publicar empleo",
             "cancel": "Cancelar",
+            "next": "Siguiente",
             "error": "Error al publicar el empleo. Inténtalo de nuevo.",
-            "job_description": "Descripción del empleo"
+            "job_description": "Descripción del empleo",
+            "description_placeholder": "¿Qué incluye el trabajo? ¿Qué experiencia se requiere?",
+            "select_placeholder": "Seleccionar...",
+            "trade_category": "Oficio",
+            "trade": {
+                "electrician": "Electricista",
+                "plumber": "Plomero",
+                "carpenter": "Carpintero",
+                "concrete": "Concreto",
+                "painting": "Pintura",
+                "drywall": "Drywall",
+                "general_labor": "Ayudante general",
+                "other": "Otro"
+            },
+            "pay_min": "Pago mínimo",
+            "pay_max": "Pago máximo",
+            "start_date": "Fecha de inicio",
+            "expected_duration": "Duración esperada",
+            "duration_placeholder": "ej. 2 semanas",
+            "shift_schedule": "Horario",
+            "shift_placeholder": "ej. Lun-Vie turno de día",
+            "number_of_workers_needed": "Trabajadores necesarios",
+            "required_experience_years": "Experiencia requerida",
+            "language_preference": "Idioma preferido",
+            "language": {
+                "any": "Cualquiera",
+                "en": "Inglés",
+                "es": "Español"
+            },
+            "transportation_required": "Requiere transporte",
+            "certifications": "Certificaciones",
+            "certifications_placeholder": "OSHA 10, montacargas, CDL",
+            "validation_required": "Completa los campos requeridos.",
+            "validation_number": "Ingresa números válidos y no negativos.",
+            "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
+            "validation_headcount": "Trabajadores necesarios debe ser al menos 1."
         },
         "worker_profile": {
             "back": "Volver a postulantes",
@@ -330,10 +534,11 @@
         "empty": "Aún no has postulado a ningún trabajo.",
         "empty_cta": "Buscar trabajos",
         "status": {
-            "pending": "Pendiente",
-            "reviewed": "Revisado",
+            "pending": "Aplicado",
+            "contacted": "Empleador contactó",
+            "talking": "En conversación",
             "hired": "Contratado",
-            "rejected": "Rechazado"
+            "not_interested": "No seleccionado"
         }
     },
     "worker_home": {
@@ -345,11 +550,18 @@
             "part_time": "Medio tiempo",
             "contract": "Contrato"
         },
+        "openings_count": "{open}/{total} disponibles",
         "empty": "No hay trabajos activos en este momento."
     },
     "worker_job_detail": {
         "back": "← Volver a trabajos",
         "required_docs": "Documentos requeridos",
+        "pay_range": "Rango de pago",
+        "start_date": "Fecha de inicio",
+        "expected_duration": "Duración",
+        "shift_schedule": "Horario",
+        "openings": "Vacantes",
+        "required_experience": "Experiencia",
         "upload_prompt": "Sube los documentos faltantes en tu perfil.",
         "upload_link": "Ir al perfil",
         "apply": "Postularse",

@@ -183,6 +183,21 @@ function handler(event) {
       },
     );
 
+    const rewriteSurveyPrefix = new cloudfront.Function(
+      this,
+      'RewriteSurveyPrefixFunction',
+      {
+        functionName: 'jale-rewrite-survey-prefix',
+        code: cloudfront.FunctionCode.fromInline(`
+function handler(event) {
+  var request = event.request;
+  request.uri = request.uri.replace(/^\\/survey(?=\\/|$)/, '') || '/';
+  return request;
+}
+`),
+      },
+    );
+
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {
       // Backend API → existing API Gateway
       '/api/*': {
@@ -218,15 +233,35 @@ function handler(event) {
 
     // /survey/* → Amplify (only if origin domain provided)
     if (props.surveyOriginDomain) {
-      additionalBehaviors['/survey/*'] = {
-        origin: new origins.HttpOrigin(props.surveyOriginDomain, {
-          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
-        }),
+      const surveyOrigin = new origins.HttpOrigin(props.surveyOriginDomain, {
+        protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+      });
+      const surveyBehavior = (
+        stripSurveyPrefix: boolean,
+      ): cloudfront.BehaviorOptions => ({
+        origin: surveyOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
         compress: true,
         allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-      };
+        ...(stripSurveyPrefix
+          ? {
+              functionAssociations: [
+                {
+                  function: rewriteSurveyPrefix,
+                  eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+                },
+              ],
+            }
+          : {}),
+      });
+
+      additionalBehaviors['/survey'] = surveyBehavior(true);
+      additionalBehaviors['/survey/*'] = surveyBehavior(true);
+      additionalBehaviors['/assets/*'] = surveyBehavior(false);
+      additionalBehaviors['/JaleLogo.png'] = surveyBehavior(false);
+      additionalBehaviors['/jale-logo-light.png'] = surveyBehavior(false);
+      additionalBehaviors['/jale-logo-dark.png'] = surveyBehavior(false);
     }
 
     // ── CloudFront distribution ─────────────────────────────────────

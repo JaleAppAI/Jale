@@ -55,7 +55,6 @@ interface AppliedCandidateRow {
   applied_at: string | Date;
   skills: string[] | null;
   profile_skills?: string[] | null;
-  bio: string | null;
   location: string | null;
   availability: string | null;
   profile_years_experience: number | string | null;
@@ -163,13 +162,6 @@ function scoreCandidate(job: EmployerCandidateJob, row: AppliedCandidateRow): Em
     reasons.push(`Relevant skills: ${matchedSkills.slice(0, 4).join(', ')}`);
   }
 
-  const bioKeywords = keywords(row.bio);
-  const profileMatches = bioKeywords.filter((word) => jobKeywords.includes(word));
-  if (profileMatches.length > 0) {
-    score += Math.min(10, 4 + profileMatches.length * 2);
-    reasons.push('Profile keywords match');
-  }
-
   if (availability && job.job_type === 'full-time' && availability === 'full_time') {
     score += 3;
     reasons.push('Availability match');
@@ -186,7 +178,7 @@ function scoreCandidate(job: EmployerCandidateJob, row: AppliedCandidateRow): Em
     score += 2;
   }
 
-  if (['submitted', 'viewed', 'contacted'].includes(row.status)) {
+  if (['contacted', 'talking', 'hired'].includes(row.status)) {
     score += 3;
   }
 
@@ -288,10 +280,16 @@ export async function readFreshEmployerCandidateCache(
 export async function listEmployerCandidates(
   client: PoolClient,
   jobId: string,
-  options: { limit: number },
+  options: { limit: number; includeContact?: boolean },
 ): Promise<EmployerCandidateRankingResult> {
   const limit = Math.max(1, Math.min(Math.trunc(options.limit || MAX_API_LIMIT), MAX_API_LIMIT));
   const shortlistLimit = Math.min(limit * 3, MAX_SHORTLIST);
+  const fullNameSelect = options.includeContact
+    ? 'COALESCE(wp.full_name, u.full_name) AS full_name'
+    : 'NULL::text AS full_name';
+  const phoneSelect = options.includeContact
+    ? 'COALESCE(wp.phone, u.phone) AS phone'
+    : 'NULL::text AS phone';
 
   const jobResult = await client.query<EmployerCandidateJob>(
     `SELECT id, title, location, job_type, description, required_docs, created_at
@@ -318,18 +316,17 @@ export async function listEmployerCandidates(
   const candidatesResult = await client.query<AppliedCandidateRow>(
     `SELECT ja.id AS application_id,
             ja.worker_id,
-            COALESCE(wp.full_name, u.full_name) AS full_name,
-            COALESCE(wp.phone, u.phone) AS phone,
+            ${fullNameSelect},
+            ${phoneSelect},
             ja.status,
             ja.applied_at,
             ARRAY(
               SELECT ws.skill
                 FROM worker_skills ws
                WHERE ws.worker_id = ja.worker_id
-               ORDER BY ws.skill
+              ORDER BY ws.skill
             ) AS skills,
             NULL::text[] AS profile_skills,
-            wp.bio,
             wp.location,
             wp.availability,
             wp.years_experience AS profile_years_experience,

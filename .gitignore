@@ -57,7 +57,12 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+.tmp/
+scripts/local-admin-postgres-harness.ps1
+scripts/start-local-admin-demo.ps1
 
 # Local frontend deploy state
 infra/scripts/.frontend-fast-deploy-last.env
 
+# Code review scratch artifacts
+.claude-review/

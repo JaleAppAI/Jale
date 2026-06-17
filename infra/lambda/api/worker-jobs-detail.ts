@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -38,14 +38,28 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
     const workerId: string = workerRes.rows[0].id;
-    await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerId]);
+    await setInternalUserRlsContext(client, workerId);
 
     const jobRes = await client.query(
-      `SELECT j.id, j.title, j.location, j.job_type, j.description, j.required_docs, j.created_at,
+      `SELECT j.id, j.title, j.location, j.pay, j.job_type, j.status, j.description, j.required_docs, j.created_at,
+              j.pay_min, j.pay_max, j.start_date, j.expected_duration, j.shift_schedule,
+              j.transportation_required, j.language_preference, j.number_of_workers_needed,
+              j.workers_hired AS hired_count,
+              GREATEST(j.number_of_workers_needed - j.workers_hired, 0) AS open_count,
+              j.trade_category, j.required_experience_years, j.certifications,
               u.full_name AS company_name
        FROM jobs j JOIN users u ON u.id = j.employer_id
-       WHERE j.id = $1 AND j.status = 'active'`,
-      [jobId],
+       WHERE j.id = $1
+         AND (
+           j.status = 'active'
+           OR EXISTS (
+             SELECT 1
+             FROM job_applications ja
+             WHERE ja.job_id = j.id
+               AND ja.worker_id = $2
+           )
+         )`,
+      [jobId, workerId],
     );
     if (jobRes.rows.length === 0) {
       await client.query('COMMIT');
@@ -58,17 +72,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       ? await client.query(
         `SELECT DISTINCT doc_type FROM worker_documents
          WHERE worker_id = $1
-           AND doc_type = ANY($2::text[])`,
-        [workerId, requiredDocs],
+           AND doc_type = ANY($2::text[])
+           AND (job_id IS NULL OR job_id = $3::uuid)`,
+        [workerId, requiredDocs, jobId],
       )
       : { rows: [] };
     const uploadedTypes = new Set(docsRes.rows.map((r: any) => r.doc_type));
     const missing_docs = requiredDocs.filter(d => !uploadedTypes.has(d));
 
     const appRes = await client.query(
-      `SELECT status FROM job_applications
-       WHERE job_id = $1 AND worker_id = (SELECT id FROM users WHERE cognito_sub = $2)`,
-      [jobId, cognitoSub],
+      `SELECT CASE status
+                WHEN 'reviewed' THEN 'contacted'
+                WHEN 'rejected' THEN 'not_interested'
+                ELSE status
+              END AS status
+       FROM job_applications
+       WHERE job_id = $1 AND worker_id = $2`,
+      [jobId, workerId],
     );
     const already_applied = appRes.rows.length > 0;
     const application_status = already_applied ? appRes.rows[0].status : null;

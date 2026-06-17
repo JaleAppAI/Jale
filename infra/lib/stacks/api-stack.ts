@@ -35,6 +35,11 @@ export class ApiStack extends cdk.Stack {
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const stageName = this.node.tryGetContext('environment') ?? 'dev';
+    const twilioSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      'MessagingTwilioSecret',
+      'jale/whatsapp/twilio',
+    );
 
     // ── API Gateway CloudWatch account role ──
     // This is an account-level setting (one per region) required before API Gateway
@@ -239,6 +244,75 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerApplicationStatusUpdateLambda.function);
 
+    const employerConversationsListLambda = new JaleLambdaFunction(this, 'EmployerConversationsListLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-conversations-list.ts'),
+      description: 'Employer conversations list endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerConversationsListLambda.function);
+
+    const employerConversationsDetailLambda = new JaleLambdaFunction(this, 'EmployerConversationsDetailLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-conversations-detail.ts'),
+      description: 'Employer conversations detail endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerConversationsDetailLambda.function);
+
+    const employerConversationsCreateLambda = new JaleLambdaFunction(this, 'EmployerConversationsCreateLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-conversations-create.ts'),
+      description: 'Employer conversations create endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        TWILIO_SECRET_ARN: twilioSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerConversationsCreateLambda.function);
+    twilioSecret.grantRead(employerConversationsCreateLambda.function);
+
+    const employerConversationsSendLambda = new JaleLambdaFunction(this, 'EmployerConversationsSendLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-conversations-send.ts'),
+      description: 'Employer conversations send endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        TWILIO_SECRET_ARN: twilioSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerConversationsSendLambda.function);
+    twilioSecret.grantRead(employerConversationsSendLambda.function);
+
+    const employerConversationsUpdateLambda = new JaleLambdaFunction(this, 'EmployerConversationsUpdateLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-conversations-update.ts'),
+      description: 'Employer conversations update endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerConversationsUpdateLambda.function);
+
     // Token refresh — no auth (refresh token is the credential), no DB
     const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
       entry: path.join(__dirname, '../../lambda/auth/token-refresh.ts'),
@@ -265,10 +339,10 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
-    // Worker web signup - no auth yet; creates/confirm worker then web login sends WhatsApp OTP
+    // Worker web signup - no auth yet; creates/confirms worker, then custom auth sends SMS OTP
     const workerWebSignupLambda = new JaleLambdaFunction(this, 'WorkerWebSignupLambda', {
       entry: path.join(__dirname, '../../lambda/auth/worker-web-signup.ts'),
-      description: 'Worker web signup endpoint - create confirmed worker before WhatsApp OTP login',
+      description: 'Worker web signup endpoint - create confirmed worker before SMS OTP login',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
@@ -384,12 +458,18 @@ export class ApiStack extends cdk.Stack {
       resources: poolArns,
     }));
 
+    // C4: this set must cover every Cognito call the signup flow makes,
+    // including reconcileWorkerCognitoAccount() on the UsernameExists path:
+    // AdminGetUser, AdminUpdateUserAttributes, AdminEnableUser,
+    // AdminSetUserPassword, AdminAddUserToGroup. AdminConfirmSignUp was unused
+    // (the flow uses AdminCreateUser + SUPPRESS) and is dropped for least-privilege.
     workerWebSignupLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: [
         'cognito-idp:AdminAddUserToGroup',
         'cognito-idp:AdminCreateUser',
-        'cognito-idp:AdminConfirmSignUp',
         'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminUpdateUserAttributes',
+        'cognito-idp:AdminEnableUser',
         'cognito-idp:AdminSetUserPassword',
       ],
       resources: [props.workerPool.userPool.userPoolArn],
@@ -494,6 +574,31 @@ export class ApiStack extends cdk.Stack {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
+
+    const employerConversationsResource = employerResource.addResource('conversations');
+    employerConversationsResource.addMethod('GET', new apigateway.LambdaIntegration(employerConversationsListLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerConversationsResource.addMethod('POST', new apigateway.LambdaIntegration(employerConversationsCreateLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    const employerConversationResource = employerConversationsResource.addResource('{conversationId}');
+    employerConversationResource.addMethod('GET', new apigateway.LambdaIntegration(employerConversationsDetailLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerConversationResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerConversationsUpdateLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerConversationResource
+      .addResource('messages')
+      .addMethod('POST', new apigateway.LambdaIntegration(employerConversationsSendLambda.function), {
+        authorizer: employerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
 
     // POST /auth/refresh — no auth (user's access token may be expired)
     const authResource = this.api.root.addResource('auth');

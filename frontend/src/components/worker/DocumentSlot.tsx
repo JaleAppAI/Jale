@@ -12,14 +12,16 @@ export function DocumentSlot(props: {
   onChange: () => void;
 }) {
   const t = useTranslations('worker_profile.documents');
+  const tCommon = useTranslations('common');
   const fileRef = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<'upload' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const busy = busyAction !== null;
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setBusy(true); setError(null);
+    setBusyAction('upload'); setError(null);
     try {
       const { url, s3_key } = await getAuthUploadUrl(props.token, props.doc_type, file.type);
       await uploadFileToS3(url, file);
@@ -29,13 +31,13 @@ export function DocumentSlot(props: {
       const err = e as Record<string, unknown>;
       setError(typeof err.message === 'string' ? err.message : 'upload_failed');
     } finally {
-      setBusy(false);
+      setBusyAction(null);
       if (fileRef.current) fileRef.current.value = '';
     }
   }
 
   async function handleDelete() {
-    setBusy(true); setError(null);
+    setBusyAction('delete'); setError(null);
     try {
       await deleteVaultDocument(props.token, props.doc_type);
       props.onChange();
@@ -43,7 +45,7 @@ export function DocumentSlot(props: {
       const err = e as Record<string, unknown>;
       setError(typeof err.message === 'string' ? err.message : 'delete_failed');
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
 
@@ -64,11 +66,18 @@ export function DocumentSlot(props: {
         {props.existing && (
           <a href={props.existing.url} target="_blank" rel="noreferrer" className="text-sm text-blue-700 underline self-center">{t('view')}</a>
         )}
-        <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy}
+          loading={busyAction === 'upload'}
+          loadingLabel={tCommon('loading')}
+        >
           {props.existing ? t('replace') : t('upload')}
         </Button>
         {props.existing && (
-          <Button variant="outline" size="sm" onClick={handleDelete} disabled={busy}>{t('delete')}</Button>
+          <Button variant="outline" size="sm" onClick={handleDelete} disabled={busy} loading={busyAction === 'delete'} loadingLabel={tCommon('loading')}>{t('delete')}</Button>
         )}
         <input ref={fileRef} type="file" accept="application/pdf,image/jpeg,image/png" hidden onChange={handleFile} />
       </div>

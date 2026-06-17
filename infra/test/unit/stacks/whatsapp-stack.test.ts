@@ -13,7 +13,9 @@ describe('WhatsAppStack', () => {
   let apiTemplate: Template;
 
   beforeAll(() => {
-    const app = new cdk.App();
+    const app = new cdk.App({
+      context: { otpSmsFromNumber: '+13252210992' },
+    });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', { network });
     const auth = new AuthStack(app, 'TestAuthStack', {
@@ -21,7 +23,6 @@ describe('WhatsAppStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
-      cognitoSmsRole: network.cognitoSmsRole,
     });
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
@@ -92,8 +93,24 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 5 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 5);
+  test('Stack creates 6 Lambda functions including the admin outbox dispatcher', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 6);
+  });
+
+  test('Admin outbox dispatcher runs on a one-minute schedule', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('.*admin.*outbox.*'),
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          DB_SECRET_ARN: Match.anyValue(),
+          TWILIO_SECRET_ARN: Match.anyValue(),
+        }),
+      }),
+    });
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(1 minute)',
+      State: 'ENABLED',
+    });
   });
 
   test('Webhook Lambda has TWILIO_SECRET_ARN + SQS_QUEUE_URL env vars', () => {
@@ -149,12 +166,16 @@ describe('WhatsAppStack', () => {
     });
   });
 
-  test('Processor Lambda has Cognito permissions (AdminConfirmSignUp + InitiateAuth + SignUp + RespondToAuthChallenge)', () => {
+  test('Processor Lambda has suppressed account creation and custom auth permissions', () => {
     const expectedActions = [
-      'cognito-idp:SignUp',
-      'cognito-idp:AdminConfirmSignUp',
+      'cognito-idp:AdminCreateUser',
+      'cognito-idp:AdminSetUserPassword',
       'cognito-idp:InitiateAuth',
       'cognito-idp:RespondToAuthChallenge',
+      // C4: reconcileWorkerCognitoAccount() repair actions must stay granted.
+      'cognito-idp:AdminUpdateUserAttributes',
+      'cognito-idp:AdminEnableUser',
+      'cognito-idp:AdminAddUserToGroup',
     ];
     template.hasResourceProperties('AWS::IAM::Policy', {
       PolicyDocument: Match.objectLike({

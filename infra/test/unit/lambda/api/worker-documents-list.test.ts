@@ -2,12 +2,16 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 jest.mock('@aws-sdk/s3-request-presigner', () => ({ getSignedUrl: jest.fn().mockResolvedValue('https://get.example') }));
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { handler } from '../../../../lambda/api/worker-documents-list';
-import { getDbPool } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 const mockGetDbPool = getDbPool as jest.Mock;
+const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
+const mockGetSignedUrl = getSignedUrl as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -33,5 +37,26 @@ describe('worker-documents-list', () => {
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
     expect(body.documents[0].url).toBe('https://get.example');
+    expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'w');
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
+    expect(mockQuery).not.toHaveBeenCalledWith(
+      `SELECT set_config('app.current_user_id', $1, true)`,
+      ['u1'],
+    );
+  });
+
+  it('does not presign urls when RLS returns no vault docs', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(ev);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).documents).toEqual([]);
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
   });
 });

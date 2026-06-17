@@ -32,6 +32,7 @@ describe('employer-job-applicants Lambda', () => {
   it('reads ordered skills from worker_skills instead of worker_profiles.skills', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rowCount: 1 }) // job ownership
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
       .mockResolvedValueOnce({}); // COMMIT
@@ -48,6 +49,7 @@ describe('employer-job-applicants Lambda', () => {
   it('filters skills with normalized worker_skills values', async () => {
     mockQuery
       .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rowCount: 1 }) // job ownership
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // applicants
       .mockResolvedValueOnce({}); // COMMIT
