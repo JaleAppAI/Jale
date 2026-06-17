@@ -160,60 +160,74 @@ export async function sendPendingAdminOutbox(
   client: PoolClient,
   limit = 25,
 ): Promise<void> {
-  const pending = await client.query<{
-    id: string;
-    sequence: number;
-    whatsapp_number: string;
-    body: string | null;
-    content_template: string | null;
-    content_variables: Record<string, string> | null;
-  }>(
-    `SELECT id, sequence, whatsapp_number, body, content_template, content_variables
-       FROM whatsapp_outbox
-      WHERE source_type = 'admin_case'
-        AND status IN ('pending', 'failed')
-        AND attempt_count < $1
-      ORDER BY created_at
-      LIMIT $2
-      FOR UPDATE SKIP LOCKED`,
-    [MAX_ADMIN_SEND_ATTEMPTS, limit],
-  );
-
-  for (const row of pending.rows) {
+  for (let processed = 0; processed < limit; processed += 1) {
+    await client.query('BEGIN');
     try {
-      const twilioMessageSid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = 'sent',
-                sent_at = now(),
-                twilio_message_sid = COALESCE($2, twilio_message_sid),
-                last_error = NULL
-          WHERE id = $1`,
-        [row.id, twilioMessageSid],
+      const pending = await client.query<{
+        id: string;
+        sequence: number;
+        whatsapp_number: string;
+        body: string | null;
+        content_template: string | null;
+        content_variables: Record<string, string> | null;
+      }>(
+        `SELECT id, sequence, whatsapp_number, body, content_template, content_variables
+           FROM whatsapp_outbox
+          WHERE source_type = 'admin_case'
+            AND status IN ('pending', 'failed')
+            AND attempt_count < $1
+          ORDER BY created_at
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED`,
+        [MAX_ADMIN_SEND_ATTEMPTS],
       );
-      await client.query(
-        `SELECT record_admin_whatsapp_delivery($1, 'sent', $2, NULL)`,
-        [row.id, twilioMessageSid],
-      );
+
+      const row = pending.rows[0];
+      if (!row) {
+        await client.query('COMMIT');
+        return;
+      }
+
+      try {
+        const twilioMessageSid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
+        await client.query(
+          `UPDATE whatsapp_outbox
+              SET status = 'sent',
+                  sent_at = now(),
+                  twilio_message_sid = COALESCE($2, twilio_message_sid),
+                  last_error = NULL
+            WHERE id = $1`,
+          [row.id, twilioMessageSid],
+        );
+        await client.query(
+          `SELECT record_admin_whatsapp_delivery($1, 'sent', $2, NULL)`,
+          [row.id, twilioMessageSid],
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const ambiguous = err instanceof AmbiguousTwilioSendError;
+        const failureStatus = ambiguous ? 'send_unknown' : 'failed';
+        // H4: parameterize the status instead of interpolating it into the SQL
+        // string. Matches sendPendingOutbox() above and the repo's rule against
+        // string-built SQL predicates.
+        await client.query(
+          `UPDATE whatsapp_outbox
+              SET status = $1,
+                  attempt_count = attempt_count + 1,
+                  last_error = $2
+            WHERE id = $3`,
+          [failureStatus, message, row.id],
+        );
+        await client.query(
+          `SELECT record_admin_whatsapp_delivery($1, $2, NULL, $3)`,
+          [row.id, failureStatus, message],
+        );
+      }
+
+      await client.query('COMMIT');
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const ambiguous = err instanceof AmbiguousTwilioSendError;
-      const failureStatus = ambiguous ? 'send_unknown' : 'failed';
-      // H4: parameterize the status instead of interpolating it into the SQL
-      // string. Matches sendPendingOutbox() above and the repo's rule against
-      // string-built SQL predicates.
-      await client.query(
-        `UPDATE whatsapp_outbox
-            SET status = $1,
-                attempt_count = attempt_count + 1,
-                last_error = $2
-          WHERE id = $3`,
-        [failureStatus, message, row.id],
-      );
-      await client.query(
-        `SELECT record_admin_whatsapp_delivery($1, $2, NULL, $3)`,
-        [row.id, failureStatus, message],
-      );
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
     }
   }
 }

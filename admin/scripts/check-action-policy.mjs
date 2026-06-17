@@ -69,6 +69,13 @@ assert.deepEqual(policy.getCaseActions({ status: 'pending_worker', type: 'outbou
   'reveal_pii',
   'resolve_case',
 ]);
+const outboundFailureActions = policy.getCaseActions(
+  { status: 'pending_worker', type: 'outbound_failure' },
+  'admin_ops',
+);
+assert.equal(outboundFailureActions[0].id, 'resend_outbound');
+assert.equal(outboundFailureActions[0].disabled, true);
+assert.match(outboundFailureActions[0].reason, /not available/);
 
 assert.equal(
   policy.getCaseActions({ status: 'resolved', type: 'help_request' }, 'admin_ops').every((action) => action.disabled),

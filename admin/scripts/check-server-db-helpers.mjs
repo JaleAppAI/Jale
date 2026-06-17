@@ -133,7 +133,7 @@ try {
   // Test dynamic pool sizing based on NODE_ENV.
   process.env.NODE_ENV = 'production';
   const prodConfig = db.buildAdminPoolConfig(parsed);
-  assert.equal(prodConfig.max, 1);
+  assert.equal(prodConfig.max, 5);
 
   process.env.NODE_ENV = 'development';
   const devConfig = db.buildAdminPoolConfig(parsed);

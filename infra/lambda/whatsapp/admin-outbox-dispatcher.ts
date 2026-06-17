@@ -7,12 +7,7 @@ export async function handler(_event: ScheduledEvent): Promise<void> {
   const client = await pool.connect();
 
   try {
-    await client.query('BEGIN');
     await sendPendingAdminOutbox(client);
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw error;
   } finally {
     client.release();
   }

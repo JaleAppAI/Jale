@@ -59,7 +59,7 @@ export function buildAdminPoolConfig(secret: AdminDbSecret): AdminPoolConfig {
     database: secret.dbname,
     user: secret.username,
     password: secret.password,
-    max: process.env.NODE_ENV === 'production' ? 1 : 5,
+    max: 5,
     idleTimeoutMillis: 10000,
     connectionTimeoutMillis: 2000,
     ssl,

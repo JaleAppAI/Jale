@@ -78,13 +78,15 @@ export function getCaseActions(context: CaseActionContext, role: AdminRole): Adm
   const actions: AdminAction[] = [];
 
   if (context.type === 'outbound_failure') {
+    const resendUnavailableReason =
+      closedReason ?? 'Resend outbound message is not available yet; use manual follow-up and record the resolution.';
     actions.push(
       action(
         'resend_outbound',
         'Resend outbound message',
         'Queue a safe resend for a previously failed WhatsApp delivery.',
         role,
-        closedReason,
+        resendUnavailableReason,
       ),
     );
   } else {
