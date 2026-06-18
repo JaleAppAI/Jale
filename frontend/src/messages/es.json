@@ -256,7 +256,7 @@
         "starting": "Iniciando...",
         "message_start_failed": "No se pudo iniciar la conversacion.",
         "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
-        "default_initial_message": "Hola, te escribo sobre tu aplicacion. Responde aqui cuando estes disponible.",
+        "default_initial_message": "Hola, te escribo sobre tu aplicacion de {jobTitle}. Responde aqui cuando estes disponible.",
         "message_status": {
             "queued": "En cola",
             "waiting_worker_reply": "Esperando respuesta del trabajador",

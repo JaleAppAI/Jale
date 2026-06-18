@@ -135,7 +135,7 @@ try {
     Write-Host "Running cdk deploy JaleFrontendStack..." -ForegroundColor Cyan
     Write-Host "CDK builds Docker image, pushes to ECR, and updates Lambda."
 
-    $cdkArgs = @("deploy", "JaleFrontendStack") + $profileArgs + @("--require-approval=never", "--output", $CdkOutputDir) + $ctxArgs
+    $cdkArgs = @("deploy", "JaleFrontendStack", "--exclusively") + $profileArgs + @("--require-approval=never", "--output", $CdkOutputDir) + $ctxArgs
     Invoke-Cdk $cdkArgs
 
     if ($LASTEXITCODE -ne 0) {

@@ -274,6 +274,7 @@ export default function JobDetailPage() {
                   applicant={applicant}
                   match={candidateMatches.get(applicant.application_id) ?? candidateMatches.get(applicant.worker_id)}
                   jobId={job.id}
+                  jobTitle={job.title}
                   t={t}
                   tMatch={tMatch}
                 />
@@ -301,12 +302,14 @@ function ApplicantCard({
   applicant,
   match,
   jobId,
+  jobTitle,
   t,
   tMatch,
 }: {
   applicant: Applicant;
   match?: ApplicantMatch;
   jobId: string;
+  jobTitle: string;
   t: ReturnType<typeof useTranslations>;
   tMatch: ReturnType<typeof useTranslations>;
 }) {
@@ -324,7 +327,7 @@ function ApplicantCard({
       const response = await startConversation(idToken, {
         job_id: jobId,
         worker_id: applicant.worker_id,
-        initial_message: tMessages('default_initial_message'),
+        initial_message: tMessages('default_initial_message', { jobTitle }),
       });
       router.push(`/employer/conversations?conversation_id=${response.conversation.id}`);
     } catch (err) {

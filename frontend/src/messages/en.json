@@ -256,7 +256,7 @@
         "starting": "Starting...",
         "message_start_failed": "Could not start the conversation.",
         "worker_whatsapp_unavailable": "This worker does not have a WhatsApp number yet.",
-        "default_initial_message": "Hi, I am reaching out about your application. Reply here when you are available.",
+        "default_initial_message": "Hi, I am reaching out about your {jobTitle} application. Reply here when you are available.",
         "message_status": {
             "queued": "Queued",
             "waiting_worker_reply": "Waiting for worker reply",

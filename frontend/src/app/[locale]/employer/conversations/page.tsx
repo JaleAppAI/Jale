@@ -66,9 +66,10 @@ export default function EmployerConversationsPage() {
       return;
     }
     let active = true;
+    let firstLoad = true;
 
     async function loadThread() {
-      setLoadingThread(true);
+      if (firstLoad) setLoadingThread(true);
       try {
         const detail = await getConversation(idToken!, selectedId!);
         if (!active) return;
@@ -82,6 +83,7 @@ export default function EmployerConversationsPage() {
         }
       } finally {
         if (active) setLoadingThread(false);
+        firstLoad = false;
       }
     }
 
