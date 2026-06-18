@@ -34,6 +34,7 @@ export default function WorkerJobDetailPage() {
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [profilePrefill, setProfilePrefill] = useState<Partial<ProfileCompleteValues> | null>(null);
 
   const load = useCallback(async () => {
     if (!idToken || !id) return;
@@ -51,8 +52,8 @@ export default function WorkerJobDetailPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  async function profileIsComplete(): Promise<boolean> {
-    if (!idToken) return false;
+  async function fetchProfile(): Promise<Partial<ProfileCompleteValues>> {
+    if (!idToken) throw new Error('not_signed_in');
     const res = await apiFetch('/worker/profile', {}, idToken);
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { error?: string };
@@ -61,8 +62,11 @@ export default function WorkerJobDetailPage() {
       err.code = body.error;
       throw err;
     }
-    const p = await res.json();
-    return !!(p.full_name && p.skills?.length > 0 && p.availability && p.location);
+    return await res.json();
+  }
+
+  function profileIsComplete(p: Partial<ProfileCompleteValues>): boolean {
+    return !!(p.full_name && p.skills && p.skills.length > 0 && p.availability && p.location);
   }
 
   async function handleApplyClick() {
@@ -70,7 +74,9 @@ export default function WorkerJobDetailPage() {
     setError(null);
     setApplying(true);
     try {
-      if (!(await profileIsComplete())) {
+      const profile = await fetchProfile();
+      if (!profileIsComplete(profile)) {
+        setProfilePrefill(profile);
         setModalOpen(true);
         return;
       }
@@ -226,6 +232,7 @@ export default function WorkerJobDetailPage() {
 
       <ProfileCompleteModal
         open={modalOpen}
+        initial={profilePrefill ?? undefined}
         onClose={() => setModalOpen(false)}
         onSubmit={handleModalSubmit}
       />

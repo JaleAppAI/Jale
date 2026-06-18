@@ -65,6 +65,7 @@ MIGRATIONS=(
   "025_job_messaging.sql"
   "026_job_messaging_hardening.sql"
   "027_hired_count_trigger_security_definer.sql"
+  "028_whatsapp_worker_skills_seed.sql"
 )
 
 echo ">> Using region: $REGION"

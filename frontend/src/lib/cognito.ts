@@ -116,6 +116,30 @@ export function employerSignIn(email: string, password: string): Promise<AuthTok
     });
 }
 
+export function employerForgotPassword(email: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: employerPool });
+        user.forgotPassword({
+            onSuccess: () => resolve(),
+            onFailure: reject,
+        });
+    });
+}
+
+export function employerConfirmNewPassword(
+    email: string,
+    code: string,
+    newPassword: string,
+): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: employerPool });
+        user.confirmPassword(code.trim(), newPassword, {
+            onSuccess: () => resolve(),
+            onFailure: reject,
+        });
+    });
+}
+
 async function workerWebSignUp(input: { phone: string; fullName: string }): Promise<void> {
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/auth/worker/signup`, {
         method: 'POST',

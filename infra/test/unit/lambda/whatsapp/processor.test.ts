@@ -1940,6 +1940,7 @@ describe('building_profile custom trade handoff', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields before compute next
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPSERT worker_profiles
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_skills seed
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade_other: 'Soldador' }] })
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // existing WTA
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cached trade_questions

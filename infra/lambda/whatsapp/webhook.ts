@@ -111,9 +111,15 @@ export const handler = async (
       hasFrom: true,
     });
 
-    // 5. Return 200 — Twilio expects a 2xx response within a few seconds,
-    //    or it will retry. Returning plain text is fine.
-    return { statusCode: 200, body: 'queued' };
+    // 5. Return 200 with empty TwiML. Twilio's messaging webhook contract
+    //    expects text/xml (or an empty body) — without the header API Gateway
+    //    defaults to application/json, which Twilio rejects as Error 12300
+    //    and re-delivers the message via its fallback URL ~30s later.
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'text/xml' },
+      body: '<?xml version="1.0" encoding="UTF-8"?><Response/>',
+    };
   } catch (err: unknown) {
     console.error('[webhook] handler error:', err);
     return {
