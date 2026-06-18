@@ -129,6 +129,14 @@
             "password_note": "Password must be at least 8 characters and include uppercase and lowercase letters, a number, and a symbol.",
             "panel_title": "faster time-to-hire",
             "panel_body": "Employer profiles help workers recognize the company behind each opportunity.",
+            "forgot_link": "Forgot password?",
+            "forgot_title": "Reset your password",
+            "forgot_subtitle": "Enter your work email and we'll send a reset code.",
+            "send_code": "Send reset code",
+            "forgot_confirm_title": "Set a new password",
+            "forgot_confirm_subtitle": "Enter the code we sent to {email}",
+            "set_password": "Set new password",
+            "reset_success": "Password updated — sign in below.",
             "fields": {
                 "company_name": "Company name",
                 "contact_name": "Contact name",
@@ -142,7 +150,9 @@
                 "typical_job_types": "Typical job types",
                 "company_size": "Company size",
                 "company_description": "Company description",
-                "confirmation_code": "Confirmation code"
+                "confirmation_code": "Confirmation code",
+                "reset_code": "Reset code",
+                "new_password": "New password"
             },
             "trades": {
                 "electrician": "Electrician",
