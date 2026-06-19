@@ -390,12 +390,30 @@ export async function createApplicantConversation(
     );
   }
 
+  // The WhatsApp session is per phone number, not per conversation. If the worker
+  // has replied to any other open conversation from this employer in the last 24h,
+  // that session covers this new conversation too — send freeform to avoid a
+  // template rejection (Twilio 21655) when a marketing session is already active.
+  const crossSessionRow = await client.query<{ active: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM job_conversations
+        WHERE employer_id = $1
+          AND worker_id = $2
+          AND status = 'open'
+          AND id != $3
+          AND last_worker_message_at > now() - interval '24 hours'
+     ) AS active`,
+    [employerId, workerId, conversation.rows[0].id],
+  );
+  const workerSessionOpen = crossSessionRow.rows[0]?.active ?? false;
+
   await queueConversationMessageFromEmployer(
     client,
     conversation.rows[0].id,
     employerId,
     initialMessage,
     inviteTemplateName(conversation.rows[0].worker_language),
+    { forceCanSendFreeform: workerSessionOpen },
   );
 
   return { conversationId: conversation.rows[0].id };
@@ -407,11 +425,12 @@ export async function queueConversationMessageFromEmployer(
   employerId: string,
   body: string,
   closedWindowTemplateName?: string,
+  options?: { forceCanSendFreeform?: boolean },
 ): Promise<{ messageId: string; queuedAsTemplate: boolean }> {
   const conversation = await loadConversationForEmployer(client, conversationId, employerId);
   if (!conversation || conversation.status !== 'open') throw new Error('conversation_not_found');
 
-  const canSendFreeform = isWorkerReplyWindowOpen(conversation.last_worker_message_at);
+  const canSendFreeform = (options?.forceCanSendFreeform ?? false) || isWorkerReplyWindowOpen(conversation.last_worker_message_at);
   const message = await client.query<{ id: string }>(
     `INSERT INTO job_conversation_messages
        (conversation_id, sender_type, direction, body, status)
