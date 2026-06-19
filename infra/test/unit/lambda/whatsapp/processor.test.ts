@@ -20,8 +20,12 @@
 const mockCognitoSend = jest.fn();
 jest.mock('@aws-sdk/client-cognito-identity-provider', () => ({
   CognitoIdentityProviderClient: jest.fn(() => ({ send: mockCognitoSend })),
-  SignUpCommand: jest.fn((args) => ({ input: args, __type: 'SignUp' })),
-  AdminConfirmSignUpCommand: jest.fn((args) => ({ input: args, __type: 'AdminConfirmSignUp' })),
+  AdminCreateUserCommand: jest.fn((args) => ({ input: args, __type: 'AdminCreateUser' })),
+  AdminAddUserToGroupCommand: jest.fn((args) => ({ input: args, __type: 'AdminAddUserToGroup' })),
+  AdminEnableUserCommand: jest.fn((args) => ({ input: args, __type: 'AdminEnableUser' })),
+  AdminGetUserCommand: jest.fn((args) => ({ input: args, __type: 'AdminGetUser' })),
+  AdminSetUserPasswordCommand: jest.fn((args) => ({ input: args, __type: 'AdminSetUserPassword' })),
+  AdminUpdateUserAttributesCommand: jest.fn((args) => ({ input: args, __type: 'AdminUpdateUserAttributes' })),
   InitiateAuthCommand: jest.fn((args) => ({ input: args, __type: 'InitiateAuth' })),
   RespondToAuthChallengeCommand: jest.fn((args) => ({ input: args, __type: 'RespondToAuthChallenge' })),
   AuthFlowType: { CUSTOM_AUTH: 'CUSTOM_AUTH' },
@@ -285,10 +289,10 @@ describe('Processor Lambda', () => {
         // built-in 'new' greeting path runs as before.
         .mockResolvedValueOnce({ rowCount: 0, rows: [] });
       // handleNewOrRestart begins here; we route via the 'new' → greeting path.
-      // SignUp + AdminConfirmSignUp succeed (empty responses).
+      // Suppressed AdminCreateUser + AdminSetUserPassword succeed.
       mockCognitoSend
-        .mockResolvedValueOnce({}) // SignUp
-        .mockResolvedValueOnce({}) // AdminConfirmSignUp
+        .mockResolvedValueOnce({}) // AdminCreateUser
+        .mockResolvedValueOnce({}) // AdminSetUserPassword
         .mockResolvedValueOnce({
           Session: 'INIT-SESSION',
           ChallengeName: 'CUSTOM_CHALLENGE',
@@ -329,6 +333,16 @@ describe('Processor Lambda', () => {
         /INSERT INTO whatsapp_processed_messages/i,
       );
       expect(claim).toContain('SM-new');
+
+      expect(mockCognitoSend.mock.calls[0][0]).toEqual(expect.objectContaining({
+        __type: 'AdminCreateUser',
+        input: expect.objectContaining({
+          MessageAction: 'SUPPRESS',
+          UserAttributes: expect.arrayContaining([
+            { Name: 'phone_number_verified', Value: 'true' },
+          ]),
+        }),
+      }));
 
       // Exactly one Twilio call (the welcome message) across the whole flow.
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -431,9 +445,13 @@ describe('Processor Lambda', () => {
 
       // The outbox row was marked 'failed' with an incremented attempt_count.
       const failedUpd = findQueryByPattern(
-        /UPDATE whatsapp_outbox\s+SET status = 'failed'/i,
+        /UPDATE whatsapp_outbox\s+SET status = \$1/i,
       );
       expect(failedUpd).toBeDefined();
+      expect(mockQuery.mock.calls.some(([sql, params]) => (
+        /UPDATE whatsapp_outbox\s+SET status = \$1/i.test(sql)
+        && params?.[0] === 'failed'
+      ))).toBe(true);
       // markCompleted was NOT called (no UPDATE status='completed' in mockQuery calls)
       expect(
         countQueryByPattern(/UPDATE whatsapp_processed_messages\s+SET status = 'completed'/i),

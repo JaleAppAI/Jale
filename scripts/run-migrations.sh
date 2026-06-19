@@ -11,7 +11,7 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→019
+#   - Base64-encodes migrations 001→026
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -63,6 +63,8 @@ MIGRATIONS=(
   "023_job_fields_and_statuses_mvp.sql"
   "024_sprint11_hiring_flow_hardening.sql"
   "025_job_messaging.sql"
+  "026_admin_panel.sql"
+  "027_admin_security_hardening.sql"
   "028_job_messaging_hardening.sql"
   "029_hired_count_trigger_security_definer.sql"
   "030_whatsapp_worker_skills_seed.sql"
@@ -113,6 +115,19 @@ if [[ -z "$MATCHING_SECRET_ARN" || "$MATCHING_SECRET_ARN" == "None" ]]; then
 fi
 echo "   matching-secret: $MATCHING_SECRET_ARN"
 
+echo ">> Resolving jale_admin_console DB secret ARN..."
+ADMIN_CONSOLE_SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "$DATABASE_STACK" \
+  --region "$REGION" \
+  --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'AdminConsoleDbSecret')].PhysicalResourceId | [0]" \
+  --output text)
+
+if [[ -z "$ADMIN_CONSOLE_SECRET_ARN" || "$ADMIN_CONSOLE_SECRET_ARN" == "None" ]]; then
+  echo "!! Could not find jale_admin_console DB secret in $DATABASE_STACK."
+  exit 1
+fi
+echo "   admin-console-secret: $ADMIN_CONSOLE_SECRET_ARN"
+
 # ---------------------------------------------------------------------------
 # Base64-encode each migration + prepare the remote script.
 # ---------------------------------------------------------------------------
@@ -145,6 +160,7 @@ set -euo pipefail
 REGION="$REGION"
 DB_SECRET_ARN="$DB_SECRET_ARN"
 MATCHING_SECRET_ARN="$MATCHING_SECRET_ARN"
+ADMIN_CONSOLE_SECRET_ARN="$ADMIN_CONSOLE_SECRET_ARN"
 WA_DB_SECRET_NAME="$WA_DB_SECRET_NAME"
 
 echo ">> Fetching jale_admin creds from \$DB_SECRET_ARN"
@@ -186,6 +202,14 @@ MATCHING_SECRET_JSON=\$(aws secretsmanager get-secret-value \
 MATCHING_PW=\$(echo "\$MATCHING_SECRET_JSON" | jq -r .password)
 "\${PG_CMD[@]}" -c "ALTER ROLE jale_matching WITH PASSWORD '\$MATCHING_PW';"
 
+echo ">> Setting jale_admin_console password from generated secret..."
+ADMIN_CONSOLE_SECRET_JSON=\$(aws secretsmanager get-secret-value \
+  --secret-id "\$ADMIN_CONSOLE_SECRET_ARN" \
+  --region "\$REGION" \
+  --query SecretString --output text)
+ADMIN_CONSOLE_PW=\$(echo "\$ADMIN_CONSOLE_SECRET_JSON" | jq -r .password)
+"\${PG_CMD[@]}" -c "ALTER ROLE jale_admin_console WITH PASSWORD '\$ADMIN_CONSOLE_PW';"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 # 32 bytes base64 → strip =+/ → first 24 chars. URL-safe, no quoting issues
 # in SQL or JSON.
@@ -218,7 +242,7 @@ else
   echo "   created new secret"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON
+unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON
 echo ">> Done."
 REMOTE_EOF
 )

@@ -11,6 +11,8 @@ const requiredFiles = [
   '.github/workflows/deploy-production.yml',
   '.github/workflows/_reusable-validate.yml',
   '.github/workflows/_reusable-deploy.yml',
+  'scripts/run-admin-migration.ps1',
+  'scripts/bootstrap-admin-user.ps1',
 ];
 
 function fail(message) {
@@ -50,6 +52,8 @@ const reusableDeploy = readRequired('.github/workflows/_reusable-deploy.yml');
 const setupNode = readRequired('.github/actions/setup-node-cache/action.yml');
 const awsLogin = readRequired('.github/actions/aws-oidc-login/action.yml');
 const codeowners = readRequired('.github/CODEOWNERS');
+const adminMigration = readRequired('scripts/run-admin-migration.ps1');
+const adminBootstrap = readRequired('scripts/bootstrap-admin-user.ps1');
 
 requireIncludes('.github/workflows/pr-validate.yml', prValidate, 'pull_request:');
 requireMatches('.github/workflows/pr-validate.yml', prValidate, /branches:\s*\[[^\]]*prod[^\]]*\]/, 'prod pull request validation');
@@ -64,6 +68,10 @@ requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'ca
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'id-token: write');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, '_reusable-deploy.yml');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, "grep -Ev '^infra/package(-lock)?\\.json$'");
+requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'admin-prerequisites');
+requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'JaleDatabaseStack JaleAdminCertStack');
+requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'JaleDatabaseStack JaleWhatsAppStack JaleAdminStack');
+requireIncludes('.github/workflows/deploy-production.yml', deployProduction, "vars.CDK_CONTEXT_ENVIRONMENT || 'production'");
 
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run build');
@@ -71,6 +79,9 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --audit-level=high');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:session');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:dispatch');
 
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'environment: ${{ inputs.github-environment }}');
@@ -79,7 +90,19 @@ if (reusableDeploy.includes('JaleBastionStack')) {
   fail('.github/workflows/_reusable-deploy.yml must not deploy JaleBastionStack by default');
 }
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'cdk diff');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '--no-change-set');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'cdk deploy');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c deletionProtection=true');
+
+requireIncludes('scripts/run-admin-migration.ps1', adminMigration, '026_admin_panel.sql');
+requireIncludes('scripts/run-admin-migration.ps1', adminMigration, 'jale_admin_console');
+if (adminMigration.includes('ALTER ROLE jale_whatsapp') || adminMigration.includes('ALTER ROLE jale_matching')) {
+  fail('scripts/run-admin-migration.ps1 must not rotate unrelated database roles');
+}
+
+requireIncludes('scripts/bootstrap-admin-user.ps1', adminBootstrap, 'admin-create-user');
+requireIncludes('scripts/bootstrap-admin-user.ps1', adminBootstrap, 'admin-add-user-to-group');
+requireIncludes('scripts/bootstrap-admin-user.ps1', adminBootstrap, 'admin_users');
 
 requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'actions/setup-node');
 requireIncludes('.github/actions/setup-node-cache/action.yml', setupNode, 'npm ci');

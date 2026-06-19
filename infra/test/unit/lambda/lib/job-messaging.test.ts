@@ -196,14 +196,15 @@ describe('createApplicantConversation thread-number assignment', () => {
         status: 'open', worker_phone: '+15125551234', worker_language: 'es',
         company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
       }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{                                 // (6) loadConversationForEmployer (inside queueConversationMessageFromEmployer)
+      .mockResolvedValueOnce({ rows: [{ active: false }], rowCount: 1 }) // (6) cross-session EXISTS check -> no active session
+      .mockResolvedValueOnce({ rows: [{                                 // (7) loadConversationForEmployer (inside queueConversationMessageFromEmployer)
         id: CONV_A, job_id: 'job-1', employer_id: EMP, worker_id: WORKER, application_id: 'app-a',
         status: 'open', worker_phone: '+15125551234', worker_language: 'es',
         company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
       }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })  // (7) INSERT job_conversation_messages
-      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 }) // (8) pending-template EXISTS check -> false
-      .mockResolvedValue({ rows: [], rowCount: 1 });                    // (9+) INSERT outbox, UPDATE conversations, UPDATE applications
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })  // (8) INSERT job_conversation_messages
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 }) // (9) pending-template EXISTS check -> false
+      .mockResolvedValue({ rows: [], rowCount: 1 });                    // (10+) INSERT outbox, UPDATE conversations, UPDATE applications
 
     await createApplicantConversation(client, EMP, 'job-1', WORKER, 'hola, te escribo sobre el trabajo');
 

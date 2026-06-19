@@ -8,7 +8,14 @@ describe('AuthStack', () => {
   let template: Template;
 
   beforeAll(() => {
-    const app = new cdk.App({ context: { environment: 'prod' } });
+    const app = new cdk.App({
+      context: {
+        environment: 'prod',
+        otpSmsFromNumber: '+15125550123',
+        otpSmsRequestTimeoutMs: 3500,
+        otpSmsValidityPeriodSeconds: 180,
+      },
+    });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', {
       network,
@@ -18,7 +25,6 @@ describe('AuthStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
-      cognitoSmsRole: network.cognitoSmsRole,
     });
     template = Template.fromStack(auth);
   });
@@ -27,10 +33,10 @@ describe('AuthStack', () => {
     template.resourceCountIs('AWS::Cognito::UserPool', 2);
   });
 
-  test('Worker pool has MFA required', () => {
+  test('Worker pool uses only the custom OTP challenge, with Cognito MFA disabled', () => {
     template.hasResourceProperties('AWS::Cognito::UserPool', {
       UserPoolName: 'jale-worker-pool',
-      MfaConfiguration: 'ON',
+      MfaConfiguration: 'OFF',
     });
   });
 
@@ -157,8 +163,61 @@ describe('AuthStack', () => {
       Environment: Match.objectLike({
         Variables: Match.objectLike({
           TWILIO_SECRET_ARN: 'jale/whatsapp/otp-twilio',
+          TWILIO_FROM_NUMBER: '+15125550123',
+          TWILIO_REQUEST_TIMEOUT_MS: '3500',
+          TWILIO_VALIDITY_PERIOD_SECONDS: '180',
+          OTP_RATE_LIMIT_TABLE_NAME: Match.anyValue(),
         }),
       }),
+    });
+  });
+
+  test('UserPoolClients suppress username-existence errors', () => {
+    template.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+      PreventUserExistenceErrors: 'ENABLED',
+    });
+  });
+
+  test('OTP rate limits use a TTL-enabled on-demand DynamoDB table', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'subject', KeyType: 'HASH' },
+        { AttributeName: 'window', KeyType: 'RANGE' },
+      ],
+      TimeToLiveSpecification: {
+        AttributeName: 'expiresAt',
+        Enabled: true,
+      },
+    });
+  });
+
+  test('CreateAuthChallenge Lambda can perform DynamoDB rate-limit transactions', () => {
+    const policies = template.findResources('AWS::IAM::Policy');
+    const statements = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement);
+
+    const transactStatements = statements.filter((statement: any) => {
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      return actions.includes('dynamodb:TransactWriteItems');
+    });
+
+    expect(transactStatements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Effect: 'Allow',
+          Resource: expect.anything(),
+        }),
+      ]),
+    );
+  });
+
+  test('CreateAuthChallenge errors raise a CloudWatch alarm', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'WorkerOtpSendErrors',
+      MetricName: 'Errors',
+      Namespace: 'AWS/Lambda',
+      Threshold: 1,
     });
   });
 
@@ -197,6 +256,5 @@ describe('AuthStack', () => {
     const templateJson = JSON.stringify(template.toJSON());
     expect(templateJson).not.toContain('TWILIO_ACCOUNT_SID');
     expect(templateJson).not.toContain('TWILIO_AUTH_TOKEN');
-    expect(templateJson).not.toContain('TWILIO_FROM_NUMBER');
   });
 });

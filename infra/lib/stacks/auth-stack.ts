@@ -1,6 +1,8 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -14,7 +16,6 @@ export interface AuthStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly dbSecret: secretsmanager.ISecret;
-  readonly cognitoSmsRole: iam.IRole;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -49,11 +50,6 @@ export class AuthStack extends cdk.Stack {
     dlq.grantSendMessages(postConfirmationLambda.function);
     this.postConfirmationLambda = postConfirmationLambda;
 
-    // ── SMS IAM Role for Worker Pool MFA ──
-    // Role is pre-created in NetworkStack to ensure IAM propagation completes
-    // before Cognito validates SNS permissions at UserPool creation time.
-    const smsRole = props.cognitoSmsRole;
-
     // ── Custom Auth Challenge Lambdas (Worker Pool — passwordless OTP) ──
     // DefineAuthChallenge: routes the challenge flow (first attempt, success, retry, fail).
     const defineAuthChallengeLambda = new JaleLambdaFunction(this, 'DefineAuthChallengeLambda', {
@@ -74,6 +70,39 @@ export class AuthStack extends cdk.Stack {
       'OtpTwilioSecret',
       'jale/whatsapp/otp-twilio',
     );
+    const otpSmsFromNumber = String(this.node.tryGetContext('otpSmsFromNumber') ?? '');
+    const otpSmsRequestTimeoutMs = Number(
+      this.node.tryGetContext('otpSmsRequestTimeoutMs') ?? 3500,
+    );
+    const otpSmsValidityPeriodSeconds = Number(
+      this.node.tryGetContext('otpSmsValidityPeriodSeconds') ?? 180,
+    );
+    const otpRateLimitTable = new dynamodb.Table(this, 'OtpRateLimitTable', {
+      partitionKey: { name: 'subject', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'window', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    if (!/^\+[1-9]\d{7,14}$/.test(otpSmsFromNumber)) {
+      throw new Error('otpSmsFromNumber must be a valid E.164 phone number');
+    }
+    if (
+      !Number.isInteger(otpSmsRequestTimeoutMs)
+      || otpSmsRequestTimeoutMs < 500
+      || otpSmsRequestTimeoutMs > 4000
+    ) {
+      throw new Error('otpSmsRequestTimeoutMs must be between 500 and 4000');
+    }
+    if (
+      !Number.isInteger(otpSmsValidityPeriodSeconds)
+      || otpSmsValidityPeriodSeconds < 6
+      || otpSmsValidityPeriodSeconds > 36000
+    ) {
+      throw new Error('otpSmsValidityPeriodSeconds must be between 6 and 36000');
+    }
 
     const createAuthChallengeLambda = new JaleLambdaFunction(this, 'CreateAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/create-auth-challenge.ts'),
@@ -85,8 +114,17 @@ export class AuthStack extends cdk.Stack {
         // partial ARN as secretArn; Secrets Manager's runtime auth path has
         // denied that partial ARN even when IAM simulation says allowed.
         TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
+        TWILIO_FROM_NUMBER: otpSmsFromNumber,
+        TWILIO_REQUEST_TIMEOUT_MS: String(otpSmsRequestTimeoutMs),
+        TWILIO_VALIDITY_PERIOD_SECONDS: String(otpSmsValidityPeriodSeconds),
+        OTP_RATE_LIMIT_TABLE_NAME: otpRateLimitTable.tableName,
       },
     });
+    otpRateLimitTable.grantReadWriteData(createAuthChallengeLambda.function);
+    createAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:TransactWriteItems'],
+      resources: [otpRateLimitTable.tableArn],
+    }));
     otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
     // Keep an explicit partial-ARN allow for compatibility with any deployed
     // code/config that still passes the imported secretArn as SecretId.
@@ -95,6 +133,41 @@ export class AuthStack extends cdk.Stack {
       actions: ['secretsmanager:GetSecretValue', 'secretsmanager:DescribeSecret'],
       resources: [otpTwilioSecret.secretArn],
     }));
+    new cloudwatch.Alarm(this, 'WorkerOtpSendErrorAlarm', {
+      alarmName: 'WorkerOtpSendErrors',
+      alarmDescription: 'Worker OTP CreateAuthChallenge Lambda reported an error',
+      metric: createAuthChallengeLambda.function.metricErrors({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'WorkerOtpThrottleAlarm', {
+      alarmName: 'WorkerOtpSendThrottled',
+      metric: new cloudwatch.Metric({
+        namespace: 'Jale/OTP',
+        metricName: 'WorkerOtpSendThrottled',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 20,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    new cloudwatch.Alarm(this, 'WorkerOtpTwilioFailureAlarm', {
+      alarmName: 'WorkerOtpTwilioFailures',
+      metric: new cloudwatch.Metric({
+        namespace: 'Jale/OTP',
+        metricName: 'WorkerOtpTwilioFailure',
+        statistic: 'Sum',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
 
     // VerifyAuthChallenge: compares user answer to stored OTP. Stateless.
     const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {
@@ -109,10 +182,8 @@ export class AuthStack extends cdk.Stack {
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
       signInAliases: { phone: true },
-      mfa: isProd ? cognito.Mfa.REQUIRED : cognito.Mfa.OPTIONAL,
+      mfa: cognito.Mfa.OFF,
       adminUserPassword: !isProd,
-      smsRole,
-      smsExternalId: 'jale-worker-sms',
       passwordPolicy: {
         minLength: 12,
         requireLowercase: false,
@@ -123,8 +194,7 @@ export class AuthStack extends cdk.Stack {
       customAttributes: {
         user_type: new cognito.StringAttribute({ mutable: false }),
       },
-      selfSignUp: true,
-      autoVerify: { phone: true },
+      selfSignUp: false,
       lambdaTriggers: {
         postConfirmation: postConfirmationLambda.function,
         defineAuthChallenge: defineAuthChallengeLambda.function,
