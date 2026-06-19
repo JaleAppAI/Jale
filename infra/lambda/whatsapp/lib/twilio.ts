@@ -128,5 +128,7 @@ export interface TwilioSecret {
     employer_message_invite_en?: string;
     employer_message_resume_es?: string;
     employer_message_resume_en?: string;
+    admin_support_reply_es?: string;
+    admin_support_reply_en?: string;
   };
 }

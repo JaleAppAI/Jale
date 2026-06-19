@@ -192,6 +192,26 @@ describe('AuthStack', () => {
     });
   });
 
+  test('CreateAuthChallenge Lambda can perform DynamoDB rate-limit transactions', () => {
+    const policies = template.findResources('AWS::IAM::Policy');
+    const statements = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement);
+
+    const transactStatements = statements.filter((statement: any) => {
+      const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+      return actions.includes('dynamodb:TransactWriteItems');
+    });
+
+    expect(transactStatements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          Effect: 'Allow',
+          Resource: expect.anything(),
+        }),
+      ]),
+    );
+  });
+
   test('CreateAuthChallenge errors raise a CloudWatch alarm', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'WorkerOtpSendErrors',

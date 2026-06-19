@@ -92,12 +92,13 @@ describe('CreateAuthChallenge Lambda', () => {
     const expectedAuth = 'Basic ' + Buffer.from('ACtest:test-token').toString('base64');
     expect((init.headers as Record<string, string>).Authorization).toBe(expectedAuth);
 
-    // Form body contains recipient WhatsApp address, Messaging Service SID from secret, and OTP.
+    // Form body contains the E.164 recipient, dedicated SMS From number, and OTP.
     // Twilio Messages API rejects requests that specify both From and MessagingServiceSid.
     // OTP delivery must use the dedicated From number, never the WhatsApp service.
     const body = init.body as URLSearchParams;
-    expect(body.get('To')).toBe('+15125551234');
-    expect(body.get('From')).toBe('+13252210992');
+    expect(body.get('To')).toBe(event.request.userAttributes.phone_number);
+    expect(body.get('To')).not.toContain('whatsapp:');
+    expect(body.get('From')).toBe(process.env.TWILIO_FROM_NUMBER);
     expect(body.get('MessagingServiceSid')).toBeNull();
     expect(body.get('Body')).toContain(otp!);
     expect(body.get('Body')).not.toContain('Reply');

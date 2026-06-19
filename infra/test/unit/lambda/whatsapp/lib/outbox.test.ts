@@ -28,7 +28,10 @@ describe('whatsapp outbox templates', () => {
         accountSid: 'AC_test',
         authToken: 'tok_test',
         messagingServiceSid: 'MG_test',
-        templates: { job_alert_en: 'HX_job_en' },
+        templates: {
+          job_alert_en: 'HX_job_en',
+          admin_support_reply_en: 'HX_admin_en',
+        },
       }),
     });
     mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM_sent' }) });
@@ -97,7 +100,7 @@ describe('whatsapp outbox templates', () => {
           return { rows: [{
           id: 'outbox-admin-1',
           sequence: 0,
-          whatsapp_number: '+15125551234',
+          whatsapp_number: '+151****1234',
           body: 'Admin follow-up',
           content_template: null,
           content_variables: null,
@@ -124,6 +127,76 @@ describe('whatsapp outbox templates', () => {
       expect.stringContaining('record_admin_whatsapp_delivery'),
       ['outbox-admin-1', 'SM_sent'],
     );
+  });
+
+  it('sends admin support replies with Content API templates when configured', async () => {
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM whatsapp_outbox')) {
+        if (query.mock.calls.filter(([callSql]) => String(callSql).includes('FROM whatsapp_outbox')).length === 1) {
+          return { rows: [{
+            id: 'outbox-admin-template',
+            sequence: 0,
+            whatsapp_number: '+151****1234',
+            body: null,
+            content_template: 'admin_support_reply_en',
+            content_variables: {
+              '1': 'Please send the missing document.',
+              __fallback_body: 'Please send\nthe missing document.',
+            },
+          }] };
+        }
+        return { rows: [] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    await sendPendingAdminOutbox({ query } as any);
+
+    const sentBody = mockFetch.mock.calls[0][1].body as string;
+    expect(sentBody).toContain('ContentSid=HX_admin_en');
+    expect(sentBody).toContain('ContentVariables=');
+    expect(sentBody).not.toContain('__fallback_body');
+    expect(sentBody).not.toContain('Body=');
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'sent'"),
+      ['outbox-admin-template', 'SM_sent'],
+    );
+  });
+
+  it('falls back to freeform body for admin support replies while template SID is missing', async () => {
+    mockSecretsSend.mockResolvedValueOnce({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MG_test',
+        templates: { job_alert_en: 'HX_job_en' },
+      }),
+    });
+    query.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM whatsapp_outbox')) {
+        if (query.mock.calls.filter(([callSql]) => String(callSql).includes('FROM whatsapp_outbox')).length === 1) {
+          return { rows: [{
+            id: 'outbox-admin-fallback',
+            sequence: 0,
+            whatsapp_number: '+151****1234',
+            body: null,
+            content_template: 'admin_support_reply_en',
+            content_variables: {
+              '1': 'Please send the missing document.',
+              __fallback_body: 'Please send\nthe missing document.',
+            },
+          }] };
+        }
+        return { rows: [] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    await sendPendingAdminOutbox({ query } as any);
+
+    const sentBody = mockFetch.mock.calls[0][1].body as string;
+    expect(sentBody).toContain('Body=Please+send%0Athe+missing+document.');
+    expect(sentBody).not.toContain('ContentSid=');
   });
 
   it('records an ambiguous state instead of retryable failure when Twilio times out', async () => {
