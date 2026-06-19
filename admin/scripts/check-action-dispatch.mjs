@@ -74,23 +74,54 @@ const dispatch = await import(pathToFileURL(resolve(outDir, 'admin-action-dispat
 assert.deepEqual(dispatch.buildAdminReplyOutboxInsert({
   targetId: 'case-1',
   requestId: '11111111-1111-4111-8111-111111111111',
-  message: 'Please send the missing document.',
-  whatsappNumber: '+15125551234',
+  message: 'Please send\nthe missing document.',
+  whatsappNumber: '+151****1234',
 }), {
   sql: expectSql(`
     INSERT INTO whatsapp_outbox
-      (inbound_message_sid, sequence, whatsapp_number, body, status, source_type, source_id, idempotency_key)
-    VALUES (NULL, 0, $1, $2, 'pending', 'admin_case', $3, $4)
+      (inbound_message_sid, sequence, whatsapp_number, body, content_template, content_variables, status, source_type, source_id, idempotency_key)
+    VALUES (NULL, 0, $1, NULL, $2, $3::jsonb, 'pending', 'admin_case', $4, $5)
     ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
     RETURNING id
   `),
   params: [
-    '+15125551234',
-    'Please send the missing document.',
+    '+151****1234',
+    'admin_support_reply_en',
+    JSON.stringify({
+      '1': 'Please send the missing document.',
+      __fallback_body: 'Please send\nthe missing document.',
+    }),
     'case-1',
     'admin-reply:11111111-1111-4111-8111-111111111111',
   ],
 });
+
+const longAdminReply = dispatch.buildAdminReplyOutboxInsert({
+  targetId: 'case-2',
+  requestId: '22222222-2222-4222-8222-222222222222',
+  message: `${'One two three four five '.repeat(20)}\nsecond line`,
+  whatsappNumber: '+151****5678',
+});
+const longContentVariables = JSON.parse(longAdminReply.params[2]);
+assert.equal(longContentVariables['1'].includes('\n'), false);
+assert.equal(longContentVariables['1'].length <= 250, true);
+assert.equal(longContentVariables.__fallback_body.includes('\n'), true);
+
+assert.equal(dispatch.buildAdminReplyOutboxInsert({
+  targetId: 'case-es',
+  requestId: '33333333-3333-4333-8333-333333333333',
+  message: 'Necesitamos un documento más.',
+  whatsappNumber: '+151****9999',
+  language: 'es',
+}).params[1], 'admin_support_reply_es');
+
+assert.equal(dispatch.buildAdminReplyOutboxInsert({
+  targetId: 'case-en',
+  requestId: '44444444-4444-4444-8444-444444444444',
+  message: 'We need one more document.',
+  whatsappNumber: '+151****0000',
+  language: 'en',
+}).params[1], 'admin_support_reply_en');
 
 assert.deepEqual(dispatch.buildCaseMutation('request_more_info', { note: 'Need registration.' }), {
   sql: `UPDATE admin_cases SET status = $2, details = details || $3::jsonb, updated_at = NOW() WHERE id = $1 AND status NOT IN ('resolved', 'dismissed')`,

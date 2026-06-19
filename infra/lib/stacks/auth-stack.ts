@@ -121,6 +121,10 @@ export class AuthStack extends cdk.Stack {
       },
     });
     otpRateLimitTable.grantReadWriteData(createAuthChallengeLambda.function);
+    createAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['dynamodb:TransactWriteItems'],
+      resources: [otpRateLimitTable.tableArn],
+    }));
     otpTwilioSecret.grantRead(createAuthChallengeLambda.function);
     // Keep an explicit partial-ARN allow for compatibility with any deployed
     // code/config that still passes the imported secretArn as SecretId.

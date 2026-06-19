@@ -27,11 +27,30 @@ type MutationInput = {
   justification?: string;
 };
 
+const ADMIN_SUPPORT_TEMPLATE_EN = 'admin_support_reply_en';
+const ADMIN_SUPPORT_TEMPLATE_ES = 'admin_support_reply_es';
+const ADMIN_TEMPLATE_VARIABLE_MAX_CHARS = 250;
+
+function normalizeTemplateVariableText(message: string): string {
+  const collapsed = message.replace(/\s+/g, ' ').trim();
+  if (collapsed.length <= ADMIN_TEMPLATE_VARIABLE_MAX_CHARS) {
+    return collapsed;
+  }
+  return `${collapsed.slice(0, ADMIN_TEMPLATE_VARIABLE_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function adminSupportTemplateForLanguage(language: string | null | undefined): string {
+  return language?.toLowerCase().startsWith('es')
+    ? ADMIN_SUPPORT_TEMPLATE_ES
+    : ADMIN_SUPPORT_TEMPLATE_EN;
+}
+
 export function buildAdminReplyOutboxInsert(input: {
   targetId: string;
   requestId: string;
   message: string;
   whatsappNumber: string;
+  language?: string | null;
 }): MutationSpec {
   return {
     // C3: idx_whatsapp_outbox_idempotency is a PARTIAL unique index
@@ -40,13 +59,17 @@ export function buildAdminReplyOutboxInsert(input: {
     // so the WHERE clause below is required — without it this INSERT throws
     // "no unique or exclusion constraint matching the ON CONFLICT specification".
     sql: `INSERT INTO whatsapp_outbox
-      (inbound_message_sid, sequence, whatsapp_number, body, status, source_type, source_id, idempotency_key)
-     VALUES (NULL, 0, $1, $2, 'pending', 'admin_case', $3, $4)
+      (inbound_message_sid, sequence, whatsapp_number, body, content_template, content_variables, status, source_type, source_id, idempotency_key)
+     VALUES (NULL, 0, $1, NULL, $2, $3::jsonb, 'pending', 'admin_case', $4, $5)
      ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
      RETURNING id`.replace(/\s+/g, ' ').trim(),
     params: [
       input.whatsappNumber,
-      input.message,
+      adminSupportTemplateForLanguage(input.language),
+      JSON.stringify({
+        '1': normalizeTemplateVariableText(input.message),
+        __fallback_body: input.message,
+      }),
       input.targetId,
       `admin-reply:${input.requestId}`,
     ],
@@ -213,9 +236,15 @@ async function sendCaseWhatsAppReply(
       whatsapp_number: string | null;
       status: AdminCaseStatus;
       case_type: AdminCaseType;
+      language: string | null;
     }>(
       `SELECT c.status, c.case_type,
-              COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, '')) AS whatsapp_number
+              COALESCE(NULLIF(u.whatsapp_number, ''), NULLIF(u.phone, '')) AS whatsapp_number,
+              COALESCE(
+                NULLIF(c.details->>'language', ''),
+                NULLIF(c.details->>'workerLanguage', ''),
+                NULLIF(c.details->>'locale', '')
+              ) AS language
          FROM admin_cases c
          JOIN users u ON u.id = c.user_id
         WHERE c.id = $1
@@ -247,6 +276,7 @@ async function sendCaseWhatsAppReply(
       requestId: request.requestId,
       message,
       whatsappNumber: phone,
+      language: target.language,
     });
     const inserted = await client.query<{ id: string }>(outbox.sql, outbox.params);
     if (inserted.rows.length === 0) {

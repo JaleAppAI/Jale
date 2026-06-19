@@ -78,7 +78,7 @@ jobs:
           full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
-          admin_stack_list="JaleAdminStack"
+          admin_stack_list="JaleDatabaseStack JaleWhatsAppStack JaleAdminStack"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             case "${{ inputs.deploy_scope }}" in
