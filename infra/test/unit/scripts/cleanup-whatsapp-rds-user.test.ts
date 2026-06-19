@@ -17,6 +17,7 @@ describe('cleanup-whatsapp-rds-user.ps1', () => {
       'whatsapp_conversations',
       'document_upload_tokens',
       'worker_documents',
+      'job_conversations',
       'job_applications',
       'legal_consent_log',
       'worker_profile_ai_extractions',
@@ -32,6 +33,12 @@ describe('cleanup-whatsapp-rds-user.ps1', () => {
       expect(script).toContain(tableName);
     }
 
+    expect(script.indexOf("DELETE FROM job_conversations")).toBeGreaterThan(
+      script.indexOf("worker_match_log"),
+    );
+    expect(script.indexOf("DELETE FROM job_applications")).toBeGreaterThan(
+      script.indexOf("DELETE FROM job_conversations"),
+    );
     expect(script.indexOf("DELETE FROM users")).toBeGreaterThan(script.indexOf("worker_trust_assessments"));
     expect(script.indexOf("DELETE FROM users")).toBeGreaterThan(script.indexOf("worker_match_log"));
   });

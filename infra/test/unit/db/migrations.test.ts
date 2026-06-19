@@ -48,8 +48,9 @@ describe('database migrations', () => {
       '023',
       '024',
       '025',
-      '026',
-      '027',
+      '028',
+      '029',
+      '030',
     ]);
   });
 
@@ -256,8 +257,8 @@ describe('database migrations', () => {
     expect(migration).toContain('job_conversations_worker_all');
   });
 
-  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 026', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '026_job_messaging_hardening.sql'), 'utf8');
+  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 028', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '028_job_messaging_hardening.sql'), 'utf8');
 
     expect(migration).toContain('GRANT UPDATE (status, updated_at) ON job_applications TO jale_whatsapp');
     expect(migration).toContain('DROP POLICY IF EXISTS jobapp_whatsapp_all ON job_applications');
@@ -283,9 +284,9 @@ describe('database migrations', () => {
     expect(migration).toContain('GRANT EXECUTE ON FUNCTION list_stale_job_outbox_workers');
   });
 
-  it('makes sync_job_hired_counts SECURITY DEFINER in migration 027 so jale_whatsapp replies do not hit permission denied on jobs', () => {
+  it('makes sync_job_hired_counts SECURITY DEFINER in migration 029 so jale_whatsapp replies do not hit permission denied on jobs', () => {
     const migration = fs.readFileSync(
-      path.join(migrationsDir, '027_hired_count_trigger_security_definer.sql'),
+      path.join(migrationsDir, '029_hired_count_trigger_security_definer.sql'),
       'utf8',
     );
 

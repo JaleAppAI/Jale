@@ -33,8 +33,8 @@ const expectedBaselineMigrations = [
   '023_job_fields_and_statuses_mvp.sql',
   '024_sprint11_hiring_flow_hardening.sql',
   '025_job_messaging.sql',
-  '026_job_messaging_hardening.sql',
-  '027_hired_count_trigger_security_definer.sql',
+  '028_job_messaging_hardening.sql',
+  '029_hired_count_trigger_security_definer.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -361,8 +361,8 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('job_conversations_worker_all');
   });
 
-  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 026', () => {
-    const migration = readMigration('026_job_messaging_hardening.sql');
+  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 028', () => {
+    const migration = readMigration('028_job_messaging_hardening.sql');
 
     expect(migration).toContain('GRANT UPDATE (status, updated_at) ON job_applications TO jale_whatsapp');
     expect(migration).toContain('DROP POLICY IF EXISTS jobapp_whatsapp_all ON job_applications');
@@ -379,8 +379,8 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('CREATE OR REPLACE FUNCTION list_stale_job_outbox_workers');
   });
 
-  it('recreates sync_job_hired_counts as SECURITY DEFINER in migration 027 (worker-reply jobs-cascade fix)', () => {
-    const migration = readMigration('027_hired_count_trigger_security_definer.sql');
+  it('recreates sync_job_hired_counts as SECURITY DEFINER in migration 029 (worker-reply jobs-cascade fix)', () => {
+    const migration = readMigration('029_hired_count_trigger_security_definer.sql');
 
     expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts()');
     expect(migration).toContain('SECURITY DEFINER');
