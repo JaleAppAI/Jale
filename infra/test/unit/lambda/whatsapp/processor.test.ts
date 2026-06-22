@@ -283,7 +283,11 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [convRow({ conversation_state: 'new' })],
-        });
+        })
+        // tryConversationRelay: resolveWorkerIdForWhatsappNumber finds no
+        // verified-phone worker (user_id is null) → relay returns null and the
+        // built-in 'new' greeting path runs as before.
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] });
       // handleNewOrRestart begins here; we route via the 'new' → greeting path.
       // Suppressed AdminCreateUser + AdminSetUserPassword succeed.
       mockCognitoSend
@@ -1257,7 +1261,11 @@ describe('Processor Lambda', () => {
       expect(applicationInsert).toEqual(['job-1', 'user-1']);
     });
 
-    it('routes worker text to an open employer conversation even when WhatsApp auth state is awaiting OTP', async () => {
+    // §4.2a: relaying a non-OTP reply while awaiting_otp is CONVERSATION-SCOPED.
+    // It must NOT bind identity (no user_id / conversation_state write) — account
+    // access still requires a completed OTP. The reply is still relayed to the
+    // worker's open employer thread, and the cognito_session is preserved.
+    it('relays worker text to an open employer conversation while awaiting OTP WITHOUT binding identity', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-worker-reply' }] }) // claim
@@ -1271,13 +1279,14 @@ describe('Processor Lambda', () => {
             otp_expires_at: new Date(Date.now() + 60_000),
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (relay is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-conv-1', application_id: 'app-1' }] }) // open job conversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-conv-1', application_id: 'app-1' }] }) // single open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker message
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation timestamps
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no waiting employer messages
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // reset WhatsApp conversation to idle
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations focus column
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
@@ -1297,21 +1306,28 @@ describe('Processor Lambda', () => {
       );
 
       expect(mockCognitoSend).not.toHaveBeenCalled();
+      // The reply was relayed into the open employer thread.
       expect(findQueryByPattern(/INSERT INTO job_conversation_messages/i)).toEqual([
         'job-conv-1',
         'Buenas tardes',
         'SM-worker-reply',
         'whatsapp:+15125551234',
       ]);
-      expect(findQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toEqual(expect.arrayContaining([
-        'conv-1',
-        'worker-1',
-        'idle',
-        '{}',
-        0,
-        null,
-        'SM-worker-reply',
-      ]));
+
+      // §4.2a: NO identity/state binding. The only whatsapp_conversations write
+      // is the focus-column update — it must not set user_id, must not flip the
+      // state to 'idle', and must not clear state_context to '{}'.
+      const convUpdate = mockQuery.mock.calls.find(([sql]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+      expect(convUpdate).toBeTruthy();
+      const [convUpdateSql, convUpdateParams] = convUpdate as [string, unknown[]];
+      expect(convUpdateSql).toMatch(/focused_job_conversation_id/);
+      expect(convUpdateSql).not.toMatch(/\buser_id\b\s*=/);
+      expect(convUpdateSql).not.toMatch(/conversation_state\s*=/);
+      // The cleared-context binding params are gone.
+      expect(convUpdateParams).not.toContain('idle');
+      expect(convUpdateParams).not.toContain('{}');
+      expect(convUpdateParams).toContain('job-conv-1');
     });
 
     it('opens an employer conversation from a WhatsApp button before OTP routing', async () => {
@@ -1330,6 +1346,7 @@ describe('Processor Lambda', () => {
           })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
@@ -1375,15 +1392,20 @@ describe('Processor Lambda', () => {
         '+15125551234',
         'Employer says hello',
       ]);
-      expect(findQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toEqual(expect.arrayContaining([
-        'conv-1',
-        'worker-1',
-        'idle',
-        JSON.stringify({ active_job_conversation_id: conversationId }),
-        0,
-        null,
-        'SM-open-conversation',
-      ]));
+      // R10: opening a conversation must NOT reset onboarding. The only
+      // whatsapp_conversations write is the focus-column update — it sets
+      // focused_job_conversation_id (+ last_processed_message_sid) and must not
+      // set user_id, must not flip conversation_state to 'idle', and must not
+      // clear state_context.
+      const convOpenUpdate = mockQuery.mock.calls.find(([sql]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+      expect(convOpenUpdate).toBeTruthy();
+      const [convOpenSql, convOpenParams] = convOpenUpdate as [string, unknown[]];
+      expect(convOpenSql).toMatch(/focused_job_conversation_id/);
+      expect(convOpenSql).not.toMatch(/\buser_id\b\s*=/);
+      expect(convOpenSql).not.toMatch(/conversation_state\s*=/);
+      expect(convOpenSql).not.toMatch(/state_context\s*=/);
+      expect(convOpenParams).toEqual(['conv-1', conversationId, 'SM-open-conversation']);
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.twilio.com/2010-04-01/Accounts/AC_test/Messages.json',
         expect.objectContaining({
@@ -1409,6 +1431,7 @@ describe('Processor Lambda', () => {
           })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // latest open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
@@ -1453,18 +1476,20 @@ describe('Processor Lambda', () => {
         '+15125551234',
         'Employer says hello',
       ]);
-      expect(findQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toEqual(expect.arrayContaining([
-        'conv-1',
-        'worker-1',
-        'idle',
-        JSON.stringify({ active_job_conversation_id: conversationId }),
-        0,
-        null,
-        'SM-open-text',
-      ]));
+      // R10: same as the button path — opening via text action only writes the
+      // focus column, never resets onboarding identity/state.
+      const convOpenTextUpdate = mockQuery.mock.calls.find(([sql]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+      expect(convOpenTextUpdate).toBeTruthy();
+      const [convOpenTextSql, convOpenTextParams] = convOpenTextUpdate as [string, unknown[]];
+      expect(convOpenTextSql).toMatch(/focused_job_conversation_id/);
+      expect(convOpenTextSql).not.toMatch(/\buser_id\b\s*=/);
+      expect(convOpenTextSql).not.toMatch(/conversation_state\s*=/);
+      expect(convOpenTextSql).not.toMatch(/state_context\s*=/);
+      expect(convOpenTextParams).toEqual(['conv-1', conversationId, 'SM-open-text']);
     });
 
-    it('routes idle worker text to the active employer conversation from state context', async () => {
+    it('routes idle worker text to its focused employer conversation (focus column)', async () => {
       const activeConversationId = '11111111-2222-3333-4444-555555555555';
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -1475,14 +1500,15 @@ describe('Processor Lambda', () => {
             conversation_state: 'idle',
             user_id: 'worker-1',
             language: 'es',
-            state_context: { active_job_conversation_id: activeConversationId },
+            focused_job_conversation_id: activeConversationId,
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ id: activeConversationId, application_id: 'app-1' }],
-        }) // preferred active job conversation
+        }) // focused job conversation lookup
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker message
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation timestamps
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
@@ -1932,6 +1958,7 @@ describe('building_profile custom trade handoff', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields before compute next
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPSERT worker_profiles
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_skills seed
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade_other: 'Soldador' }] })
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // existing WTA
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cached trade_questions

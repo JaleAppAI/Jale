@@ -129,6 +129,14 @@
             "password_note": "La contrasena debe tener al menos 8 caracteres e incluir mayusculas, minusculas, un numero y un simbolo.",
             "panel_title": "contratacion mas rapida",
             "panel_body": "Los perfiles de empleador ayudan a los trabajadores a reconocer la empresa detras de cada oportunidad.",
+            "forgot_link": "¿Olvidaste tu contraseña?",
+            "forgot_title": "Restablecer contraseña",
+            "forgot_subtitle": "Ingresa tu correo y te enviaremos un código.",
+            "send_code": "Enviar código",
+            "forgot_confirm_title": "Crear nueva contraseña",
+            "forgot_confirm_subtitle": "Ingresa el código que enviamos a {email}",
+            "set_password": "Establecer nueva contraseña",
+            "reset_success": "Contraseña actualizada — inicia sesión abajo.",
             "fields": {
                 "company_name": "Nombre de la empresa",
                 "contact_name": "Nombre de contacto",
@@ -142,7 +150,9 @@
                 "typical_job_types": "Tipos de empleo",
                 "company_size": "Tamano de empresa",
                 "company_description": "Descripcion de la empresa",
-                "confirmation_code": "Codigo de confirmacion"
+                "confirmation_code": "Codigo de confirmacion",
+                "reset_code": "Código de restablecimiento",
+                "new_password": "Nueva contraseña"
             },
             "trades": {
                 "electrician": "Electricista",
@@ -246,7 +256,7 @@
         "starting": "Iniciando...",
         "message_start_failed": "No se pudo iniciar la conversacion.",
         "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
-        "default_initial_message": "Hola, te escribo sobre tu aplicacion. Responde aqui cuando estes disponible.",
+        "default_initial_message": "Hola, te escribo sobre tu aplicacion de {jobTitle}. Responde aqui cuando estes disponible.",
         "message_status": {
             "queued": "En cola",
             "waiting_worker_reply": "Esperando respuesta del trabajador",

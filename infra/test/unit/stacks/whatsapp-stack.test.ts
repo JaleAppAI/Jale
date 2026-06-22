@@ -93,8 +93,14 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 6 Lambda functions including the admin outbox dispatcher', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 6);
+  test('Stack creates 7 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver + outbox-sweeper + admin-outbox-dispatcher)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 7);
+  });
+
+  test('job message outbox sweeper runs on a 5-minute schedule', () => {
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(5 minutes)',
+    });
   });
 
   test('Admin outbox dispatcher runs on a one-minute schedule', () => {

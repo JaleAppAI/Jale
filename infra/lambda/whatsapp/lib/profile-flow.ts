@@ -99,6 +99,27 @@ export async function upsertWorkerProfileFromUsers(
            location = EXCLUDED.location`,
     [userId],
   );
+
+  // Seed a trade-derived starter skill. worker_skills is the canonical
+  // matching table (ADR-M03) and the web app's profile-completeness gate
+  // requires at least one skill — without this, every WhatsApp-onboarded
+  // worker is blocked from applying on the web. Uses main_trade_other free
+  // text when the trade is "other"; the literal "other" is never a skill.
+  // ON CONFLICT DO NOTHING keeps retries idempotent and never clobbers
+  // skills the worker added on the web. Lowercased to match the 008
+  // normalization convention; capped at the column's 100-char CHECK.
+  await client.query(
+    `INSERT INTO worker_skills (worker_id, skill)
+     SELECT id,
+            lower(left(btrim(COALESCE(NULLIF(btrim(main_trade_other), ''), main_trade)), 100))
+     FROM users
+     WHERE id = $1
+       AND user_type = 'worker'
+       AND COALESCE(NULLIF(btrim(main_trade_other), ''), main_trade) IS NOT NULL
+       AND lower(btrim(COALESCE(NULLIF(btrim(main_trade_other), ''), main_trade))) <> 'other'
+     ON CONFLICT DO NOTHING`,
+    [userId],
+  );
 }
 
 export interface AutoAdvanceProfileArgs {
