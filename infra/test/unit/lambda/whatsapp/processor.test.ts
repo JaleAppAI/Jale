@@ -1347,7 +1347,7 @@ describe('Processor Lambda', () => {
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // open job conversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello' }] }) // waiting employer messages
@@ -1364,7 +1364,7 @@ describe('Processor Lambda', () => {
             id: 'job-outbox-1',
             message_id: 'msg-1',
             whatsapp_number: '+15125551234',
-            body: 'Employer says hello',
+            body: '🏢 ACME — Plomero (#1)\nEmployer says hello',
             content_template: null,
             content_variables: null,
           }],
@@ -1390,13 +1390,12 @@ describe('Processor Lambda', () => {
         conversationId,
         'msg-1',
         '+15125551234',
-        'Employer says hello',
+        '🏢 ACME — Plomero (#1)\nEmployer says hello',
       ]);
-      // R10: opening a conversation must NOT reset onboarding. The only
-      // whatsapp_conversations write is the focus-column update — it sets
-      // focused_job_conversation_id (+ last_processed_message_sid) and must not
-      // set user_id, must not flip conversation_state to 'idle', and must not
-      // clear state_context.
+      // R10: opening a conversation must NOT reset onboarding. The focus update
+      // sets focused_job_conversation_id + state_context (pending_picker cleared,
+      // all other collected answers preserved) + last_processed_message_sid.
+      // It must not set user_id or flip conversation_state.
       const convOpenUpdate = mockQuery.mock.calls.find(([sql]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string));
       expect(convOpenUpdate).toBeTruthy();
@@ -1404,13 +1403,14 @@ describe('Processor Lambda', () => {
       expect(convOpenSql).toMatch(/focused_job_conversation_id/);
       expect(convOpenSql).not.toMatch(/\buser_id\b\s*=/);
       expect(convOpenSql).not.toMatch(/conversation_state\s*=/);
-      expect(convOpenSql).not.toMatch(/state_context\s*=/);
-      expect(convOpenParams).toEqual(['conv-1', conversationId, 'SM-open-conversation']);
+      // state_context IS written (to clear pending_picker) but must preserve session
+      expect(convOpenSql).toMatch(/state_context\s*=/);
+      expect(convOpenParams).toEqual(['conv-1', conversationId, '{"cognito_session":"stale-session"}', 'SM-open-conversation']);
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.twilio.com/2010-04-01/Accounts/AC_test/Messages.json',
         expect.objectContaining({
           method: 'POST',
-          body: expect.stringContaining('Body=Employer+says+hello'),
+          body: expect.stringContaining('Employer+says+hello'),
         }),
       );
     });
@@ -1432,7 +1432,7 @@ describe('Processor Lambda', () => {
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // latest open job conversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // latest open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello' }] }) // waiting employer messages
@@ -1449,7 +1449,7 @@ describe('Processor Lambda', () => {
             id: 'job-outbox-1',
             message_id: 'msg-1',
             whatsapp_number: '+15125551234',
-            body: 'Employer says hello',
+            body: '🏢 ACME — Plomero (#1)\nEmployer says hello',
             content_template: null,
             content_variables: null,
           }],
@@ -1474,10 +1474,11 @@ describe('Processor Lambda', () => {
         conversationId,
         'msg-1',
         '+15125551234',
-        'Employer says hello',
+        '🏢 ACME — Plomero (#1)\nEmployer says hello',
       ]);
-      // R10: same as the button path — opening via text action only writes the
-      // focus column, never resets onboarding identity/state.
+      // R10: same as the button path — opening via text action writes the focus
+      // column and state_context (pending_picker cleared, existing fields preserved)
+      // but never resets identity or conversation_state.
       const convOpenTextUpdate = mockQuery.mock.calls.find(([sql]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string));
       expect(convOpenTextUpdate).toBeTruthy();
@@ -1485,8 +1486,9 @@ describe('Processor Lambda', () => {
       expect(convOpenTextSql).toMatch(/focused_job_conversation_id/);
       expect(convOpenTextSql).not.toMatch(/\buser_id\b\s*=/);
       expect(convOpenTextSql).not.toMatch(/conversation_state\s*=/);
-      expect(convOpenTextSql).not.toMatch(/state_context\s*=/);
-      expect(convOpenTextParams).toEqual(['conv-1', conversationId, 'SM-open-text']);
+      // state_context IS written (to clear pending_picker) but must preserve session
+      expect(convOpenTextSql).toMatch(/state_context\s*=/);
+      expect(convOpenTextParams).toEqual(['conv-1', conversationId, '{"cognito_session":"stale-session"}', 'SM-open-text']);
     });
 
     it('routes idle worker text to its focused employer conversation (focus column)', async () => {

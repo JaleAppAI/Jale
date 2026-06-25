@@ -9,6 +9,7 @@
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from '../../lib/db';
 import {
+  closeWorkerConversation,
   declineLatestWorkerConversationFromButtonText,
   declineWorkerConversationFromButton,
   openLatestWorkerConversationFromButtonText,
@@ -70,6 +71,16 @@ export interface RouterDeps {
 
 export function isLikelyOtpCode(body: string): boolean {
   return /^\s*\d{6}\s*$/.test(body);
+}
+
+export function isChatsKeyword(body: string): boolean {
+  const normalized = body.trim().toUpperCase();
+  return normalized === 'CHATS' || normalized === 'MENSAJES';
+}
+
+export function isCloseKeyword(body: string): boolean {
+  const normalized = body.trim().toUpperCase();
+  return normalized === 'CERRAR' || normalized === 'CLOSE';
 }
 
 /**
@@ -158,6 +169,21 @@ export async function tryConversationRelay(
   if (conv.user_id === null) {
     console.log(JSON.stringify({ metric: 'ConversationRelayPhoneMatch', workerId }));
   }
+
+  // CHATS/MENSAJES keyword: show the worker their open employer threads.
+  // Must be intercepted here so it never reaches relayWorkerFreeText which
+  // would attempt to route "CHATS" as a job message.
+  if (isChatsKeyword(msg.body)) {
+    if (!(await workerHasAcceptedTos(client, workerId))) {
+      await deps.queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
+      console.log(JSON.stringify({ metric: 'ChatsKeywordLegalHold', workerId }));
+      return workerId;
+    }
+    await setInternalUserRlsContext(client, workerId);
+    await sendChatsPickerOrAutoFocus(client, conv, workerId, msg, deps);
+    return workerId;
+  }
+
   return await relayWorkerFreeText(client, conv, msg, workerId, deps);
 }
 
@@ -177,11 +203,14 @@ async function setFocusedConversation(
   messageSid: string,
   deps: RouterDeps,
 ): Promise<void> {
+  const { pending_picker: _drop, ...restContext } = (conv.state_context ?? {}) as ProfileStateContext;
   await deps.updateConversation(client, conv.id, {
     focused_job_conversation_id: conversationId,
+    state_context: restContext,
     last_processed_message_sid: messageSid,
   });
   conv.focused_job_conversation_id = conversationId;
+  conv.state_context = restContext as typeof conv.state_context;
 }
 
 // R6: an open/decline targeting a closed/missing conversation must not silently
@@ -196,7 +225,7 @@ export async function handleEmployerConversationButton(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
-  payload: { action: 'open' | 'decline'; conversationId: string },
+  payload: { action: 'open' | 'decline' | 'focus'; conversationId: string },
   deps: RouterDeps,
 ): Promise<string | null> {
   const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
@@ -206,6 +235,31 @@ export async function handleEmployerConversationButton(
   }
 
   await setInternalUserRlsContext(client, workerId);
+
+  if (payload.action === 'focus') {
+    // Verify the thread is still open before switching focus.
+    // No ToS check: focus is a structural navigation action — the worker already
+    // accepted ToS to receive the button that generated this payload.
+    const threadCheck = await client.query<{ id: string }>(
+      `SELECT id FROM job_conversations WHERE id = $1 AND worker_id = $2 AND status = 'open'`,
+      [payload.conversationId, workerId],
+    );
+    if ((threadCheck.rowCount ?? 0) === 0) {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conversationUnavailableText(conv.language));
+      return null;
+    }
+    await setFocusedConversation(client, conv, payload.conversationId, msg.messageSid, deps);
+    await queueOutboxText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Now replying to that conversation. Send your message.'
+        : 'Ahora respondes a esa conversación. Escribe tu mensaje.',
+    );
+    return workerId;
+  }
 
   if (payload.action === 'decline') {
     const declined = await declineWorkerConversationFromButton(
@@ -328,9 +382,81 @@ export async function handleEmployerConversationTextAction(
   return workerId;
 }
 
-// ── Disambiguation flow ─────────────────────────────────────────
+// ── Chats picker / auto-focus helper ──────────────────────────────
 
-const PENDING_RELAY_TTL_MS = 60 * 60 * 1000; // 1h — stale buffered text is dropped
+/**
+ * After clearing focus (e.g. focused thread closed), offer the worker their
+ * remaining open threads: auto-focus if exactly 1, send a numbered picker if
+ * ≥2, or send a "no open conversations" notice if 0.
+ */
+async function sendChatsPickerOrAutoFocus(
+  client: PoolClient,
+  conv: ConversationRow,
+  workerId: string,
+  msg: IncomingMessage,
+  deps: RouterDeps,
+): Promise<void> {
+  const open = await client.query<{
+    id: string;
+    job_title: string;
+    company: string;
+    worker_thread_number: number | null;
+  }>(
+    `SELECT jc.id,
+            COALESCE(NULLIF(j.title, ''), 'Trabajo') AS job_title,
+            COALESCE(NULLIF(j.company, ''), 'Empleador') AS company,
+            jc.worker_thread_number
+       FROM job_conversations jc
+       JOIN jobs j ON j.id = jc.job_id
+      WHERE jc.worker_id = $1
+        AND jc.status = 'open'
+        AND jc.accepted_at IS NOT NULL
+      ORDER BY jc.worker_thread_number NULLS LAST, jc.created_at`,
+    [workerId],
+  );
+
+  if ((open.rowCount ?? 0) === 0) {
+    await queueOutboxText(client, msg.messageSid, msg.from,
+      conv.language === 'en'
+        ? 'You have no open conversations.'
+        : 'No tienes conversaciones abiertas.');
+    return;
+  }
+
+  if ((open.rowCount ?? 0) === 1) {
+    const row = open.rows[0];
+    await setFocusedConversation(client, conv, row.id, msg.messageSid, deps);
+    await queueOutboxText(client, msg.messageSid, msg.from,
+      conv.language === 'en'
+        ? `Now replying to ${row.company}. Send your message.`
+        : `Ahora respondes a ${row.company}. Escribe tu mensaje.`);
+    return;
+  }
+
+  // ≥2 open threads: send picker
+  const threads = open.rows.map(r => ({
+    conversationId: r.id,
+    jobTitle: r.job_title,
+    companyName: r.company,
+    threadNumber: r.worker_thread_number,
+  }));
+  const { pending_picker: _drop, ...restCtx } = (conv.state_context ?? {}) as ProfileStateContext;
+  await deps.updateConversation(client, conv.id, {
+    state_context: { ...restCtx, pending_picker: { kind: 'chats' as const, threads } },
+    last_processed_message_sid: msg.messageSid,
+  });
+  conv.state_context = { ...restCtx, pending_picker: { kind: 'chats', threads } } as ProfileStateContext;
+  const header = conv.language === 'en'
+    ? 'Your open conversations:'
+    : 'Tus conversaciones abiertas:';
+  const lines = threads.map((t, i) =>
+    `${i + 1}. ${t.companyName} — ${t.jobTitle}`);
+  const footer = conv.language === 'en' ? 'Reply with the number.' : 'Responde con el número.';
+  await queueOutboxText(client, msg.messageSid, msg.from,
+    [header, ...lines, footer].join('\n'));
+}
+
+// ── Disambiguation flow ─────────────────────────────────────────
 
 function sanitizeLabel(value: string | null | undefined, max = 40): string {
   return (value ?? '').replace(/[\r\n\t -]/g, ' ').trim().slice(0, max) || 'Empleador';
@@ -339,15 +465,6 @@ function sanitizeLabel(value: string | null | undefined, max = 40): string {
 export function parseDisambiguationPick(body: string): number | null {
   const m = body.trim().match(/^\d{1,2}$/);
   return m ? Number(m[0]) : null;
-}
-
-function disambiguationPromptBody(threads: ThreadOption[], lang: Lang): string {
-  const header = lang === 'en'
-    ? 'You have several open conversations. Who do you want to reply to? Send the number:'
-    : 'Tienes varias conversaciones abiertas. ¿A quién quieres responder? Envía el número:';
-  const lines = threads.map((t, i) =>
-    `${i + 1}. ${sanitizeLabel(t.companyName)} — ${sanitizeLabel(t.jobTitle)}`);
-  return [header, ...lines].join('\n');
 }
 
 /**
@@ -370,6 +487,28 @@ export async function relayWorkerFreeText(
   }
 
   await setInternalUserRlsContext(client, workerId);
+
+  // CERRAR/CLOSE is contextual — only meaningful with an active focus.
+  // Without focus, these words relay as ordinary text (not intercepted).
+  if (isCloseKeyword(msg.body) && conv.focused_job_conversation_id) {
+    const closed = await closeWorkerConversation(
+      client, conv.focused_job_conversation_id, workerId);
+    await setFocusedConversation(client, conv, null, msg.messageSid, deps);
+    if (closed) {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conv.language === 'en'
+          ? 'Conversation closed.'
+          : 'Conversación cerrada.');
+    } else {
+      // Thread already closed (employer closed it simultaneously)
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conv.language === 'en'
+          ? 'That conversation has already ended.'
+          : 'Esa conversación ya había terminado.');
+    }
+    return workerId;
+  }
+
   const result = await recordWorkerConversationReply(
     client, workerId, msg.body, msg.from, msg.messageSid,
     conv.focused_job_conversation_id,
@@ -388,30 +527,45 @@ export async function relayWorkerFreeText(
     await deps.updateConversation(client, conv.id, {
       state_context: {
         ...(conv.state_context ?? {}),
-        conversation_disambiguation: {
+        pending_picker: {
+          kind: 'disambiguation' as const,
           threads: result.threads,
-          pending: { body: msg.body, messageSid: msg.messageSid, ts: Date.now() },
         },
       },
       last_processed_message_sid: msg.messageSid,
     });
+    const header = conv.language === 'en'
+      ? 'You have several open conversations. Who do you want to message? Reply with the number, then send your message.'
+      : 'Tienes varias conversaciones abiertas. ¿A quién le quieres escribir? Responde con el número, luego envía tu mensaje.';
+    const lines = result.threads.map((t, i) =>
+      `${i + 1}. ${sanitizeLabel(t.companyName)} — ${sanitizeLabel(t.jobTitle)}`);
     await queueOutboxText(client, msg.messageSid, msg.from,
-      disambiguationPromptBody(result.threads, conv.language));
+      [header, ...lines].join('\n'));
+    return workerId;
+  }
+  if (result.status === 'focus_closed') {
+    await queueOutboxText(client, msg.messageSid, msg.from,
+      conv.language === 'en'
+        ? 'That conversation has ended.'
+        : 'Esa conversación ya terminó.');
+    await setFocusedConversation(client, conv, null, msg.messageSid, deps);
+    await sendChatsPickerOrAutoFocus(client, conv, workerId, msg, deps);
     return workerId;
   }
   return null; // no_conversation -> caller falls through to built-in replies
 }
 
-export async function handleDisambiguationPick(
+export async function handlePickerResponse(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
   workerId: string,
   deps: RouterDeps,
 ): Promise<string | null> {
-  const ctx = conv.state_context?.conversation_disambiguation;
+  const ctx = conv.state_context?.pending_picker;
   const pick = parseDisambiguationPick(msg.body);
   if (!ctx || pick === null) return null;
+
   const chosen = ctx.threads[pick - 1];
   if (!chosen) {
     await queueOutboxText(client, msg.messageSid, msg.from,
@@ -421,31 +575,10 @@ export async function handleDisambiguationPick(
     return workerId;
   }
 
-  await setInternalUserRlsContext(client, workerId);
-  const { conversation_disambiguation: _drop, ...restContext } = conv.state_context ?? {};
-  const pendingFresh = ctx.pending && Date.now() - ctx.pending.ts < PENDING_RELAY_TTL_MS;
-
-  if (pendingFresh && ctx.pending) {
-    await recordWorkerConversationReply(
-      client, workerId, ctx.pending.body, msg.from, ctx.pending.messageSid,
-      chosen.conversationId,
-    );
-  }
-  await deps.updateConversation(client, conv.id, {
-    focused_job_conversation_id: chosen.conversationId,
-    state_context: restContext,
-    last_processed_message_sid: msg.messageSid,
-  });
-  conv.focused_job_conversation_id = chosen.conversationId;
-  conv.state_context = restContext as ProfileStateContext;
-
+  await setFocusedConversation(client, conv, chosen.conversationId, msg.messageSid, deps);
   await queueOutboxText(client, msg.messageSid, msg.from,
     conv.language === 'en'
-      ? (pendingFresh
-          ? `Done — your message was sent to ${sanitizeLabel(chosen.companyName)}.`
-          : `Done — you are now replying to ${sanitizeLabel(chosen.companyName)}. Write your message.`)
-      : (pendingFresh
-          ? `Listo — tu mensaje se envió a ${sanitizeLabel(chosen.companyName)}.`
-          : `Listo — ahora respondes a ${sanitizeLabel(chosen.companyName)}. Escribe tu mensaje.`));
+      ? `Now replying to ${sanitizeLabel(chosen.companyName)}. Send your message.`
+      : `Ahora respondes a ${sanitizeLabel(chosen.companyName)}. Escribe tu mensaje.`);
   return workerId;
 }

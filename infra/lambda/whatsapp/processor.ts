@@ -39,7 +39,7 @@ import {
   handleEmployerConversationTextAction,
   tryConversationRelay,
   parseDisambiguationPick,
-  handleDisambiguationPick,
+  handlePickerResponse,
   type ConversationRow,
   type IncomingMessage,
   type RouterDeps,
@@ -935,10 +935,10 @@ async function routeMessage(
     }
   }
 
-  if (conv.state_context?.conversation_disambiguation && parseDisambiguationPick(msg.body) !== null) {
+  if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
     const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
     if (workerId) {
-      return await handleDisambiguationPick(client, conv, msg, workerId, routerDeps);
+      return await handlePickerResponse(client, conv, msg, workerId, routerDeps);
     }
   }
 
