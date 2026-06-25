@@ -566,6 +566,9 @@ export async function handlePickerResponse(
   const pick = parseDisambiguationPick(msg.body);
   if (!ctx || pick === null) return null;
 
+  // Temporary guard: close_reason branch is implemented in Task 4.
+  if (ctx.kind === 'close_reason') return null;
+
   const chosen = ctx.threads[pick - 1];
   if (!chosen) {
     await queueOutboxText(client, msg.messageSid, msg.from,

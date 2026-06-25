@@ -133,10 +133,9 @@ export interface ProfileStateContext {
   pending_media_photo_id?: string;
   /** True when optional photo upload is happening after profile completion. */
   profile_completed?: boolean;
-  pending_picker?: {
-    kind: 'disambiguation' | 'chats';
-    threads: { conversationId: string; jobTitle: string; companyName: string; threadNumber: number | null }[];
-  };
+  pending_picker?:
+    | { kind: 'disambiguation' | 'chats'; threads: { conversationId: string; jobTitle: string; companyName: string; threadNumber: number | null }[] }
+    | { kind: 'close_reason'; conversationId: string };
 }
 
 // -- Trust Signal Layer ----------------------------------------------------
