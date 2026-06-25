@@ -529,6 +529,7 @@ export async function closeWorkerConversation(
   client: PoolClient,
   conversationId: string,
   workerId: string,
+  systemMessageBody?: string,
 ): Promise<boolean> {
   const result = await client.query(
     `UPDATE job_conversations
@@ -537,13 +538,12 @@ export async function closeWorkerConversation(
     [conversationId, workerId],
   );
   if ((result.rowCount ?? 0) === 0) return false;
+  const body = systemMessageBody ?? 'El trabajador terminó la conversación / Worker ended the conversation';
   await client.query(
     `INSERT INTO job_conversation_messages
        (conversation_id, sender_type, direction, body, status)
-     VALUES ($1, 'system', 'outbound',
-             'El trabajador terminó la conversación / Worker ended the conversation',
-             'sent')`,
-    [conversationId],
+     VALUES ($1, 'system', 'outbound', $2, 'sent')`,
+    [conversationId, body],
   );
   return true;
 }

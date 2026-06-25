@@ -259,6 +259,27 @@ describe('closeWorkerConversation', () => {
       /INSERT INTO job_conversation_messages/.test(sql));
     expect(systemInsert).toBeUndefined();
   });
+
+  it('uses custom systemMessageBody when provided', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })   // UPDATE → closed
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });  // INSERT system message
+    await closeWorkerConversation(client, CONV_A, WORKER, 'El trabajador encontró trabajo / Worker found work');
+    const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql));
+    expect(insertCall).toBeDefined();
+    expect(insertCall![1]).toContain('El trabajador encontró trabajo / Worker found work');
+  });
+
+  it('uses default body when systemMessageBody is omitted', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    await closeWorkerConversation(client, CONV_A, WORKER);
+    const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql));
+    expect(insertCall![1]).toContain('El trabajador terminó la conversación / Worker ended the conversation');
+  });
 });
 
 describe('context header on employer freeform messages', () => {
