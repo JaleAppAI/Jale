@@ -26,7 +26,6 @@ const WORKER_REASON_KEYS = new Set([
 const DOC_LABELS: Record<string, string> = {
   resume: 'Resume',
   driver_license: "Driver's License",
-  ssn: 'SSN',
 };
 
 function jobTypeLabel(type: string) {

@@ -132,7 +132,6 @@ export default function JobDetailPage() {
   const docLabels: Record<string, string> = {
     resume: t('worker_profile.doc_resume'),
     driver_license: t('worker_profile.doc_driver_license'),
-    ssn: t('worker_profile.doc_ssn'),
   };
   const jobTypeLabels: Record<string, string> = {
     'full-time': t('modal.job_type_fulltime'),
@@ -204,6 +203,7 @@ export default function JobDetailPage() {
                 <DetailField label={t('modal.expected_duration')} value={job.expected_duration ?? t('jobs.not_specified')} />
                 <DetailField label={t('modal.shift_schedule')} value={job.shift_schedule ?? t('jobs.not_specified')} />
                 <DetailField label={t('modal.transportation_required')} value={job.transportation_required ? t('jobs.yes') : t('jobs.no')} />
+                <DetailField label={t('modal.work_authorization_required')} value={job.work_authorization_required ? t('jobs.yes') : t('jobs.no')} />
                 <DetailField label={t('modal.language_preference')} value={job.language_preference.map((lang) => t(`modal.language.${lang}`)).join(', ')} />
                 <DetailField label={t('modal.number_of_workers_needed')} value={String(job.number_of_workers_needed)} />
                 <DetailField label={t('jobs.hired_progress')} value={t('jobs.hired_progress_value', { hired: job.hired_count, total: job.number_of_workers_needed, open: openCount })} />

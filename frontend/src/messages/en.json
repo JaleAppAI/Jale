@@ -457,6 +457,7 @@
                 "es": "Spanish"
             },
             "transportation_required": "Transportation required",
+            "work_authorization_required": "Work authorization required",
             "certifications": "Certifications",
             "certifications_placeholder": "OSHA 10, forklift, CDL",
             "validation_required": "Complete the required fields.",
@@ -572,6 +573,8 @@
         "shift_schedule": "Shift",
         "openings": "Openings",
         "required_experience": "Experience",
+        "work_authorization_required": "Work authorization required",
+        "work_authorization_required_yes": "Required",
         "upload_prompt": "Upload missing documents in your profile.",
         "upload_link": "Go to profile",
         "apply": "Apply",

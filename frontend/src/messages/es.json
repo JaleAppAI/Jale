@@ -457,6 +457,7 @@
                 "es": "Español"
             },
             "transportation_required": "Requiere transporte",
+            "work_authorization_required": "Requiere autorización de trabajo",
             "certifications": "Certificaciones",
             "certifications_placeholder": "OSHA 10, montacargas, CDL",
             "validation_required": "Completa los campos requeridos.",
@@ -572,6 +573,8 @@
         "shift_schedule": "Horario",
         "openings": "Vacantes",
         "required_experience": "Experiencia",
+        "work_authorization_required": "Requiere autorización de trabajo",
+        "work_authorization_required_yes": "Requerida",
         "upload_prompt": "Sube los documentos faltantes en tu perfil.",
         "upload_link": "Ir al perfil",
         "apply": "Postularse",

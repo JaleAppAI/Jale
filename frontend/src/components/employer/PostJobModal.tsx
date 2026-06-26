@@ -9,8 +9,8 @@ import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
-type DocType = 'resume' | 'driver_license' | 'ssn';
-const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
+type DocType = 'resume' | 'driver_license';
+const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
 const LANGUAGE_OPTIONS = ['any', 'en', 'es'] as const;
 const TRADE_CATEGORIES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'drywall', 'general_labor', 'other'] as const;
 
@@ -25,6 +25,7 @@ type JobForm = {
   expected_duration: string;
   shift_schedule: string;
   transportation_required: boolean;
+  work_authorization_required: boolean;
   language_preference: Array<'any' | 'en' | 'es'>;
   number_of_workers_needed: string;
   trade_category: typeof TRADE_CATEGORIES[number] | '';
@@ -44,12 +45,13 @@ const initialForm: JobForm = {
   expected_duration: '',
   shift_schedule: '',
   transportation_required: false,
+  work_authorization_required: false,
   language_preference: ['any'],
   number_of_workers_needed: '1',
   trade_category: '',
   required_experience_years: '',
   certifications: '',
-  required_docs: { resume: false, driver_license: false, ssn: false },
+  required_docs: { resume: false, driver_license: false },
 };
 
 interface Props {
@@ -163,6 +165,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         expected_duration: form.expected_duration.trim() || null,
         shift_schedule: form.shift_schedule.trim() || null,
         transportation_required: form.transportation_required,
+        work_authorization_required: form.work_authorization_required,
         language_preference: form.language_preference,
         number_of_workers_needed: Number(form.number_of_workers_needed),
         trade_category: form.trade_category,
@@ -181,7 +184,6 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const docLabel: Record<DocType, string> = {
     resume: t('worker_profile.doc_resume'),
     driver_license: t('worker_profile.doc_driver_license'),
-    ssn: t('worker_profile.doc_ssn'),
   };
 
   return (
@@ -299,6 +301,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                   onChange={(e) => update('transportation_required', e.target.checked)}
                 />
                 {t('modal.transportation_required')}
+              </label>
+              <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
+                <input
+                  type="checkbox"
+                  checked={form.work_authorization_required}
+                  onChange={(e) => update('work_authorization_required', e.target.checked)}
+                />
+                {t('modal.work_authorization_required')}
               </label>
               <Field label={t('modal.certifications')}>
                 <Input value={form.certifications} onChange={(e) => update('certifications', e.target.value)} placeholder={t('modal.certifications_placeholder')} />
