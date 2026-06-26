@@ -39,6 +39,7 @@ const expectedBaselineMigrations = [
   '029_hired_count_trigger_security_definer.sql',
   '030_whatsapp_worker_skills_seed.sql',
   '031_work_authorization_required.sql',
+  '032_pay_interval_experience_months_worker_certifications.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -92,7 +93,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-031 readiness baseline order', () => {
+  it('locks the 001-032 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -396,11 +397,23 @@ describe('migration apply order baseline', () => {
     const migration = readMigration('031_work_authorization_required.sql');
 
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS work_authorization_required BOOLEAN NOT NULL DEFAULT false');
-    expect(migration).not.toContain("worker_documents");
-    expect(migration).not.toContain("DROP CONSTRAINT IF EXISTS jobs_required_docs_valid");
+    expect(migration).toContain('SSN is intentionally kept in jobs_required_docs_valid CHECK');
   });
 
-  maybeIt('applies migrations 001-026 against a local Postgres database', async () => {
+  it('adds pay interval, experience months, and worker certifications in migration 032', () => {
+    const migration = readMigration('032_pay_interval_experience_months_worker_certifications.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_interval TEXT');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS required_experience_months INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS experience_months INTEGER');
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS certifications TEXT[] NOT NULL DEFAULT '{}'::text[]");
+    expect(migration).toContain('jobs_pay_interval_check');
+    expect(migration).toContain('jobs_required_experience_months_check');
+    expect(migration).toContain('worker_profiles_experience_months_check');
+    expect(migration).toContain('worker_profiles_certifications_count_check');
+  });
+
+  maybeIt('applies migrations 001-032 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

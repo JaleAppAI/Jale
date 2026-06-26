@@ -66,7 +66,9 @@ describe('employer-worker-profile Lambda', () => {
       skills: ['Forklift'],
       availability: 'immediate',
       years_experience: 3,
+      experience_months: 36,
       location: 'LA',
+      certifications: ['OSHA 10'],
       main_trade: 'electrician',
       main_trade_other: null,
       has_transportation: true,
@@ -88,6 +90,8 @@ describe('employer-worker-profile Lambda', () => {
     expect(profileQuery).toContain('WHERE ws.worker_id = ja.worker_id');
     expect(profileQuery).toContain('j.employer_id = $3');
     expect(profileQuery).not.toContain('wp.skills');
+    expect(profileQuery).toContain('wp.experience_months');
+    expect(profileQuery).toContain('wp.certifications');
     // Safe onboarding facts must be in the query
     expect(profileQuery).toContain('u.main_trade');
     expect(profileQuery).toContain('u.main_trade_other');
@@ -102,7 +106,7 @@ describe('employer-worker-profile Lambda', () => {
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
       .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] }) // job ownership
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'w', full_name: null, phone: null, skills: [], availability: null, years_experience: null, location: null, main_trade: null, main_trade_other: null, has_transportation: null, city: null, application_status: 'pending', applied_at: null }] }) // profile query
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'w', full_name: null, phone: null, skills: [], availability: null, years_experience: null, experience_months: null, location: null, certifications: [], main_trade: null, main_trade_other: null, has_transportation: null, city: null, application_status: 'pending', applied_at: null }] }) // profile query
       .mockResolvedValueOnce({}); // COMMIT
     await handler(makeEvent('employer-sub'));
     const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];

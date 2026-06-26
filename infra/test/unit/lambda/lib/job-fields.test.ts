@@ -8,6 +8,7 @@ const validBody = {
   language_preference: ['any'],
   number_of_workers_needed: 3,
   trade_category: 'concrete',
+  required_experience_months: 24,
   required_experience_years: 2,
   certifications: ['OSHA 10'],
 };
@@ -29,6 +30,7 @@ describe('job-fields parser', () => {
         pay_max: 9999,
         number_of_workers_needed: 500,
         required_experience_years: 80,
+        required_experience_months: 24,
       }),
     });
   });
@@ -50,10 +52,39 @@ describe('job-fields parser', () => {
     ['pay_max', 10000, 'invalid_pay_max'],
     ['number_of_workers_needed', 501, 'invalid_number_of_workers_needed'],
     ['required_experience_years', 81, 'invalid_required_experience_years'],
+    ['required_experience_months', 961, 'invalid_required_experience_months'],
   ])('rejects out-of-range %s', (field, value, error) => {
     const result = parseJobFields({ ...validBody, [field]: value });
 
     expect(result).toEqual({ ok: false, error });
+  });
+
+  it('accepts pay intervals and converts legacy required years to canonical months', () => {
+    const result = parseJobFields({
+      ...validBody,
+      pay_interval: 'weekly',
+      required_experience_months: undefined,
+      required_experience_years: 3,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        pay_interval: 'weekly',
+        required_experience_years: 3,
+        required_experience_months: 36,
+      }),
+    });
+  });
+
+  it('rejects invalid pay intervals', () => {
+    const result = parseJobFields({ ...validBody, pay_interval: 'biweekly' });
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'invalid_pay_interval',
+      valid: ['hourly', 'daily', 'weekly', 'monthly', 'fixed'],
+    });
   });
 
   it('rejects oversized language preference arrays before normalization', () => {

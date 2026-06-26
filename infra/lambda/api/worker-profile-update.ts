@@ -8,23 +8,36 @@ const CORS_HEADERS = corsHeaders();
 const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
 const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'] as const;
 const VALID_AVAIL = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
+const MAX_CERTIFICATIONS = 20;
+const MAX_CERTIFICATION_LENGTH = 200;
+const MAX_EXPERIENCE_MONTHS = 960;
 
-function normalizeSkills(skills: string[]): string[] | null {
+function normalizeStringList(values: string[], maxItems: number, maxLength: number, transform: (value: string) => string): string[] | null {
   const normalized: string[] = [];
   const seen = new Set<string>();
 
-  for (const rawSkill of skills) {
-    const skill = rawSkill.trim().toLowerCase();
-    if (skill.length < 1 || skill.length > 100) {
+  if (values.length > maxItems) return null;
+
+  for (const raw of values) {
+    const value = transform(raw.trim());
+    if (value.length < 1 || value.length > maxLength) {
       return null;
     }
-    if (!seen.has(skill)) {
-      seen.add(skill);
-      normalized.push(skill);
+    if (!seen.has(value)) {
+      seen.add(value);
+      normalized.push(value);
     }
   }
 
   return normalized;
+}
+
+function normalizeSkills(skills: string[]): string[] | null {
+  return normalizeStringList(skills, 100, 100, (value) => value.toLowerCase());
+}
+
+function normalizeCertifications(certifications: string[]): string[] | null {
+  return normalizeStringList(certifications, MAX_CERTIFICATIONS, MAX_CERTIFICATION_LENGTH, (value) => value);
 }
 
 function experienceSlugToYears(value: string | number | null | undefined): number | null {
@@ -34,6 +47,11 @@ function experienceSlugToYears(value: string | number | null | undefined): numbe
   if (value === '5-9') return 7;
   if (value === '10+') return 10;
   return null;
+}
+
+function experienceToMonths(value: string | number | null | undefined): number | null {
+  const years = experienceSlugToYears(value);
+  return years === null ? null : years * 12;
 }
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
@@ -53,14 +71,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       skills,
       availability,
       years_experience,
+      experience_months,
       location,
       bio,
       city,
       main_trade,
       main_trade_other,
       has_transportation,
+      certifications,
     } = body;
     const skillsProvided = Object.prototype.hasOwnProperty.call(body, 'skills');
+    const certificationsProvided = Object.prototype.hasOwnProperty.call(body, 'certifications');
     if (availability !== undefined && availability !== null && !VALID_AVAIL.includes(availability)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_availability', valid: VALID_AVAIL }) };
     }
@@ -70,8 +91,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (main_trade === 'other' && (typeof main_trade_other !== 'string' || main_trade_other.trim().length === 0)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'main_trade_other_required' }) };
     }
+    if (experience_months !== undefined && experience_months !== null) {
+      if (typeof experience_months !== 'number' || !Number.isInteger(experience_months) || experience_months < 0 || experience_months > MAX_EXPERIENCE_MONTHS) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_experience_months' }) };
+      }
+    }
     if (years_experience !== undefined && years_experience !== null) {
-      const validNumericExperience = typeof years_experience === 'number' && years_experience >= 0;
+      const validNumericExperience = typeof years_experience === 'number' && years_experience >= 0 && Number.isInteger(years_experience);
       const validSlugExperience = typeof years_experience === 'string' && VALID_EXPERIENCE.includes(years_experience as any);
       if (!validNumericExperience && !validSlugExperience) {
         return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_years_experience', valid: VALID_EXPERIENCE }) };
@@ -86,6 +112,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const normalizedSkills = skillsProvided ? normalizeSkills(skills) : undefined;
     if (normalizedSkills === null) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_skills' }) };
+    }
+    if (certificationsProvided && (!Array.isArray(certifications) || certifications.some((s: any) => typeof s !== 'string'))) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_certifications' }) };
+    }
+    const normalizedCertifications = certificationsProvided ? normalizeCertifications(certifications) : undefined;
+    if (normalizedCertifications === null) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_certifications' }) };
     }
     const hasLatitude = Object.prototype.hasOwnProperty.call(body, 'latitude');
     const hasLongitude = Object.prototype.hasOwnProperty.call(body, 'longitude');
@@ -124,6 +157,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       : null;
     const userExperience = typeof years_experience === 'string' ? years_experience : null;
     const profileExperience = experienceSlugToYears(years_experience);
+    const profileExperienceMonths = typeof experience_months === 'number' ? experience_months : experienceToMonths(years_experience);
     const normalizedBio = typeof bio === 'string' && bio.trim().length > 0 ? bio.trim() : null;
 
     await client.query(
@@ -153,8 +187,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     );
 
     const upsertRes = await client.query(
-      `INSERT INTO worker_profiles (user_id, full_name, phone, availability, years_experience, location, bio)
-       SELECT id, full_name, COALESCE(phone, whatsapp_number), $2, $3, $4, $5
+      `INSERT INTO worker_profiles (user_id, full_name, phone, availability, years_experience, experience_months, location, bio, certifications)
+       SELECT id, full_name, COALESCE(phone, whatsapp_number), $2, $3, $4, $5, $6, COALESCE($7::text[], '{}'::text[])
        FROM users
        WHERE cognito_sub = $1
        ON CONFLICT (user_id) DO UPDATE SET
@@ -162,8 +196,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          phone            = COALESCE(EXCLUDED.phone, worker_profiles.phone),
          availability     = COALESCE(EXCLUDED.availability, worker_profiles.availability),
          years_experience = COALESCE(EXCLUDED.years_experience, worker_profiles.years_experience),
+         experience_months = COALESCE(EXCLUDED.experience_months, worker_profiles.experience_months),
          location         = COALESCE(EXCLUDED.location, worker_profiles.location),
          bio              = COALESCE(EXCLUDED.bio, worker_profiles.bio),
+         certifications   = CASE WHEN $8::boolean THEN EXCLUDED.certifications ELSE worker_profiles.certifications END,
          updated_at       = NOW()
        RETURNING
          user_id,
@@ -175,9 +211,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          ) AS skills,
          availability,
          years_experience,
+         experience_months,
          location,
-         bio`,
-      [cognitoSub, availability ?? null, profileExperience, normalizedLocation, normalizedBio],
+         bio,
+         certifications`,
+      [
+        cognitoSub,
+        availability ?? null,
+        profileExperience,
+        profileExperienceMonths,
+        normalizedLocation,
+        normalizedBio,
+        normalizedCertifications ?? null,
+        certificationsProvided,
+      ],
     );
     const profile = upsertRes.rows[0];
 

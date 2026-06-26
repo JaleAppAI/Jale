@@ -58,7 +58,7 @@ describe('worker-profile-update', () => {
   it('accepts canonical database availability values', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('INSERT INTO worker_profiles')) {
-        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: 'full_time', years_experience: 3, location: 'TX', bio: null }] });
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: 'full_time', years_experience: 3, experience_months: 36, location: 'TX', bio: null, certifications: [] }] });
       }
       return Promise.resolve({});
     });
@@ -92,7 +92,7 @@ describe('worker-profile-update', () => {
     );
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO worker_profiles'),
-      ['w', 'full_time', 7, 'Austin', null],
+      ['w', 'full_time', 7, 84, 'Austin', null, null, false],
     );
   });
 
@@ -100,7 +100,7 @@ describe('worker-profile-update', () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('UPDATE users')) return Promise.resolve({ rowCount: 1 });
       if (q.includes('INSERT INTO worker_profiles')) {
-        return Promise.resolve({ rows: [{ user_id: 'u', skills: ['carpentry', 'welding'], availability: 'full_time', years_experience: 3, location: 'TX', bio: null }] });
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: ['carpentry', 'welding'], availability: 'full_time', years_experience: 3, experience_months: 36, location: 'TX', bio: null, certifications: [] }] });
       }
       return Promise.resolve({});
     });
@@ -129,7 +129,7 @@ describe('worker-profile-update', () => {
   it('preserves existing worker_skills when skills are omitted', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('INSERT INTO worker_profiles')) {
-        return Promise.resolve({ rows: [{ user_id: 'u', skills: ['existing'], availability: 'weekends', years_experience: null, location: null, bio: null }] });
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: ['existing'], availability: 'weekends', years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
       }
       return Promise.resolve({});
     });
@@ -145,7 +145,7 @@ describe('worker-profile-update', () => {
   it('clears worker_skills when skills is an explicit empty array', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('INSERT INTO worker_profiles')) {
-        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, location: null, bio: null }] });
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
       }
       return Promise.resolve({});
     });
@@ -164,6 +164,35 @@ describe('worker-profile-update', () => {
 
     expect(blank.statusCode).toBe(400);
     expect(overlong.statusCode).toBe(400);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('accepts and normalizes worker certifications', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('INSERT INTO worker_profiles')) {
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: 18, location: null, bio: null, certifications: ['OSHA 10', 'Forklift'] }] });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ experience_months: 18, certifications: [' OSHA 10 ', 'OSHA 10', 'Forklift'] }));
+
+    expect(res.statusCode).toBe(200);
+    const profileUpsertCall = mockQuery.mock.calls.find(([q]) => String(q).includes('INSERT INTO worker_profiles'));
+    expect(profileUpsertCall?.[1]).toEqual(['w', null, null, 18, null, null, ['OSHA 10', 'Forklift'], true]);
+    expect(JSON.parse(res.body).certifications).toEqual(['OSHA 10', 'Forklift']);
+  });
+
+  it.each([
+    ['non-array certifications', { certifications: 'OSHA 10' }],
+    ['blank certification', { certifications: [' '] }],
+    ['overlong certification', { certifications: ['x'.repeat(201)] }],
+    ['too many certifications', { certifications: Array.from({ length: 21 }, (_, index) => `cert-${index}`) }],
+    ['invalid experience months', { experience_months: 961 }],
+  ])('rejects %s before writing', async (_caseName, body) => {
+    const res = await handler(mkEv(body));
+
+    expect(res.statusCode).toBe(400);
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
@@ -186,7 +215,7 @@ describe('worker-profile-update', () => {
   it('sets worker map_pin coordinates after profile upsert when both coordinates are present', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('INSERT INTO worker_profiles')) {
-        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, location: null, bio: null }] });
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
       }
       return Promise.resolve({});
     });

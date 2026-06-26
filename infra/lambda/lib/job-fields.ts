@@ -8,6 +8,7 @@ export const LEGACY_APPLICATION_STATUS_MAP: Record<string, ApplicationStatus> = 
 };
 export const DOC_TYPES = ['resume', 'driver_license'] as const;
 export const LANGUAGE_PREFERENCES = ['any', 'en', 'es'] as const;
+export const PAY_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly', 'fixed'] as const;
 export const TRADE_CATEGORIES = [
   'electrician',
   'plumber',
@@ -23,10 +24,12 @@ export type JobType = typeof JOB_TYPES[number];
 export type JobStatus = typeof JOB_STATUSES[number];
 export type WritableJobStatus = typeof WRITABLE_JOB_STATUSES[number];
 export type ApplicationStatus = typeof APPLICATION_STATUSES[number];
+export type PayInterval = typeof PAY_INTERVALS[number];
 
 export interface ParsedJobFields {
   pay_min: number | null;
   pay_max: number | null;
+  pay_interval: PayInterval | null;
   start_date: string | null;
   expected_duration: string | null;
   shift_schedule: string | null;
@@ -36,6 +39,7 @@ export interface ParsedJobFields {
   number_of_workers_needed: number;
   trade_category: string;
   required_experience_years: number | null;
+  required_experience_months: number | null;
   certifications: string[];
 }
 
@@ -53,6 +57,7 @@ function optionalString(value: unknown): string | null {
 const MAX_PAY_DOLLARS = 9999;
 const MAX_WORKERS_NEEDED = 500;
 const MAX_REQUIRED_EXPERIENCE_YEARS = 80;
+const MAX_REQUIRED_EXPERIENCE_MONTHS = MAX_REQUIRED_EXPERIENCE_YEARS * 12;
 const MAX_CERTIFICATIONS = 20;
 const MAX_CERTIFICATION_LENGTH = 200;
 
@@ -102,6 +107,11 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
     return { ok: false, error: 'invalid_pay_range' };
   }
 
+  const payInterval = body.pay_interval ?? null;
+  if (payInterval !== null && (typeof payInterval !== 'string' || !PAY_INTERVALS.includes(payInterval as PayInterval))) {
+    return { ok: false, error: 'invalid_pay_interval', valid: PAY_INTERVALS };
+  }
+
   const startDate = optionalString(body.start_date);
   if (startDate !== null && !isValidIsoDate(startDate)) {
     return { ok: false, error: 'invalid_start_date' };
@@ -133,8 +143,11 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
     return { ok: false, error: 'invalid_trade_category', valid: TRADE_CATEGORIES };
   }
 
-  const requiredExperience = optionalInteger(body.required_experience_years, 'required_experience_years', MAX_REQUIRED_EXPERIENCE_YEARS);
-  if (!requiredExperience.ok) return requiredExperience;
+  const requiredExperienceMonths = optionalInteger(body.required_experience_months, 'required_experience_months', MAX_REQUIRED_EXPERIENCE_MONTHS);
+  if (!requiredExperienceMonths.ok) return requiredExperienceMonths;
+  const requiredExperienceYears = optionalInteger(body.required_experience_years, 'required_experience_years', MAX_REQUIRED_EXPERIENCE_YEARS);
+  if (!requiredExperienceYears.ok) return requiredExperienceYears;
+  const canonicalRequiredExperienceMonths = requiredExperienceMonths.value ?? (requiredExperienceYears.value === null ? null : requiredExperienceYears.value * 12);
 
   let certifications: string[] = [];
   if (body.certifications !== undefined) {
@@ -153,6 +166,7 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
     value: {
       pay_min: payMin.value,
       pay_max: payMax.value,
+      pay_interval: payInterval as PayInterval | null,
       start_date: startDate,
       expected_duration: optionalString(body.expected_duration),
       shift_schedule: optionalString(body.shift_schedule),
@@ -161,7 +175,8 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
       language_preference: language.value,
       number_of_workers_needed: workersNeeded,
       trade_category: tradeCategory,
-      required_experience_years: requiredExperience.value,
+      required_experience_years: requiredExperienceYears.value,
+      required_experience_months: canonicalRequiredExperienceMonths,
       certifications,
     },
   };
