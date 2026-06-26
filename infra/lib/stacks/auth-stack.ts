@@ -4,6 +4,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -85,6 +86,13 @@ export class AuthStack extends cdk.Stack {
       timeToLiveAttribute: 'expiresAt',
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
+    const otpDeliveryStatusTable = new dynamodb.Table(this, 'OtpDeliveryStatusTable', {
+      partitionKey: { name: 'twilioMessageSid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     if (!/^\+[1-9]\d{7,14}$/.test(otpSmsFromNumber)) {
       throw new Error('otpSmsFromNumber must be a valid E.164 phone number');
@@ -104,6 +112,20 @@ export class AuthStack extends cdk.Stack {
       throw new Error('otpSmsValidityPeriodSeconds must be between 6 and 36000');
     }
 
+    const otpStatusCallbackLambda = new JaleLambdaFunction(this, 'OtpStatusCallbackLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/otp-status-callback.ts'),
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      description: 'Twilio SMS OTP delivery status callback receiver',
+      environment: {
+        TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
+        OTP_DELIVERY_STATUS_TABLE_NAME: otpDeliveryStatusTable.tableName,
+      },
+    });
+    const otpStatusCallbackUrl = otpStatusCallbackLambda.function.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+    });
+
     const createAuthChallengeLambda = new JaleLambdaFunction(this, 'CreateAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/create-auth-challenge.ts'),
       vpc: props.vpc,
@@ -118,9 +140,14 @@ export class AuthStack extends cdk.Stack {
         TWILIO_REQUEST_TIMEOUT_MS: String(otpSmsRequestTimeoutMs),
         TWILIO_VALIDITY_PERIOD_SECONDS: String(otpSmsValidityPeriodSeconds),
         OTP_RATE_LIMIT_TABLE_NAME: otpRateLimitTable.tableName,
+        OTP_DELIVERY_STATUS_TABLE_NAME: otpDeliveryStatusTable.tableName,
+        TWILIO_STATUS_CALLBACK_URL: otpStatusCallbackUrl.url,
       },
     });
     otpRateLimitTable.grantReadWriteData(createAuthChallengeLambda.function);
+    otpDeliveryStatusTable.grantWriteData(createAuthChallengeLambda.function);
+    otpDeliveryStatusTable.grantReadWriteData(otpStatusCallbackLambda.function);
+    otpTwilioSecret.grantRead(otpStatusCallbackLambda.function);
     createAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:TransactWriteItems'],
       resources: [otpRateLimitTable.tableArn],

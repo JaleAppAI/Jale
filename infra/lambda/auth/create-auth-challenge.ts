@@ -3,6 +3,10 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from '@aws-sdk/client-secrets-manager';
+import {
+  DynamoDBClient,
+  PutItemCommand,
+} from '@aws-sdk/client-dynamodb';
 import { checkOtpRateLimit } from './lib/otp-rate-limit';
 
 /**
@@ -22,6 +26,7 @@ interface OtpTwilioSecret {
 }
 
 const secretsManager = new SecretsManagerClient({});
+const dynamodb = new DynamoDBClient({});
 let cachedSecret: OtpTwilioSecret | null = null;
 let cachedAt = 0;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -83,7 +88,20 @@ export const handler = async (
     }
     emitOtpMetric('WorkerOtpSendAllowed');
     try {
-      await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
+      const sendResult = await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
+      emitOtpMetric('WorkerOtpApiAccepted');
+      try {
+        await recordOtpDeliveryAttempt({
+          twilioMessageSid: sendResult.messageSid,
+          phoneHint: maskPhone(phoneNumber),
+          userName: event.userName,
+        });
+      } catch (telemetryError) {
+        emitOtpMetric('WorkerOtpDeliveryTelemetryFailure');
+        console.warn('OTP delivery telemetry write failed', {
+          error: telemetryError instanceof Error ? telemetryError.message : String(telemetryError),
+        });
+      }
     } catch (error) {
       emitOtpMetric('WorkerOtpTwilioFailure');
       throw error;
@@ -106,7 +124,7 @@ export const handler = async (
   return event;
 };
 
-async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
+async function sendTwilioSmsOtp(to: string, body: string): Promise<{ messageSid?: string }> {
   const { accountSid, authToken } = await getOtpTwilioSecret();
   const from = process.env.TWILIO_FROM_NUMBER;
   if (!from || !/^\+[1-9]\d{7,14}$/.test(from)) {
@@ -133,6 +151,10 @@ async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
     Body: body,
     ValidityPeriod: String(validityPeriodSeconds),
   });
+  const statusCallbackUrl = process.env.TWILIO_STATUS_CALLBACK_URL;
+  if (statusCallbackUrl) {
+    body_.set('StatusCallback', statusCallbackUrl);
+  }
 
   let response: Response;
   try {
@@ -157,6 +179,36 @@ async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
     const detail = data.message ?? `HTTP ${response.status}`;
     throw new Error(`Twilio SMS OTP send failed: ${detail}`);
   }
+
+  const data = (await response.json().catch(() => ({}))) as { sid?: string };
+  return { messageSid: data.sid };
+}
+
+async function recordOtpDeliveryAttempt(input: {
+  twilioMessageSid?: string;
+  phoneHint: string;
+  userName?: string;
+}): Promise<void> {
+  const tableName = process.env.OTP_DELIVERY_STATUS_TABLE_NAME;
+  if (!tableName || !input.twilioMessageSid) {
+    return;
+  }
+
+  const now = new Date();
+  const ttl = Math.floor(now.getTime() / 1000) + 14 * 24 * 60 * 60;
+  await dynamodb.send(new PutItemCommand({
+    TableName: tableName,
+    Item: {
+      twilioMessageSid: { S: input.twilioMessageSid },
+      phoneHint: { S: input.phoneHint },
+      userName: input.userName ? { S: input.userName } : { S: 'unknown' },
+      apiAcceptedAt: { S: now.toISOString() },
+      createdAt: { S: now.toISOString() },
+      updatedAt: { S: now.toISOString() },
+      messageStatus: { S: 'accepted' },
+      ttl: { N: String(ttl) },
+    },
+  }));
 }
 
 function parseBoundedInteger(

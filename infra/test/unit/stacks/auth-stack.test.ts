@@ -122,8 +122,8 @@ describe('AuthStack', () => {
   });
 
   // ── Custom Auth Challenge (Phase 2) ──────────────────────────────
-  test('Stack contains 4 Lambda functions (post-confirmation + 3 auth challenge)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 4);
+  test('Stack contains 5 Lambda functions (post-confirmation + 3 auth challenge + OTP callback)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 5);
   });
 
   test('Worker pool has all 4 Lambda triggers wired', () => {
@@ -167,6 +167,8 @@ describe('AuthStack', () => {
           TWILIO_REQUEST_TIMEOUT_MS: '3500',
           TWILIO_VALIDITY_PERIOD_SECONDS: '180',
           OTP_RATE_LIMIT_TABLE_NAME: Match.anyValue(),
+          OTP_DELIVERY_STATUS_TABLE_NAME: Match.anyValue(),
+          TWILIO_STATUS_CALLBACK_URL: Match.anyValue(),
         }),
       }),
     });
@@ -189,6 +191,33 @@ describe('AuthStack', () => {
         AttributeName: 'expiresAt',
         Enabled: true,
       },
+    });
+  });
+
+  test('OTP delivery status uses a TTL-enabled on-demand DynamoDB table keyed by Twilio MessageSid', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'twilioMessageSid', KeyType: 'HASH' },
+      ],
+      TimeToLiveSpecification: {
+        AttributeName: 'ttl',
+        Enabled: true,
+      },
+    });
+  });
+
+  test('OTP status callback Lambda has a public function URL and DynamoDB write access', () => {
+    template.hasResourceProperties('AWS::Lambda::Url', {
+      AuthType: 'NONE',
+    });
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          OTP_DELIVERY_STATUS_TABLE_NAME: Match.anyValue(),
+          TWILIO_SECRET_ARN: 'jale/whatsapp/otp-twilio',
+        }),
+      }),
     });
   });
 
