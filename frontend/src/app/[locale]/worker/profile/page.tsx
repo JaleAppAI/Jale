@@ -36,6 +36,7 @@ export default function WorkerProfilePage() {
         id: p.id, phone: p.phone, full_name: p.full_name,
         skills: p.skills ?? [], availability: p.availability,
         years_experience: p.years_experience, location: p.location, bio: p.bio,
+        certifications: p.certifications ?? [],
       });
       const d = await getVaultDocuments(idToken);
       setDocs(d.documents);
@@ -50,6 +51,7 @@ export default function WorkerProfilePage() {
             id: next.id, phone: next.phone, full_name: next.full_name,
             skills: next.skills ?? [], availability: next.availability,
             years_experience: next.years_experience, location: next.location, bio: next.bio,
+            certifications: next.certifications ?? [],
           });
         }
       }
@@ -87,6 +89,7 @@ export default function WorkerProfilePage() {
             <Field label={t('field_phone')} value={profile.phone} />
             <Field label={t('field_name')} value={profile.full_name} />
             <SkillsField label={t('field_skills')} skills={profile.skills} />
+            <CertificationsField label={t('field_certifications')} certifications={profile.certifications ?? []} />
             <Field label={t('field_availability')} value={profile.availability ?? '-'} />
             <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
             <Field label={t('field_location')} value={profile.location ?? '-'} />
@@ -132,6 +135,25 @@ function SkillsField({ label, skills }: { label: string; skills: string[] }) {
           {skills.map((skill) => (
             <span key={skill} className="pill pill-info" style={{ fontSize: 10, textTransform: 'none' }}>
               {skill}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm">-</p>
+      )}
+    </div>
+  );
+}
+
+function CertificationsField({ label, certifications }: { label: string; certifications: string[] }) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
+      {certifications.length > 0 ? (
+        <div className="flex flex-wrap gap-1.5">
+          {certifications.map((cert) => (
+            <span key={cert} className="pill pill-info" style={{ fontSize: 10, textTransform: 'none' }}>
+              {cert}
             </span>
           ))}
         </div>

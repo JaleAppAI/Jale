@@ -443,6 +443,14 @@
             },
             "pay_min": "Pago mínimo",
             "pay_max": "Pago máximo",
+            "pay_interval": "Intervalo de pago",
+            "pay_interval_option": {
+                "hourly": "Por hora",
+                "daily": "Diario",
+                "weekly": "Semanal",
+                "monthly": "Mensual",
+                "fixed": "Fijo (tarifa plana)"
+            },
             "start_date": "Fecha de inicio",
             "expected_duration": "Duración esperada",
             "duration_placeholder": "ej. 2 semanas",
@@ -610,6 +618,7 @@
         "field_phone": "Teléfono",
         "field_name": "Nombre completo",
         "field_skills": "Habilidades",
+        "field_certifications": "Certificaciones",
         "field_availability": "Disponibilidad",
         "field_years_experience": "Años de experiencia",
         "field_location": "Ubicación",
@@ -640,6 +649,7 @@
             "years_experience": "Años de experiencia",
             "location": "Ubicación",
             "bio": "Acerca de ti",
+            "certifications_placeholder": "OSHA 10, montacargas, CDL",
             "save": "Guardar",
             "cancel": "Cancelar"
         },

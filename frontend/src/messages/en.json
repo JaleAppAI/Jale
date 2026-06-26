@@ -443,6 +443,14 @@
             },
             "pay_min": "Pay Min",
             "pay_max": "Pay Max",
+            "pay_interval": "Pay Interval",
+            "pay_interval_option": {
+                "hourly": "Hourly",
+                "daily": "Daily",
+                "weekly": "Weekly",
+                "monthly": "Monthly",
+                "fixed": "Fixed (flat rate)"
+            },
             "start_date": "Start Date",
             "expected_duration": "Expected Duration",
             "duration_placeholder": "e.g. 2 weeks",
@@ -610,6 +618,7 @@
         "field_phone": "Phone",
         "field_name": "Full name",
         "field_skills": "Skills",
+        "field_certifications": "Certifications",
         "field_availability": "Availability",
         "field_years_experience": "Years of experience",
         "field_location": "Location",
@@ -640,6 +649,7 @@
             "years_experience": "Years of experience",
             "location": "Location",
             "bio": "About you",
+            "certifications_placeholder": "OSHA 10, forklift, CDL",
             "save": "Save",
             "cancel": "Cancel"
         },

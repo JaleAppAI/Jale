@@ -13,6 +13,8 @@ type DocType = 'resume' | 'driver_license';
 const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
 const LANGUAGE_OPTIONS = ['any', 'en', 'es'] as const;
 const TRADE_CATEGORIES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'drywall', 'general_labor', 'other'] as const;
+const PAY_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly', 'fixed'] as const;
+type PayInterval = typeof PAY_INTERVALS[number];
 
 type JobForm = {
   title: string;
@@ -21,6 +23,7 @@ type JobForm = {
   description: string;
   pay_min: string;
   pay_max: string;
+  pay_interval: PayInterval;
   start_date: string;
   expected_duration: string;
   shift_schedule: string;
@@ -41,6 +44,7 @@ const initialForm: JobForm = {
   description: '',
   pay_min: '',
   pay_max: '',
+  pay_interval: 'hourly',
   start_date: '',
   expected_duration: '',
   shift_schedule: '',
@@ -161,6 +165,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         required_docs,
         pay_min,
         pay_max,
+        pay_interval: form.pay_interval,
         start_date: form.start_date || null,
         expected_duration: form.expected_duration.trim() || null,
         shift_schedule: form.shift_schedule.trim() || null,
@@ -256,6 +261,13 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                   <Input type="number" min={0} value={form.pay_max} onChange={(e) => update('pay_max', e.target.value)} />
                 </Field>
               </div>
+              <Field label={t('modal.pay_interval')}>
+                <Select value={form.pay_interval} onChange={(e) => update('pay_interval', e.target.value as PayInterval)}>
+                  {PAY_INTERVALS.map((interval) => (
+                    <option key={interval} value={interval}>{t(`modal.pay_interval_option.${interval}`)}</option>
+                  ))}
+                </Select>
+              </Field>
               <div className="grid gap-3 md:grid-cols-2">
                 <Field label={t('modal.start_date')}>
                   <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />

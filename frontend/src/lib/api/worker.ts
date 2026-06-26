@@ -83,6 +83,8 @@ export type Job = {
   pay?: string;
   pay_min?: number | null;
   pay_max?: number | null;
+  pay_interval?: string | null;
+  required_experience_months?: number | null;
   start_date?: string | null;
   expected_duration?: string | null;
   shift_schedule?: string | null;
@@ -135,6 +137,7 @@ export type WorkerProfileData = {
   main_trade?: WorkerTrade | null;
   main_trade_other?: string | null;
   has_transportation?: boolean | null;
+  certifications?: string[] | null;
 };
 
 export type WorkerVaultDoc = {
