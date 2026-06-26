@@ -503,28 +503,51 @@ describe('conversation actions preserve onboarding state (R10) + actionable no-o
 describe('CERRAR/CLOSE contextual close in relayWorkerFreeText', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('CERRAR with focused thread closes conversation, clears focus, replies "Conversación cerrada."', async () => {
+  it('CERRAR with focused thread sends reason picker and sets close_reason state — does NOT close immediately', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // ToS check
-    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
     const conv = { ...baseConv, language: 'es' as const, focused_job_conversation_id: CONV_A };
     const routed = await relayWorkerFreeText(client, conv, { ...msg, body: 'CERRAR' }, WORKER, deps);
     expect(routed).toBe(WORKER);
-    expect(closeWorkerConversation).toHaveBeenCalledWith(client, CONV_A, WORKER);
-    const focusClear = (deps.updateConversation as jest.Mock).mock.calls.find(
-      (c: any[]) => 'focused_job_conversation_id' in c[2]);
-    expect(focusClear![2].focused_job_conversation_id).toBeNull();
-    const notices = (queueOutboxText as jest.Mock).mock.calls.map((c: any[]) => c[3]);
-    expect(notices.some((t: string) => /cerrada/i.test(t))).toBe(true);
+    // Must NOT call closeWorkerConversation
+    expect(closeWorkerConversation).not.toHaveBeenCalled();
+    // Must NOT clear focused_job_conversation_id
+    const focusClearCall = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2] && c[2].focused_job_conversation_id === null);
+    expect(focusClearCall).toBeUndefined();
+    // Must call updateConversation with pending_picker.kind === 'close_reason'
+    const updateCall = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => c[2].state_context?.pending_picker?.kind === 'close_reason');
+    expect(updateCall).toBeDefined();
+    expect(updateCall![2].state_context.pending_picker.conversationId).toBe(CONV_A);
+    // Must send picker message
+    expect(queueOutboxText).toHaveBeenCalledTimes(1);
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(sent).toMatch(/Por qué cierras/i);
+    expect(sent).toContain('1.');
+    expect(sent).toContain('2.');
+    expect(sent).toContain('3.');
     expect(recordWorkerConversationReply).not.toHaveBeenCalled();
   });
 
-  it('CLOSE (EN) with focused thread replies "Conversation closed."', async () => {
+  it('CLOSE (EN) with focused thread sends EN reason picker', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
-    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
     const conv = { ...baseConv, language: 'en' as const, focused_job_conversation_id: CONV_A };
-    await relayWorkerFreeText(client, conv, { ...msg, body: 'CLOSE' }, WORKER, deps);
-    const notices = (queueOutboxText as jest.Mock).mock.calls.map((c: any[]) => c[3]);
-    expect(notices.some((t: string) => /Conversation closed/i.test(t))).toBe(true);
+    const routed = await relayWorkerFreeText(client, conv, { ...msg, body: 'CLOSE' }, WORKER, deps);
+    expect(routed).toBe(WORKER);
+    expect(closeWorkerConversation).not.toHaveBeenCalled();
+    expect(queueOutboxText).toHaveBeenCalledTimes(1);
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(sent).toMatch(/Why are you closing/i);
+    expect(sent).not.toMatch(/Por qué/);
+  });
+
+  it('CERRAR sends Spanish picker when conv.language === "es"', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
+    const conv = { ...baseConv, language: 'es' as const, focused_job_conversation_id: CONV_A };
+    await relayWorkerFreeText(client, conv, { ...msg, body: 'CERRAR' }, WORKER, deps);
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(sent).toMatch(/Por qué cierras/i);
+    expect(sent).not.toMatch(/Why are you closing/i);
   });
 
   it('CERRAR with no focus: relays as ordinary text (not intercepted)', async () => {
@@ -534,15 +557,6 @@ describe('CERRAR/CLOSE contextual close in relayWorkerFreeText', () => {
     await relayWorkerFreeText(client, conv, { ...msg, body: 'CERRAR' }, WORKER, deps);
     expect(closeWorkerConversation).not.toHaveBeenCalled();
     expect(recordWorkerConversationReply).toHaveBeenCalled();
-  });
-
-  it('already-closed thread: closeWorkerConversation returns false → "already ended" reply', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
-    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(false); // already closed
-    const conv = { ...baseConv, focused_job_conversation_id: CONV_A };
-    await relayWorkerFreeText(client, conv, { ...msg, body: 'CERRAR' }, WORKER, deps);
-    const notices = (queueOutboxText as jest.Mock).mock.calls.map((c: any[]) => c[3]);
-    expect(notices.some((t: string) => /ya había terminado|already ended/i.test(t))).toBe(true);
   });
 
   it('isCloseKeyword: exact match only', () => {
@@ -626,33 +640,31 @@ describe('EN/ES language assertions for Phase 2 messages', () => {
     expect(picker).not.toMatch(/Tus conversaciones/);
   });
 
-  // Test 5: CERRAR confirmation in Spanish
-  it('CERRAR confirmation is in Spanish when conv.language === "es"', async () => {
+  // Test 5: CERRAR picker in Spanish
+  it('CERRAR picker is in Spanish when conv.language === "es"', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
-    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
     const conv = {
       ...baseConv,
       language: 'es' as const,
       focused_job_conversation_id: 'conv-a',
     };
     await relayWorkerFreeText(client, conv, { ...msg, body: 'CERRAR' }, WORKER, deps);
-    const confirmation = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
-    expect(confirmation).toMatch(/cerrada/i);
-    expect(confirmation).not.toMatch(/closed/i);
+    const picker = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(picker).toMatch(/Por qué cierras/i);
+    expect(picker).not.toMatch(/Why are you closing/i);
   });
 
-  // Test 6: CLOSE confirmation in English
-  it('CLOSE confirmation is in English when conv.language === "en"', async () => {
+  // Test 6: CLOSE picker in English
+  it('CLOSE picker is in English when conv.language === "en"', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
-    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
     const conv = {
       ...baseConv,
       language: 'en' as const,
       focused_job_conversation_id: 'conv-a',
     };
     await relayWorkerFreeText(client, conv, { ...msg, body: 'CLOSE' }, WORKER, deps);
-    const confirmation = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
-    expect(confirmation).toMatch(/Conversation closed/i);
-    expect(confirmation).not.toMatch(/cerrada/i);
+    const picker = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(picker).toMatch(/Why are you closing/i);
+    expect(picker).not.toMatch(/Por qué cierras/i);
   });
 });

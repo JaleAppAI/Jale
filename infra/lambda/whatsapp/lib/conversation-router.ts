@@ -490,22 +490,35 @@ export async function relayWorkerFreeText(
 
   // CERRAR/CLOSE is contextual — only meaningful with an active focus.
   // Without focus, these words relay as ordinary text (not intercepted).
+  // With focus: send a 3-option reason picker and wait for the worker to pick.
+  // closeWorkerConversation is called in Task 4 (handlePickerResponse close_reason branch).
   if (isCloseKeyword(msg.body) && conv.focused_job_conversation_id) {
-    const closed = await closeWorkerConversation(
-      client, conv.focused_job_conversation_id, workerId);
-    await setFocusedConversation(client, conv, null, msg.messageSid, deps);
-    if (closed) {
-      await queueOutboxText(client, msg.messageSid, msg.from,
-        conv.language === 'en'
-          ? 'Conversation closed.'
-          : 'Conversación cerrada.');
-    } else {
-      // Thread already closed (employer closed it simultaneously)
-      await queueOutboxText(client, msg.messageSid, msg.from,
-        conv.language === 'en'
-          ? 'That conversation has already ended.'
-          : 'Esa conversación ya había terminado.');
-    }
+    const { pending_picker: _drop, ...restCtx } = (conv.state_context ?? {}) as ProfileStateContext;
+    const closePicker: ProfileStateContext['pending_picker'] = {
+      kind: 'close_reason',
+      conversationId: conv.focused_job_conversation_id,
+    };
+    await deps.updateConversation(client, conv.id, {
+      state_context: { ...restCtx, pending_picker: closePicker },
+      last_processed_message_sid: msg.messageSid,
+    });
+    conv.state_context = { ...restCtx, pending_picker: closePicker } as ProfileStateContext;
+    const lines = conv.language === 'en'
+      ? [
+          'Why are you closing this conversation?',
+          '1. Found work',
+          '2. Not interested',
+          '3. Other',
+          'Reply with the number.',
+        ]
+      : [
+          '¿Por qué cierras esta conversación?',
+          '1. Encontré trabajo',
+          '2. No me interesa',
+          '3. Otro',
+          'Responde con el número.',
+        ];
+    await queueOutboxText(client, msg.messageSid, msg.from, lines.join('\n'));
     return workerId;
   }
 
