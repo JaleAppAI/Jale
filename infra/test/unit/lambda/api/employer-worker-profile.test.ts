@@ -57,7 +57,7 @@ describe('employer-worker-profile Lambda', () => {
     expect(JSON.parse(res.body).error).toBe('forbidden');
   });
 
-  it('returns 200 with worker profile and application status', async () => {
+  it('returns 200 with worker profile including safe onboarding facts', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const mockProfile = {
       worker_id: 'worker-uuid',
@@ -67,6 +67,10 @@ describe('employer-worker-profile Lambda', () => {
       availability: 'immediate',
       years_experience: 3,
       location: 'LA',
+      main_trade: 'electrician',
+      main_trade_other: null,
+      has_transportation: true,
+      city: 'Los Angeles',
       application_status: 'pending',
       applied_at: new Date().toISOString(),
     };
@@ -84,6 +88,29 @@ describe('employer-worker-profile Lambda', () => {
     expect(profileQuery).toContain('WHERE ws.worker_id = ja.worker_id');
     expect(profileQuery).toContain('j.employer_id = $3');
     expect(profileQuery).not.toContain('wp.skills');
+    // Safe onboarding facts must be in the query
+    expect(profileQuery).toContain('u.main_trade');
+    expect(profileQuery).toContain('u.main_trade_other');
+    expect(profileQuery).toContain('u.has_transportation');
+    expect(profileQuery).toContain('u.city');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('does not expose scoring or rubric internals in the SQL query', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
+      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] }) // job ownership
+      .mockResolvedValueOnce({ rows: [{ worker_id: 'w', full_name: null, phone: null, skills: [], availability: null, years_experience: null, location: null, main_trade: null, main_trade_other: null, has_transportation: null, city: null, application_status: 'pending', applied_at: null }] }) // profile query
+      .mockResolvedValueOnce({}); // COMMIT
+    await handler(makeEvent('employer-sub'));
+    const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
+    expect(profileQuery).not.toContain('trade_competency_score');
+    expect(profileQuery).not.toContain('trust_signals');
+    expect(profileQuery).not.toContain('worker_trust_assessments');
+    expect(profileQuery).not.toContain('score_components');
+    expect(profileQuery).not.toContain('score_rationale');
+    expect(profileQuery).not.toContain('confidence_scores');
   });
 });

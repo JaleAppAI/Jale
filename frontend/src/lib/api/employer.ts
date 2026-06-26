@@ -326,6 +326,10 @@ export interface WorkerProfile {
   availability: string | null;
   years_experience: number | null;
   location: string | null;
+  main_trade: string | null;
+  main_trade_other: string | null;
+  has_transportation: boolean | null;
+  city: string | null;
   application_status: ApplicationStatus;
   applied_at: string | null;
 }

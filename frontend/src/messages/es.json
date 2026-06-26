@@ -506,6 +506,18 @@
                 "part_time": "Medio tiempo",
                 "weekends": "Fines de semana",
                 "flexible": "Flexible"
+            },
+            "trade": "Oficio",
+            "fallback_trade": "Oficio no especificado",
+            "transportation_yes": "Tiene transporte propio",
+            "transportation_no": "Sin transporte propio",
+            "trades": {
+                "electrician": "Electricista",
+                "plumber": "Plomero",
+                "carpenter": "Carpintero",
+                "concrete": "Concreto",
+                "painting": "Pintura",
+                "other": "Otro"
             }
         },
         "post_job_docs": {
