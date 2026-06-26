@@ -418,7 +418,7 @@ async function sendChatsPickerOrAutoFocus(
   }>(
     `SELECT jc.id,
             COALESCE(NULLIF(j.title, ''), 'Trabajo') AS job_title,
-            COALESCE(NULLIF(j.company, ''), 'Empleador') AS company,
+            employer_display_name(jc.employer_id) AS company,
             jc.worker_thread_number
        FROM job_conversations jc
        JOIN jobs j ON j.id = jc.job_id

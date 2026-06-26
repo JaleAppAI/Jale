@@ -80,7 +80,7 @@ type OpenThreadRow = {
 const OPEN_THREAD_SELECT = `
   SELECT jc.id, jc.application_id, jc.worker_thread_number,
          j.title AS job_title,
-         COALESCE(NULLIF(j.company, ''), 'Empleador') AS company
+         employer_display_name(jc.employer_id) AS company
     FROM job_conversations jc
     JOIN jobs j ON j.id = jc.job_id`;
 
@@ -700,7 +700,7 @@ async function openWorkerConversation(
   }>(
     `SELECT jc.id, jc.application_id, jc.worker_thread_number,
             j.title AS job_title,
-            COALESCE(NULLIF(j.company, ''), 'Empleador') AS company
+            employer_display_name(jc.employer_id) AS company
      FROM job_conversations jc
      JOIN jobs j ON j.id = jc.job_id
      WHERE ${filter}

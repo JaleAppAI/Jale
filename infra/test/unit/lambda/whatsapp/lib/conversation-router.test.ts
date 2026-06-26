@@ -330,6 +330,9 @@ describe('CHATS/MENSAJES keyword in tryConversationRelay', () => {
       .find((sql: string) => /FROM job_conversations/.test(sql) && /status = 'open'/.test(sql));
     expect(openThreadsSql).toBeDefined();
     expect(openThreadsSql).not.toMatch(/accepted_at/);
+    // Company label resolves via the SECURITY DEFINER lookup, not j.company
+    // (jale_whatsapp cannot read employer rows directly).
+    expect(openThreadsSql).toMatch(/employer_display_name\(/);
   });
 
   it('CHATS with 1 open thread: shows the picker (no auto-focus)', async () => {

@@ -83,6 +83,19 @@ describe('recordWorkerConversationReply (focused-thread)', () => {
       /UPDATE job_conversations/.test(sql) && /accepted_at/.test(sql));
     expect(update).toBeDefined();
   });
+
+  it('resolves the company label via employer_display_name(), not j.company', async () => {
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([
+        { id: CONV_A, application_id: 'app-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+      ]))
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await recordWorkerConversationReply(client, WORKER, 'hola', 'whatsapp:+1512', 'SM5', CONV_A);
+    const select = mockQuery.mock.calls.find(([sql]) =>
+      /FROM job_conversations jc/.test(sql) && /jc\.id = \$1/.test(sql));
+    expect(select).toBeDefined();
+    expect(select![0]).toMatch(/employer_display_name\(jc\.employer_id\)/);
+  });
 });
 
 import { sendPendingJobMessageOutbox } from '../../../../lambda/lib/job-messaging';
