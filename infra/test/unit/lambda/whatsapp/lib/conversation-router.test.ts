@@ -668,3 +668,95 @@ describe('EN/ES language assertions for Phase 2 messages', () => {
     expect(picker).not.toMatch(/Por qué cierras/i);
   });
 });
+
+import type { ProfileStateContext } from '../../../../../lambda/whatsapp/lib/flows';
+
+describe('handlePickerResponse — close_reason branch', () => {
+  const CLOSE_CONV = 'conv-to-close';
+  const baseCloseConv = {
+    ...baseConv,
+    focused_job_conversation_id: CLOSE_CONV,
+    state_context: {
+      pending_picker: { kind: 'close_reason' as const, conversationId: CLOSE_CONV },
+    } as ProfileStateContext,
+  };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('pick 1 (found work) closes with "encontró trabajo" system message and clears focus', async () => {
+    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
+    const conv = { ...baseCloseConv, language: 'es' as const };
+    const result = await handlePickerResponse(client, conv, { ...msg, body: '1' }, WORKER, deps);
+    expect(result).toBe(WORKER);
+    expect(closeWorkerConversation).toHaveBeenCalledWith(
+      client, CLOSE_CONV, WORKER,
+      'El trabajador encontró trabajo / Worker found work',
+    );
+    const focusClear = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusClear![2].focused_job_conversation_id).toBeNull();
+    const confirmation = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(confirmation).toMatch(/cerrada/i);
+  });
+
+  it('pick 2 (not interested) closes with "no está interesado" system message', async () => {
+    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
+    const conv = { ...baseCloseConv, language: 'es' as const };
+    await handlePickerResponse(client, conv, { ...msg, body: '2' }, WORKER, deps);
+    expect(closeWorkerConversation).toHaveBeenCalledWith(
+      client, CLOSE_CONV, WORKER,
+      'El trabajador no está interesado / Worker is not interested',
+    );
+  });
+
+  it('pick 3 (other) closes with default system message', async () => {
+    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
+    const conv = { ...baseCloseConv, language: 'es' as const };
+    await handlePickerResponse(client, conv, { ...msg, body: '3' }, WORKER, deps);
+    expect(closeWorkerConversation).toHaveBeenCalledWith(
+      client, CLOSE_CONV, WORKER,
+      'El trabajador terminó la conversación / Worker ended the conversation',
+    );
+  });
+
+  it('pick 1 EN sends "Conversation closed." confirmation', async () => {
+    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
+    const conv = { ...baseCloseConv, language: 'en' as const };
+    await handlePickerResponse(client, conv, { ...msg, body: '1' }, WORKER, deps);
+    const confirmation = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(confirmation).toMatch(/Conversation closed/i);
+    expect(confirmation).not.toMatch(/cerrada/i);
+  });
+
+  it('out-of-range pick 4 reprompts with valid range (ES)', async () => {
+    const conv = { ...baseCloseConv, language: 'es' as const };
+    const result = await handlePickerResponse(client, conv, { ...msg, body: '4' }, WORKER, deps);
+    expect(result).toBe(WORKER);
+    expect(closeWorkerConversation).not.toHaveBeenCalled();
+    const reprompt = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(reprompt).toMatch(/1 y 3/);
+  });
+
+  it('out-of-range pick 0 reprompts (EN)', async () => {
+    const conv = { ...baseCloseConv, language: 'en' as const };
+    await handlePickerResponse(client, conv, { ...msg, body: '0' }, WORKER, deps);
+    expect(closeWorkerConversation).not.toHaveBeenCalled();
+    const reprompt = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(reprompt).toMatch(/1 and 3/);
+  });
+
+  it('already-closed thread (returns false) sends "ya había terminado" notice', async () => {
+    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(false);
+    const conv = { ...baseCloseConv, language: 'es' as const };
+    await handlePickerResponse(client, conv, { ...msg, body: '1' }, WORKER, deps);
+    const notice = (queueOutboxText as jest.Mock).mock.calls[0][3] as string;
+    expect(notice).toMatch(/ya había terminado/i);
+  });
+
+  it('non-numeric body returns null (falls through to relay)', async () => {
+    const conv = { ...baseCloseConv };
+    const result = await handlePickerResponse(client, conv, { ...msg, body: 'hola' }, WORKER, deps);
+    expect(result).toBeNull();
+    expect(closeWorkerConversation).not.toHaveBeenCalled();
+  });
+});

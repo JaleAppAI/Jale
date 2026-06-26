@@ -491,7 +491,6 @@ export async function relayWorkerFreeText(
   // CERRAR/CLOSE is contextual — only meaningful with an active focus.
   // Without focus, these words relay as ordinary text (not intercepted).
   // With focus: send a 3-option reason picker and wait for the worker to pick.
-  // closeWorkerConversation is called in Task 4 (handlePickerResponse close_reason branch).
   if (isCloseKeyword(msg.body) && conv.focused_job_conversation_id) {
     const { pending_picker: _drop, ...restCtx } = (conv.state_context ?? {}) as ProfileStateContext;
     const closePicker: ProfileStateContext['pending_picker'] = {
@@ -579,8 +578,33 @@ export async function handlePickerResponse(
   const pick = parseDisambiguationPick(msg.body);
   if (!ctx || pick === null) return null;
 
-  // Temporary guard: close_reason branch is implemented in Task 4.
-  if (ctx.kind === 'close_reason') return null;
+  if (ctx.kind === 'close_reason') {
+    const SYSTEM_BODIES: Record<number, string> = {
+      1: 'El trabajador encontró trabajo / Worker found work',
+      2: 'El trabajador no está interesado / Worker is not interested',
+      3: 'El trabajador terminó la conversación / Worker ended the conversation',
+    };
+    if (pick < 1 || pick > 3) {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conv.language === 'en'
+          ? 'Please send a number between 1 and 3.'
+          : 'Envía un número entre 1 y 3.');
+      return workerId;
+    }
+    const closed = await closeWorkerConversation(
+      client, ctx.conversationId, workerId, SYSTEM_BODIES[pick]);
+    await setFocusedConversation(client, conv, null, msg.messageSid, deps);
+    if (closed) {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conv.language === 'en' ? 'Conversation closed.' : 'Conversación cerrada.');
+    } else {
+      await queueOutboxText(client, msg.messageSid, msg.from,
+        conv.language === 'en'
+          ? 'That conversation has already ended.'
+          : 'Esa conversación ya había terminado.');
+    }
+    return workerId;
+  }
 
   const chosen = ctx.threads[pick - 1];
   if (!chosen) {
