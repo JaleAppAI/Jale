@@ -140,6 +140,14 @@ export default function WorkerProfilePage() {
     return value;
   };
 
+  const tradeLabel = (trade: WorkerProfile['main_trade'], tradeOther: WorkerProfile['main_trade_other']) => {
+    if (!trade) return t('worker_profile.fallback_trade');
+    if (trade === 'other') return tradeOther || t('worker_profile.trades.other');
+    const knownTrades = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting'];
+    if (knownTrades.includes(trade)) return t(`worker_profile.trades.${trade}`);
+    return trade;
+  };
+
   const displayName = profile?.full_name?.trim() || t('worker_profile.fallback_name');
   const initials = displayName.split(/\s+/).map(name => name[0]).join('').slice(0, 2).toUpperCase() || '?';
   const skills = profile?.skills ?? [];
@@ -179,13 +187,21 @@ export default function WorkerProfilePage() {
               </div>
               <div className="grid grid-cols-2 gap-2 text-sm text-gray-600">
                 <span>{t('worker_profile.phone')}: {profile.phone || t('worker_profile.fallback_phone')}</span>
-                <span>{t('worker_profile.location')}: {profile.location || t('worker_profile.fallback_location')}</span>
+                <span>{t('worker_profile.location')}: {profile.city || profile.location || t('worker_profile.fallback_location')}</span>
                 <span>
                   {yearsExperience === null
                     ? t('worker_profile.fallback_experience')
                     : t('worker_profile.years_experience', { years: yearsExperience })}
                 </span>
                 <span>{t('worker_profile.availability_label')}: {availabilityLabel(profile.availability)}</span>
+                <span>{t('worker_profile.trade')}: {tradeLabel(profile.main_trade, profile.main_trade_other)}</span>
+                <span>
+                  {profile.has_transportation === null || profile.has_transportation === undefined
+                    ? null
+                    : profile.has_transportation
+                    ? t('worker_profile.transportation_yes')
+                    : t('worker_profile.transportation_no')}
+                </span>
               </div>
             </div>
 

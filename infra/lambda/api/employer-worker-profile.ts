@@ -99,6 +99,7 @@ export const handler = async (
               ) AS skills,
               wp.availability,
               wp.years_experience, wp.location,
+              u.main_trade, u.main_trade_other, u.has_transportation, u.city,
               CASE ja.status
                 WHEN 'reviewed' THEN 'contacted'
                 WHEN 'rejected' THEN 'not_interested'
