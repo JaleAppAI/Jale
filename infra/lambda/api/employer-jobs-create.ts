@@ -31,6 +31,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       expected_duration?: string | null;
       shift_schedule?: string | null;
       transportation_required?: boolean;
+      work_authorization_required?: boolean;
       language_preference?: string[];
       number_of_workers_needed?: number;
       trade_category?: string;
@@ -120,6 +121,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          expected_duration,
          shift_schedule,
          transportation_required,
+         work_authorization_required,
          language_preference,
          number_of_workers_needed,
          trade_category,
@@ -128,11 +130,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        )
        VALUES (
          (SELECT id FROM users WHERE cognito_sub = $1),
-         $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12, $13, $14, $15, $16, $17, $18
+         $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12, $13, $14, $15, $16, $17, $18, $19
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
          pay_min, pay_max, start_date, expected_duration, shift_schedule,
-         transportation_required, language_preference, number_of_workers_needed,
+         transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, certifications`,
@@ -150,6 +152,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.expected_duration,
         jobFields.value.shift_schedule,
         jobFields.value.transportation_required,
+        jobFields.value.work_authorization_required,
         jobFields.value.language_preference,
         jobFields.value.number_of_workers_needed,
         jobFields.value.trade_category,

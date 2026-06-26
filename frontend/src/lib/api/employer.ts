@@ -19,6 +19,7 @@ export type Job = {
   expected_duration: string | null;
   shift_schedule: string | null;
   transportation_required: boolean;
+  work_authorization_required: boolean;
   language_preference: Array<'any' | 'en' | 'es'>;
   number_of_workers_needed: number;
   trade_category: 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'drywall' | 'general_labor' | 'other' | null;
@@ -29,7 +30,7 @@ export type Job = {
 
 export type EmployerJobDetail = Job & {
   description: string | null;
-  required_docs: Array<'resume' | 'driver_license' | 'ssn'>;
+  required_docs: Array<'resume' | 'driver_license'>;
 };
 
 export type Applicant = {
@@ -181,6 +182,7 @@ export async function createJob(
     expected_duration?: string | null;
     shift_schedule?: string | null;
     transportation_required?: boolean;
+    work_authorization_required?: boolean;
     language_preference?: Array<'any' | 'en' | 'es'>;
     number_of_workers_needed?: number;
     trade_category: string;

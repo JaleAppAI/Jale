@@ -6,7 +6,7 @@ export const LEGACY_APPLICATION_STATUS_MAP: Record<string, ApplicationStatus> = 
   reviewed: 'contacted',
   rejected: 'not_interested',
 };
-export const DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
+export const DOC_TYPES = ['resume', 'driver_license'] as const;
 export const LANGUAGE_PREFERENCES = ['any', 'en', 'es'] as const;
 export const TRADE_CATEGORIES = [
   'electrician',
@@ -31,6 +31,7 @@ export interface ParsedJobFields {
   expected_duration: string | null;
   shift_schedule: string | null;
   transportation_required: boolean;
+  work_authorization_required: boolean;
   language_preference: string[];
   number_of_workers_needed: number;
   trade_category: string;
@@ -111,6 +112,11 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
     return { ok: false, error: 'invalid_transportation_required' };
   }
 
+  const workAuthorizationRequired = body.work_authorization_required ?? false;
+  if (typeof workAuthorizationRequired !== 'boolean') {
+    return { ok: false, error: 'invalid_work_authorization_required' };
+  }
+
   const language = normalizeStringArray(body.language_preference ?? ['any'], LANGUAGE_PREFERENCES, 'language_preference');
   if (!language.ok) return language;
   if (language.value.includes('any') && language.value.length > 1) {
@@ -151,6 +157,7 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
       expected_duration: optionalString(body.expected_duration),
       shift_schedule: optionalString(body.shift_schedule),
       transportation_required: transportationRequired,
+      work_authorization_required: workAuthorizationRequired,
       language_preference: language.value,
       number_of_workers_needed: workersNeeded,
       trade_category: tradeCategory,

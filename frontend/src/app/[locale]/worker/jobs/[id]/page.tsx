@@ -19,7 +19,6 @@ export const dynamic = 'force-dynamic';
 const DOC_LABELS: Record<string, string> = {
   resume: 'Resume',
   driver_license: "Driver's License",
-  ssn: 'SSN',
 };
 
 export default function WorkerJobDetailPage() {
@@ -189,6 +188,9 @@ export default function WorkerJobDetailPage() {
           )}
           {job.required_experience_years !== undefined && job.required_experience_years !== null && (
             <Detail label={t('required_experience')} value={`${job.required_experience_years}`} />
+          )}
+          {job.work_authorization_required && (
+            <Detail label={t('work_authorization_required')} value={t('work_authorization_required_yes')} />
           )}
         </div>
 

@@ -38,6 +38,7 @@ const expectedBaselineMigrations = [
   '028_job_messaging_hardening.sql',
   '029_hired_count_trigger_security_definer.sql',
   '030_whatsapp_worker_skills_seed.sql',
+  '031_work_authorization_required.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -91,7 +92,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-030 readiness baseline order', () => {
+  it('locks the 001-031 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -389,6 +390,14 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('SECURITY DEFINER');
     expect(migration).toContain('SET search_path = public');
     expect(migration).not.toContain('CREATE TRIGGER');
+  });
+
+  it('adds work_authorization_required column to jobs in migration 031', () => {
+    const migration = readMigration('031_work_authorization_required.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS work_authorization_required BOOLEAN NOT NULL DEFAULT false');
+    expect(migration).not.toContain("worker_documents");
+    expect(migration).not.toContain("DROP CONSTRAINT IF EXISTS jobs_required_docs_valid");
   });
 
   maybeIt('applies migrations 001-026 against a local Postgres database', async () => {

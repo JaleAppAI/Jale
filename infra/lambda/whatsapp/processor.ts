@@ -2279,7 +2279,6 @@ function localizeDocList(docTypes: string[], lang: Lang): string {
   const labels: Record<string, Record<Lang, string>> = {
     resume: { en: 'Resume', es: 'Resume' },
     driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
-    ssn: { en: 'SSN card / ITIN', es: 'Tarjeta SSN / ITIN' },
   };
   return docTypes.map((docType) => labels[docType]?.[lang] ?? docType).join(', ');
 }
