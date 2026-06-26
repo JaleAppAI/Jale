@@ -257,4 +257,94 @@ describe('AuthStack', () => {
     expect(templateJson).not.toContain('TWILIO_ACCOUNT_SID');
     expect(templateJson).not.toContain('TWILIO_AUTH_TOKEN');
   });
+
+  test('Employer pool uses Cognito default email (no SES config) when sesEmailFromAddress is absent', () => {
+    // Without sesEmailFromAddress context the EmailConfiguration block should
+    // be absent (CDK omits it, Cognito defaults to COGNITO_DEFAULT).
+    const pools = template.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    });
+    const employerPool = Object.values(pools)[0] as any;
+    expect(employerPool.Properties.EmailConfiguration).toBeUndefined();
+  });
+});
+
+// ── Employer pool: SES developer email configuration ──────────────────────────
+describe('AuthStack — employer SES email', () => {
+  let sesTemplate: Template;
+
+  beforeAll(() => {
+    const app = new cdk.App({
+      context: {
+        environment: 'prod',
+        otpSmsFromNumber: '+15125550123',
+        otpSmsRequestTimeoutMs: 3500,
+        otpSmsValidityPeriodSeconds: 180,
+        sesEmailFromAddress: 'no-reply@jaleapp.ai',
+        sesEmailFromName: 'Jale',
+        sesEmailRegion: 'us-east-1',
+      },
+    });
+    const network = new NetworkStack(app, 'SesNetworkStack');
+    const database = new DatabaseStack(app, 'SesDatabaseStack', { network });
+    const auth = new AuthStack(app, 'SesAuthStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    sesTemplate = Template.fromStack(auth);
+  });
+
+  test('Employer pool has EmailSendingAccount DEVELOPER', () => {
+    const pools = sesTemplate.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    });
+    const employerPool = Object.values(pools)[0] as any;
+    expect(employerPool.Properties.EmailConfiguration).toBeDefined();
+    expect(employerPool.Properties.EmailConfiguration.EmailSendingAccount).toBe('DEVELOPER');
+  });
+
+  test('Employer pool From address contains friendly name and no-reply@jaleapp.ai', () => {
+    const pools = sesTemplate.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    });
+    const employerPool = Object.values(pools)[0] as any;
+    const from: string = employerPool.Properties.EmailConfiguration.From ?? '';
+    // e.g. "Jale <no-reply@jaleapp.ai>" — both name and address must be present
+    expect(from).toContain('Jale <');
+    expect(from).toContain('no-reply@jaleapp.ai');
+  });
+
+  test('Employer pool SES SourceArn references SES identity for jaleapp.ai in us-east-1', () => {
+    // The SourceArn region comes from `sesEmailRegion` context (us-east-1 here),
+    // NOT from the stack's deployment region. The SES identity must exist in that
+    // same region or Cognito email sends will fail at runtime.
+    const pools = sesTemplate.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    });
+    const employerPool = Object.values(pools)[0] as any;
+    const sourceArn = JSON.stringify(employerPool.Properties.EmailConfiguration.SourceArn);
+    expect(sourceArn).toContain('ses');
+    expect(sourceArn).toContain('us-east-1');
+    expect(sourceArn).toContain('jaleapp.ai');
+  });
+
+  test('Worker pool is unaffected — no EmailConfiguration (phone/OTP, no email flow)', () => {
+    const pools = sesTemplate.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-worker-pool' },
+    });
+    const workerPool = Object.values(pools)[0] as any;
+    expect(workerPool.Properties.EmailConfiguration).toBeUndefined();
+  });
+
+  test('Synthesized template contains no plaintext SES credentials or API keys', () => {
+    // SES DEVELOPER mode uses IAM/resource-policy; no API key or secret
+    // should appear in the synthesized template.
+    const templateJson = JSON.stringify(sesTemplate.toJSON());
+    expect(templateJson).not.toContain('SES_API_KEY');
+    expect(templateJson).not.toContain('SES_SECRET');
+    expect(templateJson).not.toContain('AWS_ACCESS_KEY_ID');
+    expect(templateJson).not.toContain('AWS_SECRET_ACCESS_KEY');
+  });
 });

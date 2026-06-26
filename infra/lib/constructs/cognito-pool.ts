@@ -46,6 +46,19 @@ export interface CognitoPoolProps {
   smsExternalId?: string;
   /** Enable ADMIN_USER_PASSWORD_AUTH flow — for integration tests only, must NOT be true in prod */
   adminUserPassword?: boolean;
+  /**
+   * Email sending configuration. Use `cognito.UserPoolEmail.withSES(...)` to
+   * enable SES developer sending from an authenticated domain. Omit (or leave
+   * undefined) to use Cognito's default shared email service.
+   *
+   * Operator pre-requisites before deploy (not enforced by CDK). Authoritative
+   * checklist is in AuthStack where the context vars are read and validated:
+   *   1. SES domain identity verified for the sender domain.
+   *   2. SES identity resource policy grants cognito-idp.amazonaws.com
+   *      ses:SendEmail / ses:SendRawEmail, scoped to the user pool ARN.
+   *   3. SES account out of sandbox (or destination addresses sandbox-verified).
+   */
+  email?: cognito.UserPoolEmail;
 }
 
 export { CognitoPool as JaleCognitoPool };
@@ -80,6 +93,7 @@ export class CognitoPool extends Construct {
         : undefined,
       smsRole: props.smsRole,
       smsRoleExternalId: props.smsExternalId,
+      email: props.email,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
