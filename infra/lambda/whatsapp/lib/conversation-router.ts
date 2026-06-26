@@ -393,6 +393,14 @@ export async function handleEmployerConversationTextAction(
  * used by the post-close continuation (the worker did not ask for a list). The
  * explicit CHATS/MENSAJES command passes false so the worker always sees the
  * list and explicitly picks, even with a single open thread.
+ *
+ * Lists ALL open threads regardless of `accepted_at`. A new invite delivered as
+ * a freeform message (cross-session path) has no Open/Decline buttons and stays
+ * accepted_at=NULL, so gating on accepted_at would make it invisible here and
+ * lock the worker out of the conversation. Picking an un-accepted thread sets
+ * focus; the worker's next reply routes via focus (no accepted_at gate) and
+ * sets accepted_at. Auto-route (no-focus reply) keeps the accepted_at gate so
+ * an in-progress chat is not interrupted by a brand-new invite.
  */
 async function sendChatsPickerOrAutoFocus(
   client: PoolClient,
@@ -416,7 +424,6 @@ async function sendChatsPickerOrAutoFocus(
        JOIN jobs j ON j.id = jc.job_id
       WHERE jc.worker_id = $1
         AND jc.status = 'open'
-        AND jc.accepted_at IS NOT NULL
       ORDER BY jc.worker_thread_number NULLS LAST, jc.created_at`,
     [workerId],
   );

@@ -313,6 +313,25 @@ describe('CHATS/MENSAJES keyword in tryConversationRelay', () => {
     expect(recordWorkerConversationReply).not.toHaveBeenCalled();
   });
 
+  it('CHATS lists all open threads regardless of accepted_at (new freeform invites included)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }) // ToS check
+      .mockResolvedValueOnce({ rows: [
+        { id: 'conv-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+        { id: 'conv-b', job_title: 'Electricista', company: 'BuildCo', worker_thread_number: 2 },
+      ], rowCount: 2 });
+    const conv = { ...baseConv, user_id: WORKER };
+    await tryConversationRelay(client, conv, { ...msg, body: 'CHATS' }, deps);
+
+    // The open-threads query must NOT gate on accepted_at — an unaccepted
+    // freeform invite would otherwise be invisible and unreachable.
+    const openThreadsSql = mockQuery.mock.calls
+      .map((c: any[]) => String(c[0]))
+      .find((sql: string) => /FROM job_conversations/.test(sql) && /status = 'open'/.test(sql));
+    expect(openThreadsSql).toBeDefined();
+    expect(openThreadsSql).not.toMatch(/accepted_at/);
+  });
+
   it('CHATS with 1 open thread: shows the picker (no auto-focus)', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }) // ToS check
