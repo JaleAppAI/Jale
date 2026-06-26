@@ -313,6 +313,33 @@ describe('CHATS/MENSAJES keyword in tryConversationRelay', () => {
     expect(recordWorkerConversationReply).not.toHaveBeenCalled();
   });
 
+  it('CHATS with 1 open thread: shows the picker (no auto-focus)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }) // ToS check
+      .mockResolvedValueOnce({ rows: [                                          // sendChatsPickerOrAutoFocus
+        { id: 'conv-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+      ], rowCount: 1 });
+    const conv = { ...baseConv, user_id: WORKER };
+    const routed = await tryConversationRelay(client, conv, { ...msg, body: 'CHATS' }, deps);
+
+    expect(routed).toBe(WORKER);
+
+    // Picker stored, not a focus switch
+    const updateCalls = (deps.updateConversation as jest.Mock).mock.calls;
+    const state = updateCalls[0]?.[2]?.state_context;
+    expect(state?.pending_picker?.kind).toBe('chats');
+    expect(state?.pending_picker?.threads).toHaveLength(1);
+
+    // Did NOT auto-focus the single thread
+    const focusCall = updateCalls.find(
+      (c: any[]) => c[2]?.focused_job_conversation_id === 'conv-a');
+    expect(focusCall).toBeUndefined();
+
+    // Numbered list rendered
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3];
+    expect(sent).toContain('1. ACME');
+  });
+
   it('CHATS is case-insensitive: "chats" works', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 })

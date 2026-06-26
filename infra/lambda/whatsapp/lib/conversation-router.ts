@@ -180,7 +180,9 @@ export async function tryConversationRelay(
       return workerId;
     }
     await setInternalUserRlsContext(client, workerId);
-    await sendChatsPickerOrAutoFocus(client, conv, workerId, msg, deps);
+    // Explicit CHATS/MENSAJES: always show the list so the worker picks,
+    // even with a single open thread.
+    await sendChatsPickerOrAutoFocus(client, conv, workerId, msg, deps, false);
     return workerId;
   }
 
@@ -385,9 +387,12 @@ export async function handleEmployerConversationTextAction(
 // ── Chats picker / auto-focus helper ──────────────────────────────
 
 /**
- * After clearing focus (e.g. focused thread closed), offer the worker their
- * remaining open threads: auto-focus if exactly 1, send a numbered picker if
- * ≥2, or send a "no open conversations" notice if 0.
+ * Offer the worker their open employer threads: send a "no open conversations"
+ * notice if 0, otherwise list them as a numbered picker. When `autoFocusSingle`
+ * is true and exactly 1 thread is open, skip the list and focus it directly —
+ * used by the post-close continuation (the worker did not ask for a list). The
+ * explicit CHATS/MENSAJES command passes false so the worker always sees the
+ * list and explicitly picks, even with a single open thread.
  */
 async function sendChatsPickerOrAutoFocus(
   client: PoolClient,
@@ -395,6 +400,7 @@ async function sendChatsPickerOrAutoFocus(
   workerId: string,
   msg: IncomingMessage,
   deps: RouterDeps,
+  autoFocusSingle: boolean,
 ): Promise<void> {
   const open = await client.query<{
     id: string;
@@ -423,7 +429,7 @@ async function sendChatsPickerOrAutoFocus(
     return;
   }
 
-  if ((open.rowCount ?? 0) === 1) {
+  if ((open.rowCount ?? 0) === 1 && autoFocusSingle) {
     const row = open.rows[0];
     await setFocusedConversation(client, conv, row.id, msg.messageSid, deps);
     await queueOutboxText(client, msg.messageSid, msg.from,
@@ -433,7 +439,7 @@ async function sendChatsPickerOrAutoFocus(
     return;
   }
 
-  // ≥2 open threads: send picker
+  // ≥1 open thread (or ≥2 when auto-focus is enabled): send picker
   const threads = open.rows.map(r => ({
     conversationId: r.id,
     jobTitle: r.job_title,
@@ -561,7 +567,9 @@ export async function relayWorkerFreeText(
         ? 'That conversation has ended.'
         : 'Esa conversación ya terminó.');
     await setFocusedConversation(client, conv, null, msg.messageSid, deps);
-    await sendChatsPickerOrAutoFocus(client, conv, workerId, msg, deps);
+    // Post-close continuation: auto-focus a single remaining thread (the worker
+    // did not ask for a list — keep them in the flow).
+    await sendChatsPickerOrAutoFocus(client, conv, workerId, msg, deps, true);
     return workerId;
   }
   return null; // no_conversation -> caller falls through to built-in replies
