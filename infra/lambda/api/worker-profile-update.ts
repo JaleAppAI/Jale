@@ -10,7 +10,8 @@ const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'] as const;
 const VALID_AVAIL = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 const MAX_CERTIFICATIONS = 20;
 const MAX_CERTIFICATION_LENGTH = 200;
-const MAX_EXPERIENCE_MONTHS = 960;
+const MAX_EXPERIENCE_YEARS = 80;
+const MAX_EXPERIENCE_MONTHS = MAX_EXPERIENCE_YEARS * 12; // 960; mirrors the worker_profiles CHECK
 
 function normalizeStringList(values: string[], maxItems: number, maxLength: number, transform: (value: string) => string): string[] | null {
   const normalized: string[] = [];
@@ -97,10 +98,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
     }
     if (years_experience !== undefined && years_experience !== null) {
-      const validNumericExperience = typeof years_experience === 'number' && years_experience >= 0 && Number.isInteger(years_experience);
+      const validNumericExperience = typeof years_experience === 'number' && years_experience >= 0 && years_experience <= MAX_EXPERIENCE_YEARS && Number.isInteger(years_experience);
       const validSlugExperience = typeof years_experience === 'string' && VALID_EXPERIENCE.includes(years_experience as any);
       if (!validNumericExperience && !validSlugExperience) {
-        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_years_experience', valid: VALID_EXPERIENCE }) };
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_years_experience', valid: VALID_EXPERIENCE, max: MAX_EXPERIENCE_YEARS }) };
       }
     }
     if (has_transportation !== undefined && has_transportation !== null && typeof has_transportation !== 'boolean') {

@@ -411,6 +411,10 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('jobs_required_experience_months_check');
     expect(migration).toContain('worker_profiles_experience_months_check');
     expect(migration).toContain('worker_profiles_certifications_count_check');
+    // Both year→month backfills must clamp via LEAST so a legacy row with
+    // years > 80 cannot violate the new BETWEEN 0 AND 960 CHECK and abort.
+    expect(migration).toMatch(/LEAST\(required_experience_years \* 12, 960\)/);
+    expect(migration).toMatch(/LEAST\(years_experience \* 12, 960\)/);
   });
 
   maybeIt('applies migrations 001-032 against a local Postgres database', async () => {

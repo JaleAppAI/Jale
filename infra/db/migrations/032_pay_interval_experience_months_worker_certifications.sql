@@ -6,8 +6,11 @@ ALTER TABLE jobs
   ADD COLUMN IF NOT EXISTS pay_interval TEXT,
   ADD COLUMN IF NOT EXISTS required_experience_months INTEGER;
 
+-- Clamp to the 0-960 bound below: legacy year columns are only CHECK (>= 0)
+-- (mig 023 jobs / mig 003 worker_profiles), so an out-of-range row must not
+-- abort the ADD CONSTRAINT that follows.
 UPDATE jobs
-SET required_experience_months = required_experience_years * 12
+SET required_experience_months = LEAST(required_experience_years * 12, 960)
 WHERE required_experience_months IS NULL
   AND required_experience_years IS NOT NULL;
 
@@ -24,7 +27,7 @@ ALTER TABLE worker_profiles
   ADD COLUMN IF NOT EXISTS certifications TEXT[] NOT NULL DEFAULT '{}'::text[];
 
 UPDATE worker_profiles
-SET experience_months = years_experience * 12
+SET experience_months = LEAST(years_experience * 12, 960)
 WHERE experience_months IS NULL
   AND years_experience IS NOT NULL;
 

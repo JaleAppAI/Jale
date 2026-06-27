@@ -196,6 +196,29 @@ describe('worker-profile-update', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
+  it('rejects numeric years_experience above the 80-year cap before writing', async () => {
+    const res = await handler(mkEv({ years_experience: 81 }));
+
+    expect(res.statusCode).toBe(400);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error).toBe('invalid_years_experience');
+    expect(parsed.max).toBe(80);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('accepts numeric years_experience exactly at the 80-year cap', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('INSERT INTO worker_profiles')) {
+        return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: 'full_time', years_experience: 80, experience_months: 960, location: 'TX', bio: null, certifications: [] }] });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ availability: 'full_time', years_experience: 80, location: 'TX' }));
+
+    expect(res.statusCode).toBe(200);
+  });
+
   it('rejects partial coordinate payloads before writing', async () => {
     const res = await handler(mkEv({ latitude: 39.961176 }));
 
