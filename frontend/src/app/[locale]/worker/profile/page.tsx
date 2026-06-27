@@ -88,8 +88,8 @@ export default function WorkerProfilePage() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Field label={t('field_phone')} value={profile.phone} />
             <Field label={t('field_name')} value={profile.full_name} />
-            <SkillsField label={t('field_skills')} skills={profile.skills} />
-            <CertificationsField label={t('field_certifications')} certifications={profile.certifications ?? []} />
+            <PillListField label={t('field_skills')} items={profile.skills} />
+            <PillListField label={t('field_certifications')} items={profile.certifications ?? []} />
             <Field label={t('field_availability')} value={profile.availability ?? '-'} />
             <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
             <Field label={t('field_location')} value={profile.location ?? '-'} />
@@ -126,34 +126,15 @@ function Field({ label, value }: { label: string; value: string | null }) {
   );
 }
 
-function SkillsField({ label, skills }: { label: string; skills: string[] }) {
+function PillListField({ label, items }: { label: string; items: string[] }) {
   return (
     <div>
       <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
-      {skills.length > 0 ? (
+      {items.length > 0 ? (
         <div className="flex flex-wrap gap-1.5">
-          {skills.map((skill) => (
-            <span key={skill} className="pill pill-info" style={{ fontSize: 10, textTransform: 'none' }}>
-              {skill}
-            </span>
-          ))}
-        </div>
-      ) : (
-        <p className="text-sm">-</p>
-      )}
-    </div>
-  );
-}
-
-function CertificationsField({ label, certifications }: { label: string; certifications: string[] }) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
-      {certifications.length > 0 ? (
-        <div className="flex flex-wrap gap-1.5">
-          {certifications.map((cert) => (
-            <span key={cert} className="pill pill-info" style={{ fontSize: 10, textTransform: 'none' }}>
-              {cert}
+          {items.map((item) => (
+            <span key={item} className="pill pill-info" style={{ fontSize: 10, textTransform: 'none' }}>
+              {item}
             </span>
           ))}
         </div>

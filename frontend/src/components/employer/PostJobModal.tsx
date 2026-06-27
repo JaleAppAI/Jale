@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { createJob, Job } from '@/lib/api/employer';
+import { splitDedupe } from '@/lib/text';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -68,10 +69,6 @@ function parseOptionalNumber(value: string): number | null {
   if (!value.trim()) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
-}
-
-function splitCertifications(value: string): string[] {
-  return Array.from(new Set(value.split(',').map((item) => item.trim()).filter(Boolean)));
 }
 
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
@@ -175,7 +172,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         number_of_workers_needed: Number(form.number_of_workers_needed),
         trade_category: form.trade_category,
         required_experience_years,
-        certifications: splitCertifications(form.certifications),
+        certifications: splitDedupe(form.certifications),
       });
       onJobCreated(job);
       handleClose();
