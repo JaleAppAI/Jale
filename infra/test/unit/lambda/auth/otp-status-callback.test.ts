@@ -89,4 +89,25 @@ describe('OTP status callback Lambda', () => {
 
     logSpy.mockRestore();
   });
+
+  it('sets a TTL via if_not_exists on every upsert so callbacks cannot create immortal rows', async () => {
+    await handler(event('MessageSid=SM123&MessageStatus=delivered'));
+
+    const command = mockDynamoSend.mock.calls[0][0];
+    expect(command.input.UpdateExpression).toContain('#ttl = if_not_exists(#ttl, :ttl)');
+    expect(command.input.ExpressionAttributeNames['#ttl']).toBe('ttl');
+    expect(Number(command.input.ExpressionAttributeValues[':ttl'].N)).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  it('acks with 200 and emits an error metric when the DynamoDB upsert throws', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    mockDynamoSend.mockRejectedValueOnce(new Error('dynamo unavailable'));
+
+    const result = await handler(event('MessageSid=SM123&MessageStatus=delivered'));
+
+    expect(result.statusCode).toBe(200);
+    expect(JSON.stringify(logSpy.mock.calls)).toContain('WorkerOtpCallbackError');
+
+    logSpy.mockRestore();
+  });
 });

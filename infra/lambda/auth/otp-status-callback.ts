@@ -4,63 +4,59 @@ import {
   UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb';
 import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
-import {
   parseFormBody,
   reconstructWebhookUrl,
   validateTwilioSignature,
 } from '../whatsapp/lib/twilio';
-
-interface OtpTwilioSecret {
-  accountSid: string;
-  authToken: string;
-}
+import { getOtpTwilioSecret, emitOtpMetric, _clearSecretCacheForTests } from './lib/otp-twilio';
 
 const dynamodb = new DynamoDBClient({});
-const secretsManager = new SecretsManagerClient({});
 
-let cachedSecret: OtpTwilioSecret | null = null;
-let cachedAt = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
+export { _clearSecretCacheForTests };
 
 export const handler = async (event: any): Promise<APIGatewayProxyResult> => {
-  const rawBody = event.isBase64Encoded
-    ? Buffer.from(event.body ?? '', 'base64').toString('utf8')
-    : event.body ?? '';
-  const params = parseFormBody(rawBody);
-  const secret = await getOtpTwilioSecret();
-  const fullUrl = reconstructCallbackUrl(event);
-  const signature = event.headers['X-Twilio-Signature'] ?? event.headers['x-twilio-signature'];
+  try {
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body ?? '', 'base64').toString('utf8')
+      : event.body ?? '';
+    const params = parseFormBody(rawBody);
+    const secret = await getOtpTwilioSecret();
+    const fullUrl = reconstructCallbackUrl(event);
+    const signature = event.headers?.['X-Twilio-Signature'] ?? event.headers?.['x-twilio-signature'];
 
-  if (!validateTwilioSignature(fullUrl, params, signature, secret.authToken)) {
-    emitOtpMetric('WorkerOtpCallbackRejected');
-    return { statusCode: 403, body: 'invalid signature' };
+    if (!validateTwilioSignature(fullUrl, params, signature, secret.authToken)) {
+      emitOtpMetric('WorkerOtpCallbackRejected');
+      return { statusCode: 403, body: 'invalid signature' };
+    }
+
+    const messageSid = params.MessageSid;
+    const messageStatus = params.MessageStatus ?? params.SmsStatus;
+    if (!messageSid || !messageStatus) {
+      return { statusCode: 400, body: 'missing MessageSid or MessageStatus' };
+    }
+
+    await updateOtpDeliveryStatus({
+      messageSid,
+      messageStatus,
+      errorCode: params.ErrorCode,
+      errorMessage: params.ErrorMessage,
+    });
+
+    if (messageStatus === 'delivered') {
+      emitOtpMetric('WorkerOtpDelivered');
+    } else if (messageStatus === 'undelivered' || messageStatus === 'failed') {
+      emitOtpMetric('WorkerOtpDeliveryFailed', { errorCode: params.ErrorCode ?? 'unknown' });
+    } else {
+      emitOtpMetric('WorkerOtpDeliveryStatus', { status: messageStatus });
+    }
+
+    return { statusCode: 200, body: 'ok' };
+  } catch {
+    // Delivery-status tracking is best-effort. Swallow internal errors and ack
+    // so Twilio does not retry-storm the public callback; the lost row is telemetry only.
+    emitOtpMetric('WorkerOtpCallbackError');
+    return { statusCode: 200, body: 'ok' };
   }
-
-  const messageSid = params.MessageSid;
-  const messageStatus = params.MessageStatus ?? params.SmsStatus;
-  if (!messageSid || !messageStatus) {
-    return { statusCode: 400, body: 'missing MessageSid or MessageStatus' };
-  }
-
-  await updateOtpDeliveryStatus({
-    messageSid,
-    messageStatus,
-    errorCode: params.ErrorCode,
-    errorMessage: params.ErrorMessage,
-  });
-
-  if (messageStatus === 'delivered') {
-    emitOtpMetric('WorkerOtpDelivered');
-  } else if (messageStatus === 'undelivered' || messageStatus === 'failed') {
-    emitOtpMetric('WorkerOtpDeliveryFailed', { errorCode: params.ErrorCode ?? 'unknown' });
-  } else {
-    emitOtpMetric('WorkerOtpDeliveryStatus', { status: messageStatus });
-  }
-
-  return { statusCode: 200, body: 'ok' };
 };
 
 function reconstructCallbackUrl(event: any): string {
@@ -76,28 +72,6 @@ function reconstructCallbackUrl(event: any): string {
   return reconstructWebhookUrl(event.requestContext ?? {}, event.headers ?? {});
 }
 
-async function getOtpTwilioSecret(): Promise<OtpTwilioSecret> {
-  const now = Date.now();
-  if (cachedSecret && now - cachedAt < CACHE_TTL_MS) {
-    return cachedSecret;
-  }
-  const secretId = process.env.TWILIO_SECRET_ARN;
-  if (!secretId) {
-    throw new Error('Missing TWILIO_SECRET_ARN');
-  }
-  const resp = await secretsManager.send(new GetSecretValueCommand({ SecretId: secretId }));
-  if (!resp.SecretString) {
-    throw new Error('TWILIO_SECRET_ARN secret has no SecretString');
-  }
-  const parsed = JSON.parse(resp.SecretString) as Partial<OtpTwilioSecret>;
-  if (!parsed.accountSid || !parsed.authToken) {
-    throw new Error('OTP Twilio secret missing accountSid/authToken');
-  }
-  cachedSecret = parsed as OtpTwilioSecret;
-  cachedAt = now;
-  return cachedSecret;
-}
-
 async function updateOtpDeliveryStatus(input: {
   messageSid: string;
   messageStatus: string;
@@ -109,15 +83,21 @@ async function updateOtpDeliveryStatus(input: {
     throw new Error('Missing OTP_DELIVERY_STATUS_TABLE_NAME');
   }
   const now = new Date().toISOString();
-  const values: Record<string, { S: string }> = {
+  // Mirror the 14-day TTL set by create-auth-challenge's PutItem so a callback
+  // that upserts a row without a prior record (skipped/failed PutItem) cannot
+  // create an immortal entry. if_not_exists preserves an existing TTL.
+  const ttl = Math.floor(Date.now() / 1000) + 14 * 24 * 60 * 60;
+  const values: Record<string, { S: string } | { N: string }> = {
     ':status': { S: input.messageStatus },
     ':updatedAt': { S: now },
+    ':ttl': { N: String(ttl) },
   };
   const names: Record<string, string> = {
     '#status': 'messageStatus',
     '#updatedAt': 'updatedAt',
+    '#ttl': 'ttl',
   };
-  const assignments = ['#status = :status', '#updatedAt = :updatedAt'];
+  const assignments = ['#status = :status', '#updatedAt = :updatedAt', '#ttl = if_not_exists(#ttl, :ttl)'];
 
   if (input.errorCode) {
     values[':errorCode'] = { S: input.errorCode };
@@ -137,24 +117,4 @@ async function updateOtpDeliveryStatus(input: {
     ExpressionAttributeNames: names,
     ExpressionAttributeValues: values,
   }));
-}
-
-function emitOtpMetric(metricName: string, dimensions: Record<string, string> = {}): void {
-  console.log(JSON.stringify({
-    _aws: {
-      Timestamp: Date.now(),
-      CloudWatchMetrics: [{
-        Namespace: 'Jale/OTP',
-        Dimensions: [Object.keys(dimensions)],
-        Metrics: [{ Name: metricName, Unit: 'Count' }],
-      }],
-    },
-    ...dimensions,
-    [metricName]: 1,
-  }));
-}
-
-export function _clearSecretCacheForTests(): void {
-  cachedSecret = null;
-  cachedAt = 0;
 }

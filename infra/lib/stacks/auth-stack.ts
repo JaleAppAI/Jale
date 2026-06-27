@@ -125,6 +125,13 @@ export class AuthStack extends cdk.Stack {
     const otpStatusCallbackUrl = otpStatusCallbackLambda.function.addFunctionUrl({
       authType: lambda.FunctionUrlAuthType.NONE,
     });
+    // Do NOT inject otpStatusCallbackUrl.url back into this same Lambda's environment:
+    // the Function URL targets this function, so referencing its URL here creates a
+    // CloudFormation cycle (function → env → function-url → function). The callback
+    // handler reconstructs the exact signed URL from its Function URL request context
+    // (domainName + path), which matches what Twilio signed. The *sender* Lambda
+    // (CreateAuthChallenge) gets the URL via env below and passes it to Twilio as
+    // StatusCallback, so Twilio signs precisely that URL.
 
     const createAuthChallengeLambda = new JaleLambdaFunction(this, 'CreateAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/create-auth-challenge.ts'),
