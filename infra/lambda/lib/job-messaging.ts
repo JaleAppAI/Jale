@@ -20,6 +20,7 @@ type ConversationAccessRow = {
   company_name: string | null;
   job_title: string | null;
   last_worker_message_at: Date | string | null;
+  worker_thread_number: number | null;
 };
 
 export type ConversationSummary = {
@@ -64,6 +65,7 @@ export type ThreadOption = {
 
 export type WorkerReplyRouteResult =
   | { status: 'routed'; conversationId: string }
+  | { status: 'focus_closed' }
   | { status: 'no_conversation' }
   | { status: 'ambiguous'; threads: ThreadOption[] };
 
@@ -78,7 +80,7 @@ type OpenThreadRow = {
 const OPEN_THREAD_SELECT = `
   SELECT jc.id, jc.application_id, jc.worker_thread_number,
          j.title AS job_title,
-         COALESCE(NULLIF(j.company, ''), 'Empleador') AS company
+         employer_display_name(jc.employer_id) AS company
     FROM job_conversations jc
     JOIN jobs j ON j.id = jc.job_id`;
 
@@ -119,6 +121,21 @@ function buildInviteFallback(companyName: string, jobTitle: string, lang: string
     : `${companyName} te envio un mensaje sobre ${jobTitle}. Responde aqui para abrir la conversacion.`;
 }
 
+function sanitizeHeaderInput(value: string | null | undefined, max = 40): string {
+  return (value ?? '').replace(/[\r\n\t]/g, ' ').trim().slice(0, max) || 'Empleador';
+}
+
+function buildContextHeader(
+  companyName: string | null,
+  jobTitle: string | null,
+  threadNumber: number | null,
+): string {
+  const co = sanitizeHeaderInput(companyName);
+  const jt = sanitizeHeaderInput(jobTitle, 50);
+  const num = threadNumber != null ? ` (#${threadNumber})` : '';
+  return `🏢 ${co} — ${jt}${num}\n`;
+}
+
 async function setSessionInternalUser(client: PoolClient, userId: string): Promise<void> {
   await client.query(`SELECT set_config('app.current_internal_user_id', $1, false)`, [userId]);
 }
@@ -144,7 +161,8 @@ async function loadConversationForEmployer(
        wc.language AS worker_language,
        COALESCE(ep.company_name, employer.full_name, j.company, 'Jale') AS company_name,
        j.title AS job_title,
-       jc.last_worker_message_at
+       jc.last_worker_message_at,
+       jc.worker_thread_number
      FROM job_conversations jc
      JOIN jobs j ON j.id = jc.job_id
      JOIN users employer ON employer.id = jc.employer_id
@@ -197,11 +215,12 @@ async function queueEmployerFreeformMessage(
   const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
   if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
 
+  const header = buildContextHeader(conversation.company_name, conversation.job_title, conversation.worker_thread_number);
   await client.query(
     `INSERT INTO job_message_outbox
         (conversation_id, message_id, whatsapp_number, send_kind, body)
      VALUES ($1, $2, $3, 'freeform', $4)`,
-    [conversation.id, messageId, whatsappNumber, body],
+    [conversation.id, messageId, whatsappNumber, `${header}${body}`],
   );
 }
 
@@ -375,7 +394,8 @@ export async function createApplicantConversation(
          $7::text AS worker_language,
          $8::text AS company_name,
          $9::text AS job_title,
-         NULL::timestamptz AS last_worker_message_at`,
+         NULL::timestamptz AS last_worker_message_at,
+         $10::int AS worker_thread_number`,
       [
         created.rows[0].id,
         row.job_id,
@@ -386,6 +406,7 @@ export async function createApplicantConversation(
         row.worker_language,
         row.company_name,
         row.job_title,
+        threadNumber.rows[0].n,
       ],
     );
   }
@@ -504,6 +525,29 @@ export async function closeEmployerConversation(
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function closeWorkerConversation(
+  client: PoolClient,
+  conversationId: string,
+  workerId: string,
+  systemMessageBody?: string,
+): Promise<boolean> {
+  const result = await client.query(
+    `UPDATE job_conversations
+        SET status = 'closed', closed_at = now()
+      WHERE id = $1 AND worker_id = $2 AND status = 'open'`,
+    [conversationId, workerId],
+  );
+  if ((result.rowCount ?? 0) === 0) return false;
+  const body = systemMessageBody ?? 'El trabajador terminó la conversación / Worker ended the conversation';
+  await client.query(
+    `INSERT INTO job_conversation_messages
+       (conversation_id, sender_type, direction, body, status)
+     VALUES ($1, 'system', 'outbound', $2, 'sent')`,
+    [conversationId, body],
+  );
+  return true;
+}
+
 export async function recordWorkerConversationReply(
   client: PoolClient,
   workerId: string,
@@ -521,6 +565,7 @@ export async function recordWorkerConversationReply(
       [focusedConversationId, workerId],
     );
     target = focused.rows[0] ?? null;
+    if (!target) return { status: 'focus_closed' };
   }
 
   if (!target) {
@@ -574,7 +619,11 @@ export async function recordWorkerConversationReply(
   );
   const whatsappNumber = normalizeWhatsappNumber(from);
   if (whatsappNumber) {
-    await queueWaitingEmployerMessages(client, target.id, whatsappNumber, pending.rows);
+    await queueWaitingEmployerMessages(client, target.id, whatsappNumber, pending.rows, {
+      company: target.company,
+      jobTitle: target.job_title,
+      threadNumber: target.worker_thread_number,
+    });
   }
   return { status: 'routed', conversationId: target.id };
 }
@@ -592,14 +641,18 @@ async function queueWaitingEmployerMessages(
   client: PoolClient,
   conversationId: string,
   whatsappNumber: string,
-  messages: { id: string; body: string }[],
+  messages: Array<{ id: string; body: string }>,
+  headerData?: { company: string | null; jobTitle: string | null; threadNumber: number | null },
 ): Promise<number> {
+  const header = headerData
+    ? buildContextHeader(headerData.company, headerData.jobTitle, headerData.threadNumber)
+    : '';
   for (const message of messages) {
     await client.query(
       `INSERT INTO job_message_outbox
           (conversation_id, message_id, whatsapp_number, send_kind, body)
        VALUES ($1, $2, $3, 'freeform', $4)`,
-      [conversationId, message.id, whatsappNumber, message.body],
+      [conversationId, message.id, whatsappNumber, `${header}${message.body}`],
     );
     await client.query(
       `UPDATE job_conversation_messages
@@ -636,19 +689,25 @@ async function openWorkerConversation(
 ): Promise<WorkerConversationActionResult> {
   const params = conversationId ? [conversationId, workerId] : [workerId];
   const filter = conversationId
-    ? 'id = $1 AND worker_id = $2'
-    : 'worker_id = $1';
+    ? 'jc.id = $1 AND jc.worker_id = $2'
+    : 'jc.worker_id = $1';
   const conversation = await client.query<{
     id: string;
     application_id: string;
+    worker_thread_number: number | null;
+    job_title: string | null;
+    company: string | null;
   }>(
-    `SELECT id, application_id
-     FROM job_conversations
+    `SELECT jc.id, jc.application_id, jc.worker_thread_number,
+            j.title AS job_title,
+            employer_display_name(jc.employer_id) AS company
+     FROM job_conversations jc
+     JOIN jobs j ON j.id = jc.job_id
      WHERE ${filter}
-       AND status = 'open'
-     ORDER BY COALESCE(last_message_at, created_at) DESC
+       AND jc.status = 'open'
+     ORDER BY COALESCE(jc.last_message_at, jc.created_at) DESC
      LIMIT 1
-     FOR UPDATE`,
+     FOR UPDATE OF jc`,
     params,
   );
 
@@ -678,7 +737,11 @@ async function openWorkerConversation(
     pendingEmployerMessagesSql(),
     [row.id],
   );
-  const queuedMessages = await queueWaitingEmployerMessages(client, row.id, whatsappNumber, pending.rows);
+  const queuedMessages = await queueWaitingEmployerMessages(client, row.id, whatsappNumber, pending.rows, {
+    company: row.company,
+    jobTitle: row.job_title,
+    threadNumber: row.worker_thread_number,
+  });
 
   return { found: true, queuedMessages, conversationId: row.id };
 }

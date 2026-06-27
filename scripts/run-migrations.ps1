@@ -73,7 +73,8 @@ $MigrationFiles = @(
     # '027_admin_security_hardening.sql',
     '028_job_messaging_hardening.sql',
     '029_hired_count_trigger_security_definer.sql',
-    '030_whatsapp_worker_skills_seed.sql'
+    '030_whatsapp_worker_skills_seed.sql',
+    '031_employer_display_name.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

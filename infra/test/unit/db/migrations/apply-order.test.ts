@@ -38,6 +38,7 @@ const expectedBaselineMigrations = [
   '028_job_messaging_hardening.sql',
   '029_hired_count_trigger_security_definer.sql',
   '030_whatsapp_worker_skills_seed.sql',
+  '031_employer_display_name.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -91,7 +92,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-030 readiness baseline order', () => {
+  it('locks the 001-031 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 

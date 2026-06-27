@@ -4,7 +4,7 @@ jest.mock('../../../../lambda/whatsapp/lib/outbox', () => ({
   sendTwilioWhatsAppMessage: jest.fn(),
   queueOutboxText: jest.fn(),
 }));
-import { recordWorkerConversationReply, queueConversationMessageFromEmployer } from '../../../../lambda/lib/job-messaging';
+import { recordWorkerConversationReply, queueConversationMessageFromEmployer, closeWorkerConversation } from '../../../../lambda/lib/job-messaging';
 
 const WORKER = 'aaaaaaaa-0000-0000-0000-000000000001';
 const CONV_A = 'bbbbbbbb-0000-0000-0000-00000000000a';
@@ -36,17 +36,31 @@ describe('recordWorkerConversationReply (focused-thread)', () => {
       /INSERT INTO job_conversation_messages/.test(sql))).toBe(false);
   });
 
-  it('routes to the single open accepted thread when focus is stale', async () => {
+  it('returns focus_closed (not misrouted) when focused thread is closed', async () => {
     mockQuery
-      .mockResolvedValueOnce(openThreadsResult([]))                          // stale focused id -> none
-      .mockResolvedValueOnce(openThreadsResult([
-        { id: CONV_A, application_id: 'app-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
-      ]))
-      .mockResolvedValue({ rows: [], rowCount: 1 });
+      .mockResolvedValueOnce(openThreadsResult([]))  // focused lookup -> empty (thread closed)
+      // NO second mock needed — we early-return before scanning open threads
+      .mockResolvedValue({ rows: [], rowCount: 1 }); // cleanup for any stray queries
     const result = await recordWorkerConversationReply(
       client, WORKER, 'hola', 'whatsapp:+1512', 'SM2', 'stale-conversation-id',
     );
-    expect(result.status).toBe('routed');
+    expect(result.status).toBe('focus_closed');
+    // Must NOT have inserted any message
+    expect(mockQuery.mock.calls.some(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql))).toBe(false);
+  });
+
+  it('focus_closed — does NOT route to sole survivor (explicit misroute regression)', async () => {
+    // Focus id is set, thread closed. One open survivor exists but MUST NOT be used.
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([]))           // focused lookup -> not open
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    const result = await recordWorkerConversationReply(
+      client, WORKER, 'hola', 'whatsapp:+1512', 'SM99', 'closed-conv-id',
+    );
+    expect(result.status).toBe('focus_closed');
+    expect(mockQuery.mock.calls.some(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql))).toBe(false);
   });
 
   it('returns no_conversation when worker has zero open threads', async () => {
@@ -68,6 +82,19 @@ describe('recordWorkerConversationReply (focused-thread)', () => {
     const update = mockQuery.mock.calls.find(([sql]) =>
       /UPDATE job_conversations/.test(sql) && /accepted_at/.test(sql));
     expect(update).toBeDefined();
+  });
+
+  it('resolves the company label via employer_display_name(), not j.company', async () => {
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([
+        { id: CONV_A, application_id: 'app-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+      ]))
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await recordWorkerConversationReply(client, WORKER, 'hola', 'whatsapp:+1512', 'SM5', CONV_A);
+    const select = mockQuery.mock.calls.find(([sql]) =>
+      /FROM job_conversations jc/.test(sql) && /jc\.id = \$1/.test(sql));
+    expect(select).toBeDefined();
+    expect(select![0]).toMatch(/employer_display_name\(jc\.employer_id\)/);
   });
 });
 
@@ -195,12 +222,14 @@ describe('createApplicantConversation thread-number assignment', () => {
         id: CONV_A, job_id: 'job-1', employer_id: EMP, worker_id: WORKER, application_id: 'app-a',
         status: 'open', worker_phone: '+15125551234', worker_language: 'es',
         company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
+        worker_thread_number: 3,
       }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ active: false }], rowCount: 1 }) // (6) cross-session EXISTS check -> no active session
       .mockResolvedValueOnce({ rows: [{                                 // (7) loadConversationForEmployer (inside queueConversationMessageFromEmployer)
         id: CONV_A, job_id: 'job-1', employer_id: EMP, worker_id: WORKER, application_id: 'app-a',
         status: 'open', worker_phone: '+15125551234', worker_language: 'es',
         company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
+        worker_thread_number: 3,
       }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })  // (8) INSERT job_conversation_messages
       .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 }) // (9) pending-template EXISTS check -> false
@@ -217,5 +246,92 @@ describe('createApplicantConversation thread-number assignment', () => {
       /INSERT INTO job_conversations/.test(sql));
     expect(insert).toBeDefined();
     expect(insert![0]).toMatch(/worker_thread_number/);
+  });
+});
+
+describe('closeWorkerConversation', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('closes the focused thread and inserts a system message, returns true', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE: 1 row affected
+      .mockResolvedValue({ rows: [], rowCount: 1 });    // INSERT system message
+    const closed = await closeWorkerConversation(client, CONV_A, WORKER);
+    expect(closed).toBe(true);
+    const systemInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql) && /'system'/.test(sql));
+    expect(systemInsert).toBeDefined();
+  });
+
+  it('returns false when thread is already closed (UPDATE matches 0 rows)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 }); // UPDATE: no rows
+    const closed = await closeWorkerConversation(client, CONV_A, WORKER);
+    expect(closed).toBe(false);
+    // No INSERT should have occurred
+    const systemInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql));
+    expect(systemInsert).toBeUndefined();
+  });
+
+  it('uses custom systemMessageBody when provided', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })   // UPDATE → closed
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });  // INSERT system message
+    await closeWorkerConversation(client, CONV_A, WORKER, 'El trabajador encontró trabajo / Worker found work');
+    const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql));
+    expect(insertCall).toBeDefined();
+    expect(insertCall![1]).toContain('El trabajador encontró trabajo / Worker found work');
+  });
+
+  it('uses default body when systemMessageBody is omitted', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    await closeWorkerConversation(client, CONV_A, WORKER);
+    const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql));
+    expect(insertCall![1]).toContain('El trabajador terminó la conversación / Worker ended the conversation');
+  });
+});
+
+describe('context header on employer freeform messages', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('freeform employer message includes 🏢 context header', async () => {
+    // last_worker_message_at: new Date() makes it a freeform (window open)
+    const row = conversationAccessRow({ worker_thread_number: 2, last_worker_message_at: new Date() });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [row], rowCount: 1 }) // loadConversationForEmployer
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 }) // INSERT message
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'Hola, ¿puedes?');
+    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_message_outbox/.test(sql) || /INSERT INTO.*outbox/.test(sql));
+    // The body argument (one of the $N params) should start with 🏢
+    const params: any[] = outboxInsert![1];
+    const bodyParam = params.find((p: any) => typeof p === 'string' && p.startsWith('🏢'));
+    expect(bodyParam).toBeDefined();
+    expect(bodyParam).toMatch(/^🏢 ACME — Plomero \(#2\)\n/);
+    expect(bodyParam).toContain('Hola, ¿puedes?');
+  });
+
+  it('template path does NOT get a header', async () => {
+    // last_worker_message_at: null → window closed → template branch
+    const row = conversationAccessRow({ worker_thread_number: 1, last_worker_message_at: null });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [row], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })
+      .mockResolvedValue({ rows: [], rowCount: 1 });
+    await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'Hola');
+    // All INSERT INTO outbox calls should NOT have a body param starting with 🏢
+    const outboxInserts = mockQuery.mock.calls.filter(([sql]: [string]) =>
+      /INSERT INTO.*outbox/.test(sql) || /INSERT INTO job_message_outbox/.test(sql));
+    outboxInserts.forEach((call: [string, any[]]) => {
+      const params: any[] = call[1];
+      const hasHeader = params.some((p: any) => typeof p === 'string' && p.includes('🏢'));
+      expect(hasHeader).toBe(false);
+    });
   });
 });

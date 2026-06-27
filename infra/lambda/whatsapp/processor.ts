@@ -39,7 +39,7 @@ import {
   handleEmployerConversationTextAction,
   tryConversationRelay,
   parseDisambiguationPick,
-  handleDisambiguationPick,
+  handlePickerResponse,
   type ConversationRow,
   type IncomingMessage,
   type RouterDeps,
@@ -375,6 +375,51 @@ async function updateConversation(
     `UPDATE whatsapp_conversations SET ${sets}, updated_at = now() WHERE id = $1`,
     [id, ...values],
   );
+}
+
+// ── Web-worker bypass (Phase 2.2) ───────────────────────────────
+//
+// Workers who registered via the web app (email/password, tos already accepted)
+// skip the 8-state WhatsApp onboarding on first contact and land directly in
+// `idle` state with a contextual welcome message.
+
+async function findWebRegisteredWorker(
+  client: PoolClient,
+  phone: string,
+): Promise<{ id: string } | null> {
+  const result = await client.query<{ id: string }>(
+    `SELECT id FROM users
+       WHERE phone = $1
+         AND user_type = 'worker'
+         AND tos_accepted_at IS NOT NULL
+       LIMIT 1`,
+    [phone],
+  );
+  return result.rowCount ? result.rows[0] : null;
+}
+
+async function bypassOnboardingForWebWorker(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  userId: string,
+): Promise<void> {
+  const lang = detectLanguage(msg.body);
+  await updateConversation(client, conv.id, {
+    conversation_state: 'idle',
+    user_id: userId,
+    language: lang,
+    last_processed_message_sid: msg.messageSid,
+  });
+  await client.query(
+    `UPDATE users SET whatsapp_number = $1 WHERE id = $2 AND whatsapp_number IS NULL`,
+    [conv.whatsapp_number, userId],
+  );
+  const welcome =
+    lang === 'en'
+      ? 'Welcome to Jale! Type JOBS to see available job listings.'
+      : '¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.';
+  await queueOutboxText(client, msg.messageSid, msg.from, welcome);
 }
 
 // ── Main SQS handler ────────────────────────────────────────────
@@ -935,10 +980,10 @@ async function routeMessage(
     }
   }
 
-  if (conv.state_context?.conversation_disambiguation && parseDisambiguationPick(msg.body) !== null) {
+  if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
     const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
     if (workerId) {
-      return await handleDisambiguationPick(client, conv, msg, workerId, routerDeps);
+      return await handlePickerResponse(client, conv, msg, workerId, routerDeps);
     }
   }
 
@@ -955,6 +1000,14 @@ async function routeMessage(
   const textConversationAction = parseEmployerConversationTextAction(msg.body);
   if (textConversationAction) {
     return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction, routerDeps);
+  }
+
+  if (conv.conversation_state === 'new') {
+    const webWorker = await findWebRegisteredWorker(client, conv.whatsapp_number);
+    if (webWorker) {
+      await bypassOnboardingForWebWorker(client, conv, msg, webWorker.id);
+      return null;
+    }
   }
 
   const relayedWorkerId = await tryConversationRelay(client, conv, msg, routerDeps);
