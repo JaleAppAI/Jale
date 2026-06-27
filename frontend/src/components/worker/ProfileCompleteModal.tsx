@@ -59,7 +59,9 @@ export function ProfileCompleteModal(props: {
         skills: skills.split(',').map(s => s.trim()).filter(Boolean),
         availability,
         location: location.trim(),
-        years_experience: Number(yearsExp) || 0,
+        // Clamp to [0, 80] to mirror the backend cap (max= on the input is not a
+        // complete guard when submit goes through a custom handler).
+        years_experience: Math.min(Math.max(Number(yearsExp) || 0, 0), 80),
       });
     } catch (e) {
       const err = e as Record<string, unknown>;
@@ -81,7 +83,7 @@ export function ProfileCompleteModal(props: {
           {AVAILABILITY.map(a => <option key={a} value={a}>{t(`availability.${a}`)}</option>)}
         </select>
         <Input placeholder={t('location')} value={location} onChange={(e) => setLocation(e.target.value)} />
-        <Input type="number" min={0} placeholder={t('years_experience')} value={yearsExp} onChange={(e) => setYearsExp(e.target.value)} />
+        <Input type="number" min={0} max={80} placeholder={t('years_experience')} value={yearsExp} onChange={(e) => setYearsExp(e.target.value)} />
 
         {error && <p className="text-sm text-error">{error}</p>}
 
