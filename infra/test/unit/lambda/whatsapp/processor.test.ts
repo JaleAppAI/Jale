@@ -284,6 +284,8 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'new' })],
         })
+        // findWebRegisteredWorker → no match (not a web-registered worker)
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         // tryConversationRelay: resolveWorkerIdForWhatsappNumber finds no
         // verified-phone worker (user_id is null) → relay returns null and the
         // built-in 'new' greeting path runs as before.
@@ -371,6 +373,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'new' })],
         }) // INSERT whatsapp_conversations
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox start_prompt
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -1347,7 +1350,7 @@ describe('Processor Lambda', () => {
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // open job conversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello' }] }) // waiting employer messages
@@ -1364,7 +1367,7 @@ describe('Processor Lambda', () => {
             id: 'job-outbox-1',
             message_id: 'msg-1',
             whatsapp_number: '+15125551234',
-            body: 'Employer says hello',
+            body: '🏢 ACME — Plomero (#1)\nEmployer says hello',
             content_template: null,
             content_variables: null,
           }],
@@ -1390,13 +1393,12 @@ describe('Processor Lambda', () => {
         conversationId,
         'msg-1',
         '+15125551234',
-        'Employer says hello',
+        '🏢 ACME — Plomero (#1)\nEmployer says hello',
       ]);
-      // R10: opening a conversation must NOT reset onboarding. The only
-      // whatsapp_conversations write is the focus-column update — it sets
-      // focused_job_conversation_id (+ last_processed_message_sid) and must not
-      // set user_id, must not flip conversation_state to 'idle', and must not
-      // clear state_context.
+      // R10: opening a conversation must NOT reset onboarding. The focus update
+      // sets focused_job_conversation_id + state_context (pending_picker cleared,
+      // all other collected answers preserved) + last_processed_message_sid.
+      // It must not set user_id or flip conversation_state.
       const convOpenUpdate = mockQuery.mock.calls.find(([sql]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string));
       expect(convOpenUpdate).toBeTruthy();
@@ -1404,13 +1406,14 @@ describe('Processor Lambda', () => {
       expect(convOpenSql).toMatch(/focused_job_conversation_id/);
       expect(convOpenSql).not.toMatch(/\buser_id\b\s*=/);
       expect(convOpenSql).not.toMatch(/conversation_state\s*=/);
-      expect(convOpenSql).not.toMatch(/state_context\s*=/);
-      expect(convOpenParams).toEqual(['conv-1', conversationId, 'SM-open-conversation']);
+      // state_context IS written (to clear pending_picker) but must preserve session
+      expect(convOpenSql).toMatch(/state_context\s*=/);
+      expect(convOpenParams).toEqual(['conv-1', conversationId, '{"cognito_session":"stale-session"}', 'SM-open-conversation']);
       expect(mockFetch).toHaveBeenCalledWith(
         'https://api.twilio.com/2010-04-01/Accounts/AC_test/Messages.json',
         expect.objectContaining({
           method: 'POST',
-          body: expect.stringContaining('Body=Employer+says+hello'),
+          body: expect.stringContaining('Employer+says+hello'),
         }),
       );
     });
@@ -1432,7 +1435,7 @@ describe('Processor Lambda', () => {
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1' }] }) // latest open job conversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // latest open job conversation
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation reply window
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'msg-1', body: 'Employer says hello' }] }) // waiting employer messages
@@ -1449,7 +1452,7 @@ describe('Processor Lambda', () => {
             id: 'job-outbox-1',
             message_id: 'msg-1',
             whatsapp_number: '+15125551234',
-            body: 'Employer says hello',
+            body: '🏢 ACME — Plomero (#1)\nEmployer says hello',
             content_template: null,
             content_variables: null,
           }],
@@ -1474,10 +1477,11 @@ describe('Processor Lambda', () => {
         conversationId,
         'msg-1',
         '+15125551234',
-        'Employer says hello',
+        '🏢 ACME — Plomero (#1)\nEmployer says hello',
       ]);
-      // R10: same as the button path — opening via text action only writes the
-      // focus column, never resets onboarding identity/state.
+      // R10: same as the button path — opening via text action writes the focus
+      // column and state_context (pending_picker cleared, existing fields preserved)
+      // but never resets identity or conversation_state.
       const convOpenTextUpdate = mockQuery.mock.calls.find(([sql]) =>
         /UPDATE whatsapp_conversations SET/i.test(sql as string));
       expect(convOpenTextUpdate).toBeTruthy();
@@ -1485,8 +1489,9 @@ describe('Processor Lambda', () => {
       expect(convOpenTextSql).toMatch(/focused_job_conversation_id/);
       expect(convOpenTextSql).not.toMatch(/\buser_id\b\s*=/);
       expect(convOpenTextSql).not.toMatch(/conversation_state\s*=/);
-      expect(convOpenTextSql).not.toMatch(/state_context\s*=/);
-      expect(convOpenTextParams).toEqual(['conv-1', conversationId, 'SM-open-text']);
+      // state_context IS written (to clear pending_picker) but must preserve session
+      expect(convOpenTextSql).toMatch(/state_context\s*=/);
+      expect(convOpenTextParams).toEqual(['conv-1', conversationId, '{"cognito_session":"stale-session"}', 'SM-open-text']);
     });
 
     it('routes idle worker text to its focused employer conversation (focus column)', async () => {
@@ -2325,5 +2330,152 @@ describe('interactivePayload extraction from Body', () => {
     // The plain-text profile_reprompt body was enqueued.
     const reprompt = outboxBodies().find((b) => /Terminemos tu perfil primero/.test(b ?? ''));
     expect(reprompt).toBeDefined();
+  });
+
+  describe('web-worker bypass (Phase 2.2)', () => {
+    const WEB_WORKER_ID = 'web-worker-uuid-1234';
+    const PHONE = '+15125551234';
+
+    it('sets conversation to idle, links user_id, sets whatsapp_number, sends welcome (ES)', async () => {
+      mockQuery
+        // BEGIN
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+        // claim INSERT → succeeds
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web' }] })
+        // SELECT whatsapp_conversations FOR UPDATE → empty (new conversation)
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+        // INSERT whatsapp_conversations
+        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', language: 'es' })] })
+        // findWebRegisteredWorker → found
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: WEB_WORKER_ID }] })
+        // updateConversation (set idle + user_id)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        // UPDATE users SET whatsapp_number WHERE whatsapp_number IS NULL
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        // INSERT whatsapp_outbox (welcome message)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        // UPDATE processed_messages status='db_committed'
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+        // sendPendingOutbox: SELECT pending rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'o-1', sequence: 1, whatsapp_number: PHONE, body: 'welcome' }] })
+        // UPDATE outbox status='sent'
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+        // markCompleted
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+      await handler(
+        makeSqsEvent({ MessageSid: 'SM-web', From: `whatsapp:${PHONE}`, Body: 'Hola' }),
+        {} as any,
+        {} as any,
+      );
+
+      // No Cognito calls — bypass skips OTP entirely
+      expect(mockCognitoSend).not.toHaveBeenCalled();
+
+      // updateConversation wrote user_id
+      const updateCall = findQueryByPattern(/UPDATE whatsapp_conversations SET/i);
+      expect(updateCall).toBeDefined();
+      expect(updateCall).toContain(WEB_WORKER_ID);
+
+      // users.whatsapp_number updated
+      const phoneUpdate = findQueryByPattern(/UPDATE users SET whatsapp_number/i);
+      expect(phoneUpdate).toBeDefined();
+      expect(phoneUpdate).toContain(PHONE);
+      expect(phoneUpdate).toContain(WEB_WORKER_ID);
+
+      // Welcome message sent in Spanish
+      const bodies = outboxBodies();
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toMatch(/TRABAJOS|trabajos/);
+    });
+
+    it('sends EN welcome when body is in English', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-en' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
+        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', language: 'en' })] }) // INSERT conv
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: WEB_WORKER_ID }] }) // findWebRegisteredWorker
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // updateConversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // UPDATE users whatsapp_number
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // INSERT outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // COMMIT
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'o-en', sequence: 1, whatsapp_number: PHONE, body: 'Welcome to Jale! Type JOBS to see available job listings.' }] }) // sendPendingOutbox: SELECT
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // UPDATE outbox status='sent'
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] });       // markCompleted
+
+      await handler(
+        makeSqsEvent({ MessageSid: 'SM-web-en', From: `whatsapp:${PHONE}`, Body: 'Hello' }),
+        {} as any,
+        {} as any,
+      );
+
+      const bodies = outboxBodies();
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toMatch(/JOBS|jobs/i);
+      expect(bodies[0]).not.toMatch(/TRABAJOS/);
+    });
+
+    it('falls through to normal onboarding when no web-registered worker found', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new2' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
+        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // INSERT conv
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // findWebRegisteredWorker → NOT FOUND
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] });       // tryConversationRelay → resolveWorkerIdForWhatsappNumber → not found
+      mockCognitoSend
+        .mockResolvedValueOnce({})  // AdminCreateUser
+        .mockResolvedValueOnce({})  // AdminSetUserPassword
+        .mockResolvedValueOnce({ Session: 'SESS', ChallengeName: 'CUSTOM_CHALLENGE' }); // InitiateAuth
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // INSERT users
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // updateConversation → awaiting_otp
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // INSERT outbox (OTP prompt)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })  // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })  // sendPendingOutbox: no pending
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({ MessageSid: 'SM-new2', From: `whatsapp:${PHONE}`, Body: 'Hola' }),
+        {} as any,
+        {} as any,
+      );
+
+      // Normal onboarding started — Cognito was called
+      expect(mockCognitoSend).toHaveBeenCalled();
+      // No users.whatsapp_number update (bypass-only step)
+      expect(findQueryByPattern(/UPDATE users SET whatsapp_number/i)).toBeUndefined();
+    });
+
+    it('bypasses even on non-greeting first message (e.g. TRABAJOS)', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-jobs' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
+        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // INSERT conv
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: WEB_WORKER_ID }] }) // findWebRegisteredWorker → found
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // updateConversation
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // UPDATE users whatsapp_number
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // INSERT outbox (welcome)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // sendPendingOutbox: no pending
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] });       // markCompleted
+
+      await handler(
+        makeSqsEvent({ MessageSid: 'SM-web-jobs', From: `whatsapp:${PHONE}`, Body: 'TRABAJOS' }),
+        {} as any,
+        {} as any,
+      );
+
+      // Bypass fired, Cognito not called
+      expect(mockCognitoSend).not.toHaveBeenCalled();
+      expect(findQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBeDefined();
+    });
   });
 });

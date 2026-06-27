@@ -1,6 +1,6 @@
--- 032_pay_interval_experience_months_worker_certifications.sql
--- Sprint 13 / TSK-09: canonical pay interval, experience in months, and worker certifications.
--- Run manually AFTER 031_work_authorization_required.sql.
+-- 033_pay_interval_experience_months_worker_certifications.sql
+-- Sprint 15 / TSK-09: canonical pay interval, experience in months, and worker certifications.
+-- Run manually AFTER 032_work_authorization_required.sql.
 
 ALTER TABLE jobs
   ADD COLUMN IF NOT EXISTS pay_interval TEXT,

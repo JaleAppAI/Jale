@@ -38,8 +38,9 @@ const expectedBaselineMigrations = [
   '028_job_messaging_hardening.sql',
   '029_hired_count_trigger_security_definer.sql',
   '030_whatsapp_worker_skills_seed.sql',
-  '031_work_authorization_required.sql',
-  '032_pay_interval_experience_months_worker_certifications.sql',
+  '031_employer_display_name.sql',
+  '032_work_authorization_required.sql',
+  '033_pay_interval_experience_months_worker_certifications.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -93,7 +94,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-032 readiness baseline order', () => {
+  it('locks the 001-033 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -393,15 +394,15 @@ describe('migration apply order baseline', () => {
     expect(migration).not.toContain('CREATE TRIGGER');
   });
 
-  it('adds work_authorization_required column to jobs in migration 031', () => {
-    const migration = readMigration('031_work_authorization_required.sql');
+  it('adds work_authorization_required column to jobs in migration 032', () => {
+    const migration = readMigration('032_work_authorization_required.sql');
 
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS work_authorization_required BOOLEAN NOT NULL DEFAULT false');
     expect(migration).toContain('SSN is intentionally kept in jobs_required_docs_valid CHECK');
   });
 
-  it('adds pay interval, experience months, and worker certifications in migration 032', () => {
-    const migration = readMigration('032_pay_interval_experience_months_worker_certifications.sql');
+  it('adds pay interval, experience months, and worker certifications in migration 033', () => {
+    const migration = readMigration('033_pay_interval_experience_months_worker_certifications.sql');
 
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_interval TEXT');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS required_experience_months INTEGER');
@@ -418,7 +419,7 @@ describe('migration apply order baseline', () => {
     expect(migration).toMatch(/LEAST\(years_experience, 80\) \* 12/);
   });
 
-  maybeIt('applies migrations 001-032 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-033 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

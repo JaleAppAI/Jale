@@ -1,6 +1,6 @@
 -- ============================================================
--- 031_work_authorization_required.sql
--- Run manually AFTER 030_whatsapp_worker_skills_seed.sql
+-- 032_work_authorization_required.sql
+-- Run manually AFTER 031_employer_display_name.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 -- ============================================================
 
