@@ -19,6 +19,8 @@ export const dynamic = 'force-dynamic';
 const DOC_LABELS: Record<string, string> = {
   resume: 'Resume',
   driver_license: "Driver's License",
+  // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
+  ssn: 'SSN Card / ITIN',
 };
 
 export default function WorkerJobDetailPage() {

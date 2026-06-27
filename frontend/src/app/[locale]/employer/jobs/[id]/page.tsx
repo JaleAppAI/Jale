@@ -132,6 +132,8 @@ export default function JobDetailPage() {
   const docLabels: Record<string, string> = {
     resume: t('worker_profile.doc_resume'),
     driver_license: t('worker_profile.doc_driver_license'),
+    // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
+    ssn: t('worker_profile.doc_ssn'),
   };
   const jobTypeLabels: Record<string, string> = {
     'full-time': t('modal.job_type_fulltime'),
