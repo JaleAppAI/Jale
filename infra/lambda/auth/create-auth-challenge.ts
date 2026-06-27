@@ -1,9 +1,10 @@
 import type { CreateAuthChallengeTriggerEvent } from 'aws-lambda';
 import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
+  DynamoDBClient,
+  PutItemCommand,
+} from '@aws-sdk/client-dynamodb';
 import { checkOtpRateLimit } from './lib/otp-rate-limit';
+import { getOtpTwilioSecret, emitOtpMetric, _clearSecretCacheForTests } from './lib/otp-twilio';
 
 /**
  * Generates a six-digit Cognito custom-auth challenge and sends it by SMS from
@@ -12,47 +13,10 @@ import { checkOtpRateLimit } from './lib/otp-rate-limit';
  * WhatsApp credentials and addressing are not used by this Lambda.
  */
 
-// ── Module-level Secrets Manager client + 5-minute cache ──────────────────
-// Secrets Manager credentials rotate on a schedule, so a 5-minute TTL lets a
-// warm Lambda container pick up a new value within 5 minutes of rotation
-// instead of holding stale creds until cold-start.
-interface OtpTwilioSecret {
-  accountSid: string;
-  authToken: string;
-}
+const dynamodb = new DynamoDBClient({});
 
-const secretsManager = new SecretsManagerClient({});
-let cachedSecret: OtpTwilioSecret | null = null;
-let cachedAt = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-async function getOtpTwilioSecret(): Promise<OtpTwilioSecret> {
-  const now = Date.now();
-  if (cachedSecret && now - cachedAt < CACHE_TTL_MS) {
-    return cachedSecret;
-  }
-  const arn = process.env.TWILIO_SECRET_ARN;
-  if (!arn) {
-    throw new Error(
-      'Missing TWILIO_SECRET_ARN env var; expected Secrets Manager ARN for jale/whatsapp/otp-twilio',
-    );
-  }
-  const resp = await secretsManager.send(
-    new GetSecretValueCommand({ SecretId: arn }),
-  );
-  if (!resp.SecretString) {
-    throw new Error('TWILIO_SECRET_ARN secret has no SecretString');
-  }
-  const parsed = JSON.parse(resp.SecretString) as Partial<OtpTwilioSecret>;
-  if (!parsed.accountSid || !parsed.authToken) {
-    throw new Error(
-      'jale/whatsapp/otp-twilio secret missing required fields accountSid/authToken',
-    );
-  }
-  cachedSecret = parsed as OtpTwilioSecret;
-  cachedAt = now;
-  return cachedSecret;
-}
+// Re-exported for tests that clear the shared OTP secret cache between scenarios.
+export { _clearSecretCacheForTests };
 
 export const handler = async (
   event: CreateAuthChallengeTriggerEvent,
@@ -83,7 +47,20 @@ export const handler = async (
     }
     emitOtpMetric('WorkerOtpSendAllowed');
     try {
-      await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
+      const sendResult = await sendTwilioSmsOtp(phoneNumber, `${otp} is your Jale verification code.`);
+      emitOtpMetric('WorkerOtpApiAccepted');
+      try {
+        await recordOtpDeliveryAttempt({
+          twilioMessageSid: sendResult.messageSid,
+          phoneHint: maskPhone(phoneNumber),
+          userName: event.userName,
+        });
+      } catch (telemetryError) {
+        emitOtpMetric('WorkerOtpDeliveryTelemetryFailure');
+        console.warn('OTP delivery telemetry write failed', {
+          error: telemetryError instanceof Error ? telemetryError.message : String(telemetryError),
+        });
+      }
     } catch (error) {
       emitOtpMetric('WorkerOtpTwilioFailure');
       throw error;
@@ -106,7 +83,7 @@ export const handler = async (
   return event;
 };
 
-async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
+async function sendTwilioSmsOtp(to: string, body: string): Promise<{ messageSid?: string }> {
   const { accountSid, authToken } = await getOtpTwilioSecret();
   const from = process.env.TWILIO_FROM_NUMBER;
   if (!from || !/^\+[1-9]\d{7,14}$/.test(from)) {
@@ -133,6 +110,10 @@ async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
     Body: body,
     ValidityPeriod: String(validityPeriodSeconds),
   });
+  const statusCallbackUrl = process.env.TWILIO_STATUS_CALLBACK_URL;
+  if (statusCallbackUrl) {
+    body_.set('StatusCallback', statusCallbackUrl);
+  }
 
   let response: Response;
   try {
@@ -157,6 +138,36 @@ async function sendTwilioSmsOtp(to: string, body: string): Promise<void> {
     const detail = data.message ?? `HTTP ${response.status}`;
     throw new Error(`Twilio SMS OTP send failed: ${detail}`);
   }
+
+  const data = (await response.json().catch(() => ({}))) as { sid?: string };
+  return { messageSid: data.sid };
+}
+
+async function recordOtpDeliveryAttempt(input: {
+  twilioMessageSid?: string;
+  phoneHint: string;
+  userName?: string;
+}): Promise<void> {
+  const tableName = process.env.OTP_DELIVERY_STATUS_TABLE_NAME;
+  if (!tableName || !input.twilioMessageSid) {
+    return;
+  }
+
+  const now = new Date();
+  const ttl = Math.floor(now.getTime() / 1000) + 14 * 24 * 60 * 60;
+  await dynamodb.send(new PutItemCommand({
+    TableName: tableName,
+    Item: {
+      twilioMessageSid: { S: input.twilioMessageSid },
+      phoneHint: { S: input.phoneHint },
+      userName: input.userName ? { S: input.userName } : { S: 'unknown' },
+      apiAcceptedAt: { S: now.toISOString() },
+      createdAt: { S: now.toISOString() },
+      updatedAt: { S: now.toISOString() },
+      messageStatus: { S: 'accepted' },
+      ttl: { N: String(ttl) },
+    },
+  }));
 }
 
 function parseBoundedInteger(
@@ -185,23 +196,3 @@ function maskPhone(phone: string): string {
   return phone.slice(0, 2) + '***' + phone.slice(-4);
 }
 
-function emitOtpMetric(metricName: string, dimensions: Record<string, string> = {}): void {
-  console.log(JSON.stringify({
-    _aws: {
-      Timestamp: Date.now(),
-      CloudWatchMetrics: [{
-        Namespace: 'Jale/OTP',
-        Dimensions: [Object.keys(dimensions)],
-        Metrics: [{ Name: metricName, Unit: 'Count' }],
-      }],
-    },
-    ...dimensions,
-    [metricName]: 1,
-  }));
-}
-
-// Exported only for tests — clear the module-level cache between scenarios.
-export function _clearSecretCacheForTests(): void {
-  cachedSecret = null;
-  cachedAt = 0;
-}

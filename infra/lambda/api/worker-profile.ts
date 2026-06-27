@@ -59,7 +59,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
             WHERE ws.worker_id = wp.user_id
             ORDER BY ws.skill
           ) AS skills,
-          wp.availability, wp.years_experience, wp.location, wp.bio
+          wp.availability, wp.years_experience, wp.experience_months, wp.location, wp.bio,
+          COALESCE(wp.certifications, '{}'::text[]) AS certifications
    FROM users u
    LEFT JOIN worker_profiles wp ON wp.user_id = u.id
    WHERE u.cognito_sub = $1`,

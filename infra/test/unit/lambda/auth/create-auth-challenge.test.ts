@@ -13,6 +13,7 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 const mockDynamoSend = jest.fn();
 jest.mock('@aws-sdk/client-dynamodb', () => ({
   DynamoDBClient: jest.fn(() => ({ send: mockDynamoSend })),
+  PutItemCommand: jest.fn((input) => ({ input, __type: 'PutItem' })),
   TransactWriteItemsCommand: jest.fn((input) => ({ input, __type: 'TransactWriteItems' })),
 }));
 
@@ -50,6 +51,8 @@ describe('CreateAuthChallenge Lambda', () => {
     process.env.TWILIO_REQUEST_TIMEOUT_MS = '3500';
     process.env.TWILIO_VALIDITY_PERIOD_SECONDS = '180';
     process.env.OTP_RATE_LIMIT_TABLE_NAME = 'otp-rate-limit';
+    process.env.OTP_DELIVERY_STATUS_TABLE_NAME = 'otp-delivery-status';
+    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://otp-callback.example.com/';
     mockDynamoSend.mockReset();
     mockDynamoSend.mockResolvedValue({});
     mockSecretsSend.mockReset();
@@ -70,6 +73,8 @@ describe('CreateAuthChallenge Lambda', () => {
     delete process.env.TWILIO_REQUEST_TIMEOUT_MS;
     delete process.env.TWILIO_VALIDITY_PERIOD_SECONDS;
     delete process.env.OTP_RATE_LIMIT_TABLE_NAME;
+    delete process.env.OTP_DELIVERY_STATUS_TABLE_NAME;
+    delete process.env.TWILIO_STATUS_CALLBACK_URL;
   });
 
   it('generates a 6-digit OTP and sends SMS from the dedicated Jale number on first call', async () => {
@@ -82,7 +87,7 @@ describe('CreateAuthChallenge Lambda', () => {
 
     // Twilio fetch was called exactly once
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(mockDynamoSend).toHaveBeenCalledTimes(1);
+    expect(mockDynamoSend).toHaveBeenCalledTimes(2);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages.json');
@@ -103,10 +108,31 @@ describe('CreateAuthChallenge Lambda', () => {
     expect(body.get('Body')).toContain(otp!);
     expect(body.get('Body')).not.toContain('Reply');
     expect(body.get('ValidityPeriod')).toBe('180');
+    expect(body.get('StatusCallback')).toBe(process.env.TWILIO_STATUS_CALLBACK_URL);
     expect(init.signal).toBeInstanceOf(AbortSignal);
 
     // challengeMetadata carries the OTP forward for retry reuse
     expect(result.response.challengeMetadata).toBe(otp);
+
+    const putItemCalls = mockDynamoSend.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.__type === 'PutItem');
+    expect(putItemCalls).toHaveLength(1);
+    expect(putItemCalls[0].input.TableName).toBe('otp-delivery-status');
+    expect(putItemCalls[0].input.Item.twilioMessageSid.S).toBe('SMxxxxxxxxxxxxxxxx');
+    expect(putItemCalls[0].input.Item.phoneHint.S).toBe('+1***1234');
+    expect(JSON.stringify(putItemCalls[0].input.Item)).not.toContain(otp!);
+  });
+
+  it('does not fail the Cognito challenge when delivery telemetry persistence fails after Twilio accepts', async () => {
+    mockDynamoSend
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error('dynamodb unavailable'));
+
+    const result = await handler(baseEvent([]));
+
+    expect(result.response.privateChallengeParameters?.otp).toMatch(/^\d{6}$/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('caches the Secrets Manager fetch across invocations within the TTL', async () => {

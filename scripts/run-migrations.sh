@@ -69,6 +69,8 @@ MIGRATIONS=(
   "029_hired_count_trigger_security_definer.sql"
   "030_whatsapp_worker_skills_seed.sql"
   "031_employer_display_name.sql"
+  "032_work_authorization_required.sql"
+  "033_pay_interval_experience_months_worker_certifications.sql"
 )
 
 echo ">> Using region: $REGION"

@@ -68,11 +68,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
        FROM employer_job
        WHERE jobs.id = employer_job.id
        RETURNING jobs.id, jobs.title, jobs.location, jobs.pay, jobs.job_type, jobs.status, jobs.created_at,
-         jobs.pay_min, jobs.pay_max, jobs.start_date, jobs.expected_duration, jobs.shift_schedule,
-         jobs.transportation_required, jobs.language_preference, jobs.number_of_workers_needed,
+         jobs.pay_min, jobs.pay_max, jobs.pay_interval, jobs.start_date, jobs.expected_duration, jobs.shift_schedule,
+         jobs.transportation_required, jobs.work_authorization_required, jobs.language_preference, jobs.number_of_workers_needed,
          jobs.workers_hired AS hired_count,
          GREATEST(jobs.number_of_workers_needed - jobs.workers_hired, 0) AS open_count,
-         jobs.trade_category, jobs.required_experience_years, jobs.certifications,
+         jobs.trade_category, jobs.required_experience_years, jobs.required_experience_months, jobs.certifications,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
       [status, jobId, cognitoSub],
     );

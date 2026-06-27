@@ -15,21 +15,24 @@ export type Job = {
   open_count: number;
   pay_min: number | null;
   pay_max: number | null;
+  pay_interval: string | null;
   start_date: string | null;
   expected_duration: string | null;
   shift_schedule: string | null;
   transportation_required: boolean;
+  work_authorization_required: boolean;
   language_preference: Array<'any' | 'en' | 'es'>;
   number_of_workers_needed: number;
   trade_category: 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'drywall' | 'general_labor' | 'other' | null;
   required_experience_years: number | null;
+  required_experience_months: number | null;
   certifications: string[];
   created_at: string;
 };
 
 export type EmployerJobDetail = Job & {
   description: string | null;
-  required_docs: Array<'resume' | 'driver_license' | 'ssn'>;
+  required_docs: Array<'resume' | 'driver_license'>;
 };
 
 export type Applicant = {
@@ -181,10 +184,12 @@ export async function createJob(
     expected_duration?: string | null;
     shift_schedule?: string | null;
     transportation_required?: boolean;
+    work_authorization_required?: boolean;
     language_preference?: Array<'any' | 'en' | 'es'>;
     number_of_workers_needed?: number;
     trade_category: string;
     required_experience_years?: number | null;
+    pay_interval?: string | null;
     certifications?: string[];
   }
 ): Promise<Job> {
@@ -326,6 +331,10 @@ export interface WorkerProfile {
   availability: string | null;
   years_experience: number | null;
   location: string | null;
+  main_trade: string | null;
+  main_trade_other: string | null;
+  has_transportation: boolean | null;
+  city: string | null;
   application_status: ApplicationStatus;
   applied_at: string | null;
 }

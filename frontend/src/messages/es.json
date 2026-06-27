@@ -443,6 +443,14 @@
             },
             "pay_min": "Pago mínimo",
             "pay_max": "Pago máximo",
+            "pay_interval": "Intervalo de pago",
+            "pay_interval_option": {
+                "hourly": "Por hora",
+                "daily": "Diario",
+                "weekly": "Semanal",
+                "monthly": "Mensual",
+                "fixed": "Fijo (tarifa plana)"
+            },
             "start_date": "Fecha de inicio",
             "expected_duration": "Duración esperada",
             "duration_placeholder": "ej. 2 semanas",
@@ -457,6 +465,7 @@
                 "es": "Español"
             },
             "transportation_required": "Requiere transporte",
+            "work_authorization_required": "Requiere autorización de trabajo",
             "certifications": "Certificaciones",
             "certifications_placeholder": "OSHA 10, montacargas, CDL",
             "validation_required": "Completa los campos requeridos.",
@@ -506,6 +515,18 @@
                 "part_time": "Medio tiempo",
                 "weekends": "Fines de semana",
                 "flexible": "Flexible"
+            },
+            "trade": "Oficio",
+            "fallback_trade": "Oficio no especificado",
+            "transportation_yes": "Tiene transporte propio",
+            "transportation_no": "Sin transporte propio",
+            "trades": {
+                "electrician": "Electricista",
+                "plumber": "Plomero",
+                "carpenter": "Carpintero",
+                "concrete": "Concreto",
+                "painting": "Pintura",
+                "other": "Otro"
             }
         },
         "post_job_docs": {
@@ -572,6 +593,8 @@
         "shift_schedule": "Horario",
         "openings": "Vacantes",
         "required_experience": "Experiencia",
+        "work_authorization_required": "Requiere autorización de trabajo",
+        "work_authorization_required_yes": "Requerida",
         "upload_prompt": "Sube los documentos faltantes en tu perfil.",
         "upload_link": "Ir al perfil",
         "apply": "Postularse",
@@ -595,6 +618,7 @@
         "field_phone": "Teléfono",
         "field_name": "Nombre completo",
         "field_skills": "Habilidades",
+        "field_certifications": "Certificaciones",
         "field_availability": "Disponibilidad",
         "field_years_experience": "Años de experiencia",
         "field_location": "Ubicación",
@@ -625,6 +649,7 @@
             "years_experience": "Años de experiencia",
             "location": "Ubicación",
             "bio": "Acerca de ti",
+            "certifications_placeholder": "OSHA 10, montacargas, CDL",
             "save": "Guardar",
             "cancel": "Cancelar"
         },

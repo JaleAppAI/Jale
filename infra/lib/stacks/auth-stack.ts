@@ -4,6 +4,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -85,6 +86,13 @@ export class AuthStack extends cdk.Stack {
       timeToLiveAttribute: 'expiresAt',
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
+    const otpDeliveryStatusTable = new dynamodb.Table(this, 'OtpDeliveryStatusTable', {
+      partitionKey: { name: 'twilioMessageSid', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'ttl',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
 
     if (!/^\+[1-9]\d{7,14}$/.test(otpSmsFromNumber)) {
       throw new Error('otpSmsFromNumber must be a valid E.164 phone number');
@@ -104,6 +112,27 @@ export class AuthStack extends cdk.Stack {
       throw new Error('otpSmsValidityPeriodSeconds must be between 6 and 36000');
     }
 
+    const otpStatusCallbackLambda = new JaleLambdaFunction(this, 'OtpStatusCallbackLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/otp-status-callback.ts'),
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      description: 'Twilio SMS OTP delivery status callback receiver',
+      environment: {
+        TWILIO_SECRET_ARN: otpTwilioSecret.secretName,
+        OTP_DELIVERY_STATUS_TABLE_NAME: otpDeliveryStatusTable.tableName,
+      },
+    });
+    const otpStatusCallbackUrl = otpStatusCallbackLambda.function.addFunctionUrl({
+      authType: lambda.FunctionUrlAuthType.NONE,
+    });
+    // Do NOT inject otpStatusCallbackUrl.url back into this same Lambda's environment:
+    // the Function URL targets this function, so referencing its URL here creates a
+    // CloudFormation cycle (function → env → function-url → function). The callback
+    // handler reconstructs the exact signed URL from its Function URL request context
+    // (domainName + path), which matches what Twilio signed. The *sender* Lambda
+    // (CreateAuthChallenge) gets the URL via env below and passes it to Twilio as
+    // StatusCallback, so Twilio signs precisely that URL.
+
     const createAuthChallengeLambda = new JaleLambdaFunction(this, 'CreateAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/create-auth-challenge.ts'),
       vpc: props.vpc,
@@ -118,9 +147,14 @@ export class AuthStack extends cdk.Stack {
         TWILIO_REQUEST_TIMEOUT_MS: String(otpSmsRequestTimeoutMs),
         TWILIO_VALIDITY_PERIOD_SECONDS: String(otpSmsValidityPeriodSeconds),
         OTP_RATE_LIMIT_TABLE_NAME: otpRateLimitTable.tableName,
+        OTP_DELIVERY_STATUS_TABLE_NAME: otpDeliveryStatusTable.tableName,
+        TWILIO_STATUS_CALLBACK_URL: otpStatusCallbackUrl.url,
       },
     });
     otpRateLimitTable.grantReadWriteData(createAuthChallengeLambda.function);
+    otpDeliveryStatusTable.grantWriteData(createAuthChallengeLambda.function);
+    otpDeliveryStatusTable.grantReadWriteData(otpStatusCallbackLambda.function);
+    otpTwilioSecret.grantRead(otpStatusCallbackLambda.function);
     createAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
       actions: ['dynamodb:TransactWriteItems'],
       resources: [otpRateLimitTable.tableArn],
@@ -204,6 +238,55 @@ export class AuthStack extends cdk.Stack {
       },
     });
 
+    // ── Employer Cognito Pool — SES email configuration ──
+    // Read optional SES context. When sesEmailFromAddress is absent the pool
+    // falls back to Cognito's default shared email service (COGNITO_DEFAULT).
+    //
+    // Operator pre-requisites before deploying SES config (NOT done by CDK):
+    //   1. Verify SES domain identity for the sender domain (e.g. jaleapp.ai).
+    //   2. Enable Easy DKIM in SES; add the 3 CNAME records in Squarespace DNS.
+    //   3. Configure SES custom MAIL FROM (e.g. mail.jaleapp.ai); add MX + SPF
+    //      TXT records in Squarespace DNS.
+    //   4. Add/merge DMARC TXT at _dmarc.jaleapp.ai in Squarespace DNS.
+    //   5. Add SES identity resource policy granting cognito-idp.amazonaws.com
+    //      ses:SendEmail / ses:SendRawEmail, scoped to the user pool ARN.
+    //   6. Request SES production access if the account is still sandboxed.
+    //   7. Deploy this stack (cdk deploy JaleAuthStack) with the context vars.
+    //   8. Test delivery to Gmail / Outlook; verify SPF/DKIM/DMARC pass.
+    const sesEmailFromAddress = this.node.tryGetContext('sesEmailFromAddress') as string | undefined;
+    const sesEmailFromName = (this.node.tryGetContext('sesEmailFromName') as string | undefined) ?? 'Jale';
+    const sesEmailRegion = this.node.tryGetContext('sesEmailRegion') as string | undefined;
+    // sesVerifiedDomain controls the SES identity referenced in SourceArn.
+    // Defaults to the domain part of sesEmailFromAddress (e.g. 'jaleapp.ai'),
+    // which matches domain-level SES identity verification (recommended over
+    // email-address verification). Override via context if you use a subdomain
+    // identity like 'mail.jaleapp.ai' with a from-address on 'jaleapp.ai'.
+    const sesVerifiedDomain = (this.node.tryGetContext('sesVerifiedDomain') as string | undefined)
+      ?? sesEmailFromAddress?.split('@')[1];
+
+    if (sesEmailFromAddress !== undefined) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sesEmailFromAddress)) {
+        throw new Error('sesEmailFromAddress must be a valid email address');
+      }
+      // SES + Cognito is only supported in specific regions. Require an
+      // explicit sesEmailRegion so the SourceArn is unambiguous.
+      const COGNITO_SES_REGIONS = ['us-east-1', 'us-west-2', 'eu-west-1'];
+      if (!sesEmailRegion || !COGNITO_SES_REGIONS.includes(sesEmailRegion)) {
+        throw new Error(
+          `sesEmailRegion must be one of ${COGNITO_SES_REGIONS.join(', ')} when sesEmailFromAddress is set`,
+        );
+      }
+    }
+
+    const employerPoolEmail = sesEmailFromAddress !== undefined
+      ? cognito.UserPoolEmail.withSES({
+          fromEmail: sesEmailFromAddress,
+          fromName: sesEmailFromName,
+          sesRegion: sesEmailRegion!,
+          sesVerifiedDomain,
+        })
+      : undefined;
+
     // ── Employer Cognito Pool ──
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
       poolName: 'jale-employer-pool',
@@ -227,6 +310,7 @@ export class AuthStack extends cdk.Stack {
       lambdaTriggers: {
         postConfirmation: postConfirmationLambda.function,
       },
+      email: employerPoolEmail,
     });
 
     // ── Cognito User Groups ──

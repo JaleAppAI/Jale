@@ -26,7 +26,8 @@ const WORKER_REASON_KEYS = new Set([
 const DOC_LABELS: Record<string, string> = {
   resume: 'Resume',
   driver_license: "Driver's License",
-  ssn: 'SSN',
+  // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
+  ssn: 'SSN Card / ITIN',
 };
 
 function jobTypeLabel(type: string) {

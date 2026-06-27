@@ -27,14 +27,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       longitude?: number;
       pay_min?: number | null;
       pay_max?: number | null;
+      pay_interval?: string | null;
       start_date?: string | null;
       expected_duration?: string | null;
       shift_schedule?: string | null;
       transportation_required?: boolean;
+      work_authorization_required?: boolean;
       language_preference?: string[];
       number_of_workers_needed?: number;
       trade_category?: string;
       required_experience_years?: number | null;
+      required_experience_months?: number | null;
       certifications?: string[];
     };
     try {
@@ -116,26 +119,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          required_docs,
          pay_min,
          pay_max,
+         pay_interval,
          start_date,
          expected_duration,
          shift_schedule,
          transportation_required,
+         work_authorization_required,
          language_preference,
          number_of_workers_needed,
          trade_category,
          required_experience_years,
+         required_experience_months,
          certifications
        )
        VALUES (
          (SELECT id FROM users WHERE cognito_sub = $1),
-         $2, $3, $4, $5, $6, $7, $8, $9, $10::date, $11, $12, $13, $14, $15, $16, $17, $18
+         $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
-         pay_min, pay_max, start_date, expected_duration, shift_schedule,
-         transportation_required, language_preference, number_of_workers_needed,
+         pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
+         transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
-         trade_category, required_experience_years, certifications`,
+         trade_category, required_experience_years, required_experience_months, certifications`,
       [
         cognitoSub,
         title.trim(),
@@ -146,14 +152,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         required_docs,
         jobFields.value.pay_min,
         jobFields.value.pay_max,
+        jobFields.value.pay_interval,
         jobFields.value.start_date,
         jobFields.value.expected_duration,
         jobFields.value.shift_schedule,
         jobFields.value.transportation_required,
+        jobFields.value.work_authorization_required,
         jobFields.value.language_preference,
         jobFields.value.number_of_workers_needed,
         jobFields.value.trade_category,
         jobFields.value.required_experience_years,
+        jobFields.value.required_experience_months,
         jobFields.value.certifications,
       ],
     );

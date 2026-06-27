@@ -602,6 +602,28 @@ npx cdk destroy JaleBastionStack    # destroy after use, with approval
 - Use project constructs and shared utilities before introducing new patterns.
 - Any new legal/compliance-gated endpoint must enforce the legal wall server-side, not just in the frontend.
 - Matching engine: employer job text is untrusted input. Never log raw prompt, title, description, or model response from LLM enrichment.
+- Releases merge **forward into the target branch only** (`main` → `prod`). Never merge a long-lived branch (`main`, `prod`) into a feature/release branch and then promote that branch to *become* the target. See "Branch And Release Workflow".
+
+---
+
+## Branch And Release Workflow
+
+`main` is the integration trunk. `prod` is the production branch; pushing to `prod` triggers the production deploy, so a push to `prod` is an outward-facing, hard-to-reverse action that requires explicit user approval.
+
+**The one rule:** changes flow **forward into the target**. To release, merge `main` **into** `prod`. `prod` keeps its own history and simply gains main's delta. A merge is additive — it never discards prod-only commits.
+
+**Forbidden anti-pattern (never do this):**
+- Do NOT merge `main` (or `prod`) *into* a feature/release branch and then "promote" that branch to replace the target (e.g., force it to become `main`/`prod`, or open a PR whose effect is the branch overwriting the trunk).
+- Do NOT `reset`/`force-push` `prod` to point at `main`. That is replacement, not a release, and it silently drops prod-only work (A2P legal pages, CI region config, etc.).
+
+**Correct release procedure (`main` → `prod`):**
+1. `git fetch origin --prune`.
+2. Confirm a clean merge first: `git merge-tree --write-tree origin/prod origin/main` (exit 0 = no conflicts).
+3. `git checkout prod && git reset --hard origin/prod` (sync local prod; only safe because local prod has no unique commits — verify with `git log origin/prod..prod`).
+4. `git merge --no-ff origin/main -m "Merge origin/main into prod: <summary>"`.
+5. Show the user the diffstat and the exact commits about to ship. **Stop and get explicit approval** — pushing deploys to production.
+6. `git push origin prod`.
+7. After release, back-merge `prod` → `main` (or cherry-pick prod-only fixes) so the branches reconverge and prod-only commits don't re-diverge every cycle.
 
 ---
 

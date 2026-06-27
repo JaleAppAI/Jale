@@ -443,6 +443,14 @@
             },
             "pay_min": "Pay Min",
             "pay_max": "Pay Max",
+            "pay_interval": "Pay Interval",
+            "pay_interval_option": {
+                "hourly": "Hourly",
+                "daily": "Daily",
+                "weekly": "Weekly",
+                "monthly": "Monthly",
+                "fixed": "Fixed (flat rate)"
+            },
             "start_date": "Start Date",
             "expected_duration": "Expected Duration",
             "duration_placeholder": "e.g. 2 weeks",
@@ -457,6 +465,7 @@
                 "es": "Spanish"
             },
             "transportation_required": "Transportation required",
+            "work_authorization_required": "Work authorization required",
             "certifications": "Certifications",
             "certifications_placeholder": "OSHA 10, forklift, CDL",
             "validation_required": "Complete the required fields.",
@@ -506,6 +515,18 @@
                 "part_time": "Part-time",
                 "weekends": "Weekends",
                 "flexible": "Flexible"
+            },
+            "trade": "Trade",
+            "fallback_trade": "Trade not specified",
+            "transportation_yes": "Has own transportation",
+            "transportation_no": "No own transportation",
+            "trades": {
+                "electrician": "Electrician",
+                "plumber": "Plumber",
+                "carpenter": "Carpenter",
+                "concrete": "Concrete",
+                "painting": "Painting",
+                "other": "Other"
             }
         },
         "post_job_docs": {
@@ -572,6 +593,8 @@
         "shift_schedule": "Shift",
         "openings": "Openings",
         "required_experience": "Experience",
+        "work_authorization_required": "Work authorization required",
+        "work_authorization_required_yes": "Required",
         "upload_prompt": "Upload missing documents in your profile.",
         "upload_link": "Go to profile",
         "apply": "Apply",
@@ -595,6 +618,7 @@
         "field_phone": "Phone",
         "field_name": "Full name",
         "field_skills": "Skills",
+        "field_certifications": "Certifications",
         "field_availability": "Availability",
         "field_years_experience": "Years of experience",
         "field_location": "Location",
@@ -625,6 +649,7 @@
             "years_experience": "Years of experience",
             "location": "Location",
             "bio": "About you",
+            "certifications_placeholder": "OSHA 10, forklift, CDL",
             "save": "Save",
             "cancel": "Cancel"
         },

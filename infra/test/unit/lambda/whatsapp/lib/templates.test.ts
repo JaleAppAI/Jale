@@ -110,8 +110,8 @@ describe('templates.ts — t()', () => {
   });
 
   it('job_documents_required interpolates the missing document list', () => {
-    const body = t('job_documents_required', 'en', { missing_docs: 'Resume, SSN card / ITIN' });
-    expect(body).toContain('Resume, SSN card / ITIN');
+    const body = t('job_documents_required', 'en', { missing_docs: "Resume, Driver's license" });
+    expect(body).toContain("Resume, Driver's license");
     expect(body).not.toContain('{{missing_docs}}');
   });
 });

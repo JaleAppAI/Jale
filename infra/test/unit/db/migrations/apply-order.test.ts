@@ -39,6 +39,8 @@ const expectedBaselineMigrations = [
   '029_hired_count_trigger_security_definer.sql',
   '030_whatsapp_worker_skills_seed.sql',
   '031_employer_display_name.sql',
+  '032_work_authorization_required.sql',
+  '033_pay_interval_experience_months_worker_certifications.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -92,7 +94,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-031 readiness baseline order', () => {
+  it('locks the 001-033 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -392,7 +394,32 @@ describe('migration apply order baseline', () => {
     expect(migration).not.toContain('CREATE TRIGGER');
   });
 
-  maybeIt('applies migrations 001-026 against a local Postgres database', async () => {
+  it('adds work_authorization_required column to jobs in migration 032', () => {
+    const migration = readMigration('032_work_authorization_required.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS work_authorization_required BOOLEAN NOT NULL DEFAULT false');
+    expect(migration).toContain('SSN is intentionally kept in jobs_required_docs_valid CHECK');
+  });
+
+  it('adds pay interval, experience months, and worker certifications in migration 033', () => {
+    const migration = readMigration('033_pay_interval_experience_months_worker_certifications.sql');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS pay_interval TEXT');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS required_experience_months INTEGER');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS experience_months INTEGER');
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS certifications TEXT[] NOT NULL DEFAULT '{}'::text[]");
+    expect(migration).toContain('jobs_pay_interval_check');
+    expect(migration).toContain('jobs_required_experience_months_check');
+    expect(migration).toContain('worker_profiles_experience_months_check');
+    expect(migration).toContain('worker_profiles_certifications_count_check');
+    // Both year→month backfills must clamp the years value to 80 BEFORE the *12
+    // so a legacy row with years > 80 cannot violate the new BETWEEN 0 AND 960
+    // CHECK (abort) nor overflow int4 in the multiplication on extreme values.
+    expect(migration).toMatch(/LEAST\(required_experience_years, 80\) \* 12/);
+    expect(migration).toMatch(/LEAST\(years_experience, 80\) \* 12/);
+  });
+
+  maybeIt('applies migrations 001-033 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

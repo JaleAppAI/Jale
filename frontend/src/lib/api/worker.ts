@@ -7,6 +7,7 @@ export interface UploadUrlResponse {
 }
 
 export type DocType = 'resume' | 'driver_license' | 'ssn';
+export type JobDocType = 'resume' | 'driver_license';
 
 export async function getUploadUrl(
   token: string,
@@ -82,10 +83,13 @@ export type Job = {
   pay?: string;
   pay_min?: number | null;
   pay_max?: number | null;
+  pay_interval?: string | null;
+  required_experience_months?: number | null;
   start_date?: string | null;
   expected_duration?: string | null;
   shift_schedule?: string | null;
   transportation_required?: boolean | null;
+  work_authorization_required?: boolean | null;
   language_preference?: Array<'any' | 'en' | 'es'> | null;
   number_of_workers_needed?: number | null;
   hired_count?: number | null;
@@ -93,7 +97,7 @@ export type Job = {
   trade_category?: string | null;
   required_experience_years?: number | null;
   certifications?: string[] | null;
-  required_docs: DocType[];
+  required_docs: JobDocType[];
   created_at: string;
   match_score?: number;
   match_reasons?: string[];
@@ -104,7 +108,7 @@ export type JobDetail = Job & {
   status?: JobStatus;
   already_applied: boolean;
   application_status: ApplicationStatus | null;
-  missing_docs: DocType[];
+  missing_docs: JobDocType[];
 };
 
 export type Application = {
@@ -133,6 +137,7 @@ export type WorkerProfileData = {
   main_trade?: WorkerTrade | null;
   main_trade_other?: string | null;
   has_transportation?: boolean | null;
+  certifications?: string[] | null;
 };
 
 export type WorkerVaultDoc = {

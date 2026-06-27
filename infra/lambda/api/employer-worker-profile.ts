@@ -98,7 +98,9 @@ export const handler = async (
                 ORDER BY ws.skill
               ) AS skills,
               wp.availability,
-              wp.years_experience, wp.location,
+              wp.years_experience, wp.experience_months, wp.location,
+              COALESCE(wp.certifications, '{}'::text[]) AS certifications,
+              u.main_trade, u.main_trade_other, u.has_transportation, u.city,
               CASE ja.status
                 WHEN 'reviewed' THEN 'contacted'
                 WHEN 'rejected' THEN 'not_interested'

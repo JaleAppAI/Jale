@@ -128,8 +128,10 @@ describe('Worker Profile API Lambda', () => {
       skills: [],
       availability: null,
       years_experience: null,
+      experience_months: null,
       location: null,
       bio: null,
+      certifications: [],
     };
 
     mockQuery.mockImplementation((queryText) => {
@@ -145,6 +147,8 @@ describe('Worker Profile API Lambda', () => {
     expect(JSON.parse(response.body)).toEqual(mockUser);
     const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('LEFT JOIN worker_profiles'))?.[0];
     expect(profileQuery).toContain('FROM worker_skills ws');
+    expect(profileQuery).toContain('wp.experience_months');
+    expect(profileQuery).toContain('wp.certifications');
     expect(profileQuery).not.toContain('wp.skills');
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
