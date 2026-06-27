@@ -129,14 +129,6 @@
             "password_note": "Password must be at least 8 characters and include uppercase and lowercase letters, a number, and a symbol.",
             "panel_title": "faster time-to-hire",
             "panel_body": "Employer profiles help workers recognize the company behind each opportunity.",
-            "forgot_link": "Forgot password?",
-            "forgot_title": "Reset your password",
-            "forgot_subtitle": "Enter your work email and we'll send a reset code.",
-            "send_code": "Send reset code",
-            "forgot_confirm_title": "Set a new password",
-            "forgot_confirm_subtitle": "Enter the code we sent to {email}",
-            "set_password": "Set new password",
-            "reset_success": "Password updated — sign in below.",
             "fields": {
                 "company_name": "Company name",
                 "contact_name": "Contact name",
@@ -150,9 +142,7 @@
                 "typical_job_types": "Typical job types",
                 "company_size": "Company size",
                 "company_description": "Company description",
-                "confirmation_code": "Confirmation code",
-                "reset_code": "Reset code",
-                "new_password": "New password"
+                "confirmation_code": "Confirmation code"
             },
             "trades": {
                 "electrician": "Electrician",
@@ -256,7 +246,7 @@
         "starting": "Starting...",
         "message_start_failed": "Could not start the conversation.",
         "worker_whatsapp_unavailable": "This worker does not have a WhatsApp number yet.",
-        "default_initial_message": "Hi, I am reaching out about your {jobTitle} application. Reply here when you are available.",
+        "default_initial_message": "Hi, I am reaching out about your application. Reply here when you are available.",
         "message_status": {
             "queued": "Queued",
             "waiting_worker_reply": "Waiting for worker reply",
@@ -311,7 +301,7 @@
             "eyebrow": "Got Jale?",
             "title": "Keep every job, applicant, and WhatsApp handoff in one place.",
             "body": "This dashboard uses your live job postings today and reserves space for the upcoming matching, interviews, and growth tools from the prototype.",
-            "primary_cta": "Post a job",
+            "primary_cta": "Post un trabajo",
             "secondary_cta": "Open messages"
         },
         "quick_post": {

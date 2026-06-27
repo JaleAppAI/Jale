@@ -57,10 +57,9 @@ export function ConversationDrawer() {
   useEffect(() => {
     if (!open || !idToken || !selectedId) return;
     let active = true;
-    let firstLoad = true;
 
     async function load() {
-      if (firstLoad) setLoading(true);
+      setLoading(true);
       try {
         const detail = await getConversation(idToken!, selectedId!);
         if (!active) return;
@@ -70,7 +69,6 @@ export function ConversationDrawer() {
         handleDrawerLegalWall(err);
       } finally {
         if (active) setLoading(false);
-        firstLoad = false;
       }
     }
 

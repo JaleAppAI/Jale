@@ -204,29 +204,6 @@ export class WhatsAppStack extends cdk.Stack {
     whatsappDbSecret.grantRead(this.jobAlertLambda.function);
     twilioSecret.grantRead(this.jobAlertLambda.function);
 
-    // ── Job Message Outbox Sweeper ──────────────────────────────
-    // EventBridge every 5 min: retries stale/failed-under-cap job_message_outbox
-    // rows (R8 retry driver for employer-initiated sends). Connects as
-    // jale_whatsapp; sends via Twilio, so needs both secrets.
-    const outboxSweeperLambda = new JaleLambdaFunction(this, 'JobMessageOutboxSweeperLambda', {
-      entry: path.join(__dirname, '../../lambda/whatsapp/job-message-outbox-sweeper.ts'),
-      description: 'Job message outbox sweeper — retries stale employer-message sends',
-      vpc: props.vpc,
-      securityGroups: [props.lambdaSg],
-      environment: {
-        DB_SECRET_ARN: whatsappDbSecret.secretName,
-        TWILIO_SECRET_ARN: twilioSecret.secretName,
-        ALLOWED_ORIGIN: allowedOrigin,
-      },
-    });
-    whatsappDbSecret.grantRead(outboxSweeperLambda.function);
-    twilioSecret.grantRead(outboxSweeperLambda.function);
-
-    new events.Rule(this, 'JobMessageOutboxSweepRule', {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
-      targets: [new eventTargets.LambdaFunction(outboxSweeperLambda.function)],
-    });
-
     this.adminOutboxDispatcherLambda = new JaleLambdaFunction(this, 'AdminOutboxDispatcherLambda', {
       entry: path.join(__dirname, '../../lambda/whatsapp/admin-outbox-dispatcher.ts'),
       description: 'WhatsApp admin outbox dispatcher',

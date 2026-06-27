@@ -35,10 +35,6 @@ const expectedBaselineMigrations = [
   '025_job_messaging.sql',
   '026_admin_panel.sql',
   '027_admin_security_hardening.sql',
-  '028_job_messaging_hardening.sql',
-  '029_hired_count_trigger_security_definer.sql',
-  '030_whatsapp_worker_skills_seed.sql',
-  '031_employer_display_name.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -92,7 +88,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-031 readiness baseline order', () => {
+  it('locks the 001-027 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -365,34 +361,7 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('job_conversations_worker_all');
   });
 
-  it('hardens job messaging with thread numbers, status callbacks, and outbox sweeper in migration 028', () => {
-    const migration = readMigration('028_job_messaging_hardening.sql');
-
-    expect(migration).toContain('GRANT UPDATE (status, updated_at) ON job_applications TO jale_whatsapp');
-    expect(migration).toContain('DROP POLICY IF EXISTS jobapp_whatsapp_all ON job_applications');
-    expect(migration).toContain('CREATE POLICY jobapp_whatsapp_update ON job_applications');
-    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ');
-    expect(migration).toContain('ALTER TABLE job_conversations ADD COLUMN IF NOT EXISTS worker_thread_number INTEGER');
-    expect(migration).toContain('CREATE TABLE IF NOT EXISTS worker_thread_counters');
-    expect(migration).toContain('CREATE OR REPLACE FUNCTION assign_worker_thread_number');
-    expect(migration).toContain('SECURITY DEFINER');
-    expect(migration).toContain('focused_job_conversation_id');
-    expect(migration).toContain("CHECK (status IN ('queued', 'waiting_worker_reply', 'sent', 'delivered',");
-    expect(migration).toContain('idx_job_messages_twilio_sid');
-    expect(migration).toContain('CREATE OR REPLACE FUNCTION record_twilio_status');
-    expect(migration).toContain('CREATE OR REPLACE FUNCTION list_stale_job_outbox_workers');
-  });
-
-  it('recreates sync_job_hired_counts as SECURITY DEFINER in migration 029 (worker-reply jobs-cascade fix)', () => {
-    const migration = readMigration('029_hired_count_trigger_security_definer.sql');
-
-    expect(migration).toContain('CREATE OR REPLACE FUNCTION sync_job_hired_counts()');
-    expect(migration).toContain('SECURITY DEFINER');
-    expect(migration).toContain('SET search_path = public');
-    expect(migration).not.toContain('CREATE TRIGGER');
-  });
-
-  maybeIt('applies migrations 001-026 against a local Postgres database', async () => {
+  maybeIt('applies migrations 001-025 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');

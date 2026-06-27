@@ -74,7 +74,7 @@ describe('Webhook Lambda', () => {
     } as unknown as APIGatewayProxyEvent;
   };
 
-  it('returns 200 with empty TwiML and pushes to SQS on valid signature', async () => {
+  it('returns 200 and pushes to SQS on valid signature', async () => {
     const event = buildSignedEvent({
       AccountSid: accountSid,
       From: 'whatsapp:+15125551234',
@@ -85,10 +85,6 @@ describe('Webhook Lambda', () => {
     const result = await handler(event);
 
     expect(result.statusCode).toBe(200);
-    // Twilio rejects non-XML webhook responses (Error 12300) and re-delivers
-    // via its fallback URL — the success response must be TwiML.
-    expect(result.headers).toEqual({ 'Content-Type': 'text/xml' });
-    expect(result.body).toBe('<?xml version="1.0" encoding="UTF-8"?><Response/>');
     expect(mockSqsSend).toHaveBeenCalledTimes(1);
     expect(mockSqsSend).toHaveBeenCalledWith(
       expect.objectContaining({

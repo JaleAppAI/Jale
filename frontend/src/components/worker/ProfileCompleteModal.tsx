@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,7 +17,6 @@ export interface ProfileCompleteValues {
 
 export function ProfileCompleteModal(props: {
   open: boolean;
-  initial?: Partial<ProfileCompleteValues>;
   onClose: () => void;
   onSubmit: (values: ProfileCompleteValues) => Promise<void>;
 }) {
@@ -30,23 +29,6 @@ export function ProfileCompleteModal(props: {
   const [yearsExp, setYearsExp] = useState('0');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // Prefill from the worker's existing profile each time the modal opens,
-  // so they only fill in what's actually missing (e.g. WhatsApp-onboarded
-  // workers already have name/availability/location).
-  const { open, initial } = props;
-  useEffect(() => {
-    if (!open || !initial) return;
-    setFullName(initial.full_name ?? '');
-    setSkills((initial.skills ?? []).join(', '));
-    if (initial.availability && (AVAILABILITY as readonly string[]).includes(initial.availability)) {
-      setAvailability(initial.availability);
-    }
-    setLocation(initial.location ?? '');
-    if (typeof initial.years_experience === 'number') {
-      setYearsExp(String(initial.years_experience));
-    }
-  }, [open, initial]);
 
   if (!props.open) return null;
 

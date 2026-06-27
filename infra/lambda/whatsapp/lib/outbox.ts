@@ -156,29 +156,6 @@ export async function sendPendingOutbox(
   }
 }
 
-export async function queueOutboxText(
-  client: PoolClient,
-  inboundMessageSid: string,
-  to: string,
-  body: string,
-): Promise<void> {
-  const whatsappNumber = to.replace(/^whatsapp:/, '');
-  // Computing the next sequence in-SQL is race-free within the enclosing
-  // transaction — all queue writes for one inbound SID happen in one tx.
-  await client.query(
-    `INSERT INTO whatsapp_outbox
-        (inbound_message_sid, sequence, whatsapp_number, body)
-     VALUES (
-       $1::varchar,
-       (SELECT COALESCE(MAX(sequence), 0) + 1
-          FROM whatsapp_outbox
-         WHERE inbound_message_sid = $1::varchar),
-       $2, $3
-     )`,
-    [inboundMessageSid, whatsappNumber, body],
-  );
-}
-
 export async function sendPendingAdminOutbox(
   client: PoolClient,
   limit = 25,

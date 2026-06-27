@@ -27,23 +27,11 @@ import {
   declineWorkerConversationFromButton,
   openLatestWorkerConversationFromButtonText,
   openWorkerConversationFromButton,
+  recordWorkerConversationReply,
   sendPendingJobMessageOutbox,
 } from '../lib/job-messaging';
 import { parseFormBody, type TwilioSecret } from './lib/twilio';
-import { sendPendingOutbox, queueOutboxText } from './lib/outbox';
-import {
-  isLikelyOtpCode,
-  resolveWorkerIdForWhatsappNumber,
-  parseEmployerConversationTextAction,
-  handleEmployerConversationButton,
-  handleEmployerConversationTextAction,
-  tryConversationRelay,
-  parseDisambiguationPick,
-  handlePickerResponse,
-  type ConversationRow,
-  type IncomingMessage,
-  type RouterDeps,
-} from './lib/conversation-router';
+import { sendPendingOutbox } from './lib/outbox';
 import {
   t,
   detectLanguage,
@@ -135,7 +123,21 @@ async function queueText(
   to: string,
   body: string,
 ): Promise<void> {
-  await queueOutboxText(client, inboundMessageSid, to, body);
+  const whatsappNumber = to.replace(/^whatsapp:/, '');
+  // Computing the next sequence in-SQL is race-free within the enclosing
+  // transaction — all queue writes for one inbound SID happen in one tx.
+  await client.query(
+    `INSERT INTO whatsapp_outbox
+        (inbound_message_sid, sequence, whatsapp_number, body)
+     VALUES (
+       $1::varchar,
+       (SELECT COALESCE(MAX(sequence), 0) + 1
+          FROM whatsapp_outbox
+         WHERE inbound_message_sid = $1::varchar),
+       $2, $3
+     )`,
+    [inboundMessageSid, whatsappNumber, body],
+  );
 }
 
 async function queueReply(
@@ -279,6 +281,19 @@ async function markCompleted(
   );
 }
 
+// ── Conversation row shape (subset of the DB columns) ───────────
+interface ConversationRow {
+  id: string;
+  user_id: string | null;
+  whatsapp_number: string;
+  language: Lang;
+  conversation_state: ConversationState;
+  state_context: ProfileStateContext;
+  otp_attempts: number;
+  otp_expires_at: Date | null;
+  last_processed_message_sid: string | null;
+}
+
 // ── DB: conversation lookup / upsert ────────────────────────────
 //
 // After Fix Plan v3, the processor always calls
@@ -331,8 +346,7 @@ async function getOrCreateConversationForUpdate(
   const existing = await client.query<ConversationRow>(
     `SELECT id, user_id, whatsapp_number, language,
             conversation_state, state_context, otp_attempts,
-            otp_expires_at, last_processed_message_sid,
-            focused_job_conversation_id
+            otp_expires_at, last_processed_message_sid
        FROM whatsapp_conversations
       WHERE whatsapp_number = $1
       FOR UPDATE`,
@@ -345,8 +359,7 @@ async function getOrCreateConversationForUpdate(
      VALUES ($1, $2)
      RETURNING id, user_id, whatsapp_number, language,
                conversation_state, state_context, otp_attempts,
-               otp_expires_at, last_processed_message_sid,
-               focused_job_conversation_id`,
+               otp_expires_at, last_processed_message_sid`,
     [whatsappNumber, defaultLang],
   );
   return created.rows[0];
@@ -375,51 +388,6 @@ async function updateConversation(
     `UPDATE whatsapp_conversations SET ${sets}, updated_at = now() WHERE id = $1`,
     [id, ...values],
   );
-}
-
-// ── Web-worker bypass (Phase 2.2) ───────────────────────────────
-//
-// Workers who registered via the web app (email/password, tos already accepted)
-// skip the 8-state WhatsApp onboarding on first contact and land directly in
-// `idle` state with a contextual welcome message.
-
-async function findWebRegisteredWorker(
-  client: PoolClient,
-  phone: string,
-): Promise<{ id: string } | null> {
-  const result = await client.query<{ id: string }>(
-    `SELECT id FROM users
-       WHERE phone = $1
-         AND user_type = 'worker'
-         AND tos_accepted_at IS NOT NULL
-       LIMIT 1`,
-    [phone],
-  );
-  return result.rowCount ? result.rows[0] : null;
-}
-
-async function bypassOnboardingForWebWorker(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-  userId: string,
-): Promise<void> {
-  const lang = detectLanguage(msg.body);
-  await updateConversation(client, conv.id, {
-    conversation_state: 'idle',
-    user_id: userId,
-    language: lang,
-    last_processed_message_sid: msg.messageSid,
-  });
-  await client.query(
-    `UPDATE users SET whatsapp_number = $1 WHERE id = $2 AND whatsapp_number IS NULL`,
-    [conv.whatsapp_number, userId],
-  );
-  const welcome =
-    lang === 'en'
-      ? 'Welcome to Jale! Type JOBS to see available job listings.'
-      : '¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.';
-  await queueOutboxText(client, msg.messageSid, msg.from, welcome);
 }
 
 // ── Main SQS handler ────────────────────────────────────────────
@@ -649,6 +617,18 @@ async function processRecord(record: SQSRecord): Promise<void> {
 }
 
 // ── State router ────────────────────────────────────────────────
+interface IncomingMessage {
+  body: string;
+  buttonPayload: string | undefined;
+  interactivePayload: string | undefined;
+  messageSid: string;
+  from: string;
+  numMedia: number;
+  mediaUrl: string | undefined;
+  mediaSid: string | undefined;
+  mediaContentType: string | undefined;
+}
+
 function extractInteractivePayload(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   try {
@@ -970,20 +950,13 @@ async function routeMessage(
   if (msg.buttonPayload) {
     const conversationPayload = parseEmployerConversationButtonPayload(msg.buttonPayload);
     if (conversationPayload) {
-      return await handleEmployerConversationButton(client, conv, msg, conversationPayload, routerDeps);
+      return await handleEmployerConversationButton(client, conv, msg, conversationPayload);
     }
 
     const parsed = parseButtonPayload(msg.buttonPayload);
     if (parsed && (conv.conversation_state === 'idle' || conv.user_id)) {
       await handleJobButton(client, conv, parsed, from, msg.messageSid);
       return null;
-    }
-  }
-
-  if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
-    const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
-    if (workerId) {
-      return await handlePickerResponse(client, conv, msg, workerId, routerDeps);
     }
   }
 
@@ -999,20 +972,12 @@ async function routeMessage(
 
   const textConversationAction = parseEmployerConversationTextAction(msg.body);
   if (textConversationAction) {
-    return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction, routerDeps);
+    return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction);
   }
 
-  if (conv.conversation_state === 'new') {
-    const webWorker = await findWebRegisteredWorker(client, conv.whatsapp_number);
-    if (webWorker) {
-      await bypassOnboardingForWebWorker(client, conv, msg, webWorker.id);
-      return null;
-    }
-  }
-
-  const relayedWorkerId = await tryConversationRelay(client, conv, msg, routerDeps);
-  if (relayedWorkerId) {
-    return relayedWorkerId;
+  const routedWorkerId = await routeEmployerConversationReplyOverride(client, conv, msg);
+  if (routedWorkerId) {
+    return routedWorkerId;
   }
 
   switch (conv.conversation_state) {
@@ -1073,8 +1038,213 @@ async function routeMessage(
   return null;
 }
 
-// Processor-owned mutations injected into the conversation router module.
-const routerDeps: RouterDeps = { updateConversation, queueLegalPrompt };
+function isLikelyOtpCode(body: string): boolean {
+  return /^\s*\d{6}\s*$/.test(body);
+}
+
+function parseEmployerConversationTextAction(body: string): 'open' | 'decline' | null {
+  const normalized = body.trim().toLowerCase();
+  if (['abrir', 'abrir conversacion', 'open', 'open conversation', 'accept'].includes(normalized)) {
+    return 'open';
+  }
+  if (['rechazar', 'no me interesa', 'decline', 'not interested'].includes(normalized)) {
+    return 'decline';
+  }
+  return null;
+}
+
+async function resolveWorkerIdForWhatsappNumber(
+  client: PoolClient,
+  whatsappNumber: string,
+): Promise<string | null> {
+  const normalized = whatsappNumber.replace(/^whatsapp:/, '');
+  const result = await client.query<{ id: string }>(
+    `SELECT u.id
+       FROM users u
+       LEFT JOIN worker_profiles wp ON wp.user_id = u.id
+      WHERE u.user_type = 'worker'
+        AND (
+          u.whatsapp_number = $1
+          OR u.phone = $1
+          OR wp.phone = $1
+        )
+      ORDER BY
+        CASE
+          WHEN u.whatsapp_number = $1 THEN 0
+          WHEN u.phone = $1 THEN 1
+          ELSE 2
+        END
+      LIMIT 1`,
+    [normalized],
+  );
+  return result.rows[0]?.id ?? null;
+}
+
+async function routeEmployerConversationReplyOverride(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<string | null> {
+  if (conv.conversation_state !== 'awaiting_otp') return null;
+  if (!msg.body.trim() || isLikelyOtpCode(msg.body)) return null;
+
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) return null;
+
+  await setInternalUserRlsContext(client, workerId);
+  const routedToEmployer = await recordWorkerConversationReply(
+    client,
+    workerId,
+    msg.body,
+    msg.from,
+    msg.messageSid,
+    conv.state_context?.active_job_conversation_id,
+  );
+  if (!routedToEmployer) return null;
+
+  await updateConversation(client, conv.id, {
+    user_id: workerId,
+    conversation_state: 'idle',
+    state_context: {},
+    otp_attempts: 0,
+    otp_expires_at: null,
+    last_processed_message_sid: msg.messageSid,
+  });
+  conv.user_id = workerId;
+  conv.conversation_state = 'idle';
+  conv.state_context = {};
+  conv.otp_attempts = 0;
+  conv.otp_expires_at = null;
+
+  return workerId;
+}
+
+async function resetWhatsappConversationToIdle(
+  client: PoolClient,
+  conv: ConversationRow,
+  workerId: string,
+  messageSid: string,
+  stateContext: ProfileStateContext = {},
+): Promise<void> {
+  await updateConversation(client, conv.id, {
+    user_id: workerId,
+    conversation_state: 'idle',
+    state_context: stateContext,
+    otp_attempts: 0,
+    otp_expires_at: null,
+    last_processed_message_sid: messageSid,
+  });
+  conv.user_id = workerId;
+  conv.conversation_state = 'idle';
+  conv.state_context = stateContext;
+  conv.otp_attempts = 0;
+  conv.otp_expires_at = null;
+}
+
+async function handleEmployerConversationButton(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  payload: { action: 'open' | 'decline'; conversationId: string },
+): Promise<string | null> {
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) {
+    await reply(client, msg, 'start_prompt', detectLanguage(msg.body));
+    return null;
+  }
+
+  await setInternalUserRlsContext(client, workerId);
+
+  if (payload.action === 'decline') {
+    const declined = await declineWorkerConversationFromButton(
+      client,
+      workerId,
+      payload.conversationId,
+    );
+    if (declined) {
+      await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid);
+      await queueText(
+        client,
+        msg.messageSid,
+        msg.from,
+        conv.language === 'en'
+          ? 'Conversation closed. You can keep using Jale here.'
+          : 'Conversacion cerrada. Puedes seguir usando Jale aqui.',
+      );
+    }
+    return null;
+  }
+
+  const opened = await openWorkerConversationFromButton(
+    client,
+    workerId,
+    payload.conversationId,
+    msg.from,
+  );
+  if (!opened.found) return null;
+
+  await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {
+    active_job_conversation_id: opened.conversationId ?? payload.conversationId,
+  });
+  if (opened.queuedMessages === 0) {
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Conversation opened. Reply here to message the employer.'
+        : 'Conversacion abierta. Responde aqui para escribirle al empleador.',
+    );
+  }
+
+  return workerId;
+}
+
+async function handleEmployerConversationTextAction(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  action: 'open' | 'decline',
+): Promise<string | null> {
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) return null;
+
+  await setInternalUserRlsContext(client, workerId);
+
+  if (action === 'decline') {
+    const declined = await declineLatestWorkerConversationFromButtonText(client, workerId);
+    if (!declined) return null;
+    await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid);
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Conversation closed. You can keep using Jale here.'
+        : 'Conversacion cerrada. Puedes seguir usando Jale aqui.',
+    );
+    return null;
+  }
+
+  const opened = await openLatestWorkerConversationFromButtonText(client, workerId, msg.from);
+  if (!opened.found) return null;
+
+  await resetWhatsappConversationToIdle(client, conv, workerId, msg.messageSid, {
+    active_job_conversation_id: opened.conversationId,
+  });
+  if (opened.queuedMessages === 0) {
+    await queueText(
+      client,
+      msg.messageSid,
+      msg.from,
+      conv.language === 'en'
+        ? 'Conversation opened. Reply here to message the employer.'
+        : 'Conversacion abierta. Responde aqui para escribirle al empleador.',
+    );
+  }
+
+  return workerId;
+}
 
 // ── new / restart — SignUp + InitiateAuth(CUSTOM_AUTH) ──────────
 async function handleNewOrRestart(
@@ -2243,9 +2413,19 @@ async function handleIdle(
     return null;
   }
 
-  // Conversation relay now runs in routeMessage (tryConversationRelay) before
-  // handleIdle is reached. Reserved keywords (JOBS) and typed job actions fall
-  // through to here; everything else is the idle help fallback.
+  if (conv.user_id && msg.body.trim()) {
+    await setInternalUserRlsContext(client, conv.user_id);
+    const routedToEmployer = await recordWorkerConversationReply(
+      client,
+      conv.user_id,
+      msg.body,
+      msg.from,
+      msg.messageSid,
+      conv.state_context?.active_job_conversation_id,
+    );
+    if (routedToEmployer) return conv.user_id;
+  }
+
   await reply(client, msg,'idle_help', conv.language);
   return null;
 }

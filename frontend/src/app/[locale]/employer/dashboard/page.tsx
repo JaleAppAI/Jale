@@ -10,8 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PostJobModal } from '@/components/employer/PostJobModal';
-import { getEmployerProfile, getJobs } from '@/lib/api/employer';
-import type { EmployerProfileData, Job } from '@/lib/api/employer';
+import { getJobs } from '@/lib/api/employer';
+import type { Job } from '@/lib/api/employer';
 import type { JobStatus } from '@/lib/status';
 
 type DisabledNavItem = {
@@ -39,12 +39,6 @@ const accountNav: DisabledNavItem[] = [
 ];
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
-
-function getInitials(value: string) {
-    const parts = value.trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return 'E';
-    return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
-}
 
 function Icon({ name }: { name: 'grid' | 'briefcase' | 'message' | 'user' | 'bell' | 'search' | 'spark' | 'chart' | 'clock' | 'plus' }) {
     const common = {
@@ -166,7 +160,6 @@ export default function EmployerDashboardPage() {
     const otherLocale = locale === 'en' ? 'es' : 'en';
 
     const [jobs, setJobs] = useState<Job[]>([]);
-    const [profile, setProfile] = useState<EmployerProfileData | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
@@ -177,11 +170,8 @@ export default function EmployerDashboardPage() {
     useEffect(() => {
         if (!idToken) return;
         setLoading(true);
-        Promise.all([getJobs(idToken), getEmployerProfile(idToken)])
-            .then(([nextJobs, nextProfile]) => {
-                setJobs(nextJobs);
-                setProfile(nextProfile);
-            })
+        getJobs(idToken)
+            .then(setJobs)
             .catch((err) => {
                 try {
                     handleLegalWall(err, '/employer/dashboard');
@@ -216,10 +206,6 @@ export default function EmployerDashboardPage() {
     const applicantDensity = activeCount > 0 ? Math.round(totalApplicants / activeCount) : 0;
     const featuredJobs = filteredJobs.slice(0, 5);
     const recentJob = jobs[0];
-    const companyName = profile?.company_name?.trim() || profile?.full_name?.trim() || t('shell.company_fallback');
-    const contactName = profile?.contact_name?.trim() || profile?.full_name?.trim();
-    const companyMeta = [profile?.city, profile?.service_area].map((item) => item?.trim()).filter(Boolean).join(' · ');
-    const companyInitials = getInitials(companyName);
 
     const todayLabel = new Intl.DateTimeFormat(locale, {
         weekday: 'long',
@@ -266,11 +252,11 @@ export default function EmployerDashboardPage() {
                         <div className="border-b border-white/10 px-6 py-5">
                             <div className="flex items-center gap-3">
                                 <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
-                                    {companyInitials}
+                                    E
                                 </div>
                                 <div className="min-w-0">
-                                    <p className="truncate text-sm font-bold">{companyName}</p>
-                                    <p className="truncate text-xs text-white/55">{companyMeta || t('shell.plan_label')}</p>
+                                    <p className="truncate text-sm font-bold">{t('shell.company_fallback')}</p>
+                                    <p className="text-xs text-white/55">{t('shell.plan_label')}</p>
                                 </div>
                             </div>
                         </div>
@@ -345,10 +331,7 @@ export default function EmployerDashboardPage() {
                             <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                                 <div>
                                     <p className="text-xs font-bold uppercase text-[var(--jale-ink-2)]">{todayLabel}</p>
-                                    <h1 className="text-2xl font-extrabold text-[var(--jale-ink)] md:text-3xl">{companyName}</h1>
-                                    <p className="mt-1 text-sm font-semibold text-[var(--jale-ink-2)]">
-                                        {contactName ? `${t('shell.title')} · ${contactName}` : t('shell.title')}
-                                    </p>
+                                    <h1 className="text-2xl font-extrabold text-[var(--jale-ink)] md:text-3xl">{t('shell.title')}</h1>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2">
                                     <button
@@ -385,7 +368,7 @@ export default function EmployerDashboardPage() {
                                         aria-label={tHeader('profile')}
                                         className="avatar-initials square h-10 w-10"
                                     >
-                                        {companyInitials}
+                                        E
                                     </Link>
                                     <Button variant="outline" size="sm" onClick={handleSignOut} loading={signingOut} loadingLabel={tCommon('loading')} className="h-10">
                                         {tHeader('sign_out')}
@@ -402,14 +385,10 @@ export default function EmployerDashboardPage() {
                                         <h2 className="text-3xl font-extrabold leading-tight md:text-4xl">{t('hero.title')}</h2>
                                         <p className="mt-3 max-w-2xl text-sm leading-6 text-white/70">{t('hero.body')}</p>
                                         <div className="mt-5 flex flex-wrap gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => setModalOpen(true)}
-                                                className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-bold text-[#111642] shadow-[var(--shadow-btn)] transition-all duration-150 hover:bg-white/90 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] active:scale-[0.98]"
-                                            >
+                                            <Button onClick={() => setModalOpen(true)} className="bg-white text-[#111642] hover:bg-white/90">
                                                 <Icon name="plus" />
                                                 {t('hero.primary_cta')}
-                                            </button>
+                                            </Button>
                                             <Link
                                                 href="/employer/conversations"
                                                 className="inline-flex h-11 items-center gap-2 rounded-full border border-white/20 px-5 text-sm font-bold text-white hover:bg-white/10"
