@@ -52,6 +52,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         j.expected_duration,
         j.shift_schedule,
         j.transportation_required,
+        j.work_authorization_required,
         j.language_preference,
         j.number_of_workers_needed,
         j.workers_hired AS hired_count,
