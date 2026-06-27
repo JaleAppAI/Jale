@@ -133,6 +133,9 @@ export interface ProfileStateContext {
   pending_media_photo_id?: string;
   /** True when optional photo upload is happening after profile completion. */
   profile_completed?: boolean;
+  pending_picker?:
+    | { kind: 'disambiguation' | 'chats'; threads: { conversationId: string; jobTitle: string; companyName: string; threadNumber: number | null }[] }
+    | { kind: 'close_reason'; conversationId: string };
 }
 
 // -- Trust Signal Layer ----------------------------------------------------
@@ -359,7 +362,7 @@ export interface ButtonPayload {
 }
 
 export interface EmployerConversationButtonPayload {
-  action: 'open' | 'decline';
+  action: 'open' | 'decline' | 'focus';
   conversationId: string;
 }
 
@@ -378,7 +381,7 @@ export function parseButtonPayload(payload: string): ButtonPayload | null {
 export function parseEmployerConversationButtonPayload(
   payload: string,
 ): EmployerConversationButtonPayload | null {
-  const m = payload.match(/^conversation:(open|decline):([0-9a-fA-F-]{36})$/);
+  const m = payload.match(/^conversation:(open|decline|focus):([0-9a-fA-F-]{36})$/);
   if (!m) return null;
   return {
     action: m[1] as EmployerConversationButtonPayload['action'],

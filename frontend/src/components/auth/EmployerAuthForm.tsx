@@ -3,7 +3,7 @@ import { useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { employerConfirmSignUp, employerSignIn, employerSignUp } from '@/lib/cognito';
+import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword } from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
@@ -18,7 +18,7 @@ const TRADES: EmployerTrade[] = ['electrician', 'plumber', 'carpenter', 'concret
 const JOB_TYPES: EmployerJobType[] = ['full-time', 'part-time', 'contract'];
 const COMPANY_SIZES: CompanySize[] = ['1-10', '11-50', '51-200', '200+'];
 
-type Step = 'login' | 'signup' | 'confirm';
+type Step = 'login' | 'signup' | 'confirm' | 'forgot_request' | 'forgot_confirm';
 
 export default function EmployerAuthForm() {
     const router = useRouter();
@@ -45,6 +45,13 @@ export default function EmployerAuthForm() {
     const [companyDescription, setCompanyDescription] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [resetSuccess, setResetSuccess] = useState(false);
+    const [forgotEmail, setForgotEmail] = useState('');
+    const [resetCode, setResetCode] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
+    const [showNewPassword, setShowNewPassword] = useState(false);
+    const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false);
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
     const phoneReady = phoneLocalNumber.replace(/\D/g, '').length >= 7;
 
@@ -111,6 +118,39 @@ export default function EmployerAuthForm() {
         }
     };
 
+    const handleForgotRequest = async () => {
+        setError(null);
+        setIsLoading(true);
+        try {
+            await employerForgotPassword(forgotEmail);
+            setStep('forgot_confirm');
+        } catch (err) {
+            console.error('[EmployerAuth] forgot-password error:', err);
+            setError(t(authErrorKey(err)));
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleForgotConfirm = async () => {
+        setError(null);
+        if (newPassword !== newPasswordConfirm) {
+            setError(t('errors.password_mismatch'));
+            return;
+        }
+        setIsLoading(true);
+        try {
+            await employerConfirmNewPassword(forgotEmail, resetCode, newPassword);
+            setResetSuccess(true);
+            setStep('login');
+        } catch (err) {
+            console.error('[EmployerAuth] forgot-confirm error:', err);
+            setError(t(authErrorKey(err)));
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
     const toggleTrade = (trade: EmployerTrade) => {
         setHiringTrades((current) => current.includes(trade) ? current.filter((item) => item !== trade) : [...current, trade]);
     };
@@ -126,10 +166,10 @@ export default function EmployerAuthForm() {
             <div className="flex flex-1 flex-col justify-center py-8 px-10 max-w-lg">
 
                 <h1 className="font-bold leading-tight mb-2" style={{ fontSize: 'clamp(1.6rem, 3vw, 1.9rem)', letterSpacing: '-0.03em', color: 'var(--jale-ink)' }}>
-                    {step === 'login' ? t('hero') : t('signup_title')}
+                    {step === 'login' ? t('hero') : step === 'forgot_request' ? t('forgot_title') : step === 'forgot_confirm' ? t('forgot_confirm_title') : t('signup_title')}
                 </h1>
                 <p className="text-sm leading-relaxed mb-8" style={{ color: 'var(--jale-ink-2)' }}>
-                    {step === 'login' ? t('title') : t('signup_subtitle')}
+                    {step === 'login' ? t('title') : step === 'forgot_request' || step === 'forgot_confirm' ? '' : t('signup_subtitle')}
                 </p>
 
                 {step === 'login' && (
@@ -149,11 +189,26 @@ export default function EmployerAuthForm() {
                                 hideLabel={t('hide_password')}
                             />
                         </Field>
+                        <div className="flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => { setError(null); setResetSuccess(false); setForgotEmail(email); setStep('forgot_request'); }}
+                                className="text-xs font-medium"
+                                style={{ background: 'none', border: 0, color: 'var(--jale-blue-600)', cursor: 'pointer', padding: 0 }}
+                            >
+                                {t('forgot_link')}
+                            </button>
+                        </div>
                         {error && <ErrorText error={error} />}
+                        {resetSuccess && (
+                            <p className="text-sm font-medium rounded-lg px-4 py-3" style={{ background: 'var(--jale-success-bg)', color: 'var(--jale-success)' }}>
+                                {t('reset_success')}
+                            </p>
+                        )}
                         <Button className="w-full mt-1" size="lg" onClick={handleSignIn} disabled={!email || !password} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('sign_in')}
                         </Button>
-                        <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setStep('signup'); }} />
+                        <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setResetSuccess(false); setStep('signup'); }} />
                     </div>
                 )}
 
@@ -226,6 +281,79 @@ export default function EmployerAuthForm() {
                         {error && <ErrorText error={error} />}
                         <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('confirm_account')}
+                        </Button>
+                    </div>
+                )}
+
+                {step === 'forgot_request' && (
+                    <div className="flex flex-col gap-4">
+                        <button onClick={() => { setError(null); setStep('login'); }} className="self-start text-sm font-medium" style={{ background: 'none', border: 0, color: 'var(--jale-ink-2)', cursor: 'pointer', padding: 0 }}>
+                            &larr; {t('back')}
+                        </button>
+                        <p className="text-sm leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('forgot_subtitle')}</p>
+                        <Field label={t('fields.email')}>
+                            <Input
+                                type="email"
+                                value={forgotEmail}
+                                onChange={(e) => setForgotEmail(e.target.value)}
+                                autoComplete="email"
+                            />
+                        </Field>
+                        {error && <ErrorText error={error} />}
+                        <Button className="w-full mt-1" size="lg" onClick={handleForgotRequest} disabled={!forgotEmail.trim()} loading={isLoading} loadingLabel={tCommon('loading')}>
+                            {t('send_code')}
+                        </Button>
+                    </div>
+                )}
+
+                {step === 'forgot_confirm' && (
+                    <div className="flex flex-col gap-4">
+                        <button onClick={() => { setError(null); setResetCode(''); setNewPassword(''); setNewPasswordConfirm(''); setStep('forgot_request'); }} className="self-start text-sm font-medium" style={{ background: 'none', border: 0, color: 'var(--jale-ink-2)', cursor: 'pointer', padding: 0 }}>
+                            &larr; {t('back')}
+                        </button>
+                        <p className="text-sm leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>
+                            {t('forgot_confirm_subtitle', { email: forgotEmail })}
+                        </p>
+                        <Field label={t('fields.reset_code')}>
+                            <Input
+                                value={resetCode}
+                                onChange={(e) => setResetCode(e.target.value)}
+                                inputMode="numeric"
+                                autoComplete="one-time-code"
+                            />
+                        </Field>
+                        <Field label={t('fields.new_password')}>
+                            <PasswordInput
+                                value={newPassword}
+                                onChange={(e) => setNewPassword(e.target.value)}
+                                autoComplete="new-password"
+                                visible={showNewPassword}
+                                onToggle={() => setShowNewPassword((v) => !v)}
+                                showLabel={t('show_password')}
+                                hideLabel={t('hide_password')}
+                            />
+                        </Field>
+                        <Field label={t('fields.password_confirm')}>
+                            <PasswordInput
+                                value={newPasswordConfirm}
+                                onChange={(e) => setNewPasswordConfirm(e.target.value)}
+                                autoComplete="new-password"
+                                visible={showNewPasswordConfirm}
+                                onToggle={() => setShowNewPasswordConfirm((v) => !v)}
+                                showLabel={t('show_password')}
+                                hideLabel={t('hide_password')}
+                            />
+                        </Field>
+                        {error && <ErrorText error={error} />}
+                        <Button
+                            className="w-full mt-1"
+                            size="lg"
+                            onClick={handleForgotConfirm}
+                            disabled={!resetCode.trim() || !newPassword || !newPasswordConfirm}
+                            loading={isLoading}
+                            loadingLabel={tCommon('loading')}
+                        >
+                            {t('set_password')}
                         </Button>
                     </div>
                 )}

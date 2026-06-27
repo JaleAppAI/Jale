@@ -138,6 +138,12 @@ body {
 
 * { box-sizing: border-box; }
 
+/* Hide browser-native password reveal buttons (Edge, Chrome) so our custom toggle is the only one */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear { display: none; }
+input[type="password"]::-webkit-contacts-auto-fill-button,
+input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
+
 a { color: inherit; text-decoration: none; }
 
 /* ===== UTILITY CLASSES ============================================== */

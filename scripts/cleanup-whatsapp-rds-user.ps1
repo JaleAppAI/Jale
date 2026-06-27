@@ -242,6 +242,16 @@ BEGIN
       SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
   END IF;
 
+  IF to_regclass('job_conversations') IS NOT NULL THEN
+    DELETE FROM job_conversations
+    WHERE worker_id IN (SELECT id FROM cleanup_user_ids);
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    INSERT INTO cleanup_counts(table_name, deleted_count)
+    VALUES ('job_conversations', deleted_count)
+    ON CONFLICT (table_name) DO UPDATE
+      SET deleted_count = cleanup_counts.deleted_count + EXCLUDED.deleted_count;
+  END IF;
+
   IF to_regclass('job_applications') IS NOT NULL THEN
     IF EXISTS (
       SELECT 1 FROM information_schema.columns
