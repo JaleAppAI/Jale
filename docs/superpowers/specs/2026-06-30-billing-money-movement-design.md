@@ -1,7 +1,7 @@
 # Jale Billing and Contractor Money Movement Design
 
-**Status:** Approved in design review on 2026-06-30
-**Scope:** Employer subscription plumbing, contractor engagement payment guarantees, worker connected balances, and sandbox payouts
+**Status:** Approved in design review on 2026-06-30; amended for future Jale Gigs compatibility
+**Scope:** Employer subscription plumbing, reusable contractor payment engagements, worker connected balances, and sandbox payouts
 **Baseline:** Jale migrations currently end at `033_pay_interval_experience_months_worker_certifications.sql`
 
 ## 1. Purpose
@@ -11,7 +11,7 @@ Jale needs two related but operationally distinct payment systems:
 1. Employer subscriptions that grant higher job-posting limits and future paid entitlements.
 2. Prefunded contractor engagements that guarantee an agreed payment, release it after completion, and let the worker retain funds in a connected balance or automatically deposit them to a bank.
 
-The first release builds real, end-to-end Stripe sandbox flows. It does not move live money or enable a paid worker subscription. Worker plan plumbing exists from the beginning so paid worker entitlements can be added without another schema redesign.
+The first release builds real, end-to-end Stripe sandbox flows for employer-funded jobs. It does not move live money, enable a paid worker subscription, implement Jale Gigs, or allow workers to spend connected balances on gigs. The payment domain uses payer/payee identities and source-specific bindings so a future `GigsStack` can reuse funding, completion, dispute, release, and payout processing without weakening current relational integrity.
 
 ## 2. Approved Product Decisions
 
@@ -31,6 +31,10 @@ The first release builds real, end-to-end Stripe sandbox flows. It does not move
 - Eligible workers can request an instant payout from the wallet.
 - Jale calls this a **payment guarantee** or **prefunded payment**, never legal escrow.
 - Contractor payments ship first. A future payroll or earned-wage provider must integrate through a separate boundary.
+- Current public engagement APIs remain employer-job-specific.
+- The payment core identifies participants as payer and payee rather than assuming that only employers can pay.
+- Future Jale Gigs can bind an accepted worker-to-worker gig to the same payment core through a new source-specific table.
+- Future wallet-funded subscriptions and wallet-funded gigs require separate Stripe capability, consent, risk, tax, and legal gates.
 
 ## 3. Corrections to the Source Claude Plan
 
@@ -43,6 +47,7 @@ The source plan was directionally useful but contained assumptions that must not
 - Stripe funds segregation is a private-preview capability. The design cannot assume it is enabled.
 - Separate charges and transfers make Jale's platform responsible for payment fees, refunds, disputes, and negative platform balances.
 - A job-level `job_payments` row is insufficient because one job can hire and pay multiple workers.
+- An employer-specific engagement table would make a future worker-funded gig require a payment-domain rewrite. Source-specific binding tables preserve foreign keys while keeping the financial lifecycle reusable.
 - Stripe Accounts v1 remains supported. Accounts v2 is the preferred design target, but Jale must confirm its sandbox and account capabilities before implementation depends on preview APIs.
 
 ## 4. Architecture
@@ -68,7 +73,7 @@ Owns:
 
 Owns:
 
-- Contractor engagement APIs
+- Reusable payment-engagement APIs and domain services
 - Stripe Connect account onboarding
 - Employer funding Checkout
 - Completion, dispute, release, refund, and payout commands
@@ -82,12 +87,14 @@ Owns:
 
 Neither stack imports the other. Both receive the existing API, Cognito authorizers, VPC, subnets, and required database secrets through props. Both add routes to the API using the established downstream-stack pattern.
 
+The first release exposes only employer-job engagement routes. Internally, `MoneyMovementStack` creates and operates payment engagements using payer/payee IDs plus a source binding. A future `GigsStack` owns gig discovery, offers, bookings, and worker-to-worker permissions, then calls the same internal engagement-creation contract after a gig booking is accepted. `GigsStack` does not duplicate financial state machines or Stripe calls.
+
 ### 4.2 Trust boundaries
 
 Jale is authoritative for:
 
 - Plan definitions and entitlements
-- Agreed engagement terms
+- Agreed engagement terms and source binding
 - Participant authorization
 - Completion intent
 - Dispute intent and operator resolution
@@ -136,7 +143,7 @@ Seed sandbox/default definitions:
 - `employer_pro`: `{"active_job_limit": 10}`
 - `worker_free`: `{}`
 
-These values are data, not hardcoded application branches.
+These values are data, not hardcoded application branches. Entitlement keys are namespaced by feature. A future `GigsStack` may define keys such as `gigs.post_limit`, `gigs.featured_slots`, and `gigs.fee_discount`; this release does not seed or read those keys and does not create a paid worker plan.
 
 #### `billing_customers`
 
@@ -190,13 +197,13 @@ Unique key: `(actor_user_id, operation_type, client_idempotency_key)`.
 
 Create:
 
-#### `contractor_engagements`
+#### `payment_engagements`
 
 - `id UUID PRIMARY KEY`
-- `job_application_id UUID UNIQUE NOT NULL`
-- `job_id UUID NOT NULL`
-- `employer_id UUID NOT NULL`
-- `worker_id UUID NOT NULL`
+- `origin_type TEXT NOT NULL CHECK (origin_type IN ('job_application'))`
+- `payer_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT`
+- `payee_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT`
+- `funding_source TEXT NOT NULL DEFAULT 'external_card' CHECK (funding_source IN ('external_card'))`
 - `amount_minor BIGINT NOT NULL`
 - `currency TEXT NOT NULL DEFAULT 'usd' CHECK (currency = 'usd')`
 - `start_date DATE NOT NULL`
@@ -212,11 +219,28 @@ Create:
 - optimistic `version INTEGER NOT NULL DEFAULT 1`
 - timestamps
 
+Require `payer_user_id <> payee_user_id`. Do not require a particular `users.user_type` in the payment table. Current employer-job APIs enforce an employer payer and worker payee; the domain model remains reusable for a future worker payer.
+
 Allowed states:
 
 `proposed`, `accepted`, `funding_pending`, `funded`, `in_progress`, `completion_pending`, `release_pending`, `released`, `disputed`, `refund_pending`, `refunded`, `cancelled`, `funding_failed`.
 
-The amount must be positive and no greater than the configured pilot maximum. After funding begins, participants, amount, currency, and terms are immutable.
+The amount must be positive and no greater than the configured pilot maximum. After funding begins, participants, origin, funding source, amount, currency, and terms are immutable. V1 accepts only `external_card`; a future migration may add `connected_balance` only after its separate Stripe and legal gate passes.
+
+#### `job_payment_engagements`
+
+- `engagement_id UUID PRIMARY KEY REFERENCES payment_engagements(id) ON DELETE CASCADE`
+- `job_application_id UUID UNIQUE NOT NULL REFERENCES job_applications(id) ON DELETE RESTRICT`
+- timestamp
+
+A deferred constraint trigger validates that:
+
+- the application is `hired` when the engagement is created
+- the payer matches the owning employer of the application job
+- the payee matches the application worker
+- every `origin_type = 'job_application'` payment engagement has exactly one job binding
+
+A future Jale Gigs migration adds `worker_gig` to the allowed origin types and creates `gig_payment_engagements(engagement_id, gig_booking_id)` with equivalent source-integrity checks. The current migration does not create gig tables or permit unbound gig engagements.
 
 #### `engagement_payments`
 
@@ -272,6 +296,7 @@ Durable command and API-idempotency record:
 - command UUID
 - actor
 - engagement or payout reference
+- origin type and source-binding reference
 - command type
 - client idempotency key
 - canonical request hash
@@ -298,6 +323,7 @@ Append-only:
 
 - actor type and actor ID
 - engagement/payment/payout reference
+- origin type and source-binding reference
 - previous state
 - next state
 - reason code
@@ -308,8 +334,10 @@ No update or delete grants for application roles.
 
 ### 5.3 RLS and service roles
 
-- Employer policies expose only subscriptions and engagements owned by that employer.
-- Worker policies expose only engagements, connected-account summaries, balances, and payouts belonging to that worker.
+- Billing policies expose only subscriptions owned by the current employer.
+- Payment-engagement policies authorize by participant identity: the current user may read an engagement when they are its payer or payee.
+- Current employer-job mutation handlers additionally require an employer payer and worker payee and validate the `job_payment_engagements` binding.
+- Connected-account summaries, payout preferences, balances, and payouts remain scoped to their worker owner.
 - User-facing Lambdas continue to set `app.current_user_id` inside transactions.
 - Create narrowly privileged `jale_billing` and `jale_payments` service roles for webhook processors, scheduled workers, and operator commands.
 - Service roles receive exact table and operation grants. Do not broaden worker or employer RLS policies and do not invent a Cognito identity for background processing.
@@ -331,7 +359,7 @@ No update or delete grants for application roles.
 ## 7. Contractor Engagement and Funding Flow
 
 1. An employer selects a `hired` application and proposes a fixed amount, start date, and terms summary.
-2. Jale creates a `proposed` engagement. A database unique constraint prevents a second engagement for the same application.
+2. Jale creates a `proposed` payment engagement plus `job_payment_engagements` binding in one transaction. The binding's unique constraint prevents a second engagement for the same application.
 3. The worker reviews and accepts the terms.
 4. The worker completes Stripe-hosted connected-account onboarding. The engagement cannot become payment-ready until the transfers capability is active.
 5. The employer requests a hosted one-time funding Checkout Session.
@@ -409,6 +437,26 @@ Stripe payout webhooks are authoritative for `paid` and `failed`. Accounts v2 st
 
 Webhook routes are unauthenticated at API Gateway and authenticate exclusively through the endpoint-specific Stripe signature.
 
+### 10.5 Internal engagement contract
+
+All source adapters call one internal domain operation:
+
+```ts
+type CreatePaymentEngagementInput = {
+  originType: 'job_application';
+  originId: string;
+  payerUserId: string;
+  payeeUserId: string;
+  fundingSource: 'external_card';
+  amountMinor: number;
+  currency: 'usd';
+  startDate: string;
+  termsSummary: string;
+};
+```
+
+The operation creates the payment engagement and source binding in one database transaction. Current public handlers construct this input only after validating the employer-owned hired application. A future `GigsStack` extends the origin and funding-source unions through a migration and reviewed adapter; it does not call Stripe or write payment tables directly. There is no unauthenticated or generic public endpoint for this contract.
+
 ## 11. Deduplication and Consistency
 
 Use four independent layers.
@@ -421,7 +469,7 @@ Every money-changing endpoint requires an `Idempotency-Key` UUID. Store a canoni
 
 Use unique constraints and guarded state transitions:
 
-- one engagement per application
+- one `job_payment_engagements` binding per application
 - one financial funding identity per engagement
 - one transfer per funded payment
 - one provider payout per payout command
@@ -488,7 +536,13 @@ All new content is available in English and Spanish. Loading, empty, expired-ses
 - `PayoutPaid`
 - `PayoutFailed`
 
-No current stack must consume these events. Future email, WhatsApp, analytics, payroll, or admin integrations can subscribe without importing payment internals.
+Every engagement event includes `engagement_id`, `origin_type`, the source-binding identifier, `payer_user_id`, `payee_user_id`, currency, amount, state, and correlation ID. Events exclude payment credentials, bank details, identity data, and raw Stripe objects.
+
+No current stack must consume these events. Future email, WhatsApp, analytics, payroll, admin, or Gigs integrations can subscribe without importing payment internals.
+
+A future `GigsStack` owns gig listings, discovery, offers, bookings, and worker-to-worker authorization. After a booking is accepted, its reviewed source adapter creates a bound payment engagement through the internal contract. Card-funded gigs can reuse the existing PaymentIntent and release flow. Connected-balance funding remains disabled until Stripe explicitly approves a supported flow and Jale completes the additional consent, risk, tax, and legal review.
+
+The compatibility promise is bounded rather than zero-change: Jale Gigs adds its own stack, tables, binding table, routes, entitlement keys, and reviewed origin adapter. It extends the allowed origin and funding-source unions through forward-only migrations. It does not replace the payment-engagement table, Stripe webhook processors, command idempotency, completion/dispute/release state machine, connected accounts, payouts, or audit log.
 
 A future payroll/EWA system must not reuse contractor engagement transfers. It may consume shared user and employer identities, but it receives its own provider adapter, legal controls, tax model, and payment lifecycle.
 
@@ -510,6 +564,8 @@ The implementation target is Accounts v2 recipient accounts with a pinned Stripe
 
 Funds segregation is optional for the sandbox engineering flow but mandatory for the currently approved production design. Production cannot launch the ordinary platform-balance fallback without an explicit product, finance, and legal design revision.
 
+Wallet-funded subscriptions and wallet-funded gigs are not prerequisites for this capability gate. A later worker-monetization gate must prove Accounts v2 Stripe-balance subscription payments in Jale's sandbox. A separate Jale Gigs funding gate must determine whether Stripe permits the proposed marketplace use of Account Debits or requires Financial Accounts for platforms. It must also address consent, source-fund segregation, refunds, tax reporting, fraud, and negative-balance liability. The current design must not treat a connected-account debit as equivalent to a card-funded allocated PaymentIntent.
+
 ## 16. Testing
 
 ### Database
@@ -517,6 +573,8 @@ Funds segregation is optional for the sandbox engineering flow but mandatory for
 - Apply migrations `001` through `035` to a clean PostgreSQL database.
 - Test every RLS policy with employer, worker, cross-user, billing-service, and payments-service roles.
 - Test immutable funded terms and append-only audit rows.
+- Test that job bindings reject a non-hired application, mismatched payer, mismatched payee, duplicate application, and unbound or unsupported origins.
+- Test engagement participant RLS using payer/payee IDs rather than `users.user_type`.
 - Test unique constraints under concurrent transactions.
 
 ### Lambda and domain
@@ -529,6 +587,9 @@ Funds segregation is optional for the sandbox engineering flow but mandatory for
 - Test concurrent employer approval, employer dispute, and automatic release.
 - Test transfer failure, payout failure, refund, and chargeback handling.
 - Test authorization and recent-authentication requirements.
+- Test that the internal engagement operation atomically creates the core row and job binding and rolls both back on failure.
+- Test that current public employer routes reject a worker acting as payer even though the core schema is role-neutral.
+- Test that engagement events carry source-binding and payer/payee metadata without financial credentials or raw provider objects.
 
 ### CDK
 
@@ -536,6 +597,7 @@ Funds segregation is optional for the sandbox engineering flow but mandatory for
 - Assert unauthenticated webhook routes have signature secrets but no Cognito authorizer.
 - Assert separate queues, DLQs, encryption, alarms, security groups, database secrets, and restricted secret grants.
 - Assert `BillingStack` and `MoneyMovementStack` do not import one another.
+- Assert there is no generic public engagement-creation route and no `GigsStack` resource in this release.
 
 ### Stripe sandbox
 
@@ -579,7 +641,8 @@ Funds segregation is optional for the sandbox engineering flow but mandatory for
 - Payments service role and secret
 - `MoneyMovementStack`
 - Connected-account onboarding
-- Engagement proposal/acceptance
+- Generic payment-engagement core and `job_payment_engagements` source binding
+- Employer-job engagement proposal/acceptance
 - Funding Checkout and webhook reconciliation
 
 ### Delivery C: Release and payouts
@@ -614,13 +677,13 @@ Production requires:
 ## 19. Out of Scope
 
 - Live-money deployment
-- Worker paid subscription checkout
+- Worker paid subscription checkout or Stripe-balance subscription payment
 - Payroll, tax withholding, wage statements, or earned-wage access
 - Hourly timecards, variable final amounts, milestones, tips, bonuses, or partial settlements
 - Multi-currency or non-US connected accounts
 - Jale-managed bank/card collection
 - A self-managed wallet ledger
-- Peer-to-peer transfers
+- Jale Gigs implementation, connected-balance gig funding, or unscoped peer-to-peer transfers
 - Worker spending cards
 - Automated dispute adjudication
 - Notification delivery implementation
@@ -639,6 +702,9 @@ Production requires:
 - [Stripe idempotent requests](https://docs.stripe.com/api/idempotent_requests)
 - [Stripe webhook security and duplicate handling](https://docs.stripe.com/webhooks?lang=node)
 - [Stripe API key security](https://docs.stripe.com/keys)
+- [Stripe balance subscription payments](https://docs.stripe.com/payments/pay-with-balance)
+- [Stripe connected-account debits](https://docs.stripe.com/connect/account-debits)
+- [Stripe Financial Accounts outbound payments](https://docs.stripe.com/treasury/moving-money/moving-money-out-of-financial-accounts)
 - [IRS worker classification guidance](https://www.irs.gov/businesses/small-businesses-self-employed/independent-contractor-self-employed-or-employee)
 
 This document is an engineering design, not legal or tax advice.
