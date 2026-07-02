@@ -1,6 +1,6 @@
 # Jale Billing and Contractor Money Movement Design
 
-**Status:** Approved in design review on 2026-06-30; amended for future Jale Gigs compatibility
+**Status:** Approved in design review on 2026-06-30; amended for future Jale Gigs compatibility; amended 2026-07-01 after adversarial review (binding re-proposal, stale-state expiry, chargeback representability, payout-mode snapshot, platform fee reservation, per-pool re-auth); amended 2026-07-01 with planning decisions (refund_reason semantics, $20/mo sandbox pricing, Phase 0 local spike, A+B sequential planning)
 **Scope:** Employer subscription plumbing, reusable contractor payment engagements, worker connected balances, and sandbox payouts
 **Baseline:** Jale migrations currently end at `033_pay_interval_experience_months_worker_certifications.sql`
 
@@ -143,6 +143,8 @@ Seed sandbox/default definitions:
 - `employer_pro`: `{"active_job_limit": 10}`
 - `worker_free`: `{}`
 
+The sandbox `employer_pro` price is $20/month. The Stripe Product and Price are created by a reproducible script, and the resulting Stripe price ID lives in configuration (the billing secret/config, never source code), so real production pricing is a pure configuration change plus a new Price object.
+
 These values are data, not hardcoded application branches. Entitlement keys are namespaced by feature. A future `GigsStack` may define keys such as `gigs.post_limit`, `gigs.featured_slots`, and `gigs.fee_discount`; this release does not seed or read those keys and does not create a paid worker plan.
 
 #### `billing_customers`
@@ -205,6 +207,7 @@ Create:
 - `payee_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT`
 - `funding_source TEXT NOT NULL DEFAULT 'external_card' CHECK (funding_source IN ('external_card'))`
 - `amount_minor BIGINT NOT NULL`
+- `platform_fee_minor BIGINT NOT NULL DEFAULT 0`
 - `currency TEXT NOT NULL DEFAULT 'usd' CHECK (currency = 'usd')`
 - `start_date DATE NOT NULL`
 - `terms_summary TEXT NOT NULL`
@@ -216,6 +219,7 @@ Create:
 - `auto_release_at TIMESTAMPTZ`
 - `released_at TIMESTAMPTZ`
 - `disputed_at TIMESTAMPTZ`
+- `refund_reason TEXT CHECK (refund_reason IN ('cancellation', 'dispute_resolution'))` — set when a refund path begins; NULL otherwise
 - optimistic `version INTEGER NOT NULL DEFAULT 1`
 - timestamps
 
@@ -225,12 +229,12 @@ Allowed states:
 
 `proposed`, `accepted`, `funding_pending`, `funded`, `in_progress`, `completion_pending`, `release_pending`, `released`, `disputed`, `refund_pending`, `refunded`, `cancelled`, `funding_failed`.
 
-The amount must be positive and no greater than the configured pilot maximum. After funding begins, participants, origin, funding source, amount, currency, and terms are immutable. V1 accepts only `external_card`; a future migration may add `connected_balance` only after its separate Stripe and legal gate passes.
+The amount must be positive and no greater than the configured pilot maximum. After funding begins, participants, origin, funding source, amount, currency, and terms are immutable. V1 always sets `platform_fee_minor` to 0 and transfers the full `amount_minor`; the column exists so a future take-rate does not require a migration on live financial rows. The transfer amount is `amount_minor - platform_fee_minor`. V1 accepts only `external_card`; a future migration may add `connected_balance` only after its separate Stripe and legal gate passes.
 
 #### `job_payment_engagements`
 
 - `engagement_id UUID PRIMARY KEY REFERENCES payment_engagements(id) ON DELETE CASCADE`
-- `job_application_id UUID UNIQUE NOT NULL REFERENCES job_applications(id) ON DELETE RESTRICT`
+- `job_application_id UUID NOT NULL REFERENCES job_applications(id) ON DELETE RESTRICT`
 - timestamp
 
 A deferred constraint trigger validates that:
@@ -239,6 +243,9 @@ A deferred constraint trigger validates that:
 - the payer matches the owning employer of the application job
 - the payee matches the application worker
 - every `origin_type = 'job_application'` payment engagement has exactly one job binding
+- at most one binding per application whose engagement can still proceed or has succeeded; an application is freed for a new engagement only by a terminal-failed outcome: `cancelled`, `funding_failed`, or `refunded` with `refund_reason = 'cancellation'`. `released` permanently consumes the application, and `refunded` with `refund_reason = 'dispute_resolution'` also blocks re-proposal — a relationship that ended in an operator-refunded dispute must not quietly restart through a re-proposal on the same hire.
+
+The plain UNIQUE on `job_application_id` is replaced by this trigger-enforced partial uniqueness. A cancelled, funding-failed, or cancellation-refunded engagement releases the application for a new proposal (a pre-work cancellation refund must not permanently block a rescheduled engagement for the same hire). A released or dispute-refunded engagement permanently consumes the application.
 
 A future Jale Gigs migration adds `worker_gig` to the allowed origin types and creates `gig_payment_engagements(engagement_id, gig_booking_id)` with equivalent source-integrity checks. The current migration does not create gig tables or permit unbound gig engagements.
 
@@ -253,12 +260,13 @@ One row per engagement:
 - Stripe transfer ID, unique when present
 - Stripe refund ID, unique when present
 - funding, transfer, refund, and dispute statuses
+- `charge_dispute_status TEXT` mirroring Stripe `charge.dispute.*` events; Stripe dispute ID unique when present
 - `allocated_funds_enabled BOOLEAN NOT NULL DEFAULT false`
 - timestamps
 
 #### `connect_accounts`
 
-- `worker_id UUID PRIMARY KEY`
+- `worker_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE RESTRICT`
 - `stripe_account_id TEXT UNIQUE NOT NULL`
 - API generation/version used
 - onboarding status
@@ -278,7 +286,7 @@ Do not store bank or debit-card numbers.
 #### `payouts`
 
 - `id UUID PRIMARY KEY`
-- `worker_id UUID NOT NULL`
+- `worker_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT`
 - optional `engagement_id`
 - `amount_minor BIGINT NOT NULL`
 - `currency TEXT NOT NULL DEFAULT 'usd'`
@@ -301,6 +309,7 @@ Durable command and API-idempotency record:
 - client idempotency key
 - canonical request hash
 - deterministic Stripe idempotency key
+- captured payout mode for release/payout commands
 - status and attempt count
 - provider object ID
 - cached API response
@@ -351,7 +360,7 @@ No update or delete grants for application roles.
 5. Checkout return is informational only.
 6. A verified webhook durably records the event and queues it.
 7. The billing processor mirrors the subscription and activates `employer_pro`.
-8. Job creation calls a shared billing authorization function that counts active jobs and compares the count with the current entitlement.
+8. Job creation calls a shared billing authorization function that counts active jobs and compares the count with the current entitlement. The same function evaluates grace expiry from `grace_ends_at` at job-creation time; no separate entitlement-expiry cron exists in this release.
 9. On `past_due`, the current entitlement remains during a seven-day grace period.
 10. When the grace period ends or the subscription terminates, new posting is blocked. Existing jobs remain visible and manageable.
 11. Stripe Billing Portal handles payment-method changes, invoices, and cancellation.
@@ -359,7 +368,7 @@ No update or delete grants for application roles.
 ## 7. Contractor Engagement and Funding Flow
 
 1. An employer selects a `hired` application and proposes a fixed amount, start date, and terms summary.
-2. Jale creates a `proposed` payment engagement plus `job_payment_engagements` binding in one transaction. The binding's unique constraint prevents a second engagement for the same application.
+2. Jale creates a `proposed` payment engagement plus `job_payment_engagements` binding in one transaction. The binding's trigger-enforced partial uniqueness prevents a second concurrent non-terminal engagement for the same application.
 3. The worker reviews and accepts the terms.
 4. The worker completes Stripe-hosted connected-account onboarding. The engagement cannot become payment-ready until the transfers capability is active.
 5. The employer requests a hosted one-time funding Checkout Session.
@@ -378,8 +387,15 @@ No update or delete grants for application roles.
 5. A scheduled Lambda claims due rows with row locking and creates release commands for undisputed engagements.
 6. The release worker creates one Stripe Transfer using the charge as `source_transaction` and the worker's connected account as destination.
 7. A transfer webhook confirms release and changes the engagement to `released`.
-8. A dispute requires the IAM-authorized operator command Lambda. V1 resolution is full release or full refund.
-9. Cancellation before work starts can trigger a full refund. Cancellation after work starts uses the dispute path.
+8. A dispute requires the IAM-authorized operator command Lambda. V1 resolution is full release or full refund. An operator dispute refund sets `refund_reason = 'dispute_resolution'`.
+9. Cancellation before work starts can trigger a full refund with `refund_reason = 'cancellation'`. Cancellation after work starts uses the dispute path.
+10. A card chargeback arriving after `released` does not rewind the engagement state. The webhook processor records the charge dispute on `engagement_payments` (populating `charge_dispute_status` and the unique Stripe dispute ID), raises an alarm, and resolution — transfer reversal or absorbed loss — is an IAM-authorized operator action with an audit row and runbook. V1 does not automate chargeback recovery.
+
+### 8.1 Stale-state expiry
+
+A scheduled sweeper (using the same scheduling infrastructure as automatic release) cancels engagements stuck in `proposed` or `accepted` beyond a configured TTL. The default pilot value is 14 days; the TTL is config-driven, not hardcoded. All such transitions append audit rows with reason codes.
+
+The payment webhook processor handles `checkout.session.expired` by returning a `funding_pending` engagement to `accepted` so the employer can request a new funding Checkout Session. This transition also appends an audit row with a reason code.
 
 ## 9. Wallet and Payout Flow
 
@@ -398,7 +414,11 @@ No update or delete grants for application roles.
 - When Stripe reports the connected funds available, a scheduled command initiates a standard payout to the worker's external bank account.
 - Failures remain visible and retryable. Jale does not silently change the worker to wallet mode.
 
-### 9.3 Payout state
+### 9.3 Payout-mode snapshot
+
+The payout mode is copied from `payout_preferences` onto the release/payout command at command-creation time. Subsequent preference changes affect only future releases; they never alter an in-flight command.
+
+### 9.4 Payout state
 
 Stripe payout webhooks are authoritative for `paid` and `failed`. Accounts v2 still emits payout activity through v1 payout events, so the implementation must subscribe to those event types.
 
@@ -469,7 +489,7 @@ Every money-changing endpoint requires an `Idempotency-Key` UUID. Store a canoni
 
 Use unique constraints and guarded state transitions:
 
-- one `job_payment_engagements` binding per application
+- one `job_payment_engagements` binding per application among engagements that can still proceed or have succeeded (§5.2 partial uniqueness)
 - one financial funding identity per engagement
 - one transfer per funded payment
 - one provider payout per payout command
@@ -483,7 +503,7 @@ Every Stripe mutation gets a deterministic idempotency key. Never generate a new
 ### 11.4 Webhook event
 
 1. Preserve the exact raw request body.
-2. Verify the endpoint-specific Stripe signature before parsing or queueing.
+2. Verify the endpoint-specific Stripe signature before parsing or queueing. The raw-body signature verification Lambda has no database access; the `stripe_event_id` insert in step 5 happens in the queue processor, and the verifier must never be granted DB secrets.
 3. Send the verified event to an encrypted SQS queue.
 4. Return success only after SQS accepts the message.
 5. Atomically insert `stripe_event_id`; duplicates become no-ops.
@@ -498,7 +518,7 @@ Every Stripe mutation gets a deterministic idempotency key. Never generate a new
 - Keep Stripe client initialization server-side and cache fetched secrets only in Lambda memory.
 - Use hosted Checkout, Billing Portal, Connect onboarding, and hosted/embedded payout management where supported.
 - Never store card PAN, bank account numbers, debit-card numbers, SSNs, identity documents, or raw KYC payloads.
-- Require a recent Cognito authentication time for funding, approval, dispute, payout-preference changes, and payout creation.
+- Require a recent Cognito `auth_time` for sensitive operations, with pool-specific windows: employers (email/password) require `auth_time` within 15 minutes for funding, approval, and dispute; workers (phone OTP, where each re-auth costs a Twilio SMS) use a session-scoped `auth_time` ceiling of 24 hours for engagement completion, payout-preference changes, and payout creation, compensated by payout destinations being manageable only through Stripe-hosted surfaces. Exact windows are config values, not hardcoded.
 - Add API Gateway throttles to all mutation endpoints.
 - Validate participant ownership from the database after setting RLS context.
 - Use integer minor units and USD only.
@@ -562,6 +582,19 @@ Required proof:
 
 The implementation target is Accounts v2 recipient accounts with a pinned Stripe API version. If Jale's Stripe account cannot use the required recipient or payout capabilities, implementation pauses for a design revision. Do not silently build and maintain both Accounts v1 and v2 adapters.
 
+### 15.1 Phase 0 spike implementation
+
+The capability gate runs as **Phase 0**: an interactive Stripe sandbox setup session followed by local TypeScript spike scripts. No AWS resources are involved.
+
+- Scripts live in `scripts/stripe-spike/` and run with `npx tsx` against the sandbox restricted key.
+- The key lives in a gitignored `scripts/stripe-spike/.env`; it is pasted in by the operator and never read, logged, or committed by tooling.
+- Webhook delivery is proven with Stripe CLI forwarding (`stripe listen`), not a deployed endpoint.
+- Numbered scripts map one-to-one onto the required proofs: product/price creation ($20/mo `employer_pro`), subscription Checkout, Accounts v2 recipient creation, hosted onboarding to active transfers capability, separate charge + transfer with `source_transaction`, manual standard payout, instant-payout eligibility and trigger, and v1 payout/transfer/checkout event arrival for the v2 account.
+- Funds-segregation availability is confirmed with Stripe (dashboard or support) as a manual gate item.
+- The scripts are throwaway by design but serve as executable reference sequences for Delivery B handlers.
+
+Exit criteria: every script passes and the funds-segregation answer is recorded. Any Accounts v2 recipient or payout capability failure pauses implementation for a design revision before Delivery B.
+
 Funds segregation is optional for the sandbox engineering flow but mandatory for the currently approved production design. Production cannot launch the ordinary platform-balance fallback without an explicit product, finance, and legal design revision.
 
 Wallet-funded subscriptions and wallet-funded gigs are not prerequisites for this capability gate. A later worker-monetization gate must prove Accounts v2 Stripe-balance subscription payments in Jale's sandbox. A separate Jale Gigs funding gate must determine whether Stripe permits the proposed marketplace use of Account Debits or requires Financial Accounts for platforms. It must also address consent, source-fund segregation, refunds, tax reporting, fraud, and negative-balance liability. The current design must not treat a connected-account debit as equivalent to a card-funded allocated PaymentIntent.
@@ -576,6 +609,7 @@ Wallet-funded subscriptions and wallet-funded gigs are not prerequisites for thi
 - Test that job bindings reject a non-hired application, mismatched payer, mismatched payee, duplicate application, and unbound or unsupported origins.
 - Test engagement participant RLS using payer/payee IDs rather than `users.user_type`.
 - Test unique constraints under concurrent transactions.
+- Test that re-proposing an engagement after a cancelled, funding-failed, or cancellation-refunded one succeeds, while a released or dispute-refunded one still blocks a new proposal.
 
 ### Lambda and domain
 
@@ -590,6 +624,9 @@ Wallet-funded subscriptions and wallet-funded gigs are not prerequisites for thi
 - Test that the internal engagement operation atomically creates the core row and job binding and rolls both back on failure.
 - Test that current public employer routes reject a worker acting as payer even though the core schema is role-neutral.
 - Test that engagement events carry source-binding and payer/payee metadata without financial credentials or raw provider objects.
+- Test that a payout-preference change between release and payout sweep does not alter an in-flight payment command.
+- Test that a `checkout.session.expired` webhook returns a `funding_pending` engagement to `accepted`.
+- Test that a post-release chargeback records dispute status on `engagement_payments` without rewinding the engagement state.
 
 ### CDK
 
@@ -623,6 +660,15 @@ Wallet-funded subscriptions and wallet-funded gigs are not prerequisites for thi
 - Hosted redirect return, refresh, session expiry, legal wall, loading, empty, provider error, and retry states.
 
 ## 17. Delivery Sequence
+
+Planning decision (2026-07-01): Phase 0 (Stripe sandbox setup and capability spike, §15.1) runs first as a short interactive session. Deliveries A and B are planned together in one implementation plan but executed sequentially — A completes its review gate before B starts, so B copies A's proven webhook-inbox, service-role, security-group, and restricted-key patterns. Delivery C is planned separately after B's review gate.
+
+### Phase 0: Stripe sandbox setup and capability spike
+
+- Stripe sandbox account setup, Connect enablement, Accounts v2 confirmation
+- `scripts/stripe-spike/` local proof scripts (§15.1)
+- $20/mo `employer_pro` Product and Price creation; price ID recorded for configuration
+- Funds-segregation availability answer recorded
 
 ### Delivery A: Billing foundation
 
