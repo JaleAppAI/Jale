@@ -36,6 +36,12 @@
         "employer_jobs": "Trabajos",
         "messages": "Mensajes"
     },
+    "app_shell": {
+        "worker_workspace": "Espacio del trabajador",
+        "worker_role": "Trabajador",
+        "worker_fallback": "Tu perfil",
+        "worker_nav_main": "Menú"
+    },
     "landing": {
         "headline": "Encuentra trabajo. Encuentra trabajadores.",
         "subheadline": "Jale conecta trabajadores con empleadores en la industria de la construcción.",

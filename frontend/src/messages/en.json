@@ -36,6 +36,12 @@
         "employer_jobs": "Jobs",
         "messages": "Messages"
     },
+    "app_shell": {
+        "worker_workspace": "Worker workspace",
+        "worker_role": "Worker",
+        "worker_fallback": "Your profile",
+        "worker_nav_main": "Menu"
+    },
     "landing": {
         "headline": "Find work. Find workers.",
         "subheadline": "Jale connects workers with employers in the construction industry.",
