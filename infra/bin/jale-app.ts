@@ -14,6 +14,7 @@ import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
 import { AdminStack } from '../lib/stacks/admin-stack';
 import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
+import { BillingStack } from '../lib/stacks/billing-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
 
 const app = new cdk.App();
@@ -113,6 +114,17 @@ const api = new ApiStack(app, 'JaleApiStack', {
   // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
   // references this API. Enable cross-region exports.
   crossRegionReferences: true,
+});
+
+new BillingStack(app, 'JaleBillingStack', {
+  env,
+  vpc: network.vpc,
+  privateSubnets: network.privateSubnets,
+  billingLambdaSg: network.billingLambdaSg,
+  billingDbSecret: database.billingDbSecret,
+  api: api.api,
+  employerAuthorizer: api.employerAuthorizer,
+  employerResource: api.employerResource,
 });
 
 new LegalStack(app, 'JaleLegalStack', {

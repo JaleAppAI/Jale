@@ -2,13 +2,16 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-jobs-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/entitlements');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
+const mockResolveEntitlements = resolveEntitlements as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -31,6 +34,8 @@ describe('employer-jobs-update', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    // Default: employer_free plan with 1 slot, 0 active jobs — won't affect non-active transitions
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
   });
 
   afterAll(() => { process.env = env; });
@@ -167,5 +172,181 @@ describe('employer-jobs-update', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'forbidden' });
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Entitlement gate — A7 tests
+  // ---------------------------------------------------------------------------
+
+  // Helper to build a mock query dispatcher for the update path.
+  // currentJobStatus: status returned by the SELECT before UPDATE.
+  // activeJobs: count returned for active job count.
+  function makeUpdateQueryMock(currentJobStatus: string, activeJobs: number) {
+    return (q: string) => {
+      if (q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
+      if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
+        // current job status fetch
+        return Promise.resolve({ rows: [{ status: currentJobStatus }] });
+      }
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, title: 'Concrete Finisher', location: 'Columbus, OH',
+            pay: null, job_type: 'contract', status: 'active', created_at: 'now',
+            pay_min: null, pay_max: null, pay_interval: null, start_date: null,
+            expected_duration: null, shift_schedule: null, transportation_required: false,
+            work_authorization_required: false, language_preference: ['any'],
+            number_of_workers_needed: 1, hired_count: 0, open_count: 1,
+            trade_category: 'concrete', required_experience_years: null,
+            required_experience_months: null, certifications: [], applicant_count: 0,
+          }],
+        });
+      }
+      return Promise.resolve({});
+    };
+  }
+
+  it('returns 403 job_limit_reached when paused→active reactivation exceeds free plan limit', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
+    mockQuery.mockImplementation(makeUpdateQueryMock('paused', 1)); // 1 active job = at limit
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+    expect(res.statusCode).toBe(403);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('job_limit_reached');
+    expect(body.plan_code).toBe('employer_free');
+    expect(body.active_job_limit).toBe(1);
+    expect(body.active_jobs).toBe(1);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('UPDATE jobs'), expect.anything());
+  });
+
+  it('allows paused→active when employer_pro plan has slots remaining', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+    mockQuery.mockImplementation(makeUpdateQueryMock('paused', 3)); // under limit
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('does NOT apply entitlement gate for active→paused (slot freed, not consumed)', async () => {
+    // Even if resolveEntitlements would return limit=0 (impossible but proves gate is skipped)
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 0 });
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, title: 'Concrete Finisher', location: 'Columbus, OH',
+            pay: null, job_type: 'contract', status: 'paused', created_at: 'now',
+            pay_min: null, pay_max: null, pay_interval: null, start_date: null,
+            expected_duration: null, shift_schedule: null, transportation_required: false,
+            work_authorization_required: false, language_preference: ['any'],
+            number_of_workers_needed: 1, hired_count: 0, open_count: 1,
+            trade_category: 'concrete', required_experience_years: null,
+            required_experience_months: null, certifications: [], applicant_count: 0,
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'paused' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    // Gate NOT applied: no FOR UPDATE and no active-job-count gate query (distinct from
+    // the applicant_count subselect in the UPDATE RETURNING clause).
+    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
+    expect(calls.some((s: string) => s.includes('FOR UPDATE'))).toBe(false);
+    expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
+    expect(mockResolveEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('does NOT apply entitlement gate for active→closed', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, title: 'Concrete Finisher', location: 'Columbus, OH',
+            pay: null, job_type: 'contract', status: 'closed', created_at: 'now',
+            pay_min: null, pay_max: null, pay_interval: null, start_date: null,
+            expected_duration: null, shift_schedule: null, transportation_required: false,
+            work_authorization_required: false, language_preference: ['any'],
+            number_of_workers_needed: 1, hired_count: 0, open_count: 1,
+            trade_category: 'concrete', required_experience_years: null,
+            required_experience_months: null, certifications: [], applicant_count: 0,
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'closed' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
+    expect(calls.some((s: string) => s.includes('FOR UPDATE'))).toBe(false);
+    expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
+    expect(mockResolveEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('does NOT apply entitlement gate when editing an already-active job to status active (no slot change)', async () => {
+    // active→active: status is being set to 'active' but job is already 'active'.
+    // The current-status fetch returns 'active', so the gate branch is skipped.
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({ rows: [{ status: 'active' }] }); // already active
+      }
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, title: 'Concrete Finisher', location: 'Columbus, OH',
+            pay: null, job_type: 'contract', status: 'active', created_at: 'now',
+            pay_min: null, pay_max: null, pay_interval: null, start_date: null,
+            expected_duration: null, shift_schedule: null, transportation_required: false,
+            work_authorization_required: false, language_preference: ['any'],
+            number_of_workers_needed: 1, hired_count: 0, open_count: 1,
+            trade_category: 'concrete', required_experience_years: null,
+            required_experience_months: null, certifications: [], applicant_count: 0,
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
+    expect(calls.some((s: string) => s.includes('FOR UPDATE'))).toBe(false);
+    expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
+    expect(mockResolveEntitlements).not.toHaveBeenCalled();
+  });
+
+  it('returns 500 when resolveEntitlements throws billing_plan_catalog_invalid on paused→active', async () => {
+    mockResolveEntitlements.mockRejectedValue(new Error('billing_plan_catalog_invalid'));
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({ rows: [{ status: 'paused' }] });
+      }
+      if (q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).error).toBe('internal_error');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
 });

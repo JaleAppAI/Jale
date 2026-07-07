@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
+import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
@@ -108,6 +109,39 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // A7: Lock the employer's users row to serialize concurrent slot consumers.
+    // SELECT … FOR UPDATE on users ensures two simultaneous creates for the same
+    // employer cannot both read "0 active jobs" and both insert.
+    const lockResult = await client.query<{ id: string }>(
+      `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
+      [cognitoSub],
+    );
+    const userId = lockResult.rows[0]?.id;
+
+    // Resolve entitlements AFTER acquiring the lock so the limit is authoritative.
+    const entitlements = await resolveEntitlements(client, userId);
+
+    // Count the employer's current active jobs while holding the lock.
+    const countResult = await client.query<{ active_jobs: number }>(
+      `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
+      [userId],
+    );
+    const activeJobs = countResult.rows[0].active_jobs;
+
+    if (activeJobs >= entitlements.activeJobLimit) {
+      await client.query('ROLLBACK');
+      return {
+        statusCode: 403,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          error: 'job_limit_reached',
+          plan_code: entitlements.planCode,
+          active_job_limit: entitlements.activeJobLimit,
+          active_jobs: activeJobs,
+        }),
+      };
+    }
+
     const result = await client.query(
       `INSERT INTO jobs (
          employer_id,
@@ -133,8 +167,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          certifications
        )
        VALUES (
-         (SELECT id FROM users WHERE cognito_sub = $1),
-         $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -143,7 +176,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications`,
       [
-        cognitoSub,
+        userId,
         title.trim(),
         location.trim(),
         formatPayRange(jobFields.value.pay_min, jobFields.value.pay_max),

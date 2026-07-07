@@ -27,6 +27,8 @@ export class ApiStack extends cdk.Stack {
   public readonly dualAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   public readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   public readonly workerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
+  /** Exported so BillingStack (and other downstream stacks) can hang routes off /employer */
+  public readonly employerResource: apigateway.Resource;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -76,7 +78,7 @@ export class ApiStack extends cdk.Stack {
       defaultCorsPreflightOptions: {
         allowOrigins: [allowedOrigin],
         allowMethods: apigateway.Cors.ALL_METHODS,
-        allowHeaders: ['Content-Type', 'Authorization'],
+        allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
       },
     });
 
@@ -90,14 +92,14 @@ export class ApiStack extends cdk.Stack {
       type: apigateway.ResponseType.DEFAULT_4XX,
       responseHeaders: {
         'Access-Control-Allow-Origin': `'${allowedOrigin}'`,
-        'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,Idempotency-Key'",
       },
     });
     this.api.addGatewayResponse('Default5xx', {
       type: apigateway.ResponseType.DEFAULT_5XX,
       responseHeaders: {
         'Access-Control-Allow-Origin': `'${allowedOrigin}'`,
-        'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
+        'Access-Control-Allow-Headers': "'Content-Type,Authorization,Idempotency-Key'",
       },
     });
 
@@ -522,8 +524,9 @@ export class ApiStack extends cdk.Stack {
 
     // GET /employer/profile
     // PATCH /employer/profile
-    const employerResource = this.api.root.addResource('employer');
-    const employerProfileResource = employerResource.addResource('profile');
+    // Exported as public readonly so BillingStack can hang /employer/billing routes off it.
+    this.employerResource = this.api.root.addResource('employer');
+    const employerProfileResource = this.employerResource.addResource('profile');
     employerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(employerProfileLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -535,7 +538,7 @@ export class ApiStack extends cdk.Stack {
 
     // GET /employer/jobs — list all jobs for this employer
     // POST /employer/jobs — create a new job posting
-    const employerJobsResource = employerResource.addResource('jobs');
+    const employerJobsResource = this.employerResource.addResource('jobs');
     employerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobsListLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -575,7 +578,7 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
-    const employerConversationsResource = employerResource.addResource('conversations');
+    const employerConversationsResource = this.employerResource.addResource('conversations');
     employerConversationsResource.addMethod('GET', new apigateway.LambdaIntegration(employerConversationsListLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -612,6 +615,46 @@ export class ApiStack extends cdk.Stack {
     // POST /auth/logout — no auth (user may have expired access token)
     const logoutResource = authResource.addResource('logout');
     logoutResource.addMethod('POST', new apigateway.LambdaIntegration(logoutLambda.function));
+
+    // ── Centralized stage method-level throttles ──
+    // All per-method throttle overrides live here so there is exactly one
+    // CfnStage.MethodSettings array in the entire app.  Downstream stacks
+    // (LegalStack, BillingStack) must NOT call addPropertyOverride('MethodSettings').
+    const deployment = this.api.latestDeployment;
+    if (deployment) {
+      const cfnStage = this.api.deploymentStage.node.defaultChild as apigateway.CfnStage;
+      cfnStage.addPropertyOverride('MethodSettings', [
+        // GET /legal/tos — public endpoint; keep throttle low to limit abuse cost
+        {
+          ResourcePath: '/legal/tos',
+          HttpMethod: 'GET',
+          ThrottlingBurstLimit: 20,
+          ThrottlingRateLimit: 10,
+        },
+        // POST /employer/billing/checkout — idempotent but involves Stripe API calls
+        {
+          ResourcePath: '/employer/billing/checkout',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
+        // POST /employer/billing/portal — opens Stripe portal session
+        {
+          ResourcePath: '/employer/billing/portal',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
+        // POST /billing/webhook — inbound from Stripe; verification is cheap but
+        // we defend against accidental firehoses
+        {
+          ResourcePath: '/billing/webhook',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 50,
+          ThrottlingRateLimit: 20,
+        },
+      ]);
+    }
 
     // ── Outputs ──
     this.apiUrl = this.api.url;
