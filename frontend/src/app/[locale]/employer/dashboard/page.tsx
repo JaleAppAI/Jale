@@ -35,7 +35,6 @@ const hiringNav: DisabledNavItem[] = [
 
 const accountNav: DisabledNavItem[] = [
     { key: 'analytics' },
-    { key: 'billing' },
 ];
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
@@ -324,6 +323,13 @@ export default function EmployerDashboardPage() {
                                     </button>
                                 ))}
                                 <Link
+                                    href="/employer/billing"
+                                    className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-white/80 hover:bg-white/10 hover:text-white"
+                                >
+                                    <Icon name="chart" />
+                                    {t('nav.billing')}
+                                </Link>
+                                <Link
                                     href="/employer/profile"
                                     className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-white/80 hover:bg-white/10 hover:text-white"
                                 >
@@ -336,7 +342,12 @@ export default function EmployerDashboardPage() {
                         <div className="m-4 rounded-2xl border border-white/10 bg-white/10 p-4">
                             <p className="text-sm font-bold">{t('shell.plan_title')}</p>
                             <p className="mt-1 text-xs leading-5 text-white/60">{t('shell.plan_body')}</p>
-                            <DisabledAction>{t('shell.upgrade')}</DisabledAction>
+                            <Link
+                                href="/employer/billing"
+                                className="mt-3 inline-flex h-9 items-center justify-center rounded-full border border-white/15 bg-white/10 px-4 text-xs font-bold text-white hover:bg-white/20"
+                            >
+                                {t('shell.upgrade')}
+                            </Link>
                         </div>
                     </aside>
 

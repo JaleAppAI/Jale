@@ -14,8 +14,15 @@ export interface BillingStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   /** Dedicated billing security group (billingLambdaSg from NetworkStack) */
   readonly billingLambdaSg: ec2.ISecurityGroup;
-  /** jale/billing/db secret (CDK-created in DatabaseStack) */
+  /** jale/billing/db secret (CDK-created in DatabaseStack) — processor (jale_billing role) ONLY */
   readonly billingDbSecret: secretsmanager.ISecret;
+  /**
+   * App DB credential (jale_admin role) — same secret ApiStack Lambdas use.
+   * The jale_billing role (034) is processor-only: no billing_operations grant,
+   * no users access, and owner RLS policies are TO jale_admin. The user-facing
+   * billing Lambdas (get-billing, checkout, portal) must use this credential.
+   */
+  readonly appDbSecret: secretsmanager.ISecret;
   /** Shared REST API from ApiStack */
   readonly api: apigateway.RestApi;
   /** Employer Cognito authorizer from ApiStack */
@@ -34,11 +41,18 @@ export interface BillingStackProps extends cdk.StackProps {
  *   POST /billing/webhook               → webhook verifier Lambda (no auth, Stripe HMAC)
  *
  * Secret isolation (rule 9 of the A6 spec):
- *   get-billing : DB_SECRET_ARN only
- *   checkout    : DB_SECRET_ARN + STRIPE_SECRET_ARN
- *   portal      : DB_SECRET_ARN + STRIPE_SECRET_ARN
+ *   get-billing : DB_SECRET_ARN (app DB / jale_admin) only
+ *   checkout    : DB_SECRET_ARN (app DB / jale_admin) + STRIPE_SECRET_ARN
+ *   portal      : DB_SECRET_ARN (app DB / jale_admin) + STRIPE_SECRET_ARN
  *   webhook     : WEBHOOK_SECRET_ARN + QUEUE_URL (no DB, no Stripe API key)
- *   processor   : DB_SECRET_ARN + STRIPE_SECRET_ARN (SQS consumer)
+ *   processor   : DB_SECRET_ARN (jale/billing/db / jale_billing) + STRIPE_SECRET_ARN (SQS consumer)
+ *
+ * DB role split (intended design, migration 034): jale_billing is a processor-only
+ * service role — it is granted billing_plans/billing_customers/subscriptions/
+ * billing_webhook_events but NOT billing_operations, and has no users access. Owner
+ * RLS policies on those tables are TO jale_admin. The three user-facing Lambdas
+ * (get-billing, checkout, portal) therefore use the same app DB credential
+ * (jale_admin) that ApiStack Lambdas use, not billingDbSecret.
  *
  * Secrets imported by name (operator-created, never CDK-created):
  *   jale/billing/stripe-api  — Stripe API secret key
@@ -84,52 +98,52 @@ export class BillingStack extends cdk.Stack {
     });
 
     // ── Lambda: get-billing ──
-    // DB only — no Stripe secrets.
+    // App DB (jale_admin) only — no Stripe secrets. jale_billing is processor-only.
     const getBillingLambda = new JaleLambdaFunction(this, 'GetBillingLambda', {
       entry: path.join(__dirname, '../../lambda/billing/get-billing.ts'),
       description: 'Returns employer billing status and plan entitlements',
       vpc: props.vpc,
       securityGroups: [props.billingLambdaSg],
       environment: {
-        DB_SECRET_ARN: props.billingDbSecret.secretArn,
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    props.billingDbSecret.grantRead(getBillingLambda.function);
+    props.appDbSecret.grantRead(getBillingLambda.function);
 
     // ── Lambda: checkout ──
-    // DB + Stripe API key.
+    // App DB (jale_admin) + Stripe API key. jale_billing is processor-only.
     const checkoutLambda = new JaleLambdaFunction(this, 'CheckoutLambda', {
       entry: path.join(__dirname, '../../lambda/billing/checkout.ts'),
       description: 'Creates Stripe Checkout session for employer subscription',
       vpc: props.vpc,
       securityGroups: [props.billingLambdaSg],
       environment: {
-        DB_SECRET_ARN: props.billingDbSecret.secretArn,
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
         STRIPE_SECRET_ARN: stripeApiSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    props.billingDbSecret.grantRead(checkoutLambda.function);
+    props.appDbSecret.grantRead(checkoutLambda.function);
     stripeApiSecret.grantRead(checkoutLambda.function);
 
     // ── Lambda: portal ──
-    // DB + Stripe API key.
+    // App DB (jale_admin) + Stripe API key. jale_billing is processor-only.
     const portalLambda = new JaleLambdaFunction(this, 'PortalLambda', {
       entry: path.join(__dirname, '../../lambda/billing/portal.ts'),
       description: 'Creates Stripe Customer Portal session for billing management',
       vpc: props.vpc,
       securityGroups: [props.billingLambdaSg],
       environment: {
-        DB_SECRET_ARN: props.billingDbSecret.secretArn,
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
         STRIPE_SECRET_ARN: stripeApiSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
-    props.billingDbSecret.grantRead(portalLambda.function);
+    props.appDbSecret.grantRead(portalLambda.function);
     stripeApiSecret.grantRead(portalLambda.function);
 
     // ── Lambda: webhook verifier ──

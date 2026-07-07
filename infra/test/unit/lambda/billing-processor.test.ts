@@ -252,6 +252,142 @@ describe('billing processor: processEnvelope()', () => {
     expect(result.outcome).toBe('duplicate_terminal');
   });
 
+  // ── Lease semantics (Important #1 fix): concurrent SQS delivery guard ──
+
+  describe('lease semantics', () => {
+    it('a row with a LIVE lease is NOT processed (duplicate_in_progress, no Stripe call)', async () => {
+      const { queryMock } = makeDbMock();
+
+      queryMock.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] }); // pre-existed
+        if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+          // The atomic claim UPDATE's WHERE excludes rows with a live lease
+          // (lease_expires_at > now()) -> 0 rows updated.
+          return Promise.resolve({ rows: [] });
+        }
+        if (sql.includes('SELECT processing_status')) {
+          // received/failed, but excluded above because of the live lease.
+          return Promise.resolve({ rows: [{ processing_status: 'received' }] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const { retrieve } = mockStripe(makeStripeSubscription());
+      const rawJson = makeSubEvent({ id: EVT1 });
+      const result = await processEnvelope(makeEnvelope(rawJson));
+
+      expect(result.outcome).toBe('duplicate_in_progress');
+      // Must not touch Stripe or advance processing while another delivery
+      // holds a live lease.
+      expect(retrieve).not.toHaveBeenCalled();
+    });
+
+    it('a "failed" row with a LIVE lease is also NOT resumed (in-progress duplicate, not terminal)', async () => {
+      const { queryMock } = makeDbMock();
+
+      queryMock.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] });
+        if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+          return Promise.resolve({ rows: [] });
+        }
+        if (sql.includes('SELECT processing_status')) {
+          return Promise.resolve({ rows: [{ processing_status: 'failed' }] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      const { retrieve } = mockStripe(makeStripeSubscription());
+      const rawJson = makeSubEvent({ id: EVT1 });
+      const result = await processEnvelope(makeEnvelope(rawJson));
+
+      expect(result.outcome).toBe('duplicate_in_progress');
+      expect(retrieve).not.toHaveBeenCalled();
+    });
+
+    it('a row with an EXPIRED (or NULL) lease is resumed and processed normally', async () => {
+      const claimCalls: { sql: string; params: unknown[] }[] = [];
+      const { queryMock } = makeDbMock();
+
+      queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] }); // pre-existed
+        if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+          claimCalls.push({ sql, params });
+          // Lease is expired (or NULL) -> the atomic claim UPDATE's WHERE
+          // matches -> 1 row updated, fresh lease set.
+          return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+        }
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
+        if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [] });
+      });
+
+      mockStripe(makeStripeSubscription());
+      const rawJson = makeSubEvent({ id: EVT1 });
+      const result = await processEnvelope(makeEnvelope(rawJson));
+
+      expect(result.outcome).toBe('processed');
+      expect(claimCalls.length).toBe(1);
+      // The claim query must guard on the lease being NULL or expired, and
+      // must set a fresh lease on success.
+      expect(claimCalls[0].sql).toContain('lease_expires_at IS NULL OR lease_expires_at < now()');
+      expect(claimCalls[0].sql).toContain('lease_expires_at = now()');
+    });
+
+    it('a "failed" row (no live lease) is resumed with a fresh lease and processed', async () => {
+      const claimCalls: { sql: string; params: unknown[] }[] = [];
+      const { queryMock } = makeDbMock();
+
+      queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] });
+        if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+          claimCalls.push({ sql, params });
+          return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+        }
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
+        if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [] });
+      });
+
+      mockStripe(makeStripeSubscription());
+      const rawJson = makeSubEvent({ id: EVT1 });
+      const result = await processEnvelope(makeEnvelope(rawJson));
+
+      expect(result.outcome).toBe('processed');
+      expect(claimCalls.length).toBe(1);
+      expect(claimCalls[0].sql).toContain("processing_status IN ('received', 'failed')");
+    });
+
+    it('marking a row processed clears the lease (lease_expires_at = NULL)', async () => {
+      const processedMarkCalls: { sql: string; params: unknown[] }[] = [];
+      const { queryMock } = makeDbMock();
+
+      queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] });
+        if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+          return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+        }
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
+        if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
+        if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processed_at')) {
+          processedMarkCalls.push({ sql, params });
+          return Promise.resolve({ rows: [] });
+        }
+        return Promise.resolve({ rows: [] });
+      });
+
+      mockStripe(makeStripeSubscription());
+      const rawJson = makeSubEvent({ id: EVT1 });
+      const result = await processEnvelope(makeEnvelope(rawJson));
+
+      expect(result.outcome).toBe('processed');
+      expect(processedMarkCalls.length).toBe(1);
+      expect(processedMarkCalls[0].sql).toContain('lease_expires_at  = NULL');
+    });
+  });
+
   // ── FIX 2: attempt_count accounting ──────────────────────────────────
 
   it('FIX2: fresh claim leaves attempt_count=1 (no UPDATE increment)', async () => {
@@ -269,7 +405,7 @@ describe('billing processor: processEnvelope()', () => {
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
         attemptUpdates.push(params);
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
@@ -286,8 +422,8 @@ describe('billing processor: processEnvelope()', () => {
     expect(attemptUpdates.length).toBe(0);
   });
 
-  it('FIX2: resume after failed increments attempt_count to exactly 2', async () => {
-    const attemptUpdates: { params: unknown[] }[] = [];
+  it('FIX2: resume after failed increments attempt_count to exactly 2 (via SQL attempt_count + 1)', async () => {
+    const attemptUpdates: { sql: string; params: unknown[] }[] = [];
     const { queryMock } = makeDbMock();
 
     queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
@@ -296,12 +432,9 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [] });
       }
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] });
-      if (sql.includes('SELECT processing_status')) {
-        return Promise.resolve({ rows: [{ processing_status: 'failed', attempt_count: 1 }] });
-      }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        attemptUpdates.push({ params });
-        return Promise.resolve({ rows: [] });
+        attemptUpdates.push({ sql, params });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
@@ -314,23 +447,28 @@ describe('billing processor: processEnvelope()', () => {
     const result = await processEnvelope(makeEnvelope(rawJson));
 
     expect(result.outcome).toBe('processed');
-    // Should have fired exactly one attempt_count increment
+    // Should have fired exactly one atomic claim UPDATE that increments
+    // attempt_count in SQL (attempt_count = attempt_count + 1), not via a
+    // JS-computed literal — the row's prior attempt_count is never read
+    // by the claim path (only the atomic UPDATE ... RETURNING result matters).
     expect(attemptUpdates.length).toBe(1);
-    expect(attemptUpdates[0].params).toContain(2); // 1 + 1
+    expect(attemptUpdates[0].sql).toContain('attempt_count = attempt_count + 1');
+    expect(attemptUpdates[0].params).toContain(EVT1);
   });
 
-  it('FIX2: duplicate of processed row is terminal no-op (no attempt_count UPDATE)', async () => {
+  it('FIX2: duplicate of processed row is terminal no-op (claim UPDATE affects 0 rows)', async () => {
     const attemptUpdates: unknown[][] = [];
     const { queryMock } = makeDbMock();
 
     queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] }); // pre-existed
-      if (sql.includes('SELECT processing_status')) {
-        return Promise.resolve({ rows: [{ processing_status: 'processed', attempt_count: 3 }] });
-      }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
         attemptUpdates.push(params);
+        // processing_status='processed' is excluded by the claim UPDATE's WHERE clause -> 0 rows
         return Promise.resolve({ rows: [] });
+      }
+      if (sql.includes('SELECT processing_status')) {
+        return Promise.resolve({ rows: [{ processing_status: 'processed' }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -341,8 +479,8 @@ describe('billing processor: processEnvelope()', () => {
 
     expect(result.outcome).toBe('duplicate_terminal');
     expect(retrieve).not.toHaveBeenCalled();
-    // No attempt_count UPDATE for terminal duplicate
-    expect(attemptUpdates.length).toBe(0);
+    // The atomic claim UPDATE is attempted but affects 0 rows for a terminal status
+    expect(attemptUpdates.length).toBe(1);
   });
 
   // ── Failed row is resumable ───────────────────────────────────────────
@@ -358,7 +496,7 @@ describe('billing processor: processEnvelope()', () => {
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
         updateCalls.push({ sql, params });
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       // subscriptions upsert
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
@@ -381,10 +519,11 @@ describe('billing processor: processEnvelope()', () => {
     const rawJson = makeSubEvent({ id: EVT1 });
     const result = await processEnvelope(makeEnvelope(rawJson));
 
-    // attempt_count should have been incremented
+    // attempt_count should have been incremented atomically in SQL
     const attemptUpdate = updateCalls.find(c => c.sql.includes('attempt_count'));
     expect(attemptUpdate).toBeDefined();
-    expect(attemptUpdate!.params).toContain(2); // 1 + 1
+    expect(attemptUpdate!.sql).toContain('attempt_count = attempt_count + 1');
+    expect(attemptUpdate!.params).toContain(EVT1);
 
     // Should succeed
     expect(result.outcome).toBe('processed');
@@ -404,7 +543,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] }); // no-op increment
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -453,7 +592,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -514,7 +653,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
         skippedParams.push(params);
@@ -553,7 +692,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
         if (Array.isArray(params)) statusUpdates.push(...params.filter(p => typeof p === 'string'));
@@ -589,7 +728,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
         failedMarks.push(params);
@@ -615,8 +754,8 @@ describe('billing processor: processEnvelope()', () => {
     const { queryMock } = makeDbMock();
     queryMock.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] });
-      if (sql.includes('SELECT processing_status')) {
-        return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
+      if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       return Promise.resolve({ rows: [] });
     });
@@ -641,7 +780,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -673,8 +812,8 @@ describe('billing processor: processEnvelope()', () => {
 
     queryMock.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [] });
-      if (sql.includes('SELECT processing_status')) {
-        return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
+      if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('UPDATE billing_webhook_events')) return Promise.resolve({ rows: [] });
       if (sql.includes('billing_customers')) {
@@ -706,7 +845,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -742,7 +881,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [] }); // no customer mapping
@@ -788,7 +927,7 @@ describe('billing processor: processEnvelope()', () => {
           return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
         }
         if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-          return Promise.resolve({ rows: [] });
+          return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
         }
         if (sql.includes('billing_customers')) {
           return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -893,7 +1032,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -936,7 +1075,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [] }); // no customer
@@ -973,7 +1112,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -1007,7 +1146,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
@@ -1057,7 +1196,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ processing_status: 'received', attempt_count: 1 }] });
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('attempt_count')) {
-        return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });

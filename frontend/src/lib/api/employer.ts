@@ -3,6 +3,140 @@ import type { ScoreBand } from '../match';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
 export type { ApplicationStatus } from '../status';
 
+// ---------------------------------------------------------------------------
+// Typed API errors
+//
+// Preserves HTTP status, a provider-safe error code (the backend's `error`
+// field — a stable string, never a raw provider/exception message), and an
+// allowlisted set of extra payload fields the backend is known to attach to
+// specific error codes (e.g. job_limit_reached's plan/limit info). Anything
+// outside the allowlist is dropped so we never leak unexpected server detail
+// into the UI.
+// ---------------------------------------------------------------------------
+
+export type ApiErrorPayload = {
+  plan_code?: string;
+  active_job_limit?: number;
+  active_jobs?: number;
+  requiredVersion?: string;
+  currentVersion?: string;
+  required?: string[];
+};
+
+const ALLOWED_PAYLOAD_KEYS = [
+  'plan_code',
+  'active_job_limit',
+  'active_jobs',
+  'requiredVersion',
+  'currentVersion',
+  'required',
+] as const;
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly payload: ApiErrorPayload;
+
+  constructor(status: number, code: string, payload: ApiErrorPayload = {}) {
+    super(code);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.payload = payload;
+  }
+}
+
+async function parseApiError(res: Response, fallbackCode: string): Promise<ApiError> {
+  let body: Record<string, unknown> = {};
+  try {
+    body = await res.json();
+  } catch {
+    // Non-JSON body — fall back to the generic code below.
+  }
+  const code = typeof body.error === 'string' ? body.error : fallbackCode;
+  const payload: ApiErrorPayload = {};
+  for (const key of ALLOWED_PAYLOAD_KEYS) {
+    const value = body[key];
+    if (value !== undefined) {
+      (payload as Record<string, unknown>)[key] = value;
+    }
+  }
+  return new ApiError(res.status, code, payload);
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency keys
+//
+// One UUID per user-initiated mutation (e.g. "start checkout"), persisted in
+// sessionStorage until a definitive response arrives. A retry of the same
+// action (user clicks the button again after a transient failure) reuses the
+// same key so the backend can dedupe. A definitive response (success, or a
+// terminal validation/auth/not-found error) clears the key so the *next*
+// distinct action gets a fresh one.
+// ---------------------------------------------------------------------------
+
+const IDEMPOTENCY_STORAGE_PREFIX = 'jale.idempotency.';
+
+function randomUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback for environments without crypto.randomUUID (older browsers).
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+export function getIdempotencyKey(action: string): string {
+  if (typeof window === 'undefined') return randomUuid();
+  const storageKey = `${IDEMPOTENCY_STORAGE_PREFIX}${action}`;
+  const existing = window.sessionStorage.getItem(storageKey);
+  if (existing) return existing;
+  const key = randomUuid();
+  window.sessionStorage.setItem(storageKey, key);
+  return key;
+}
+
+export function clearIdempotencyKey(action: string): void {
+  if (typeof window === 'undefined') return;
+  window.sessionStorage.removeItem(`${IDEMPOTENCY_STORAGE_PREFIX}${action}`);
+}
+
+/**
+ * Whether an API response is a "definitive" outcome for idempotency-key
+ * purposes: success, or a terminal failure the backend has recorded as dead
+ * (so a fresh key is needed next attempt). A retry MUST resume the same
+ * operation (key retained) rather than start a new one when the backend's
+ * operation record is still live: 503 (`provider_retryable` — backend
+ * explicitly marks the operation non-terminal, see `stripeErrorCode()` in
+ * `infra/lambda/billing/checkout.ts`), plain 500 (unclassified/internal —
+ * indeterminate, safest to keep the key rather than risk a duplicate Stripe
+ * call), and 409 `operation_in_progress` (the backend's `billing_operations`
+ * row is still leased/pending — see `prepareCheckoutOperation()` in
+ * `infra/lambda/lib/billing-operations.ts` ~line 123 and ~line 174 — retrying
+ * with a *new* key would race a second Stripe session against the live one).
+ * Everything else is definitive and clears the key: 2xx success; 502
+ * `provider_error` (recorded terminal=true server-side); and every other 4xx
+ * the backend treats as terminal — validation errors (`invalid_plan`,
+ * `invalid_idempotency_key`, `invalid_json`, `missing_fields`,
+ * `invalid_return_origin`), `idempotency_key_conflict` (same key reused with
+ * a different request body — a fresh key is required), `subscription_already_current`,
+ * `user_not_provisioned`, `employer_required`, and `legal_required`.
+ *
+ * A non-`ApiError` (network failure, etc.) is treated as indeterminate —
+ * same as 500 — so the key is retained.
+ */
+export function isDefinitiveError(err: unknown): boolean {
+  if (!(err instanceof ApiError)) return false;
+  const { status, code } = err;
+  if (status >= 200 && status < 300) return true;
+  if (status === 503 || status === 500) return false;
+  if (status === 409 && code === 'operation_in_progress') return false;
+  return true;
+}
+
 export type Job = {
   id: string;
   title: string;
@@ -197,7 +331,7 @@ export async function createJob(
     method: 'POST',
     body: JSON.stringify(data),
   }, token);
-  if (!res.ok) throw new Error('create_failed');
+  if (!res.ok) throw await parseApiError(res, 'create_failed');
   return res.json();
 }
 
@@ -400,5 +534,75 @@ export async function createUploadToken(
     token,
   );
   if (!res.ok) throw new Error((await res.json()).error ?? 'token_create_failed');
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Billing
+// ---------------------------------------------------------------------------
+
+/** The paid employer plan's catalog code — a stable identifier, not a price. */
+export const EMPLOYER_PRO_PLAN_CODE = 'employer_pro';
+
+export type BillingSubscription = {
+  plan_code: string;
+  status: string;
+  current_period_start: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  grace_ends_at: string | null;
+} | null;
+
+export type EmployerBilling = {
+  planCode: string;
+  activeJobLimit: number;
+  activeJobUsage: number;
+  subscription: BillingSubscription;
+  display_price_minor: number;
+  currency: string;
+  billing_interval: string;
+};
+
+export async function getBilling(token: string): Promise<EmployerBilling> {
+  const res = await apiFetch('/employer/billing', {}, token);
+  if (!res.ok) throw await parseApiError(res, 'billing_fetch_failed');
+  return res.json();
+}
+
+export type CheckoutSession = { url: string; sessionId: string };
+
+export async function startCheckout(
+  token: string,
+  data: { planCode: string; successUrl: string; cancelUrl: string },
+  idempotencyKey: string,
+): Promise<CheckoutSession> {
+  const res = await apiFetch(
+    '/employer/billing/checkout',
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(data),
+    },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'checkout_failed');
+  return res.json();
+}
+
+export async function openBillingPortal(
+  token: string,
+  returnUrl: string,
+  idempotencyKey: string,
+): Promise<{ url: string }> {
+  const res = await apiFetch(
+    '/employer/billing/portal',
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ returnUrl }),
+    },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'portal_failed');
   return res.json();
 }

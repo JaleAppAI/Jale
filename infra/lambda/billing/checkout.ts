@@ -4,6 +4,7 @@ import { corsHeaders, errorMessage } from '../lib/http';
 import { getStripe, getStripeSecret } from '../lib/stripe-client';
 import {
   assertAllowedReturnUrl,
+  BillingCustomerConflictError,
   isUuid,
   markCheckoutSucceeded,
   persistBillingCustomer,
@@ -77,16 +78,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const stripe = await getStripe();
-    const customer = await stripe.customers.create(
-      { email: prepared.email ?? undefined, metadata: { userId: prepared.userId } },
-      { idempotencyKey: prepared.customerIdempotencyKey },
-    );
-    await persistBillingCustomer(client, cognitoSub, prepared.userId, customer.id);
+    let customerId = prepared.existingProviderCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create(
+        { email: prepared.email ?? undefined, metadata: { userId: prepared.userId } },
+        { idempotencyKey: prepared.customerIdempotencyKey },
+      );
+      try {
+        await persistBillingCustomer(client, cognitoSub, prepared.userId, customer.id);
+        customerId = customer.id;
+      } catch (err) {
+        if (err instanceof BillingCustomerConflictError) {
+          // A concurrent checkout persisted a different customer between our prepare-time
+          // lookup and now. Reuse the persisted winner rather than looping as retryable —
+          // the just-created Stripe customer is simply not linked to this user.
+          customerId = err.persistedCustomerId;
+        } else {
+          throw err;
+        }
+      }
+    }
 
     const session = await stripe.checkout.sessions.create(
       {
         mode: 'subscription',
-        customer: customer.id,
+        customer: customerId,
         line_items: [{ price: secret.priceIdEmployerPro, quantity: 1 }],
         success_url: body.successUrl,
         cancel_url: body.cancelUrl,

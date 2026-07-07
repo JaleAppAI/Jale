@@ -122,6 +122,7 @@ new BillingStack(app, 'JaleBillingStack', {
   privateSubnets: network.privateSubnets,
   billingLambdaSg: network.billingLambdaSg,
   billingDbSecret: database.billingDbSecret,
+  appDbSecret: database.dbSecret,
   api: api.api,
   employerAuthorizer: api.employerAuthorizer,
   employerResource: api.employerResource,

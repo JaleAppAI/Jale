@@ -9,6 +9,7 @@ import { BillingStack } from '../../../lib/stacks/billing-stack';
 
 describe('BillingStack', () => {
   let template: Template;
+  let dbTemplate: Template;
 
   beforeAll(() => {
     const app = new cdk.App({
@@ -46,12 +47,31 @@ describe('BillingStack', () => {
       privateSubnets: network.privateSubnets,
       billingLambdaSg: network.billingLambdaSg,
       billingDbSecret: database.billingDbSecret,
+      appDbSecret: database.dbSecret,
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
     });
     template = Template.fromStack(app.node.findChild('TestBillingStack') as cdk.Stack);
+    dbTemplate = Template.fromStack(database);
   });
+
+  /**
+   * DB_SECRET_ARN for a Lambda is a CFN intrinsic (Fn::ImportValue or Fn::Sub)
+   * referencing the exported secret ARN from TestDatabaseStack. jale_admin
+   * (appDbSecret) and jale_billing (billingDbSecret) are distinct Secrets
+   * Manager resources with distinct logical ids/export names, so a deep-equal
+   * comparison of the two Lambdas' DB_SECRET_ARN intrinsics tells us which
+   * secret each one actually points at.
+   */
+  function dbSecretArnFor(description: string): unknown {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: description },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    return (fns[0] as any).Properties.Environment?.Variables?.DB_SECRET_ARN;
+  }
 
   // ── Queue + DLQ ──────────────────────────────────────────────────────────
 
@@ -200,6 +220,75 @@ describe('BillingStack', () => {
     expect(env).toHaveProperty('STRIPE_SECRET_ARN');
     expect(env).not.toHaveProperty('WEBHOOK_SECRET_ARN');
     expect(env).not.toHaveProperty('QUEUE_URL');
+  });
+
+  // ── DB role wiring (migration 034 fix) ────────────────────────────────────
+  // jale_billing (jale/billing/db) is processor-only: no billing_operations
+  // grant, no users access; owner RLS policies on the owned tables are TO
+  // jale_admin. The three user-facing Lambdas must use the app DB credential
+  // (jale_admin / database.dbSecret), the same one ApiStack Lambdas use.
+
+  test('processor Lambda references the jale/billing/db (jale_billing) secret', () => {
+    const processorArn = dbSecretArnFor('Processes verified Stripe webhook events from SQS');
+    expect(processorArn).toBeDefined();
+  });
+
+  test('get-billing, checkout, and portal Lambdas reference the app DB secret, NOT jale/billing/db', () => {
+    const processorArn = dbSecretArnFor('Processes verified Stripe webhook events from SQS');
+    const getBillingArn = dbSecretArnFor('Returns employer billing status and plan entitlements');
+    const checkoutArn = dbSecretArnFor('Creates Stripe Checkout session for employer subscription');
+    const portalArn = dbSecretArnFor('Creates Stripe Customer Portal session for billing management');
+
+    expect(getBillingArn).toBeDefined();
+    expect(checkoutArn).toBeDefined();
+    expect(portalArn).toBeDefined();
+
+    // Each user-facing Lambda's DB_SECRET_ARN intrinsic must be identical to
+    // the others (all point at the same app DB secret)...
+    expect(getBillingArn).toEqual(checkoutArn);
+    expect(checkoutArn).toEqual(portalArn);
+
+    // ...and must differ from the processor's jale_billing secret intrinsic.
+    expect(getBillingArn).not.toEqual(processorArn);
+    expect(checkoutArn).not.toEqual(processorArn);
+    expect(portalArn).not.toEqual(processorArn);
+  });
+
+  test('get-billing, checkout, and portal Lambda roles have NO IAM grant on the jale/billing/db secret', () => {
+    // Resolve the jale/billing/db secret's logical id in TestDatabaseStack so we
+    // can recognize its ARN reference inside cross-stack IAM policy statements.
+    const billingSecretResources = dbTemplate.findResources('AWS::SecretsManager::Secret', {
+      Properties: { Name: 'jale/billing/db' },
+    });
+    const billingSecretLogicalIds = Object.keys(billingSecretResources);
+    expect(billingSecretLogicalIds.length).toBe(1);
+
+    const descriptions = [
+      'Returns employer billing status and plan entitlements',
+      'Creates Stripe Checkout session for employer subscription',
+      'Creates Stripe Customer Portal session for billing management',
+    ];
+
+    for (const description of descriptions) {
+      const fnResources = template.findResources('AWS::Lambda::Function', {
+        Properties: { Description: description },
+      });
+      const fnLogicalIds = Object.keys(fnResources);
+      expect(fnLogicalIds).toHaveLength(1);
+
+      // Every IAM Policy in this stack whose statements mention the billing
+      // secret's cross-stack export must NOT be one of these Lambdas' policies.
+      const policies = template.findResources('AWS::IAM::Policy');
+      for (const [policyId, policy] of Object.entries(policies)) {
+        const policyJson = JSON.stringify((policy as any).Properties);
+        const referencesBillingSecret = billingSecretLogicalIds.some((id) => policyJson.includes(id));
+        if (referencesBillingSecret) {
+          // This policy is for the processor (or another billing-secret reader),
+          // not for get-billing/checkout/portal — assert by name convention.
+          expect(policyId.toLowerCase()).not.toMatch(/getbilling|checkoutlambda|portallambda/);
+        }
+      }
+    }
   });
 
   // ── Routes ───────────────────────────────────────────────────────────────

@@ -21,6 +21,20 @@ export interface CheckoutOperationReady {
   requestHash: string;
   customerIdempotencyKey: string;
   checkoutIdempotencyKey: string;
+  /** Existing persisted Stripe customer id for this user, if one is already on file. */
+  existingProviderCustomerId: string | null;
+}
+
+/**
+ * Thrown by persistBillingCustomer when a concurrent checkout already persisted a
+ * different provider customer id for this user. Carries the persisted winner so the
+ * caller can recover deterministically instead of retrying forever.
+ */
+export class BillingCustomerConflictError extends Error {
+  constructor(public readonly persistedCustomerId: string) {
+    super('billing_customer_conflict');
+    this.name = 'BillingCustomerConflictError';
+  }
 }
 
 export interface CheckoutOperationReplay {
@@ -134,6 +148,10 @@ export async function prepareCheckoutOperation(
         WHERE id = $1`,
       [operationId, `${LEASE_MS} milliseconds`],
     );
+    const existingCustomerRes = await client.query(
+      `SELECT provider_customer_id FROM billing_customers WHERE user_id = $1`,
+      [userId],
+    );
     await client.query('COMMIT');
     return {
       kind: 'ready',
@@ -144,6 +162,7 @@ export async function prepareCheckoutOperation(
       requestHash,
       customerIdempotencyKey: `customer:${userId}`,
       checkoutIdempotencyKey: `checkout:${operationId}`,
+      existingProviderCustomerId: existingCustomerRes.rows[0]?.provider_customer_id ?? null,
     };
   }
 
@@ -198,6 +217,10 @@ export async function prepareCheckoutOperation(
      ) VALUES ($1, $2, $3, $4, $5, $6, 'pending', now() + ($7::text)::interval, 1)`,
     [operationId, userId, CHECKOUT_OPERATION_TYPE, idempotencyKey, requestHash, `checkout:${operationId}`, `${LEASE_MS} milliseconds`],
   );
+  const existingCustomerRes = await client.query(
+    `SELECT provider_customer_id FROM billing_customers WHERE user_id = $1`,
+    [userId],
+  );
   await client.query('COMMIT');
   return {
     kind: 'ready',
@@ -208,6 +231,7 @@ export async function prepareCheckoutOperation(
     requestHash,
     customerIdempotencyKey: `customer:${userId}`,
     checkoutIdempotencyKey: `checkout:${operationId}`,
+    existingProviderCustomerId: existingCustomerRes.rows[0]?.provider_customer_id ?? null,
   };
 }
 
@@ -231,7 +255,7 @@ export async function persistBillingCustomer(
   );
   if (res.rows[0]?.provider_customer_id !== providerCustomerId) {
     await client.query('ROLLBACK');
-    throw new Error('billing_customer_conflict');
+    throw new BillingCustomerConflictError(res.rows[0]?.provider_customer_id);
   }
   await client.query('COMMIT');
 }

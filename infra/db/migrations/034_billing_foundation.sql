@@ -109,6 +109,7 @@ CREATE TABLE billing_webhook_events (
     processing_status   TEXT NOT NULL DEFAULT 'received'
                         CHECK (processing_status IN ('received', 'processed', 'failed', 'skipped')),
     attempt_count       INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at    TIMESTAMPTZ,
     received_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at        TIMESTAMPTZ,
     last_error_code     TEXT

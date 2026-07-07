@@ -5,12 +5,24 @@
  * Processes Stripe v1 snapshot events from the billing webhook queue.
  *
  * Processing lifecycle:
- *  1. Claim inbox row by stripe_event_id (INSERT ON CONFLICT).
+ *  1. Claim inbox row by stripe_event_id (INSERT ON CONFLICT, then a single
+ *     atomic lease-guarded UPDATE if the row pre-existed).
  *     - processed/skipped → terminal duplicate no-op.
- *     - failed/received → resumable: increment attempt_count.
+ *     - failed/lease-expired received → resumable: increment attempt_count,
+ *       take a fresh lease.
+ *     - received/failed row with a LIVE (unexpired) lease → a concurrent
+ *       delivery is already in flight; not a terminal duplicate, but not
+ *       resumable either — let SQS redeliver later.
  *  2. Persist claim/attempt state in a short transaction.
  *  3. Fetch authoritative Stripe state OUTSIDE any DB transaction.
- *  4. Mirror subscription state + mark processed in a final transaction.
+ *  4. Mirror subscription state + mark processed (clearing the lease) in a
+ *     final transaction.
+ *
+ * Lease semantics guard against duplicate SQS delivery of the same Stripe
+ * event running two concurrent processor invocations (maxConcurrency 3):
+ * the lease is set strictly longer than the Lambda timeout, so a live
+ * invocation always holds an unexpired lease and a duplicate delivery sees
+ * the row as in-progress rather than resumable.
  *
  * Runs as jale_billing which has:
  *   SELECT billing_plans, billing_customers
@@ -30,6 +42,18 @@ interface WebhookEnvelope {
   receivedAt: string;
   rawBody: string; // base64-encoded raw bytes of the Stripe event
 }
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/**
+ * Inbox claim lease duration. The processor Lambda's timeout is 60s (see
+ * `timeout: 60` on BillingProcessorLambda in lib/stacks/billing-stack.ts).
+ * Five minutes is well above that with generous margin, so a live
+ * invocation's lease never expires mid-processing, while a genuinely
+ * abandoned claim (crashed/killed invocation) becomes resumable again soon
+ * after.
+ */
+const INBOX_LEASE_MS = 5 * 60 * 1000;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -86,7 +110,7 @@ function getSubscriptionPeriod(subscription: Stripe.Subscription): {
 // ── Core processor logic (exported for unit tests) ────────────────────────────
 
 export interface ProcessResult {
-  outcome: 'processed' | 'skipped' | 'failed' | 'duplicate_terminal';
+  outcome: 'processed' | 'skipped' | 'failed' | 'duplicate_terminal' | 'duplicate_in_progress';
   errorCode?: string;
 }
 
@@ -110,6 +134,12 @@ export async function processEnvelope(envelope: WebhookEnvelope): Promise<Proces
   const claimResult = await claimInboxRow(eventId, eventType, objectId);
   if (claimResult.terminalDuplicate) {
     return { outcome: 'duplicate_terminal' };
+  }
+  if (claimResult.inProgressDuplicate) {
+    // A concurrent delivery already holds a live lease on this event. Do not
+    // touch the row (that would race with the in-flight owner) — just bail
+    // out and let SQS redeliver later.
+    return { outcome: 'duplicate_in_progress' };
   }
 
   // ── Step 2: Dispatch by event type ────────────────────────────────────
@@ -311,7 +341,13 @@ async function handleSubscriptionEvent(
 // ── DB helpers ─────────────────────────────────────────────────────────────────
 
 interface ClaimResult {
+  /** processed/skipped already — no-op, never process again. */
   terminalDuplicate: boolean;
+  /**
+   * received/failed but a concurrent delivery holds a live (unexpired)
+   * lease — do not process and do not touch the row; let SQS redeliver.
+   */
+  inProgressDuplicate: boolean;
 }
 
 async function claimInboxRow(
@@ -321,6 +357,7 @@ async function claimInboxRow(
 ): Promise<ClaimResult> {
   const pool = await getDbPool();
   const client = await pool.connect();
+  const leaseInterval = `${INBOX_LEASE_MS} milliseconds`;
   try {
     await client.query('BEGIN');
 
@@ -328,54 +365,67 @@ async function claimInboxRow(
     // or a conflict (no row returned).
     const insertRes = await client.query(
       `INSERT INTO billing_webhook_events
-          (stripe_event_id, event_type, stripe_object_id, processing_status, attempt_count)
-        VALUES ($1, $2, $3, 'received', 1)
+          (stripe_event_id, event_type, stripe_object_id, processing_status, attempt_count, lease_expires_at)
+        VALUES ($1, $2, $3, 'received', 1, now() + ($4::text)::interval)
         ON CONFLICT (stripe_event_id) DO NOTHING
         RETURNING stripe_event_id`,
-      [eventId, eventType, objectId ?? null],
+      [eventId, eventType, objectId ?? null, leaseInterval],
     );
 
     if (insertRes.rows.length > 0) {
-      // Fresh claim — attempt_count=1 already set by INSERT; no further UPDATE needed.
+      // Fresh claim — attempt_count=1 and lease already set by INSERT.
       await client.query('COMMIT');
-      return { terminalDuplicate: false };
+      return { terminalDuplicate: false, inProgressDuplicate: false };
     }
 
-    // Row pre-existed — check status and branch.
-    const res = await client.query(
-      `SELECT processing_status, attempt_count
-         FROM billing_webhook_events
+    // Row pre-existed. Claim it atomically in a single UPDATE: only rows
+    // that are resumable (received/failed) AND not currently under a live
+    // lease qualify. This prevents two concurrent SQS deliveries of the
+    // same stripe_event_id from both claiming ownership — whichever UPDATE
+    // commits first wins; the loser's WHERE clause no longer matches once
+    // it re-evaluates against the committed lease.
+    const claimRes = await client.query(
+      `UPDATE billing_webhook_events
+          SET attempt_count = attempt_count + 1,
+              processing_status = 'received',
+              lease_expires_at = now() + ($2::text)::interval
         WHERE stripe_event_id = $1
-        FOR UPDATE`,
+          AND processing_status IN ('received', 'failed')
+          AND (lease_expires_at IS NULL OR lease_expires_at < now())
+        RETURNING stripe_event_id`,
+      [eventId, leaseInterval],
+    );
+
+    if (claimRes.rows.length > 0) {
+      await client.query('COMMIT');
+      return { terminalDuplicate: false, inProgressDuplicate: false };
+    }
+
+    // Zero rows claimed — either a terminal state (processed/skipped) or a
+    // live lease held by a concurrent in-flight attempt. Distinguish the two
+    // without taking any lock beyond a plain read (the UPDATE above already
+    // proved we cannot mutate this row right now).
+    const res = await client.query(
+      `SELECT processing_status
+         FROM billing_webhook_events
+        WHERE stripe_event_id = $1`,
       [eventId],
     );
     const row = res.rows[0];
+    await client.query('COMMIT');
 
     if (!row) {
-      // Should not happen — INSERT was a no-op so the row must exist
-      await client.query('COMMIT');
-      return { terminalDuplicate: false };
+      // Should not happen — INSERT was a no-op so the row must exist.
+      return { terminalDuplicate: false, inProgressDuplicate: false };
     }
 
-    const { processing_status, attempt_count } = row;
-
-    // Terminal states: processed/skipped → no-op
-    if (processing_status === 'processed' || processing_status === 'skipped') {
-      await client.query('COMMIT');
-      return { terminalDuplicate: true };
+    if (row.processing_status === 'processed' || row.processing_status === 'skipped') {
+      return { terminalDuplicate: true, inProgressDuplicate: false };
     }
 
-    // received/failed → resumable: increment attempt_count by exactly 1
-    await client.query(
-      `UPDATE billing_webhook_events
-          SET attempt_count = $2,
-              processing_status = 'received'
-        WHERE stripe_event_id = $1`,
-      [eventId, (attempt_count as number) + 1],
-    );
-
-    await client.query('COMMIT');
-    return { terminalDuplicate: false };
+    // received/failed but excluded by the lease guard → a concurrent
+    // in-flight attempt owns it right now.
+    return { terminalDuplicate: false, inProgressDuplicate: true };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -395,7 +445,8 @@ async function markInboxStatus(
     `UPDATE billing_webhook_events
         SET processing_status = $2,
             last_error_code   = $3,
-            processed_at      = $4
+            processed_at      = $4,
+            lease_expires_at  = NULL
       WHERE stripe_event_id = $1`,
     [eventId, status, errorCode, processedAt],
   );
@@ -412,7 +463,8 @@ async function markInboxStatusWithClient(
     `UPDATE billing_webhook_events
         SET processing_status = $2,
             last_error_code   = $3,
-            processed_at      = $4
+            processed_at      = $4,
+            lease_expires_at  = NULL
       WHERE stripe_event_id = $1`,
     [eventId, status, errorCode, processedAt],
   );
@@ -436,7 +488,8 @@ async function persistInboxFailure(
           DO UPDATE SET
             processing_status = 'failed',
             attempt_count     = billing_webhook_events.attempt_count + 1,
-            last_error_code   = EXCLUDED.last_error_code`,
+            last_error_code   = EXCLUDED.last_error_code,
+            lease_expires_at  = NULL`,
       [eventId, eventType, objectId ?? null, errorCode],
     );
   } catch {
@@ -467,5 +520,12 @@ async function processSqsRecord(record: SQSRecord): Promise<void> {
   if (result.outcome === 'failed') {
     // Re-throw to let SQS retry/DLQ handle it
     throw new Error(result.errorCode ?? 'processor_failed');
+  }
+  if (result.outcome === 'duplicate_in_progress') {
+    // A concurrent delivery holds a live lease. Throw (rather than deleting
+    // this SQS message) so it's redelivered later, after the in-flight
+    // attempt has had a chance to finish — protects against silently
+    // dropping an event if the in-flight attempt dies without completing.
+    throw new Error('duplicate_in_progress');
   }
 }

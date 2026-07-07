@@ -478,6 +478,7 @@ describe('migration apply order baseline', () => {
     expect(columns.get('subscriptions')?.get('status')).toBe('text');
     expect(columns.get('billing_operations')?.get('client_idempotency_key')).toBe('uuid');
     expect(columns.get('billing_webhook_events')?.get('stripe_event_id')).toBe('text');
+    expect(columns.get('billing_webhook_events')?.get('lease_expires_at')).toBe('timestamp with time zone');
     expect(columns.get('organizations')?.get('id')).toBe('uuid');
   });
 });

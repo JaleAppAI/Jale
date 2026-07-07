@@ -141,6 +141,13 @@ describe('billing webhook handler', () => {
     expect(res.statusCode).toBe(200);
   });
 
+  it('returns clean 400 (not 500) when event.headers is null/absent', async () => {
+    const res = await handler(makeEvent({ headers: undefined as unknown as Record<string, string> }));
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain('missing stripe-signature');
+    expect(mockSqsSend).not.toHaveBeenCalled();
+  });
+
   // ── Signature verification ─────────────────────────────────────────────
 
   it('returns 400 and does NOT call SQS when signature verification fails', async () => {

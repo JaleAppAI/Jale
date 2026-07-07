@@ -141,7 +141,7 @@ describe('billing checkout handler', () => {
     expect(checkoutCreate).not.toHaveBeenCalled();
   });
 
-  it('resumes an expired same-key lease with the same operation and provider idempotency keys', async () => {
+  it('resumes an expired same-key lease with the same operation and provider idempotency keys, reusing the persisted customer', async () => {
     query.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
       if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
@@ -163,9 +163,10 @@ describe('billing checkout handler', () => {
     const res = await handler(event());
 
     expect(res.statusCode).toBe(200);
-    expect(customerCreate).toHaveBeenCalledWith(expect.any(Object), { idempotencyKey: 'customer:user-1' });
+    // Existing persisted customer — checkout must reuse it directly, never call customers.create.
+    expect(customerCreate).not.toHaveBeenCalled();
     expect(checkoutCreate).toHaveBeenCalledWith(
-      expect.any(Object),
+      expect.objectContaining({ customer: 'cus_123' }),
       { idempotencyKey: 'checkout:22222222-2222-4222-8222-222222222222' },
     );
     expect(query).toHaveBeenCalledWith(
@@ -268,13 +269,21 @@ describe('billing checkout handler', () => {
     );
   });
 
-  it('commits the operation transaction before calling Stripe and stores the cached session response', async () => {
+  it('commits the operation transaction before calling Stripe and stores the cached session response (first-time customer creation)', async () => {
     const calls: string[] = [];
+    let billingCustomersCallCount = 0;
     query.mockImplementation((sql: string) => {
       calls.push(sql);
       if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
       if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
-      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) return Promise.resolve({ rows: [{ provider_customer_id: 'cus_123' }] });
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) {
+        billingCustomersCallCount += 1;
+        // 1st call = prepareCheckoutOperation's lookup — no prior customer, so
+        // customer creation is expected. 2nd call = persistBillingCustomer's
+        // post-INSERT verification SELECT, confirming the freshly-created id won.
+        if (billingCustomersCallCount === 1) return Promise.resolve({ rows: [] });
+        return Promise.resolve({ rows: [{ provider_customer_id: 'cus_123' }] });
+      }
       return Promise.resolve({ rows: [] });
     });
     customerCreate.mockImplementation(async () => {
@@ -304,6 +313,65 @@ describe('billing checkout handler', () => {
       expect.objectContaining({ idempotencyKey: expect.stringMatching(/^checkout:/) }),
     );
     expect(query).toHaveBeenCalledWith(expect.stringContaining("cached_response = $4::jsonb"), expect.arrayContaining(['cs_123']));
+    // prepareCheckoutOperation + persistBillingCustomer + markCheckoutSucceeded.
     expect(mockSetRlsContext).toHaveBeenCalledTimes(3);
+  });
+
+  it('reuses an existing persisted customer and performs zero Stripe customers.create calls', async () => {
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) return Promise.resolve({ rows: [{ provider_customer_id: 'cus_existing' }] });
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ url: 'https://checkout.stripe.test/session', sessionId: 'cs_123' });
+    expect(customerCreate).not.toHaveBeenCalled();
+    expect(checkoutCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: 'cus_existing' }),
+      expect.objectContaining({ idempotencyKey: expect.stringMatching(/^checkout:/) }),
+    );
+    // No persistBillingCustomer transaction is opened when reusing — only
+    // prepareCheckoutOperation + markCheckoutSucceeded.
+    expect(mockSetRlsContext).toHaveBeenCalledTimes(2);
+  });
+
+  it('when persistBillingCustomer detects a divergent conflict, checkout resolves to the persisted winner (not a retry loop)', async () => {
+    // Exercise the BillingCustomerConflictError recovery path directly: no
+    // existing customer at prepare time (forces stripe.customers.create), but
+    // persistBillingCustomer's own verification SELECT reports a different,
+    // already-persisted winner (a concurrent checkout raced us).
+    let billingCustomersCallCount = 0;
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) {
+        billingCustomersCallCount += 1;
+        // 1st call = prepareCheckoutOperation's lookup (no row yet).
+        if (billingCustomersCallCount === 1) return Promise.resolve({ rows: [] });
+        // 2nd call = persistBillingCustomer's post-INSERT verification SELECT —
+        // ON CONFLICT DO NOTHING left the concurrent winner's row in place.
+        return Promise.resolve({ rows: [{ provider_customer_id: 'cus_concurrent_winner' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    customerCreate.mockResolvedValue({ id: 'cus_B_orphaned' });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ url: 'https://checkout.stripe.test/session', sessionId: 'cs_123' });
+    // A Stripe customer was created (cus_B_orphaned, now orphaned) but checkout
+    // must NOT fail/retry — it resolves deterministically to the persisted winner.
+    expect(customerCreate).toHaveBeenCalled();
+    expect(checkoutCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: 'cus_concurrent_winner' }),
+      expect.any(Object),
+    );
+    // Never treated as a retryable provider error — no ROLLBACK-driven 503.
+    expect(res.statusCode).not.toBe(503);
   });
 });

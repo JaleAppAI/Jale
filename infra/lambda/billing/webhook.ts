@@ -29,9 +29,10 @@ export const handler = async (
       : Buffer.from(encodedBody, 'utf8');
 
     // ── 2. Extract signature header ───────────────────────────────────────
+    const headers = event.headers ?? {};
     const signatureHeader =
-      event.headers['stripe-signature'] ??
-      event.headers['Stripe-Signature'] ??
+      headers['stripe-signature'] ??
+      headers['Stripe-Signature'] ??
       '';
     if (!signatureHeader) {
       return { statusCode: 400, body: 'missing stripe-signature' };
