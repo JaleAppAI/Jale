@@ -14,7 +14,12 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
     const [signingOut, setSigningOut] = useState(false);
 
-    if (pathname === '/employer/dashboard' || pathname.endsWith('/employer/dashboard')) {
+    if (
+        pathname === '/employer/dashboard' ||
+        pathname.endsWith('/employer/dashboard') ||
+        pathname === '/employer/conversations' ||
+        pathname.endsWith('/employer/conversations')
+    ) {
         return null;
     }
 
