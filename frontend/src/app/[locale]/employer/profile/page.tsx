@@ -3,7 +3,9 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
-import { Card } from '@/components/ui/card';
+import { AppShell } from '@/components/layout/AppShell';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
+import { PanelHeader } from '@/components/ui/panel-header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -63,35 +65,56 @@ export default function EmployerProfilePage() {
         setEditing(false);
     }
 
-    if (error) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-error">{error}</p></main>;
-    if (!profile) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-muted">{tCommon('loading')}</p></main>;
+    if (error) {
+        return (
+            <AppShell role="employer" title={t('title')}>
+                <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+                    <p className="text-sm text-error">{error}</p>
+                </main>
+            </AppShell>
+        );
+    }
+    if (!profile) {
+        return (
+            <AppShell role="employer" title={t('title')}>
+                <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+                    <p className="text-sm text-muted">{tCommon('loading')}</p>
+                </main>
+            </AppShell>
+        );
+    }
 
     return (
-        <main className="mx-auto max-w-5xl px-4 py-10">
-            <h1 className="text-[1.4rem] md:text-[1.7rem] font-bold tracking-[-0.03em] leading-[1.2] mb-6">{t('title')}</h1>
-            <Card className="p-6 space-y-4">
-                <div className="flex items-center justify-between">
-                    <h2 className="text-base font-semibold">{profile.company_name ?? profile.full_name ?? t('fallback_company')}</h2>
-                    {!editing && <Button variant="outline" size="sm" onClick={() => setEditing(true)}>{t('edit_button')}</Button>}
-                </div>
-                {editing ? (
-                    <EmployerProfileForm initial={profile} onCancel={() => setEditing(false)} onSave={handleSave} />
-                ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <Field label={t('field_email')} value={profile.email} />
-                        <Field label={t('field_company')} value={profile.company_name ?? profile.full_name} />
-                        <Field label={t('field_contact')} value={profile.contact_name} />
-                        <Field label={t('field_phone')} value={profile.phone} />
-                        <Field label={t('field_city')} value={profile.city} />
-                        <Field label={t('field_service_area')} value={profile.service_area} />
-                        <Field label={t('field_hiring_trades')} value={profile.hiring_trades.map((trade) => tAuth(`trades.${trade}`)).join(', ')} />
-                        <Field label={t('field_job_types')} value={profile.typical_job_types.map((jobType) => tAuth(`job_types.${jobType.replace('-', '_')}`)).join(', ')} />
-                        <Field label={t('field_company_size')} value={profile.company_size} />
-                        <div className="md:col-span-2"><Field label={t('field_description')} value={profile.company_description} /></div>
+        <AppShell role="employer" title={t('title')}>
+            <div className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+                <DashboardPanel>
+                    <PanelHeader
+                        title={profile.company_name ?? profile.full_name ?? t('fallback_company')}
+                        action={!editing ? (
+                            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>{t('edit_button')}</Button>
+                        ) : undefined}
+                    />
+                    <div className="p-6">
+                        {editing ? (
+                            <EmployerProfileForm initial={profile} onCancel={() => setEditing(false)} onSave={handleSave} />
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <Field label={t('field_email')} value={profile.email} />
+                                <Field label={t('field_company')} value={profile.company_name ?? profile.full_name} />
+                                <Field label={t('field_contact')} value={profile.contact_name} />
+                                <Field label={t('field_phone')} value={profile.phone} />
+                                <Field label={t('field_city')} value={profile.city} />
+                                <Field label={t('field_service_area')} value={profile.service_area} />
+                                <Field label={t('field_hiring_trades')} value={profile.hiring_trades.map((trade) => tAuth(`trades.${trade}`)).join(', ')} />
+                                <Field label={t('field_job_types')} value={profile.typical_job_types.map((jobType) => tAuth(`job_types.${jobType.replace('-', '_')}`)).join(', ')} />
+                                <Field label={t('field_company_size')} value={profile.company_size} />
+                                <div className="md:col-span-2"><Field label={t('field_description')} value={profile.company_description} /></div>
+                            </div>
+                        )}
                     </div>
-                )}
-            </Card>
-        </main>
+                </DashboardPanel>
+            </div>
+        </AppShell>
     );
 }
 

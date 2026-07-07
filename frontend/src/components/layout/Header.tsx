@@ -14,12 +14,13 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
     const [signingOut, setSigningOut] = useState(false);
 
-    if (
-        pathname === '/employer/dashboard' ||
-        pathname.endsWith('/employer/dashboard') ||
-        pathname === '/employer/conversations' ||
-        pathname.endsWith('/employer/conversations')
-    ) {
+    // All employer pages render their own chrome via AppShell, so the global
+    // Header is suppressed across every /employer/* route (including dynamic
+    // ones). Worker routes still use the global Header until Step 5.
+    // `usePathname` from @/i18n/navigation returns a locale-stripped path, but
+    // we strip a leading /en or /es defensively in case a raw path leaks in.
+    const pathWithoutLocale = pathname.replace(/^\/(en|es)(?=\/|$)/, '');
+    if (pathWithoutLocale === '/employer' || pathWithoutLocale.startsWith('/employer/')) {
         return null;
     }
 
