@@ -11,7 +11,8 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→026
+#   - Base64-encodes the migrations listed in the MIGRATIONS array below
+#     (keep that array in sync with infra/db/migrations/)
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -33,9 +34,10 @@ DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. Runs the full chain 001→019 against
-# a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
-# is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
+# Migration files in execution order — the full chain for a fresh RDS.
+# Safe to re-run; every file wraps its own BEGIN/COMMIT and is idempotent
+# via CREATE...IF NOT EXISTS or equivalent guards.
+# KEEP IN SYNC with infra/db/migrations/ — there is no migration ledger.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
 MIGRATIONS=(
   "001_initial_schema.sql"

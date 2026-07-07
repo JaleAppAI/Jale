@@ -28,14 +28,15 @@ AGENTS.md
 *~
 
 # OS
-*.png
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Claude Code
+# Claude Code / local agent state
 .agents/
 .claude/
+.hermes/
+CLAUDE.md
 .superpowers/
 docs/
 cloudshell-db-psql.md
