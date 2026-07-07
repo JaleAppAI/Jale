@@ -1,0 +1,120 @@
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { getDbPool } from '../lib/db';
+import { corsHeaders, errorMessage } from '../lib/http';
+import { getStripe, getStripeSecret } from '../lib/stripe-client';
+import {
+  assertAllowedReturnUrl,
+  isUuid,
+  markCheckoutSucceeded,
+  persistBillingCustomer,
+  prepareCheckoutOperation,
+  recordCheckoutFailure,
+  type CheckoutRequest,
+} from '../lib/billing-operations';
+
+const CORS_HEADERS = corsHeaders();
+
+function response(statusCode: number, body: unknown): APIGatewayProxyResult {
+  return { statusCode, headers: CORS_HEADERS, body: JSON.stringify(body) };
+}
+
+function stripeErrorCode(err: unknown): { code: string; terminal: boolean; statusCode: number } {
+  const e = err as { statusCode?: number; code?: string; type?: string };
+  const providerStatus = e.statusCode ?? 500;
+  if (providerStatus === 429 || providerStatus >= 500) {
+    return { code: e.code ?? e.type ?? 'stripe_retryable_error', terminal: false, statusCode: 503 };
+  }
+  return { code: e.code ?? e.type ?? 'stripe_terminal_error', terminal: true, statusCode: 502 };
+}
+
+export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
+  let client;
+  let operationId: string | undefined;
+  let cognitoSub: string | undefined;
+  try {
+    cognitoSub = event.requestContext.authorizer?.claims?.sub;
+    if (!cognitoSub) return response(401, { error: 'unauthorized' });
+
+    const key = event.headers?.['Idempotency-Key'] ?? event.headers?.['idempotency-key'];
+    if (!isUuid(key)) return response(400, { error: 'invalid_idempotency_key' });
+
+    let body: CheckoutRequest;
+    try {
+      body = JSON.parse(event.body ?? '{}');
+    } catch {
+      return response(400, { error: 'invalid_json' });
+    }
+    if (!body?.planCode || !body?.successUrl || !body?.cancelUrl) {
+      return response(400, { error: 'missing_fields', required: ['planCode', 'successUrl', 'cancelUrl'] });
+    }
+
+    const allowedOrigin = process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000';
+    try {
+      assertAllowedReturnUrl(body.successUrl, allowedOrigin);
+      assertAllowedReturnUrl(body.cancelUrl, allowedOrigin);
+    } catch {
+      return response(400, { error: 'invalid_return_origin' });
+    }
+
+    const pool = await getDbPool();
+    client = await pool.connect();
+    const prepared = await prepareCheckoutOperation(
+      client,
+      cognitoSub,
+      key,
+      { planCode: body.planCode, successUrl: body.successUrl, cancelUrl: body.cancelUrl },
+      process.env.REQUIRED_TOS_VERSION!,
+    );
+
+    if (prepared.kind === 'error') return response(prepared.statusCode, { error: prepared.error, ...prepared.extra });
+    if (prepared.kind === 'replay') return response(200, prepared.response);
+
+    operationId = prepared.operationId;
+    const secret = await getStripeSecret();
+    if (!secret.priceIdEmployerPro) {
+      await recordCheckoutFailure(client, cognitoSub, operationId, 'stripe_price_missing', true);
+      return response(500, { error: 'billing_configuration_invalid' });
+    }
+
+    const stripe = await getStripe();
+    const customer = await stripe.customers.create(
+      { email: prepared.email ?? undefined, metadata: { userId: prepared.userId } },
+      { idempotencyKey: prepared.customerIdempotencyKey },
+    );
+    await persistBillingCustomer(client, cognitoSub, prepared.userId, customer.id);
+
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: 'subscription',
+        customer: customer.id,
+        line_items: [{ price: secret.priceIdEmployerPro, quantity: 1 }],
+        success_url: body.successUrl,
+        cancel_url: body.cancelUrl,
+        client_reference_id: prepared.userId,
+        metadata: { userId: prepared.userId, planCode: prepared.planCode, operationId },
+      },
+      { idempotencyKey: prepared.checkoutIdempotencyKey },
+    );
+
+    if (!session.url || !session.expires_at) {
+      await recordCheckoutFailure(client, cognitoSub, operationId, 'stripe_checkout_session_invalid', true);
+      return response(502, { error: 'provider_error' });
+    }
+
+    const cached = { url: session.url, sessionId: session.id };
+    await markCheckoutSucceeded(client, cognitoSub, operationId, session.id, new Date(session.expires_at * 1000), cached);
+    return response(200, cached);
+  } catch (err) {
+    if (client && operationId && cognitoSub) {
+      const mapped = stripeErrorCode(err);
+      try { await recordCheckoutFailure(client, cognitoSub, operationId, mapped.code, mapped.terminal); } catch (_) {}
+      console.error('billing-checkout provider error:', mapped.code);
+      return response(mapped.statusCode, { error: mapped.terminal ? 'provider_error' : 'provider_retryable' });
+    }
+    if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
+    console.error('billing-checkout error:', errorMessage(err));
+    return response(500, { error: 'internal_error' });
+  } finally {
+    if (client) client.release();
+  }
+};

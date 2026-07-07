@@ -8,6 +8,7 @@ export class NetworkStack extends cdk.Stack {
   public readonly isolatedSubnets: ec2.ISubnet[];
   public readonly lambdaSg: ec2.SecurityGroup;
   public readonly rdsSg: ec2.SecurityGroup;
+  public readonly billingLambdaSg: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -81,6 +82,17 @@ export class NetworkStack extends cdk.Stack {
       ec2.Port.tcp(5432),
       'Allow PostgreSQL access from Lambda functions',
     );
+
+    // Billing Lambdas get their own SG instead of the shared allow-all lambdaSg
+    // (spec S4.3). Outbound: 443 only (Stripe via NAT) + Postgres to RDS.
+    this.billingLambdaSg = new ec2.SecurityGroup(this, 'BillingLambdaSg', {
+      vpc: this.vpc,
+      description: 'Security group for billing Lambdas (DB + HTTPS egress only)',
+      allowAllOutbound: false,
+    });
+    this.billingLambdaSg.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'HTTPS egress (Stripe, AWS APIs) via NAT');
+    this.billingLambdaSg.addEgressRule(this.rdsSg, ec2.Port.tcp(5432), 'PostgreSQL to RDS');
+    this.rdsSg.addIngressRule(this.billingLambdaSg, ec2.Port.tcp(5432), 'Allow PostgreSQL access from billing Lambdas');
 
     // ---------- VPC Interface Endpoints ----------
     //

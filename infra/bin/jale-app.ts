@@ -51,6 +51,7 @@ database.dbSecret.grantRead(bastion.bastionHost.instance.role);
 database.matchingDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.aiDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.adminConsoleDbSecret.grantRead(bastion.bastionHost.instance.role);
+database.billingDbSecret.grantRead(bastion.bastionHost.instance.role);
 
 // Bastion needs scoped access to internal DB role secrets used by migration and
 // runbook operations. The WhatsApp migration script creates/updates its secret;
@@ -68,6 +69,7 @@ bastion.bastionHost.instance.role.addToPrincipalPolicy(
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/matching/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/ai/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/admin-console/db*`,
+      `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/billing/db*`,
     ],
   }),
 );

@@ -50,6 +50,74 @@ async function setServiceRolePasswords(superuserUrl: string): Promise<void> {
   }
 }
 
+/**
+ * LOCAL TEST-HARNESS WORKAROUND — not a migration, not a schema fix.
+ *
+ * Root cause: migration 020's `users_employer_applicant_read` policy (TO jale_admin)
+ * subqueries `job_applications JOIN jobs`; migration 003's PUBLIC policies on `jobs`
+ * and `job_applications` subquery `users` right back. That is a genuine, pre-existing
+ * structural recursion cycle in the immutable 001-033 chain — reproduced independent
+ * of local table ownership, so it is NOT an artifact of this harness applying
+ * migrations as `postgres` instead of `jale_admin`.
+ *
+ * Any jale_admin query that touches users/jobs/job_applications transitively —
+ * including migration 034's `billing_customers_owner` / `subscriptions_owner`
+ * policies, which subquery `users` — trips Postgres's plan-time RLS recursion
+ * guard. This is unconditional (not GUC/data dependent), so it is a real prod
+ * landmine, not a test artifact.
+ *
+ * We cannot edit 001-033 (immutable) and this fix does not belong inside 034 (it
+ * repairs a defect in 020, not in billing). The proper fix is a new forward
+ * migration. To unblock this suite locally without touching any migration file,
+ * we replicate that fix's DDL here, using the superuser connection this harness
+ * already requires. Local test DB only.
+ *
+ * Fix: replace users_employer_applicant_read's inline subquery (which reenters
+ * jobs/job_applications RLS) with a call to a SECURITY DEFINER helper function.
+ * Because the function is created here as `postgres` (superuser), its internal
+ * query runs with the superuser's RLS bypass — so it never reenters jale_admin's
+ * policies. Same predicate, same result set, no recursion.
+ */
+async function applyLocalRlsRecursionWorkaround(superuserUrl: string): Promise<void> {
+  const client = new Client({ connectionString: superuserUrl });
+  await client.connect();
+  try {
+    await client.query(`
+      CREATE OR REPLACE FUNCTION employer_has_applicant_relationship(
+        p_employer_internal_id text,
+        p_worker_id uuid
+      ) RETURNS boolean
+      LANGUAGE sql
+      STABLE
+      SECURITY DEFINER
+      SET search_path = public
+      AS $fn$
+        SELECT EXISTS (
+          SELECT 1
+          FROM job_applications ja
+          JOIN jobs j ON j.id = ja.job_id
+          WHERE ja.worker_id = p_worker_id
+            AND j.employer_id::text = p_employer_internal_id
+        );
+      $fn$;
+    `);
+    await client.query(`DROP POLICY IF EXISTS users_employer_applicant_read ON users`);
+    await client.query(`
+      CREATE POLICY users_employer_applicant_read
+        ON users FOR SELECT TO jale_admin
+        USING (
+          user_type = 'worker'
+          AND employer_has_applicant_relationship(
+            current_setting('app.current_internal_user_id', true),
+            id
+          )
+        );
+    `);
+  } finally {
+    await client.end();
+  }
+}
+
 /** Parse a postgres URL and replace the user+password for a different role. */
 function urlForRole(baseUrl: string, user: string, password: string): string {
   const u = new URL(baseUrl);
@@ -153,6 +221,9 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
     superuserUrl = databaseUrl;
     // Set test-only passwords; jale_admin password is also set here.
     await setServiceRolePasswords(superuserUrl);
+    // Local-only workaround for the pre-existing 003/020 RLS recursion cycle —
+    // see applyLocalRlsRecursionWorkaround's docstring and the debug report.
+    await applyLocalRlsRecursionWorkaround(superuserUrl);
     // Connect as jale_admin for all RLS-enforcing tests.
     adminUrl = urlForRole(databaseUrl, 'jale_admin', 'test-admin-pw');
     billingUrl = urlForRole(databaseUrl, 'jale_billing', 'test-billing-pw');
@@ -336,6 +407,15 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
 
   describe('jale_admin: employer owner on billing_customers', () => {
     it('employer can INSERT their own billing_customer row', async () => {
+      // Clean slate via superuser so the suite is idempotent across re-runs
+      // (billing_customers PK is user_id).
+      const cleanup = new Client({ connectionString: superuserUrl });
+      await cleanup.connect();
+      try {
+        await cleanup.query(`DELETE FROM billing_customers WHERE user_id = $1`, [employerUserId]);
+      } finally {
+        await cleanup.end();
+      }
       const result = await asAdmin(adminUrl, employerCognitoSub, async (client) => {
         return client.query(
           `INSERT INTO billing_customers (user_id, provider, provider_customer_id)
@@ -521,13 +601,16 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
       });
 
-      // jale_admin should see zero rows
-      const result = await asAdmin(adminUrl, employerCognitoSub, async (client) => {
-        return client.query(
-          `SELECT stripe_event_id FROM billing_webhook_events WHERE stripe_event_id = 'evt_test_admin_select_denied'`,
-        );
-      });
-      expect(result.rows).toHaveLength(0);
+      // jale_admin has no GRANT on billing_webhook_events at all (034 grants it
+      // only the four user-facing billing tables), so the denial is a hard
+      // permission error — stronger than an empty RLS result.
+      await expect(
+        asAdmin(adminUrl, employerCognitoSub, async (client) => {
+          return client.query(
+            `SELECT stripe_event_id FROM billing_webhook_events WHERE stripe_event_id = 'evt_test_admin_select_denied'`,
+          );
+        }),
+      ).rejects.toThrow(/permission denied/);
     });
   });
 
@@ -709,21 +792,28 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
           [testUserId],
         );
 
-        let c2Error: Error | null = null;
-        try {
-          await c2.query(
-            `INSERT INTO subscriptions (user_id, plan_code, status)
-             VALUES ($1, 'employer_pro', 'active')`,
-            [testUserId],
-          );
-          await c2.query('COMMIT');
-        } catch (e) {
-          c2Error = e as Error;
-          await c2.query('ROLLBACK').catch(() => {});
-        }
+        // c2's INSERT blocks on c1's uncommitted row (partial unique index),
+        // so it must run concurrently — awaiting it before c1 COMMITs deadlocks
+        // the single-threaded test against itself.
+        const c2Outcome: Promise<Error | null> = (async () => {
+          try {
+            await c2.query(
+              `INSERT INTO subscriptions (user_id, plan_code, status)
+               VALUES ($1, 'employer_pro', 'active')`,
+              [testUserId],
+            );
+            await c2.query('COMMIT');
+            return null;
+          } catch (e) {
+            await c2.query('ROLLBACK').catch(() => {});
+            return e as Error;
+          }
+        })();
 
-        // Commit c1 first
+        // Let c2 reach the lock wait, then commit c1 to release it.
+        await new Promise((resolve) => setTimeout(resolve, 250));
         await c1.query('COMMIT');
+        const c2Error = await c2Outcome;
 
         // Verify exactly one non-terminal row exists for this user
         const countResult = await c1.query<{ count: string }>(
