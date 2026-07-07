@@ -41,6 +41,7 @@ const expectedBaselineMigrations = [
   '031_employer_display_name.sql',
   '032_work_authorization_required.sql',
   '033_pay_interval_experience_months_worker_certifications.sql',
+  '034_billing_foundation.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -94,7 +95,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-033 readiness baseline order', () => {
+  it('locks the 001-034 readiness baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 
@@ -419,7 +420,47 @@ describe('migration apply order baseline', () => {
     expect(migration).toMatch(/LEAST\(years_experience, 80\) \* 12/);
   });
 
-  maybeIt('applies migrations 001-033 against a local Postgres database', async () => {
+  it('adds billing foundation tables, org scaffolding, and jale_billing role in migration 034', () => {
+    const migration = readMigration('034_billing_foundation.sql');
+
+    // Org-ready scaffolding
+    expectTable(migration, 'organizations');
+    expect(migration).toContain('ALTER TABLE organizations FORCE  ROW LEVEL SECURITY');
+    expect(migration).toContain('ADD CONSTRAINT users_tenant_id_fkey');
+    expect(migration).toContain('FOREIGN KEY (tenant_id) REFERENCES organizations(id) ON DELETE RESTRICT');
+
+    // Billing tables
+    expectTable(migration, 'billing_plans');
+    expectTable(migration, 'billing_customers');
+    expectTable(migration, 'subscriptions');
+    expectTable(migration, 'billing_operations');
+    expectTable(migration, 'billing_webhook_events');
+
+    // Seed rows present
+    expect(migration).toContain("'employer_pro'");
+    expect(migration).toContain('2000');
+
+    // Partial uniqueness index
+    expect(migration).toContain('subscriptions_one_current_per_user');
+    expect(migration).toContain("WHERE status NOT IN ('canceled', 'incomplete_expired')");
+
+    // Idempotency UNIQUE constraint
+    expect(migration).toContain('UNIQUE (actor_user_id, operation_type, client_idempotency_key)');
+
+    // RLS FORCE on all billing tables
+    expect(migration).toContain('ALTER TABLE billing_plans          FORCE  ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE billing_webhook_events FORCE  ROW LEVEL SECURITY');
+
+    // jale_billing service role
+    expect(migration).toContain("rolname = 'jale_billing'");
+    expect(migration).toContain('CREATE ROLE jale_billing WITH LOGIN');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE         ON billing_webhook_events TO jale_billing');
+
+    // jale_admin does NOT get billing_webhook_events write grant
+    expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
+  });
+
+  maybeIt('applies migrations 001-034 against a local Postgres database', async () => {
     const columns = await applyMigrationsAndReadColumns(databaseUrl!);
 
     expect(columns.get('users')?.get('trust_signals')).toBe('jsonb');
@@ -431,5 +472,12 @@ describe('migration apply order baseline', () => {
     expect(columns.get('document_upload_token_slots')?.get('issued_s3_key')).toBe('text');
     expect(columns.get('job_conversations')?.get('last_worker_message_at')).toBe('timestamp with time zone');
     expect(columns.get('job_message_outbox')?.get('send_kind')).toBe('text');
+    // Billing tables (migration 034)
+    expect(columns.get('billing_plans')?.get('code')).toBe('text');
+    expect(columns.get('billing_customers')?.get('provider_customer_id')).toBe('text');
+    expect(columns.get('subscriptions')?.get('status')).toBe('text');
+    expect(columns.get('billing_operations')?.get('client_idempotency_key')).toBe('uuid');
+    expect(columns.get('billing_webhook_events')?.get('stripe_event_id')).toBe('text');
+    expect(columns.get('organizations')?.get('id')).toBe('uuid');
   });
 });

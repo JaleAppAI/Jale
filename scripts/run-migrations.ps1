@@ -3,7 +3,7 @@
 # Apply DB migrations against the Jale RDS via the ephemeral BastionStack.
 # Usage:
 #
-#   1. Deploy the bastion: `npx cdk deploy JaleBastionStack` (from infra/)
+#   1. Deploy the bastion: `pwsh scripts/deploy-bastion.ps1` (or `npx cdk -c bastionOnly=true deploy JaleBastionStack --exclusively` from infra/)
 #   2. Run this script:    `pwsh scripts/run-migrations.ps1`  (or .\scripts\run-migrations.ps1 from repo root)
 #   3. Destroy the bastion: `npx cdk destroy JaleBastionStack`
 #
@@ -43,6 +43,7 @@ $ErrorActionPreference = 'Stop'
 $BastionStack = 'JaleBastionStack'
 $DatabaseStack = 'JaleDatabaseStack'
 $WaDbSecretName = 'jale/whatsapp/db'
+$BillingDbSecretName = 'jale/billing/db'
 
 # Migration files in execution order. Full chain against a fresh RDS.
 $MigrationFiles = @(
@@ -78,7 +79,8 @@ $MigrationFiles = @(
     '030_whatsapp_worker_skills_seed.sql',
     '031_employer_display_name.sql',
     '032_work_authorization_required.sql',
-    '033_pay_interval_experience_months_worker_certifications.sql'
+    '033_pay_interval_experience_months_worker_certifications.sql',
+    '034_billing_foundation.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -98,7 +100,7 @@ if ($bastionId) { $bastionId = $bastionId.Trim() }
 
 if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "!! Could not find BastionInstanceId output on $BastionStack." -ForegroundColor Red
-    Write-Host "   Deploy the stack first: cd infra; npx cdk deploy $BastionStack"
+    Write-Host "   Deploy the stack first: pwsh scripts/deploy-bastion.ps1"
     exit 1
 }
 Write-Host "   bastion: $bastionId"
@@ -154,6 +156,22 @@ if ([string]::IsNullOrEmpty($adminConsoleSecretArn) -or $adminConsoleSecretArn -
 Write-Host "   admin-console-secret: $adminConsoleSecretArn"
 
 # ---------------------------------------------------------------------------
+# Resolve jale_billing DB secret ARN.
+# ---------------------------------------------------------------------------
+Write-Host ">> Resolving jale_billing DB secret ARN..."
+$billingSecretArn = (aws cloudformation describe-stack-resources `
+        --stack-name $DatabaseStack `
+        --region $Region `
+        --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'BillingDbSecret')].PhysicalResourceId | [0]" `
+        --output text).Trim()
+
+if ([string]::IsNullOrEmpty($billingSecretArn) -or $billingSecretArn -eq 'None') {
+    Write-Host "!! Could not find jale_billing DB secret in $DatabaseStack." -ForegroundColor Red
+    exit 1
+}
+Write-Host "   billing-secret: $billingSecretArn"
+
+# ---------------------------------------------------------------------------
 # Verify migration files + base64-encode.
 # ---------------------------------------------------------------------------
 $migrationsB64 = [ordered]@{}
@@ -182,6 +200,7 @@ REGION="__REGION__"
 DB_SECRET_ARN="__DB_SECRET_ARN__"
 MATCHING_SECRET_ARN="__MATCHING_SECRET_ARN__"
 ADMIN_CONSOLE_SECRET_ARN="__ADMIN_CONSOLE_SECRET_ARN__"
+BILLING_SECRET_ARN="__BILLING_SECRET_ARN__"
 WA_DB_SECRET_NAME="__WA_DB_SECRET_NAME__"
 
 echo ">> Fetching jale_admin creds from $DB_SECRET_ARN"
@@ -229,6 +248,14 @@ ADMIN_CONSOLE_SECRET_JSON=$(aws secretsmanager get-secret-value \
 ADMIN_CONSOLE_PW=$(echo "$ADMIN_CONSOLE_SECRET_JSON" | jq -r .password)
 "${PG_CMD[@]}" -c "ALTER ROLE jale_admin_console WITH PASSWORD '$ADMIN_CONSOLE_PW';"
 
+echo ">> Setting jale_billing password from generated secret..."
+BILLING_SECRET_JSON=$(aws secretsmanager get-secret-value \
+  --secret-id "$BILLING_SECRET_ARN" \
+  --region "$REGION" \
+  --query SecretString --output text)
+BILLING_PW=$(echo "$BILLING_SECRET_JSON" | jq -r .password)
+"${PG_CMD[@]}" -c "ALTER ROLE jale_billing WITH PASSWORD '$BILLING_PW';"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 WA_PW=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-24)
 "${PG_CMD[@]}" -c "ALTER ROLE jale_whatsapp WITH PASSWORD '$WA_PW';"
@@ -259,7 +286,7 @@ else
   echo "   created new secret"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON
+unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON BILLING_PW BILLING_SECRET_JSON
 echo ">> Done."
 '@
 
@@ -281,6 +308,7 @@ $b64Assignments = $assignLines -join "`n"
 $dbSecretArnSafe = $dbSecretArn -replace '\$', '$$$$'
 $matchingSecretArnSafe = $matchingSecretArn -replace '\$', '$$$$'
 $adminConsoleSecretArnSafe = $adminConsoleSecretArn -replace '\$', '$$$$'
+$billingSecretArnSafe = $billingSecretArn -replace '\$', '$$$$'
 $regionSafe = $Region -replace '\$', '$$$$'
 $waDbSecretNameSafe = $WaDbSecretName -replace '\$', '$$$$'
 $fileArrayLiteralSafe = $fileArrayLiteral -replace '\$', '$$$$'
@@ -291,6 +319,7 @@ $remoteScript = $remoteTemplate `
     -replace '__DB_SECRET_ARN__', $dbSecretArnSafe `
     -replace '__MATCHING_SECRET_ARN__', $matchingSecretArnSafe `
     -replace '__ADMIN_CONSOLE_SECRET_ARN__', $adminConsoleSecretArnSafe `
+    -replace '__BILLING_SECRET_ARN__', $billingSecretArnSafe `
     -replace '__WA_DB_SECRET_NAME__', $waDbSecretNameSafe `
     -replace '__MIGRATION_FILES_ARRAY__', $fileArrayLiteralSafe `
     -replace '__MIGRATION_B64_ASSIGNMENTS__', $b64AssignmentsSafe
