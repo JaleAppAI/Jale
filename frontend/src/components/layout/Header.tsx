@@ -20,6 +20,10 @@ export function Header() {
     // `usePathname` from @/i18n/navigation returns a locale-stripped path, but
     // we strip a leading /en or /es defensively in case a raw path leaks in.
     const pathWithoutLocale = pathname.replace(/^\/(en|es)(?=\/|$)/, '');
+    // The marketing landing page (locale root) owns its own chrome.
+    if (pathWithoutLocale === '' || pathWithoutLocale === '/') {
+        return null;
+    }
     if (SHELL_ROUTE_PREFIXES.some((p) => pathWithoutLocale === p || pathWithoutLocale.startsWith(`${p}/`))) {
         return null;
     }
