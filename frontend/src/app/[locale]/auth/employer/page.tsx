@@ -19,7 +19,7 @@ export default function EmployerAuthPage() {
     if (isLoading || isAuthenticated) return null;
 
     return (
-        <main className="flex flex-col items-center px-4">
+        <main className="flex min-h-screen flex-col items-center justify-center px-4">
             <EmployerAuthForm />
         </main>
     );
