@@ -289,12 +289,7 @@
             "title": "Dashboard",
             "employer_workspace": "Employer workspace",
             "company_fallback": "Employer team",
-            "plan_label": "Jale Growth",
-            "plan_title": "Jale Growth",
-            "plan_body": "Prototype-only growth tools will unlock here as the hiring workflow expands.",
-            "upgrade": "Upgrade",
-            "alerts": "Alerts",
-            "search_workers": "Search workers"
+            "plan_label": "Jale Growth"
         },
         "nav": {
             "main": "Main",

@@ -115,11 +115,13 @@ export default function EmployerDashboardPage() {
 
     if (error) {
         return (
-            <main className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4">
-                <div className="rounded-2xl border border-[var(--jale-divider)] bg-white p-6 text-center shadow-[var(--shadow-card)]">
-                    <p className="text-sm font-semibold text-error">{error}</p>
-                </div>
-            </main>
+            <AppShell role="employer" title={t('shell.title')} subtitle={todayLabel}>
+                <main className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4">
+                    <div className="rounded-2xl border border-[var(--jale-divider)] bg-white p-6 text-center shadow-[var(--shadow-card)]">
+                        <p className="text-sm font-semibold text-error">{error}</p>
+                    </div>
+                </main>
+            </AppShell>
         );
     }
 

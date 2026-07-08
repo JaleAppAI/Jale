@@ -289,12 +289,7 @@
             "title": "Panel",
             "employer_workspace": "Espacio de empleador",
             "company_fallback": "Equipo empleador",
-            "plan_label": "Jale Growth",
-            "plan_title": "Jale Growth",
-            "plan_body": "Las herramientas de crecimiento del prototipo apareceran aqui cuando el flujo de contratacion crezca.",
-            "upgrade": "Mejorar",
-            "alerts": "Alertas",
-            "search_workers": "Buscar workers"
+            "plan_label": "Jale Growth"
         },
         "nav": {
             "main": "Principal",

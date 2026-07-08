@@ -9,6 +9,7 @@ import {
     employerAccountNav,
     employerSettingsNav,
     workerPrimaryNav,
+    isNavItemActive,
     type NavItem,
     type ShellRole,
 } from './nav-config';
@@ -34,8 +35,6 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
     const t = useTranslations('employer_dashboard');
     const tShell = useTranslations('app_shell');
     const pathname = usePathname();
-
-    const isActive = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
 
     return (
         <aside className="hidden bg-[#10143b] text-white lg:flex lg:flex-col">
@@ -64,9 +63,9 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
 
             <nav className="flex-1 overflow-y-auto px-4 py-5">
                 {role === 'employer' ? (
-                    <EmployerNav t={t} isActive={isActive} />
+                    <EmployerNav t={t} pathname={pathname} />
                 ) : (
-                    <WorkerNav navLabel={tShell('worker_nav_main')} isActive={isActive} />
+                    <WorkerNav navLabel={tShell('worker_nav_main')} pathname={pathname} />
                 )}
             </nav>
         </aside>
@@ -89,14 +88,14 @@ function NavLink({ item, active, label }: { item: NavItem; active: boolean; labe
     );
 }
 
-function WorkerNav({ navLabel, isActive }: { navLabel: string; isActive: (href: string) => boolean }) {
+function WorkerNav({ navLabel, pathname }: { navLabel: string; pathname: string }) {
     const tHeader = useTranslations('header');
     return (
         <>
             <p className="mb-2 px-2 text-[11px] font-bold uppercase text-white/45">{navLabel}</p>
             <div className="space-y-1">
                 {workerPrimaryNav.map((item) => (
-                    <NavLink key={item.key} item={item} active={isActive(item.href)} label={tHeader(item.labelKey)} />
+                    <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={tHeader(item.labelKey)} />
                 ))}
             </div>
         </>
@@ -105,17 +104,17 @@ function WorkerNav({ navLabel, isActive }: { navLabel: string; isActive: (href: 
 
 function EmployerNav({
     t,
-    isActive,
+    pathname,
 }: {
     t: ReturnType<typeof useTranslations>;
-    isActive: (href: string) => boolean;
+    pathname: string;
 }) {
     return (
         <>
             <p className="mb-2 px-2 text-[11px] font-bold uppercase text-white/45">{t('nav.main')}</p>
             <div className="space-y-1">
                 {employerPrimaryNav.map((item) => (
-                    <NavLink key={item.key} item={item} active={isActive(item.href)} label={t(item.labelKey)} />
+                    <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={t(item.labelKey)} />
                 ))}
             </div>
 
@@ -156,7 +155,7 @@ function EmployerNav({
                 ))}
                 <NavLink
                     item={employerSettingsNav}
-                    active={isActive(employerSettingsNav.href)}
+                    active={isNavItemActive(employerSettingsNav, pathname)}
                     label={t(employerSettingsNav.labelKey)}
                 />
             </div>

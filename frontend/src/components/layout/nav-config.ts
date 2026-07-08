@@ -12,7 +12,17 @@ export type NavItem = {
     href: string;
     icon: IconName;
     labelKey: string;
+    /** Path prefixes that mark this item active; defaults to `[href]`. */
+    activePrefixes?: string[];
+    /** When true, only an exact pathname match activates this item. */
+    exact?: boolean;
 };
+
+export function isNavItemActive(item: NavItem, pathname: string): boolean {
+    if (item.exact) return pathname === item.href;
+    const prefixes = item.activePrefixes ?? [item.href];
+    return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
 
 /** A disabled/"soon" employer nav item (rendered non-interactively). */
 export type DisabledNavItem = {
@@ -28,8 +38,8 @@ export type DisabledNavItem = {
  * the dashboard's jobs section).
  */
 export const employerPrimaryNav: NavItem[] = [
-    { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard' },
-    { key: 'jobs', href: '/employer/dashboard', icon: 'briefcase', labelKey: 'nav.jobs' },
+    { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard', exact: true },
+    { key: 'jobs', href: '/employer/dashboard', icon: 'briefcase', labelKey: 'nav.jobs', activePrefixes: ['/employer/jobs'] },
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
 ];
 
@@ -58,7 +68,7 @@ export const employerSettingsNav: NavItem = {
 
 /** Worker primary nav — mirrors the worker bottom tab bar. */
 export const workerPrimaryNav: NavItem[] = [
-    { key: 'find_jobs', href: '/worker/home', icon: 'search', labelKey: 'worker_home' },
+    { key: 'find_jobs', href: '/worker/home', icon: 'search', labelKey: 'worker_home', activePrefixes: ['/worker/home', '/worker/jobs'] },
     { key: 'applications', href: '/worker/applications', icon: 'briefcase', labelKey: 'my_applications' },
     { key: 'profile', href: '/worker/profile', icon: 'user', labelKey: 'profile' },
 ];

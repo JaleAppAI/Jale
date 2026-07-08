@@ -130,9 +130,11 @@ export default function EmployerConversationsPage() {
 
   if (error) {
     return (
-      <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
-        <p className="text-sm text-error">{error}</p>
-      </main>
+      <AppShell role="employer" title={t('title')} subtitle={t('subtitle')}>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
+          <p className="text-sm text-error">{error}</p>
+        </main>
+      </AppShell>
     );
   }
 
