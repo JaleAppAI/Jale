@@ -5,6 +5,9 @@ import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 
+// Routes that render their own chrome via AppShell.
+const SHELL_ROUTE_PREFIXES = ['/employer', '/worker'];
+
 export function Header() {
     const locale = useLocale();
     const pathname = usePathname();
@@ -14,13 +17,10 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
     const [signingOut, setSigningOut] = useState(false);
 
-    // All employer pages render their own chrome via AppShell, so the global
-    // Header is suppressed across every /employer/* route (including dynamic
-    // ones). Worker routes still use the global Header until Step 5.
     // `usePathname` from @/i18n/navigation returns a locale-stripped path, but
     // we strip a leading /en or /es defensively in case a raw path leaks in.
     const pathWithoutLocale = pathname.replace(/^\/(en|es)(?=\/|$)/, '');
-    if (pathWithoutLocale === '/employer' || pathWithoutLocale.startsWith('/employer/')) {
+    if (SHELL_ROUTE_PREFIXES.some((p) => pathWithoutLocale === p || pathWithoutLocale.startsWith(`${p}/`))) {
         return null;
     }
 

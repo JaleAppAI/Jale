@@ -556,6 +556,8 @@
         "success_body": "The employer has been notified.",
         "error_size": "File must be under 10 MB",
         "error_type": "Only JPG, PNG, or PDF files are accepted",
+        "error_upload": "Upload failed. Please try again.",
+        "error_submit": "Submission failed. Please try again.",
         "doc_resume": "Resume",
         "doc_driver_license": "Driver's License",
         "doc_ssn": "SSN Card / ITIN"
@@ -565,6 +567,11 @@
         "applied": "Applied",
         "empty": "You haven't applied to any jobs yet.",
         "empty_cta": "Browse jobs",
+        "stats": {
+            "total": "Total applications",
+            "active": "Active",
+            "hired": "Hired"
+        },
         "status": {
             "pending": "Applied",
             "contacted": "Employer contacted",
@@ -583,9 +590,11 @@
             "contract": "Contract"
         },
         "openings_count": "{open}/{total} open",
+        "results_count": "{count, plural, one {# job found} other {# jobs found}}",
         "empty": "No active jobs right now."
     },
     "worker_job_detail": {
+        "page_title": "Job details",
         "back": "← Back to jobs",
         "required_docs": "Required documents",
         "pay_range": "Pay range",

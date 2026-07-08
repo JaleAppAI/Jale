@@ -142,8 +142,9 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                         </div>
                     </header>
 
-                    {/* Bottom padding on mobile reserves room for the worker tab bar. */}
-                    <div className={role === 'worker' ? 'pb-20 lg:pb-0' : undefined}>{children}</div>
+                    {/* Bottom padding on mobile reserves room for the worker tab bar
+                        (5rem bar + safe-area inset on notched devices). */}
+                    <div className={role === 'worker' ? 'pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0' : undefined}>{children}</div>
                 </section>
             </div>
 

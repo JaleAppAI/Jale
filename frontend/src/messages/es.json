@@ -556,6 +556,8 @@
         "success_body": "El empleador ha sido notificado.",
         "error_size": "El archivo debe ser menor de 10 MB",
         "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
+        "error_upload": "Error al subir el archivo. Inténtalo de nuevo.",
+        "error_submit": "Error al enviar. Inténtalo de nuevo.",
         "doc_resume": "Currículum",
         "doc_driver_license": "Licencia de conducir",
         "doc_ssn": "Tarjeta SSN / ITIN"
@@ -565,6 +567,11 @@
         "applied": "Aplicado",
         "empty": "Aún no has postulado a ningún trabajo.",
         "empty_cta": "Buscar trabajos",
+        "stats": {
+            "total": "Postulaciones totales",
+            "active": "Activas",
+            "hired": "Contratado"
+        },
         "status": {
             "pending": "Aplicado",
             "contacted": "Empleador contactó",
@@ -583,9 +590,11 @@
             "contract": "Contrato"
         },
         "openings_count": "{open}/{total} disponibles",
+        "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
         "empty": "No hay trabajos activos en este momento."
     },
     "worker_job_detail": {
+        "page_title": "Detalle del empleo",
         "back": "← Volver a trabajos",
         "required_docs": "Documentos requeridos",
         "pay_range": "Rango de pago",
