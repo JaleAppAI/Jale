@@ -153,7 +153,8 @@ export default function WorkerUploadPage() {
           disabled={uploadedCount === 0}
           loading={submitting}
           loadingLabel={tCommon('loading')}
-          className="w-full rounded-xl bg-[var(--jale-blue-900)] text-white shadow-none hover:bg-[var(--jale-blue-950)]"
+          variant="deep"
+          className="w-full rounded-xl"
         >
           {t('submit')}
         </Button>
