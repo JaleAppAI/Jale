@@ -144,10 +144,11 @@ html { scroll-behavior: smooth; }
 .jale-link:hover { color: #fff; }
 @keyframes jaleFloat { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
 @keyframes jaleSlideIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes jaleCarousel { from { transform: translateX(0); } to { transform: translateX(-25%); } }
+@keyframes jaleCarousel { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 .jale-float { animation: jaleFloat 6s ease-in-out infinite; }
 .jale-slide-in { animation: jaleSlideIn .4s ease-out both; }
-.jale-carousel-track { animation: jaleCarousel 30s linear infinite; }
+.jale-carousel-track { animation: jaleCarousel 40s linear infinite; width: max-content; }
+.jale-carousel-track:hover { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) {
   .jale-float, .jale-slide-in, .jale-carousel-track { animation: none; }
 }

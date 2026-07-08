@@ -18,30 +18,35 @@ const COMPANIES = [
 ] as const;
 
 /**
- * "Companies using Jale" logo carousel — 4 cards + a duplicate of the first
- * for a seamless loop; the track slides via the `jale-carousel-track` class
- * (translateX 0 → -25%, 30s linear infinite, reduced-motion guarded) defined
- * by the landing page's style block.
+ * "Companies using Jale" logo marquee. The full set of companies is rendered
+ * twice back-to-back; the track slides via the `jale-carousel-track` class
+ * (translateX 0 → -50%, 40s linear infinite, pause-on-hover, reduced-motion
+ * guarded) defined by the landing page's style block. Because the second copy
+ * is identical to the first, the -50% point lands exactly where the loop
+ * started, so the repeat is seamless (no snap). Cards are a fixed, comfortable
+ * width so the quotes never crowd the edges.
  */
 export function CompaniesCarousel() {
     const t = useTranslations('landing.employers');
-    const cards = [...COMPANIES, COMPANIES[0]];
+    const loop = [...COMPANIES, ...COMPANIES];
 
     const blue = (chunks: React.ReactNode) => (
         <span className="font-bold text-[#0179FF]">{chunks}</span>
     );
 
     return (
-        <div className="rounded-[20px] border border-[#e5e7eb] bg-[#f9fafb] p-6 md:p-12">
+        <div className="overflow-hidden rounded-[20px] border border-[#e5e7eb] bg-[#f9fafb] p-6 md:p-12">
             <h3 className="mb-8 text-center text-2xl font-bold text-[#181855]">
                 {t('companies_title')}
             </h3>
-            <div className="relative overflow-hidden">
+            {/* Edge fades so cards entering/leaving the marquee don't look clipped. */}
+            <div className="relative overflow-hidden [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)]">
                 <div className="jale-carousel-track flex gap-[18px]">
-                    {cards.map((c, i) => (
-                        <div
+                    {loop.map((c, i) => (
+                        <figure
                             key={`${c.key}-${i}`}
-                            className="shrink-0 grow-0 basis-[70%] rounded-2xl bg-white p-6 sm:basis-[45%] md:basis-[calc(25%-14px)]"
+                            aria-hidden={i >= COMPANIES.length}
+                            className="m-0 w-[300px] shrink-0 grow-0 rounded-2xl bg-white p-6 md:w-[360px]"
                             style={{ boxShadow: '0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.06)' }}
                         >
                             <div className="mb-4 flex items-center gap-3">
@@ -50,20 +55,22 @@ export function CompaniesCarousel() {
                                     src={c.src}
                                     alt={t(`${c.key}_logo_alt`)}
                                     loading="lazy"
-                                    className="h-12 w-auto object-contain"
+                                    className="h-12 w-auto shrink-0 object-contain"
                                     style={c.darken ? { filter: 'brightness(0)' } : undefined}
                                 />
-                                <div className="flex-1">
-                                    <div className="text-sm font-bold text-[#181855]">
+                                <figcaption className="min-w-0 flex-1">
+                                    <div className="truncate text-sm font-bold text-[#181855]">
                                         {t(`${c.key}_name`)}
                                     </div>
-                                    <div className="text-xs text-[#5b6480]">{t(`${c.key}_industry`)}</div>
-                                </div>
+                                    <div className="truncate text-xs text-[#5b6480]">
+                                        {t(`${c.key}_industry`)}
+                                    </div>
+                                </figcaption>
                             </div>
                             <p className="text-[15px] leading-[1.5] text-[#181855]">
                                 {t.rich(`${c.key}_quote`, { blue })}
                             </p>
-                        </div>
+                        </figure>
                     ))}
                 </div>
             </div>
