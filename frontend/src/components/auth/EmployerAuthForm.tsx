@@ -162,9 +162,7 @@ export default function EmployerAuthForm() {
         city.trim() && serviceArea.trim() && hiringTrades.length > 0 && typicalJobTypes.length > 0;
 
     return (
-        <div className="flex w-full" style={{ minHeight: 'calc(100vh - 3.5rem)' }}>
-            <div className="flex flex-1 flex-col justify-center py-8 px-10 max-w-lg">
-
+        <div className="flex w-full flex-col">
                 <h1 className="font-bold leading-tight mb-2" style={{ fontSize: 'clamp(1.6rem, 3vw, 1.9rem)', letterSpacing: '-0.03em', color: 'var(--jale-ink)' }}>
                     {step === 'login' ? t('hero') : step === 'forgot_request' ? t('forgot_title') : step === 'forgot_confirm' ? t('forgot_confirm_title') : t('signup_title')}
                 </h1>
@@ -357,15 +355,37 @@ export default function EmployerAuthForm() {
                         </Button>
                     </div>
                 )}
-            </div>
+        </div>
+    );
+}
 
-            <div className="hidden md:flex flex-1 flex-col items-center justify-center px-12 py-16 text-white" style={{ background: 'var(--jale-blue-500)' }}>
-                <div className="max-w-xs">
-                    <div className="font-bold leading-none mb-2" style={{ fontSize: '4rem', letterSpacing: '-0.04em' }}>2.4x</div>
-                    <div className="text-lg font-semibold mb-4">{t('panel_title')}</div>
-                    <p className="text-sm leading-relaxed" style={{ opacity: 0.85 }}>{t('panel_body')}</p>
-                </div>
+// Employer proof panel — rendered in the AuthShell navy brand slot (lg+ only).
+export function EmployerBrandPanel() {
+    const t = useTranslations('auth.employer');
+    const bullets = [t('panel_bullet_1'), t('panel_bullet_2'), t('panel_bullet_3')];
+    return (
+        <div className="max-w-sm text-white">
+            <div className="font-extrabold leading-none" style={{ fontSize: 'clamp(2.5rem, 4vw, 3rem)', letterSpacing: '-0.04em' }}>
+                2.4&times;
             </div>
+            <div className="mt-3 text-lg font-semibold">{t('panel_title')}</div>
+            <p className="mt-3 text-sm leading-relaxed text-white/70">{t('panel_body')}</p>
+            <ul className="mt-6 flex flex-col gap-3">
+                {bullets.map((bullet) => (
+                    <li key={bullet} className="flex items-center gap-3 text-sm text-white/90">
+                        <span
+                            aria-hidden
+                            className="flex h-6 w-6 flex-none items-center justify-center rounded-full"
+                            style={{ background: 'rgba(1,121,255,.2)', color: '#5ea8ff' }}
+                        >
+                            <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
+                                <path d="M4 10.5l4 4 8-9" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+                            </svg>
+                        </span>
+                        {bullet}
+                    </li>
+                ))}
+            </ul>
         </div>
     );
 }

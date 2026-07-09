@@ -143,9 +143,7 @@ export default function WorkerAuthForm() {
     const canCreate = fullName.trim() && phoneReady && city.trim() && (mainTrade !== 'other' || mainTradeOther.trim());
 
     return (
-        <div className={`w-full ${step === 'signup' ? 'max-w-md' : 'max-w-sm'} mx-auto px-6 py-10 flex flex-col`} style={{ minHeight: 'calc(100vh - 3.5rem)' }}>
-            <div className="jale-wordmark mb-10" style={{ fontSize: '1.75rem' }}>Jale</div>
-
+        <div className="flex w-full flex-col">
             {step === 'login' && (
                 <div className="flex flex-col gap-5">
                     <AuthHeading title={t('title')} subtitle={t('phone_label')} />

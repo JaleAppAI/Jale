@@ -181,6 +181,10 @@
         }
     },
     "auth": {
+        "shell": {
+            "language_toggle": "Español",
+            "back_home": "Back to home"
+        },
         "worker": {
             "title": "Sign in with your phone",
             "phone_label": "Phone number: +1 3463488162",
@@ -265,6 +269,9 @@
             "password_note": "Password must be at least 8 characters and include uppercase and lowercase letters, a number, and a symbol.",
             "panel_title": "faster time-to-hire",
             "panel_body": "Employer profiles help workers recognize the company behind each opportunity.",
+            "panel_bullet_1": "Candidates speak español",
+            "panel_bullet_2": "Verified documentos",
+            "panel_bullet_3": "Contrata en días, not weeks",
             "forgot_link": "Forgot password?",
             "forgot_title": "Reset your password",
             "forgot_subtitle": "Enter your work email and we'll send a reset code.",

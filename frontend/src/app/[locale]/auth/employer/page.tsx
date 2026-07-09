@@ -2,7 +2,8 @@
 import { useEffect } from 'react';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import EmployerAuthForm from '@/components/auth/EmployerAuthForm';
+import EmployerAuthForm, { EmployerBrandPanel } from '@/components/auth/EmployerAuthForm';
+import { AuthShell } from '@/components/auth/AuthShell';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,8 +20,8 @@ export default function EmployerAuthPage() {
     if (isLoading || isAuthenticated) return null;
 
     return (
-        <main className="flex min-h-screen flex-col items-center justify-center px-4">
+        <AuthShell variant="employer" brand={<EmployerBrandPanel />}>
             <EmployerAuthForm />
-        </main>
+        </AuthShell>
     );
 }

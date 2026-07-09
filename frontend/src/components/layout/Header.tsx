@@ -5,8 +5,9 @@ import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 
-// Routes that render their own chrome via AppShell.
-const SHELL_ROUTE_PREFIXES = ['/employer', '/worker'];
+// Routes that render their own chrome (AppShell for /employer|/worker,
+// AuthShell for /auth). `/legal` and `/upload` keep the global Header.
+const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth'];
 
 export function Header() {
     const locale = useLocale();

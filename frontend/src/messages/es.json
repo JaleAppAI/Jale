@@ -181,6 +181,10 @@
         }
     },
     "auth": {
+        "shell": {
+            "language_toggle": "English",
+            "back_home": "Volver al inicio"
+        },
         "worker": {
             "title": "Inicia sesión con tu teléfono",
             "phone_label": "Número de teléfono",
@@ -265,6 +269,9 @@
             "password_note": "La contrasena debe tener al menos 8 caracteres e incluir mayusculas, minusculas, un numero y un simbolo.",
             "panel_title": "contratacion mas rapida",
             "panel_body": "Los perfiles de empleador ayudan a los trabajadores a reconocer la empresa detras de cada oportunidad.",
+            "panel_bullet_1": "Candidates speak español",
+            "panel_bullet_2": "Verified documentos",
+            "panel_bullet_3": "Contrata en días, not weeks",
             "forgot_link": "¿Olvidaste tu contraseña?",
             "forgot_title": "Restablecer contraseña",
             "forgot_subtitle": "Ingresa tu correo y te enviaremos un código.",
