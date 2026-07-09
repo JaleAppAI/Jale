@@ -4,7 +4,9 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { apiFetch } from '@/lib/api';
-import { Card } from '@/components/ui/card';
+import { AppShell } from '@/components/layout/AppShell';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
+import { PanelHeader } from '@/components/ui/panel-header';
 import { Button } from '@/components/ui/button';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
@@ -70,50 +72,75 @@ export default function WorkerProfilePage() {
     await loadAll();
   }
 
-  if (error) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-error">{error}</p></main>;
-  if (!profile) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-muted">{tCommon('loading')}</p></main>;
+  if (error) {
+    return (
+      <AppShell role="worker" title={t('title')}>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+          <p className="text-sm text-error">{error}</p>
+        </main>
+      </AppShell>
+    );
+  }
+  if (!profile) {
+    return (
+      <AppShell role="worker" title={t('title')}>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+          <p className="text-sm text-muted">{tCommon('loading')}</p>
+        </main>
+      </AppShell>
+    );
+  }
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10 space-y-8">
-      <h1 className="text-[1.4rem] md:text-[1.7rem] font-bold tracking-[-0.03em] leading-[1.2]">{t('title')}</h1>
-
-      <Card className="p-6 space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">{t('info_title')}</h2>
-          {!editing && <Button variant="outline" size="sm" onClick={() => setEditing(true)}>{t('edit_button')}</Button>}
-        </div>
-        {editing ? (
-          <ProfileEditForm initial={profile} onCancel={() => setEditing(false)} onSave={handleSave} />
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Field label={t('field_phone')} value={profile.phone} />
-            <Field label={t('field_name')} value={profile.full_name} />
-            <PillListField label={t('field_skills')} items={profile.skills} />
-            <PillListField label={t('field_certifications')} items={profile.certifications ?? []} />
-            <Field label={t('field_availability')} value={profile.availability ?? '-'} />
-            <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
-            <Field label={t('field_location')} value={profile.location ?? '-'} />
-            <div className="md:col-span-2"><Field label={t('field_bio')} value={profile.bio ?? '-'} /></div>
+    <AppShell role="worker" title={t('title')}>
+      <main className="mx-auto max-w-5xl space-y-6 px-4 py-6 md:px-6">
+        <DashboardPanel>
+          <PanelHeader
+            title={t('info_title')}
+            action={!editing ? (
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>{t('edit_button')}</Button>
+            ) : undefined}
+          />
+          <div className="p-6">
+            {editing ? (
+              <ProfileEditForm initial={profile} onCancel={() => setEditing(false)} onSave={handleSave} />
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Field label={t('field_phone')} value={profile.phone} />
+                <Field label={t('field_name')} value={profile.full_name} />
+                <PillListField label={t('field_skills')} items={profile.skills} />
+                <PillListField label={t('field_certifications')} items={profile.certifications ?? []} />
+                <Field label={t('field_availability')} value={profile.availability ?? '-'} />
+                <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
+                <Field label={t('field_location')} value={profile.location ?? '-'} />
+                <div className="md:col-span-2"><Field label={t('field_bio')} value={profile.bio ?? '-'} /></div>
+              </div>
+            )}
           </div>
-        )}
-      </Card>
+        </DashboardPanel>
 
-      <Card className="p-6 space-y-4" id="documents">
-        <h2 className="text-base font-semibold">{t('documents_title')}</h2>
-        <p className="text-xs text-muted-foreground">{t('documents_subtitle')}</p>
-        <div className="space-y-3">
-          {DOC_TYPES.map((dt) => (
-            <DocumentSlot
-              key={dt}
-              token={idToken!}
-              doc_type={dt}
-              existing={docs.find(d => d.doc_type === dt)}
-              onChange={loadAll}
-            />
-          ))}
+        {/* id="documents" kept from the original markup for future deep-linking. */}
+        <div id="documents">
+          <DashboardPanel>
+            <PanelHeader title={t('documents_title')} />
+            <div className="space-y-4 p-6">
+              <p className="text-xs text-muted-foreground">{t('documents_subtitle')}</p>
+              <div className="space-y-3">
+                {DOC_TYPES.map((dt) => (
+                  <DocumentSlot
+                    key={dt}
+                    token={idToken!}
+                    doc_type={dt}
+                    existing={docs.find(d => d.doc_type === dt)}
+                    onChange={loadAll}
+                  />
+                ))}
+              </div>
+            </div>
+          </DashboardPanel>
         </div>
-      </Card>
-    </main>
+      </main>
+    </AppShell>
   );
 }
 

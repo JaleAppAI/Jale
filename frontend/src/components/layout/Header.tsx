@@ -5,6 +5,10 @@ import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 
+// Routes that render their own chrome (AppShell for /employer|/worker,
+// AuthShell for /auth). `/legal` and `/upload` keep the global Header.
+const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth'];
+
 export function Header() {
     const locale = useLocale();
     const pathname = usePathname();
@@ -14,7 +18,14 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
     const [signingOut, setSigningOut] = useState(false);
 
-    if (pathname === '/employer/dashboard' || pathname.endsWith('/employer/dashboard')) {
+    // `usePathname` from @/i18n/navigation returns a locale-stripped path, but
+    // we strip a leading /en or /es defensively in case a raw path leaks in.
+    const pathWithoutLocale = pathname.replace(/^\/(en|es)(?=\/|$)/, '');
+    // The marketing landing page (locale root) owns its own chrome.
+    if (pathWithoutLocale === '' || pathWithoutLocale === '/') {
+        return null;
+    }
+    if (SHELL_ROUTE_PREFIXES.some((p) => pathWithoutLocale === p || pathWithoutLocale.startsWith(`${p}/`))) {
         return null;
     }
 

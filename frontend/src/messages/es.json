@@ -36,15 +36,155 @@
         "employer_jobs": "Trabajos",
         "messages": "Mensajes"
     },
+    "app_shell": {
+        "worker_workspace": "Espacio del trabajador",
+        "worker_role": "Trabajador",
+        "worker_fallback": "Tu perfil",
+        "worker_nav_main": "Menú"
+    },
     "landing": {
-        "headline": "Encuentra trabajo. Encuentra trabajadores.",
-        "subheadline": "Jale conecta trabajadores con empleadores en la industria de la construcción.",
-        "worker_cta": "Estoy buscando trabajo",
-        "employer_cta": "Estoy contratando",
-        "survey_prompt": "Cuentanos que haria mas facil encontrar trabajo o contratar trabajadores.",
-        "survey_cta": "Comparte tu opinion"
+        "nav": {
+            "how": "How it works",
+            "workers": "For workers",
+            "employers": "For employers",
+            "worker_login": "Worker login",
+            "employer_login": "Employer login",
+            "cta": "Start on WhatsApp"
+        },
+        "hero": {
+            "eyebrow": "Sin apps. Sin formularios. Sin esperas.",
+            "h1_start": "Got",
+            "h1_accent": "Jale?",
+            "sub": "Abre WhatsApp. Manda un mensaje a Jale. Habla en español o inglés, con voz o texto. <blue>Sin currículum. Sin descargas.</blue> Postúlate a empleos por hora directo en el chat. <b>De volada.</b>",
+            "cta": "Start on WhatsApp",
+            "free_line": "Always free for workers.",
+            "chips_label": "Trabajos en todos los oficios",
+            "chip1": "Warehouse",
+            "chip2": "Restaurantes",
+            "chip3": "Construcción",
+            "chip4": "Cleaning",
+            "chip5": "Jardinería",
+            "chip6": "Manufacturing"
+        },
+        "chat": {
+            "aria": "WhatsApp chat with Jale",
+            "time": "9:41",
+            "status": "online",
+            "in1": "¡Hola! Vamos a crear tu perfil. ¿Cuál es tu nombre?",
+            "out1": "Marisol",
+            "in2": "¿Qué trabajos sabes hacer?",
+            "out2": "Almacén o kitchen",
+            "in3": "Dale! Grab voz o escribe.",
+            "out3": "🎙 [voz msg]",
+            "in4": "Listo! 5 trabajos hoy.",
+            "input": "Mensaje"
+        },
+        "how": {
+            "eyebrow": "Cómo funciona",
+            "title": "Tres pasos. Five minutes.",
+            "step1_title": "Text Jale on WhatsApp",
+            "step1_body": "Abre WhatsApp. Manda un mensaje. Habla español o inglés — <b>de volada.</b>",
+            "step2_title": "Tell us about you",
+            "step2_body": "Cuéntale tus habilidades. Voz o texto. Sin currículum — <b>hacemos el conecte.</b>",
+            "step3_title": "Start applying for jobs",
+            "step3_body": "Recibe empleos en tu zona. Postúlate en el chat. <b>Start working.</b>"
+        },
+        "audience": {
+            "worker_title": "Busco trabajo",
+            "worker_b1": "No app. Solo WhatsApp.",
+            "worker_b2": "Hablamos <b>español y inglés</b>",
+            "worker_b3": "Sin currículum. Sin papeles.",
+            "worker_b4": "Apply directo en el chat",
+            "worker_cta": "Comienza aquí",
+            "employer_title": "Estoy contratando",
+            "employer_b1": "Candidates speak <b>español</b>",
+            "employer_b2": "Verified documentos",
+            "employer_b3": "Filter by skill & <b>ubicación</b>",
+            "employer_b4": "Contrata rápido, less paperwork",
+            "employer_cta": "Contrata ahora",
+            "employer_note": "Employers must pay."
+        },
+        "workers": {
+            "eyebrow": "Para trabajadores",
+            "title": "Built for workers",
+            "c1_title": "No app",
+            "c1_body": "Todo en WhatsApp. Ya lo tienes.",
+            "c2_title": "Tu voz",
+            "c2_body": "Habla. O escribe. <b>Tu forma.</b>",
+            "c3_title": "Hablamos español",
+            "c3_body": "Y inglés. Tu idioma.",
+            "c4_title": "No résumé",
+            "c4_body": "Cuéntale sobre ti. Eso es.",
+            "c5_title": "Tu privacidad",
+            "c5_body": "Tus datos. Your control.",
+            "c6_title": "Smart matching",
+            "c6_body": "AI finds jobs that fit you."
+        },
+        "employers": {
+            "eyebrow": "Para empleadores",
+            "title": "Built for employers",
+            "c1_title": "Smart matching",
+            "c1_body": "AI finds candidates that fit your needs.",
+            "c2_title": "Super easy to post",
+            "c2_body": "Post a job in seconds, right in chat.",
+            "c3_title": "Pre-verified",
+            "c3_body": "Documents checked. Ready to work.",
+            "c4_title": "Contrata rápido",
+            "c4_body": "Days, not weeks.",
+            "companies_title": "Companies using Jale",
+            "co1_name": "Spear Commercial",
+            "co1_industry": "Construction",
+            "co1_logo_alt": "Spear Commercial",
+            "co1_quote": "\"<blue>Jale helps us fill open positions quickly</blue> so we don't miss a beat.\"",
+            "co2_name": "Specialty concrete contractor",
+            "co2_industry": "Concrete",
+            "co2_logo_alt": "Rucoba & Maya",
+            "co2_quote": "\"Candidatos llegan <blue>hablando español con documentos verificados.</blue> Contratamos en días.\"",
+            "co3_name": "Custom home builder",
+            "co3_industry": "Residential",
+            "co3_logo_alt": "L&L Homes",
+            "co3_quote": "\"<blue>Finding skilled workers has never been easier.</blue> Jale connects us with reliable talent fast.\"",
+            "co4_name": "Public works contractor",
+            "co4_industry": "Civil construction",
+            "co4_logo_alt": "Public works contractor",
+            "co4_quote": "\"<blue>Fast hiring, quality workers.</blue> Jale delivers exactly what we need.\""
+        },
+        "testimonials": {
+            "eyebrow": "De la obra",
+            "title": "Lo que dicen",
+            "q1": "\"Texas summers can be brutal and we see a lot of turnover in the construction industry. <blue>Jale helps us fill our open positions quickly</blue> so we don't miss a beat.\"",
+            "q1_name": "Mark Rangel",
+            "q1_role": "Owner, Spear Commercial and Industrial",
+            "q1_initials": "MR",
+            "q2": "\"Candidatos llegan <blue>hablando español con documentos verificados.</blue> Sin traducciones, sin confusiones. Contratamos en días, not weeks.\"",
+            "q2_name": "Casa Marina",
+            "q2_role": "Grupo de restaurantes · Oakland",
+            "q2_initials": "CM"
+        },
+        "cta": {
+            "title": "¿Listo?",
+            "line": "Abre WhatsApp. Saluda a Jale. <b>Trabaja.</b>",
+            "button": "Open WhatsApp",
+            "copy_line": "O copia: <b>+1 866-787-3469</b>"
+        },
+        "footer": {
+            "tagline": "Encuentra trabajo. Find workers. Built by Latinos, for everyone.",
+            "product": "Product",
+            "company": "Company",
+            "about": "About",
+            "careers": "Careers",
+            "contact": "Contact",
+            "legal": "Legal",
+            "terms": "Terms",
+            "privacy": "Privacy",
+            "copyright": "© 2026 Jale. Built by Latinos, for the hustle."
+        }
     },
     "auth": {
+        "shell": {
+            "language_toggle": "English",
+            "back_home": "Volver al inicio"
+        },
         "worker": {
             "title": "Inicia sesión con tu teléfono",
             "phone_label": "Número de teléfono",
@@ -129,6 +269,9 @@
             "password_note": "La contrasena debe tener al menos 8 caracteres e incluir mayusculas, minusculas, un numero y un simbolo.",
             "panel_title": "contratacion mas rapida",
             "panel_body": "Los perfiles de empleador ayudan a los trabajadores a reconocer la empresa detras de cada oportunidad.",
+            "panel_bullet_1": "Candidates speak español",
+            "panel_bullet_2": "Verified documentos",
+            "panel_bullet_3": "Contrata en días, not weeks",
             "forgot_link": "¿Olvidaste tu contraseña?",
             "forgot_title": "Restablecer contraseña",
             "forgot_subtitle": "Ingresa tu correo y te enviaremos un código.",
@@ -283,12 +426,7 @@
             "title": "Panel",
             "employer_workspace": "Espacio de empleador",
             "company_fallback": "Equipo empleador",
-            "plan_label": "Jale Growth",
-            "plan_title": "Jale Growth",
-            "plan_body": "Las herramientas de crecimiento del prototipo apareceran aqui cuando el flujo de contratacion crezca.",
-            "upgrade": "Mejorar",
-            "alerts": "Alertas",
-            "search_workers": "Buscar workers"
+            "plan_label": "Jale Growth"
         },
         "nav": {
             "main": "Principal",
@@ -555,6 +693,8 @@
         "success_body": "El empleador ha sido notificado.",
         "error_size": "El archivo debe ser menor de 10 MB",
         "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
+        "error_upload": "Error al subir el archivo. Inténtalo de nuevo.",
+        "error_submit": "Error al enviar. Inténtalo de nuevo.",
         "doc_resume": "Currículum",
         "doc_driver_license": "Licencia de conducir",
         "doc_ssn": "Tarjeta SSN / ITIN"
@@ -564,6 +704,11 @@
         "applied": "Aplicado",
         "empty": "Aún no has postulado a ningún trabajo.",
         "empty_cta": "Buscar trabajos",
+        "stats": {
+            "total": "Postulaciones totales",
+            "active": "Activas",
+            "hired": "Contratado"
+        },
         "status": {
             "pending": "Aplicado",
             "contacted": "Empleador contactó",
@@ -582,9 +727,11 @@
             "contract": "Contrato"
         },
         "openings_count": "{open}/{total} disponibles",
+        "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
         "empty": "No hay trabajos activos en este momento."
     },
     "worker_job_detail": {
+        "page_title": "Detalle del empleo",
         "back": "← Volver a trabajos",
         "required_docs": "Documentos requeridos",
         "pay_range": "Rango de pago",
