@@ -186,9 +186,12 @@ const ctx = (key: string, envVar?: string): string =>
   app.node.tryGetContext(key) ?? (envVar ? process.env[envVar] : undefined) ?? '';
 
 if (!skipFrontend) {
+  const apiOriginDomainName = app.node.tryGetContext('apiOriginDomainName') as string | undefined;
   const frontend = new FrontendStack(app, 'JaleFrontendStack', {
     env: { account: env.account, region: 'us-east-1' },
-    api: api.api,
+    api: apiOriginDomainName ? undefined : api.api,
+    apiOriginDomainName,
+    apiOriginPath: app.node.tryGetContext('apiOriginPath'),
     domainName: app.node.tryGetContext('domainName') ?? 'jaleapp.ai',
     hostedZoneId: app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3',
     surveyOriginDomain: app.node.tryGetContext('surveyOriginDomain'),
@@ -200,6 +203,8 @@ if (!skipFrontend) {
     // CloudFront /api/* origin (RestApiOrigin reads stage URL at synth time).
     crossRegionReferences: true,
   });
-  frontend.addDependency(api);
+  if (!apiOriginDomainName) {
+    frontend.addDependency(api);
+  }
 }
 }

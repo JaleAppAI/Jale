@@ -14,7 +14,11 @@ import { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
   /** Existing API Gateway REST API (backend routes) */
-  readonly api: apigateway.RestApi;
+  readonly api?: apigateway.RestApi;
+  /** API Gateway origin domain, e.g. abc123.execute-api.us-east-2.amazonaws.com. */
+  readonly apiOriginDomainName?: string;
+  /** API Gateway stage origin path, e.g. /production. */
+  readonly apiOriginPath?: string;
   /** Custom domain (e.g., 'jaleapp.ai') */
   readonly domainName: string;
   /** Route 53 hosted zone ID for domainName */
@@ -197,10 +201,21 @@ function handler(event) {
       },
     );
 
+    if (!props.api && !props.apiOriginDomainName) {
+      throw new Error('FrontendStack requires either api or apiOriginDomainName');
+    }
+
+    const apiOrigin = props.apiOriginDomainName
+      ? new origins.HttpOrigin(props.apiOriginDomainName, {
+          originPath: props.apiOriginPath,
+          protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
+        })
+      : new origins.RestApiOrigin(props.api!);
+
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {
       // Backend API → existing API Gateway
       '/api/*': {
-        origin: new origins.RestApiOrigin(props.api),
+        origin: apiOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
         cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
         originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
