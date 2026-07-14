@@ -14,6 +14,7 @@ import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
 import { AdminStack } from '../lib/stacks/admin-stack';
 import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
+import { BillingStack } from '../lib/stacks/billing-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
 
 const app = new cdk.App();
@@ -51,6 +52,7 @@ database.dbSecret.grantRead(bastion.bastionHost.instance.role);
 database.matchingDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.aiDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.adminConsoleDbSecret.grantRead(bastion.bastionHost.instance.role);
+database.billingDbSecret.grantRead(bastion.bastionHost.instance.role);
 
 // Bastion needs scoped access to internal DB role secrets used by migration and
 // runbook operations. The WhatsApp migration script creates/updates its secret;
@@ -68,6 +70,7 @@ bastion.bastionHost.instance.role.addToPrincipalPolicy(
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/matching/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/ai/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/admin-console/db*`,
+      `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/billing/db*`,
     ],
   }),
 );
@@ -111,6 +114,18 @@ const api = new ApiStack(app, 'JaleApiStack', {
   // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
   // references this API. Enable cross-region exports.
   crossRegionReferences: true,
+});
+
+new BillingStack(app, 'JaleBillingStack', {
+  env,
+  vpc: network.vpc,
+  privateSubnets: network.privateSubnets,
+  billingLambdaSg: network.billingLambdaSg,
+  billingDbSecret: database.billingDbSecret,
+  appDbSecret: database.dbSecret,
+  api: api.api,
+  employerAuthorizer: api.employerAuthorizer,
+  employerResource: api.employerResource,
 });
 
 new LegalStack(app, 'JaleLegalStack', {
@@ -186,9 +201,16 @@ const ctx = (key: string, envVar?: string): string =>
   app.node.tryGetContext(key) ?? (envVar ? process.env[envVar] : undefined) ?? '';
 
 if (!skipFrontend) {
+  const apiOriginDomainName = ctx('apiOriginDomainName', 'JALE_API_ORIGIN_DOMAIN_NAME')
+    || `${api.api.restApiId}.execute-api.${env.region}.amazonaws.com`;
+  const apiStageName = ctx('apiStageName', 'JALE_API_STAGE_NAME')
+    || app.node.tryGetContext('environment')
+    || 'dev';
+
   const frontend = new FrontendStack(app, 'JaleFrontendStack', {
     env: { account: env.account, region: 'us-east-1' },
-    api: api.api,
+    apiOriginDomainName,
+    apiStageName,
     domainName: app.node.tryGetContext('domainName') ?? 'jaleapp.ai',
     hostedZoneId: app.node.tryGetContext('hostedZoneId') ?? 'Z038537639YVI3ID7S5S3',
     surveyOriginDomain: app.node.tryGetContext('surveyOriginDomain'),
@@ -196,10 +218,7 @@ if (!skipFrontend) {
     workerClientId: ctx('workerClientId', 'JALE_WORKER_CLIENT_ID'),
     employerPoolId: ctx('employerPoolId', 'JALE_EMPLOYER_POOL_ID'),
     employerClientId: ctx('employerClientId', 'JALE_EMPLOYER_CLIENT_ID'),
-    // ApiStack is in another region; allow cross-region references for the
-    // CloudFront /api/* origin (RestApiOrigin reads stage URL at synth time).
     crossRegionReferences: true,
   });
-  frontend.addDependency(api);
 }
 }

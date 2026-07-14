@@ -55,8 +55,15 @@ export const employerHiringNav: DisabledNavItem[] = [
 /** Disabled "Account" section — unchanged from the dashboard today. */
 export const employerAccountNav: DisabledNavItem[] = [
     { key: 'analytics', icon: 'chart', labelKey: 'nav.analytics' },
-    { key: 'billing', icon: 'briefcase', labelKey: 'nav.billing' },
 ];
+
+/** Employer Billing link (live). */
+export const employerBillingNav: NavItem = {
+    key: 'billing',
+    href: '/employer/billing',
+    icon: 'chart',
+    labelKey: 'nav.billing',
+};
 
 /** Employer Settings link (live). */
 export const employerSettingsNav: NavItem = {

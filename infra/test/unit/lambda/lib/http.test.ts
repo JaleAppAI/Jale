@@ -12,6 +12,7 @@ describe('HTTP Lib', () => {
     const headers = corsHeaders();
     expect(headers['Access-Control-Allow-Origin']).toBe('http://localhost:3000');
     expect(headers['Content-Type']).toBe('application/json');
+    expect(headers['Access-Control-Allow-Headers']).toContain('Idempotency-Key');
   });
 
   it('should return custom origin from env when ALLOWED_ORIGIN is set', () => {

@@ -7,6 +7,7 @@ import {
     employerPrimaryNav,
     employerHiringNav,
     employerAccountNav,
+    employerBillingNav,
     employerSettingsNav,
     workerPrimaryNav,
     isNavItemActive,
@@ -153,6 +154,11 @@ function EmployerNav({
                         {t(item.labelKey)}
                     </button>
                 ))}
+                <NavLink
+                    item={employerBillingNav}
+                    active={isNavItemActive(employerBillingNav, pathname)}
+                    label={t(employerBillingNav.labelKey)}
+                />
                 <NavLink
                     item={employerSettingsNav}
                     active={isNavItemActive(employerSettingsNav, pathname)}

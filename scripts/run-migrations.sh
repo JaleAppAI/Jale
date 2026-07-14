@@ -3,7 +3,7 @@
 # run-migrations.sh — Apply DB migrations against the Jale RDS via the
 # ephemeral BastionStack. Usage:
 #
-#   1. Deploy the bastion: `npx cdk deploy JaleBastionStack` (from infra/)
+#   1. Deploy the bastion: `bash scripts/deploy-bastion.sh` (or `npx cdk -c bastionOnly=true deploy JaleBastionStack --exclusively` from infra/)
 #   2. Run this script:    `bash scripts/run-migrations.sh`
 #   3. Destroy the bastion: `npx cdk destroy JaleBastionStack`
 #
@@ -11,7 +11,8 @@
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→026
+#   - Base64-encodes the migrations listed in the MIGRATIONS array below
+#     (keep that array in sync with infra/db/migrations/)
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)
@@ -31,11 +32,13 @@ set -euo pipefail
 BASTION_STACK="JaleBastionStack"
 DATABASE_STACK="JaleDatabaseStack"
 WA_DB_SECRET_NAME="jale/whatsapp/db"
+BILLING_DB_SECRET_NAME="jale/billing/db"
 REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-2}}"
 
-# Migration files in execution order. Runs the full chain 001→019 against
-# a fresh RDS — safe to re-run; every file wraps its own BEGIN/COMMIT and
-# is idempotent via CREATE...IF NOT EXISTS or equivalent guards.
+# Migration files in execution order — the full chain for a fresh RDS.
+# Safe to re-run; every file wraps its own BEGIN/COMMIT and is idempotent
+# via CREATE...IF NOT EXISTS or equivalent guards.
+# KEEP IN SYNC with infra/db/migrations/ — there is no migration ledger.
 MIGRATION_DIR="$(cd "$(dirname "$0")/../infra/db/migrations" && pwd)"
 MIGRATIONS=(
   "001_initial_schema.sql"
@@ -71,6 +74,7 @@ MIGRATIONS=(
   "031_employer_display_name.sql"
   "032_work_authorization_required.sql"
   "033_pay_interval_experience_months_worker_certifications.sql"
+  "034_billing_foundation.sql"
 )
 
 echo ">> Using region: $REGION"
@@ -87,7 +91,7 @@ BASTION_ID=$(aws cloudformation describe-stacks \
 
 if [[ -z "$BASTION_ID" || "$BASTION_ID" == "None" ]]; then
   echo "!! Could not find BastionInstanceId output on $BASTION_STACK."
-  echo "   Deploy the stack first: cd infra && npx cdk deploy $BASTION_STACK"
+  echo "   Deploy the stack first: bash scripts/deploy-bastion.sh"
   exit 1
 fi
 echo "   bastion: $BASTION_ID"
@@ -131,6 +135,19 @@ if [[ -z "$ADMIN_CONSOLE_SECRET_ARN" || "$ADMIN_CONSOLE_SECRET_ARN" == "None" ]]
 fi
 echo "   admin-console-secret: $ADMIN_CONSOLE_SECRET_ARN"
 
+echo ">> Resolving jale_billing DB secret ARN..."
+BILLING_SECRET_ARN=$(aws cloudformation describe-stack-resources \
+  --stack-name "$DATABASE_STACK" \
+  --region "$REGION" \
+  --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'BillingDbSecret')].PhysicalResourceId | [0]" \
+  --output text)
+
+if [[ -z "$BILLING_SECRET_ARN" || "$BILLING_SECRET_ARN" == "None" ]]; then
+  echo "!! Could not find jale_billing DB secret in $DATABASE_STACK."
+  exit 1
+fi
+echo "   billing-secret: $BILLING_SECRET_ARN"
+
 # ---------------------------------------------------------------------------
 # Base64-encode each migration + prepare the remote script.
 # ---------------------------------------------------------------------------
@@ -164,6 +181,7 @@ REGION="$REGION"
 DB_SECRET_ARN="$DB_SECRET_ARN"
 MATCHING_SECRET_ARN="$MATCHING_SECRET_ARN"
 ADMIN_CONSOLE_SECRET_ARN="$ADMIN_CONSOLE_SECRET_ARN"
+BILLING_SECRET_ARN="$BILLING_SECRET_ARN"
 WA_DB_SECRET_NAME="$WA_DB_SECRET_NAME"
 
 echo ">> Fetching jale_admin creds from \$DB_SECRET_ARN"
@@ -213,6 +231,14 @@ ADMIN_CONSOLE_SECRET_JSON=\$(aws secretsmanager get-secret-value \
 ADMIN_CONSOLE_PW=\$(echo "\$ADMIN_CONSOLE_SECRET_JSON" | jq -r .password)
 "\${PG_CMD[@]}" -c "ALTER ROLE jale_admin_console WITH PASSWORD '\$ADMIN_CONSOLE_PW';"
 
+echo ">> Setting jale_billing password from generated secret..."
+BILLING_SECRET_JSON=\$(aws secretsmanager get-secret-value \
+  --secret-id "\$BILLING_SECRET_ARN" \
+  --region "\$REGION" \
+  --query SecretString --output text)
+BILLING_PW=\$(echo "\$BILLING_SECRET_JSON" | jq -r .password)
+"\${PG_CMD[@]}" -c "ALTER ROLE jale_billing WITH PASSWORD '\$BILLING_PW';"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 # 32 bytes base64 → strip =+/ → first 24 chars. URL-safe, no quoting issues
 # in SQL or JSON.
@@ -245,7 +271,7 @@ else
   echo "   created new secret"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON
+unset PGPASSWORD WA_PW SECRET_STRING DB_PASS MATCHING_PW MATCHING_SECRET_JSON ADMIN_CONSOLE_PW ADMIN_CONSOLE_SECRET_JSON BILLING_PW BILLING_SECRET_JSON
 echo ">> Done."
 REMOTE_EOF
 )

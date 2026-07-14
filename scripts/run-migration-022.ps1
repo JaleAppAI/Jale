@@ -1,17 +1,19 @@
-# run-migrations.ps1 — PowerShell port of run-migrations.sh.
+# run-migration-022.ps1 — apply ONLY 022_job_application_required_docs_guard.sql.
+# Scoped single-migration variant of run-migrations.ps1. (Formerly misnamed
+# run-migration-020.ps1 — it never applied migration 020.)
 #
-# Apply DB migrations against the Jale RDS via the ephemeral BastionStack.
+# Apply the migration against the Jale RDS via the ephemeral BastionStack.
 # Usage:
 #
 #   1. Deploy the bastion: `npx cdk deploy JaleBastionStack` (from infra/)
-#   2. Run this script:    `pwsh scripts/run-migrations.ps1`  (or .\scripts\run-migrations.ps1 from repo root)
+#   2. Run this script:    `pwsh scripts/run-migration-022.ps1`
 #   3. Destroy the bastion: `npx cdk destroy JaleBastionStack`
 #
 # What this does:
 #   - Resolves the bastion instance ID from CloudFormation output
 #   - Resolves the jale_admin DB secret ARN from CloudFormation
 #   - Resolves the jale_matching DB secret ARN from CloudFormation
-#   - Base64-encodes migrations 001→019
+#   - Base64-encodes only 022_job_application_required_docs_guard.sql
 #   - `aws ssm send-command` runs a script ON THE BASTION that:
 #       * Fetches jale_admin creds via IAM role
 #       * Applies each migration as jale_admin (one transaction per file)

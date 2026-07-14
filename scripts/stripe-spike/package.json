@@ -1,0 +1,13 @@
+{
+  "name": "jale-stripe-spike",
+  "private": true,
+  "description": "Throwaway local scripts proving the spec S15 Stripe capability gate. Never deployed.",
+  "type": "commonjs",
+  "devDependencies": {
+    "dotenv": "^16.4.5",
+    "stripe": "22.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^20.14.0"
+  }
+}

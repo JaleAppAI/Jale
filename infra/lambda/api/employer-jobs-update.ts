@@ -1,5 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
+import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
@@ -55,6 +56,50 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         headers: CORS_HEADERS,
         body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION }),
       };
+    }
+
+    // A7: Gate non-active→active transitions against the plan's active job limit.
+    // Transitions that do not activate a job (active→paused, active→closed, active→active,
+    // paused→paused, paused→closed) consume no slot and bypass the gate entirely.
+    if (status === 'active') {
+      // Fetch the current job status to determine if this is a slot-consuming transition.
+      const currentResult = await client.query<{ status: string }>(
+        `SELECT jobs.status FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2`,
+        [jobId, cognitoSub],
+      );
+      const currentStatus = currentResult.rows[0]?.status;
+
+      if (currentStatus !== 'active') {
+        // Non-active→active: this consumes a slot. Enforce the entitlement gate.
+        // Lock the employer's users row to serialize all concurrent slot consumers.
+        const lockResult = await client.query<{ id: string }>(
+          `SELECT id FROM users WHERE cognito_sub = $1 FOR UPDATE`,
+          [cognitoSub],
+        );
+        const userId = lockResult.rows[0]?.id;
+
+        const entitlements = await resolveEntitlements(client, userId);
+
+        const countResult = await client.query<{ active_jobs: number }>(
+          `SELECT COUNT(*)::int AS active_jobs FROM jobs WHERE employer_id = $1 AND status = 'active'`,
+          [userId],
+        );
+        const activeJobs = countResult.rows[0].active_jobs;
+
+        if (activeJobs >= entitlements.activeJobLimit) {
+          await client.query('ROLLBACK');
+          return {
+            statusCode: 403,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({
+              error: 'job_limit_reached',
+              plan_code: entitlements.planCode,
+              active_job_limit: entitlements.activeJobLimit,
+              active_jobs: activeJobs,
+            }),
+          };
+        }
+      }
     }
 
     const result = await client.query(
