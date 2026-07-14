@@ -238,7 +238,20 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('worker_documents_worker_update');
   });
 
-  it('documents canonical matching source fields in the architecture guide', () => {
+  // docs/ is local-only (untracked since "stop tracking docs/"), so the
+  // architecture guide is absent on fresh checkouts including CI. Run the
+  // doc-content check only where the file exists; skip loudly otherwise.
+  const architectureExists = fs.existsSync(architecturePath);
+  if (!architectureExists) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[apply-order] SKIPPED: docs/ARCHITECTURE.md is absent (docs/ is local-only, untracked). ' +
+        'Architecture-guide content assertions only run on machines that have the local doc.',
+    );
+  }
+  const maybeItArchitecture = architectureExists ? it : it.skip;
+
+  maybeItArchitecture('documents canonical matching source fields in the architecture guide', () => {
     const architecture = fs.readFileSync(architecturePath, 'utf8');
 
     expect(architecture).toContain('### Canonical Matching Inputs');
