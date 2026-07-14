@@ -311,4 +311,163 @@ describe('BillingStack', () => {
       Threshold: 5,
     });
   });
+
+  // ── Alarm notifications ──────────────────────────────────────────────────
+
+  test('billing alarm SNS topic exists', () => {
+    template.hasResourceProperties('AWS::SNS::Topic', {
+      TopicName: 'jale-billing-alarms',
+    });
+  });
+
+  test('both alarms have AlarmActions and OKActions referencing the alarm topic', () => {
+    const topics = template.findResources('AWS::SNS::Topic', {
+      Properties: { TopicName: 'jale-billing-alarms' },
+    });
+    const topicLogicalIds = Object.keys(topics);
+    expect(topicLogicalIds).toHaveLength(1);
+
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: Match.anyValue() },
+    });
+    for (const alarmName of ['BillingWebhookDlqDepth', 'BillingProcessorThrottles']) {
+      const matching = Object.values(alarms).filter(
+        (a: any) => a.Properties.AlarmName === alarmName,
+      );
+      expect(matching).toHaveLength(1);
+      const alarm = matching[0] as any;
+      const alarmActionsJson = JSON.stringify(alarm.Properties.AlarmActions);
+      const okActionsJson = JSON.stringify(alarm.Properties.OKActions);
+      expect(topicLogicalIds.some((id) => alarmActionsJson.includes(id))).toBe(true);
+      expect(topicLogicalIds.some((id) => okActionsJson.includes(id))).toBe(true);
+    }
+  });
+});
+
+describe('BillingStack — alarm email subscription', () => {
+  let template: Template;
+
+  beforeAll(() => {
+    const app = new cdk.App({
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        billingAlarmEmail: 'ops-alerts@example.com',
+      },
+    });
+    const network = new NetworkStack(app, 'TestNetworkStackEmail');
+    const database = new DatabaseStack(app, 'TestDatabaseStackEmail', { network });
+    const auth = new AuthStack(app, 'TestAuthStackEmail', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    const api = new ApiStack(app, 'TestApiStackEmail', {
+      workerPool: auth.workerPool,
+      employerPool: auth.employerPool,
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    new LegalStack(app, 'TestLegalStackEmail', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      api: api.api,
+      dualAuthorizer: api.dualAuthorizer,
+    });
+
+    new BillingStack(app, 'TestBillingStackEmail', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      billingLambdaSg: network.billingLambdaSg,
+      billingDbSecret: database.billingDbSecret,
+      appDbSecret: database.dbSecret,
+      api: api.api,
+      employerAuthorizer: api.employerAuthorizer,
+      employerResource: api.employerResource,
+    });
+    template = Template.fromStack(app.node.findChild('TestBillingStackEmail') as cdk.Stack);
+  });
+
+  test('an email subscription exists for the configured billingAlarmEmail', () => {
+    template.hasResourceProperties('AWS::SNS::Subscription', {
+      Protocol: 'email',
+      Endpoint: 'ops-alerts@example.com',
+    });
+  });
+});
+
+describe('BillingStack — imported alarm topic', () => {
+  let template: Template;
+  const importedTopicArn = 'arn:aws:sns:us-east-2:123456789012:jale-ops-alarms';
+
+  beforeAll(() => {
+    const app = new cdk.App({
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        billingAlarmTopicArn: importedTopicArn,
+      },
+    });
+    const network = new NetworkStack(app, 'TestNetworkStackImportedTopic');
+    const database = new DatabaseStack(app, 'TestDatabaseStackImportedTopic', { network });
+    const auth = new AuthStack(app, 'TestAuthStackImportedTopic', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    const api = new ApiStack(app, 'TestApiStackImportedTopic', {
+      workerPool: auth.workerPool,
+      employerPool: auth.employerPool,
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    new LegalStack(app, 'TestLegalStackImportedTopic', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      api: api.api,
+      dualAuthorizer: api.dualAuthorizer,
+    });
+
+    new BillingStack(app, 'TestBillingStackImportedTopic', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      billingLambdaSg: network.billingLambdaSg,
+      billingDbSecret: database.billingDbSecret,
+      appDbSecret: database.dbSecret,
+      api: api.api,
+      employerAuthorizer: api.employerAuthorizer,
+      employerResource: api.employerResource,
+    });
+    template = Template.fromStack(
+      app.node.findChild('TestBillingStackImportedTopic') as cdk.Stack,
+    );
+  });
+
+  test('no new SNS topic is created when billingAlarmTopicArn is set', () => {
+    const topics = template.findResources('AWS::SNS::Topic');
+    expect(Object.keys(topics)).toHaveLength(0);
+  });
+
+  test('alarm actions reference the imported topic ARN', () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: Match.anyValue() },
+    });
+    for (const alarmName of ['BillingWebhookDlqDepth', 'BillingProcessorThrottles']) {
+      const matching = Object.values(alarms).filter(
+        (a: any) => a.Properties.AlarmName === alarmName,
+      );
+      expect(matching).toHaveLength(1);
+      const alarm = matching[0] as any;
+      expect(alarm.Properties.AlarmActions).toContain(importedTopicArn);
+      expect(alarm.Properties.OKActions).toContain(importedTopicArn);
+    }
+  });
 });

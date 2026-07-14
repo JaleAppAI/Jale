@@ -2,9 +2,12 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
@@ -65,6 +68,8 @@ export class BillingStack extends cdk.Stack {
     // ── Context values ──
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
+    const billingAlarmEmail = this.node.tryGetContext('billingAlarmEmail');
+    const billingAlarmTopicArn = this.node.tryGetContext('billingAlarmTopicArn');
 
     // ── Import operator-created secrets by name ──
     // These secrets are never CDK-managed; CDK only imports the ARN reference.
@@ -227,16 +232,36 @@ export class BillingStack extends cdk.Stack {
       .addResource('webhook')
       .addMethod('POST', new apigateway.LambdaIntegration(webhookVerifierLambda.function));
 
+    // ── Alarm notifications ──
+    // billingAlarmTopicArn (if set) imports an existing monitored ops topic and
+    // takes precedence over creating a new one. billingAlarmEmail only applies
+    // to the CDK-created topic — subscribing to an imported topic from this
+    // stack's account context isn't reliable, so that case is left to the
+    // operator to wire up out-of-band.
+    const alarmTopic = billingAlarmTopicArn
+      ? sns.Topic.fromTopicArn(this, 'BillingAlarmTopic', billingAlarmTopicArn)
+      : new sns.Topic(this, 'BillingAlarmTopic', { topicName: 'jale-billing-alarms' });
+
+    if (!billingAlarmTopicArn && billingAlarmEmail) {
+      (alarmTopic as sns.Topic).addSubscription(
+        new subscriptions.EmailSubscription(billingAlarmEmail),
+      );
+    }
+
+    const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
+
     // ── CloudWatch Alarms ──
-    new cloudwatch.Alarm(this, 'BillingWebhookDlqAlarm', {
+    const dlqDepthAlarm = new cloudwatch.Alarm(this, 'BillingWebhookDlqAlarm', {
       metric: webhookDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       alarmName: 'BillingWebhookDlqDepth',
     });
+    dlqDepthAlarm.addAlarmAction(alarmAction);
+    dlqDepthAlarm.addOkAction(alarmAction);
 
-    new cloudwatch.Alarm(this, 'BillingProcessorThrottleAlarm', {
+    const processorThrottleAlarm = new cloudwatch.Alarm(this, 'BillingProcessorThrottleAlarm', {
       metric: processorLambda.function.metricThrottles({
         period: cdk.Duration.minutes(5),
       }),
@@ -245,5 +270,7 @@ export class BillingStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       alarmName: 'BillingProcessorThrottles',
     });
+    processorThrottleAlarm.addAlarmAction(alarmAction);
+    processorThrottleAlarm.addOkAction(alarmAction);
   }
 }
