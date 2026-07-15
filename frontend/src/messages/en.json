@@ -49,7 +49,8 @@
             "employers": "For employers",
             "worker_login": "Worker login",
             "employer_login": "Employer login",
-            "cta": "Start on WhatsApp"
+            "cta": "Start on WhatsApp",
+            "language_toggle": "Español"
         },
         "hero": {
             "eyebrow": "No apps. No forms. No waiting.",
@@ -426,20 +427,10 @@
         },
         "nav": {
             "main": "Main",
-            "hiring": "Hiring",
-            "account": "Account",
             "dashboard": "Dashboard",
             "jobs": "My Jobs",
             "messages": "Messages",
-            "workers": "Workers",
-            "interviews": "Interviews",
-            "search_workers": "Search Workers",
-            "boost_job": "Boost a Job",
-            "jale_direct": "Jale Direct",
-            "analytics": "Analytics",
-            "billing": "Billing",
-            "settings": "Settings",
-            "soon": "Soon"
+            "settings": "Settings"
         },
         "hero": {
             "eyebrow": "Got Jale?",

@@ -1,10 +1,29 @@
-import { useTranslations } from 'next-intl';
-import { Link } from '@/i18n/navigation';
+'use client';
+import { useLocale, useTranslations } from 'next-intl';
+import { Link, usePathname } from '@/i18n/navigation';
+
+/** English/Spanish toggle styled for the navy landing nav. Labels the OTHER locale. */
+function LangToggle({ className = '' }: { className?: string }) {
+    const t = useTranslations('landing.nav');
+    const locale = useLocale();
+    const pathname = usePathname();
+    const otherLocale = locale === 'en' ? 'es' : 'en';
+    return (
+        <Link
+            href={pathname}
+            locale={otherLocale}
+            style={{ color: 'rgba(255,255,255,.85)' }}
+            className={`min-h-[44px] items-center justify-center rounded-full border border-white/20 px-4 text-sm font-semibold transition-colors hover:bg-white/10 ${className}`}
+        >
+            {t('language_toggle')}
+        </Link>
+    );
+}
 
 /**
  * Landing-page nav (design "1a Bold"). The global Header suppresses itself on
- * the locale root, so this owns the wordmark, section anchors, logins, and the
- * primary WhatsApp CTA (which scrolls to the #cta section, per the design).
+ * the locale root, so this owns the wordmark, section anchors, logins, language
+ * toggle, and the primary WhatsApp CTA (which scrolls to the #cta section).
  */
 export function LandingNav() {
     const t = useTranslations('landing.nav');
@@ -48,6 +67,8 @@ export function LandingNav() {
                         </Link>
                     </div>
 
+                    <LangToggle className="hidden md:inline-flex" />
+
                     <a
                         href="#cta"
                         style={{ color: '#fff' }}
@@ -58,8 +79,9 @@ export function LandingNav() {
                 </div>
             </div>
 
-            {/* Mobile login row — thumb-friendly pills */}
+            {/* Mobile row — language toggle + thumb-friendly login pills */}
             <div className="mt-3 flex gap-2 md:hidden">
+                <LangToggle className="inline-flex" />
                 <Link href="/auth/worker" className={`${loginPill} flex-1`} style={loginPillStyle}>
                     {t('worker_login')}
                 </Link>

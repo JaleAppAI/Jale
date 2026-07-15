@@ -24,14 +24,6 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
     return prefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-/** A disabled/"soon" employer nav item (rendered non-interactively). */
-export type DisabledNavItem = {
-    key: string;
-    icon: IconName;
-    labelKey: string;
-    badge?: 'soon';
-};
-
 /**
  * Employer primary nav. Targets are kept exactly as the dashboard uses them
  * today (there is no top-level `/employer/jobs` page yet, so "jobs" points at
@@ -41,21 +33,6 @@ export const employerPrimaryNav: NavItem[] = [
     { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard', exact: true },
     { key: 'jobs', href: '/employer/dashboard', icon: 'briefcase', labelKey: 'nav.jobs', activePrefixes: ['/employer/jobs'] },
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
-];
-
-/** Disabled "Hiring" section — unchanged from the dashboard today. */
-export const employerHiringNav: DisabledNavItem[] = [
-    { key: 'workers', icon: 'user', labelKey: 'nav.workers' },
-    { key: 'interviews', icon: 'clock', labelKey: 'nav.interviews', badge: 'soon' },
-    { key: 'search_workers', icon: 'search', labelKey: 'nav.search_workers' },
-    { key: 'boost_job', icon: 'spark', labelKey: 'nav.boost_job' },
-    { key: 'jale_direct', icon: 'briefcase', labelKey: 'nav.jale_direct' },
-];
-
-/** Disabled "Account" section — unchanged from the dashboard today. */
-export const employerAccountNav: DisabledNavItem[] = [
-    { key: 'analytics', icon: 'chart', labelKey: 'nav.analytics' },
-    { key: 'billing', icon: 'briefcase', labelKey: 'nav.billing' },
 ];
 
 /** Employer Settings link (live). */

@@ -49,7 +49,8 @@
             "employers": "Para empleadores",
             "worker_login": "Ingresar como trabajador",
             "employer_login": "Ingresar como empleador",
-            "cta": "Empieza en WhatsApp"
+            "cta": "Empieza en WhatsApp",
+            "language_toggle": "English"
         },
         "hero": {
             "eyebrow": "Sin apps. Sin formularios. Sin esperas.",
@@ -426,20 +427,10 @@
         },
         "nav": {
             "main": "Principal",
-            "hiring": "Contratar",
-            "account": "Cuenta",
             "dashboard": "Panel",
             "jobs": "Mis trabajos",
             "messages": "Mensajes",
-            "workers": "Workers",
-            "interviews": "Entrevistas",
-            "search_workers": "Buscar workers",
-            "boost_job": "Boost un trabajo",
-            "jale_direct": "Jale Directo",
-            "analytics": "Analytics",
-            "billing": "Billing",
-            "settings": "Settings",
-            "soon": "Pronto"
+            "settings": "Settings"
         },
         "hero": {
             "eyebrow": "Got Jale?",

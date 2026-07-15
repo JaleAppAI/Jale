@@ -5,8 +5,6 @@ import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
 import {
     employerPrimaryNav,
-    employerHiringNav,
-    employerAccountNav,
     employerSettingsNav,
     workerPrimaryNav,
     isNavItemActive,
@@ -115,43 +113,6 @@ function EmployerNav({
             <div className="space-y-1">
                 {employerPrimaryNav.map((item) => (
                     <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={t(item.labelKey)} />
-                ))}
-            </div>
-
-            <p className="mb-2 mt-6 px-2 text-[11px] font-bold uppercase text-white/45">{t('nav.hiring')}</p>
-            <div className="space-y-1">
-                {employerHiringNav.map((item) => (
-                    <button
-                        key={item.key}
-                        type="button"
-                        disabled
-                        aria-disabled="true"
-                        className="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-white/35"
-                    >
-                        <span className="inline-flex items-center gap-3">
-                            <Icon name={item.icon} />
-                            {t(item.labelKey)}
-                        </span>
-                        <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] font-bold uppercase text-white/70">
-                            {t(`nav.${item.badge ?? 'soon'}`)}
-                        </span>
-                    </button>
-                ))}
-            </div>
-
-            <p className="mb-2 mt-6 px-2 text-[11px] font-bold uppercase text-white/45">{t('nav.account')}</p>
-            <div className="space-y-1">
-                {employerAccountNav.map((item) => (
-                    <button
-                        key={item.key}
-                        type="button"
-                        disabled
-                        aria-disabled="true"
-                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-white/35"
-                    >
-                        <Icon name={item.icon} />
-                        {t(item.labelKey)}
-                    </button>
                 ))}
                 <NavLink
                     item={employerSettingsNav}
