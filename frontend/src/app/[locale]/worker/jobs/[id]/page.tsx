@@ -11,7 +11,7 @@ import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { Button } from '@/components/ui/button';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { ProfileCompleteModal, ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
-import { apiFetch, LegalWallError } from '@/lib/api';
+import { apiFetch, isLegalWallError } from '@/lib/api';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
 import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
@@ -119,7 +119,7 @@ export default function WorkerJobDetailPage() {
   }
 
   async function handleApplyError(err: unknown) {
-    if (err instanceof LegalWallError) {
+    if (isLegalWallError(err)) {
       try { handleLegalWall(err, `/worker/jobs/${id}`); } catch { setError(t('errors.legal_required')); }
       return;
     }

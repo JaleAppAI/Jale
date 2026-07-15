@@ -25,7 +25,7 @@ import { CompaniesCarousel } from '@/components/landing/CompaniesCarousel';
 
 // WhatsApp deep link (from the design source). Only the #cta section button
 // opens it; nav/hero/audience CTAs scroll to #cta.
-const WHATSAPP_HREF = 'https://wa.me/18667873469';
+const WHATSAPP_HREF = 'https://wa.me/17376880702';
 
 const DOT_PATTERN_BLUE: React.CSSProperties = {
     backgroundImage: 'radial-gradient(circle, rgba(120,164,255,.16) 1px, transparent 1px)',
@@ -380,7 +380,7 @@ html { scroll-behavior: smooth; }
 
             {/* ===== Footer (deep navy) ===== */}
             <footer className="bg-[#0e0e3d] px-5 pb-9 pt-14 text-white/70 md:px-8">
-                <div className="mx-auto grid max-w-[1120px] grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1fr]">
+                <div className="mx-auto grid max-w-[1120px] grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-[1.6fr_1fr_1fr]">
                     <div>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
@@ -399,16 +399,6 @@ html { scroll-behavior: smooth; }
                             <a href="#how-it-works" className="jale-link transition-colors">{t('nav.how')}</a>
                             <a href="#for-workers" className="jale-link transition-colors">{t('nav.workers')}</a>
                             <a href="#for-employers" className="jale-link transition-colors">{t('nav.employers')}</a>
-                        </div>
-                    </div>
-                    <div>
-                        <div className="mb-3.5 text-xs font-bold uppercase tracking-[.08em] text-white/40">
-                            {t('footer.company')}
-                        </div>
-                        <div className="flex flex-col gap-2.5 text-sm">
-                            <a href="#" className="jale-link transition-colors">{t('footer.about')}</a>
-                            <a href="#" className="jale-link transition-colors">{t('footer.careers')}</a>
-                            <a href="#" className="jale-link transition-colors">{t('footer.contact')}</a>
                         </div>
                     </div>
                     <div>
