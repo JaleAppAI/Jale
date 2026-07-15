@@ -79,23 +79,10 @@ export class LegalStack extends cdk.Stack {
       methodResponses: [{ statusCode: '200' }],
     });
 
-    // Throttle the public endpoint at the deployment stage level.
-    // Stage-level throttling is applied per-method via the deployment options.
-    // This limits GET /legal/tos to 10 req/s with burst of 20, independent of
-    // the global API throttle (100 burst / 50 rps).
-    const deployment = props.api.latestDeployment;
-    if (deployment) {
-      const stage = props.api.deploymentStage;
-      const cfnStage = stage.node.defaultChild as apigateway.CfnStage;
-      cfnStage.addPropertyOverride('MethodSettings', [
-        {
-          ResourcePath: '/legal/tos',
-          HttpMethod: 'GET',
-          ThrottlingBurstLimit: 20,
-          ThrottlingRateLimit: 10,
-        },
-      ]);
-    }
+    // NOTE: GET /legal/tos throttle (10 rps / 20 burst) lives in ApiStack's
+    // centralized MethodSettings block.  LegalStack must NOT call
+    // addPropertyOverride('MethodSettings') — doing so would overwrite the
+    // merged list and drop billing throttles.
 
     // POST /legal/accept — protected by dual Cognito authorizer (created in ApiStack)
     const acceptResource = legalResource.addResource('accept');

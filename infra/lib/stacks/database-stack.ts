@@ -16,6 +16,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly matchingDbSecret: secretsmanager.ISecret;
   public readonly aiDbSecret: secretsmanager.ISecret;
   public readonly adminConsoleDbSecret: secretsmanager.ISecret;
+  public readonly billingDbSecret: secretsmanager.ISecret;
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
 
@@ -99,6 +100,25 @@ export class DatabaseStack extends cdk.Stack {
       },
     });
     this.adminConsoleDbSecret.applyRemovalPolicy(removalPolicy);
+
+    // Generated credential for the jale_billing service role (webhook processor).
+    // Password is set on the role during the 034 migration bastion session.
+    this.billingDbSecret = new secretsmanager.Secret(this, 'BillingDbSecret', {
+      secretName: 'jale/billing/db',
+      description: 'jale_billing service role credentials',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          username: 'jale_billing',
+          host: this.dbInstance.dbInstanceEndpointAddress,
+          port: 5432,
+          dbname: 'jale',
+        }),
+        generateStringKey: 'password',
+        excludePunctuation: true,
+      },
+    });
+    this.billingDbSecret.applyRemovalPolicy(removalPolicy);
+
     this.dbEndpoint = this.dbInstance.dbInstanceEndpointAddress;
     this.dbPort = this.dbInstance.dbInstanceEndpointPort;
   }

@@ -103,4 +103,77 @@ describe('NetworkStack', () => {
   test('Exactly 1 Elastic IP exists (attached to the NAT Gateway)', () => {
     template.resourceCountIs('AWS::EC2::EIP', 1);
   });
+
+  test('billing Lambda security group exists with restricted HTTPS inline egress', () => {
+    template.hasResourceProperties('AWS::EC2::SecurityGroup', {
+      GroupDescription: 'Security group for billing Lambdas (DB + HTTPS egress only)',
+      SecurityGroupEgress: [
+        Match.objectLike({
+          IpProtocol: 'tcp',
+          FromPort: 443,
+          ToPort: 443,
+          CidrIp: '0.0.0.0/0',
+        }),
+      ],
+    });
+  });
+
+  test('billing Lambda SG allows only HTTPS egress and Postgres to RDS', () => {
+    const securityGroups = template.findResources('AWS::EC2::SecurityGroup');
+    const billingSgId = Object.entries(securityGroups).find(
+      ([, resource]) =>
+        resource.Properties?.GroupDescription === 'Security group for billing Lambdas (DB + HTTPS egress only)',
+    )?.[0];
+    const rdsSgId = Object.entries(securityGroups).find(
+      ([, resource]) => resource.Properties?.GroupDescription === 'Security group for RDS PostgreSQL',
+    )?.[0];
+
+    expect(billingSgId).toBeDefined();
+    expect(rdsSgId).toBeDefined();
+
+    const billingSg = securityGroups[billingSgId!];
+    expect(billingSg.Properties?.SecurityGroupEgress).toEqual([
+      expect.objectContaining({
+        IpProtocol: 'tcp',
+        FromPort: 443,
+        ToPort: 443,
+        CidrIp: '0.0.0.0/0',
+      }),
+    ]);
+
+    const egressRules = template.findResources('AWS::EC2::SecurityGroupEgress', {
+      Properties: {
+        GroupId: { 'Fn::GetAtt': [billingSgId, 'GroupId'] },
+      },
+    });
+    expect(Object.values(egressRules).map((resource) => resource.Properties)).toEqual([
+      expect.objectContaining({
+        IpProtocol: 'tcp',
+        FromPort: 5432,
+        ToPort: 5432,
+        DestinationSecurityGroupId: { 'Fn::GetAtt': [rdsSgId, 'GroupId'] },
+      }),
+    ]);
+  });
+
+  test('RDS SG allows Postgres specifically from billing Lambda SG', () => {
+    const securityGroups = template.findResources('AWS::EC2::SecurityGroup');
+    const billingSgId = Object.entries(securityGroups).find(
+      ([, resource]) =>
+        resource.Properties?.GroupDescription === 'Security group for billing Lambdas (DB + HTTPS egress only)',
+    )?.[0];
+    const rdsSgId = Object.entries(securityGroups).find(
+      ([, resource]) => resource.Properties?.GroupDescription === 'Security group for RDS PostgreSQL',
+    )?.[0];
+
+    expect(billingSgId).toBeDefined();
+    expect(rdsSgId).toBeDefined();
+    template.hasResourceProperties('AWS::EC2::SecurityGroupIngress', {
+      GroupId: { 'Fn::GetAtt': [rdsSgId, 'GroupId'] },
+      SourceSecurityGroupId: { 'Fn::GetAtt': [billingSgId, 'GroupId'] },
+      IpProtocol: 'tcp',
+      FromPort: 5432,
+      ToPort: 5432,
+    });
+  });
 });

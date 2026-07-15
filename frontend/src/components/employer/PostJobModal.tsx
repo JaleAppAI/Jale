@@ -2,8 +2,9 @@
 import type React from 'react';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { createJob, Job } from '@/lib/api/employer';
+import { ApiError, createJob, Job } from '@/lib/api/employer';
 import { splitDedupe } from '@/lib/text';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -74,12 +75,14 @@ function parseOptionalNumber(value: string): number | null {
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
+  const tBilling = useTranslations('billing');
   const { idToken } = useAuth();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [form, setForm] = useState<JobForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [limitReached, setLimitReached] = useState(false);
 
   if (!open) return null;
 
@@ -91,6 +94,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setStep(1);
     setForm(initialForm);
     setError('');
+    setLimitReached(false);
     onClose();
   };
 
@@ -149,6 +153,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     }
     setLoading(true);
     setError('');
+    setLimitReached(false);
     try {
       const pay_min = parseOptionalNumber(form.pay_min);
       const pay_max = parseOptionalNumber(form.pay_max);
@@ -176,8 +181,17 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       });
       onJobCreated(job);
       handleClose();
-    } catch {
-      setError(t('modal.error'));
+    } catch (err) {
+      // Preserve every other validation error message as-is; only the typed
+      // job_limit_reached code gets the upgrade CTA treatment.
+      if (err instanceof ApiError && err.code === 'job_limit_reached') {
+        setLimitReached(true);
+        setError(tBilling('limit_reached.modal_message', {
+          limit: err.payload.active_job_limit ?? 0,
+        }));
+      } else {
+        setError(t('modal.error'));
+      }
     } finally {
       setLoading(false);
     }
@@ -350,7 +364,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </div>
           )}
 
-          {error && <p className="mt-4 text-sm text-[var(--jale-danger)]">{error}</p>}
+          {error && (
+            <div className="mt-4 rounded-2xl border border-[var(--jale-danger)]/30 bg-[var(--jale-danger-bg)] p-4">
+              <p className="text-sm font-semibold text-[var(--jale-danger)]">{error}</p>
+              {limitReached && (
+                <Link
+                  href="/employer/billing"
+                  onClick={handleClose}
+                  className="mt-3 inline-flex h-10 items-center justify-center rounded-full bg-[var(--jale-blue-900)] px-5 text-sm font-bold text-white hover:bg-[var(--jale-blue-950,#0e0e3d)]"
+                >
+                  {tBilling('limit_reached.cta')}
+                </Link>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex gap-2 border-t border-[var(--jale-divider)] px-5 py-4">

@@ -10,7 +10,7 @@ export function corsHeaders(): Record<string, string> {
   return {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN ?? 'http://localhost:3000',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,Idempotency-Key',
     'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS',
   };
 }

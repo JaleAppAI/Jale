@@ -27,9 +27,9 @@ describe('DatabaseStack', () => {
     });
   });
 
-  test('Secrets Manager secrets exist for admin, matching, AI, and admin-console DB credentials', () => {
-    // RDS-generated jale_admin secret + matching + ai + admin-console = 4.
-    template.resourceCountIs('AWS::SecretsManager::Secret', 4);
+  test('Secrets Manager secrets exist for admin, matching, AI, admin-console, and billing DB credentials', () => {
+    // RDS-generated jale_admin secret + matching + ai + admin-console + billing = 5.
+    template.resourceCountIs('AWS::SecretsManager::Secret', 5);
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'jale/matching/db',
       Description: 'jale_matching role DB credentials for matching engine reads/writes',
@@ -58,6 +58,35 @@ describe('DatabaseStack', () => {
     );
     expect(JSON.stringify(adminConsole?.Properties?.GenerateSecretString?.SecretStringTemplate))
       .toContain('jale_admin_console');
+  });
+
+  test('Billing DB secret has connection-complete template (host/port/dbname/username)', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'jale/billing/db',
+      Description: 'jale_billing service role credentials',
+      GenerateSecretString: Match.objectLike({
+        GenerateStringKey: 'password',
+        ExcludePunctuation: true,
+      }),
+    });
+
+    const secrets = template.findResources('AWS::SecretsManager::Secret');
+    const billing = Object.values(secrets).find(
+      (r) => r.Properties?.Name === 'jale/billing/db',
+    );
+    const secretTemplate = billing?.Properties?.GenerateSecretString?.SecretStringTemplate;
+    expect(secretTemplate).toEqual({
+      'Fn::Join': [
+        '',
+        [
+          '{"username":"jale_billing","host":"',
+          expect.objectContaining({
+            'Fn::GetAtt': expect.arrayContaining(['Endpoint.Address']),
+          }),
+          '","port":5432,"dbname":"jale"}',
+        ],
+      ],
+    });
   });
 
   test('Backup retention is 7 days', () => {

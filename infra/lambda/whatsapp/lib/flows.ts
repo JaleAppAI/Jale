@@ -294,7 +294,7 @@ export interface TypedJobAction {
 }
 
 export function parseTypedJobAction(text: string): TypedJobAction | null {
-  const m = text.trim().toLowerCase().match(
+  const m = normalizeCommandText(text).match(
     /^(\d+)\s+(aceptar|accept|si|sí|yes|no|decline|rechazar|info)$/,
   );
   if (!m) return null;
@@ -312,29 +312,92 @@ export function parseTypedJobAction(text: string): TypedJobAction | null {
 
 // ── Keyword detection ───────────────────────────────────────────
 
+export function normalizeCommandText(text: string): string {
+  return text
+    .replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+const COMMAND_KEYWORDS = [
+  'help', 'ayuda', 'commands', 'comandos', 'jobs', 'trabajos', 'empleos',
+  'profile', 'perfil', 'skip', 'saltar', 'chats', 'mensajes', 'cerrar', 'close',
+];
+
+function damerauLevenshteinDistance(a: string, b: string): number {
+  const d: number[][] = Array.from(
+    { length: a.length + 1 },
+    () => new Array(b.length + 1).fill(0),
+  );
+  for (let i = 0; i <= a.length; i++) d[i][0] = i;
+  for (let j = 0; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost,
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[a.length][b.length];
+}
+
+export function matchCommandFuzzy(normalized: string): string | null {
+  if (!normalized || /\s/.test(normalized) || normalized.length < 4) return null;
+  for (const keyword of COMMAND_KEYWORDS) {
+    if (keyword[0] !== normalized[0]) continue;
+    if (damerauLevenshteinDistance(normalized, keyword) <= 1) return keyword;
+  }
+  return null;
+}
+
+const GREETING_WORDS = ['hola', 'hello', 'hi', 'hey', 'buenas'];
+const GREETING_PHRASES = ['buenos dias', 'buenas tardes', 'buenas noches'];
+
 export function isGreetingKeyword(text: string): boolean {
   const n = text.trim().toLowerCase();
   const words = n.match(/[a-záéíóúñ]+/gi);
-  return words?.length === 1 && (words[0] === 'hola' || words[0] === 'hello');
+  if (!words || words.length === 0) return false;
+  if (words.length >= 2) {
+    const phrase = `${words[0]} ${words[1]}`
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    if (GREETING_PHRASES.includes(phrase)) return true;
+  }
+  return GREETING_WORDS.includes(words[0]);
 }
 
 export function isJobsKeyword(text: string): boolean {
-  const n = text.trim().toLowerCase();
-  return /^(trabajos?|jobs?|empleos?)\b/.test(n);
+  const n = normalizeCommandText(text);
+  if (/^(trabajos?|jobs?|empleos?)\b/.test(n)) return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'jobs' || fuzzy === 'trabajos' || fuzzy === 'empleos';
 }
 
 export function isHelpCommand(text: string): boolean {
-  const n = text.trim().toLowerCase();
-  return /^(help|ayuda|commands?|comandos?)$/.test(n);
+  const n = normalizeCommandText(text);
+  if (/^(help|ayuda|commands?|comandos?)$/.test(n)) return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'help' || fuzzy === 'ayuda' || fuzzy === 'commands' || fuzzy === 'comandos';
 }
 
 export function isProfileCommand(text: string): boolean {
-  const n = text.trim().toLowerCase();
-  return /^(profile|perfil|my profile|mi perfil)$/.test(n);
+  const n = normalizeCommandText(text);
+  if (/^(profile|perfil|my profile|mi perfil)$/.test(n)) return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'profile' || fuzzy === 'perfil';
 }
 
 export function isSkipKeyword(text: string): boolean {
-  return /^(skip|saltar)$/i.test(text.trim());
+  const n = normalizeCommandText(text);
+  if (/^(skip|saltar)$/.test(n)) return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'skip' || fuzzy === 'saltar';
 }
 
 // JS `\b` is ASCII-only, so it fails on Spanish accented chars (sí, está).
@@ -345,12 +408,12 @@ const ES_DECLINE = /^(no acepto|no)(?=\s|$)/;
 const EN_DECLINE = /^(decline|no)(?=\s|$)/;
 
 export function isAccept(text: string, lang: Lang): boolean {
-  const n = text.trim().toLowerCase();
+  const n = normalizeCommandText(text);
   return (lang === 'es' ? ES_ACCEPT : EN_ACCEPT).test(n);
 }
 
 export function isDecline(text: string, lang: Lang): boolean {
-  const n = text.trim().toLowerCase();
+  const n = normalizeCommandText(text);
   return (lang === 'es' ? ES_DECLINE : EN_DECLINE).test(n);
 }
 
@@ -387,6 +450,13 @@ export function parseEmployerConversationButtonPayload(
     action: m[1] as EmployerConversationButtonPayload['action'],
     conversationId: m[2],
   };
+}
+
+export type CommandPayload = 'jobs' | 'profile' | 'chats' | 'help';
+
+export function parseCommandPayload(payload: string | undefined): CommandPayload | null {
+  const m = payload?.match(/^command:(jobs|profile|chats|help)$/);
+  return m ? (m[1] as CommandPayload) : null;
 }
 
 export function parseLegalReplyPayload(

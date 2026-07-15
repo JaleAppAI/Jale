@@ -1,6 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
 import { Template, Match } from 'aws-cdk-lib/assertions';
-import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { FrontendStack } from '../../../lib/stacks/frontend-stack';
 
 // CDK builds the Docker image during synth (DockerImageFunction.fromImageAsset).
@@ -13,26 +12,10 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
   beforeAll(() => {
     const app = new cdk.App();
 
-    // Minimal API stack (FrontendStack accepts a real RestApi)
-    const apiStack = new cdk.Stack(app, 'TestApiStack', {
-      env: { account: '111111111111', region: 'us-east-1' },
-    });
-    const api = new apigateway.RestApi(apiStack, 'TestApi', {
-      restApiName: 'test-api',
-    });
-    api.root.addMethod(
-      'GET',
-      new apigateway.MockIntegration({
-        integrationResponses: [{ statusCode: '200' }],
-        passthroughBehavior: apigateway.PassthroughBehavior.NEVER,
-        requestTemplates: { 'application/json': '{"statusCode": 200}' },
-      }),
-      { methodResponses: [{ statusCode: '200' }] },
-    );
-
     const stack = new FrontendStack(app, 'TestFrontendStack', {
       env: { account: '111111111111', region: 'us-east-1' },
-      api,
+      apiOriginDomainName: 'abc123.execute-api.us-east-2.amazonaws.com',
+      apiStageName: 'production',
       domainName: 'example.com',
       hostedZoneId: 'Z1234567890ABC',
       surveyOriginDomain: 'd1a2b3c4.amplifyapp.com',
@@ -103,6 +86,12 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
       'AWS::CloudFront::Distribution',
       Match.objectLike({
         DistributionConfig: Match.objectLike({
+          Origins: Match.arrayWith([
+            Match.objectLike({
+              DomainName: 'abc123.execute-api.us-east-2.amazonaws.com',
+              OriginPath: '/production',
+            }),
+          ]),
           CacheBehaviors: Match.arrayWith([
             Match.objectLike({ PathPattern: '/api/*' }),
           ]),
@@ -269,25 +258,10 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
 describeIfDocker('FrontendStack without survey origin', () => {
   test('does NOT create /survey/* behavior when surveyOriginDomain omitted', () => {
     const app = new cdk.App();
-    const apiStack = new cdk.Stack(app, 'TestApiStack2', {
-      env: { account: '111111111111', region: 'us-east-1' },
-    });
-    const api = new apigateway.RestApi(apiStack, 'TestApi2', {
-      restApiName: 'test-api-2',
-    });
-    api.root.addMethod(
-      'GET',
-      new apigateway.MockIntegration({
-        integrationResponses: [{ statusCode: '200' }],
-        passthroughBehavior: apigateway.PassthroughBehavior.NEVER,
-        requestTemplates: { 'application/json': '{"statusCode": 200}' },
-      }),
-      { methodResponses: [{ statusCode: '200' }] },
-    );
-
     const stack = new FrontendStack(app, 'TestFrontendStack2', {
       env: { account: '111111111111', region: 'us-east-1' },
-      api,
+      apiOriginDomainName: 'abc123.execute-api.us-east-2.amazonaws.com',
+      apiStageName: 'production',
       domainName: 'example.com',
       hostedZoneId: 'Z1234567890ABC',
       // surveyOriginDomain omitted

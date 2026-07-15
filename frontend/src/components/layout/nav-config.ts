@@ -35,6 +35,14 @@ export const employerPrimaryNav: NavItem[] = [
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
 ];
 
+/** Employer Billing link (live). */
+export const employerBillingNav: NavItem = {
+    key: 'billing',
+    href: '/employer/billing',
+    icon: 'chart',
+    labelKey: 'nav.billing',
+};
+
 /** Employer Settings link (live). */
 export const employerSettingsNav: NavItem = {
     key: 'settings',

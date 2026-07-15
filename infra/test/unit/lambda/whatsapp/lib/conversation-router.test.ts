@@ -65,7 +65,7 @@ describe('resolveWorkerIdForWhatsappNumber', () => {
 import {
   relayWorkerFreeText, handlePickerResponse, parseDisambiguationPick,
   tryConversationRelay, handleEmployerConversationButton, isChatsKeyword,
-  isCloseKeyword,
+  isCloseKeyword, isLikelyOtpCode, parseEmployerConversationTextAction,
 } from '../../../../../lambda/whatsapp/lib/conversation-router';
 import {
   recordWorkerConversationReply,
@@ -381,6 +381,10 @@ describe('CHATS/MENSAJES keyword in tryConversationRelay', () => {
     expect(isChatsKeyword('CHATS NOW')).toBe(false); // not an exact match
     expect(isChatsKeyword('')).toBe(false);
   });
+
+  it('isChatsKeyword tolerates stray punctuation', () => {
+    expect(isChatsKeyword('chats.')).toBe(true);
+  });
 });
 
 describe('focus_closed handling in relayWorkerFreeText', () => {
@@ -616,6 +620,25 @@ describe('CERRAR/CLOSE contextual close in relayWorkerFreeText', () => {
     expect(isCloseKeyword(' CLOSE ')).toBe(true);
     expect(isCloseKeyword('CLOSE NOW')).toBe(false);
     expect(isCloseKeyword('')).toBe(false);
+  });
+
+  it('isCloseKeyword tolerates stray punctuation', () => {
+    expect(isCloseKeyword('CERRAR!')).toBe(true);
+  });
+});
+
+describe('normalization regressions — punctuation must not hijack unrelated matchers', () => {
+  it('isLikelyOtpCode rejects trailing punctuation, still accepts clean 6-digit codes', () => {
+    expect(isLikelyOtpCode('123456.')).toBe(false);
+    expect(isLikelyOtpCode('123456')).toBe(true);
+  });
+
+  it('parseDisambiguationPick stays null for punctuated input', () => {
+    expect(parseDisambiguationPick('1.')).toBeNull();
+  });
+
+  it('parseEmployerConversationTextAction tolerates stray punctuation', () => {
+    expect(parseEmployerConversationTextAction('abrir.')).toBe('open');
   });
 });
 

@@ -10,7 +10,6 @@ build/
 cdk.out/
 cdk.out.*/
 .cdk.staging/
-cdk.context.json
 
 # Environment & secrets
 .env
@@ -33,11 +32,18 @@ AGENTS.md
 Thumbs.db
 desktop.ini
 
-# Claude Code
+# Claude Code / local agent state
+.agents/
 .claude/
+.hermes/
+CLAUDE.md
 .superpowers/
 docs/
 cloudshell-db-psql.md
+.playwright/
+skills-lock.json
+dogfood-output/
+
 
 # Git worktrees
 .worktrees/

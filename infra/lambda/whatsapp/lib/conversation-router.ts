@@ -19,7 +19,9 @@ import {
 } from '../../lib/job-messaging';
 import { queueOutboxText } from './outbox';
 import { detectLanguage, t, type Lang } from './templates';
-import { isJobsKeyword, parseTypedJobAction } from './flows';
+import {
+  isJobsKeyword, parseTypedJobAction, normalizeCommandText, matchCommandFuzzy,
+} from './flows';
 import type { ConversationState, ProfileStateContext } from './flows';
 
 // ── Conversation row shape (subset of the DB columns) ───────────
@@ -74,13 +76,17 @@ export function isLikelyOtpCode(body: string): boolean {
 }
 
 export function isChatsKeyword(body: string): boolean {
-  const normalized = body.trim().toUpperCase();
-  return normalized === 'CHATS' || normalized === 'MENSAJES';
+  const n = normalizeCommandText(body);
+  if (n === 'chats' || n === 'mensajes') return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'chats' || fuzzy === 'mensajes';
 }
 
 export function isCloseKeyword(body: string): boolean {
-  const normalized = body.trim().toUpperCase();
-  return normalized === 'CERRAR' || normalized === 'CLOSE';
+  const n = normalizeCommandText(body);
+  if (n === 'cerrar' || n === 'close') return true;
+  const fuzzy = matchCommandFuzzy(n);
+  return fuzzy === 'cerrar' || fuzzy === 'close';
 }
 
 /**
@@ -102,7 +108,7 @@ async function workerHasAcceptedTos(client: PoolClient, workerId: string): Promi
 }
 
 export function parseEmployerConversationTextAction(body: string): 'open' | 'decline' | null {
-  const normalized = body.trim().toLowerCase();
+  const normalized = normalizeCommandText(body);
   if (['abrir', 'abrir conversacion', 'open', 'open conversation', 'accept'].includes(normalized)) {
     return 'open';
   }

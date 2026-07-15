@@ -116,6 +116,14 @@ export function buildTrustInteractivePrompt(
   };
 }
 
+export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
+  return {
+    templateName: lang === 'es' ? 'help_menu_list_es' : 'help_menu_list_en',
+    variables: {},
+    fallbackBody: t('help_menu', lang),
+  };
+}
+
 function trustQuestionBody(step: number, lang: Lang): string {
   if (step === 0) {
     return lang === 'es'

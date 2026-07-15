@@ -5,6 +5,7 @@ import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
 import {
     employerPrimaryNav,
+    employerBillingNav,
     employerSettingsNav,
     workerPrimaryNav,
     isNavItemActive,
@@ -114,6 +115,11 @@ function EmployerNav({
                 {employerPrimaryNav.map((item) => (
                     <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={t(item.labelKey)} />
                 ))}
+                <NavLink
+                    item={employerBillingNav}
+                    active={isNavItemActive(employerBillingNav, pathname)}
+                    label={t(employerBillingNav.labelKey)}
+                />
                 <NavLink
                     item={employerSettingsNav}
                     active={isNavItemActive(employerSettingsNav, pathname)}

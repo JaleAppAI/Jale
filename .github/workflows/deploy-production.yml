@@ -14,6 +14,7 @@ on:
           - frontend
           - admin-prerequisites
           - admin
+          - billing-prerequisites
           - all
 
 permissions:
@@ -75,10 +76,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
+          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
           admin_stack_list="JaleDatabaseStack JaleWhatsAppStack JaleAdminStack"
+          billing_prerequisites_stack_list="JaleNetworkStack JaleDatabaseStack"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             case "${{ inputs.deploy_scope }}" in
@@ -88,6 +90,10 @@ jobs:
                 ;;
               admin-prerequisites)
                 echo "deploy-stacks=${admin_prerequisites_stack_list}" >> "$GITHUB_OUTPUT"
+                echo "cdk-extra-args=--exclusively" >> "$GITHUB_OUTPUT"
+                ;;
+              billing-prerequisites)
+                echo "deploy-stacks=${billing_prerequisites_stack_list}" >> "$GITHUB_OUTPUT"
                 echo "cdk-extra-args=--exclusively" >> "$GITHUB_OUTPUT"
                 ;;
               admin)

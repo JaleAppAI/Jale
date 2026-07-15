@@ -56,6 +56,7 @@ describe('database migrations', () => {
       '031',
       '032',
       '033',
+      '034',
     ]);
   });
 
@@ -91,6 +92,51 @@ describe('database migrations', () => {
     expect(docs).not.toMatch(/worker_id::text = current_setting\('app\.current_user_id'/);
   });
 
+  it('adds billing foundation tables, org scaffolding, and jale_billing role in migration 034', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '034_billing_foundation.sql'), 'utf8');
+
+    // Org-ready scaffolding
+    expect(migration).toContain('CREATE TABLE organizations');
+    expect(migration).toContain('ALTER TABLE organizations FORCE  ROW LEVEL SECURITY');
+    expect(migration).toContain('ADD CONSTRAINT users_tenant_id_fkey');
+    expect(migration).toContain('FOREIGN KEY (tenant_id) REFERENCES organizations(id) ON DELETE RESTRICT');
+
+    // Core billing tables
+    expect(migration).toContain('CREATE TABLE billing_plans');
+    expect(migration).toContain('CREATE TABLE billing_customers');
+    expect(migration).toContain('CREATE TABLE subscriptions');
+    expect(migration).toContain('CREATE TABLE billing_operations');
+    expect(migration).toContain('CREATE TABLE billing_webhook_events');
+
+    // Seed rows
+    expect(migration).toContain("'employer_free'");
+    expect(migration).toContain("'employer_pro'");
+    expect(migration).toContain("'worker_free'");
+    expect(migration).toContain('2000');
+
+    // Partial index for one-active-sub-per-user
+    expect(migration).toContain('subscriptions_one_current_per_user');
+    expect(migration).toContain("WHERE status NOT IN ('canceled', 'incomplete_expired')");
+
+    // Idempotency constraint
+    expect(migration).toContain('UNIQUE (actor_user_id, operation_type, client_idempotency_key)');
+
+    // RLS + FORCE
+    expect(migration).toContain('ALTER TABLE billing_plans          FORCE  ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE billing_webhook_events FORCE  ROW LEVEL SECURITY');
+
+    // jale_billing service role
+    expect(migration).toContain("rolname = 'jale_billing'");
+    expect(migration).toContain('CREATE ROLE jale_billing WITH LOGIN');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE         ON subscriptions          TO jale_billing');
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE         ON billing_webhook_events TO jale_billing');
+
+    // jale_admin grants (no webhook events)
+    expect(migration).toContain('GRANT SELECT, INSERT, UPDATE ON billing_customers  TO jale_admin');
+    expect(migration).toContain('GRANT SELECT                 ON subscriptions      TO jale_admin');
+    expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
+  });
+
   it('keeps migration runner scripts pointed at the current files', () => {
     const expectedFiles = migrationFiles();
     const scriptPaths = [
@@ -106,6 +152,8 @@ describe('database migrations', () => {
       expect(script).toContain("starts_with(LogicalResourceId, 'JaleDatabaseStackDatabaseSecret')");
       expect(script).toContain("starts_with(LogicalResourceId, 'MatchingDbSecret')");
       expect(script).toContain('ALTER ROLE jale_matching WITH PASSWORD');
+      expect(script).toContain("starts_with(LogicalResourceId, 'BillingDbSecret')");
+      expect(script).toContain('ALTER ROLE jale_billing WITH PASSWORD');
       expect(script).not.toContain('003_whatsapp.sql');
       expect(script).not.toContain('004_jobs.sql');
       expect(script).not.toContain('005_job_applications.sql');
