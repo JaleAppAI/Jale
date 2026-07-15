@@ -103,10 +103,23 @@ describe('templates.ts — t()', () => {
     const help = t('help_menu', 'en');
     expect(help).toContain('Jobs');
     expect(help).toContain('Profile');
+    expect(help).toContain('Chats');
+    expect(help).toContain('Close');
     expect(help).toContain('Help');
     expect(help).toContain('use the buttons');
     expect(help).toContain('[number] accept');
     expect(help).not.toContain('1 accept');
+  });
+
+  it('help menu lists the main commands in Spanish', () => {
+    const help = t('help_menu', 'es');
+    expect(help).toContain('Trabajos');
+    expect(help).toContain('Perfil');
+    expect(help).toContain('Chats');
+    expect(help).toContain('Cerrar');
+    expect(help).toContain('Ayuda');
+    expect(help).toContain('usa los botones');
+    expect(help).toContain('[numero] aceptar');
   });
 
   it('job_documents_required interpolates the missing document list', () => {

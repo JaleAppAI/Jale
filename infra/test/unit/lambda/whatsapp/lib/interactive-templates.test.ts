@@ -1,9 +1,11 @@
 import {
+  buildHelpMenuInteractivePrompt,
   buildLegalInteractivePrompt,
   buildMediaInteractivePrompt,
   buildProfileInteractivePrompt,
   buildTrustInteractivePrompt,
 } from '../../../../../lambda/whatsapp/lib/interactive-templates';
+import { t } from '../../../../../lambda/whatsapp/lib/templates';
 
 describe('interactive onboarding templates', () => {
   it('builds legal quick-reply prompts with the ToS URL variable', () => {
@@ -99,5 +101,18 @@ describe('interactive onboarding templates', () => {
     expect(buildMediaInteractivePrompt('photo_skip', 'en').fallbackBody).toContain(
       'Profile photo',
     );
+  });
+
+  it('builds the help menu list-picker prompt', () => {
+    expect(buildHelpMenuInteractivePrompt('en')).toMatchObject({
+      templateName: 'help_menu_list_en',
+      variables: {},
+      fallbackBody: t('help_menu', 'en'),
+    });
+    expect(buildHelpMenuInteractivePrompt('es')).toMatchObject({
+      templateName: 'help_menu_list_es',
+      variables: {},
+      fallbackBody: t('help_menu', 'es'),
+    });
   });
 });

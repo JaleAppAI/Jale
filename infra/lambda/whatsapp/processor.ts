@@ -59,6 +59,7 @@ import {
   upsertWorkerProfileFromUsers,
 } from './lib/profile-flow';
 import {
+  buildHelpMenuInteractivePrompt,
   buildLegalInteractivePrompt,
   buildMediaInteractivePrompt,
   buildProfileInteractivePrompt,
@@ -74,6 +75,7 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseCommandPayload,
   parseEmployerConversationButtonPayload,
   parseLegalReplyPayload,
   parseMediaPayload,
@@ -494,11 +496,13 @@ async function processRecord(record: SQSRecord): Promise<void> {
   // payloads are well under 50 chars.
   const interactivePayload =
     buttonPayload
+    ?? findKnownPayload(params.ListId)
     ?? extractInteractivePayload(params.InteractiveData)
     ?? extractInteractivePayload(params.ChannelMetadata)
     ?? (body.length <= 256 ? findKnownPayload(body) : undefined);
-  const interactivePayloadSource: 'button' | 'interactive_data' | 'channel_metadata' | 'body' | 'none' =
+  const interactivePayloadSource: 'button' | 'list_id' | 'interactive_data' | 'channel_metadata' | 'body' | 'none' =
     buttonPayload ? 'button'
+    : findKnownPayload(params.ListId) ? 'list_id'
     : extractInteractivePayload(params.InteractiveData) ? 'interactive_data'
     : extractInteractivePayload(params.ChannelMetadata) ? 'channel_metadata'
     : (body.length <= 256 && findKnownPayload(body)) ? 'body'
@@ -660,7 +664,7 @@ function extractInteractivePayload(raw: string | undefined): string | undefined 
 
 function findKnownPayload(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return /^(legal|profile|trust|media|conversation):/.test(value) ? value : undefined;
+    return /^(legal|profile|trust|media|conversation|command):/.test(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -980,6 +984,16 @@ async function routeMessage(
     }
   }
 
+  const commandPayload = parseCommandPayload(msg.interactivePayload);
+  if (commandPayload) {
+    msg = {
+      ...msg,
+      body: commandPayload,
+      buttonPayload: undefined,
+      interactivePayload: undefined,
+    };
+  }
+
   if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
     const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
     if (workerId) {
@@ -988,7 +1002,12 @@ async function routeMessage(
   }
 
   if (isHelpCommand(msg.body)) {
-    await reply(client, msg, 'help_menu', conv.language);
+    await queueInteractivePrompt(
+      client,
+      msg.messageSid,
+      msg.from,
+      buildHelpMenuInteractivePrompt(conv.language),
+    );
     return null;
   }
 

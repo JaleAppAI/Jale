@@ -883,7 +883,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
         })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu_list_en
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
@@ -899,9 +899,139 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      expect(outboxBodies()[0]).toContain('Commands');
-      expect(outboxBodies()[0]).toContain('Jobs - See opportunities');
+      expect(outboxTemplates()).toContain('help_menu_list_en');
+      const insert = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[])[2] === 'help_menu_list_en',
+      );
+      const variables = (insert![1] as unknown[])[3] as Record<string, string>;
+      expect(variables.__fallback_body).toContain('Commands');
+      expect(variables.__fallback_body).toContain('Jobs - See opportunities');
       expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
+    });
+
+    it('routes a tapped "command:jobs" list-picker row into the jobs listing path', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-cmd-jobs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-cmd-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          ButtonPayload: 'command:jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+    });
+
+    it('routes a list-picker ListId "command:jobs" with row-title Body into the jobs listing path', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-listid-jobs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-listid-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Jobs',
+          ListId: 'command:jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+    });
+
+    it('routes Body "command:profile" (no ButtonPayload) to the profile path', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-cmd-profile' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            phone: '+15125551234',
+            whatsapp_number: '+15125551234',
+            full_name: 'Luis Gomez',
+            city: '79928',
+            main_trade: 'electrician',
+            main_trade_other: null,
+            years_experience: '10+',
+            has_transportation: true,
+            availability: 'flexible',
+            trust_signals_completed_at: '2026-04-29T00:00:00.000Z',
+            trust_signals: {
+              specialization: { label: 'Commercial' },
+              seniority: { label: 'Lead crew' },
+              tasks: { label: 'Work panels' },
+            },
+          }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-cmd-profile',
+          From: 'whatsapp:+15125551234',
+          Body: 'command:profile',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const body = outboxBodies()[0];
+      expect(body).toContain('Your profile');
+      expect(body).toContain('Name: Luis Gomez');
     });
 
     it('returns profile details for a linked worker profile command', async () => {
