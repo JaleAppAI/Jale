@@ -412,6 +412,47 @@ export function isAccept(text: string, lang: Lang): boolean {
   return (lang === 'es' ? ES_ACCEPT : EN_ACCEPT).test(n);
 }
 
+// Language-specific vocabularies used to answer a typed command in the same
+// language the worker wrote it in. Canonical command keywords mirror
+// COMMAND_KEYWORDS, split by language, plus common singular/verb forms.
+const EN_LANG_WORDS = new Set([
+  'help', 'commands', 'command', 'jobs', 'job', 'profile', 'skip', 'chats',
+  'close', 'accept', 'yes', 'decline', 'info',
+]);
+const ES_LANG_WORDS = new Set([
+  'ayuda', 'comandos', 'comando', 'trabajos', 'trabajo', 'empleos', 'empleo',
+  'perfil', 'saltar', 'mensajes', 'cerrar', 'aceptar', 'acepto', 'rechazar',
+  'si', 'sí',
+]);
+
+/**
+ * Detect the language a typed command/message is written in, so the reply can
+ * match it. Returns null when there is no clear signal (e.g. bare "no", which
+ * is valid in both languages, or free text) — callers keep the stored
+ * conversation language in that case. Not for button/interactive payloads,
+ * which are language-agnostic.
+ */
+export function detectCommandLanguage(text: string): Lang | null {
+  const n = normalizeCommandText(text);
+  if (!n) return null;
+
+  const words = n.split(' ');
+  // Typed job actions look like "1 aceptar" / "2 accept" — key off the verb.
+  const token = /^\d+$/.test(words[0]) && words[1] ? words[1] : words[0];
+
+  if (EN_LANG_WORDS.has(token)) return 'en';
+  if (ES_LANG_WORDS.has(token)) return 'es';
+
+  if (/^(hello|hi|hey)$/.test(token)) return 'en';
+  if (/^(hola|buenas|buenos)$/.test(token)) return 'es';
+
+  const fuzzy = matchCommandFuzzy(n);
+  if (fuzzy && EN_LANG_WORDS.has(fuzzy)) return 'en';
+  if (fuzzy && ES_LANG_WORDS.has(fuzzy)) return 'es';
+
+  return null;
+}
+
 export function isDecline(text: string, lang: Lang): boolean {
   const n = normalizeCommandText(text);
   return (lang === 'es' ? ES_DECLINE : EN_DECLINE).test(n);

@@ -68,6 +68,7 @@ import {
 } from './lib/interactive-templates';
 import {
   isGreetingKeyword,
+  detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
   isProfileCommand,
@@ -968,6 +969,24 @@ async function routeMessage(
   msg: IncomingMessage,
 ): Promise<string | null> {
   const from = msg.from;
+
+  // Answer typed commands/messages in the language the worker used, regardless
+  // of the language they onboarded in. Only for TYPED text — button and
+  // interactive taps carry language-agnostic payloads, so they keep the stored
+  // language. Scoped to `idle` (post-onboarding) so the onboarding language
+  // flow is untouched. Persisted so later taps (accept/decline) stay in the
+  // same language the worker just switched to.
+  if (
+    !msg.buttonPayload &&
+    !msg.interactivePayload &&
+    conv.conversation_state === 'idle'
+  ) {
+    const msgLang = detectCommandLanguage(msg.body);
+    if (msgLang && msgLang !== conv.language) {
+      conv.language = msgLang;
+      await updateConversation(client, conv.id, { language: msgLang });
+    }
+  }
 
   // Button-payload taps on job alerts are self-identifying. Route them first
   // — they can arrive in any state except onboarding (worker must be linked).

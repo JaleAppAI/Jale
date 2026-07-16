@@ -1,5 +1,6 @@
 import {
   isGreetingKeyword,
+  detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
   isProfileCommand,
@@ -97,6 +98,43 @@ describe('flows.ts — keyword detection', () => {
     it('"no se" still declines (regression — prefix match unaffected by normalization)', () => {
       expect(isDecline('no se', 'es')).toBe(true);
     });
+  });
+});
+
+describe('flows.ts — detectCommandLanguage', () => {
+  it('detects English command keywords', () => {
+    expect(detectCommandLanguage('JOBS')).toBe('en');
+    expect(detectCommandLanguage('help')).toBe('en');
+    expect(detectCommandLanguage('Profile')).toBe('en');
+  });
+
+  it('detects Spanish command keywords', () => {
+    expect(detectCommandLanguage('TRABAJOS')).toBe('es');
+    expect(detectCommandLanguage('ayuda')).toBe('es');
+    expect(detectCommandLanguage('empleos')).toBe('es');
+    expect(detectCommandLanguage('perfil')).toBe('es');
+  });
+
+  it('detects language from typed job-action verbs', () => {
+    expect(detectCommandLanguage('1 aceptar')).toBe('es');
+    expect(detectCommandLanguage('2 accept')).toBe('en');
+    expect(detectCommandLanguage('1 rechazar')).toBe('es');
+  });
+
+  it('detects greetings', () => {
+    expect(detectCommandLanguage('hola')).toBe('es');
+    expect(detectCommandLanguage('hello there')).toBe('en');
+  });
+
+  it('tolerates typos via fuzzy match', () => {
+    expect(detectCommandLanguage('trabajoss')).toBe('es');
+    expect(detectCommandLanguage('jbos')).toBe('en');
+  });
+
+  it('returns null when there is no clear language signal', () => {
+    expect(detectCommandLanguage('no')).toBeNull(); // valid in both languages
+    expect(detectCommandLanguage('')).toBeNull();
+    expect(detectCommandLanguage('asdfghjkl')).toBeNull();
   });
 });
 

@@ -66,8 +66,14 @@ export async function applyWorkerToJob(
   const { workerId, jobId } = input;
   await setInternalUserRlsContext(client, workerId);
 
+  // No FOR UPDATE here: a row lock requires the UPDATE privilege on `jobs`,
+  // which the WhatsApp role (jale_whatsapp) deliberately does not have
+  // (ADR-W05). Applying from WhatsApp would otherwise fail with
+  // "permission denied for table jobs" (42501). The lock is not needed for
+  // correctness — the INSERT ... ON CONFLICT (job_id, worker_id) DO NOTHING
+  // below makes the apply idempotent under concurrency.
   const jobRes = await client.query<{ id: string; required_docs: string[] | null }>(
-    `SELECT id, required_docs FROM jobs WHERE id = $1 AND status = 'active' FOR UPDATE`,
+    `SELECT id, required_docs FROM jobs WHERE id = $1 AND status = 'active'`,
     [jobId],
   );
   if (jobRes.rows.length === 0) {
