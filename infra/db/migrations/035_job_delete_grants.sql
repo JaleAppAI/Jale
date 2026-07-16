@@ -19,10 +19,13 @@ GRANT DELETE ON jobs                   TO jale_admin;
 GRANT DELETE ON job_conversations      TO jale_admin;
 GRANT DELETE ON document_upload_tokens TO jale_admin;
 
+-- DROP … IF EXISTS before CREATE so this migration is safely re-runnable (matches 018).
+DROP POLICY IF EXISTS jobs_employer_delete ON jobs;
 CREATE POLICY jobs_employer_delete ON jobs FOR DELETE
   USING (employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
 
 -- worker_documents has no employer_id column, so ownership is checked through jobs.
+DROP POLICY IF EXISTS worker_documents_employer_delete ON worker_documents;
 CREATE POLICY worker_documents_employer_delete ON worker_documents FOR DELETE
   USING (EXISTS (
     SELECT 1 FROM jobs j
@@ -30,6 +33,7 @@ CREATE POLICY worker_documents_employer_delete ON worker_documents FOR DELETE
       AND j.employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true))));
 
 -- job_conversations carries employer_id directly (025).
+DROP POLICY IF EXISTS job_conversations_employer_delete ON job_conversations;
 CREATE POLICY job_conversations_employer_delete ON job_conversations FOR DELETE
   USING (employer_id = (SELECT id FROM users WHERE cognito_sub = current_setting('app.current_user_id', true)));
 
