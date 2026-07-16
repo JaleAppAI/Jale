@@ -246,6 +246,38 @@ describe('database migrations', () => {
     expect(migration).not.toMatch(/GRANT\s+(SELECT|INSERT|UPDATE|DELETE)\s+ON\s+admin_cases\s+TO\s+jale_whatsapp/i);
   });
 
+  it('adds durable monotonic Twilio delivery correlation in migration 036', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '036_whatsapp_delivery_status.sql'),
+      'utf8',
+    );
+    expect(migration).toContain('record_whatsapp_delivery_status');
+    expect(migration).toContain('record_twilio_delivery_status');
+    expect(migration).toContain("source_type IN ('admin_case', 'job_alert')");
+    expect(migration).toContain('FROM public.job_conversation_messages');
+    // Review-1 correction: the privileged implementation lives in the
+    // locked jale_twilio_callback schema (fully qualified, catalog-only
+    // search_path); public.record_twilio_status is now a narrow wrapper.
+    expect(migration).toContain('jale_twilio_callback.record_twilio_status(p_sid, p_status, p_at)');
+    expect(migration).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(migration).toContain(
+      'REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_delivery_status',
+    );
+    expect(migration).toContain('NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT');
+    expect(migration).toContain(
+      "'REVOKE jale_twilio_callback FROM %I GRANTED BY %I'",
+    );
+    expect(migration).toContain('AND grantor.rolsuper');
+    expect(migration).toContain('idx_whatsapp_outbox_twilio_message_sid');
+    // Review-1 correction: no unconditional ALTER ROLE against production;
+    // rerun validates existing role attributes instead.
+    expect(migration).not.toMatch(/^ALTER ROLE jale_twilio_callback\b/m);
+    expect(migration).toContain('jale_twilio_callback role already exists with unsafe attributes');
+    // Review-1 correction: DB-level bounds on error fields.
+    expect(migration).toContain('whatsapp_outbox_twilio_error_code_check');
+    expect(migration).toContain('whatsapp_outbox_twilio_error_message_check');
+  });
+
   it('keeps migration runner scripts pointed at the current files', () => {
     const expectedFiles = migrationFiles();
     const scriptPaths = [

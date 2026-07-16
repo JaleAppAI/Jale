@@ -35,6 +35,7 @@ describe('WhatsAppStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     });
     const ai = new AiStack(app, 'TestAiStack', {
       vpc: network.vpc,
@@ -64,6 +65,7 @@ describe('WhatsAppStack', () => {
       questionGeneratorFn: ai.questionGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
     });
     template = Template.fromStack(whatsapp);
     apiTemplate = Template.fromStack(api);
@@ -98,8 +100,14 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 8 Lambda functions including the status callback', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 8);
+  test('Stack creates 9 Lambda functions including the status callback and job-alert drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 9);
+  });
+
+  test('job alert outbox drain runs on a 5-minute schedule', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('.*[Jj]ob [Aa]lert outbox drain.*'),
+    });
   });
 
   test('job message outbox sweeper runs on a 5-minute schedule', () => {
@@ -236,12 +244,61 @@ describe('WhatsAppStack', () => {
     });
   });
 
-  test('all six WhatsAppStack outbound senders and callback use the exact configured URL', () => {
+  // Review-1 correction: a PathPart match alone doesn't prove the resource
+  // is actually mounted under /whatsapp alongside /webhook — it only proves
+  // a resource with that PathPart exists somewhere in the tree. Walk the
+  // exact ApiGateway::Resource parent chain instead.
+  test('status-callback resource shares the exact same parent (/whatsapp) as webhook, both NONE-authorized', () => {
+    const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+    const findByPathPart = (pathPart: string) =>
+      Object.entries(resources).find(([, r]: [string, any]) =>
+        r.Properties?.PathPart === pathPart);
+
+    const whatsappEntry = findByPathPart('whatsapp');
+    const webhookEntry = findByPathPart('webhook');
+    const statusCallbackEntry = findByPathPart('status-callback');
+    expect(whatsappEntry).toBeDefined();
+    expect(webhookEntry).toBeDefined();
+    expect(statusCallbackEntry).toBeDefined();
+
+    const [whatsappLogicalId] = whatsappEntry!;
+    const [, webhookResource] = webhookEntry!;
+    const [, statusCallbackResource] = statusCallbackEntry!;
+
+    const parentRef = (r: any) => r.Properties?.ParentId?.Ref
+      ?? r.Properties?.ParentId?.['Fn::GetAtt']?.[0];
+
+    // Both webhook and status-callback are children of the SAME /whatsapp
+    // resource — proves they are siblings, not just two resources that
+    // happen to exist anywhere in the API tree.
+    expect(parentRef(webhookResource)).toBe(whatsappLogicalId);
+    expect(parentRef(statusCallbackResource)).toBe(whatsappLogicalId);
+
+    // Both methods on those two resources are unauthenticated.
+    const methods = apiTemplate.findResources('AWS::ApiGateway::Method');
+    const methodsOnResource = (resourceLogicalId: string) =>
+      Object.values(methods).filter((m: any) =>
+        (m.Properties?.ResourceId?.Ref) === resourceLogicalId
+        && m.Properties?.HttpMethod === 'POST');
+
+    const [webhookLogicalId] = webhookEntry!;
+    const [statusCallbackLogicalId] = statusCallbackEntry!;
+    for (const m of methodsOnResource(webhookLogicalId)) {
+      expect((m as any).Properties.AuthorizationType).toBe('NONE');
+    }
+    for (const m of methodsOnResource(statusCallbackLogicalId)) {
+      expect((m as any).Properties.AuthorizationType).toBe('NONE');
+    }
+    expect(methodsOnResource(webhookLogicalId).length).toBeGreaterThan(0);
+    expect(methodsOnResource(statusCallbackLogicalId).length).toBeGreaterThan(0);
+  });
+
+  test('all seven WhatsAppStack outbound senders and callback use the exact configured URL', () => {
     const functions = template.findResources('AWS::Lambda::Function');
     const configured = Object.values(functions).filter((resource: any) =>
       resource.Properties?.Environment?.Variables?.TWILIO_STATUS_CALLBACK_URL
         === 'https://callbacks.example.test/prod/whatsapp/status-callback');
-    expect(configured).toHaveLength(7);
+    expect(configured).toHaveLength(8);
   });
 
   test('both ApiStack employer-conversation senders use the exact configured URL', () => {

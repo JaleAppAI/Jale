@@ -1,5 +1,5 @@
 import { getDbPool } from '../lib/db';
-import { sendTwilioWhatsAppMessage } from './lib/outbox';
+import { queueJobAlert } from './lib/outbox';
 import { getTwilioSecret } from './lib/twilio-secret';
 
 // ── Handler event shape ─────────────────────────────────────────
@@ -38,14 +38,21 @@ interface WorkerRow {
 }
 
 // ── Handler ─────────────────────────────────────────────────────
+// This Lambda is the PRODUCER only: it resolves matched workers and queues
+// one idempotent whatsapp_outbox row per (job, worker), then returns. It
+// never calls Twilio. Sending happens on the scheduled drain
+// (job-alert-drain.ts, EventBridge every 5 minutes,
+// drainJobAlertOutbox()) — this removes the crash window where an inline
+// send between "insert pending row" and "mark sent" could strand a row or,
+// worse, re-send a message Twilio already accepted on Lambda retry.
 export const handler = async (
   event: JobAlertEvent,
-): Promise<{ sent: number; skipped: number }> => {
+): Promise<{ queued: number; skipped: number }> => {
   if (!event.jobId) {
     // V1 only supports mode 1. Return early rather than error — caller can
     // extend later.
     console.warn('[job-alert] no jobId in event; V1 only supports jobId mode', event);
-    return { sent: 0, skipped: 0 };
+    return { queued: 0, skipped: 0 };
   }
 
   const pool = await getDbPool();
@@ -59,7 +66,7 @@ export const handler = async (
     );
     if (jobResult.rowCount === 0) {
       console.warn('[job-alert] job not found', { jobId: event.jobId });
-      return { sent: 0, skipped: 0 };
+      return { queued: 0, skipped: 0 };
     }
     const job = jobResult.rows[0];
 
@@ -90,10 +97,11 @@ export const handler = async (
 
     if (workers.rowCount === 0) {
       console.log('[job-alert] no matched workers', { jobId: job.id });
-      return { sent: 0, skipped: 0 };
+      return { queued: 0, skipped: 0 };
     }
 
-    // 3. Send the appropriate language template to each worker.
+    // 3. Queue the appropriate language template for each worker. No Twilio
+    // call happens here — see the module doc comment above.
     const secret = await getTwilioSecret();
     const sidEs = secret.templates?.job_alert_es;
     const sidEn = secret.templates?.job_alert_en;
@@ -103,7 +111,7 @@ export const handler = async (
       );
     }
 
-    let sent = 0;
+    let queued = 0;
     let skipped = 0;
     for (const worker of workers.rows) {
       const templateKey = worker.language === 'en' ? 'job_alert_en' : 'job_alert_es';
@@ -114,54 +122,23 @@ export const handler = async (
         '4': job.pay,
         '5': `job-${job.id}`, // matches parseButtonPayload expectation in flows.ts
       };
-      let outboxId: string | undefined;
       try {
-        // Claim a durable outbox row before the network call. The unique
-        // idempotency key prevents duplicate alerts across retries/invocations.
-        const claimed = await client.query<{ id: string }>(
-          `INSERT INTO whatsapp_outbox
-             (inbound_message_sid, sequence, whatsapp_number, body,
-              content_template, content_variables, source_type, source_id,
-              idempotency_key)
-           VALUES (NULL, 1, $1, NULL, $2, $3::jsonb, 'job_alert', $4, $5)
-           ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
-           DO UPDATE SET status = 'pending'
-             WHERE whatsapp_outbox.status = 'failed'
-               AND whatsapp_outbox.attempt_count < 5
-           RETURNING id`,
-          [worker.whatsapp_number, templateKey, JSON.stringify(variables), job.id,
-            `job-alert:${job.id}:${worker.id}`],
-        );
-        outboxId = claimed.rows[0]?.id;
+        const outboxId = await queueJobAlert(client, {
+          whatsappNumber: worker.whatsapp_number,
+          templateKey,
+          variables,
+          jobId: job.id,
+          workerId: worker.id,
+        });
         if (!outboxId) {
+          // Already pending/sent, or failed at the attempt cap — idempotent
+          // no-op, not an error.
           skipped++;
           continue;
         }
-        const twilioMessageSid = await sendTwilioWhatsAppMessage(
-          `whatsapp:${worker.whatsapp_number}`,
-          { body: null, content_template: templateKey, content_variables: variables },
-        );
-        await client.query(
-          `UPDATE whatsapp_outbox
-              SET status = 'sent', sent_at = now(),
-                  twilio_message_sid = COALESCE($2, twilio_message_sid)
-            WHERE id = $1`,
-          [outboxId, twilioMessageSid],
-        );
-        sent++;
+        queued++;
       } catch (err) {
-        if (outboxId) {
-          await client.query(
-            `UPDATE whatsapp_outbox
-                SET status = 'failed', attempt_count = attempt_count + 1,
-                    last_error = $2
-              WHERE id = $1`,
-            [outboxId, err instanceof Error ? err.message : String(err)],
-          ).catch(() => undefined);
-        }
-        // Log per-worker failures but keep sending to others. Real failures
-        // land in CloudWatch; operational alarms are out of V1 scope.
-        console.error('[job-alert] send failed for worker', {
+        console.error('[job-alert] queue failed for worker', {
           workerId: worker.id,
           jobId: job.id,
           err: (err as Error).message,
@@ -170,8 +147,8 @@ export const handler = async (
       }
     }
 
-    console.log('[job-alert] done', { jobId: job.id, sent, skipped });
-    return { sent, skipped };
+    console.log('[job-alert] done', { jobId: job.id, queued, skipped });
+    return { queued, skipped };
   } finally {
     client.release();
   }

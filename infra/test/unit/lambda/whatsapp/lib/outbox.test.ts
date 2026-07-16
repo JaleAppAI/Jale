@@ -8,6 +8,7 @@ const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
 import {
+  drainJobAlertOutbox,
   sendPendingAdminOutbox,
   sendPendingOutbox,
   _clearOutboxTwilioSecretCacheForTests,
@@ -36,7 +37,7 @@ describe('whatsapp outbox templates', () => {
         },
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM_sent' }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM11111111111111111111111111111111' }) });
   });
 
   afterAll(() => {
@@ -71,7 +72,7 @@ describe('whatsapp outbox templates', () => {
     expect(sentBody).toContain(
       'StatusCallback=https%3A%2F%2Fcallbacks.example.test%2Fprod%2Fwhatsapp%2Fstatus-callback',
     );
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1', 'SM_sent']);
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1', 'SM11111111111111111111111111111111']);
   });
 
   it('falls back to text when an in-session template SID is not configured', async () => {
@@ -95,7 +96,7 @@ describe('whatsapp outbox templates', () => {
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('Body=What+is+your+main+trade');
     expect(sentBody).not.toContain('ContentSid=');
-    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2', 'SM_sent']);
+    expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-2', 'SM11111111111111111111111111111111']);
   });
 
   it('drains admin-originated rows independently of inbound message rows', async () => {
@@ -126,11 +127,11 @@ describe('whatsapp outbox templates', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = 'sent'"),
-      ['outbox-admin-1', 'SM_sent'],
+      ['outbox-admin-1', 'SM11111111111111111111111111111111'],
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('record_admin_whatsapp_delivery'),
-      ['outbox-admin-1', 'SM_sent'],
+      ['outbox-admin-1', 'SM11111111111111111111111111111111'],
     );
   });
 
@@ -164,7 +165,7 @@ describe('whatsapp outbox templates', () => {
     expect(sentBody).not.toContain('Body=');
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = 'sent'"),
-      ['outbox-admin-template', 'SM_sent'],
+      ['outbox-admin-template', 'SM11111111111111111111111111111111'],
     );
   });
 
@@ -233,7 +234,7 @@ describe('whatsapp outbox templates', () => {
 
   it('commits each admin outbox row independently', async () => {
     mockFetch
-      .mockResolvedValueOnce({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM_first' }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM22222222222222222222222222222222' }) })
       .mockRejectedValueOnce(new Error('Twilio 500'));
     const rows = [
       {
@@ -272,11 +273,113 @@ describe('whatsapp outbox templates', () => {
     expect(firstCommitIndex).toBeLessThan(secondFailureIndex);
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = 'sent'"),
-      ['outbox-admin-first', 'SM_first'],
+      ['outbox-admin-first', 'SM22222222222222222222222222222222'],
     );
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining('SET status = $1'),
       ['failed', 'Twilio 500', 'outbox-admin-second'],
+    );
+  });
+
+  function jobAlertPool(attemptCount = 0) {
+    const events: string[] = [];
+    const claimQuery = jest.fn(async (sql: string, _params?: unknown[]) => {
+      events.push(sql);
+      if (sql.includes('SELECT id, whatsapp_number')) {
+        return {
+          rows: [{
+            id: 'job-alert-row',
+            whatsapp_number: '+15125551234',
+            body: 'A new job is available',
+            content_template: null,
+            content_variables: null,
+            attempt_count: attemptCount,
+          }],
+        };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const resultQuery = jest.fn(async (sql: string, _params?: unknown[]) => {
+      events.push(sql);
+      return { rowCount: 1, rows: [] };
+    });
+    const clients = [
+      { query: claimQuery, release: jest.fn() },
+      { query: resultQuery, release: jest.fn() },
+    ];
+    const pool = { connect: jest.fn(async () => clients.shift()!) };
+    return { pool, claimQuery, resultQuery, events };
+  }
+
+  it('claims only pending job alerts with SKIP LOCKED and commits before sending', async () => {
+    const { pool, claimQuery, resultQuery, events } = jobAlertPool();
+    mockFetch.mockImplementationOnce(async () => {
+      events.push('TWILIO_SEND');
+      return {
+        ok: true,
+        json: async () => ({ sid: 'SM33333333333333333333333333333333' }),
+      };
+    });
+
+    await expect(drainJobAlertOutbox(pool as any, 1)).resolves.toEqual({
+      sent: 1, ambiguous: 0, failed: 0,
+    });
+
+    const selectSql = String(claimQuery.mock.calls.find(([sql]) => sql.includes('SELECT id'))![0]);
+    expect(selectSql).toContain("status = 'pending'");
+    expect(selectSql).not.toContain("'send_unknown'");
+    expect(selectSql).toContain('FOR UPDATE SKIP LOCKED');
+    expect(events.indexOf('COMMIT')).toBeLessThan(events.indexOf('TWILIO_SEND'));
+    expect(claimQuery).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'send_unknown'"),
+      ['job-alert-row'],
+    );
+    expect(resultQuery).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'sent'"),
+      ['job-alert-row', 'SM33333333333333333333333333333333'],
+    );
+  });
+
+  it('leaves an ambiguous job-alert send terminally send_unknown without backoff', async () => {
+    const { pool, resultQuery } = jobAlertPool();
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+
+    await expect(drainJobAlertOutbox(pool as any, 1)).resolves.toEqual({
+      sent: 0, ambiguous: 1, failed: 0,
+    });
+
+    const update = resultQuery.mock.calls.find(([sql]) => sql.includes("status = 'send_unknown'"));
+    expect(update).toBeDefined();
+    expect(String(update![0])).toContain('next_attempt_at = NULL');
+    expect(String(update![0])).not.toContain('milliseconds');
+    expect(update![1]).toEqual(['job-alert-row', expect.stringContaining('valid message SID')]);
+  });
+
+  it('retries definite non-acceptance with backoff while below the attempt cap', async () => {
+    const { pool, resultQuery } = jobAlertPool();
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 503, text: async () => 'unavailable' });
+
+    await expect(drainJobAlertOutbox(pool as any, 1)).resolves.toEqual({
+      sent: 0, ambiguous: 0, failed: 1,
+    });
+
+    const update = resultQuery.mock.calls.find(([sql]) => sql.includes("status = 'pending'"));
+    expect(update).toBeDefined();
+    expect(String(update![0])).toContain('milliseconds');
+    expect(update![1]).toEqual(['job-alert-row', expect.stringContaining('HTTP 503'), '30000']);
+  });
+
+  it('marks definite non-acceptance failed at the attempt cap', async () => {
+    const { pool, resultQuery } = jobAlertPool(4);
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 400, text: async () => 'invalid' });
+
+    await expect(drainJobAlertOutbox(pool as any, 1)).resolves.toEqual({
+      sent: 0, ambiguous: 0, failed: 1,
+    });
+
+    expect(resultQuery).toHaveBeenCalledWith(
+      expect.stringContaining("SET status = 'failed'"),
+      ['job-alert-row', expect.stringContaining('HTTP 400')],
     );
   });
 });

@@ -51,6 +51,7 @@ describe('BillingStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     // LegalStack must be created so the DualAuthorizer is attached to a method
     // (CDK validates this at synth time; Template.fromStack triggers synthesis).
@@ -503,6 +504,7 @@ describe('BillingStack — alarm email subscription', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     new LegalStack(app, 'TestLegalStackEmail', {
       vpc: network.vpc,
@@ -562,6 +564,7 @@ describe('BillingStack — imported alarm topic', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     new LegalStack(app, 'TestLegalStackImportedTopic', {
       vpc: network.vpc,

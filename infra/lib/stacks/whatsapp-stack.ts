@@ -13,11 +13,13 @@ import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
+import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -37,16 +39,14 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly trustAssessmentQueue: sqs.IQueue;
   /** Exact public API Gateway URL configured in Twilio for delivery callbacks. */
   readonly statusCallbackUrl: string;
-}
-
-function validateStatusCallbackUrl(raw: string): string {
-  let url: URL;
-  try { url = new URL(raw); } catch { throw new Error('statusCallbackUrl must be a valid HTTPS URL'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
-      || !url.pathname.endsWith('/whatsapp/status-callback')) {
-    throw new Error('statusCallbackUrl must be an HTTPS /whatsapp/status-callback URL');
-  }
-  return url.toString();
+  /**
+   * Existing SNS topic ARN for WhatsApp operational alarms. Required in any
+   * environment that wants actionable alarms — an alarm with no subscriber
+   * is not actionable. If omitted, a topic is created but left unsubscribed
+   * (synth-only/dev convenience); operators must subscribe it before relying
+   * on these alarms.
+   */
+  readonly alarmTopicArn?: string;
 }
 
 /**
@@ -74,7 +74,7 @@ export class WhatsAppStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
       this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
-    const statusCallbackUrl = validateStatusCallbackUrl(props.statusCallbackUrl);
+    const statusCallbackUrl = normalizeWhatsappStatusCallbackUrl(props.statusCallbackUrl);
 
     // ── Secrets Manager references ──────────────────────────────
     // NOTE: fromSecretNameV2 is an imported reference — CDK synth/deploy
@@ -222,6 +222,32 @@ export class WhatsAppStack extends cdk.Stack {
     });
     whatsappDbSecret.grantRead(this.jobAlertLambda.function);
     twilioSecret.grantRead(this.jobAlertLambda.function);
+
+    // ── Job Alert Outbox Drain ───────────────────────────────────
+    // Crash-safe scheduled sender for job_alert outbox rows queued by
+    // WhatsAppJobAlertLambda above (which only queues — see job-alert.ts
+    // and drainJobAlertOutbox() for the crash-safety design). EventBridge
+    // every 5 minutes, mirroring JobMessageOutboxSweeperLambda's cadence.
+    const jobAlertDrainLambda = new JaleLambdaFunction(this, 'JobAlertOutboxDrainLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/job-alert-drain.ts'),
+      description: 'Job alert outbox drain — crash-safe scheduled Twilio sends',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
+        TWILIO_REQUEST_TIMEOUT_MS: '4000',
+        ALLOWED_ORIGIN: allowedOrigin,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
+      },
+    });
+    whatsappDbSecret.grantRead(jobAlertDrainLambda.function);
+    twilioSecret.grantRead(jobAlertDrainLambda.function);
+
+    new events.Rule(this, 'JobAlertOutboxDrainSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new eventTargets.LambdaFunction(jobAlertDrainLambda.function)],
+    });
 
     // ── Job Message Outbox Sweeper ──────────────────────────────
     // EventBridge every 5 min: retries stale/failed-under-cap job_message_outbox
@@ -387,29 +413,82 @@ export class WhatsAppStack extends cdk.Stack {
     whatsappDbSecret.grantRead(statusCallbackLambda.function);
     twilioSecret.grantRead(statusCallbackLambda.function);
 
-    const deliveryFailureMetric = new logs.MetricFilter(this, 'WhatsAppDeliveryFailureMetric', {
-      logGroup: statusCallbackLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppDeliveryFailure'),
-      metricNamespace: 'Jale/WhatsApp',
-      metricName: 'DeliveryFailures',
-      metricValue: '1',
-    });
-    const deliveryFailureAlarm = new cloudwatch.Alarm(this, 'WhatsAppDeliveryFailuresAlarm', {
-      alarmName: 'WhatsAppDeliveryFailures',
-      metric: deliveryFailureMetric.metric({
-        period: cdk.Duration.minutes(5),
-        statistic: 'Sum',
-      }),
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    const alarmTopicArn = this.node.tryGetContext('billingAlarmTopicArn');
-    const alarmTopic = alarmTopicArn
-      ? sns.Topic.fromTopicArn(this, 'WhatsAppAlarmTopic', alarmTopicArn)
+    // ── Alarm notifications ──
+    // WhatsApp-specific naming (not billingAlarmTopicArn — a distinct SNS
+    // topic per domain keeps ownership and paging routing clear). An alarm
+    // with no reachable subscriber is not actionable, so this stack requires
+    // either an existing monitored topic ARN (whatsappAlarmTopicArn context /
+    // props.alarmTopicArn) or an email to subscribe on a CDK-created topic
+    // (whatsappAlarmEmail context). Fail closed rather than silently wiring
+    // alarms to an empty topic.
+    const whatsappAlarmEmail = this.node.tryGetContext('whatsappAlarmEmail');
+    if (!props.alarmTopicArn && !whatsappAlarmEmail) {
+      throw new Error(
+        'WhatsAppStack requires an actionable alarm target: pass alarmTopicArn '
+        + '(-c whatsappAlarmTopicArn=<existing SNS topic ARN>) or -c whatsappAlarmEmail=<address> '
+        + 'to subscribe a new topic.',
+      );
+    }
+    const alarmTopic = props.alarmTopicArn
+      ? sns.Topic.fromTopicArn(this, 'WhatsAppAlarmTopic', props.alarmTopicArn)
       : new sns.Topic(this, 'WhatsAppAlarmTopic', { topicName: 'jale-whatsapp-alarms' });
-    deliveryFailureAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+    if (!props.alarmTopicArn && whatsappAlarmEmail) {
+      (alarmTopic as sns.Topic).addSubscription(
+        new snsSubscriptions.EmailSubscription(whatsappAlarmEmail),
+      );
+    }
+    const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
+
+    const metricFilter = (id: string, metricValueEquals: string, metricName: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: statusCallbackLambda.logGroup,
+        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        metricNamespace: 'Jale/WhatsApp',
+        metricName,
+        metricValue: '1',
+      });
+
+    const alarm = (id: string, alarmName: string, metric: cloudwatch.IMetric) =>
+      new cloudwatch.Alarm(this, id, {
+        alarmName,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    // Twilio-reported terminal delivery failures (failed/undelivered).
+    const deliveryFailureMetric = metricFilter(
+      'WhatsAppDeliveryFailureMetric', 'WhatsAppDeliveryFailure', 'DeliveryFailures',
+    );
+    alarm(
+      'WhatsAppDeliveryFailuresAlarm', 'WhatsAppDeliveryFailures',
+      deliveryFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // Callback processing/config/database failures (signature validation
+    // errors, DB connection failures, secret/config errors) — these are the
+    // callback pipeline breaking, not a Twilio-side delivery outcome, and
+    // were previously invisible to alarms.
+    const callbackErrorMetric = metricFilter(
+      'WhatsAppStatusCallbackErrorMetric', 'WhatsAppStatusCallbackError', 'CallbackErrors',
+    );
+    alarm(
+      'WhatsAppStatusCallbackErrorsAlarm', 'WhatsAppStatusCallbackErrors',
+      callbackErrorMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // Callbacks for a Twilio SID we have no durable-outbox or job-message row
+    // for — could indicate a correlation bug or a race between send-commit
+    // and callback delivery worth paging on if sustained.
+    const unknownSidMetric = metricFilter(
+      'WhatsAppStatusCallbackUnknownSidMetric', 'WhatsAppStatusCallbackUnknownSid', 'UnknownSids',
+    );
+    alarm(
+      'WhatsAppStatusCallbackUnknownSidAlarm', 'WhatsAppStatusCallbackUnknownSids',
+      unknownSidMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────
     // INTENTIONALLY UNAUTHENTICATED. Twilio signs webhook requests with

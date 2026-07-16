@@ -172,7 +172,7 @@ describe('Processor Lambda', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
   });
 
   afterAll(() => {
@@ -1853,7 +1853,7 @@ describe('awaiting_media_photo state', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
   });
 
   test('text message (skip) transitions to awaiting_media_voice', async () => {
@@ -1998,7 +1998,7 @@ describe('awaiting_media_voice state', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
   });
 
   test('text message (skip) transitions to building_profile and asks first profile question', async () => {
@@ -2172,7 +2172,7 @@ describe('building_profile custom trade handoff', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
   });
 
   test('last text profile answer for other trade generates custom questions and asks Q1 in spanish', async () => {
@@ -2265,7 +2265,7 @@ describe('processing_ai state', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
   });
 
   test('any inbound message replies with ai_processing_wait and does not change state', async () => {
@@ -2325,7 +2325,7 @@ describe('interactivePayload extraction from Body', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
   });
 
   // Test A — Body-as-payload is accepted on the trade prompt.

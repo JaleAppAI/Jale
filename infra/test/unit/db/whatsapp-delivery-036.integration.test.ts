@@ -27,9 +27,18 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
   beforeAll(async () => {
     client = new Client({ connectionString: databaseUrl });
     await client.connect();
-    // Production migrations run as the jale_admin cluster owner. Normalize the
-    // disposable superuser-applied testbed to that ownership model.
-    await client.query('ALTER TABLE whatsapp_outbox OWNER TO jale_admin');
+    // Review-1 correction (item 3, native gate integrity): this test must
+    // run against a database bootstrapped as the plain jale_admin owner
+    // (NOSUPERUSER NOCREATEDB CREATEROLE NOBYPASSRLS — the exact production
+    // ownership model) with migrations 001..036 applied byte-for-byte, in
+    // order, as that same non-superuser role. No ownership rewrites, no RLS
+    // bypass, no ALTER TABLE ... OWNER TO shortcuts. See
+    // docs/whatsapp-delivery-036-native-gate.md (or the correction-round
+    // summary) for the exact bootstrap commands and the known migration-023
+    // blocker (42P17 recursive RLS policy from migration 020 on `users`,
+    // reached applying 023_job_fields_and_statuses_mvp.sql) that currently
+    // prevents this suite from reaching 036 end-to-end; that blocker is
+    // being fixed by a separate, parallel migration-repair task.
     await client.query(
       `INSERT INTO users (id, cognito_sub, user_type) VALUES
          ($1, $2, 'employer'), ($3, $4, 'worker')`,
@@ -72,12 +81,23 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
     await client.end();
   });
 
+  // Review-1 correction (item 3): exercise the unified callback exactly as
+  // production does — as jale_whatsapp via SET LOCAL ROLE inside a
+  // transaction, not as the jale_admin migration owner.
   const record = async (sid: string, status: string) => {
-    const result = await client.query<{ matched: boolean; changed: boolean; source: string | null }>(
-      'SELECT * FROM jale_twilio_callback.record_twilio_delivery_status($1, $2, NULL, NULL)',
-      [sid, status],
-    );
-    return result.rows[0];
+    await client.query('BEGIN');
+    try {
+      await client.query('SET LOCAL ROLE jale_whatsapp');
+      const result = await client.query<{ matched: boolean; changed: boolean; source: string | null }>(
+        'SELECT * FROM jale_twilio_callback.record_twilio_delivery_status($1, $2, NULL, NULL)',
+        [sid, status],
+      );
+      await client.query('COMMIT');
+      return result.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    }
   };
 
   test('whatsapp outbox transitions are monotonic and idempotent', async () => {
@@ -122,6 +142,43 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
       expect(acl.rows[0]).toEqual({
         can_set_helper: false, public_alias: false, unified: true,
       });
+    } finally {
+      await client.query('ROLLBACK');
+    }
+  });
+
+  // Review-1 correction (item 3): admin_case_events is admin-console-owned
+  // (migration 026/027) — jale_whatsapp has no grant on it at all. The
+  // admin-event write on delivery/read/failure MUST happen exclusively
+  // inside the SECURITY DEFINER dispatch, never as a direct app-code write,
+  // and this proves jale_whatsapp cannot bypass that.
+  test('jale_whatsapp cannot write admin_case_events directly (only via the SECURITY DEFINER dispatch)', async () => {
+    await client.query('BEGIN');
+    try {
+      await client.query('SET LOCAL ROLE jale_whatsapp');
+      await expect(client.query(
+        `INSERT INTO admin_case_events (case_id, event_type, actor_type, actor_id, payload)
+         VALUES ($1, 'admin_reply_delivered', 'system', 'twilio', '{}'::jsonb)`,
+        [randomUUID()],
+      )).rejects.toThrow(/permission denied/i);
+    } finally {
+      await client.query('ROLLBACK');
+    }
+  });
+
+  // Review-1 correction (item 3): the NOLOGIN jale_twilio_callback role
+  // itself must never be directly reachable by anything other than the
+  // migration-time grantor — no application role should be able to SET
+  // ROLE into it (that would let a compromised Lambda role bypass the
+  // dispatch function's validation and call the raw locked implementations
+  // with arbitrary inputs). Covered structurally in the ACL test above via
+  // can_set_helper === false; this test proves the negative outcome too.
+  test('jale_whatsapp cannot SET ROLE into jale_twilio_callback', async () => {
+    await client.query('BEGIN');
+    try {
+      await client.query('SET LOCAL ROLE jale_whatsapp');
+      await expect(client.query('SET LOCAL ROLE jale_twilio_callback'))
+        .rejects.toThrow(/permission denied/i);
     } finally {
       await client.query('ROLLBACK');
     }

@@ -38,6 +38,7 @@ describe('ApiStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
       employerCandidateRerankQueue,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     // LegalStack must be created so the dual authorizer is attached to a method
     new LegalStack(app, 'TestLegalStack', {
