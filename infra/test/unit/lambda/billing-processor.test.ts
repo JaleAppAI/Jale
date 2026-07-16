@@ -28,6 +28,8 @@ import { processEnvelope } from '../../../lambda/billing/processor';
 
 jest.mock('../../../lambda/lib/db');
 jest.mock('../../../lambda/lib/stripe-client');
+jest.mock('../../../lambda/lib/entitlements');
+jest.mock('../../../lambda/lib/email-outbox');
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const dbMod = require('../../../lambda/lib/db');
@@ -37,6 +39,10 @@ const mockGetDbPool: jest.Mock = dbMod.getDbPool;
 const stripeMod = require('../../../lambda/lib/stripe-client');
 const mockGetStripe: jest.Mock = stripeMod.getStripe;
 const mockGetStripeSecret: jest.Mock = stripeMod.getStripeSecret;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const mockResolveEntitlements: jest.Mock = require('../../../lambda/lib/entitlements').resolveEntitlements;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const mockQueueEmail: jest.Mock = require('../../../lambda/lib/email-outbox').queueEmail;
 
 // ── Fake IDs ───────────────────────────────────────────────────────────────
 
@@ -204,8 +210,126 @@ describe('billing processor: processEnvelope()', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     process.env = { ...originalEnv };
+    process.env.ALLOWED_ORIGIN = 'https://jaleapp.ai';
     // FIX 1: price comes from stripe secret, not env var
     mockGetStripeSecret.mockResolvedValue({ secretKey: 'rk_test_000', priceIdEmployerPro: PRICE_PRO });
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
+    mockQueueEmail.mockResolvedValue('email-outbox-1');
+  });
+
+  function setupEntitlementReduction(
+    pausedCount: number,
+    pausedTitles: string[] = [],
+    employerEmail: string | null = 'employer@example.com',
+  ) {
+    const { queryMock } = makeDbMock();
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
+      if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
+      if (sql.includes('billing_pause_over_limit_jobs')) return Promise.resolve({ rows: [{
+        paused_count: pausedCount,
+        employer_email: employerEmail,
+        paused_titles: pausedTitles,
+      }] });
+      return Promise.resolve({ rows: [] });
+    });
+    return { queryMock };
+  }
+
+  it.each(['canceled', 'unpaid', 'incomplete_expired', 'paused'])(
+    'enforces the resolved active-job limit for reducing status %s',
+    async (status) => {
+      const { queryMock } = setupEntitlementReduction(0);
+      mockStripe(makeStripeSubscription({ status }));
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
+      expect(result.outcome).toBe('processed');
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
+      expect(queryMock).toHaveBeenCalledWith(
+        expect.stringContaining('billing_pause_over_limit_jobs'),
+        [USER1, 1],
+      );
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['active', 'trialing', 'past_due'])(
+    'does not enforce or email for non-reducing/grace status %s',
+    async (status) => {
+      const { queryMock } = setupEntitlementReduction(2, ['Newest job']);
+      mockStripe(makeStripeSubscription({ status }));
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({ status })));
+      expect(result.outcome).toBe('processed');
+      expect(mockResolveEntitlements).not.toHaveBeenCalled();
+      expect(queryMock.mock.calls.some(([sql]) => String(sql).includes('billing_pause_over_limit_jobs'))).toBe(false);
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+    },
+  );
+
+  it('queues one bilingual email atomically with exact subscription/event idempotency', async () => {
+    const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+    setupEntitlementReduction(2, ['Older overflow', 'Newest overflow']);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    const result = await processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })));
+    expect(result.outcome).toBe('processed');
+    expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+    expect(mockQueueEmail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      recipientEmail: 'employer@example.com',
+      sourceType: 'billing_pause',
+      sourceId: 'subscription-row-uuid',
+      idempotencyKey: `billing-pause:subscription-row-uuid:${EVT1}`,
+      bodyText: expect.stringMatching(/Older overflow[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/billing[\s\S]*Tu suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/billing/),
+    }));
+    expect(infoLog).toHaveBeenCalledWith('paused_over_limit_jobs', { userId: USER1, pausedCount: 2 });
+    infoLog.mockRestore();
+  });
+
+  it.each([
+    { name: 'missing employer email', count: 1, titles: ['Overflow'], email: null,
+      code: 'billing_job_enforcement_invalid_email' },
+    { name: 'title count mismatch', count: 2, titles: ['Only one'], email: 'employer@example.com',
+      code: 'billing_job_enforcement_invalid_titles' },
+    { name: 'blank title', count: 1, titles: ['   '], email: 'employer@example.com',
+      code: 'billing_job_enforcement_invalid_titles' },
+  ])('rolls back on $name', async ({ count, titles, email, code }) => {
+    const { queryMock } = setupEntitlementReduction(count, titles, email);
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: code });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('rolls back when the enforcement function returns no result row', async () => {
+    const { queryMock } = setupEntitlementReduction(0);
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
+      if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
+      if (sql.includes('billing_pause_over_limit_jobs')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({ rows: [] });
+    });
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+
+    await expect(processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' }))))
+      .resolves.toEqual({ outcome: 'failed', errorCode: 'billing_job_enforcement_invalid_result' });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+  });
+
+  it('rolls back subscription, enforcement, and email together when queueing fails', async () => {
+    const { queryMock } = setupEntitlementReduction(1, ['Newest overflow']);
+    mockQueueEmail.mockRejectedValue(new Error('email_outbox_insert_failed'));
+    mockStripe(makeStripeSubscription({ status: 'canceled' }));
+    const result = await processEnvelope(makeEnvelope(makeSubEvent({ status: 'canceled' })));
+    expect(result).toEqual({ outcome: 'failed', errorCode: 'email_outbox_insert_failed' });
+    expect(queryMock).toHaveBeenCalledWith('ROLLBACK');
+    const queueOrder = mockQueueEmail.mock.invocationCallOrder[0];
+    const rollbackCall = queryMock.mock.calls.findIndex(([sql]) => sql === 'ROLLBACK');
+    expect(rollbackCall).toBeGreaterThan(-1);
+    expect(queueOrder).toBeLessThan(queryMock.mock.invocationCallOrder[rollbackCall]);
   });
 
   afterAll(() => {

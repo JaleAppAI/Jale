@@ -58,6 +58,9 @@ describe('database migrations', () => {
       '033',
       '034',
       '035',
+      '037',
+      '038',
+      '039',
     ]);
   });
 
@@ -136,6 +139,68 @@ describe('database migrations', () => {
     expect(migration).toContain('GRANT SELECT, INSERT, UPDATE ON billing_customers  TO jale_admin');
     expect(migration).toContain('GRANT SELECT                 ON subscriptions      TO jale_admin');
     expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
+  });
+
+  it('adds least-privilege job-limit enforcement in migration 037', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '037_billing_job_limit_enforcement.sql'), 'utf8');
+    expect(migration).toContain('CREATE ROLE jale_billing_job_enforcer');
+    expect(migration).toContain('CREATE SCHEMA jale_billing_internal AUTHORIZATION jale_billing_job_enforcer');
+    expect(migration).toContain('CREATE FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(migration).toContain('ORDER BY j.created_at ASC, j.id ASC');
+    expect(migration).toContain("AND j.status = 'active'");
+    expect(migration).toContain('REVOKE ALL ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
+    expect(migration).toContain('REVOKE jale_billing_job_enforcer FROM jale_admin');
+    expect(migration).toContain('NOT membership.set_option');
+    expect(migration).toContain('jale_billing_job_enforcer column privilege invariant failed');
+    expect(migration).toContain('Billing enforcer schema/function invariant failed');
+    expect(migration).toContain('Billing enforcer ACL invariant failed');
+    expect(migration).not.toContain('ALTER ROLE jale_billing_job_enforcer');
+  });
+
+  it('adds a bounded default-deny generic email outbox in migration 038', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '038_email_outbox.sql'), 'utf8');
+    expect(migration).toContain('CREATE TABLE email_outbox');
+    expect(migration).toContain('recipient_email');
+    expect(migration).toContain('source_id         UUID NOT NULL');
+    expect(migration).toContain('next_attempt_at   TIMESTAMPTZ');
+    expect(migration).toContain('next_attempt_at ASC NULLS FIRST');
+    expect(migration).toContain("status IN ('pending', 'sent', 'failed', 'send_unknown')");
+    expect(migration).toContain('email_outbox_idempotency_unique');
+    expect(migration).toContain('ALTER TABLE email_outbox FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain("WITH CHECK (source_type = 'billing_pause')");
+    expect(migration).not.toContain('GRANT DELETE');
+  });
+
+  it('repairs relationship RLS recursion with a narrow NOLOGIN helper in migration 039', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '039_rls_relationship_recursion_repair.sql'), 'utf8');
+    expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
+    expect(migration).toContain('NOLOGIN NOSUPERUSER');
+    expect(migration).toContain('NOBYPASSRLS');
+    expect(migration).toContain('ALTER POLICY jobs_worker_read_active    ON jobs             TO jale_admin');
+    expect(migration.match(/ALTER POLICY/g)).toHaveLength(8);
+    expect(migration).toContain('GRANT SELECT (worker_id, job_id) ON job_applications');
+    expect(migration).toContain('GRANT SELECT (id, employer_id) ON jobs');
+    expect(migration).toContain('GRANT USAGE ON SCHEMA public TO jale_rls_relationship_reader');
+    expect(migration).toContain('CREATE SCHEMA jale_internal AUTHORIZATION jale_rls_relationship_reader');
+    expect(migration).toContain('REVOKE ALL ON SCHEMA jale_internal FROM PUBLIC');
+    expect(migration).toContain('CREATE FUNCTION jale_internal.employer_has_applicant_relationship');
+    expect(migration).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(migration).toContain('GRANT USAGE ON SCHEMA jale_internal TO jale_admin');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION jale_internal.employer_has_applicant_relationship');
+    expect(migration).toContain('Existing jale_internal schema has unexpected owner');
+    expect(migration).toContain('Existing jale_rls_relationship_reader role has unsafe memberships');
+    expect(migration).toContain('jale_rls_relationship_reader creator membership invariant failed');
+    expect(migration).toContain('Relationship predicate definition invariant failed');
+    expect(migration).toContain('jale_internal PUBLIC privilege invariant failed');
+    expect(migration).toContain('policy.polroles = ARRAY[');
+    expect(migration).toContain('NOT membership.set_option');
+    expect(migration).toContain('REVOKE jale_rls_relationship_reader FROM jale_admin');
+    expect(migration).not.toContain('ALTER ROLE jale_rls_relationship_reader');
+    expect(migration).not.toContain('CREATE OR REPLACE FUNCTION');
+    expect(migration).not.toMatch(/\sBYPASSRLS(?:\s|;)/);
   });
 
   it('keeps migration runner scripts pointed at the current files', () => {

@@ -33,6 +33,8 @@ import type { SQSHandler, SQSRecord } from 'aws-lambda';
 import Stripe = require('stripe');
 import { getDbPool } from '../lib/db';
 import { getStripe, getStripeSecret } from '../lib/stripe-client';
+import { resolveEntitlements } from '../lib/entitlements';
+import { queueEmail } from '../lib/email-outbox';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -290,7 +292,7 @@ async function handleSubscriptionEvent(
       ? existing.grace_ends_at  // preserve — use literal timestamp
       : null;
 
-    await client.query(
+    const upsertRes = await client.query<{ id: string }>(
       `INSERT INTO subscriptions (
           user_id, plan_code, provider_subscription_id, status,
           current_period_start, current_period_end, cancel_at_period_end,
@@ -314,7 +316,8 @@ async function handleSubscriptionEvent(
                THEN EXCLUDED.grace_ends_at             -- new deadline (now+7d)
              ELSE NULL                                 -- non-past_due: clear
            END,
-           updated_at           = now()`,
+           updated_at           = now()
+       RETURNING id`,
       [
         userId,
         planCode,
@@ -326,6 +329,62 @@ async function handleSubscriptionEvent(
         graceFragment,
       ],
     );
+
+    const persistedSubscriptionId = upsertRes.rows[0]?.id ?? existing?.id;
+    const reducingStatuses = new Set(['canceled', 'unpaid', 'incomplete_expired', 'paused']);
+    if (reducingStatuses.has(status)) {
+      if (!persistedSubscriptionId) throw new Error('subscription_upsert_missing_id');
+      const entitlements = await resolveEntitlements(client, userId);
+      const enforcement = await client.query<{
+        paused_count: number;
+        employer_email: string | null;
+        paused_titles: string[];
+      }>(
+        `SELECT paused_count, employer_email, paused_titles
+           FROM jale_billing_internal.billing_pause_over_limit_jobs($1, $2)`,
+        [userId, entitlements.activeJobLimit],
+      );
+      const result = enforcement.rows[0];
+      if (!result) throw new Error('billing_job_enforcement_invalid_result');
+      const pausedCount = Number(result.paused_count);
+      if (!Number.isInteger(pausedCount) || pausedCount < 0) {
+        throw new Error('billing_job_enforcement_invalid_result');
+      }
+      if (pausedCount > 0) {
+        if (typeof result?.employer_email !== 'string'
+          || result.employer_email.length > 320
+          || !result.employer_email.includes('@')) {
+          throw new Error('billing_job_enforcement_invalid_email');
+        }
+        const titles = Array.isArray(result.paused_titles) ? result.paused_titles : [];
+        if (titles.length !== pausedCount
+          || titles.some((title) => typeof title !== 'string' || title.trim().length === 0)) {
+          throw new Error('billing_job_enforcement_invalid_titles');
+        }
+        console.info('paused_over_limit_jobs', { userId, pausedCount });
+        const bulletList = titles.map((title) => `- ${title}`).join('\n');
+        const origin = (process.env.ALLOWED_ORIGIN ?? '').replace(/\/$/, '');
+        if (!origin) throw new Error('billing_allowed_origin_missing');
+        const englishBillingUrl = `${origin}/en/employer/billing`;
+        const spanishBillingUrl = `${origin}/es/employer/billing`;
+        await queueEmail(client, {
+          recipientEmail: result.employer_email,
+          subject: 'Job posting update / Actualización de empleos',
+          bodyText: [
+            'Your subscription changed and these job postings were paused to match your active-job limit:',
+            bulletList,
+            `Manage billing: ${englishBillingUrl}`,
+            '',
+            'Tu suscripción cambió y estas ofertas de trabajo se pausaron para respetar tu límite de empleos activos:',
+            bulletList,
+            `Administrar facturación: ${spanishBillingUrl}`,
+          ].join('\n\n'),
+          sourceType: 'billing_pause',
+          sourceId: persistedSubscriptionId,
+          idempotencyKey: `billing-pause:${persistedSubscriptionId}:${eventId}`,
+        });
+      }
+    }
 
     await markInboxStatusWithClient(client, eventId, 'processed', null, new Date());
     await client.query('COMMIT');

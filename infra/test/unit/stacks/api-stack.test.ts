@@ -13,7 +13,11 @@ describe('ApiStack', () => {
 
   beforeAll(() => {
     const app = new cdk.App({
-      context: { otpSmsFromNumber: '+13252210992' },
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        emailFromAddress: 'billing@jaleapp.ai',
+        sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+      },
     });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', {
