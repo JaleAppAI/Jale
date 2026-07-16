@@ -32,9 +32,11 @@ describe('Job Alert Sender Lambda', () => {
       ...originalEnv,
       TWILIO_SECRET_ARN: 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/twilio',
       DB_SECRET_ARN: 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/db',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     };
 
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockQuery.mockResolvedValue({ rowCount: 1, rows: [{ id: 'outbox-claimed' }] });
 
     // Default Twilio secret with templates wired
     mockSecretsSend.mockResolvedValue({
@@ -110,6 +112,13 @@ describe('Job Alert Sender Lambda', () => {
     expect(body.get('From')).toBeNull();
     expect(body.get('To')).toBe('whatsapp:+15125551234');
     expect(body.get('ContentSid')).toBe(JOB_ALERT_SID_ES);
+    expect(body.get('StatusCallback')).toBe(
+      'https://callbacks.example.test/prod/whatsapp/status-callback',
+    );
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("'job_alert'"),
+      expect.arrayContaining(['job-alert:job-uuid-1:worker-uuid-1']),
+    );
 
     const vars = JSON.parse(body.get('ContentVariables')!);
     expect(vars).toEqual({

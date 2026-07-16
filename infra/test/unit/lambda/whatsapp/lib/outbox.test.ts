@@ -23,6 +23,8 @@ describe('whatsapp outbox templates', () => {
     _clearOutboxTwilioSecretCacheForTests();
     process.env = { ...originalEnv, TWILIO_SECRET_ARN: 'arn:twilio' };
     process.env.TWILIO_REQUEST_TIMEOUT_MS = '4000';
+    process.env.TWILIO_STATUS_CALLBACK_URL =
+      'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
         accountSid: 'AC_test',
@@ -66,6 +68,9 @@ describe('whatsapp outbox templates', () => {
     );
     const sentBody = mockFetch.mock.calls[0][1].body as string;
     expect(sentBody).toContain('ContentVariables=');
+    expect(sentBody).toContain(
+      'StatusCallback=https%3A%2F%2Fcallbacks.example.test%2Fprod%2Fwhatsapp%2Fstatus-callback',
+    );
     expect(query).toHaveBeenLastCalledWith(expect.stringContaining("SET status = 'sent'"), ['outbox-1', 'SM_sent']);
   });
 

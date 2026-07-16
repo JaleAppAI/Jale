@@ -37,6 +37,8 @@ export class ApiStack extends cdk.Stack {
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const stageName = this.node.tryGetContext('environment') ?? 'dev';
+    const whatsappStatusCallbackUrl = this.node.tryGetContext('whatsappStatusCallbackUrl')
+      ?? process.env.JALE_WHATSAPP_STATUS_CALLBACK_URL;
     const twilioSecret = secretsmanager.Secret.fromSecretNameV2(
       this,
       'MessagingTwilioSecret',
@@ -282,6 +284,9 @@ export class ApiStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        ...(whatsappStatusCallbackUrl
+          ? { TWILIO_STATUS_CALLBACK_URL: whatsappStatusCallbackUrl }
+          : {}),
       },
     });
     props.dbSecret.grantRead(employerConversationsCreateLambda.function);
@@ -297,6 +302,9 @@ export class ApiStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        ...(whatsappStatusCallbackUrl
+          ? { TWILIO_STATUS_CALLBACK_URL: whatsappStatusCallbackUrl }
+          : {}),
       },
     });
     props.dbSecret.grantRead(employerConversationsSendLambda.function);

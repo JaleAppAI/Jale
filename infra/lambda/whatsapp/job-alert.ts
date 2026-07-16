@@ -1,72 +1,6 @@
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
 import { getDbPool } from '../lib/db';
-import type { TwilioSecret } from './lib/twilio';
-
-// ── Module-level clients + caches ───────────────────────────────
-const secretsManager = new SecretsManagerClient({});
-
-let cachedTwilio: TwilioSecret | null = null;
-let twilioCacheExp = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-async function getTwilioSecret(): Promise<TwilioSecret> {
-  const now = Date.now();
-  if (cachedTwilio && now < twilioCacheExp) return cachedTwilio;
-  const arn = process.env.TWILIO_SECRET_ARN;
-  if (!arn) throw new Error('TWILIO_SECRET_ARN not set');
-  const r = await secretsManager.send(new GetSecretValueCommand({ SecretId: arn }));
-  if (!r.SecretString) throw new Error('TWILIO secret empty');
-  cachedTwilio = JSON.parse(r.SecretString) as TwilioSecret;
-  twilioCacheExp = now + CACHE_TTL_MS;
-  return cachedTwilio;
-}
-
-// ── Twilio Content API template send ────────────────────────────
-/**
- * Sends an approved WhatsApp template (Content API) via Twilio.
- *
- * Uses the "Messages" endpoint with ContentSid + ContentVariables — this is
- * the correct path for business-initiated messages (outside the 24h session
- * window). Free-form Body-only sends would fail outside the session.
- *
- * ContentVariables is a JSON string mapping numeric variable indices to values.
- * For jale_job_alert_*:
- *   {{1}} = job title      (body)
- *   {{2}} = company name   (body)
- *   {{3}} = location       (body)
- *   {{4}} = pay rate       (body)
- *   {{5}} = job id         (button payload, not shown in body)
- */
-async function sendTemplate(
-  to: string, // "whatsapp:+1..."
-  contentSid: string,
-  contentVariables: Record<string, string>,
-  secret: TwilioSecret,
-): Promise<void> {
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
-  const form = new URLSearchParams({
-    MessagingServiceSid: secret.messagingServiceSid,
-    To: to,
-    ContentSid: contentSid,
-    ContentVariables: JSON.stringify(contentVariables),
-  });
-  const auth = Buffer.from(`${secret.accountSid}:${secret.authToken}`).toString('base64');
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Basic ${auth}`,
-      'Content-Type': 'application/x-www-form-urlencoded',
-    },
-    body: form.toString(),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Twilio template send failed ${res.status}: ${text}`);
-  }
-}
+import { sendTwilioWhatsAppMessage } from './lib/outbox';
+import { getTwilioSecret } from './lib/twilio-secret';
 
 // ── Handler event shape ─────────────────────────────────────────
 /**
@@ -172,7 +106,7 @@ export const handler = async (
     let sent = 0;
     let skipped = 0;
     for (const worker of workers.rows) {
-      const sid = worker.language === 'en' ? sidEn : sidEs;
+      const templateKey = worker.language === 'en' ? 'job_alert_en' : 'job_alert_es';
       const variables = {
         '1': job.title,
         '2': job.company,
@@ -180,15 +114,51 @@ export const handler = async (
         '4': job.pay,
         '5': `job-${job.id}`, // matches parseButtonPayload expectation in flows.ts
       };
+      let outboxId: string | undefined;
       try {
-        await sendTemplate(
+        // Claim a durable outbox row before the network call. The unique
+        // idempotency key prevents duplicate alerts across retries/invocations.
+        const claimed = await client.query<{ id: string }>(
+          `INSERT INTO whatsapp_outbox
+             (inbound_message_sid, sequence, whatsapp_number, body,
+              content_template, content_variables, source_type, source_id,
+              idempotency_key)
+           VALUES (NULL, 1, $1, NULL, $2, $3::jsonb, 'job_alert', $4, $5)
+           ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+           DO UPDATE SET status = 'pending'
+             WHERE whatsapp_outbox.status = 'failed'
+               AND whatsapp_outbox.attempt_count < 5
+           RETURNING id`,
+          [worker.whatsapp_number, templateKey, JSON.stringify(variables), job.id,
+            `job-alert:${job.id}:${worker.id}`],
+        );
+        outboxId = claimed.rows[0]?.id;
+        if (!outboxId) {
+          skipped++;
+          continue;
+        }
+        const twilioMessageSid = await sendTwilioWhatsAppMessage(
           `whatsapp:${worker.whatsapp_number}`,
-          sid,
-          variables,
-          secret,
+          { body: null, content_template: templateKey, content_variables: variables },
+        );
+        await client.query(
+          `UPDATE whatsapp_outbox
+              SET status = 'sent', sent_at = now(),
+                  twilio_message_sid = COALESCE($2, twilio_message_sid)
+            WHERE id = $1`,
+          [outboxId, twilioMessageSid],
         );
         sent++;
       } catch (err) {
+        if (outboxId) {
+          await client.query(
+            `UPDATE whatsapp_outbox
+                SET status = 'failed', attempt_count = attempt_count + 1,
+                    last_error = $2
+              WHERE id = $1`,
+            [outboxId, err instanceof Error ? err.message : String(err)],
+          ).catch(() => undefined);
+        }
         // Log per-worker failures but keep sending to others. Real failures
         // land in CloudWatch; operational alarms are out of V1 scope.
         console.error('[job-alert] send failed for worker', {

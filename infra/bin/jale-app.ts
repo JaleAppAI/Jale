@@ -149,6 +149,9 @@ new WhatsAppStack(app, 'JaleWhatsAppStack', {
   workerRerankQueue: matching.workerRerankQueue,
   questionGeneratorFn: ai.questionGeneratorFn.function,
   trustAssessmentQueue: ai.trustAssessmentQueue,
+  statusCallbackUrl: app.node.tryGetContext('whatsappStatusCallbackUrl')
+    ?? process.env.JALE_WHATSAPP_STATUS_CALLBACK_URL
+    ?? '',
 });
 
 new DocumentsStack(app, 'JaleDocumentsStack', {

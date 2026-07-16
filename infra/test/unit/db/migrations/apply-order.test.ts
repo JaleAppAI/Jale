@@ -43,6 +43,7 @@ const expectedBaselineMigrations = [
   '033_pay_interval_experience_months_worker_certifications.sql',
   '034_billing_foundation.sql',
   '035_whatsapp_support_cases.sql',
+  '036_whatsapp_delivery_status.sql',
   '037_billing_job_limit_enforcement.sql',
   '038_email_outbox.sql',
   '039_rls_relationship_recursion_repair.sql',

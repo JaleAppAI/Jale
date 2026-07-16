@@ -8,7 +8,11 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
@@ -31,6 +35,18 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly workerRerankQueue?: sqs.IQueue;
   readonly questionGeneratorFn: lambda.IFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
+  /** Exact public API Gateway URL configured in Twilio for delivery callbacks. */
+  readonly statusCallbackUrl: string;
+}
+
+function validateStatusCallbackUrl(raw: string): string {
+  let url: URL;
+  try { url = new URL(raw); } catch { throw new Error('statusCallbackUrl must be a valid HTTPS URL'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
+      || !url.pathname.endsWith('/whatsapp/status-callback')) {
+    throw new Error('statusCallbackUrl must be an HTTPS /whatsapp/status-callback URL');
+  }
+  return url.toString();
 }
 
 /**
@@ -58,6 +74,7 @@ export class WhatsAppStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
       this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
+    const statusCallbackUrl = validateStatusCallbackUrl(props.statusCallbackUrl);
 
     // ── Secrets Manager references ──────────────────────────────
     // NOTE: fromSecretNameV2 is an imported reference — CDK synth/deploy
@@ -147,6 +164,7 @@ export class WhatsAppStack extends cdk.Stack {
         WORKER_CLIENT_ID: props.workerPool.clientId,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
     });
     whatsappDbSecret.grantRead(this.processorLambda.function);
@@ -199,6 +217,7 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         ALLOWED_ORIGIN: allowedOrigin,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
     });
     whatsappDbSecret.grantRead(this.jobAlertLambda.function);
@@ -217,6 +236,7 @@ export class WhatsAppStack extends cdk.Stack {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         ALLOWED_ORIGIN: allowedOrigin,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
     });
     whatsappDbSecret.grantRead(outboxSweeperLambda.function);
@@ -236,6 +256,7 @@ export class WhatsAppStack extends cdk.Stack {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
     });
     whatsappDbSecret.grantRead(this.adminOutboxDispatcherLambda.function);
@@ -271,6 +292,7 @@ export class WhatsAppStack extends cdk.Stack {
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
         QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
       nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-lambda'],
     });
@@ -303,6 +325,7 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
         TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
     });
     whatsappDbSecret.grantRead(voiceTrustReceiverLambda.function);
@@ -348,6 +371,46 @@ export class WhatsAppStack extends cdk.Stack {
     props.trustAssessmentQueue.grantSendMessages(this.processorLambda.function);
     props.questionGeneratorFn.grantInvoke(this.processorLambda.function);
 
+    // Public Twilio delivery-status receiver. Authentication is the Twilio
+    // HMAC signature; it needs DB + Twilio secrets but no Cognito authorizer.
+    const statusCallbackLambda = new JaleLambdaFunction(this, 'WhatsAppStatusCallbackLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/status-callback.ts'),
+      description: 'Twilio WhatsApp delivery status callback — signature validation + durable status',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TWILIO_SECRET_ARN: twilioSecret.secretName,
+        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
+      },
+    });
+    whatsappDbSecret.grantRead(statusCallbackLambda.function);
+    twilioSecret.grantRead(statusCallbackLambda.function);
+
+    const deliveryFailureMetric = new logs.MetricFilter(this, 'WhatsAppDeliveryFailureMetric', {
+      logGroup: statusCallbackLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppDeliveryFailure'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'DeliveryFailures',
+      metricValue: '1',
+    });
+    const deliveryFailureAlarm = new cloudwatch.Alarm(this, 'WhatsAppDeliveryFailuresAlarm', {
+      alarmName: 'WhatsAppDeliveryFailures',
+      metric: deliveryFailureMetric.metric({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    const alarmTopicArn = this.node.tryGetContext('billingAlarmTopicArn');
+    const alarmTopic = alarmTopicArn
+      ? sns.Topic.fromTopicArn(this, 'WhatsAppAlarmTopic', alarmTopicArn)
+      : new sns.Topic(this, 'WhatsAppAlarmTopic', { topicName: 'jale-whatsapp-alarms' });
+    deliveryFailureAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
     // ── API Gateway route: POST /whatsapp/webhook ───────────────
     // INTENTIONALLY UNAUTHENTICATED. Twilio signs webhook requests with
     // X-Twilio-Signature (HMAC-SHA1 over the full URL + sorted body params).
@@ -360,6 +423,18 @@ export class WhatsAppStack extends cdk.Stack {
       new apigateway.LambdaIntegration(this.webhookLambda.function),
       {
         methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
+      },
+    );
+    const statusCallbackResource = whatsappResource.addResource('status-callback');
+    statusCallbackResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(statusCallbackLambda.function),
+      {
+        authorizationType: apigateway.AuthorizationType.NONE,
+        methodResponses: [
+          { statusCode: '200' }, { statusCode: '400' },
+          { statusCode: '403' }, { statusCode: '503' },
+        ],
       },
     );
   }

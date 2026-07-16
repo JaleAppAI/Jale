@@ -158,6 +158,7 @@ describe('Processor Lambda', () => {
       WORKER_POOL_ID: 'pool-abc',
       WORKER_CLIENT_ID: 'client-abc',
       TWILIO_SECRET_ARN: 'arn:twilio',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       DB_SECRET_ARN: 'arn:db',
       REQUIRED_TOS_VERSION: '1.0',
     };
@@ -1842,6 +1843,7 @@ describe('awaiting_media_photo state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -1986,6 +1988,7 @@ describe('awaiting_media_voice state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -2158,6 +2161,7 @@ describe('building_profile custom trade handoff', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
@@ -2251,6 +2255,7 @@ describe('processing_ai state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -2306,6 +2311,7 @@ describe('interactivePayload extraction from Body', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
+    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     process.env.WORKER_POOL_ID = 'pool-abc';
     process.env.WORKER_CLIENT_ID = 'client-abc';
     process.env.DB_SECRET_ARN = 'arn:db';

@@ -14,7 +14,11 @@ describe('WhatsAppStack', () => {
 
   beforeAll(() => {
     const app = new cdk.App({
-      context: { otpSmsFromNumber: '+13252210992' },
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        whatsappStatusCallbackUrl:
+          'https://callbacks.example.test/prod/whatsapp/status-callback',
+      },
     });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', { network });
@@ -59,6 +63,7 @@ describe('WhatsAppStack', () => {
       api: api.api,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
+      statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     });
     template = Template.fromStack(whatsapp);
     apiTemplate = Template.fromStack(api);
@@ -93,8 +98,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 7 Lambda functions (webhook + processor + job-alert + ai-profile-writer + voice-trust-receiver + outbox-sweeper + admin-outbox-dispatcher)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 7);
+  test('Stack creates 8 Lambda functions including the status callback', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 8);
   });
 
   test('job message outbox sweeper runs on a 5-minute schedule', () => {
@@ -215,6 +220,49 @@ describe('WhatsAppStack', () => {
     });
     // At least one unauthenticated POST method should exist
     expect(webhookMethods.length).toBeGreaterThan(0);
+  });
+
+  test('status callback is a sibling unauthenticated API Gateway route', () => {
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Resource', {
+      PathPart: 'status-callback',
+    });
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'NONE',
+      MethodResponses: Match.arrayWith([
+        Match.objectLike({ StatusCode: '200' }),
+        Match.objectLike({ StatusCode: '503' }),
+      ]),
+    });
+  });
+
+  test('all six WhatsAppStack outbound senders and callback use the exact configured URL', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const configured = Object.values(functions).filter((resource: any) =>
+      resource.Properties?.Environment?.Variables?.TWILIO_STATUS_CALLBACK_URL
+        === 'https://callbacks.example.test/prod/whatsapp/status-callback');
+    expect(configured).toHaveLength(7);
+  });
+
+  test('both ApiStack employer-conversation senders use the exact configured URL', () => {
+    const functions = apiTemplate.findResources('AWS::Lambda::Function');
+    const configured = Object.values(functions).filter((resource: any) =>
+      resource.Properties?.Environment?.Variables?.TWILIO_STATUS_CALLBACK_URL
+        === 'https://callbacks.example.test/prod/whatsapp/status-callback');
+    expect(configured).toHaveLength(2);
+  });
+
+  test('delivery failure metric alarms to SNS', () => {
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      MetricTransformations: Match.arrayWith([
+        Match.objectLike({ MetricName: 'DeliveryFailures', MetricNamespace: 'Jale/WhatsApp' }),
+      ]),
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'WhatsAppDeliveryFailures',
+      Threshold: 1,
+      AlarmActions: Match.anyValue(),
+    });
   });
 
   describe('Sprint 7: AI profile media resources', () => {

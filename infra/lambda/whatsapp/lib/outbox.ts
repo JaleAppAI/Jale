@@ -1,11 +1,11 @@
 import type { PoolClient } from 'pg';
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
 import type { TwilioSecret } from './twilio';
+import {
+  getTwilioSecret,
+  requireTwilioStatusCallbackUrl,
+  _clearTwilioSecretCacheForTests,
+} from './twilio-secret';
 
-const secretsManager = new SecretsManagerClient({});
 const FALLBACK_BODY_KEY = '__fallback_body';
 
 // H3: poison-message guard for the scheduled admin dispatcher. A row that Twilio
@@ -14,30 +14,11 @@ const FALLBACK_BODY_KEY = '__fallback_body';
 // stays 'failed' with last_error set for operator follow-up.
 const MAX_ADMIN_SEND_ATTEMPTS = 5;
 
-let cachedTwilio: TwilioSecret | null = null;
-let twilioCacheExp = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
 class AmbiguousTwilioSendError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AmbiguousTwilioSendError';
   }
-}
-
-async function getTwilioSecret(): Promise<TwilioSecret> {
-  const now = Date.now();
-  if (cachedTwilio && now < twilioCacheExp) return cachedTwilio;
-
-  const arn = process.env.TWILIO_SECRET_ARN;
-  if (!arn) throw new Error('TWILIO_SECRET_ARN not set');
-
-  const r = await secretsManager.send(new GetSecretValueCommand({ SecretId: arn }));
-  if (!r.SecretString) throw new Error('TWILIO secret empty');
-
-  cachedTwilio = JSON.parse(r.SecretString) as TwilioSecret;
-  twilioCacheExp = now + CACHE_TTL_MS;
-  return cachedTwilio;
 }
 
 export async function sendTwilioWhatsAppMessage(to: string, row: {
@@ -50,6 +31,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
   const formValues: Record<string, string> = {
     MessagingServiceSid: secret.messagingServiceSid,
     To: to,
+    StatusCallback: requireTwilioStatusCallbackUrl(),
   };
 
   if (row.content_template) {
@@ -264,6 +246,5 @@ function parseTimeout(raw: string | undefined): number {
 }
 
 export function _clearOutboxTwilioSecretCacheForTests(): void {
-  cachedTwilio = null;
-  twilioCacheExp = 0;
+  _clearTwilioSecretCacheForTests();
 }
