@@ -312,6 +312,65 @@ describe('BillingStack', () => {
     });
   });
 
+  // ── Checkout error taxonomy (config vs. provider) ───────────────────────
+
+  test('CheckoutConfigError metric filter matches the configuration-error log literal into Jale/Billing', () => {
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '"billing-checkout configuration error"',
+      MetricTransformations: Match.arrayWith([
+        Match.objectLike({
+          MetricNamespace: 'Jale/Billing',
+          MetricName: 'CheckoutConfigError',
+        }),
+      ]),
+    });
+  });
+
+  test('CheckoutProviderError metric filter matches the provider-error log literal into Jale/Billing', () => {
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '"billing-checkout provider error"',
+      MetricTransformations: Match.arrayWith([
+        Match.objectLike({
+          MetricNamespace: 'Jale/Billing',
+          MetricName: 'CheckoutProviderError',
+        }),
+      ]),
+    });
+  });
+
+  test('CheckoutConfigErrorAlarm fires on >= 1 CheckoutConfigError in a single 5-minute period, treating missing data as not breaching', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'CheckoutConfigErrorAlarm',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      Period: 300,
+      Statistic: 'Sum',
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      MetricName: 'CheckoutConfigError',
+      Namespace: 'Jale/Billing',
+    });
+  });
+
+  test('CheckoutConfigErrorAlarm is wired to the billing alarm topic', () => {
+    const topics = template.findResources('AWS::SNS::Topic', {
+      Properties: { TopicName: 'jale-billing-alarms' },
+    });
+    const topicLogicalIds = Object.keys(topics);
+    expect(topicLogicalIds).toHaveLength(1);
+
+    const alarms = template.findResources('AWS::CloudWatch::Alarm', {
+      Properties: { AlarmName: 'CheckoutConfigErrorAlarm' },
+    });
+    const matching = Object.values(alarms);
+    expect(matching).toHaveLength(1);
+    const alarm = matching[0] as any;
+    const alarmActionsJson = JSON.stringify(alarm.Properties.AlarmActions);
+    const okActionsJson = JSON.stringify(alarm.Properties.OKActions);
+    expect(topicLogicalIds.some((id) => alarmActionsJson.includes(id))).toBe(true);
+    expect(topicLogicalIds.some((id) => okActionsJson.includes(id))).toBe(true);
+  });
+
   // ── Alarm notifications ──────────────────────────────────────────────────
 
   test('billing alarm SNS topic exists', () => {

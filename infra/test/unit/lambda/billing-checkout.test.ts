@@ -1,13 +1,20 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../../../lambda/lib/db';
 import { checkCompliance } from '../../../lambda/legal/check-compliance';
-import { getStripe, getStripeSecret } from '../../../lambda/lib/stripe-client';
+import { getStripe, getStripeSecret, StripeConfigError } from '../../../lambda/lib/stripe-client';
 import { checkoutRequestHash } from '../../../lambda/lib/billing-operations';
 import { handler } from '../../../lambda/billing/checkout';
 
 jest.mock('../../../lambda/lib/db');
 jest.mock('../../../lambda/legal/check-compliance');
-jest.mock('../../../lambda/lib/stripe-client');
+// Keep the real StripeConfigError class (so `instanceof` checks in
+// checkout.ts work against genuine instances) while mocking the async
+// functions.
+jest.mock('../../../lambda/lib/stripe-client', () => ({
+  ...jest.requireActual('../../../lambda/lib/stripe-client'),
+  getStripe: jest.fn(),
+  getStripeSecret: jest.fn(),
+}));
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
@@ -193,7 +200,64 @@ describe('billing checkout handler', () => {
     expect(checkoutCreate).toHaveBeenCalledWith(expect.any(Object), expect.objectContaining({ idempotencyKey: expect.stringMatching(/^checkout:/) }));
   });
 
+  it('m5: replays the open checkout for a new idempotency key when the request_hash matches (same body)', async () => {
+    const cachedOpen = { url: 'https://cached.example/open-session', sessionId: 'cs_open' };
+    query.mockImplementation((sql: string, params: any[]) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      if (sql.includes('client_idempotency_key')) return Promise.resolve({ rows: [] });
+      if (sql.includes('FROM subscriptions')) return Promise.resolve({ rows: [] });
+      if (sql.includes("status = 'pending'") && sql.includes('lease_expires_at > now()')) return Promise.resolve({ rows: [] });
+      if (sql.includes('FROM billing_operations') && sql.includes('provider_expires_at > now()')) {
+        expect(sql).toContain('request_hash = $3');
+        const requestHash = params[params.length - 1];
+        if (requestHash === checkoutRequestHash(body)) return Promise.resolve({ rows: [{ cached_response: cachedOpen }] });
+        return Promise.resolve({ rows: [] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await handler(event({ headers: { 'Idempotency-Key': '44444444-4444-4444-8444-444444444444' } }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual(cachedOpen);
+    expect(customerCreate).not.toHaveBeenCalled();
+    expect(checkoutCreate).not.toHaveBeenCalled();
+  });
+
+  it('m5: does NOT replay the open checkout for a new idempotency key with a changed body (different request_hash) — creates a new operation', async () => {
+    const cachedOpen = { url: 'https://cached.example/open-session', sessionId: 'cs_open' };
+    const differentBody = { ...body, planCode: 'employer_pro_v2' };
+    query.mockImplementation((sql: string, params: any[]) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro_v2' }] });
+      if (sql.includes('client_idempotency_key')) return Promise.resolve({ rows: [] });
+      if (sql.includes('FROM subscriptions')) return Promise.resolve({ rows: [] });
+      if (sql.includes("status = 'pending'") && sql.includes('lease_expires_at > now()')) return Promise.resolve({ rows: [] });
+      if (sql.includes('FROM billing_operations') && sql.includes('provider_expires_at > now()')) {
+        // The stale open session's hash belongs to the OLD body — the new,
+        // different-body request_hash must not match it.
+        const requestHash = params[params.length - 1];
+        if (requestHash === checkoutRequestHash(body)) return Promise.resolve({ rows: [{ cached_response: cachedOpen }] });
+        return Promise.resolve({ rows: [] });
+      }
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) return Promise.resolve({ rows: [{ provider_customer_id: 'cus_123' }] });
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await handler(event({
+      body: JSON.stringify(differentBody),
+      headers: { 'Idempotency-Key': '55555555-5555-4555-8555-555555555555' },
+    }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ url: 'https://checkout.stripe.test/session', sessionId: 'cs_123' });
+    expect(checkoutCreate).toHaveBeenCalled();
+    expect(query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO billing_operations'), expect.arrayContaining(['user-1']));
+  });
+
   it('returns billing_configuration_invalid and marks operation failed when the Stripe price is missing', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockGetStripeSecret.mockResolvedValue({});
     query.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
@@ -205,10 +269,123 @@ describe('billing checkout handler', () => {
 
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body)).toEqual({ error: 'billing_configuration_invalid' });
+    expect(mockGetStripe).not.toHaveBeenCalled();
     expect(customerCreate).not.toHaveBeenCalled();
+    expect(checkoutCreate).not.toHaveBeenCalled();
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('lease_expires_at = NULL'),
+      expect.arrayContaining(['stripe_price_missing', true]),
+    );
+    expect(errorLog).toHaveBeenCalledWith('billing-checkout configuration error:', 'stripe_price_missing');
+    errorLog.mockRestore();
+  });
+
+  it('returns billing_configuration_invalid (not 503) and marks the operation terminally failed when getStripeSecret throws StripeConfigError', async () => {
+    mockGetStripeSecret.mockRejectedValue(new StripeConfigError('stripe_api_secret_invalid_key'));
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'billing_configuration_invalid' });
+    expect(mockGetStripe).not.toHaveBeenCalled();
+    expect(customerCreate).not.toHaveBeenCalled();
+    expect(checkoutCreate).not.toHaveBeenCalled();
+    // Terminal failure — status flips to 'failed', unlike the retryable path.
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("status = CASE WHEN $3 THEN 'failed' ELSE status END"),
-      expect.arrayContaining(['stripe_price_missing', true]),
+      expect.arrayContaining(['stripe_api_secret_invalid_key', true]),
+    );
+  });
+
+  it('returns 503 and keeps the operation resumable when Secrets Manager throttles', async () => {
+    mockGetStripeSecret.mockRejectedValue({
+      name: 'ThrottlingException',
+      $metadata: { httpStatusCode: 400 },
+    });
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'provider_retryable' });
+    expect(mockGetStripe).not.toHaveBeenCalled();
+    expect(customerCreate).not.toHaveBeenCalled();
+    expect(checkoutCreate).not.toHaveBeenCalled();
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('lease_expires_at = NULL'),
+      expect.arrayContaining(['stripe_retryable_error', false]),
+    );
+  });
+
+  it('returns billing_configuration_invalid when getStripe (not just getStripeSecret) throws StripeConfigError', async () => {
+    mockGetStripeSecret.mockResolvedValue({ priceIdEmployerPro: 'price_employer_pro' });
+    mockGetStripe.mockRejectedValue(new StripeConfigError('stripe_secret_arn_missing'));
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      return Promise.resolve({ rows: [] });
+    });
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'billing_configuration_invalid' });
+    expect(customerCreate).not.toHaveBeenCalled();
+    expect(checkoutCreate).not.toHaveBeenCalled();
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining("status = CASE WHEN $3 THEN 'failed' ELSE status END"),
+      expect.arrayContaining(['stripe_secret_arn_missing', true]),
+    );
+  });
+
+  it('resumes and succeeds on a same-key retry after a prior config-error attempt once the secret loads', async () => {
+    // First attempt: secret is broken.
+    mockGetStripeSecret.mockRejectedValueOnce(new StripeConfigError('stripe_api_secret_invalid_key'));
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      return Promise.resolve({ rows: [] });
+    });
+    const firstRes = await handler(event());
+    expect(firstRes.statusCode).toBe(500);
+    expect(JSON.parse(firstRes.body)).toEqual({ error: 'billing_configuration_invalid' });
+
+    // Second attempt, same idempotency key: secret now loads fine and the
+    // operation resumes from the same (now-failed, lease-cleared) row.
+    mockGetStripeSecret.mockResolvedValue({ priceIdEmployerPro: 'price_employer_pro' });
+    query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users')) return Promise.resolve({ rows: [{ id: 'user-1', email: 'e@example.com' }] });
+      if (sql.includes('SELECT code FROM billing_plans')) return Promise.resolve({ rows: [{ code: 'employer_pro' }] });
+      if (sql.includes('FROM billing_operations') && sql.includes('client_idempotency_key')) {
+        return Promise.resolve({
+          rows: [{
+            id: '33333333-3333-4333-8333-333333333333',
+            request_hash: checkoutRequestHash(body),
+            status: 'failed',
+            cached_response: null,
+            lease_expires_at: null,
+          }],
+        });
+      }
+      if (sql.includes('SELECT provider_customer_id FROM billing_customers')) return Promise.resolve({ rows: [{ provider_customer_id: 'cus_123' }] });
+      return Promise.resolve({ rows: [] });
+    });
+
+    const secondRes = await handler(event());
+    expect(secondRes.statusCode).toBe(200);
+    expect(JSON.parse(secondRes.body)).toEqual({ url: 'https://checkout.stripe.test/session', sessionId: 'cs_123' });
+    expect(checkoutCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ customer: 'cus_123' }),
+      { idempotencyKey: 'checkout:33333333-3333-4333-8333-333333333333' },
     );
   });
 

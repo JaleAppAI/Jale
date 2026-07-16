@@ -5,6 +5,7 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
@@ -272,5 +273,43 @@ export class BillingStack extends cdk.Stack {
     });
     processorThrottleAlarm.addAlarmAction(alarmAction);
     processorThrottleAlarm.addOkAction(alarmAction);
+
+    // ── Checkout error taxonomy metrics ──
+    // Distinguish permanent Stripe configuration errors (checkout.ts logs
+    // "billing-checkout configuration error: <reason>") from retryable
+    // provider outages (checkout.ts logs "billing-checkout provider error:
+    // <code>") so on-call sees a config break as a hard page, not noise
+    // indistinguishable from Stripe having a bad day.
+    const checkoutConfigErrorFilter = new logs.MetricFilter(this, 'CheckoutConfigErrorMetricFilter', {
+      logGroup: checkoutLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'CheckoutConfigError',
+      filterPattern: logs.FilterPattern.literal('"billing-checkout configuration error"'),
+      metricValue: '1',
+    });
+
+    // Available for dashboards/ad-hoc alarms even though no alarm currently
+    // keys off it directly.
+    new logs.MetricFilter(this, 'CheckoutProviderErrorMetricFilter', {
+      logGroup: checkoutLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'CheckoutProviderError',
+      filterPattern: logs.FilterPattern.literal('"billing-checkout provider error"'),
+      metricValue: '1',
+    });
+
+    const checkoutConfigErrorAlarm = new cloudwatch.Alarm(this, 'CheckoutConfigErrorAlarm', {
+      metric: checkoutConfigErrorFilter.metric({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'CheckoutConfigErrorAlarm',
+    });
+    checkoutConfigErrorAlarm.addAlarmAction(alarmAction);
+    checkoutConfigErrorAlarm.addOkAction(alarmAction);
   }
 }
