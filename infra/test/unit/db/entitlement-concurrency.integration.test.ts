@@ -63,7 +63,14 @@ async function setServiceRolePasswords(superuserUrl: string): Promise<void> {
   const client = new Client({ connectionString: superuserUrl });
   await client.connect();
   try {
-    await client.query(`ALTER ROLE jale_admin WITH PASSWORD 'test-admin-pw'`);
+    // When the disposable database itself is bootstrapped as jale_admin (the
+    // production-equivalent plain-owner model), rewriting its password would
+    // invalidate the caller's own JALE_TEST_DATABASE_URL — and break every
+    // suite that connects after this one in the same run. Mirror the guard
+    // used by billing-rls / rls-relationship-repair.
+    if (new URL(superuserUrl).username !== 'jale_admin') {
+      await client.query(`ALTER ROLE jale_admin WITH PASSWORD 'test-admin-pw'`);
+    }
     await client.query(`ALTER ROLE jale_billing WITH PASSWORD 'test-billing-pw'`);
   } finally {
     await client.end();
@@ -96,7 +103,9 @@ maybeDescribe('entitlement concurrency (A7 race-safe gate)', () => {
 
     superuserUrl = databaseUrl;
     await setServiceRolePasswords(superuserUrl);
-    adminUrl = urlForRole(databaseUrl, 'jale_admin', 'test-admin-pw');
+    adminUrl = new URL(databaseUrl).username === 'jale_admin'
+      ? databaseUrl
+      : urlForRole(databaseUrl, 'jale_admin', 'test-admin-pw');
 
     // Create a test employer via superuser (bypasses RLS for fixture setup)
     const setup = new Client({ connectionString: superuserUrl });

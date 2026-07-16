@@ -40,11 +40,10 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   /** Exact public API Gateway URL configured in Twilio for delivery callbacks. */
   readonly statusCallbackUrl: string;
   /**
-   * Existing SNS topic ARN for WhatsApp operational alarms. Required in any
-   * environment that wants actionable alarms — an alarm with no subscriber
-   * is not actionable. If omitted, a topic is created but left unsubscribed
-   * (synth-only/dev convenience); operators must subscribe it before relying
-   * on these alarms.
+   * Existing SNS topic ARN for WhatsApp operational alarms. An alarm with no
+   * subscriber is not actionable, so the stack fails synth unless either this
+   * ARN or the `whatsappAlarmEmail` context (which subscribes a CDK-created
+   * topic) is provided.
    */
   readonly alarmTopicArn?: string;
 }
