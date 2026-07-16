@@ -5,7 +5,24 @@ import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
-import { BillingStack } from '../../../lib/stacks/billing-stack';
+import { BillingStack, validateBillingEmailConfiguration } from '../../../lib/stacks/billing-stack';
+
+describe('billing email configuration', () => {
+  test('requires both sender values and rejects missing or partial configuration', () => {
+    expect(() => validateBillingEmailConfiguration(undefined, undefined))
+      .toThrow('emailFromAddress and sesVerifiedIdentityArn are required for billing email delivery');
+    expect(() => validateBillingEmailConfiguration(
+      'billing@jaleapp.ai',
+      'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+    )).not.toThrow();
+    expect(() => validateBillingEmailConfiguration('billing@jaleapp.ai', undefined))
+      .toThrow('emailFromAddress and sesVerifiedIdentityArn are required for billing email delivery');
+    expect(() => validateBillingEmailConfiguration(
+      undefined,
+      'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+    )).toThrow('emailFromAddress and sesVerifiedIdentityArn are required for billing email delivery');
+  });
+});
 
 describe('BillingStack', () => {
   let template: Template;
@@ -13,7 +30,11 @@ describe('BillingStack', () => {
 
   beforeAll(() => {
     const app = new cdk.App({
-      context: { otpSmsFromNumber: '+13252210992' },
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        emailFromAddress: 'billing@jaleapp.ai',
+        sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+      },
     });
     const network = new NetworkStack(app, 'TestNetworkStack');
     const database = new DatabaseStack(app, 'TestDatabaseStack', { network });
@@ -136,6 +157,58 @@ describe('BillingStack', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Processes verified Stripe webhook events from SQS',
     });
+  });
+
+  test('email outbox sweeper uses jale_admin DB, configured sender, and a five-minute schedule', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Sends durable billing email outbox messages through SES',
+      Environment: { Variables: Match.objectLike({
+        DB_SECRET_ARN: dbSecretArnFor('Sends durable billing email outbox messages through SES'),
+        EMAIL_FROM_ADDRESS: 'billing@jaleapp.ai',
+        ALLOWED_ORIGIN: 'https://jaleapp.ai',
+      }) },
+    });
+    expect(dbSecretArnFor('Sends durable billing email outbox messages through SES'))
+      .toEqual(dbSecretArnFor('Returns employer billing status and plan entitlements'));
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(5 minutes)',
+    });
+  });
+
+  test('email sweeper IAM permits only ses:SendEmail on the configured identity', () => {
+    template.hasResourceProperties('AWS::IAM::Policy', {
+      PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
+        Action: 'ses:SendEmail',
+        Effect: 'Allow',
+        Resource: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+      })]) },
+    });
+    const policies = template.findResources('AWS::IAM::Policy');
+    const sesStatements = Object.values(policies).flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => JSON.stringify(statement.Action).includes('ses:'));
+    expect(sesStatements).toEqual([expect.objectContaining({
+      Action: 'ses:SendEmail',
+      Resource: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+    })]);
+  });
+
+  test('email outbox failure logs have metric filters and alarm-topic-backed alarms', () => {
+    for (const [literal, metricName, alarmName] of [
+      ['email_outbox_retryable_failure', 'EmailOutboxRetryableFailure', 'EmailOutboxRetryableFailureAlarm'],
+      ['email_outbox_send_unknown', 'EmailOutboxSendUnknown', 'EmailOutboxSendUnknownAlarm'],
+      ['email_outbox_attempt_cap', 'EmailOutboxAttemptCap', 'EmailOutboxAttemptCapAlarm'],
+    ]) {
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        FilterPattern: `"${literal}"`,
+        MetricTransformations: Match.arrayWith([Match.objectLike({
+          MetricNamespace: 'Jale/Billing', MetricName: metricName,
+        })]),
+      });
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        AlarmActions: Match.anyValue(),
+      });
+    }
   });
 
   // ── Secret isolation matrix ──────────────────────────────────────────────
@@ -411,6 +484,8 @@ describe('BillingStack — alarm email subscription', () => {
       context: {
         otpSmsFromNumber: '+13252210992',
         billingAlarmEmail: 'ops-alerts@example.com',
+        emailFromAddress: 'billing@jaleapp.ai',
+        sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
       },
     });
     const network = new NetworkStack(app, 'TestNetworkStackEmail');
@@ -468,6 +543,8 @@ describe('BillingStack — imported alarm topic', () => {
       context: {
         otpSmsFromNumber: '+13252210992',
         billingAlarmTopicArn: importedTopicArn,
+        emailFromAddress: 'billing@jaleapp.ai',
+        sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
       },
     });
     const network = new NetworkStack(app, 'TestNetworkStackImportedTopic');

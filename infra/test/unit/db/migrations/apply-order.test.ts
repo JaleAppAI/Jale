@@ -42,6 +42,9 @@ const expectedBaselineMigrations = [
   '032_work_authorization_required.sql',
   '033_pay_interval_experience_months_worker_certifications.sql',
   '034_billing_foundation.sql',
+  '037_billing_job_limit_enforcement.sql',
+  '038_email_outbox.sql',
+  '039_rls_relationship_recursion_repair.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -95,7 +98,7 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 }
 
 describe('migration apply order baseline', () => {
-  it('locks the 001-034 readiness baseline order', () => {
+  it('locks the local billing-track migration order (035-036 merge during integration)', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
   });
 

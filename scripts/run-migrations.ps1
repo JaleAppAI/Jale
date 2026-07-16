@@ -80,7 +80,10 @@ $MigrationFiles = @(
     '031_employer_display_name.sql',
     '032_work_authorization_required.sql',
     '033_pay_interval_experience_months_worker_certifications.sql',
-    '034_billing_foundation.sql'
+    '034_billing_foundation.sql',
+    '037_billing_job_limit_enforcement.sql',
+    '038_email_outbox.sql',
+    '039_rls_relationship_recursion_repair.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

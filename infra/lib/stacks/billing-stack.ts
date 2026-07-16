@@ -4,6 +4,9 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
@@ -33,6 +36,15 @@ export interface BillingStackProps extends cdk.StackProps {
   readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   /** /employer resource from ApiStack — billing routes hang off it */
   readonly employerResource: apigateway.Resource;
+}
+
+export function validateBillingEmailConfiguration(
+  emailFromAddress: string | undefined,
+  sesVerifiedIdentityArn: string | undefined,
+): void {
+  if (!emailFromAddress || !sesVerifiedIdentityArn) {
+    throw new Error('emailFromAddress and sesVerifiedIdentityArn are required for billing email delivery');
+  }
 }
 
 /**
@@ -71,6 +83,11 @@ export class BillingStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const billingAlarmEmail = this.node.tryGetContext('billingAlarmEmail');
     const billingAlarmTopicArn = this.node.tryGetContext('billingAlarmTopicArn');
+    const emailFromAddress = this.node.tryGetContext('emailFromAddress') as string | undefined;
+    const sesVerifiedIdentityArn = this.node.tryGetContext('sesVerifiedIdentityArn') as string | undefined;
+    validateBillingEmailConfiguration(emailFromAddress, sesVerifiedIdentityArn);
+    const requiredEmailFromAddress = emailFromAddress!;
+    const requiredSesVerifiedIdentityArn = sesVerifiedIdentityArn!;
 
     // ── Import operator-created secrets by name ──
     // These secrets are never CDK-managed; CDK only imports the ARN reference.
@@ -182,6 +199,7 @@ export class BillingStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: props.billingDbSecret.secretArn,
         STRIPE_SECRET_ARN: stripeApiSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     props.billingDbSecret.grantRead(processorLambda.function);
@@ -195,6 +213,28 @@ export class BillingStack extends cdk.Stack {
         reportBatchItemFailures: true,
       }),
     );
+
+    const emailSweeperLambda = new JaleLambdaFunction(this, 'EmailOutboxSweeperLambda', {
+        entry: path.join(__dirname, '../../lambda/billing/email-outbox-sweeper.ts'),
+        description: 'Sends durable billing email outbox messages through SES',
+        vpc: props.vpc,
+        securityGroups: [props.billingLambdaSg],
+        environment: {
+          DB_SECRET_ARN: props.appDbSecret.secretArn,
+          EMAIL_FROM_ADDRESS: requiredEmailFromAddress,
+          ALLOWED_ORIGIN: allowedOrigin,
+        },
+        nodeModules: ['@aws-sdk/client-ses'],
+    });
+    props.appDbSecret.grantRead(emailSweeperLambda.function);
+    emailSweeperLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail'],
+      resources: [requiredSesVerifiedIdentityArn],
+    }));
+    new events.Rule(this, 'EmailOutboxSweepSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new eventTargets.LambdaFunction(emailSweeperLambda.function)],
+    });
 
     // ── Routes ──
     // /employer/billing — employer-auth routes
@@ -311,5 +351,29 @@ export class BillingStack extends cdk.Stack {
     });
     checkoutConfigErrorAlarm.addAlarmAction(alarmAction);
     checkoutConfigErrorAlarm.addOkAction(alarmAction);
+
+    for (const [id, literal, metricName, alarmName] of [
+      ['EmailOutboxRetryable', 'email_outbox_retryable_failure', 'EmailOutboxRetryableFailure', 'EmailOutboxRetryableFailureAlarm'],
+      ['EmailOutboxUnknown', 'email_outbox_send_unknown', 'EmailOutboxSendUnknown', 'EmailOutboxSendUnknownAlarm'],
+      ['EmailOutboxAttemptCap', 'email_outbox_attempt_cap', 'EmailOutboxAttemptCap', 'EmailOutboxAttemptCapAlarm'],
+    ] as const) {
+      const metricFilter = new logs.MetricFilter(this, `${id}MetricFilter`, {
+        logGroup: emailSweeperLambda.logGroup,
+        metricNamespace: 'Jale/Billing',
+        metricName,
+        filterPattern: logs.FilterPattern.literal(`"${literal}"`),
+        metricValue: '1',
+      });
+      const alarm = new cloudwatch.Alarm(this, `${id}Alarm`, {
+        metric: metricFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        alarmName,
+      });
+      alarm.addAlarmAction(alarmAction);
+      alarm.addOkAction(alarmAction);
+    }
   }
 }
