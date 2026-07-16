@@ -338,6 +338,30 @@ Required before branch acceptance:
 The integration branch/worktree must remain local and must not be merged into
 `SPRINT16` without a new explicit user instruction.
 
+## Consolidation verification — 2026-07-16
+
+- Frontend clean install, Vitest, lint, and clean-environment production build
+  passed. Vitest passed 14/14; lint/build retained the previously documented
+  React hook warnings.
+- Infra clean install and TypeScript build passed. The full serial Jest run
+  passed 111 suites and 1,087 tests; one suite and 61 tests were skipped,
+  including the database-backed gates that require a migrated PostgreSQL URL.
+- `git diff --check` passed after both conflict resolutions and the handoff
+  update.
+- The generic disposable testbed, bootstrapped with a superuser `jale_admin`,
+  applied migrations 001–036 and then migration 037 correctly rejected the
+  superuser-created ACL shape. This harness shape is not production-equivalent.
+- A fresh PostgreSQL 16 database owned by a plain `NOSUPERUSER`,
+  `NOBYPASSRLS`, `CREATEROLE` `jale_admin` applied migrations 001–022 exactly.
+  Migration 023 then aborted with `42P17` (`infinite recursion detected in
+  policy for relation "users"`) because migration 020's recursive policy is
+  exercised before repair migration 039 can run.
+
+The combined clean-chain and PostgreSQL-backed test gates therefore remain
+open. Do not promote or merge this branch until the migration-order recursion
+and the W2 Review-1 blockers are corrected and the complete verification
+matrix passes.
+
 ## Operator prerequisites and external blockers
 
 - Production checkout still lacks the
