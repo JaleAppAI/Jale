@@ -55,7 +55,19 @@ const migrationsDir = path.join(infraRoot, 'db', 'migrations');
 const databaseUrl = process.env.JALE_TEST_UPGRADE_DATABASE_URL;
 
 // Pre-034 baseline — the "already migrated through 033, production-equivalent"
-// starting point. Must exactly match apply-order.test.ts's list minus 034.
+// starting point. Must exactly match apply-order.test.ts's list minus 034,
+// with one deliberate exception: 020b_rls_relationship_recursion_prevention.sql
+// is left OUT here. That migration's invariant checks (carried over from 039)
+// require the DDL executor to be the CREATEROLE non-superuser jale_admin
+// described in infra/db/migrations/020b's header (PG16 auto-grants that
+// creator admin-option membership on roles it creates; a real superuser gets
+// no such row). This suite's own bootstrapJaleAdminRole() below intentionally
+// applies migrations as the Postgres superuser instead (jale_admin here is a
+// bootstrapped LOGIN-only role, never the DDL executor — see that function's
+// comment), which is the opposite role model from 020b/039's assumption and
+// would fail their closing invariant DO block. 020b does not touch any
+// billing table or role this suite verifies, so omitting it from this
+// narrower baseline does not affect what this suite proves about 034.
 const baselineMigrations = [
   '001_initial_schema.sql',
   '002_rls_policies.sql',

@@ -28,6 +28,7 @@ const expectedBaselineMigrations = [
   '018_document_vault_rls_hardening.sql',
   '019_application_status_constraint_repair.sql',
   '020_worker_pii_rls_hardening.sql',
+  '020b_rls_relationship_recursion_prevention.sql',
   '021_whatsapp_required_docs_apply_support.sql',
   '022_job_application_required_docs_guard.sql',
   '023_job_fields_and_statuses_mvp.sql',
@@ -317,6 +318,16 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('information_schema.columns');
     expect(migration).toContain('matching_profile_columns');
     expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
+  });
+
+  it('carries the 039 recursion repair forward to 020b so a fresh cluster never hits 023\'s 42P17', () => {
+    const migration = readMigration('020b_rls_relationship_recursion_prevention.sql');
+
+    expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
+    expect(migration.match(/ALTER POLICY/g)).toHaveLength(8);
+    expect(migration).toContain('CREATE SCHEMA jale_internal AUTHORIZATION jale_rls_relationship_reader');
+    expect(migration).toContain('CREATE FUNCTION jale_internal.employer_has_applicant_relationship');
+    expect(migration).toContain('CREATE POLICY users_employer_applicant_read');
   });
 
   it('adds WhatsApp document access support in migration 021', () => {

@@ -16,8 +16,17 @@ function migrationSql(): string {
 }
 
 describe('database migrations', () => {
-  it('use one contiguous lexical sequence', () => {
-    const files = migrationFiles();
+  // 020b_rls_relationship_recursion_prevention.sql is the one deliberate
+  // exception to "one file per numbered slot": it must apply between 020 and
+  // 021 on a fresh cluster (see its header comment for the full "why"), but
+  // 001-033 are immutable and 023 cannot be renumbered, so it cannot claim a
+  // bare three-digit slot of its own without colliding with 020 or 023. This
+  // allowlist keeps the invariant meaningful (still catches any *other*
+  // numbering mistake) while permitting exactly this one insertion.
+  const INSERTED_NON_CONTIGUOUS_FILES = ['020b_rls_relationship_recursion_prevention.sql'];
+
+  it('use one contiguous lexical sequence (plus the one documented insertion)', () => {
+    const files = migrationFiles().filter((name) => !INSERTED_NON_CONTIGUOUS_FILES.includes(name));
     const numbers = files.map((name) => name.match(/^(\d{3})_/)?.[1]);
 
     expect(numbers).not.toContain(undefined);
@@ -63,6 +72,18 @@ describe('database migrations', () => {
       '038',
       '039',
     ]);
+
+    // The insertion must sort strictly between 020 and 021 under plain
+    // lexical/byte ordering (what Node's Array.prototype.sort() and the
+    // migration runner both use) so the fresh-cluster apply order is
+    // deterministic regardless of shell locale.
+    const allFiles = migrationFiles();
+    const idx020 = allFiles.indexOf('020_worker_pii_rls_hardening.sql');
+    const idx020b = allFiles.indexOf('020b_rls_relationship_recursion_prevention.sql');
+    const idx021 = allFiles.indexOf('021_whatsapp_required_docs_apply_support.sql');
+    expect(idx020).toBeGreaterThanOrEqual(0);
+    expect(idx020b).toBe(idx020 + 1);
+    expect(idx021).toBe(idx020b + 1);
   });
 
   it('define canonical jobs and applications only once', () => {
@@ -316,6 +337,29 @@ describe('database migrations', () => {
     expect(migration).toContain('information_schema.columns');
     expect(migration).toContain('matching_profile_columns');
     expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
+  });
+
+  it('prevents the users<->jobs/job_applications RLS recursion before a fresh cluster reaches migration 023', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '020b_rls_relationship_recursion_prevention.sql'),
+      'utf8',
+    );
+
+    // Same repair 039 performs, carried earlier so a fresh cluster's first
+    // pass through the chain never hits 023's 42P17 abort.
+    expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
+    expect(migration).toContain('NOLOGIN NOSUPERUSER');
+    expect(migration).toContain('NOBYPASSRLS');
+    expect(migration).toContain('ALTER POLICY jobs_worker_read_active    ON jobs             TO jale_admin');
+    expect(migration.match(/ALTER POLICY/g)).toHaveLength(8);
+    expect(migration).toContain('GRANT SELECT (worker_id, job_id) ON job_applications');
+    expect(migration).toContain('GRANT SELECT (id, employer_id) ON jobs');
+    expect(migration).toContain('CREATE SCHEMA jale_internal AUTHORIZATION jale_rls_relationship_reader');
+    expect(migration).toContain('CREATE FUNCTION jale_internal.employer_has_applicant_relationship');
+    expect(migration).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(migration).toContain('jale_rls_relationship_reader creator membership invariant failed');
+    expect(migration).toContain('Relationship predicate definition invariant failed');
+    expect(migration).not.toContain('ALTER ROLE jale_rls_relationship_reader');
   });
 
   it('adds WhatsApp document access support in migration 021', () => {
