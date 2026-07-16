@@ -57,6 +57,7 @@ describe('database migrations', () => {
       '032',
       '033',
       '034',
+      '035',
       '037',
       '038',
       '039',
@@ -200,6 +201,27 @@ describe('database migrations', () => {
     expect(migration).not.toContain('ALTER ROLE jale_rls_relationship_reader');
     expect(migration).not.toContain('CREATE OR REPLACE FUNCTION');
     expect(migration).not.toMatch(/\sBYPASSRLS(?:\s|;)/);
+  });
+
+  it('adds a least-privilege idempotent WhatsApp support-case function in migration 035', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '035_whatsapp_support_cases.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION create_admin_support_case');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('SET search_path = public, pg_temp');
+    expect(migration).toContain("c.case_type = 'help_request'");
+    expect(migration).toContain("c.status IN ('open', 'pending_worker', 'pending_admin')");
+    expect(migration).toContain("'case_created'");
+    expect(migration).toContain("'title', 'Worker requested help'");
+    expect(migration).toContain("'detail', LEFT(v_summary, 500)");
+    expect(migration).toContain("'help_request',\n    'open',\n    70");
+    expect(migration).toContain('wc.user_id IS NULL');
+    expect(migration).toContain('wc.whatsapp_number = u.whatsapp_number');
+    expect(migration).toContain('wc.whatsapp_number = u.phone');
+    expect(migration).not.toContain('GRANT SELECT ON whatsapp_conversations TO jale_admin');
+    expect(migration).toContain('REVOKE ALL ON FUNCTION create_admin_support_case(UUID, UUID, TEXT, TEXT) FROM PUBLIC');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION create_admin_support_case(UUID, UUID, TEXT, TEXT) TO jale_whatsapp');
+    expect(migration).not.toMatch(/GRANT\s+(SELECT|INSERT|UPDATE|DELETE)\s+ON\s+admin_cases\s+TO\s+jale_whatsapp/i);
   });
 
   it('keeps migration runner scripts pointed at the current files', () => {

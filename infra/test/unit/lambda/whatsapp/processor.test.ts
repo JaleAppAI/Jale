@@ -981,6 +981,173 @@ describe('Processor Lambda', () => {
       expect(outboxTemplates()).not.toContain('help_menu_list_es');
     });
 
+    it('creates a support case for a linked worker before focused-thread relay', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'idle',
+            language: 'en',
+            user_id: 'user-1',
+            focused_job_conversation_id: 'job-conv-1',
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub-1' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-1', created: true }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-support',
+          From: 'whatsapp:+15125551234',
+          Body: 'Support',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(findQueryByPattern(/FROM create_admin_support_case/i)).toEqual([
+        'user-1',
+        'conv-1',
+        'Worker requested WhatsApp support',
+        'Support',
+      ]);
+      expect(outboxBodies()).toContain(t('support_ack', 'en'));
+      expect(countQueryByPattern(/INSERT INTO job_conversation_messages/i)).toBe(0);
+    });
+
+    it('acknowledges an existing open support case without creating another', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-existing' }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'es', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub-1' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-1', created: false }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack_existing outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-support-existing',
+          From: 'whatsapp:+15125551234',
+          Body: 'soporte',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(countQueryByPattern(/FROM create_admin_support_case/i)).toBe(1);
+      expect(outboxBodies()).toContain(t('support_ack_existing', 'es'));
+    });
+
+    it('requires signup for a pre-OTP support command and does not create a case', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-pre-otp' }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
+        })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // verified-phone worker resolution
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_needs_signup outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-support-pre-otp',
+          From: 'whatsapp:+15125551234',
+          Body: 'support',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(findQueryByPattern(/create_admin_support_case/i)).toBeUndefined();
+      expect(outboxBodies()).toContain(t('support_needs_signup', 'en'));
+    });
+
+    it('creates a support case for an unlinked conversation resolved by verified phone without binding it', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-phone' }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'phone-worker-1' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'phone-worker-sub-1' }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-phone-1', created: true }] })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-support-phone',
+          From: 'whatsapp:+15125551234',
+          Body: 'support',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(findQueryByPattern(/FROM create_admin_support_case/i)).toEqual([
+        'phone-worker-1',
+        'conv-1',
+        'Worker requested WhatsApp support',
+        'support',
+      ]);
+      expect(outboxBodies()).toContain(t('support_ack', 'en'));
+      expect(countQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBe(0);
+    });
+
+    it('does not reserve a support near-match and allows normal new-state routing', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-near' }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'new', language: 'en', user_id: null })],
+        })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // relay phone resolution
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT start_prompt
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-support-near',
+          From: 'whatsapp:+15125551234',
+          Body: 'support me',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(findQueryByPattern(/create_admin_support_case/i)).toBeUndefined();
+      expect(outboxBodies()).toContain(t('start_prompt', 'es'));
+    });
+
     it('returns profile details for a linked worker profile command', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN

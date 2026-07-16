@@ -328,6 +328,11 @@ export function isHelpCommand(text: string): boolean {
   return /^(help|ayuda|commands?|comandos?)$/.test(n);
 }
 
+export function isSupportCommand(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  return /^(support|soporte)$/.test(n);
+}
+
 export function isProfileCommand(text: string): boolean {
   const n = text.trim().toLowerCase();
   return /^(profile|perfil|my profile|mi perfil)$/.test(n);
