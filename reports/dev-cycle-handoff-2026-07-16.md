@@ -431,3 +431,79 @@ The next authorized integration action, if desired, is to review the final
 local commit and explicitly merge/cherry-pick it into `SPRINT16`. Operator-owned
 SES, Twilio, production secret, deployment, and live-phone prerequisites remain
 external and unchanged.
+
+---
+
+## Independent full-branch code review — Sol (Claude), 2026-07-16 evening
+
+Scope: every change on `feat/sprint16-dev-cycle-integration` from its base
+(`d837a10..0754047`, 8 substantive commits, 64 files, +8,477/−1,255), reviewed
+hunk-by-hunk per the dev-cycle skill, with every verification gate re-run
+independently (no result trusted from prior transcripts).
+
+### Review verdicts (per seam)
+
+- **Migrations/DB security (13cf631, 0754047, 036 in 93ef92d): accepted.**
+  020b/039 bodies remain byte-identical after the residual fixes; every
+  owner-only GRANT/REVOKE runs under a scoped `SET LOCAL ROLE`; the
+  `proargtypes` OID lookups correctly avoid schema-USAGE dependence; 036's
+  column grants match exactly what each recorder reads/writes, the temporary
+  SET-capable self-grant is removed with `REVOKE … GRANTED BY`, and the closing
+  invariants fail closed on role attributes, membership shape, ACLs, ownership,
+  policies, and function hardening. No migration in 021–033 reintroduces a
+  `TO`-less policy on `jobs`/`job_applications` (028's are scoped to
+  `jale_whatsapp`). 001–033 untouched.
+- **WhatsApp delivery lifecycle (9e1c316 + 93ef92d): accepted.** Terminal
+  ambiguity holds end-to-end: the drain commits `send_unknown` + attempt bump
+  before any network call, only definite non-acceptance re-queues (bounded,
+  exponential backoff, 30-min cap), and only a validated `SM…` SID reaches
+  `sent`. The sender treats timeout/unparseable-2xx/malformed-SID as ambiguous.
+  The callback route validates the Twilio signature against the exact
+  operator-configured URL before any DB access, bounds all inputs, and logs no
+  message/phone identifiers. Alarms (delivery failures, callback pipeline
+  errors, unknown SIDs) require an actionable target at synth.
+- **Billing (7320b0d, f8b9160): accepted.** Config failures classified
+  terminal vs transient correctly (SM throttle/5xx stay retryable);
+  `request_hash` now gates open-checkout replay; the 037 enforcer follows the
+  same fail-closed helper-role pattern; the enforcement path validates the SQL
+  function's output shape before queueing the bilingual notification email.
+- **Support cases (7851b65) and frontend (839134a): accepted.** Parameterized
+  SQL with RLS context; idempotency keys are now canonical-body-bound,
+  matching the backend replay gate. Red-flag sweeps (SQL interpolation, PII
+  logging, secrets) clean across all commits.
+
+### Findings and resolutions (lead-owned, committed as `a6401da`)
+
+1. **Native-gate harness bug (real, fixed):**
+   `entitlement-concurrency.integration.test.ts` unconditionally rewrote
+   `jale_admin`'s password in `beforeAll`, so under a plain-owner bootstrap URL
+   it invalidated `JALE_TEST_DATABASE_URL` mid-batch and broke every suite that
+   connected after it. Guarded like the sibling suites; all six native suites
+   now pass in ONE `--runInBand` batch.
+2. **Stale doc comment (fixed):** `whatsapp-stack.ts` `alarmTopicArn` prop doc
+   contradicted the fail-closed synth behavior.
+3. **Cosmetic, deliberately skipped:** `sendTwilioWhatsAppMessage` return type
+   still says `string | null` though `null` is unreachable (callers COALESCE).
+
+### Independent gate results (this review, worktree at a6401da)
+
+- infra `npm run build` clean; full serial Jest 111/112 suites (1 skipped),
+  1,104 passed / 63 skipped / 9 todo.
+- frontend: lint pass (pre-existing hook warning only), Vitest 14/14, clean
+  production build.
+- `cdk synth --all`: 14/14 stacks (contexts: `whatsappStatusCallbackUrl`,
+  `whatsappAlarmEmail`, `emailFromAddress`, `sesVerifiedIdentityArn`,
+  `billingAlarmEmail`).
+- Fresh disposable PG16 container (`jale-sol-review-pg`, removed after use),
+  database owned by plain `jale_admin` (NOSUPERUSER/NOBYPASSRLS/CREATEROLE,
+  INHERIT): full 40-file chain (001→020, 020b, 021→039) applied byte-for-byte
+  in the runner's order with `ON_ERROR_STOP` — the gate the previous session
+  was interrupted on. 020b/036/039 each re-applied cleanly (idempotence).
+- Six native DB suites versus that cluster: **47/47** (superuser bootstrap URL
+  for fixtures per suite docs; runtime assertions run as unprivileged runner
+  roles / `SET LOCAL ROLE`).
+- `git diff --check` clean; secret scan clean (only obvious test placeholders).
+
+Branch state: `feat/sprint16-dev-cycle-integration` at `a6401da`, clean tree,
+local-only. Unchanged boundaries: no push, no merge into `SPRINT16`, no deploy,
+no secret reads, no shared databases touched.
