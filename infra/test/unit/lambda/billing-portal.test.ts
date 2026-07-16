@@ -1,12 +1,18 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../../../lambda/lib/db';
 import { checkCompliance } from '../../../lambda/legal/check-compliance';
-import { getStripe, getStripeSecret } from '../../../lambda/lib/stripe-client';
+import { getStripe, getStripeSecret, StripeConfigError } from '../../../lambda/lib/stripe-client';
 import { handler } from '../../../lambda/billing/portal';
 
 jest.mock('../../../lambda/lib/db');
 jest.mock('../../../lambda/legal/check-compliance');
-jest.mock('../../../lambda/lib/stripe-client');
+// Keep the real StripeConfigError class (so `instanceof` checks in portal.ts
+// work against genuine instances) while mocking the async functions.
+jest.mock('../../../lambda/lib/stripe-client', () => ({
+  ...jest.requireActual('../../../lambda/lib/stripe-client'),
+  getStripe: jest.fn(),
+  getStripeSecret: jest.fn(),
+}));
 
 const query = jest.fn();
 const release = jest.fn();
@@ -79,7 +85,36 @@ describe('billing portal handler', () => {
   });
 
   it('returns configuration error when portal configuration is absent', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockGetStripeSecret.mockResolvedValue({});
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'billing_configuration_invalid' });
+    expect(mockGetStripe).not.toHaveBeenCalled();
+    expect(portalCreate).not.toHaveBeenCalled();
+    expect(errorLog).toHaveBeenCalledWith(
+      'billing-portal configuration error:',
+      'stripe_portal_configuration_missing',
+    );
+    errorLog.mockRestore();
+  });
+
+  it('returns billing_configuration_invalid (not a retryable error) when getStripeSecret throws StripeConfigError', async () => {
+    mockGetStripeSecret.mockRejectedValue(new StripeConfigError('stripe_api_secret_invalid_key'));
+
+    const res = await handler(event());
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'billing_configuration_invalid' });
+    expect(mockGetStripe).not.toHaveBeenCalled();
+    expect(portalCreate).not.toHaveBeenCalled();
+  });
+
+  it('returns billing_configuration_invalid when getStripe throws StripeConfigError', async () => {
+    mockGetStripeSecret.mockResolvedValue({ portalConfigurationId: 'bpc_123' });
+    mockGetStripe.mockRejectedValue(new StripeConfigError('stripe_secret_arn_missing'));
 
     const res = await handler(event());
 

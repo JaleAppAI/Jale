@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
-import { getStripe, getStripeSecret } from '../lib/stripe-client';
+import { getStripe, getStripeSecret, StripeConfigError } from '../lib/stripe-client';
 import { assertAllowedReturnUrl } from '../lib/billing-operations';
 
 const CORS_HEADERS = corsHeaders();
@@ -62,7 +62,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('COMMIT');
 
     const secret = await getStripeSecret();
-    if (!secret.portalConfigurationId) return response(500, { error: 'billing_configuration_invalid' });
+    if (!secret.portalConfigurationId) {
+      throw new StripeConfigError('stripe_portal_configuration_missing');
+    }
     const stripe = await getStripe();
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
@@ -71,6 +73,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     });
     return response(200, { url: session.url });
   } catch (err) {
+    if (err instanceof StripeConfigError) {
+      // The DB transaction here has already committed by the time
+      // getStripeSecret()/getStripe() run (see above), so there is nothing to
+      // roll back — just report the permanent config problem, never a
+      // retryable outage.
+      console.error('billing-portal configuration error:', err.reason);
+      return response(500, { error: 'billing_configuration_invalid' });
+    }
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
     console.error('billing-portal error');
     return response(500, { error: 'internal_error' });

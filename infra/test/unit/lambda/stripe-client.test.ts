@@ -15,6 +15,7 @@ describe('stripe-client', () => {
   let getStripe: any;
   let clearStripeCache: any;
   let STRIPE_API_VERSION: any;
+  let StripeConfigError: any;
 
   const validSecret = {
     secretKey: 'rk_test_00000000000000000000000000000000000000000000000000',
@@ -33,6 +34,7 @@ describe('stripe-client', () => {
       getStripe = mod.getStripe;
       clearStripeCache = mod.clearStripeCache;
       STRIPE_API_VERSION = mod.STRIPE_API_VERSION;
+      StripeConfigError = mod.StripeConfigError;
       clearStripeCache();
     });
   });
@@ -60,38 +62,144 @@ describe('stripe-client', () => {
       expect(secret).toEqual(validSecret);
     });
 
-    it('throws when STRIPE_SECRET_ARN is not set', async () => {
+    it('throws StripeConfigError with stripe_secret_arn_missing when STRIPE_SECRET_ARN is not set', async () => {
       delete process.env.STRIPE_SECRET_ARN;
-      await expect(getStripeSecret()).rejects.toThrow('STRIPE_SECRET_ARN env var not set');
+      await expect(getStripeSecret()).rejects.toThrow('stripe_secret_arn_missing');
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_secret_arn_missing');
+      }
     });
 
-    it('throws when the secret has no SecretString (binary secret)', async () => {
+    it('throws StripeConfigError with stripe_api_secret_missing_string when the secret has no SecretString (binary secret)', async () => {
       mockSend.mockResolvedValue({ SecretBinary: new Uint8Array([1, 2, 3]) });
       await expect(getStripeSecret()).rejects.toThrow('stripe_api_secret_missing_string');
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_missing_string');
+      }
     });
 
-    it('throws on malformed (non-JSON) secret string', async () => {
+    it('throws StripeConfigError with stripe_api_secret_malformed on non-JSON secret string', async () => {
       mockSend.mockResolvedValue({ SecretString: 'not-json{{{' });
-      await expect(getStripeSecret()).rejects.toThrow();
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_malformed');
+      }
     });
 
-    it('throws when secretKey is missing (incomplete secret)', async () => {
+    it('throws StripeConfigError with stripe_api_secret_invalid_key when secretKey is missing (incomplete secret)', async () => {
       mockSend.mockResolvedValue({ SecretString: JSON.stringify({ priceIdEmployerPro: 'price_x' }) });
-      await expect(getStripeSecret()).rejects.toThrow('stripe_api_secret_invalid_key');
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_invalid_key');
+      }
     });
 
-    it('throws when secretKey does not have the rk_ prefix', async () => {
+    it('throws StripeConfigError with stripe_api_secret_invalid_key when secretKey does not have the rk_ prefix', async () => {
       mockSend.mockResolvedValue({
         SecretString: JSON.stringify({ ...validSecret, secretKey: 'sk_live_shouldnotuse' }),
       });
-      await expect(getStripeSecret()).rejects.toThrow('stripe_api_secret_invalid_key');
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_invalid_key');
+      }
     });
 
-    it('throws when priceIdEmployerPro has an invalid prefix', async () => {
+    it('throws StripeConfigError with stripe_api_secret_invalid_price when priceIdEmployerPro has an invalid prefix', async () => {
       mockSend.mockResolvedValue({
         SecretString: JSON.stringify({ ...validSecret, priceIdEmployerPro: 'not-a-price-id' }),
       });
-      await expect(getStripeSecret()).rejects.toThrow('stripe_api_secret_invalid_price');
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_invalid_price');
+      }
+    });
+
+    it('throws StripeConfigError with stripe_api_secret_unreadable on SM ResourceNotFoundException', async () => {
+      const smError: any = new Error('Secrets Manager can’t find the specified secret.');
+      smError.name = 'ResourceNotFoundException';
+      mockSend.mockRejectedValue(smError);
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_unreadable');
+      }
+    });
+
+    it('throws StripeConfigError with stripe_api_secret_unreadable on SM AccessDeniedException', async () => {
+      const smError: any = new Error('User is not authorized to perform: secretsmanager:GetSecretValue');
+      smError.name = 'AccessDeniedException';
+      mockSend.mockRejectedValue(smError);
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_unreadable');
+      }
+    });
+
+    it('throws StripeConfigError with stripe_api_secret_unreadable on other terminal SM 4xx responses', async () => {
+      const smError: any = new Error('Invalid SecretId');
+      smError.name = 'ValidationException';
+      smError.$metadata = { httpStatusCode: 400 };
+      mockSend.mockRejectedValue(smError);
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(StripeConfigError);
+        expect((err as any).reason).toBe('stripe_api_secret_unreadable');
+        expect((err as Error).message).not.toContain('Invalid SecretId');
+      }
+    });
+
+    it('does NOT wrap SM ThrottlingException as StripeConfigError (stays retryable)', async () => {
+      const smError: any = new Error('Rate exceeded');
+      smError.name = 'ThrottlingException';
+      mockSend.mockRejectedValue(smError);
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).not.toBeInstanceOf(StripeConfigError);
+        expect((err as any).name).toBe('ThrottlingException');
+      }
+    });
+
+    it('does NOT wrap a Secrets Manager 5xx as StripeConfigError (stays retryable)', async () => {
+      const smError: any = new Error('Internal service error');
+      smError.name = 'InternalServiceErrorException';
+      smError.$metadata = { httpStatusCode: 500 };
+      mockSend.mockRejectedValue(smError);
+      try {
+        await getStripeSecret();
+        throw new Error('expected getStripeSecret to reject');
+      } catch (err) {
+        expect(err).not.toBeInstanceOf(StripeConfigError);
+        expect((err as any).$metadata?.httpStatusCode).toBe(500);
+      }
     });
 
     it('does not require priceIdEmployerPro or portalConfigurationId to be present', async () => {

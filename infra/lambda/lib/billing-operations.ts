@@ -193,6 +193,13 @@ export async function prepareCheckoutOperation(
     return { kind: 'error', statusCode: 409, error: 'operation_in_progress' };
   }
 
+  // m5: gate the cross-key open-checkout replay on request_hash too. Without
+  // this, a different idempotency key (new client_idempotency_key) whose body
+  // happens to differ from the still-open session would replay a stale
+  // Checkout Session created for a different request. Requiring a
+  // byte-identical request_hash keeps replay scoped to the same logical
+  // request; a changed body instead falls through to creating a new
+  // operation/session below.
   const openCheckout = await client.query(
     `SELECT cached_response FROM billing_operations
       WHERE actor_user_id = $1
@@ -200,9 +207,10 @@ export async function prepareCheckoutOperation(
         AND status = 'succeeded'
         AND provider_expires_at > now()
         AND cached_response IS NOT NULL
+        AND request_hash = $3
       ORDER BY updated_at DESC
       LIMIT 1`,
-    [userId, CHECKOUT_OPERATION_TYPE],
+    [userId, CHECKOUT_OPERATION_TYPE, requestHash],
   );
   if (openCheckout.rows[0]?.cached_response) {
     await client.query('COMMIT');

@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { getStripe, getStripeSecret } from '../lib/stripe-client';
+import { getStripe, getStripeSecret, StripeConfigError } from '../lib/stripe-client';
 import {
   assertAllowedReturnUrl,
   BillingCustomerConflictError,
@@ -73,8 +73,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     operationId = prepared.operationId;
     const secret = await getStripeSecret();
     if (!secret.priceIdEmployerPro) {
-      await recordCheckoutFailure(client, cognitoSub, operationId, 'stripe_price_missing', true);
-      return response(500, { error: 'billing_configuration_invalid' });
+      throw new StripeConfigError('stripe_price_missing');
     }
 
     const stripe = await getStripe();
@@ -121,6 +120,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await markCheckoutSucceeded(client, cognitoSub, operationId, session.id, new Date(session.expires_at * 1000), cached);
     return response(200, cached);
   } catch (err) {
+    if (err instanceof StripeConfigError) {
+      // Permanent config problem (missing/malformed secret, bad key/price
+      // prefix, unreadable SM entry) — never present this as a retryable
+      // provider outage. getStripeSecret()/getStripe() are only reachable
+      // after prepareCheckoutOperation returned `ready`, so operationId and
+      // client are always set here; the fallback branch below only guards
+      // against a future call site moving the Stripe secret lookup earlier.
+      if (client && operationId && cognitoSub) {
+        try { await recordCheckoutFailure(client, cognitoSub, operationId, err.reason, true); } catch (_) {}
+      } else if (client) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+      }
+      console.error('billing-checkout configuration error:', err.reason);
+      return response(500, { error: 'billing_configuration_invalid' });
+    }
     if (client && operationId && cognitoSub) {
       const mapped = stripeErrorCode(err);
       try { await recordCheckoutFailure(client, cognitoSub, operationId, mapped.code, mapped.terminal); } catch (_) {}
