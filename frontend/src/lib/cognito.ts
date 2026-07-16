@@ -9,15 +9,45 @@ export type AuthTokens = {
     refreshToken: string;
 };
 
-const workerPool = new CognitoUserPool({
-    UserPoolId: process.env.NEXT_PUBLIC_WORKER_POOL_ID!,
-    ClientId: process.env.NEXT_PUBLIC_WORKER_CLIENT_ID!,
-});
+// Lazy singletons: constructed on first use, not at module scope. Module-scope
+// construction threw during `next build`'s page-data collection whenever the
+// NEXT_PUBLIC_* env vars were absent (e.g. a clean checkout with no .env),
+// which broke the build even though the pages that use these pools are
+// force-dynamic and never actually need a pool at build time.
+let workerPoolInstance: CognitoUserPool | undefined;
+let employerPoolInstance: CognitoUserPool | undefined;
 
-const employerPool = new CognitoUserPool({
-    UserPoolId: process.env.NEXT_PUBLIC_EMPLOYER_POOL_ID!,
-    ClientId: process.env.NEXT_PUBLIC_EMPLOYER_CLIENT_ID!,
-});
+function getWorkerPool(): CognitoUserPool {
+    if (!workerPoolInstance) {
+        const UserPoolId = process.env.NEXT_PUBLIC_WORKER_POOL_ID;
+        const ClientId = process.env.NEXT_PUBLIC_WORKER_CLIENT_ID;
+        const missing = [
+            !UserPoolId && 'NEXT_PUBLIC_WORKER_POOL_ID',
+            !ClientId && 'NEXT_PUBLIC_WORKER_CLIENT_ID',
+        ].filter(Boolean);
+        if (missing.length > 0) {
+            throw new Error(`Missing required env var(s): ${missing.join(', ')}`);
+        }
+        workerPoolInstance = new CognitoUserPool({ UserPoolId: UserPoolId!, ClientId: ClientId! });
+    }
+    return workerPoolInstance;
+}
+
+function getEmployerPool(): CognitoUserPool {
+    if (!employerPoolInstance) {
+        const UserPoolId = process.env.NEXT_PUBLIC_EMPLOYER_POOL_ID;
+        const ClientId = process.env.NEXT_PUBLIC_EMPLOYER_CLIENT_ID;
+        const missing = [
+            !UserPoolId && 'NEXT_PUBLIC_EMPLOYER_POOL_ID',
+            !ClientId && 'NEXT_PUBLIC_EMPLOYER_CLIENT_ID',
+        ].filter(Boolean);
+        if (missing.length > 0) {
+            throw new Error(`Missing required env var(s): ${missing.join(', ')}`);
+        }
+        employerPoolInstance = new CognitoUserPool({ UserPoolId: UserPoolId!, ClientId: ClientId! });
+    }
+    return employerPoolInstance;
+}
 
 function signUp(
     pool: CognitoUserPool,
@@ -52,12 +82,12 @@ export function workerSignUp(input: { phone: string; fullName: string }): Promis
 }
 
 export function workerConfirmSignUp(phone: string, code: string): Promise<void> {
-    return confirm(workerPool, phone.trim(), code);
+    return confirm(getWorkerPool(), phone.trim(), code);
 }
 
 export function workerSignIn(phone: string): Promise<CognitoUser> {
     return new Promise((resolve, reject) => {
-        const user = new CognitoUser({ Username: phone, Pool: workerPool });
+        const user = new CognitoUser({ Username: phone, Pool: getWorkerPool() });
         const authDetails = new AuthenticationDetails({ Username: phone });
         user.initiateAuth(authDetails, {
             onSuccess: () => reject(new Error('Unexpected success on initiate')),
@@ -88,7 +118,7 @@ export function employerSignUp(input: {
     phone: string;
 }): Promise<void> {
     const email = input.email.trim().toLowerCase();
-    return signUp(employerPool, email, input.password, {
+    return signUp(getEmployerPool(), email, input.password, {
         email,
         name: input.companyName.trim(),
         phone_number: input.phone.trim(),
@@ -98,12 +128,12 @@ export function employerSignUp(input: {
 }
 
 export function employerConfirmSignUp(email: string, code: string): Promise<void> {
-    return confirm(employerPool, email.trim().toLowerCase(), code);
+    return confirm(getEmployerPool(), email.trim().toLowerCase(), code);
 }
 
 export function employerSignIn(email: string, password: string): Promise<AuthTokens> {
     return new Promise((resolve, reject) => {
-        const user = new CognitoUser({ Username: email, Pool: employerPool });
+        const user = new CognitoUser({ Username: email, Pool: getEmployerPool() });
         const authDetails = new AuthenticationDetails({ Username: email, Password: password });
         user.authenticateUser(authDetails, {
             onSuccess: (session) => resolve({
@@ -118,7 +148,7 @@ export function employerSignIn(email: string, password: string): Promise<AuthTok
 
 export function employerForgotPassword(email: string): Promise<void> {
     return new Promise((resolve, reject) => {
-        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: employerPool });
+        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: getEmployerPool() });
         user.forgotPassword({
             onSuccess: () => resolve(),
             onFailure: reject,
@@ -132,7 +162,7 @@ export function employerConfirmNewPassword(
     newPassword: string,
 ): Promise<void> {
     return new Promise((resolve, reject) => {
-        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: employerPool });
+        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: getEmployerPool() });
         user.confirmPassword(code.trim(), newPassword, {
             onSuccess: () => resolve(),
             onFailure: reject,

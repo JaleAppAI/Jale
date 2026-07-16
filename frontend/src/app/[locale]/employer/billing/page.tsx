@@ -102,19 +102,16 @@ export default function EmployerBillingPage() {
     if (!idToken) return;
     setCheckoutBusy(true);
     setActionError(null);
-    const idempotencyKey = getIdempotencyKey('billing-checkout');
+    const origin = window.location.origin;
+    const path = window.location.pathname;
+    const body = {
+      planCode: EMPLOYER_PRO_PLAN_CODE,
+      successUrl: `${origin}${path}?billing=success`,
+      cancelUrl: `${origin}${path}?billing=cancel`,
+    };
+    const idempotencyKey = getIdempotencyKey('billing-checkout', body);
     try {
-      const origin = window.location.origin;
-      const path = window.location.pathname;
-      const session = await startCheckout(
-        idToken,
-        {
-          planCode: EMPLOYER_PRO_PLAN_CODE,
-          successUrl: `${origin}${path}?billing=success`,
-          cancelUrl: `${origin}${path}?billing=cancel`,
-        },
-        idempotencyKey,
-      );
+      const session = await startCheckout(idToken, body, idempotencyKey);
       clearIdempotencyKey('billing-checkout');
       // Redirect only to the server-returned hosted URL — never construct one.
       window.location.href = session.url;
@@ -136,11 +133,12 @@ export default function EmployerBillingPage() {
     if (!idToken) return;
     setPortalBusy(true);
     setActionError(null);
-    const idempotencyKey = getIdempotencyKey('billing-portal');
+    const origin = window.location.origin;
+    const path = window.location.pathname;
+    const returnUrl = `${origin}${path}`;
+    const idempotencyKey = getIdempotencyKey('billing-portal', { returnUrl });
     try {
-      const origin = window.location.origin;
-      const path = window.location.pathname;
-      const session = await openBillingPortal(idToken, `${origin}${path}`, idempotencyKey);
+      const session = await openBillingPortal(idToken, returnUrl, idempotencyKey);
       clearIdempotencyKey('billing-portal');
       window.location.href = session.url;
     } catch (err) {

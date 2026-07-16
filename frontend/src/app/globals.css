@@ -1,6 +1,13 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800&display=swap');
+
+/*
+ * Lexend is loaded via next/font/google in src/app/[locale]/layout.tsx (weights
+ * 300-800), which injects the `--font-lexend` CSS variable on <html> and
+ * self-hosts the font files (no runtime Google Fonts request, no render-
+ * blocking @import). The --font-sans stack below in the Tailwind theme map
+ * references --font-lexend first and falls back to the 'Lexend' family name.
+ */
 
 @custom-variant dark (&:is(.dark *));
 
