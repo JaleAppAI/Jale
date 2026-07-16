@@ -79,11 +79,20 @@ export default function EmployerDashboardPage() {
     const featuredJobs = filteredJobs.slice(0, 5);
     const recentJob = jobs[0];
 
-    const todayLabel = new Intl.DateTimeFormat(locale, {
-        weekday: 'long',
-        month: 'short',
-        day: 'numeric',
-    }).format(new Date());
+    // `new Date()` must NOT be formatted during render: the server (Lambda, UTC) and the
+    // browser (user's local timezone) can land on different calendar days, producing
+    // different strings and a hydration mismatch (React #418/#423/#425). Compute it after
+    // mount so the server HTML and the client's first render agree (empty), then fill in.
+    const [todayLabel, setTodayLabel] = useState('');
+    useEffect(() => {
+        setTodayLabel(
+            new Intl.DateTimeFormat(locale, {
+                weekday: 'long',
+                month: 'short',
+                day: 'numeric',
+            }).format(new Date()),
+        );
+    }, [locale]);
 
     function handleJobCreated(job: Job) {
         setJobs((prev) => [job, ...prev]);
