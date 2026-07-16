@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -16,35 +15,12 @@ import { MetricCard } from '@/components/ui/metric-card';
 import { ProgressRow } from '@/components/ui/progress-row';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PostJobModal } from '@/components/employer/PostJobModal';
-import { getJobs } from '@/lib/api/employer';
+import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
+import { deleteJob, getJobs } from '@/lib/api/employer';
 import type { Job } from '@/lib/api/employer';
 import type { JobStatus } from '@/lib/status';
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
-
-// Content-panel affordances (preview badge / disabled placeholder action). These
-// mark not-yet-built dashboard panels; they are content, not shell chrome, so
-// they stay with the page rather than moving into AppShell.
-function DisabledPill({ children }: { children: ReactNode }) {
-    return (
-        <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] font-bold uppercase text-white/70">
-            {children}
-        </span>
-    );
-}
-
-function DisabledAction({ children }: { children: ReactNode }) {
-    return (
-        <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            className="inline-flex h-9 items-center justify-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-4 text-xs font-bold text-[var(--jale-ink-2)] opacity-70"
-        >
-            {children}
-        </button>
-    );
-}
 
 export default function EmployerDashboardPage() {
     const { idToken } = useAuth();
@@ -54,6 +30,7 @@ export default function EmployerDashboardPage() {
     const locale = useLocale();
 
     const [jobs, setJobs] = useState<Job[]>([]);
+    const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
@@ -230,6 +207,7 @@ export default function EmployerDashboardPage() {
                                                     job={job}
                                                     href={`/employer/jobs/${job.id}`}
                                                     isLast={index === featuredJobs.length - 1}
+                                                    onDelete={setJobToDelete}
                                                 />
                                             ))}
                                         </div>
@@ -247,7 +225,7 @@ export default function EmployerDashboardPage() {
                             </DashboardPanel>
 
                             <DashboardPanel>
-                                <PanelHeader title={t('quick_post.title')} action={<DisabledAction>{t('disabled.label')}</DisabledAction>} />
+                                <PanelHeader title={t('quick_post.title')} />
                                 <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
                                     <div>
                                         <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
@@ -260,22 +238,11 @@ export default function EmployerDashboardPage() {
                                 </div>
                             </DashboardPanel>
 
-                            <DashboardPanel>
-                                <PanelHeader title={t('panels.applicants_title')} action={<DisabledAction>{t('disabled.coming_soon')}</DisabledAction>} />
-                                <div className="grid gap-3 p-5 md:grid-cols-3">
-                                    {[0, 1, 2].map((item) => (
-                                        <div key={item} className="rounded-2xl border border-dashed border-[var(--jale-divider)] bg-[var(--jale-paper-2)] p-4 opacity-75">
-                                            <p className="text-sm font-bold text-[var(--jale-ink)]">{t(`panels.applicant_stub_${item + 1}`)}</p>
-                                            <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('panels.applicants_body')}</p>
-                                        </div>
-                                    ))}
-                                </div>
-                            </DashboardPanel>
                         </div>
 
                         <div className="space-y-5">
                             <DashboardPanel className="!bg-[#111642] text-white">
-                                <PanelHeader title={t('panels.trust_title')} action={<DisabledPill>{t('disabled.preview')}</DisabledPill>} />
+                                <PanelHeader title={t('panels.trust_title')} />
                                 <div className="space-y-4 p-5">
                                     <div className="rounded-2xl bg-white/10 p-4">
                                         <p className="text-4xl font-extrabold">{loading ? '-' : `${hireProgress}%`}</p>
@@ -308,7 +275,7 @@ export default function EmployerDashboardPage() {
                             </DashboardPanel>
 
                             <DashboardPanel>
-                                <PanelHeader title={t('panels.hiring_status_title')} action={<DisabledAction>{t('disabled.label')}</DisabledAction>} />
+                                <PanelHeader title={t('panels.hiring_status_title')} />
                                 <div className="space-y-4 p-5">
                                     <ProgressRow label={t('jobs.status.active')} value={String(loading ? '-' : activeCount)} percent={jobs.length ? (activeCount / jobs.length) * 100 : 0} />
                                     <ProgressRow label={t('jobs.status.paused')} value={String(loading ? '-' : pausedCount)} percent={jobs.length ? (pausedCount / jobs.length) * 100 : 0} />
@@ -324,6 +291,18 @@ export default function EmployerDashboardPage() {
                 open={modalOpen}
                 onClose={() => setModalOpen(false)}
                 onJobCreated={handleJobCreated}
+            />
+
+            <DeleteJobDialog
+                open={jobToDelete !== null}
+                jobTitle={jobToDelete?.title ?? ''}
+                onCancel={() => setJobToDelete(null)}
+                onConfirm={async () => {
+                    const target = jobToDelete!;
+                    await deleteJob(idToken!, target.id);
+                    setJobs((cur) => cur.filter((j) => j.id !== target.id));
+                    setJobToDelete(null);
+                }}
             />
         </>
     );

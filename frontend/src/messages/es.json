@@ -511,7 +511,16 @@
       "search_placeholder": "Buscar por titulo, ubicacion u oficio...",
       "back_to_dashboard": "← Volver al panel",
       "empty_title": "No se encontraron trabajos",
-      "empty_body": "Publica un empleo o limpia los filtros para volver a ver tu tablero."
+      "empty_body": "Publica un empleo o limpia los filtros para volver a ver tu tablero.",
+      "delete": {
+        "button": "Eliminar",
+        "confirm_title": "¿Eliminar este empleo?",
+        "confirm_body": "Esto elimina permanentemente \"{title}\" y sus postulaciones. No se puede deshacer.",
+        "confirm_cta": "Eliminar empleo",
+        "cancel": "Cancelar",
+        "error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérralo en su lugar.",
+        "error_generic": "No se pudo eliminar el empleo. Inténtalo de nuevo."
+      }
     },
     "filter": {
       "title": "Filtrar candidatos",

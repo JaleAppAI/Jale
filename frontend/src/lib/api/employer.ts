@@ -354,6 +354,11 @@ export async function updateJobStatus(
   return res.json();
 }
 
+export async function deleteJob(token: string, jobId: string): Promise<void> {
+  const res = await apiFetch(`/employer/jobs/${jobId}`, { method: 'DELETE' }, token);
+  if (!res.ok) throw await parseApiError(res, 'delete_failed');
+}
+
 export async function getJobApplicants(
   token: string,
   jobId: string,

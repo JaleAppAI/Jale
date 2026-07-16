@@ -218,6 +218,19 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerJobsUpdateLambda.function);
 
+    const employerJobsDeleteLambda = new JaleLambdaFunction(this, 'EmployerJobsDeleteLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-jobs-delete.ts'),
+      description: 'Employer jobs hard-delete endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerJobsDeleteLambda.function);
+
     // Employer job applicants — employer auth, DB access
     const employerJobApplicantsLambda = new JaleLambdaFunction(this, 'EmployerJobApplicantsLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-job-applicants.ts'),
@@ -557,6 +570,11 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     employerJobResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerJobsUpdateLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    // DELETE /employer/jobs/{jobId} — permanently delete a job the employer owns
+    employerJobResource.addMethod('DELETE', new apigateway.LambdaIntegration(employerJobsDeleteLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

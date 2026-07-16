@@ -16,7 +16,8 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { MetricCard } from '@/components/ui/metric-card';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
-import { getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
+import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
+import { deleteJob, getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
@@ -33,6 +34,7 @@ type ApplicantMatch = {
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
+  const router = useRouter();
   const { idToken } = useAuth();
   const { handleLegalWall } = useRequireAuth();
   const t = useTranslations('employer_dashboard');
@@ -47,6 +49,7 @@ export default function JobDetailPage() {
   const [loadingJob, setLoadingJob] = useState(true);
   const [loadingApplicants, setLoadingApplicants] = useState(false);
   const [togglingStatus, setTogglingStatus] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -181,10 +184,14 @@ export default function JobDetailPage() {
           {t('jobs.toggle.activate')}
         </Button>
       )}
+      <Button variant="error" size="sm" onClick={() => setConfirmDelete(true)} disabled={togglingStatus}>
+        {t('jobs.delete.button')}
+      </Button>
     </div>
   ) : undefined;
 
   return (
+    <>
     <AppShell
       role="employer"
       title={job ? job.title : t('jobs.posting_details')}
@@ -292,6 +299,16 @@ export default function JobDetailPage() {
       )}
     </main>
     </AppShell>
+    <DeleteJobDialog
+      open={confirmDelete}
+      jobTitle={job?.title ?? ''}
+      onCancel={() => setConfirmDelete(false)}
+      onConfirm={async () => {
+        await deleteJob(idToken!, job!.id);
+        router.push('/employer/dashboard');
+      }}
+    />
+    </>
   );
 }
 

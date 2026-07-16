@@ -511,7 +511,16 @@
       "search_placeholder": "Search by title, location, or trade...",
       "back_to_dashboard": "← Back to Dashboard",
       "empty_title": "No jobs found",
-      "empty_body": "Post a job or clear the filters to bring your hiring board back."
+      "empty_body": "Post a job or clear the filters to bring your hiring board back.",
+      "delete": {
+        "button": "Delete",
+        "confirm_title": "Delete this job?",
+        "confirm_body": "This permanently removes \"{title}\" and its applications. This can’t be undone.",
+        "confirm_cta": "Delete job",
+        "cancel": "Cancel",
+        "error_hired": "This job has hired workers and can’t be deleted. Close it instead.",
+        "error_generic": "Couldn’t delete this job. Please try again."
+      }
     },
     "filter": {
       "title": "Filter Applicants",

@@ -9,9 +9,10 @@ interface Props {
   job: Job;
   href: string;
   isLast?: boolean;
+  onDelete?: (job: Job) => void;
 }
 
-export function JobPostingCard({ job, href, isLast }: Props) {
+export function JobPostingCard({ job, href, isLast, onDelete }: Props) {
   const t = useTranslations('employer_dashboard');
   const locale = useLocale();
 
@@ -24,7 +25,7 @@ export function JobPostingCard({ job, href, isLast }: Props) {
 
   return (
     <div
-      className="grid grid-cols-1 gap-3 px-5 py-4 items-start hover:bg-[var(--jale-blue-50)] transition-colors duration-100 md:grid-cols-[minmax(0,2fr)_minmax(7rem,1fr)_minmax(6rem,0.8fr)_minmax(7rem,1fr)_auto_auto] md:items-center"
+      className="grid grid-cols-1 gap-3 px-5 py-4 items-start hover:bg-[var(--jale-blue-50)] transition-colors duration-100 md:grid-cols-[minmax(0,2fr)_minmax(7rem,1fr)_minmax(6rem,0.8fr)_minmax(7rem,1fr)_auto_auto_auto] md:items-center"
       style={{
         borderBottom: isLast ? 'none' : '1px solid var(--jale-divider)',
       }}
@@ -74,6 +75,22 @@ export function JobPostingCard({ job, href, isLast }: Props) {
       >
         {t('jobs.details')}
       </Link>
+
+      {onDelete ? (
+        <button
+          type="button"
+          aria-label={t('jobs.delete.button')}
+          title={t('jobs.delete.button')}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(job); }}
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-[var(--jale-ink-2)] hover:bg-[var(--jale-danger-bg)] hover:text-[var(--jale-danger)]"
+        >
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" />
+          </svg>
+        </button>
+      ) : (
+        <span aria-hidden="true" />
+      )}
     </div>
   );
 }
