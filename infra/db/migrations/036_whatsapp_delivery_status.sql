@@ -61,6 +61,11 @@ BEGIN
 END;
 $$;
 
+-- PostgreSQL requires a function's new owner to hold CREATE on the
+-- containing schema. Grant it temporarily so the narrow public wrappers can
+-- be transferred to the helper, then revoke it before commit.
+GRANT CREATE ON SCHEMA public TO jale_twilio_callback;
+
 CREATE SCHEMA IF NOT EXISTS jale_twilio_callback;
 ALTER SCHEMA jale_twilio_callback OWNER TO jale_twilio_callback;
 -- Schema-level GRANT/REVOKE are owner-only operations. Static SET-capable
@@ -74,6 +79,44 @@ REVOKE ALL ON SCHEMA jale_twilio_callback FROM PUBLIC;
 DO $$ BEGIN
   EXECUTE format('GRANT USAGE, CREATE ON SCHEMA jale_twilio_callback TO %I', session_user);
 END $$;
+RESET ROLE;
+
+-- On a rerun the callback functions below are already helper-owned. The
+-- migration runner deliberately cannot drop those objects through its
+-- NOINHERIT membership, so remove them while the temporary SET grant is
+-- active. Drop callers before callees to avoid CASCADE and keep the exact
+-- object surface explicit.
+SET LOCAL ROLE jale_twilio_callback;
+DO $$
+DECLARE
+  target RECORD;
+BEGIN
+  FOR target IN
+    SELECT function.oid
+      FROM pg_catalog.pg_proc function
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function.pronamespace
+     WHERE function.proowner = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user)
+       AND (
+         (namespace.nspname = 'public' AND function.proname IN (
+           'record_twilio_status', 'record_whatsapp_delivery_status',
+           'record_admin_whatsapp_delivery'
+         ))
+         OR
+         (namespace.nspname = 'jale_twilio_callback' AND function.proname IN (
+           'record_twilio_status', 'record_whatsapp_delivery_status',
+           'record_twilio_delivery_status', 'record_admin_whatsapp_delivery'
+         ))
+       )
+     ORDER BY CASE
+       WHEN namespace.nspname = 'public' THEN 0
+       WHEN function.proname = 'record_twilio_delivery_status' THEN 1
+       ELSE 2
+     END
+  LOOP
+    EXECUTE pg_catalog.format('DROP FUNCTION %s', target.oid::pg_catalog.regprocedure);
+  END LOOP;
+END;
+$$;
 RESET ROLE;
 
 ALTER TABLE whatsapp_outbox
@@ -114,6 +157,40 @@ ALTER TABLE whatsapp_outbox
 CREATE UNIQUE INDEX IF NOT EXISTS idx_whatsapp_outbox_twilio_message_sid
   ON whatsapp_outbox (twilio_message_sid)
   WHERE twilio_message_sid IS NOT NULL;
+
+-- The locked SECURITY DEFINER implementations run as the NOLOGIN helper,
+-- not as the table-owning migration role. Give that helper only the columns
+-- its validated callback paths read or update, together with helper-specific
+-- RLS policies (admin tables use FORCE ROW LEVEL SECURITY).
+REVOKE ALL ON public.whatsapp_outbox FROM jale_twilio_callback;
+GRANT SELECT (id, source_type, source_id, twilio_delivery_status,
+              twilio_message_sid, body, last_error),
+      UPDATE (twilio_delivery_status, twilio_error_code,
+              twilio_error_message, twilio_status_updated_at, last_error)
+  ON public.whatsapp_outbox TO jale_twilio_callback;
+DROP POLICY IF EXISTS whatsapp_outbox_twilio_callback_select ON public.whatsapp_outbox;
+DROP POLICY IF EXISTS whatsapp_outbox_twilio_callback_update ON public.whatsapp_outbox;
+CREATE POLICY whatsapp_outbox_twilio_callback_select ON public.whatsapp_outbox
+  FOR SELECT TO jale_twilio_callback USING (true);
+CREATE POLICY whatsapp_outbox_twilio_callback_update ON public.whatsapp_outbox
+  FOR UPDATE TO jale_twilio_callback USING (true) WITH CHECK (true);
+
+REVOKE ALL ON public.admin_cases FROM jale_twilio_callback;
+GRANT SELECT (id, details), UPDATE (details, updated_at)
+  ON public.admin_cases TO jale_twilio_callback;
+DROP POLICY IF EXISTS admin_cases_twilio_callback_select ON public.admin_cases;
+DROP POLICY IF EXISTS admin_cases_twilio_callback_update ON public.admin_cases;
+CREATE POLICY admin_cases_twilio_callback_select ON public.admin_cases
+  FOR SELECT TO jale_twilio_callback USING (true);
+CREATE POLICY admin_cases_twilio_callback_update ON public.admin_cases
+  FOR UPDATE TO jale_twilio_callback USING (true) WITH CHECK (true);
+
+REVOKE ALL ON public.admin_case_events FROM jale_twilio_callback;
+GRANT INSERT (case_id, event_type, actor_type, actor_id, payload)
+  ON public.admin_case_events TO jale_twilio_callback;
+DROP POLICY IF EXISTS admin_case_events_twilio_callback_insert ON public.admin_case_events;
+CREATE POLICY admin_case_events_twilio_callback_insert ON public.admin_case_events
+  FOR INSERT TO jale_twilio_callback WITH CHECK (true);
 
 REVOKE ALL ON public.job_conversation_messages FROM jale_twilio_callback;
 GRANT SELECT (twilio_message_sid, status, sent_at, delivered_at),
@@ -160,19 +237,10 @@ BEGIN
 END $$;
 ALTER FUNCTION jale_twilio_callback.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ)
   OWNER TO jale_twilio_callback;
-REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ)
-  TO jale_twilio_callback;
 
 -- Public compatibility wrapper: preserves migration 028's public signature
--- and grants (jale_whatsapp, jale_admin) so existing callers are unaffected.
--- Deliberately stays OWNED BY jale_admin (unchanged from migration 028) —
--- PostgreSQL requires a new owner to hold CREATE on the containing schema,
--- and jale_twilio_callback intentionally has none on `public` (it owns only
--- its own locked schema). A thin, jale_admin-owned SECURITY DEFINER wrapper
--- with a pinned search_path that delegates to the locked implementation
--- gets the same result without widening jale_twilio_callback's footprint
--- into `public`.
+-- for jale_whatsapp. It is helper-owned so the wrapper can call the locked
+-- implementation without granting jale_admin access to the locked schema.
 DROP FUNCTION IF EXISTS public.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ);
 CREATE FUNCTION public.record_twilio_status(
     p_sid TEXT, p_status TEXT, p_at TIMESTAMPTZ
@@ -180,13 +248,8 @@ CREATE FUNCTION public.record_twilio_status(
 LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
   SELECT jale_twilio_callback.record_twilio_status(p_sid, p_status, p_at);
 $$;
-REVOKE ALL ON FUNCTION public.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ)
-  TO jale_whatsapp, jale_admin;
--- The wrapper runs as its owner (jale_admin) once invoked, so jale_admin —
--- not just jale_twilio_callback — needs EXECUTE on the locked implementation.
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ)
-  TO jale_admin;
+ALTER FUNCTION public.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ)
+  OWNER TO jale_twilio_callback;
 
 -- Job alerts now use the same durable outbox. Preserve the original inbound
 -- and admin-case origins while allowing one idempotent row per job/worker.
@@ -343,9 +406,6 @@ $$;
 
 ALTER FUNCTION jale_twilio_callback.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT)
   OWNER TO jale_twilio_callback;
-REVOKE ALL ON FUNCTION jale_twilio_callback.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT)
-  TO jale_twilio_callback;
 
 -- Public compatibility wrapper preserving the prior public signature/grants.
 DROP FUNCTION IF EXISTS public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT);
@@ -364,14 +424,8 @@ AS $$
     p_twilio_message_sid, p_message_status, p_error_code, p_error_message
   );
 $$;
--- Stays owned by jale_admin (see record_twilio_status wrapper above for why
--- jale_twilio_callback is never made the owner of a `public`-schema object).
-REVOKE ALL ON FUNCTION public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT) TO jale_whatsapp;
-GRANT EXECUTE ON FUNCTION public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT)
-  TO jale_twilio_callback;
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT)
-  TO jale_admin;
+ALTER FUNCTION public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT)
+  OWNER TO jale_twilio_callback;
 
 -- One callback entry point dispatches to both durable outbound stores. The
 -- job-message writer introduced in migration 028 updates its message record;
@@ -422,10 +476,6 @@ $$;
 
 ALTER FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT)
   OWNER TO jale_twilio_callback;
-REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT USAGE ON SCHEMA jale_twilio_callback TO jale_whatsapp;
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT)
-  TO jale_whatsapp;
 
 DROP FUNCTION IF EXISTS jale_twilio_callback.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT);
 CREATE FUNCTION jale_twilio_callback.record_admin_whatsapp_delivery(
@@ -486,9 +536,6 @@ END;
 $$;
 ALTER FUNCTION jale_twilio_callback.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT)
   OWNER TO jale_twilio_callback;
-REVOKE ALL ON FUNCTION jale_twilio_callback.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT)
-  TO jale_twilio_callback;
 
 -- Dispatch status remains `sent` for compatibility, but its timeline title
 -- must not imply final delivery before an asynchronous Twilio callback.
@@ -510,12 +557,31 @@ AS $$
     p_outbox_id, p_status, p_twilio_message_sid, p_error
   );
 $$;
--- Stays owned by jale_admin (see record_twilio_status wrapper above for why
--- jale_twilio_callback is never made the owner of a `public`-schema object).
+ALTER FUNCTION public.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT)
+  OWNER TO jale_twilio_callback;
+
+-- Apply every helper-owned ACL while the helper role is active. Performing
+-- these grants after ownership transfer as jale_admin only emits warnings
+-- and grants nothing when membership is NOINHERIT.
+SET LOCAL ROLE jale_twilio_callback;
+REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION jale_twilio_callback.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION jale_twilio_callback.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT) TO jale_whatsapp;
-GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT)
-  TO jale_admin;
+GRANT USAGE ON SCHEMA jale_twilio_callback TO jale_whatsapp;
+GRANT EXECUTE ON FUNCTION jale_twilio_callback.record_twilio_delivery_status(TEXT, TEXT, TEXT, TEXT)
+  TO jale_whatsapp;
+GRANT EXECUTE ON FUNCTION public.record_twilio_status(TEXT, TEXT, TIMESTAMPTZ)
+  TO jale_whatsapp;
+GRANT EXECUTE ON FUNCTION public.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT)
+  TO jale_whatsapp;
+GRANT EXECUTE ON FUNCTION public.record_admin_whatsapp_delivery(UUID, TEXT, TEXT, TEXT)
+  TO jale_whatsapp;
+RESET ROLE;
+REVOKE CREATE ON SCHEMA public FROM jale_twilio_callback;
 
 -- Remove the temporary migration-time SET capability entirely. The schema
 -- privilege revoke is again an owner-only operation (see above) and needs
@@ -542,7 +608,16 @@ $$;
 -- Fail closed if any helper-role, ACL, ownership, policy, or function setting
 -- drifts while this rerunnable migration is being maintained.
 DO $$
-DECLARE v_creator OID := (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user);
+DECLARE
+  v_creator OID := (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user);
+  v_unified_callback OID := (
+    SELECT function.oid
+      FROM pg_catalog.pg_proc function
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function.pronamespace
+     WHERE namespace.nspname = 'jale_twilio_callback'
+       AND function.proname = 'record_twilio_delivery_status'
+       AND function.proargtypes = '25 25 25 25'::pg_catalog.oidvector
+  );
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_catalog.pg_roles
@@ -589,6 +664,51 @@ BEGIN
       AND NOT pg_catalog.has_schema_privilege('public', n.oid, 'USAGE')
   ) THEN RAISE EXCEPTION 'jale_twilio_callback schema ACL/owner drift'; END IF;
 
+  IF pg_catalog.has_schema_privilege('jale_twilio_callback', 'public', 'CREATE')
+     OR (SELECT count(*)
+           FROM pg_catalog.pg_proc function
+           JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function.pronamespace
+           JOIN pg_catalog.pg_roles owner ON owner.oid = function.proowner
+          WHERE namespace.nspname = 'public'
+            AND function.proname IN (
+              'record_twilio_status',
+              'record_whatsapp_delivery_status',
+              'record_admin_whatsapp_delivery'
+            )
+            AND owner.rolname = 'jale_twilio_callback'
+            AND function.prosecdef
+            AND function.proconfig @> ARRAY['search_path=pg_catalog, pg_temp']) <> 3
+  THEN RAISE EXCEPTION 'callback wrapper owner/schema privilege drift'; END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_proc function
+      JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function.pronamespace,
+      LATERAL pg_catalog.aclexplode(
+        COALESCE(function.proacl, pg_catalog.acldefault('f', function.proowner))
+      ) acl
+     WHERE namespace.nspname = 'public'
+       AND function.proname IN (
+         'record_twilio_status',
+         'record_whatsapp_delivery_status',
+         'record_admin_whatsapp_delivery'
+       )
+       AND acl.grantee = 0
+       AND acl.privilege_type = 'EXECUTE'
+  ) OR (SELECT count(*)
+          FROM pg_catalog.pg_proc function
+          JOIN pg_catalog.pg_namespace namespace ON namespace.oid = function.pronamespace
+         WHERE namespace.nspname = 'public'
+           AND function.proname IN (
+             'record_twilio_status',
+             'record_whatsapp_delivery_status',
+             'record_admin_whatsapp_delivery'
+           )
+           AND pg_catalog.has_function_privilege(
+             'jale_whatsapp', function.oid, 'EXECUTE'
+           )) <> 3
+  THEN RAISE EXCEPTION 'callback wrapper execute ACL drift'; END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_catalog.pg_proc p
      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
@@ -621,10 +741,12 @@ BEGIN
        'public.job_conversation_messages', 'twilio_message_sid', 'SELECT')
   THEN RAISE EXCEPTION 'Twilio callback table/column ACL drift'; END IF;
 
-  IF pg_catalog.has_function_privilege('public',
-       'jale_twilio_callback.record_twilio_delivery_status(text,text,text,text)', 'EXECUTE')
-     OR NOT pg_catalog.has_function_privilege('jale_whatsapp',
-       'jale_twilio_callback.record_twilio_delivery_status(text,text,text,text)', 'EXECUTE')
+  -- Use the catalog OID here: jale_admin intentionally has no USAGE on the
+  -- locked schema by this point, so resolving a regprocedure by qualified
+  -- name would make the self-audit fail with permission denied.
+  IF v_unified_callback IS NULL
+     OR pg_catalog.has_function_privilege('public', v_unified_callback, 'EXECUTE')
+     OR NOT pg_catalog.has_function_privilege('jale_whatsapp', v_unified_callback, 'EXECUTE')
   THEN RAISE EXCEPTION 'unified callback execute ACL drift'; END IF;
 
   IF pg_catalog.to_regprocedure('public.record_twilio_delivery_status(text,text,text,text)') IS NOT NULL

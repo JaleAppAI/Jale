@@ -79,7 +79,9 @@ BEGIN
 END;
 $$;
 
+SET LOCAL ROLE jale_billing_job_enforcer;
 REVOKE ALL ON SCHEMA jale_billing_internal FROM PUBLIC;
+RESET ROLE;
 DROP FUNCTION IF EXISTS public.billing_pause_over_limit_jobs(UUID, INTEGER);
 
 SET LOCAL ROLE jale_billing_job_enforcer;
@@ -132,11 +134,10 @@ BEGIN
 END;
 $$;
 REVOKE ALL ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(UUID, INTEGER) FROM PUBLIC;
-RESET ROLE;
-
 GRANT USAGE ON SCHEMA jale_billing_internal TO jale_billing;
 GRANT EXECUTE ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(UUID, INTEGER)
   TO jale_billing;
+RESET ROLE;
 REVOKE jale_billing_job_enforcer FROM jale_admin;
 
 DO $$

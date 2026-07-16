@@ -22,10 +22,31 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
   const jobMessageSid = `SM${randomUUID().replaceAll('-', '')}`;
   const whatsappSid = `SM${randomUUID().replaceAll('-', '')}`;
   const unknownSid = `SM${randomUUID().replaceAll('-', '')}`;
+  const runtimeRole = 'jale_callback_test_runner';
+  let setupClient: Client;
   let client: Client;
 
   beforeAll(async () => {
-    client = new Client({ connectionString: databaseUrl });
+    // Use the bootstrap connection only for fixtures and a disposable,
+    // unprivileged runner for runtime assertions. The runner can SET LOCAL
+    // ROLE to jale_whatsapp but has no path to the helper role. This keeps
+    // FORCE RLS from making fixture setup impossible without accidentally
+    // giving callback assertions superuser session semantics.
+    const runtimeUrl = new URL(databaseUrl!);
+    runtimeUrl.username = runtimeRole;
+    runtimeUrl.password = 'test-callback-runner-pw';
+    setupClient = new Client({ connectionString: databaseUrl });
+    await setupClient.connect();
+    await setupClient.query(`DROP ROLE IF EXISTS ${runtimeRole}`);
+    await setupClient.query(
+      `CREATE ROLE ${runtimeRole}
+         LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
+         PASSWORD 'test-callback-runner-pw'`,
+    );
+    await setupClient.query(
+      `GRANT jale_whatsapp TO ${runtimeRole} WITH SET TRUE, INHERIT FALSE`,
+    );
+    client = new Client({ connectionString: runtimeUrl.toString() });
     await client.connect();
     // Review-1 correction (item 3, native gate integrity): this test must
     // run against a database bootstrapped as the plain jale_admin owner
@@ -39,33 +60,33 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
     // reached applying 023_job_fields_and_statuses_mvp.sql) that currently
     // prevents this suite from reaching 036 end-to-end; that blocker is
     // being fixed by a separate, parallel migration-repair task.
-    await client.query(
+    await setupClient.query(
       `INSERT INTO users (id, cognito_sub, user_type) VALUES
          ($1, $2, 'employer'), ($3, $4, 'worker')`,
       [employerId, `w2-employer-${employerId}`, workerId, `w2-worker-${workerId}`],
     );
-    await client.query(
+    await setupClient.query(
       `INSERT INTO jobs (id, employer_id, title, location, job_type)
        VALUES ($1, $2, 'W2 job', 'Denver', 'full-time')`,
       [jobId, employerId],
     );
-    await client.query(
+    await setupClient.query(
       `INSERT INTO job_applications (id, job_id, worker_id) VALUES ($1, $2, $3)`,
       [applicationId, jobId, workerId],
     );
-    await client.query(
+    await setupClient.query(
       `INSERT INTO job_conversations
          (id, job_id, employer_id, worker_id, application_id)
        VALUES ($1, $2, $3, $4, $5)`,
       [conversationId, jobId, employerId, workerId, applicationId],
     );
-    await client.query(
+    await setupClient.query(
       `INSERT INTO job_conversation_messages
          (id, conversation_id, sender_type, direction, body, status, twilio_message_sid)
        VALUES ($1, $2, 'employer', 'outbound', 'hello', 'sent', $3)`,
       [messageId, conversationId, jobMessageSid],
     );
-    await client.query(
+    await setupClient.query(
       `INSERT INTO whatsapp_outbox
          (id, sequence, whatsapp_number, body, status, content_template,
           content_variables, source_type, source_id, idempotency_key, twilio_message_sid)
@@ -76,9 +97,11 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
   });
 
   afterAll(async () => {
-    await client.query('DELETE FROM jobs WHERE id = $1', [jobId]);
-    await client.query('DELETE FROM users WHERE id IN ($1, $2)', [employerId, workerId]);
+    await setupClient.query('DELETE FROM jobs WHERE id = $1', [jobId]);
+    await setupClient.query('DELETE FROM users WHERE id IN ($1, $2)', [employerId, workerId]);
     await client.end();
+    await setupClient.query(`DROP ROLE ${runtimeRole}`);
+    await setupClient.end();
   });
 
   // Review-1 correction (item 3): exercise the unified callback exactly as

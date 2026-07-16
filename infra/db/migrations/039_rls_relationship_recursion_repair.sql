@@ -93,7 +93,9 @@ BEGIN
 END;
 $$;
 
+SET LOCAL ROLE jale_rls_relationship_reader;
 REVOKE ALL ON SCHEMA jale_internal FROM PUBLIC;
+RESET ROLE;
 
 -- Remove the dependent policy before refreshing the function. Recreating as
 -- the helper is rerun-safe and cannot preserve an unexpected prior owner.
@@ -108,9 +110,8 @@ BEGIN
     JOIN pg_namespace namespace ON namespace.oid = function.pronamespace
     JOIN pg_roles owner ON owner.oid = function.proowner
    WHERE namespace.nspname = 'jale_internal'
-     AND function.oid = to_regprocedure(
-       'jale_internal.employer_has_applicant_relationship(TEXT, UUID)'
-     );
+     AND function.proname = 'employer_has_applicant_relationship'
+     AND function.proargtypes = '25 2950'::pg_catalog.oidvector;
 
   IF FOUND AND predicate_owner <> 'jale_rls_relationship_reader' THEN
     RAISE EXCEPTION 'Existing relationship predicate has unexpected owner %', predicate_owner;
@@ -139,10 +140,9 @@ AS $$
   );
 $$;
 REVOKE ALL ON FUNCTION jale_internal.employer_has_applicant_relationship(TEXT, UUID) FROM PUBLIC;
-RESET ROLE;
-
 GRANT USAGE ON SCHEMA jale_internal TO jale_admin;
 GRANT EXECUTE ON FUNCTION jale_internal.employer_has_applicant_relationship(TEXT, UUID) TO jale_admin;
+RESET ROLE;
 REVOKE jale_rls_relationship_reader FROM jale_admin;
 
 CREATE POLICY users_employer_applicant_read

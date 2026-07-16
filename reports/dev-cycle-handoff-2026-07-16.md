@@ -387,3 +387,47 @@ matrix passes.
 7. Run the complete combined verification matrix and update this handoff.
 8. Stop before any `SPRINT16` merge, push, deployment, secret operation, or
    shared migration.
+
+## Final Dev Cycle closure — 2026-07-16
+
+This section supersedes the earlier WIP/blocker status above. W2 Review 2 is
+complete, the clean-chain repair and corrected WhatsApp work are integrated on
+the local `feat/sprint16-dev-cycle-integration` branch, and the implementation
+plan has been completed. The branch has not been merged into `SPRINT16`, pushed,
+deployed, or applied to a shared database.
+
+Residual lead-owned corrections found by the production-equivalent database
+gate:
+
+- Helper-owned schema/function ACL changes in migrations 020b, 036, 037, and
+  039 now execute under a narrowly scoped temporary helper role and are safe on
+  both first application and reapplication.
+- Migration 036 uses owner-aware function cleanup, narrow callback helper
+  column grants/RLS policies, catalog-based audits that do not require locked
+  schema access, and an actionable non-superuser runtime-role native test.
+- The billing webhook denial assertion now reflects the real production model:
+  `jale_admin` owns the FORCE-RLS table, so a denied SELECT returns no rows
+  rather than failing at the table ACL layer.
+
+Final verification:
+
+- A fresh PostgreSQL 16 cluster owned by plain `jale_admin`
+  (`NOSUPERUSER`, `NOBYPASSRLS`, `CREATEROLE`) applied the exact lexical chain
+  001 through 039. The corrected 020b, 036, 037, and 039 migrations then
+  reapplied successfully as the same owner.
+- All six native PostgreSQL suites passed: 47/47 assertions, including callback
+  execution as an unprivileged runner using `SET LOCAL ROLE jale_whatsapp`.
+- Infra TypeScript build passed. The full serial Jest gate passed 111 suites,
+  1,104 tests, with 63 documented skips and 9 todos; the final migration static
+  recheck passed 26/26.
+- Frontend Vitest passed 14/14; lint and clean-environment production build
+  passed with only the previously documented React hook warnings.
+- Full `cdk synth --all` succeeded for all 14 stacks with the required billing,
+  SES, callback URL, alarm topic, and Cognito contexts.
+- `git diff --check` passed. No shared environment or production resource was
+  changed.
+
+The next authorized integration action, if desired, is to review the final
+local commit and explicitly merge/cherry-pick it into `SPRINT16`. Operator-owned
+SES, Twilio, production secret, deployment, and live-phone prerequisites remain
+external and unchanged.

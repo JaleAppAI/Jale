@@ -268,6 +268,13 @@ describe('database migrations', () => {
       "'REVOKE jale_twilio_callback FROM %I GRANTED BY %I'",
     );
     expect(migration).toContain('AND grantor.rolsuper');
+    expect(migration).toContain("function.proargtypes = '25 25 25 25'::pg_catalog.oidvector");
+    expect(migration).toContain(
+      "has_function_privilege('jale_whatsapp', v_unified_callback, 'EXECUTE')",
+    );
+    expect(migration).toContain('OWNER TO jale_twilio_callback');
+    expect(migration).toContain('REVOKE CREATE ON SCHEMA public FROM jale_twilio_callback');
+    expect(migration).toContain('callback wrapper execute ACL drift');
     expect(migration).toContain('idx_whatsapp_outbox_twilio_message_sid');
     // Review-1 correction: no unconditional ALTER ROLE against production;
     // rerun validates existing role attributes instead.
