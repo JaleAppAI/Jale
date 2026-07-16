@@ -17,7 +17,7 @@ import { MetricCard } from '@/components/ui/metric-card';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
-import { deleteJob, getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
+import { ApiError, deleteJob, getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
@@ -50,6 +50,8 @@ export default function JobDetailPage() {
   const [loadingApplicants, setLoadingApplicants] = useState(false);
   const [togglingStatus, setTogglingStatus] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -302,10 +304,28 @@ export default function JobDetailPage() {
     <DeleteJobDialog
       open={confirmDelete}
       jobTitle={job?.title ?? ''}
-      onCancel={() => setConfirmDelete(false)}
+      deleting={deleting}
+      error={deleteError}
+      onCancel={() => {
+        if (deleting) return;
+        setConfirmDelete(false);
+        setDeleteError(null);
+      }}
       onConfirm={async () => {
-        await deleteJob(idToken!, job!.id);
-        router.push('/employer/dashboard');
+        if (!idToken || !job || deleting) return;
+        setDeleting(true);
+        setDeleteError(null);
+        try {
+          await deleteJob(idToken, job.id);
+          router.push('/employer/dashboard');
+        } catch (err) {
+          if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
+            setDeleteError(t('jobs.delete.error_hired'));
+          } else {
+            setDeleteError(t('jobs.delete.error_generic'));
+          }
+          setDeleting(false);
+        }
       }}
     />
     </>

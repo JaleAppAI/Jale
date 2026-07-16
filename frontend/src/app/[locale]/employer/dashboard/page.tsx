@@ -16,7 +16,7 @@ import { ProgressRow } from '@/components/ui/progress-row';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PostJobModal } from '@/components/employer/PostJobModal';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
-import { deleteJob, getJobs } from '@/lib/api/employer';
+import { ApiError, deleteJob, getJobs } from '@/lib/api/employer';
 import type { Job } from '@/lib/api/employer';
 import type { JobStatus } from '@/lib/status';
 
@@ -31,6 +31,8 @@ export default function EmployerDashboardPage() {
 
     const [jobs, setJobs] = useState<Job[]>([]);
     const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
+    const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
@@ -97,6 +99,39 @@ export default function EmployerDashboardPage() {
     function handleJobCreated(job: Job) {
         setJobs((prev) => [job, ...prev]);
         setModalOpen(false);
+    }
+
+    function openDeleteDialog(job: Job) {
+        setDeletingJobId(null);
+        setDeleteError(null);
+        setJobToDelete(job);
+    }
+
+    function closeDeleteDialog() {
+        setDeletingJobId(null);
+        setDeleteError(null);
+        setJobToDelete(null);
+    }
+
+    async function handleConfirmDelete() {
+        if (!idToken || !jobToDelete || deletingJobId) return;
+
+        const target = jobToDelete;
+        setDeletingJobId(target.id);
+        setDeleteError(null);
+        try {
+            await deleteJob(idToken, target.id);
+            setJobs((cur) => cur.filter((job) => job.id !== target.id));
+            closeDeleteDialog();
+        } catch (err) {
+            if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
+                setDeleteError(t('jobs.delete.error_hired'));
+            } else {
+                setDeleteError(t('jobs.delete.error_generic'));
+            }
+        } finally {
+            setDeletingJobId(null);
+        }
     }
 
     if (error) {
@@ -216,7 +251,7 @@ export default function EmployerDashboardPage() {
                                                     job={job}
                                                     href={`/employer/jobs/${job.id}`}
                                                     isLast={index === featuredJobs.length - 1}
-                                                    onDelete={setJobToDelete}
+                                                    onDelete={openDeleteDialog}
                                                 />
                                             ))}
                                         </div>
@@ -303,15 +338,13 @@ export default function EmployerDashboardPage() {
             />
 
             <DeleteJobDialog
+                key={jobToDelete?.id ?? 'closed'}
                 open={jobToDelete !== null}
                 jobTitle={jobToDelete?.title ?? ''}
-                onCancel={() => setJobToDelete(null)}
-                onConfirm={async () => {
-                    const target = jobToDelete!;
-                    await deleteJob(idToken!, target.id);
-                    setJobs((cur) => cur.filter((j) => j.id !== target.id));
-                    setJobToDelete(null);
-                }}
+                deleting={deletingJobId === jobToDelete?.id}
+                error={deleteError}
+                onCancel={closeDeleteDialog}
+                onConfirm={handleConfirmDelete}
             />
         </>
     );

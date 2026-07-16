@@ -1,62 +1,43 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
-import { ApiError } from '@/lib/api/employer';
-import { LegalWallError } from '@/lib/api';
 
 /**
  * Shared confirm modal for permanently deleting a job. Follows the PostJobModal overlay
- * pattern (no dialog primitive exists). `onConfirm` performs the delete; a LegalWallError
- * is re-thrown so the calling page can route to the legal wall, while an
- * `ApiError` with code `job_has_hired_workers` shows the specific blocked message.
+ * pattern (no dialog primitive exists). The parent owns the deleting/error state
+ * so one delete attempt cannot leak loading state into the next selected job.
  */
 export function DeleteJobDialog({
   open,
   jobTitle,
+  deleting,
+  error,
   onCancel,
   onConfirm,
 }: {
   open: boolean;
   jobTitle: string;
+  deleting: boolean;
+  error: string | null;
   onCancel: () => void;
   onConfirm: () => Promise<void>;
 }) {
   const t = useTranslations('employer_dashboard');
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) {
-      setDeleting(false);
-      setError(null);
-    }
-  }, [open]);
 
   if (!open) return null;
 
   async function handleConfirm() {
-    setDeleting(true);
-    setError(null);
-    try {
-      await onConfirm();
-      setDeleting(false);
-    } catch (err) {
-      if (err instanceof LegalWallError) throw err; // let the page route to the legal wall
-      if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
-        setError(t('jobs.delete.error_hired'));
-      } else {
-        setError(t('jobs.delete.error_generic'));
-      }
-      setDeleting(false);
-    }
+    if (deleting) return;
+    await onConfirm();
   }
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onCancel}
+      onClick={() => {
+        if (!deleting) onCancel();
+      }}
       role="dialog"
       aria-modal="true"
     >

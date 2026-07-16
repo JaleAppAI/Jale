@@ -359,6 +359,7 @@
     "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
     "threads": "Conversations",
     "drawer_button": "Messages",
+    "drawer_close": "Close",
     "hide": "Hide",
     "empty": "No open conversations yet.",
     "empty_select": "Select a conversation.",
