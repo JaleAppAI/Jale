@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { ApiError } from '@/lib/api/employer';
@@ -27,6 +27,13 @@ export function DeleteJobDialog({
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!open) {
+      setDeleting(false);
+      setError(null);
+    }
+  }, [open]);
+
   if (!open) return null;
 
   async function handleConfirm() {
@@ -34,6 +41,7 @@ export function DeleteJobDialog({
     setError(null);
     try {
       await onConfirm();
+      setDeleting(false);
     } catch (err) {
       if (err instanceof LegalWallError) throw err; // let the page route to the legal wall
       if (err instanceof ApiError && err.code === 'job_has_hired_workers') {

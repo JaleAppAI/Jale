@@ -153,6 +153,16 @@ export class FrontendStack extends cdk.Stack {
       },
     );
 
+    // Viewer-request function for the Next.js (default + static) behaviors. It does
+    // two things, in order:
+    //   1. Canonical host redirect: www.<domain> → <apex>. The apex is the ONLY
+    //      origin the API's CORS config allows, and NEXT_PUBLIC_API_BASE_URL is
+    //      baked to the apex (`https://<apex>/api`). If the app is served from
+    //      www it stays functional to look at but every API call is cross-origin
+    //      (www → apex) and blocked by CORS, so the app shows a generic error.
+    //      Redirecting to the apex keeps a single origin end-to-end.
+    //   2. Strip the viewer Authorization header before OAC SigV4 signing (apex
+    //      requests only; www requests never reach this point).
     const stripFrontendAuthorization = new cloudfront.Function(
       this,
       'StripFrontendAuthorizationFunction',
@@ -161,6 +171,35 @@ export class FrontendStack extends cdk.Stack {
         code: cloudfront.FunctionCode.fromInline(`
 function handler(event) {
   var request = event.request;
+  var hostHeader = request.headers.host;
+  var host = hostHeader ? hostHeader.value : '';
+
+  if (host === '${wwwDomainName}') {
+    var qs = request.querystring;
+    var pairs = [];
+    for (var key in qs) {
+      var entry = qs[key];
+      if (entry.multiValue) {
+        for (var i = 0; i < entry.multiValue.length; i++) {
+          pairs.push(key + '=' + entry.multiValue[i].value);
+        }
+      } else if (entry.value !== '') {
+        pairs.push(key + '=' + entry.value);
+      } else {
+        pairs.push(key);
+      }
+    }
+    var query = pairs.length > 0 ? '?' + pairs.join('&') : '';
+    return {
+      statusCode: 301,
+      statusDescription: 'Moved Permanently',
+      headers: {
+        location: { value: 'https://${props.domainName}' + request.uri + query },
+        'cache-control': { value: 'max-age=3600' }
+      }
+    };
+  }
+
   delete request.headers.authorization;
   return request;
 }
