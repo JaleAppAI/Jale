@@ -45,6 +45,14 @@ export function buildLegalInteractivePrompt(lang: Lang, tosUrl: string): Interac
   };
 }
 
+export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
+  return {
+    templateName: `help_menu_list_${lang}`,
+    variables: {},
+    fallbackBody: t('help_menu', lang),
+  };
+}
+
 export function buildProfileInteractivePrompt(
   field: ProfileField,
   lang: Lang,

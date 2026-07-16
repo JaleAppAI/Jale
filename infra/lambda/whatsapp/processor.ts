@@ -59,6 +59,7 @@ import {
   upsertWorkerProfileFromUsers,
 } from './lib/profile-flow';
 import {
+  buildHelpMenuInteractivePrompt,
   buildLegalInteractivePrompt,
   buildMediaInteractivePrompt,
   buildProfileInteractivePrompt,
@@ -988,7 +989,7 @@ async function routeMessage(
   }
 
   if (isHelpCommand(msg.body)) {
-    await reply(client, msg, 'help_menu', conv.language);
+    await queueInteractivePrompt(client, msg.messageSid, msg.from, buildHelpMenuInteractivePrompt(conv.language));
     return null;
   }
 

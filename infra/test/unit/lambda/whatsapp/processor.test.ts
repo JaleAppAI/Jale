@@ -78,6 +78,7 @@ const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
 import { handler } from '../../../../lambda/whatsapp/processor';
+import { t } from '../../../../lambda/whatsapp/lib/templates';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -875,7 +876,7 @@ describe('Processor Lambda', () => {
       expect(photoUpdate).toBeDefined();
     });
 
-    it('returns the command menu when a worker sends help', async () => {
+    it('queues the help list-picker template (with plain-text fallback) when a worker sends help', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-help' }] }) // claim
@@ -883,7 +884,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
         })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu_list_en
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
@@ -899,9 +900,85 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      expect(outboxBodies()[0]).toContain('Commands');
-      expect(outboxBodies()[0]).toContain('Jobs - See opportunities');
+      expect(outboxTemplates()).toEqual(['help_menu_list_en']);
+      expect(outboxBodies()).toEqual([]);
+      const helpPrompt = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('help_menu_list_en')
+      );
+      expect(helpPrompt).toBeDefined();
+      const contentVariables = (helpPrompt![1] as unknown[])[3] as Record<string, string>;
+      expect(contentVariables.__fallback_body).toContain('Commands');
+      expect(contentVariables.__fallback_body).toContain('Jobs - See opportunities');
       expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
+    });
+
+    it('queues the Spanish help list-picker template for an ES conversation', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-help-es' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'es', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu_list_es
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-help-es',
+          From: 'whatsapp:+15125551234',
+          Body: 'Ayuda',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxTemplates()).toEqual(['help_menu_list_es']);
+      const helpPrompt = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[]).includes('help_menu_list_es')
+      );
+      expect(helpPrompt).toBeDefined();
+      const contentVariables = (helpPrompt![1] as unknown[])[3] as Record<string, string>;
+      expect(contentVariables.__fallback_body).toEqual(t('help_menu', 'es'));
+    });
+
+    it('does not treat a near-match like "help me" as the help command', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-help-nomatch' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'new', language: 'en', user_id: null })],
+        })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // tryConversationRelay → resolveWorkerIdForWhatsappNumber → no match
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox start_prompt (not-a-greeting fallback)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-help-nomatch',
+          From: 'whatsapp:+15125551234',
+          Body: 'help me',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxTemplates()).not.toContain('help_menu_list_en');
+      expect(outboxTemplates()).not.toContain('help_menu_list_es');
     });
 
     it('returns profile details for a linked worker profile command', async () => {
