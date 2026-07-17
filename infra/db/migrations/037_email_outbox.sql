@@ -1,4 +1,4 @@
--- 038_email_outbox.sql
+-- 037_email_outbox.sql
 -- Generic durable email outbox. Billing is a narrow producer; jale_admin is
 -- the scheduled sender. Forward-only; apply after 037.
 

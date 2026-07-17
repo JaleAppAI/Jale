@@ -50,14 +50,14 @@
 -- list, which is a no-op if already set that way). Verified empirically
 -- (disposable PG16
 -- container, plain jale_admin): applying this file, then continuing the
--- chain through 039, causes 039 to re-run this same repair a second time
+-- chain through 038, causes 039 to re-run this same repair a second time
 -- and complete cleanly -- it recognizes the already-correct state via its
 -- own invariant DO-block checks and changes nothing. That also means this
 -- file is safe (a strict no-op re-verification) if ever run against a
 -- database that already carries 039's repair from some other path. 039 is
 -- intentionally left in place at its original position: it remains the
 -- correct (and now redundant-safe) repair step for any already-migrated
--- database whose operator applies 034-039 without this file, and it keeps
+-- database whose operator applies 034-038 without this file, and it keeps
 -- protecting a fresh cluster even if this file is ever skipped by mistake.
 -- ============================================================
 

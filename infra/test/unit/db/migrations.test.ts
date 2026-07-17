@@ -162,8 +162,8 @@ describe('database migrations', () => {
     expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
   });
 
-  it('adds least-privilege job-limit enforcement in migration 037', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '037_billing_job_limit_enforcement.sql'), 'utf8');
+  it('adds least-privilege job-limit enforcement in migration 036', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '036_billing_job_limit_enforcement.sql'), 'utf8');
     expect(migration).toContain('CREATE ROLE jale_billing_job_enforcer');
     expect(migration).toContain('CREATE SCHEMA jale_billing_internal AUTHORIZATION jale_billing_job_enforcer');
     expect(migration).toContain('CREATE FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
@@ -181,8 +181,8 @@ describe('database migrations', () => {
     expect(migration).not.toContain('ALTER ROLE jale_billing_job_enforcer');
   });
 
-  it('adds a bounded default-deny generic email outbox in migration 038', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '038_email_outbox.sql'), 'utf8');
+  it('adds a bounded default-deny generic email outbox in migration 037', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '037_email_outbox.sql'), 'utf8');
     expect(migration).toContain('CREATE TABLE email_outbox');
     expect(migration).toContain('recipient_email');
     expect(migration).toContain('source_id         UUID NOT NULL');
@@ -195,8 +195,8 @@ describe('database migrations', () => {
     expect(migration).not.toContain('GRANT DELETE');
   });
 
-  it('repairs relationship RLS recursion with a narrow NOLOGIN helper in migration 039', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '039_rls_relationship_recursion_repair.sql'), 'utf8');
+  it('repairs relationship RLS recursion with a narrow NOLOGIN helper in migration 038', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '038_rls_relationship_recursion_repair.sql'), 'utf8');
     expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
     expect(migration).toContain('NOLOGIN NOSUPERUSER');
     expect(migration).toContain('NOBYPASSRLS');
