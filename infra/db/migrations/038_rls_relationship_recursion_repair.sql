@@ -249,7 +249,15 @@ BEGIN
     WHERE namespace.nspname = 'jale_internal'
       AND owner.rolname = 'jale_rls_relationship_reader'
   ) OR NOT has_schema_privilege('jale_admin', 'jale_internal', 'USAGE')
-    OR has_schema_privilege('jale_admin', 'jale_internal', 'CREATE')
+    -- rds_superuser grants the RDS master effective CREATE independent of the
+    -- schema ACL. Assert the migration-controlled explicit ACL instead.
+    OR EXISTS (
+      SELECT 1 FROM pg_namespace namespace,
+           LATERAL aclexplode(COALESCE(namespace.nspacl, acldefault('n', namespace.nspowner))) acl
+       WHERE namespace.nspname = 'jale_internal'
+         AND acl.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'jale_admin')
+         AND acl.privilege_type = 'CREATE'
+    )
     OR NOT has_function_privilege(
       'jale_admin',
       'jale_internal.employer_has_applicant_relationship(TEXT, UUID)',

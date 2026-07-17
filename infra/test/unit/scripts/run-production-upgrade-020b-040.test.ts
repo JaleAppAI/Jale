@@ -77,6 +77,12 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
     expect(script).toContain('POSTFLIGHT_FAILED');
     expect(script).toContain("function.proname IN ('record_twilio_status'");
     expect(script).toContain("function.proargtypes='25 25 25 25'::oidvector");
+    expect(script).toContain(
+      "acl.grantee=(SELECT oid FROM pg_roles WHERE rolname='jale_admin') AND acl.privilege_type='CREATE'",
+    );
+    expect(script).not.toContain(
+      "has_schema_privilege('jale_admin','jale_internal','CREATE')",
+    );
     expect(script).not.toContain("record_whatsapp_delivery_status(character varying,text,text,text)");
   });
 
