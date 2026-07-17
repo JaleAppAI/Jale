@@ -1,22 +1,19 @@
 import type { PoolClient } from 'pg';
-import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
 import type { TwilioSecret } from './twilio';
+import {
+  getTwilioSecret,
+  requireTwilioStatusCallbackUrl,
+  _clearTwilioSecretCacheForTests,
+} from './twilio-secret';
 
-const secretsManager = new SecretsManagerClient({});
 const FALLBACK_BODY_KEY = '__fallback_body';
+const TWILIO_SID_RE = /^SM[0-9A-Fa-f]{32}$/;
 
 // H3: poison-message guard for the scheduled admin dispatcher. A row that Twilio
 // hard-rejects (4xx) flips to 'failed' and would otherwise be re-selected and
 // re-sent every minute forever. Stop retrying after this many attempts; the row
 // stays 'failed' with last_error set for operator follow-up.
 const MAX_ADMIN_SEND_ATTEMPTS = 5;
-
-let cachedTwilio: TwilioSecret | null = null;
-let twilioCacheExp = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
 
 class AmbiguousTwilioSendError extends Error {
   constructor(message: string) {
@@ -25,20 +22,7 @@ class AmbiguousTwilioSendError extends Error {
   }
 }
 
-async function getTwilioSecret(): Promise<TwilioSecret> {
-  const now = Date.now();
-  if (cachedTwilio && now < twilioCacheExp) return cachedTwilio;
-
-  const arn = process.env.TWILIO_SECRET_ARN;
-  if (!arn) throw new Error('TWILIO_SECRET_ARN not set');
-
-  const r = await secretsManager.send(new GetSecretValueCommand({ SecretId: arn }));
-  if (!r.SecretString) throw new Error('TWILIO secret empty');
-
-  cachedTwilio = JSON.parse(r.SecretString) as TwilioSecret;
-  twilioCacheExp = now + CACHE_TTL_MS;
-  return cachedTwilio;
-}
+export { AmbiguousTwilioSendError };
 
 export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
@@ -50,6 +34,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
   const formValues: Record<string, string> = {
     MessagingServiceSid: secret.messagingServiceSid,
     To: to,
+    StatusCallback: requireTwilioStatusCallbackUrl(),
   };
 
   if (row.content_template) {
@@ -92,7 +77,13 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
         `Twilio request timed out after ${timeoutMs}ms; delivery state unknown`,
       );
     }
-    throw error;
+    // Once fetch starts, a transport failure cannot prove Twilio rejected the
+    // POST. The peer may have accepted it before the connection reset or the
+    // response was truncated. Never automatically resend in that state.
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new AmbiguousTwilioSendError(
+      `Twilio transport failed; delivery state unknown: ${reason}`,
+    );
   }
   if (!res.ok) {
     throw new Error(`Twilio send failed with HTTP ${res.status}`);
@@ -101,9 +92,22 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
   try {
     responseBody = await res.json() as { sid?: string };
   } catch {
-    responseBody = null;
+    // A 2xx with an unparseable body means we cannot confirm what Twilio did
+    // with the message — ambiguous, not success.
+    throw new AmbiguousTwilioSendError('Twilio 2xx response body was not valid JSON');
   }
-  return responseBody?.sid ?? null;
+  const sid = responseBody?.sid;
+  if (!sid || typeof sid !== 'string' || !TWILIO_SID_RE.test(sid)) {
+    // A 2xx HTTP status only means Twilio accepted the request over the
+    // wire — it does not guarantee a valid message SID came back. Treat a
+    // missing or malformed SID as ambiguous (never as success): the caller
+    // must not mark the row 'sent' without a real SM... SID to correlate
+    // delivery-status callbacks against.
+    throw new AmbiguousTwilioSendError(
+      `Twilio response missing a valid message SID (got: ${JSON.stringify(sid)})`,
+    );
+  }
+  return sid;
 }
 
 /**
@@ -177,6 +181,193 @@ export async function queueOutboxText(
      )`,
     [inboundMessageSid, whatsappNumber, body],
   );
+}
+
+// ── Job-alert outbox: idempotent producer + crash-safe scheduled drain ──
+//
+// The producer (job-alert.ts) only claims a durable, idempotent outbox row
+// per (job, worker) — it never sends to Twilio inline. All sending happens
+// in drainJobAlertOutbox(), invoked on a 5-minute EventBridge schedule
+// (JobAlertOutboxDrainLambda). This removes the crash window that existed
+// when the producer inserted a pending row and sent directly in the same
+// invocation: a Lambda timeout or crash between "insert" and "mark sent"
+// could strand a 'pending' row forever, or (worse) a retry of the whole
+// invocation could re-send a message Twilio already accepted.
+const MAX_JOB_ALERT_ATTEMPTS = 5;
+const JOB_ALERT_BACKOFF_BASE_MS = 30_000; // 30s, doubled per attempt
+const JOB_ALERT_BACKOFF_CAP_MS = 30 * 60_000; // 30 min ceiling
+
+export interface JobAlertQueueRow {
+  whatsappNumber: string;
+  templateKey: string;
+  variables: Record<string, string>;
+  jobId: string;
+  workerId: string;
+}
+
+/**
+ * Idempotently claim/refresh a job_alert outbox row. Safe to call
+ * repeatedly for the same (jobId, workerId) pair: the unique
+ * `job-alert:<jobId>:<workerId>` idempotency key means a second call while
+ * the first is still pending/sent is a no-op, and a second call after a
+ * terminal 'failed' row (under the attempt cap) re-queues it. Returns the
+ * queued row id, or undefined if nothing needed to change (already
+ * pending/sent, or failed at the attempt cap).
+ */
+export async function queueJobAlert(
+  client: PoolClient,
+  row: JobAlertQueueRow,
+): Promise<string | undefined> {
+  const claimed = await client.query<{ id: string }>(
+    `INSERT INTO whatsapp_outbox
+       (inbound_message_sid, sequence, whatsapp_number, body,
+        content_template, content_variables, source_type, source_id,
+        idempotency_key)
+     VALUES (NULL, 1, $1, NULL, $2, $3::jsonb, 'job_alert', $4, $5)
+     ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+     DO UPDATE SET status = 'pending', next_attempt_at = NULL
+       WHERE whatsapp_outbox.status = 'failed'
+         AND whatsapp_outbox.attempt_count < ${MAX_JOB_ALERT_ATTEMPTS}
+     RETURNING id`,
+    [row.whatsappNumber, row.templateKey, JSON.stringify(row.variables), row.jobId,
+      `job-alert:${row.jobId}:${row.workerId}`],
+  );
+  return claimed.rows[0]?.id;
+}
+
+interface ClaimedJobAlertRow {
+  id: string;
+  whatsapp_number: string;
+  body: string | null;
+  content_template: string | null;
+  content_variables: Record<string, string> | null;
+  attempt_count: number;
+}
+
+/**
+ * Scheduled drain for job_alert outbox rows (EventBridge, every 5 minutes).
+ * Crash-safe claim-then-send:
+ *
+ *   1. SKIP LOCKED claim of one due row, committed as 'send_unknown' with
+ *      attempt_count incremented BEFORE any network call. If the process
+ *      dies right here, the row is already ambiguous (never silently
+ *      re-queued as fresh 'pending', never left claimable by a concurrent
+ *      drain) and will not be retried automatically. An operator can
+ *      reconcile the ambiguous send using Twilio's message records.
+ *   2. The Twilio send happens outside that transaction, on a separate
+ *      pool connection.
+ *   3. Success requires a syntactically valid `SM...` SID
+ *      (sendTwilioWhatsAppMessage already enforces this) — that is the
+ *      only path back to 'sent'.
+ *   4. AmbiguousTwilioSendError (timeout / malformed response) leaves the
+ *      row terminally 'send_unknown'. Retrying an ambiguous send can create
+ *      a duplicate if Twilio accepted the first request before the timeout.
+ *   5. Any other error is treated as definite non-acceptance: bounded
+ *      retry with backoff back to 'pending' under the attempt cap, else
+ *      terminal 'failed'.
+ */
+export async function drainJobAlertOutbox(
+  pool: { connect(): Promise<PoolClient> },
+  limit = 25,
+): Promise<{ sent: number; ambiguous: number; failed: number }> {
+  let sent = 0;
+  let ambiguous = 0;
+  let failed = 0;
+
+  for (let processed = 0; processed < limit; processed += 1) {
+    const claimClient = await pool.connect();
+    let claimedRow: ClaimedJobAlertRow | undefined;
+    try {
+      await claimClient.query('BEGIN');
+      const result = await claimClient.query<ClaimedJobAlertRow>(
+        `SELECT id, whatsapp_number, body, content_template, content_variables, attempt_count
+           FROM whatsapp_outbox
+          WHERE source_type = 'job_alert'
+            AND status = 'pending'
+            AND attempt_count < $1
+            AND (next_attempt_at IS NULL OR next_attempt_at <= now())
+          ORDER BY created_at
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED`,
+        [MAX_JOB_ALERT_ATTEMPTS],
+      );
+      claimedRow = result.rows[0];
+      if (claimedRow) {
+        await claimClient.query(
+          `UPDATE whatsapp_outbox
+              SET status = 'send_unknown', attempt_count = attempt_count + 1,
+                  next_attempt_at = NULL
+            WHERE id = $1`,
+          [claimedRow.id],
+        );
+      }
+      await claimClient.query('COMMIT');
+    } catch (err) {
+      await claimClient.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      claimClient.release();
+    }
+
+    if (!claimedRow) break; // nothing due; stop polling this invocation
+
+    const attemptCount = claimedRow.attempt_count + 1; // already bumped above
+    try {
+      const sid = await sendTwilioWhatsAppMessage(`whatsapp:${claimedRow.whatsapp_number}`, claimedRow);
+      const resultClient = await pool.connect();
+      try {
+        await resultClient.query(
+          `UPDATE whatsapp_outbox
+              SET status = 'sent', sent_at = now(), twilio_message_sid = $2,
+                  last_error = NULL, next_attempt_at = NULL
+            WHERE id = $1`,
+          [claimedRow.id, sid],
+        );
+      } finally {
+        resultClient.release();
+      }
+      sent++;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const isAmbiguous = err instanceof AmbiguousTwilioSendError;
+      const atCap = attemptCount >= MAX_JOB_ALERT_ATTEMPTS;
+      const backoffMs = Math.min(
+        JOB_ALERT_BACKOFF_BASE_MS * 2 ** Math.max(attemptCount - 1, 0),
+        JOB_ALERT_BACKOFF_CAP_MS,
+      );
+      const resultClient = await pool.connect();
+      try {
+        if (isAmbiguous) {
+          await resultClient.query(
+            `UPDATE whatsapp_outbox
+                SET status = 'send_unknown', last_error = $2,
+                    next_attempt_at = NULL
+              WHERE id = $1`,
+            [claimedRow.id, message],
+          );
+        } else if (atCap) {
+          await resultClient.query(
+            `UPDATE whatsapp_outbox SET status = 'failed', last_error = $2 WHERE id = $1`,
+            [claimedRow.id, message],
+          );
+        } else {
+          await resultClient.query(
+            `UPDATE whatsapp_outbox
+                SET status = 'pending', last_error = $2,
+                    next_attempt_at = now() + ($3 || ' milliseconds')::interval
+              WHERE id = $1`,
+            [claimedRow.id, message, String(backoffMs)],
+          );
+        }
+      } finally {
+        resultClient.release();
+      }
+      if (isAmbiguous) ambiguous++;
+      else failed++;
+    }
+  }
+
+  return { sent, ambiguous, failed };
 }
 
 export async function sendPendingAdminOutbox(
@@ -264,6 +455,5 @@ function parseTimeout(raw: string | undefined): number {
 }
 
 export function _clearOutboxTwilioSecretCacheForTests(): void {
-  cachedTwilio = null;
-  twilioCacheExp = 0;
+  _clearTwilioSecretCacheForTests();
 }

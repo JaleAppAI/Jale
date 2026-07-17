@@ -34,6 +34,7 @@ describe('DocumentsStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     new LegalStack(app, 'TestLegalStack', {
       vpc: network.vpc,

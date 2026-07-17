@@ -7,6 +7,7 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Button } from '@/components/ui/button';
+import { AppShell } from '@/components/layout/AppShell';
 import {
   ApiError,
   EMPLOYER_PRO_PLAN_CODE,
@@ -102,19 +103,16 @@ export default function EmployerBillingPage() {
     if (!idToken) return;
     setCheckoutBusy(true);
     setActionError(null);
-    const idempotencyKey = getIdempotencyKey('billing-checkout');
+    const origin = window.location.origin;
+    const path = window.location.pathname;
+    const body = {
+      planCode: EMPLOYER_PRO_PLAN_CODE,
+      successUrl: `${origin}${path}?billing=success`,
+      cancelUrl: `${origin}${path}?billing=cancel`,
+    };
+    const idempotencyKey = getIdempotencyKey('billing-checkout', body);
     try {
-      const origin = window.location.origin;
-      const path = window.location.pathname;
-      const session = await startCheckout(
-        idToken,
-        {
-          planCode: EMPLOYER_PRO_PLAN_CODE,
-          successUrl: `${origin}${path}?billing=success`,
-          cancelUrl: `${origin}${path}?billing=cancel`,
-        },
-        idempotencyKey,
-      );
+      const session = await startCheckout(idToken, body, idempotencyKey);
       clearIdempotencyKey('billing-checkout');
       // Redirect only to the server-returned hosted URL — never construct one.
       window.location.href = session.url;
@@ -136,11 +134,12 @@ export default function EmployerBillingPage() {
     if (!idToken) return;
     setPortalBusy(true);
     setActionError(null);
-    const idempotencyKey = getIdempotencyKey('billing-portal');
+    const origin = window.location.origin;
+    const path = window.location.pathname;
+    const returnUrl = `${origin}${path}`;
+    const idempotencyKey = getIdempotencyKey('billing-portal', { returnUrl });
     try {
-      const origin = window.location.origin;
-      const path = window.location.pathname;
-      const session = await openBillingPortal(idToken, `${origin}${path}`, idempotencyKey);
+      const session = await openBillingPortal(idToken, returnUrl, idempotencyKey);
       clearIdempotencyKey('billing-portal');
       window.location.href = session.url;
     } catch (err) {
@@ -173,15 +172,12 @@ export default function EmployerBillingPage() {
     : null;
 
   return (
-    <main className="min-h-screen bg-[#eef2f7] px-4 py-8 text-[var(--jale-ink)] md:px-8">
-      <div className="mx-auto max-w-3xl">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <Link href="/employer/dashboard" className="text-xs font-bold uppercase text-[var(--jale-ink-2)] hover:underline">
-              {t('back_to_dashboard')}
-            </Link>
-            <h1 className="mt-2 text-2xl font-extrabold md:text-3xl">{t('title')}</h1>
-          </div>
+    <AppShell role="employer" title={t('title')}>
+      <div className="mx-auto max-w-3xl px-4 py-6 md:px-6">
+        <div className="mb-5 lg:hidden">
+          <Link href="/employer/dashboard" className="text-xs font-bold uppercase text-[var(--jale-ink-2)] hover:underline">
+            {t('back_to_dashboard')}
+          </Link>
         </div>
 
         {returnState === 'success' && (
@@ -206,15 +202,15 @@ export default function EmployerBillingPage() {
           </div>
         ) : billing ? (
           <div className="space-y-5">
-            <section className="rounded-2xl border border-[var(--jale-divider)] bg-white p-5 shadow-[var(--shadow-card)]">
+            <section className="rounded-2xl bg-[#10143b] p-5 text-white shadow-[var(--shadow-card)]">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-bold uppercase text-[var(--jale-ink-2)]">{t('current_plan.label')}</p>
+                  <p className="text-xs font-bold uppercase text-white/60">{t('current_plan.label')}</p>
                   <h2 className="mt-1 text-xl font-extrabold">
                     {billing.planCode === 'employer_pro' ? t('plan_name.employer_pro') : t('plan_name.employer_free')}
                   </h2>
                   {priceLabel && (
-                    <p className="mt-1 text-sm font-semibold text-[var(--jale-ink-2)]">
+                    <p className="mt-1 text-sm font-semibold text-white/70">
                       {t('current_plan.price', {
                         price: priceLabel,
                         interval: billing.billing_interval === 'year' ? t('interval.year') : t('interval.month'),
@@ -223,7 +219,7 @@ export default function EmployerBillingPage() {
                   )}
                 </div>
                 {billing.subscription?.status && (
-                  <span className="rounded-full bg-[var(--jale-blue-50)] px-3 py-1 text-xs font-bold uppercase text-[var(--jale-blue-700)]">
+                  <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-bold uppercase text-white">
                     {t(SUBSCRIPTION_STATUS_KEYS[billing.subscription.status] ?? 'status.active')}
                   </span>
                 )}
@@ -236,20 +232,27 @@ export default function EmployerBillingPage() {
                     {t('usage.value', { used: billing.activeJobUsage, limit: billing.activeJobLimit })}
                   </span>
                 </div>
-                <div className="h-2 overflow-hidden rounded-full bg-[var(--jale-paper-2)]">
-                  <div className="h-full rounded-full bg-[var(--jale-blue-500)]" style={{ width: `${usagePercent}%` }} />
+                <div
+                  className="h-2 overflow-hidden rounded-full bg-white/10"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={billing.activeJobLimit}
+                  aria-valuenow={billing.activeJobUsage}
+                  aria-label={t('usage.label')}
+                >
+                  <div className="h-full rounded-full bg-[var(--jale-blue-400)]" style={{ width: `${usagePercent}%` }} />
                 </div>
               </div>
 
               {billing.subscription?.cancel_at_period_end && billing.subscription.current_period_end && (
-                <p className="mt-4 text-xs font-semibold text-[var(--jale-ink-2)]">
+                <p className="mt-4 text-xs font-semibold text-white/60">
                   {t('current_plan.cancels_at', {
                     date: new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(billing.subscription.current_period_end)),
                   })}
                 </p>
               )}
               {billing.subscription?.status === 'past_due' && billing.subscription.grace_ends_at && (
-                <p className="mt-4 rounded-xl bg-[var(--jale-warning-bg)] p-3 text-xs font-semibold text-[#8a4400]">
+                <p className="mt-4 rounded-xl border border-white/15 bg-white/10 p-3 text-xs font-semibold text-amber-200">
                   {t('current_plan.grace_period', {
                     date: new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(billing.subscription.grace_ends_at)),
                   })}
@@ -263,20 +266,26 @@ export default function EmployerBillingPage() {
                   </Button>
                 )}
                 {canManage && (
-                  <Button onClick={handleManage} loading={portalBusy} loadingLabel={t('actions.manage_loading')} className="h-12 px-6" variant="outline">
+                  <Button
+                    onClick={handleManage}
+                    loading={portalBusy}
+                    loadingLabel={t('actions.manage_loading')}
+                    className="h-12 px-6 !border-white/25 !bg-white/10 !text-white hover:!bg-white/20"
+                    variant="outline"
+                  >
                     {t('actions.manage')}
                   </Button>
                 )}
               </div>
 
               {actionError && (
-                <div className="mt-4 rounded-2xl border border-[var(--jale-danger)]/30 bg-[var(--jale-danger-bg)] p-4">
-                  <p className="text-sm font-semibold text-[var(--jale-danger)]">{actionError.message}</p>
+                <div className="mt-4 rounded-2xl border border-red-300/30 bg-red-500/15 p-4">
+                  <p className="text-sm font-semibold text-red-200">{actionError.message}</p>
                   {(actionError.kind === 'provider_unavailable') && (
-                    <p className="mt-1 text-xs font-semibold text-[var(--jale-ink-2)]">{t('action_error.retry_safe')}</p>
+                    <p className="mt-1 text-xs font-semibold text-white/70">{t('action_error.retry_safe')}</p>
                   )}
                   {actionError.kind === 'expired_session' && (
-                    <Link href="/auth/employer" className="mt-2 inline-block text-xs font-bold text-[var(--jale-blue-700)] hover:underline">
+                    <Link href="/auth/employer" className="mt-2 inline-block text-xs font-bold text-[var(--jale-blue-200)] hover:underline">
                       {t('action_error.sign_in_again')}
                     </Link>
                   )}
@@ -286,7 +295,7 @@ export default function EmployerBillingPage() {
 
             {canUpgrade && (
               <section className="rounded-2xl border border-[var(--jale-divider)] bg-white p-5 shadow-[var(--shadow-card)]">
-                <h3 className="text-base font-bold">{t('upgrade_panel.title')}</h3>
+                <h3 className="text-base font-bold text-[var(--jale-blue-900)]">{t('upgrade_panel.title')}</h3>
                 <p className="mt-2 text-sm leading-6 text-[var(--jale-ink-2)]">{t('upgrade_panel.body')}</p>
                 <Button onClick={handleUpgrade} loading={checkoutBusy} loadingLabel={t('actions.upgrade_loading')} className="mt-4">
                   {t('actions.upgrade')}
@@ -301,6 +310,6 @@ export default function EmployerBillingPage() {
           </div>
         )}
       </div>
-    </main>
+    </AppShell>
   );
 }

@@ -71,6 +71,7 @@ import {
   detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
+  isSupportCommand,
   isProfileCommand,
   isSkipKeyword,
   isAccept,
@@ -963,6 +964,41 @@ async function handleProcessingAi(
   await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
 }
 
+async function handleSupportCommand(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  // Prefer the OTP-linked identity, then allow the existing verified-phone
+  // resolver. The database function independently checks the exact
+  // worker/conversation relationship and never binds conversation identity.
+  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  if (!workerId) {
+    await queueReply(client, msg.messageSid, msg.from, 'support_needs_signup', conv.language);
+    return;
+  }
+
+  await setWorkerRlsContextByUserId(client, workerId);
+
+  const result = await client.query<{ case_id: string; created: boolean }>(
+    `SELECT case_id, created
+       FROM create_admin_support_case($1, $2, $3, $4)`,
+    [workerId, conv.id, 'Worker requested WhatsApp support', msg.body],
+  );
+  const supportCase = result.rows[0];
+  if (!supportCase) {
+    throw new Error('create_admin_support_case returned no row');
+  }
+
+  await queueReply(
+    client,
+    msg.messageSid,
+    msg.from,
+    supportCase.created ? 'support_ack' : 'support_ack_existing',
+    conv.language,
+  );
+}
+
 async function routeMessage(
   client: PoolClient,
   conv: ConversationRow,
@@ -1027,6 +1063,11 @@ async function routeMessage(
       msg.from,
       buildHelpMenuInteractivePrompt(conv.language),
     );
+    return null;
+  }
+
+  if (isSupportCommand(msg.body)) {
+    await handleSupportCommand(client, conv, msg);
     return null;
   }
 

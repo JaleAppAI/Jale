@@ -70,9 +70,19 @@ async function parseApiError(res: Response, fallbackCode: string): Promise<ApiEr
 // One UUID per user-initiated mutation (e.g. "start checkout"), persisted in
 // sessionStorage until a definitive response arrives. A retry of the same
 // action (user clicks the button again after a transient failure) reuses the
-// same key so the backend can dedupe. A definitive response (success, or a
-// terminal validation/auth/not-found error) clears the key so the *next*
-// distinct action gets a fresh one.
+// same key so the backend can dedupe — but ONLY if the retried request body
+// is identical to the one the key was minted for. The stored payload is
+// `{key, canonicalBody}` where `canonicalBody` is the canonical JSON request
+// body. If a caller asks for a key with a body that doesn't match what's
+// stored (or the stored value is a legacy bare UUID from before this change),
+// the key is rotated: a fresh UUID is minted and the new canonical body is
+// stored in its place. This matters because the request body here is
+// rebuilt from `window.location` on every call (e.g. the locale-prefixed
+// success/cancel URLs in the billing page) — reusing a key across a changed
+// body would make the backend reject the retry with 409
+// `idempotency_key_conflict` instead of treating it as the same operation.
+// A definitive response (success, or a terminal validation/auth/not-found
+// error) still clears the key so the *next* distinct action gets a fresh one.
 // ---------------------------------------------------------------------------
 
 const IDEMPOTENCY_STORAGE_PREFIX = 'jale.idempotency.';
@@ -89,13 +99,62 @@ function randomUuid(): string {
   });
 }
 
-export function getIdempotencyKey(action: string): string {
+/**
+ * Deterministic JSON serialization: object keys are sorted recursively so
+ * that two calls building the "same" body in a different key order (or a
+ * different property insertion order) serialize identically. Arrays keep their
+ * order (order is semantically meaningful there).
+ */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(sortKeysDeep(value));
+}
+
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value !== null && typeof value === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      sorted[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+type StoredIdempotency = { key: string; canonicalBody: string };
+
+function parseStoredIdempotency(raw: string): StoredIdempotency | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (
+      parsed && typeof parsed === 'object' &&
+      typeof parsed.key === 'string' && typeof parsed.canonicalBody === 'string'
+    ) {
+      return parsed as StoredIdempotency;
+    }
+  } catch {
+    // Not JSON — likely a legacy bare-UUID value from before this change.
+  }
+  return null;
+}
+
+/**
+ * Returns the idempotency key to send for `action`, given the exact request
+ * `body` about to be sent. Reuses the previously stored key only if its
+ * recorded canonical body matches this body; otherwise (including legacy bare-UUID
+ * values, or no stored value at all) mints and stores a fresh key.
+ */
+export function getIdempotencyKey(action: string, body: unknown): string {
+  const canonicalBody = canonicalJson(body);
   if (typeof window === 'undefined') return randomUuid();
   const storageKey = `${IDEMPOTENCY_STORAGE_PREFIX}${action}`;
-  const existing = window.sessionStorage.getItem(storageKey);
-  if (existing) return existing;
+  const raw = window.sessionStorage.getItem(storageKey);
+  if (raw) {
+    const stored = parseStoredIdempotency(raw);
+    if (stored && stored.canonicalBody === canonicalBody) return stored.key;
+  }
   const key = randomUuid();
-  window.sessionStorage.setItem(storageKey, key);
+  window.sessionStorage.setItem(storageKey, JSON.stringify({ key, canonicalBody }));
   return key;
 }
 

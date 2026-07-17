@@ -70,6 +70,8 @@ describe('database migrations', () => {
       '036',
       '037',
       '038',
+      '039',
+      '040',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -224,6 +226,66 @@ describe('database migrations', () => {
     expect(migration).not.toMatch(/\sBYPASSRLS(?:\s|;)/);
   });
 
+  it('adds a least-privilege idempotent WhatsApp support-case function in migration 039', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '039_whatsapp_support_cases.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE OR REPLACE FUNCTION create_admin_support_case');
+    expect(migration).toContain('SECURITY DEFINER');
+    expect(migration).toContain('SET search_path = public, pg_temp');
+    expect(migration).toContain("c.case_type = 'help_request'");
+    expect(migration).toContain("c.status IN ('open', 'pending_worker', 'pending_admin')");
+    expect(migration).toContain("'case_created'");
+    expect(migration).toContain("'title', 'Worker requested help'");
+    expect(migration).toContain("'detail', LEFT(v_summary, 500)");
+    expect(migration).toContain("'help_request',\n    'open',\n    70");
+    expect(migration).toContain('wc.user_id IS NULL');
+    expect(migration).toContain('wc.whatsapp_number = u.whatsapp_number');
+    expect(migration).toContain('wc.whatsapp_number = u.phone');
+    expect(migration).not.toContain('GRANT SELECT ON whatsapp_conversations TO jale_admin');
+    expect(migration).toContain('REVOKE ALL ON FUNCTION create_admin_support_case(UUID, UUID, TEXT, TEXT) FROM PUBLIC');
+    expect(migration).toContain('GRANT EXECUTE ON FUNCTION create_admin_support_case(UUID, UUID, TEXT, TEXT) TO jale_whatsapp');
+    expect(migration).not.toMatch(/GRANT\s+(SELECT|INSERT|UPDATE|DELETE)\s+ON\s+admin_cases\s+TO\s+jale_whatsapp/i);
+  });
+
+  it('adds durable monotonic Twilio delivery correlation in migration 040', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '040_whatsapp_delivery_status.sql'),
+      'utf8',
+    );
+    expect(migration).toContain('record_whatsapp_delivery_status');
+    expect(migration).toContain('record_twilio_delivery_status');
+    expect(migration).toContain("source_type IN ('admin_case', 'job_alert')");
+    expect(migration).toContain('FROM public.job_conversation_messages');
+    // Review-1 correction: the privileged implementation lives in the
+    // locked jale_twilio_callback schema (fully qualified, catalog-only
+    // search_path); public.record_twilio_status is now a narrow wrapper.
+    expect(migration).toContain('jale_twilio_callback.record_twilio_status(p_sid, p_status, p_at)');
+    expect(migration).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(migration).toContain(
+      'REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_delivery_status',
+    );
+    expect(migration).toContain('NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT');
+    expect(migration).toContain(
+      "'REVOKE jale_twilio_callback FROM %I GRANTED BY %I'",
+    );
+    expect(migration).toContain('AND grantor.rolsuper');
+    expect(migration).toContain("function.proargtypes = '25 25 25 25'::pg_catalog.oidvector");
+    expect(migration).toContain(
+      "has_function_privilege('jale_whatsapp', v_unified_callback, 'EXECUTE')",
+    );
+    expect(migration).toContain('OWNER TO jale_twilio_callback');
+    expect(migration).toContain('REVOKE CREATE ON SCHEMA public FROM jale_twilio_callback');
+    expect(migration).toContain('callback wrapper execute ACL drift');
+    expect(migration).toContain('idx_whatsapp_outbox_twilio_message_sid');
+    // Review-1 correction: no unconditional ALTER ROLE against production;
+    // rerun validates existing role attributes instead.
+    expect(migration).not.toMatch(/^ALTER ROLE jale_twilio_callback\b/m);
+    expect(migration).toContain('jale_twilio_callback role already exists with unsafe attributes');
+    // Review-1 correction: DB-level bounds on error fields.
+    expect(migration).toContain('whatsapp_outbox_twilio_error_code_check');
+    expect(migration).toContain('whatsapp_outbox_twilio_error_message_check');
+  });
+
   it('keeps migration runner scripts pointed at the current files', () => {
     const expectedFiles = migrationFiles();
     const scriptPaths = [
@@ -323,7 +385,7 @@ describe('database migrations', () => {
       'utf8',
     );
 
-    // Same repair 039 performs, carried earlier so a fresh cluster's first
+    // Same repair 038 performs, carried earlier so a fresh cluster's first
     // pass through the chain never hits 023's 42P17 abort.
     expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
     expect(migration).toContain('NOLOGIN NOSUPERUSER');

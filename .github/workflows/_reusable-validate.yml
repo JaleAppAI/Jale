@@ -91,7 +91,7 @@ jobs:
 
       - name: CDK synth backend stacks
         working-directory: infra
-        run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai --output "$RUNNER_TEMP/jale-cdk-synth-backend"
+        run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms --output "$RUNNER_TEMP/jale-cdk-synth-backend"
 
       - name: Upload backend synth artifact
         uses: actions/upload-artifact@v4

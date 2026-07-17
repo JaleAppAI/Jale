@@ -16,6 +16,7 @@ import { AdminStack } from '../lib/stacks/admin-stack';
 import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
 import { BillingStack } from '../lib/stacks/billing-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
+import { resolveWhatsappStatusCallbackUrl } from '../lib/whatsapp-status-callback-url';
 
 const app = new cdk.App();
 const skipFrontend = app.node.tryGetContext('skipFrontend') === true
@@ -101,6 +102,13 @@ const matching = new MatchingStack(app, 'JaleMatchingStack', {
   matchingDbSecret: database.matchingDbSecret,
 });
 
+// Required in every environment that sends WhatsApp messages: Twilio signs
+// its delivery-status callback against this exact URL, and both ApiStack's
+// employer-conversations Lambdas and WhatsAppStack's senders rely on it.
+// Resolved once here (fail closed at synth) instead of each stack silently
+// defaulting to '' when absent.
+const whatsappStatusCallbackUrl = resolveWhatsappStatusCallbackUrl(app);
+
 const api = new ApiStack(app, 'JaleApiStack', {
   env,
   vpc: network.vpc,
@@ -111,6 +119,7 @@ const api = new ApiStack(app, 'JaleApiStack', {
   employerPool: auth.employerPool,
   candidateMaterializationQueue: matching.candidateMaterializationQueue,
   employerCandidateRerankQueue: matching.employerCandidateRerankQueue,
+  whatsappStatusCallbackUrl,
   // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
   // references this API. Enable cross-region exports.
   crossRegionReferences: true,
@@ -149,6 +158,8 @@ new WhatsAppStack(app, 'JaleWhatsAppStack', {
   workerRerankQueue: matching.workerRerankQueue,
   questionGeneratorFn: ai.questionGeneratorFn.function,
   trustAssessmentQueue: ai.trustAssessmentQueue,
+  statusCallbackUrl: whatsappStatusCallbackUrl,
+  alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
 });
 
 new DocumentsStack(app, 'JaleDocumentsStack', {

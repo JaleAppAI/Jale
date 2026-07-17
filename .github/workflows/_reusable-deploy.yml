@@ -46,6 +46,7 @@ jobs:
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
       BILLING_EMAIL_FROM_ADDRESS: ${{ vars.EMAIL_FROM_ADDRESS }}
       BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
+      WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
       JALE_WORKER_POOL_ID: ${{ vars.JALE_WORKER_POOL_ID }}
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
@@ -123,6 +124,10 @@ jobs:
             exit 1
           fi
           api_url="${api_url%/}"
+          if [[ -z "$WHATSAPP_ALARM_TOPIC_ARN" ]]; then
+            echo "::error::WHATSAPP_ALARM_TOPIC_ARN must be configured as a production Environment variable."
+            exit 1
+          fi
           api_without_scheme="${api_url#https://}"
           api_origin_domain="${api_without_scheme%%/*}"
           api_stage_name="${api_without_scheme#*/}"
@@ -138,6 +143,7 @@ jobs:
             echo "JALE_EMPLOYER_CLIENT_ID=$employer_client_id"
             echo "JALE_API_ORIGIN_DOMAIN_NAME=$api_origin_domain"
             echo "JALE_API_STAGE_NAME=$api_stage_name"
+            echo "JALE_WHATSAPP_STATUS_CALLBACK_URL=$api_url/whatsapp/status-callback"
           } >> "$GITHUB_ENV"
 
       - name: Run production CDK synth and diff
@@ -146,8 +152,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" --output "$RUNNER_TEMP/jale-cdk-synth-production"
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
+          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" --output "$RUNNER_TEMP/jale-cdk-synth-production"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
 
       - name: Upload production plan artifacts
         if: env.AWS_PLAN_ROLE_ARN != ''
@@ -172,6 +178,7 @@ jobs:
       CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
       BILLING_EMAIL_FROM_ADDRESS: ${{ vars.EMAIL_FROM_ADDRESS }}
       BILLING_SES_VERIFIED_IDENTITY_ARN: ${{ vars.SES_VERIFIED_IDENTITY_ARN }}
+      WHATSAPP_ALARM_TOPIC_ARN: ${{ vars.WHATSAPP_ALARM_TOPIC_ARN }}
       JALE_WORKER_POOL_ID: ${{ vars.JALE_WORKER_POOL_ID }}
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
@@ -251,6 +258,10 @@ jobs:
             exit 1
           fi
           api_url="${api_url%/}"
+          if [[ -z "$WHATSAPP_ALARM_TOPIC_ARN" ]]; then
+            echo "::error::WHATSAPP_ALARM_TOPIC_ARN must be configured as a production Environment variable."
+            exit 1
+          fi
           api_without_scheme="${api_url#https://}"
           api_origin_domain="${api_without_scheme%%/*}"
           api_stage_name="${api_without_scheme#*/}"
@@ -266,6 +277,7 @@ jobs:
             echo "JALE_EMPLOYER_CLIENT_ID=$employer_client_id"
             echo "JALE_API_ORIGIN_DOMAIN_NAME=$api_origin_domain"
             echo "JALE_API_STAGE_NAME=$api_stage_name"
+            echo "JALE_WHATSAPP_STATUS_CALLBACK_URL=$api_url/whatsapp/status-callback"
           } >> "$GITHUB_ENV"
 
       - name: Check CloudFormation stack status
@@ -295,14 +307,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
 
       - name: Deploy CDK stacks
         working-directory: infra
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
+          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
 
       - name: Upload deployment artifacts
         if: always()

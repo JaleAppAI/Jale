@@ -80,6 +80,8 @@ MIGRATIONS=(
   "036_billing_job_limit_enforcement.sql"
   "037_email_outbox.sql"
   "038_rls_relationship_recursion_repair.sql"
+  "039_whatsapp_support_cases.sql"
+  "040_whatsapp_delivery_status.sql"
 )
 
 echo ">> Using region: $REGION"

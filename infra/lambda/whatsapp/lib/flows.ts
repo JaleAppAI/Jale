@@ -386,6 +386,11 @@ export function isHelpCommand(text: string): boolean {
   return fuzzy === 'help' || fuzzy === 'ayuda' || fuzzy === 'commands' || fuzzy === 'comandos';
 }
 
+export function isSupportCommand(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  return /^(support|soporte)$/.test(n);
+}
+
 export function isProfileCommand(text: string): boolean {
   const n = normalizeCommandText(text);
   if (/^(profile|perfil|my profile|mi perfil)$/.test(n)) return true;

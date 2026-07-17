@@ -53,7 +53,11 @@ export type TemplateKey =
   | 'ai_processing_ack'
   | 'ai_processing_wait'
   | 'ai_extraction_summary'
-  | 'ai_extraction_failed';
+  | 'ai_extraction_failed'
+  // Support command
+  | 'support_ack'
+  | 'support_ack_existing'
+  | 'support_needs_signup';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -212,6 +216,18 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   ai_extraction_failed: {
     es: 'No pudimos procesar tu mensaje de voz. Continuemos con algunas preguntas rapidas.',
     en: 'We could not process your voice message. Let\'s continue with a few quick questions.',
+  },
+  support_ack: {
+    es: 'Recibido. Nuestro equipo te contactara pronto por WhatsApp.',
+    en: 'Got it. Our team will contact you soon on WhatsApp.',
+  },
+  support_ack_existing: {
+    es: 'Ya tenemos tu solicitud de ayuda. Te contactaremos pronto.',
+    en: 'We already have your help request. We will contact you soon.',
+  },
+  support_needs_signup: {
+    es: 'Para pedir ayuda, primero termina tu registro. Envia "Hola" para empezar.',
+    en: 'To request help, please finish signing up first. Send "Hello" to get started.',
   },
 };
 

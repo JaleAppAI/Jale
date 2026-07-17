@@ -3,6 +3,7 @@ import {
   detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
+  isSupportCommand,
   isProfileCommand,
   isAccept,
   isDecline,
@@ -446,6 +447,18 @@ describe('flows.ts — trust signals', () => {
       expect(isHelpCommand(input)).toBe(false);
       expect(isProfileCommand(input)).toBe(false);
     });
+  });
+
+  describe('isSupportCommand', () => {
+    test.each(['Support', ' support ', 'SOPORTE', 'soporte'])(
+      'accepts the exact reserved command "%s"',
+      (input) => expect(isSupportCommand(input)).toBe(true),
+    );
+
+    test.each(['support me', 'soporte por favor', 'supporting', 'ayuda', ''])(
+      'rejects the near-match "%s"',
+      (input) => expect(isSupportCommand(input)).toBe(false),
+    );
   });
 
   it('returns shared seniority options', () => {

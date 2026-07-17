@@ -437,6 +437,7 @@ describe('WhatsApp onboarding — full conversation', () => {
       WORKER_POOL_ID: 'pool-abc',
       WORKER_CLIENT_ID: 'client-abc',
       TWILIO_SECRET_ARN: 'arn:twilio',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       DB_SECRET_ARN: 'arn:db',
       REQUIRED_TOS_VERSION: '1.0',
     };
@@ -451,7 +452,10 @@ describe('WhatsApp onboarding — full conversation', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ sid: 'SM11111111111111111111111111111111' }),
+    });
 
     mockCognitoSend.mockImplementation(async (command: any) => {
       switch (command.__type) {

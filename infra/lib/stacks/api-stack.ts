@@ -9,6 +9,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
 
 export interface ApiStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
@@ -19,6 +20,13 @@ export interface ApiStackProps extends cdk.StackProps {
   readonly dbSecret: secretsmanager.ISecret;
   readonly candidateMaterializationQueue?: sqs.IQueue;
   readonly employerCandidateRerankQueue?: sqs.IQueue;
+  /**
+   * Exact public Twilio WhatsApp delivery-status callback URL. Required —
+   * the employer-conversations Lambdas send WhatsApp messages and must set
+   * a valid StatusCallback on every send. Fail closed rather than silently
+   * omitting the env var (a prior version conditionally omitted it).
+   */
+  readonly whatsappStatusCallbackUrl: string;
 }
 
 export class ApiStack extends cdk.Stack {
@@ -37,6 +45,10 @@ export class ApiStack extends cdk.Stack {
     const allowedOrigin = this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const stageName = this.node.tryGetContext('environment') ?? 'dev';
+    if (!props.whatsappStatusCallbackUrl) {
+      throw new Error('ApiStack requires whatsappStatusCallbackUrl (props.whatsappStatusCallbackUrl)');
+    }
+    const whatsappStatusCallbackUrl = normalizeWhatsappStatusCallbackUrl(props.whatsappStatusCallbackUrl);
     const twilioSecret = secretsmanager.Secret.fromSecretNameV2(
       this,
       'MessagingTwilioSecret',
@@ -295,6 +307,7 @@ export class ApiStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        TWILIO_STATUS_CALLBACK_URL: whatsappStatusCallbackUrl,
       },
     });
     props.dbSecret.grantRead(employerConversationsCreateLambda.function);
@@ -310,6 +323,7 @@ export class ApiStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        TWILIO_STATUS_CALLBACK_URL: whatsappStatusCallbackUrl,
       },
     });
     props.dbSecret.grantRead(employerConversationsSendLambda.function);
