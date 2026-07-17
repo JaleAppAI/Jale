@@ -5,6 +5,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
 import {
   getWorkerProfile, getWorkerDocuments, createUploadToken, updateApplicantStatus,
@@ -154,10 +155,19 @@ export default function WorkerProfilePage() {
   const appliedAt = profile?.applied_at ? profile.applied_at.slice(0, 10) : t('worker_profile.fallback_applied');
   const yearsExperience = profile?.years_experience ?? null;
 
-  if (loading) return <div className="p-8 text-center text-gray-500">{tCommon('loading')}</div>;
+  const shellSubtitle = profile ? tradeLabel(profile.main_trade, profile.main_trade_other) : undefined;
+
+  if (loading) {
+    return (
+      <AppShell role="employer" title={t('worker_profile.fallback_name')}>
+        <div className="p-8 text-center text-gray-500">{tCommon('loading')}</div>
+      </AppShell>
+    );
+  }
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
+    <AppShell role="employer" title={displayName} subtitle={shellSubtitle}>
+    <div className="max-w-4xl mx-auto px-4 py-6 md:px-6">
       <button onClick={() => router.back()} className="text-blue-900 text-sm mb-4 flex items-center gap-1">
         &larr; {t('worker_profile.back')}
       </button>
@@ -296,5 +306,6 @@ export default function WorkerProfilePage() {
         </div>
       </div>
     </div>
+    </AppShell>
   );
 }

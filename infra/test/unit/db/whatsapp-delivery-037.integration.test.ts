@@ -5,13 +5,13 @@ const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 const maybeDescribe = databaseUrl ? describe : describe.skip;
 
 if (!databaseUrl) {
-  test('CONCERN: migration 036 PostgreSQL gate was not run', () => {
-    console.warn('[whatsapp-delivery-036] set JALE_TEST_DATABASE_URL for native verification');
+  test('CONCERN: migration 037 PostgreSQL gate was not run', () => {
+    console.warn('[whatsapp-delivery-037] set JALE_TEST_DATABASE_URL for native verification');
     expect(databaseUrl).toBeUndefined();
   });
 }
 
-maybeDescribe('migration 036 Twilio delivery correlation', () => {
+maybeDescribe('migration 037 Twilio delivery correlation', () => {
   const employerId = randomUUID();
   const workerId = randomUUID();
   const jobId = randomUUID();
@@ -54,7 +54,7 @@ maybeDescribe('migration 036 Twilio delivery correlation', () => {
     // ownership model) with migrations 001..036 applied byte-for-byte, in
     // order, as that same non-superuser role. No ownership rewrites, no RLS
     // bypass, no ALTER TABLE ... OWNER TO shortcuts. See
-    // docs/whatsapp-delivery-036-native-gate.md (or the correction-round
+    // docs/whatsapp-delivery-037-native-gate.md (or the correction-round
     // summary) for the exact bootstrap commands and the known migration-023
     // blocker (42P17 recursive RLS policy from migration 020 on `users`,
     // reached applying 023_job_fields_and_statuses_mvp.sql) that currently

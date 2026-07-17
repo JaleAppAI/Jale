@@ -1,5 +1,6 @@
 import {
   isGreetingKeyword,
+  detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
   isSupportCommand,
@@ -20,6 +21,9 @@ import {
   computeNextField,
   PROFILE_FIELDS,
   isSkipKeyword,
+  normalizeCommandText,
+  matchCommandFuzzy,
+  parseCommandPayload,
   type ConversationState,
   type ProfileStateContext,
 } from '../../../../../lambda/whatsapp/lib/flows';
@@ -33,12 +37,17 @@ describe('flows.ts — keyword detection', () => {
       ['Hola!', true],
       ['Hello', true],
       ['hello.', true],
-      ['hi', false],
-      ['Hey there', false],
-      ['Buenas', false],
-      ['Buenos días', false],
+      ['hi', true],
+      ['Hi', true],
+      ['hey', true],
+      ['Hey there', true],
+      ['Buenas', true],
+      ['buenas', true],
+      ['Buenos días', true],
+      ['buenos dias', true],
+      ['hola quiero trabajo', true],
+      ['hola trabajos', true],
       ['Trabajos', false],
-      ['hola trabajos', false],
       ['', false],
       ['hell', false], // not 'hello' prefix
     ])('isGreetingKeyword("%s") → %s', (input, expected) => {
@@ -55,6 +64,8 @@ describe('flows.ts — keyword detection', () => {
       ['job', true],
       ['Empleo', true],
       ['empleos', true],
+      ['trabajos!!', true],
+      ['trabjos', true], // typo tolerance
       ['Hola', false],
       ['', false],
     ])('isJobsKeyword("%s") → %s', (input, expected) => {
@@ -80,6 +91,104 @@ describe('flows.ts — keyword detection', () => {
       expect(isDecline('Decline', 'en')).toBe(true);
       expect(isDecline('No', 'en')).toBe(true);
     });
+    it('tolerates stray punctuation', () => {
+      expect(isAccept('sí!', 'es')).toBe(true);
+      expect(isAccept('👍 si', 'es')).toBe(true);
+      expect(isDecline('no.', 'es')).toBe(true);
+    });
+    it('"no se" still declines (regression — prefix match unaffected by normalization)', () => {
+      expect(isDecline('no se', 'es')).toBe(true);
+    });
+  });
+});
+
+describe('flows.ts — detectCommandLanguage', () => {
+  it('detects English command keywords', () => {
+    expect(detectCommandLanguage('JOBS')).toBe('en');
+    expect(detectCommandLanguage('help')).toBe('en');
+    expect(detectCommandLanguage('Profile')).toBe('en');
+  });
+
+  it('detects Spanish command keywords', () => {
+    expect(detectCommandLanguage('TRABAJOS')).toBe('es');
+    expect(detectCommandLanguage('ayuda')).toBe('es');
+    expect(detectCommandLanguage('empleos')).toBe('es');
+    expect(detectCommandLanguage('perfil')).toBe('es');
+  });
+
+  it('detects language from typed job-action verbs', () => {
+    expect(detectCommandLanguage('1 aceptar')).toBe('es');
+    expect(detectCommandLanguage('2 accept')).toBe('en');
+    expect(detectCommandLanguage('1 rechazar')).toBe('es');
+  });
+
+  it('detects greetings', () => {
+    expect(detectCommandLanguage('hola')).toBe('es');
+    expect(detectCommandLanguage('hello there')).toBe('en');
+  });
+
+  it('tolerates typos via fuzzy match', () => {
+    expect(detectCommandLanguage('trabajoss')).toBe('es');
+    expect(detectCommandLanguage('jbos')).toBe('en');
+  });
+
+  it('returns null when there is no clear language signal', () => {
+    expect(detectCommandLanguage('no')).toBeNull(); // valid in both languages
+    expect(detectCommandLanguage('')).toBeNull();
+    expect(detectCommandLanguage('asdfghjkl')).toBeNull();
+  });
+});
+
+describe('flows.ts — normalizeCommandText', () => {
+  test.each([
+    ['help.', 'help'],
+    ['Ayuda!', 'ayuda'],
+    [' Help ?', 'help'],
+    ['¡ayuda!', 'ayuda'],
+    ['AYUDA…', 'ayuda'],
+    ['perfil.', 'perfil'],
+  ])('normalizeCommandText("%s") → "%s"', (input, expected) => {
+    expect(normalizeCommandText(input)).toBe(expected);
+  });
+});
+
+describe('flows.ts — matchCommandFuzzy', () => {
+  test.each([
+    ['hlep', 'help'],
+    ['ayudda', 'ayuda'],
+    ['trabjos', 'trabajos'],
+    ['porfile', 'profile'],
+  ])('matchCommandFuzzy("%s") → "%s"', (input, expected) => {
+    expect(matchCommandFuzzy(input)).toBe(expected);
+  });
+
+  test.each(['nos', 'ni', 'sin', 'hey', 'no'])(
+    'matchCommandFuzzy("%s") → null (too short, never fuzzy-matched)',
+    (input) => {
+      expect(matchCommandFuzzy(input)).toBeNull();
+    },
+  );
+
+  it('does not fuzzy-match multi-word input', () => {
+    expect(matchCommandFuzzy('help me')).toBeNull();
+  });
+
+  it('does not fuzzy-match unrelated words far from any keyword', () => {
+    expect(matchCommandFuzzy('helpful')).toBeNull();
+  });
+});
+
+describe('flows.ts — parseCommandPayload', () => {
+  it('parses known command payloads', () => {
+    expect(parseCommandPayload('command:jobs')).toBe('jobs');
+    expect(parseCommandPayload('command:profile')).toBe('profile');
+    expect(parseCommandPayload('command:chats')).toBe('chats');
+    expect(parseCommandPayload('command:help')).toBe('help');
+  });
+
+  it('rejects unknown or missing payloads', () => {
+    expect(parseCommandPayload('command:bogus')).toBeNull();
+    expect(parseCommandPayload(undefined)).toBeNull();
   });
 });
 
@@ -317,21 +426,24 @@ describe('flows.ts — trust signals', () => {
   });
 
   describe('isHelpCommand / isProfileCommand', () => {
-    test.each(['Help', 'help', 'Ayuda', 'commands', 'comandos'])(
+    test.each([
+      'Help', 'help', 'Ayuda', 'commands', 'comandos',
+      'help.', 'Ayuda!', ' Help ?', '¡ayuda!', 'AYUDA…', 'hlep',
+    ])(
       'isHelpCommand("%s") -> true',
       (input) => {
         expect(isHelpCommand(input)).toBe(true);
       },
     );
 
-    test.each(['Profile', 'perfil', 'my profile', 'mi perfil'])(
+    test.each(['Profile', 'perfil', 'my profile', 'mi perfil', 'perfil.', 'porfile'])(
       'isProfileCommand("%s") -> true',
       (input) => {
         expect(isProfileCommand(input)).toBe(true);
       },
     );
 
-    test.each(['Trabajos', 'Hola', '1 aceptar', ''])('rejects "%s"', (input) => {
+    test.each(['Trabajos', 'Hola', '1 aceptar', '', 'helpful', 'help me now'])('rejects "%s"', (input) => {
       expect(isHelpCommand(input)).toBe(false);
       expect(isProfileCommand(input)).toBe(false);
     });
@@ -405,6 +517,7 @@ describe('flows.ts — parseTypedJobAction', () => {
     ['1 no', { index: 0, action: 'decline' }],
     ['2 rechazar', { index: 1, action: 'decline' }],
     ['1 info', { index: 0, action: 'info' }],
+    ['1 aceptar.', { index: 0, action: 'accept' }],
   ])('parses "%s"', (input, expected) => {
     expect(parseTypedJobAction(input)).toEqual(expected);
   });
@@ -489,5 +602,9 @@ describe('new media state types', () => {
   test('isSkipKeyword returns false for non-skip input', () => {
     expect(isSkipKeyword('hello')).toBe(false);
     expect(isSkipKeyword('si')).toBe(false);
+  });
+
+  test('isSkipKeyword tolerates stray punctuation', () => {
+    expect(isSkipKeyword('skip.')).toBe(true);
   });
 });

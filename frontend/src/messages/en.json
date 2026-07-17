@@ -37,12 +37,139 @@
     "messages": "Messages"
   },
   "landing": {
-    "headline": "Find work. Find workers.",
-    "subheadline": "Jale connects workers with employers in the construction industry.",
-    "worker_cta": "I'm looking for work",
-    "employer_cta": "I'm hiring",
-    "survey_prompt": "Tell us what would make finding work or hiring workers easier.",
-    "survey_cta": "Share your thoughts"
+    "nav": {
+      "how": "How it works",
+      "workers": "For workers",
+      "employers": "For employers",
+      "worker_login": "Worker login",
+      "employer_login": "Employer login",
+      "cta": "Start on WhatsApp",
+      "language_toggle": "Español"
+    },
+    "hero": {
+      "eyebrow": "No apps. No forms. No waiting.",
+      "h1_start": "Got",
+      "h1_accent": "Jale?",
+      "sub": "Open WhatsApp. Send Jale a message. Talk by voice or text. <blue>No résumé. No downloads.</blue> Apply to hourly jobs right in the chat. <b>Fast.</b>",
+      "cta": "Start on WhatsApp",
+      "free_line": "Always free for workers.",
+      "chips_label": "Jobs in every trade",
+      "chip1": "Warehouse",
+      "chip2": "Restaurants",
+      "chip3": "Construction",
+      "chip4": "Cleaning",
+      "chip5": "Landscaping",
+      "chip6": "Manufacturing"
+    },
+    "chat": {
+      "aria": "WhatsApp chat with Jale",
+      "time": "9:41",
+      "status": "online",
+      "in1": "Hi! Let's build your profile. What's your name?",
+      "out1": "Marisol",
+      "in2": "What kind of work can you do?",
+      "out2": "Warehouse or kitchen",
+      "in3": "Great! Record a voice note or type it.",
+      "out3": "🎙 [voice message]",
+      "in4": "Done! 5 jobs for you today.",
+      "input": "Message"
+    },
+    "how": {
+      "eyebrow": "How it works",
+      "title": "Three steps. Five minutes.",
+      "step1_title": "Text Jale on WhatsApp",
+      "step1_body": "Open WhatsApp. Send a message. Talk in English or Spanish — <b>fast.</b>",
+      "step2_title": "Tell us about you",
+      "step2_body": "Share your skills, by voice or text. No résumé — <b>we make the match.</b>",
+      "step3_title": "Start applying for jobs",
+      "step3_body": "Get jobs in your area. Apply right in the chat. <b>Start working.</b>"
+    },
+    "audience": {
+      "worker_title": "Looking for work",
+      "worker_b1": "No app. Just WhatsApp.",
+      "worker_b2": "We speak <b>English and Spanish</b>",
+      "worker_b3": "No résumé. No paperwork.",
+      "worker_b4": "Apply right in the chat",
+      "worker_cta": "Get started",
+      "employer_title": "I'm hiring",
+      "employer_b1": "Candidates speak <b>Spanish</b>",
+      "employer_b2": "Verified documents",
+      "employer_b3": "Filter by skill and <b>location</b>",
+      "employer_b4": "Hire fast, less paperwork",
+      "employer_cta": "Hire now",
+      "employer_note": "Employers pay to post."
+    },
+    "workers": {
+      "eyebrow": "For workers",
+      "title": "Built for workers",
+      "c1_title": "No app",
+      "c1_body": "It's all on WhatsApp. You already have it.",
+      "c2_title": "Your voice",
+      "c2_body": "Talk or type. <b>Your way.</b>",
+      "c3_title": "We speak Spanish",
+      "c3_body": "And English. Your language.",
+      "c4_title": "No résumé",
+      "c4_body": "Just tell us about yourself. That’s it.",
+      "c5_title": "Your privacy",
+      "c5_body": "Your data. Your control.",
+      "c6_title": "Smart matching",
+      "c6_body": "AI finds jobs that fit you."
+    },
+    "employers": {
+      "eyebrow": "For employers",
+      "title": "Built for employers",
+      "c1_title": "Smart matching",
+      "c1_body": "AI finds candidates that fit your needs.",
+      "c2_title": "Super easy to post",
+      "c2_body": "Post a job in seconds, right in the chat.",
+      "c3_title": "Pre-verified",
+      "c3_body": "Documents checked. Ready to work.",
+      "c4_title": "Hire fast",
+      "c4_body": "Days, not weeks.",
+      "companies_title": "Companies using Jale",
+      "co1_name": "Spear Commercial",
+      "co1_industry": "Construction",
+      "co1_logo_alt": "Spear Commercial",
+      "co1_quote": "\"<blue>Jale helps us fill open positions quickly</blue> so we don’t miss a beat.\"",
+      "co2_name": "Specialty concrete contractor",
+      "co2_industry": "Concrete",
+      "co2_logo_alt": "Rucoba & Maya",
+      "co2_quote": "\"Candidates arrive <blue>speaking Spanish with verified documents.</blue> We hire in days.\"",
+      "co3_name": "Custom home builder",
+      "co3_industry": "Residential",
+      "co3_logo_alt": "L&L Homes",
+      "co3_quote": "\"<blue>Finding skilled workers has never been easier.</blue> Jale connects us with reliable talent fast.\"",
+      "co4_name": "Public works contractor",
+      "co4_industry": "Civil construction",
+      "co4_logo_alt": "Public works contractor",
+      "co4_quote": "\"<blue>Fast hiring, quality workers.</blue> Jale delivers exactly what we need.\""
+    },
+    "testimonials": {
+      "eyebrow": "From the field",
+      "title": "What they say",
+      "q1": "\"Texas summers can be brutal and we see a lot of turnover in the construction industry. <blue>Jale helps us fill our open positions quickly</blue> so we don’t miss a beat.\"",
+      "q1_name": "Mark Rangel",
+      "q1_role": "Owner, Spear Commercial and Industrial",
+      "q1_initials": "MR",
+      "q2": "\"Candidates arrive <blue>speaking Spanish with verified documents.</blue> No translations, no confusion. We hire in days, not weeks.\"",
+      "q2_name": "Casa Marina",
+      "q2_role": "Restaurant group · Oakland",
+      "q2_initials": "CM"
+    },
+    "cta": {
+      "title": "Ready?",
+      "line": "Open WhatsApp. Say hi to Jale. <b>Get to work.</b>",
+      "button": "Open WhatsApp",
+      "copy_line": "Or copy: <b>+1 737-688-0702</b>"
+    },
+    "footer": {
+      "tagline": "Find work. Find workers. Built by Latinos, for everyone.",
+      "product": "Product",
+      "legal": "Legal",
+      "terms": "Terms",
+      "privacy": "Privacy",
+      "copyright": "© 2026 Jale. Built by Latinos, for the hustle."
+    }
   },
   "auth": {
     "worker": {
@@ -180,7 +307,14 @@
         "invalid_credentials": "The email or password is incorrect.",
         "invalid_signup": "Check the account details and try again.",
         "signup_failed": "We could not create the account. Check the fields and try again."
-      }
+      },
+      "panel_bullet_1": "Candidates speak español",
+      "panel_bullet_2": "Verified documentos",
+      "panel_bullet_3": "Contrata en días, not weeks"
+    },
+    "shell": {
+      "language_toggle": "Español",
+      "back_home": "Back to home"
     }
   },
   "legal": {
@@ -225,6 +359,7 @@
     "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
     "threads": "Conversations",
     "drawer_button": "Messages",
+    "drawer_close": "Close",
     "hide": "Hide",
     "empty": "No open conversations yet.",
     "empty_select": "Select a conversation.",
@@ -377,7 +512,16 @@
       "search_placeholder": "Search by title, location, or trade...",
       "back_to_dashboard": "← Back to Dashboard",
       "empty_title": "No jobs found",
-      "empty_body": "Post a job or clear the filters to bring your hiring board back."
+      "empty_body": "Post a job or clear the filters to bring your hiring board back.",
+      "delete": {
+        "button": "Delete",
+        "confirm_title": "Delete this job?",
+        "confirm_body": "This permanently removes \"{title}\" and its applications. This can’t be undone.",
+        "confirm_cta": "Delete job",
+        "cancel": "Cancel",
+        "error_hired": "This job has hired workers and can’t be deleted. Close it instead.",
+        "error_generic": "Couldn’t delete this job. Please try again."
+      }
     },
     "filter": {
       "title": "Filter Applicants",
@@ -471,7 +615,11 @@
       "validation_required": "Complete the required fields.",
       "validation_number": "Enter valid non-negative numbers.",
       "validation_pay_range": "Pay min cannot be greater than pay max.",
-      "validation_headcount": "Workers needed must be at least 1."
+      "validation_headcount": "Workers needed must be at least 1.",
+      "edit_title": "Edit job",
+      "edit_save": "Save changes",
+      "locked_note": "Locked — this job has applicants",
+      "edit_error": "Could not save changes. Please try again."
     },
     "worker_profile": {
       "back": "Back to applicants",
@@ -557,7 +705,9 @@
     "error_type": "Only JPG, PNG, or PDF files are accepted",
     "doc_resume": "Resume",
     "doc_driver_license": "Driver's License",
-    "doc_ssn": "SSN Card / ITIN"
+    "doc_ssn": "SSN Card / ITIN",
+    "error_upload": "Upload failed. Please try again.",
+    "error_submit": "Submission failed. Please try again."
   },
   "worker_applications": {
     "title": "My Applications",
@@ -570,6 +720,11 @@
       "talking": "In conversation",
       "hired": "Hired",
       "not_interested": "Not selected"
+    },
+    "stats": {
+      "total": "Total applications",
+      "active": "Active",
+      "hired": "Hired"
     }
   },
   "worker_home": {
@@ -582,7 +737,8 @@
       "contract": "Contract"
     },
     "openings_count": "{open}/{total} open",
-    "empty": "No active jobs right now."
+    "empty": "No active jobs right now.",
+    "results_count": "{count, plural, one {# job found} other {# jobs found}}"
   },
   "worker_job_detail": {
     "back": "← Back to jobs",
@@ -609,7 +765,8 @@
       "already_applied": "You already applied to this job.",
       "server_error": "We could not submit this application right now. Please try again in a few minutes.",
       "apply_failed": "We could not submit this application. Please check your profile and documents, then try again."
-    }
+    },
+    "page_title": "Job details"
   },
   "worker_profile": {
     "title": "My Profile",
@@ -732,5 +889,11 @@
       "modal_message": "You've reached your plan's limit of {limit} active job posting(s). Upgrade to post more.",
       "cta": "Upgrade plan"
     }
+  },
+  "app_shell": {
+    "worker_workspace": "Worker workspace",
+    "worker_role": "Worker",
+    "worker_fallback": "Your profile",
+    "worker_nav_main": "Menu"
   }
 }

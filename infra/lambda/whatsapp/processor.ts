@@ -68,6 +68,7 @@ import {
 } from './lib/interactive-templates';
 import {
   isGreetingKeyword,
+  detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
   isSupportCommand,
@@ -76,6 +77,7 @@ import {
   isAccept,
   isDecline,
   parseButtonPayload,
+  parseCommandPayload,
   parseEmployerConversationButtonPayload,
   parseLegalReplyPayload,
   parseMediaPayload,
@@ -496,11 +498,13 @@ async function processRecord(record: SQSRecord): Promise<void> {
   // payloads are well under 50 chars.
   const interactivePayload =
     buttonPayload
+    ?? findKnownPayload(params.ListId)
     ?? extractInteractivePayload(params.InteractiveData)
     ?? extractInteractivePayload(params.ChannelMetadata)
     ?? (body.length <= 256 ? findKnownPayload(body) : undefined);
-  const interactivePayloadSource: 'button' | 'interactive_data' | 'channel_metadata' | 'body' | 'none' =
+  const interactivePayloadSource: 'button' | 'list_id' | 'interactive_data' | 'channel_metadata' | 'body' | 'none' =
     buttonPayload ? 'button'
+    : findKnownPayload(params.ListId) ? 'list_id'
     : extractInteractivePayload(params.InteractiveData) ? 'interactive_data'
     : extractInteractivePayload(params.ChannelMetadata) ? 'channel_metadata'
     : (body.length <= 256 && findKnownPayload(body)) ? 'body'
@@ -662,7 +666,7 @@ function extractInteractivePayload(raw: string | undefined): string | undefined 
 
 function findKnownPayload(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return /^(legal|profile|trust|media|conversation):/.test(value) ? value : undefined;
+    return /^(legal|profile|trust|media|conversation|command):/.test(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -1002,6 +1006,24 @@ async function routeMessage(
 ): Promise<string | null> {
   const from = msg.from;
 
+  // Answer typed commands/messages in the language the worker used, regardless
+  // of the language they onboarded in. Only for TYPED text — button and
+  // interactive taps carry language-agnostic payloads, so they keep the stored
+  // language. Scoped to `idle` (post-onboarding) so the onboarding language
+  // flow is untouched. Persisted so later taps (accept/decline) stay in the
+  // same language the worker just switched to.
+  if (
+    !msg.buttonPayload &&
+    !msg.interactivePayload &&
+    conv.conversation_state === 'idle'
+  ) {
+    const msgLang = detectCommandLanguage(msg.body);
+    if (msgLang && msgLang !== conv.language) {
+      conv.language = msgLang;
+      await updateConversation(client, conv.id, { language: msgLang });
+    }
+  }
+
   // Button-payload taps on job alerts are self-identifying. Route them first
   // — they can arrive in any state except onboarding (worker must be linked).
   if (msg.buttonPayload) {
@@ -1017,6 +1039,16 @@ async function routeMessage(
     }
   }
 
+  const commandPayload = parseCommandPayload(msg.interactivePayload);
+  if (commandPayload) {
+    msg = {
+      ...msg,
+      body: commandPayload,
+      buttonPayload: undefined,
+      interactivePayload: undefined,
+    };
+  }
+
   if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
     const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
     if (workerId) {
@@ -1025,7 +1057,12 @@ async function routeMessage(
   }
 
   if (isHelpCommand(msg.body)) {
-    await queueInteractivePrompt(client, msg.messageSid, msg.from, buildHelpMenuInteractivePrompt(conv.language));
+    await queueInteractivePrompt(
+      client,
+      msg.messageSid,
+      msg.from,
+      buildHelpMenuInteractivePrompt(conv.language),
+    );
     return null;
   }
 

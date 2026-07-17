@@ -1,4 +1,4 @@
--- 039_rls_relationship_recursion_repair.sql
+-- 040_rls_relationship_recursion_repair.sql
 -- Repair the users -> applications/jobs -> users RLS recursion without a
 -- superuser/BYPASSRLS helper. The dedicated NOLOGIN role can read only the
 -- relationship columns required by the SECURITY DEFINER predicate.

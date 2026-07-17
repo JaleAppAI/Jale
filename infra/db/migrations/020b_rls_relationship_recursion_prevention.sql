@@ -17,14 +17,14 @@
 -- statement (e.g. migration 023's `UPDATE jobs ...`) requires evaluating the
 -- jobs/job_applications policies for a role affected by both policy sets.
 --
--- Migration 039 (rls_relationship_recursion_repair) already contains the
+-- Migration 040 (rls_relationship_recursion_repair) already contains the
 -- correct fix: retarget the 003/007 policies to `TO jale_admin` explicitly
 -- and replace the users-table predicate with a SECURITY DEFINER function
 -- owned by a narrow NOLOGIN helper role, so the predicate never has to
 -- re-enter RLS-checked table access as jale_admin. The problem is purely
--- POSITIONAL: 039 sits at the end of the chain, after 023, so a fresh
+-- POSITIONAL: 040 sits at the end of the chain, after 023, so a fresh
 -- cluster applying the chain in file order hits the 42P17 abort at 023 and
--- never reaches 039 at all.
+-- never reaches 040 at all.
 --
 -- Production-equivalence note: this is not a test-harness artifact. On a
 -- real RDS PostgreSQL 16 instance, the master user (which this app names
@@ -39,25 +39,25 @@
 -- model uses for local verification. The recursion is plan-time and
 -- data-independent, so migration 023 would abort identically on a fresh RDS
 -- cluster. This file (not a runner change) is the fix: it carries forward
--- the exact same repair 039 performs, positioned where a fresh cluster
+-- the exact same repair 040 performs, positioned where a fresh cluster
 -- actually needs it -- immediately after the migration (020) that introduces
 -- the recursive predicate, and before the first migration (023) whose
 -- UPDATE statement triggers policy expansion under FORCE RLS.
 --
--- Idempotence / interaction with 039: this file's statements are exactly
--- 039's (DO-block guarded role/schema/function creation, `DROP POLICY IF
+-- Idempotence / interaction with 040: this file's statements are exactly
+-- 040's (DO-block guarded role/schema/function creation, `DROP POLICY IF
 -- EXISTS` + recreate, idempotent GRANT/REVOKE, retargeting a policy's TO
 -- list, which is a no-op if already set that way). Verified empirically
 -- (disposable PG16
 -- container, plain jale_admin): applying this file, then continuing the
--- chain through 039, causes 039 to re-run this same repair a second time
+-- chain through 040, causes 040 to re-run this same repair a second time
 -- and complete cleanly -- it recognizes the already-correct state via its
 -- own invariant DO-block checks and changes nothing. That also means this
 -- file is safe (a strict no-op re-verification) if ever run against a
--- database that already carries 039's repair from some other path. 039 is
+-- database that already carries 040's repair from some other path. 040 is
 -- intentionally left in place at its original position: it remains the
 -- correct (and now redundant-safe) repair step for any already-migrated
--- database whose operator applies 034-039 without this file, and it keeps
+-- database whose operator applies 034-040 without this file, and it keeps
 -- protecting a fresh cluster even if this file is ever skipped by mistake.
 -- ============================================================
 

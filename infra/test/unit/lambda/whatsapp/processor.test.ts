@@ -158,7 +158,6 @@ describe('Processor Lambda', () => {
       WORKER_POOL_ID: 'pool-abc',
       WORKER_CLIENT_ID: 'client-abc',
       TWILIO_SECRET_ARN: 'arn:twilio',
-      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       DB_SECRET_ARN: 'arn:db',
       REQUIRED_TOS_VERSION: '1.0',
     };
@@ -172,7 +171,7 @@ describe('Processor Lambda', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
   afterAll(() => {
@@ -875,6 +874,165 @@ describe('Processor Lambda', () => {
         && params.includes('awaiting_media_photo'),
       );
       expect(photoUpdate).toBeDefined();
+    });
+
+    it('returns the command menu when a worker sends help', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-help' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox help_menu_list_en
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-help',
+          From: 'whatsapp:+15125551234',
+          Body: 'Help',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxTemplates()).toContain('help_menu_list_en');
+      const insert = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && Array.isArray(params)
+        && (params as unknown[])[2] === 'help_menu_list_en',
+      );
+      const variables = (insert![1] as unknown[])[3] as Record<string, string>;
+      expect(variables.__fallback_body).toContain('Commands');
+      expect(variables.__fallback_body).toContain('Jobs - See opportunities');
+      expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
+    });
+
+    it('routes a tapped "command:jobs" list-picker row into the jobs listing path', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-cmd-jobs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-cmd-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          ButtonPayload: 'command:jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+    });
+
+    it('routes a list-picker ListId "command:jobs" with row-title Body into the jobs listing path', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-listid-jobs' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-listid-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Jobs',
+          ListId: 'command:jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+    });
+
+    it('routes Body "command:profile" (no ButtonPayload) to the profile path', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-cmd-profile' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            phone: '+15125551234',
+            whatsapp_number: '+15125551234',
+            full_name: 'Luis Gomez',
+            city: '79928',
+            main_trade: 'electrician',
+            main_trade_other: null,
+            years_experience: '10+',
+            has_transportation: true,
+            availability: 'flexible',
+            trust_signals_completed_at: '2026-04-29T00:00:00.000Z',
+            trust_signals: {
+              specialization: { label: 'Commercial' },
+              seniority: { label: 'Lead crew' },
+              tasks: { label: 'Work panels' },
+            },
+          }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-cmd-profile',
+          From: 'whatsapp:+15125551234',
+          Body: 'command:profile',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const body = outboxBodies()[0];
+      expect(body).toContain('Your profile');
+      expect(body).toContain('Name: Luis Gomez');
     });
 
     it('queues the help list-picker template (with plain-text fallback) when a worker sends help', async () => {
@@ -1843,7 +2001,6 @@ describe('awaiting_media_photo state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -1853,7 +2010,7 @@ describe('awaiting_media_photo state', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
   test('text message (skip) transitions to awaiting_media_voice', async () => {
@@ -1988,7 +2145,6 @@ describe('awaiting_media_voice state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -1998,7 +2154,7 @@ describe('awaiting_media_voice state', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
   test('text message (skip) transitions to building_profile and asks first profile question', async () => {
@@ -2161,7 +2317,6 @@ describe('building_profile custom trade handoff', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
@@ -2172,7 +2327,7 @@ describe('building_profile custom trade handoff', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
   test('last text profile answer for other trade generates custom questions and asks Q1 in spanish', async () => {
@@ -2255,7 +2410,6 @@ describe('processing_ai state', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
     mockSecretsSend.mockResolvedValue({
       SecretString: JSON.stringify({
@@ -2265,7 +2419,7 @@ describe('processing_ai state', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
   test('any inbound message replies with ai_processing_wait and does not change state', async () => {
@@ -2311,7 +2465,6 @@ describe('interactivePayload extraction from Body', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
     process.env.WORKER_POOL_ID = 'pool-abc';
     process.env.WORKER_CLIENT_ID = 'client-abc';
     process.env.DB_SECRET_ARN = 'arn:db';
@@ -2325,7 +2478,7 @@ describe('interactivePayload extraction from Body', () => {
         templates: {},
       }),
     });
-    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK', json: async () => ({ sid: 'SM' + '0'.repeat(32) }) });
+    mockFetch.mockResolvedValue({ ok: true, text: async () => 'OK' });
   });
 
   // Test A — Body-as-payload is accepted on the trade prompt.

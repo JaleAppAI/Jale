@@ -2,7 +2,7 @@
 import { useCallback, useEffect } from 'react';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { LegalWallError } from '@/lib/api';
+import { isLegalWallError } from '@/lib/api';
 
 type UserType = 'worker' | 'employer';
 
@@ -26,7 +26,7 @@ export function useRequireAuth() {
     }, [isLoading, isAuthenticated, pathname, userType, router]);
 
     const handleLegalWall = useCallback((err: unknown, returnUrl: string) => {
-        if (err instanceof LegalWallError) {
+        if (isLegalWallError(err)) {
             sessionStorage.setItem('legalReturnUrl', returnUrl);
             router.replace('/legal/accept');
         } else {

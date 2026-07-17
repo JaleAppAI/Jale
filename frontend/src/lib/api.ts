@@ -1,4 +1,16 @@
-export class LegalWallError extends Error {}
+export class LegalWallError extends Error {
+    constructor() {
+        super('legal_required');
+        this.name = 'LegalWallError';
+        Object.setPrototypeOf(this, LegalWallError.prototype);
+    }
+}
+
+export function isLegalWallError(err: unknown): err is LegalWallError {
+    return err instanceof LegalWallError || (
+        err instanceof Error && err.name === 'LegalWallError'
+    );
+}
 
 export async function apiFetch(
     path: string,
@@ -15,14 +27,9 @@ export async function apiFetch(
     });
 
     if (res.status === 403) {
-        // Clone before reading body so the original response remains usable by the caller
-        try {
-            const body = await res.clone().json();
-            if (body.error === 'legal_required') throw new LegalWallError();
-        } catch (e) {
-            if (e instanceof LegalWallError) throw e;
-            // Non-JSON 403 or different error code — fall through and return response as-is
-        }
+        // Clone before reading body so the original response remains usable by the caller.
+        const body = await res.clone().json().catch(() => null) as { error?: string } | null;
+        if (body?.error === 'legal_required') throw new LegalWallError();
     }
 
     return res;

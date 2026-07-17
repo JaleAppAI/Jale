@@ -71,6 +71,7 @@ describe('database migrations', () => {
       '037',
       '038',
       '039',
+      '040',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -163,8 +164,8 @@ describe('database migrations', () => {
     expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
   });
 
-  it('adds least-privilege job-limit enforcement in migration 037', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '037_billing_job_limit_enforcement.sql'), 'utf8');
+  it('adds least-privilege job-limit enforcement in migration 038', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '038_billing_job_limit_enforcement.sql'), 'utf8');
     expect(migration).toContain('CREATE ROLE jale_billing_job_enforcer');
     expect(migration).toContain('CREATE SCHEMA jale_billing_internal AUTHORIZATION jale_billing_job_enforcer');
     expect(migration).toContain('CREATE FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
@@ -182,8 +183,8 @@ describe('database migrations', () => {
     expect(migration).not.toContain('ALTER ROLE jale_billing_job_enforcer');
   });
 
-  it('adds a bounded default-deny generic email outbox in migration 038', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '038_email_outbox.sql'), 'utf8');
+  it('adds a bounded default-deny generic email outbox in migration 039', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '039_email_outbox.sql'), 'utf8');
     expect(migration).toContain('CREATE TABLE email_outbox');
     expect(migration).toContain('recipient_email');
     expect(migration).toContain('source_id         UUID NOT NULL');
@@ -196,8 +197,8 @@ describe('database migrations', () => {
     expect(migration).not.toContain('GRANT DELETE');
   });
 
-  it('repairs relationship RLS recursion with a narrow NOLOGIN helper in migration 039', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '039_rls_relationship_recursion_repair.sql'), 'utf8');
+  it('repairs relationship RLS recursion with a narrow NOLOGIN helper in migration 040', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '040_rls_relationship_recursion_repair.sql'), 'utf8');
     expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
     expect(migration).toContain('NOLOGIN NOSUPERUSER');
     expect(migration).toContain('NOBYPASSRLS');
@@ -225,8 +226,8 @@ describe('database migrations', () => {
     expect(migration).not.toMatch(/\sBYPASSRLS(?:\s|;)/);
   });
 
-  it('adds a least-privilege idempotent WhatsApp support-case function in migration 035', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '035_whatsapp_support_cases.sql'), 'utf8');
+  it('adds a least-privilege idempotent WhatsApp support-case function in migration 036', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '036_whatsapp_support_cases.sql'), 'utf8');
 
     expect(migration).toContain('CREATE OR REPLACE FUNCTION create_admin_support_case');
     expect(migration).toContain('SECURITY DEFINER');
@@ -246,9 +247,9 @@ describe('database migrations', () => {
     expect(migration).not.toMatch(/GRANT\s+(SELECT|INSERT|UPDATE|DELETE)\s+ON\s+admin_cases\s+TO\s+jale_whatsapp/i);
   });
 
-  it('adds durable monotonic Twilio delivery correlation in migration 036', () => {
+  it('adds durable monotonic Twilio delivery correlation in migration 037', () => {
     const migration = fs.readFileSync(
-      path.join(migrationsDir, '036_whatsapp_delivery_status.sql'),
+      path.join(migrationsDir, '037_whatsapp_delivery_status.sql'),
       'utf8',
     );
     expect(migration).toContain('record_whatsapp_delivery_status');

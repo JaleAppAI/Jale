@@ -1,5 +1,5 @@
 /**
- * PostgreSQL-backed verification for migration 035.
+ * PostgreSQL-backed verification for migration 036.
  *
  * Set JALE_TEST_DATABASE_URL to an isolated Postgres 16 database with the
  * complete migration chain applied. The URL user must be able to SET ROLE so
@@ -11,10 +11,10 @@ import { Client, type QueryResultRow } from 'pg';
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
 if (!databaseUrl) {
-  test('CONCERN: migration 035 PostgreSQL gate was not run', () => {
+  test('CONCERN: migration 036 PostgreSQL gate was not run', () => {
     // eslint-disable-next-line no-console
     console.warn(
-      '[whatsapp-support-035] DONE_WITH_CONCERNS: set JALE_TEST_DATABASE_URL ' +
+      '[whatsapp-support-036] DONE_WITH_CONCERNS: set JALE_TEST_DATABASE_URL ' +
         'to run the support-case function and privilege checks against Postgres 16.',
     );
     expect(databaseUrl).toBeUndefined();
@@ -90,7 +90,7 @@ async function queryAsWhatsapp<T extends QueryResultRow = QueryResultRow>(
   }
 }
 
-maybeDescribe('migration 035 WhatsApp support cases', () => {
+maybeDescribe('migration 036 WhatsApp support cases', () => {
   let workerId: string;
   let conversationId: string;
   let otherWorkerId: string;

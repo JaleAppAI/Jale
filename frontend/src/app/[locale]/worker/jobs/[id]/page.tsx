@@ -6,11 +6,12 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Link } from '@/i18n/navigation';
-import { Card } from '@/components/ui/card';
+import { AppShell } from '@/components/layout/AppShell';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { Button } from '@/components/ui/button';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { ProfileCompleteModal, ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
-import { apiFetch, LegalWallError } from '@/lib/api';
+import { apiFetch, isLegalWallError } from '@/lib/api';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
 import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
@@ -118,7 +119,7 @@ export default function WorkerJobDetailPage() {
   }
 
   async function handleApplyError(err: unknown) {
-    if (err instanceof LegalWallError) {
+    if (isLegalWallError(err)) {
       try { handleLegalWall(err, `/worker/jobs/${id}`); } catch { setError(t('errors.legal_required')); }
       return;
     }
@@ -158,89 +159,103 @@ export default function WorkerJobDetailPage() {
     setError(t('errors.apply_failed'));
   }
 
-  if (loading) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-muted">{tCommon('loading')}</p></main>;
-  if (!job) return <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center"><p className="text-sm text-error">{error ?? tCommon('error')}</p></main>;
+  if (loading) {
+    return (
+      <AppShell role="worker" title={job?.title ?? t('page_title')}>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+          <p className="text-sm text-muted">{tCommon('loading')}</p>
+        </main>
+      </AppShell>
+    );
+  }
+  if (!job) {
+    return (
+      <AppShell role="worker" title={t('page_title')}>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+          <p className="text-sm text-error">{error ?? tCommon('error')}</p>
+        </main>
+      </AppShell>
+    );
+  }
 
   const canApply = !job.already_applied && job.missing_docs.length === 0;
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10">
-      <Link href="/worker/home" className="text-sm text-muted-foreground hover:text-foreground mb-6 inline-block">
-        {t('back')}
-      </Link>
+    <AppShell role="worker" title={job.title} subtitle={`${job.company_name} · ${job.location}`}>
+      <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+        <Link href="/worker/home" className="text-sm text-muted-foreground hover:text-foreground mb-6 inline-block">
+          {t('back')}
+        </Link>
 
-      <Card className="p-6 space-y-4 mb-6">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold">{job.title}</h1>
-            <p className="text-sm text-muted-foreground mt-1">{job.company_name} - {job.location}</p>
-            <p className="text-xs text-muted-foreground mt-1 capitalize">{job.job_type.replace('-', ' ')} - {new Date(job.created_at).toLocaleDateString()}</p>
-          </div>
-        </div>
+        <DashboardPanel className="mb-6">
+          <div className="space-y-4 p-6">
+            <p className="text-xs text-muted-foreground capitalize">{job.job_type.replace('-', ' ')} - {new Date(job.created_at).toLocaleDateString()}</p>
 
-        {job.description && <p className="text-sm whitespace-pre-wrap">{job.description}</p>}
+            {job.description && <p className="text-sm whitespace-pre-wrap">{job.description}</p>}
 
-        <div className="grid gap-3 text-sm md:grid-cols-3">
-          {job.pay && job.pay !== 'Pay not specified' && <Detail label={t('pay_range')} value={job.pay} />}
-          {job.start_date && <Detail label={t('start_date')} value={job.start_date} />}
-          {job.expected_duration && <Detail label={t('expected_duration')} value={job.expected_duration} />}
-          {job.shift_schedule && <Detail label={t('shift_schedule')} value={job.shift_schedule} />}
-          {job.number_of_workers_needed !== undefined && (
-            <Detail label={t('openings')} value={`${job.open_count ?? 0}/${job.number_of_workers_needed}`} />
-          )}
-          {job.required_experience_years !== undefined && job.required_experience_years !== null && (
-            <Detail label={t('required_experience')} value={`${job.required_experience_years}`} />
-          )}
-          {job.work_authorization_required && (
-            <Detail label={t('work_authorization_required')} value={t('work_authorization_required_yes')} />
-          )}
-        </div>
+            <div className="grid gap-3 text-sm md:grid-cols-3">
+              {job.pay && job.pay !== 'Pay not specified' && <Detail label={t('pay_range')} value={job.pay} />}
+              {job.start_date && <Detail label={t('start_date')} value={job.start_date} />}
+              {job.expected_duration && <Detail label={t('expected_duration')} value={job.expected_duration} />}
+              {job.shift_schedule && <Detail label={t('shift_schedule')} value={job.shift_schedule} />}
+              {job.number_of_workers_needed !== undefined && (
+                <Detail label={t('openings')} value={`${job.open_count ?? 0}/${job.number_of_workers_needed}`} />
+              )}
+              {job.required_experience_years !== undefined && job.required_experience_years !== null && (
+                <Detail label={t('required_experience')} value={`${job.required_experience_years}`} />
+              )}
+              {job.work_authorization_required && (
+                <Detail label={t('work_authorization_required')} value={t('work_authorization_required_yes')} />
+              )}
+            </div>
 
-        {job.required_docs.length > 0 && (
-          <div>
-            <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('required_docs')}</p>
-            <ul className="space-y-1">
-              {job.required_docs.map((d) => {
-                const missing = job.missing_docs.includes(d);
-                return (
-                  <li key={d} className="text-sm flex items-center gap-2">
-                    <span className={missing ? 'text-error' : 'text-green-700'}>{missing ? 'x' : 'OK'}</span>
-                    <span>{DOC_LABELS[d] ?? d}</span>
-                  </li>
-                );
-              })}
-            </ul>
-            {job.missing_docs.length > 0 && (
-              <p className="text-xs text-muted mt-2">
-                {t('upload_prompt')} <Link href="/worker/profile" className="text-blue-700 underline">{t('upload_link')}</Link>
-              </p>
+            {job.required_docs.length > 0 && (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('required_docs')}</p>
+                <ul className="space-y-1">
+                  {job.required_docs.map((d) => {
+                    const missing = job.missing_docs.includes(d);
+                    return (
+                      <li key={d} className="text-sm flex items-center gap-2">
+                        <span className={missing ? 'text-error' : 'text-green-700'}>{missing ? 'x' : 'OK'}</span>
+                        <span>{DOC_LABELS[d] ?? d}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {job.missing_docs.length > 0 && (
+                  <p className="text-xs text-muted mt-2">
+                    {t('upload_prompt')} <Link href="/worker/profile" className="text-blue-700 underline">{t('upload_link')}</Link>
+                  </p>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </Card>
+        </DashboardPanel>
 
-      <div className="flex items-center justify-end gap-3">
-        {job.already_applied ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{t('already_applied')}</span>
-            <ApplicationStatusChip status={job.application_status ?? 'pending'} />
-          </div>
-        ) : (
-          <Button onClick={handleApplyClick} disabled={!canApply} loading={applying} loadingLabel={tCommon('loading')}>
-            {t('apply')}
-          </Button>
-        )}
-      </div>
+        <div className="flex items-center justify-end gap-3">
+          {job.already_applied ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">{t('already_applied')}</span>
+              <ApplicationStatusChip status={job.application_status ?? 'pending'} />
+            </div>
+          ) : (
+            <Button onClick={handleApplyClick} disabled={!canApply} loading={applying} loadingLabel={tCommon('loading')}>
+              {t('apply')}
+            </Button>
+          )}
+        </div>
 
-      {error && <p className="text-sm text-error mt-4">{error}</p>}
+        {error && <p className="text-sm text-error mt-4">{error}</p>}
 
-      <ProfileCompleteModal
-        open={modalOpen}
-        initial={profilePrefill ?? undefined}
-        onClose={() => setModalOpen(false)}
-        onSubmit={handleModalSubmit}
-      />
-    </main>
+        <ProfileCompleteModal
+          open={modalOpen}
+          initial={profilePrefill ?? undefined}
+          onClose={() => setModalOpen(false)}
+          onSubmit={handleModalSubmit}
+        />
+      </main>
+    </AppShell>
   );
 }
 

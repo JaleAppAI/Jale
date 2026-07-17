@@ -45,14 +45,6 @@ export function buildLegalInteractivePrompt(lang: Lang, tosUrl: string): Interac
   };
 }
 
-export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
-  return {
-    templateName: `help_menu_list_${lang}`,
-    variables: {},
-    fallbackBody: t('help_menu', lang),
-  };
-}
-
 export function buildProfileInteractivePrompt(
   field: ProfileField,
   lang: Lang,
@@ -121,6 +113,14 @@ export function buildTrustInteractivePrompt(
       '7': `trust:${step}:2`,
     },
     fallbackBody: buildTrustQuestion(step, trade, lang),
+  };
+}
+
+export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
+  return {
+    templateName: lang === 'es' ? 'help_menu_list_es' : 'help_menu_list_en',
+    variables: {},
+    fallbackBody: t('help_menu', lang),
   };
 }
 

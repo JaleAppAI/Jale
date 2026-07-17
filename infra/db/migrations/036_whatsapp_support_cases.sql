@@ -1,5 +1,5 @@
 -- ============================================================
--- 035_whatsapp_support_cases.sql
+-- 036_whatsapp_support_cases.sql
 -- Worker-initiated support cases from the WhatsApp command flow.
 -- Connect as: jale_admin (NOT the RDS master user)
 -- ============================================================

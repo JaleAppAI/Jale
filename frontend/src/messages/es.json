@@ -37,12 +37,139 @@
     "messages": "Mensajes"
   },
   "landing": {
-    "headline": "Encuentra trabajo. Encuentra trabajadores.",
-    "subheadline": "Jale conecta trabajadores con empleadores en la industria de la construcción.",
-    "worker_cta": "Estoy buscando trabajo",
-    "employer_cta": "Estoy contratando",
-    "survey_prompt": "Cuentanos que haria mas facil encontrar trabajo o contratar trabajadores.",
-    "survey_cta": "Comparte tu opinion"
+    "nav": {
+      "how": "Cómo funciona",
+      "workers": "Para trabajadores",
+      "employers": "Para empleadores",
+      "worker_login": "Ingresar como trabajador",
+      "employer_login": "Ingresar como empleador",
+      "cta": "Empieza en WhatsApp",
+      "language_toggle": "English"
+    },
+    "hero": {
+      "eyebrow": "Sin apps. Sin formularios. Sin esperas.",
+      "h1_start": "¿Ya tienes",
+      "h1_accent": "Jale?",
+      "sub": "Abre WhatsApp. Mándale un mensaje a Jale. Habla por voz o texto. <blue>Sin currículum. Sin descargas.</blue> Postúlate a empleos por hora directo en el chat. <b>De volada.</b>",
+      "cta": "Empieza en WhatsApp",
+      "free_line": "Siempre gratis para trabajadores.",
+      "chips_label": "Trabajos en todos los oficios",
+      "chip1": "Almacén",
+      "chip2": "Restaurantes",
+      "chip3": "Construcción",
+      "chip4": "Limpieza",
+      "chip5": "Jardinería",
+      "chip6": "Manufactura"
+    },
+    "chat": {
+      "aria": "Chat de WhatsApp con Jale",
+      "time": "9:41",
+      "status": "en línea",
+      "in1": "¡Hola! Vamos a crear tu perfil. ¿Cuál es tu nombre?",
+      "out1": "Marisol",
+      "in2": "¿Qué trabajos sabes hacer?",
+      "out2": "Almacén o cocina",
+      "in3": "¡Dale! Graba un audio o escribe.",
+      "out3": "🎙 [audio]",
+      "in4": "¡Listo! 5 trabajos hoy.",
+      "input": "Mensaje"
+    },
+    "how": {
+      "eyebrow": "Cómo funciona",
+      "title": "Tres pasos. Cinco minutos.",
+      "step1_title": "Escríbele a Jale por WhatsApp",
+      "step1_body": "Abre WhatsApp. Manda un mensaje. Habla español o inglés — <b>de volada.</b>",
+      "step2_title": "Cuéntanos de ti",
+      "step2_body": "Cuéntale tus habilidades, por voz o texto. Sin currículum — <b>hacemos el conecte.</b>",
+      "step3_title": "Empieza a postularte",
+      "step3_body": "Recibe empleos en tu zona. Postúlate en el chat. <b>A trabajar.</b>"
+    },
+    "audience": {
+      "worker_title": "Busco trabajo",
+      "worker_b1": "Sin app. Solo WhatsApp.",
+      "worker_b2": "Hablamos <b>español e inglés</b>",
+      "worker_b3": "Sin currículum. Sin papeles.",
+      "worker_b4": "Postúlate directo en el chat",
+      "worker_cta": "Comienza aquí",
+      "employer_title": "Estoy contratando",
+      "employer_b1": "Los candidatos hablan <b>español</b>",
+      "employer_b2": "Documentos verificados",
+      "employer_b3": "Filtra por habilidad y <b>ubicación</b>",
+      "employer_b4": "Contrata rápido, menos papeleo",
+      "employer_cta": "Contrata ahora",
+      "employer_note": "Los empleadores pagan por publicar."
+    },
+    "workers": {
+      "eyebrow": "Para trabajadores",
+      "title": "Hecho para trabajadores",
+      "c1_title": "Sin app",
+      "c1_body": "Todo en WhatsApp. Ya lo tienes.",
+      "c2_title": "Tu voz",
+      "c2_body": "Habla o escribe. <b>A tu manera.</b>",
+      "c3_title": "Hablamos español",
+      "c3_body": "Y inglés. Tu idioma.",
+      "c4_title": "Sin currículum",
+      "c4_body": "Solo cuéntanos de ti. Eso es todo.",
+      "c5_title": "Tu privacidad",
+      "c5_body": "Tus datos. Tú decides.",
+      "c6_title": "Emparejamiento inteligente",
+      "c6_body": "La IA encuentra trabajos para ti."
+    },
+    "employers": {
+      "eyebrow": "Para empleadores",
+      "title": "Hecho para empleadores",
+      "c1_title": "Emparejamiento inteligente",
+      "c1_body": "La IA encuentra candidatos según tus necesidades.",
+      "c2_title": "Muy fácil de publicar",
+      "c2_body": "Publica un empleo en segundos, en el chat.",
+      "c3_title": "Pre-verificados",
+      "c3_body": "Documentos revisados. Listos para trabajar.",
+      "c4_title": "Contrata rápido",
+      "c4_body": "Días, no semanas.",
+      "companies_title": "Empresas que usan Jale",
+      "co1_name": "Spear Commercial",
+      "co1_industry": "Construcción",
+      "co1_logo_alt": "Spear Commercial",
+      "co1_quote": "\"<blue>Jale nos ayuda a cubrir vacantes rápido</blue> y no perdemos el ritmo.\"",
+      "co2_name": "Contratista de concreto especializado",
+      "co2_industry": "Concreto",
+      "co2_logo_alt": "Rucoba & Maya",
+      "co2_quote": "\"Los candidatos llegan <blue>hablando español y con documentos verificados.</blue> Contratamos en días.\"",
+      "co3_name": "Constructor de casas personalizadas",
+      "co3_industry": "Residencial",
+      "co3_logo_alt": "L&L Homes",
+      "co3_quote": "\"<blue>Encontrar trabajadores calificados nunca fue tan fácil.</blue> Jale nos conecta con talento confiable rápido.\"",
+      "co4_name": "Contratista de obra pública",
+      "co4_industry": "Construcción civil",
+      "co4_logo_alt": "Contratista de obra pública",
+      "co4_quote": "\"<blue>Contratación rápida, trabajadores de calidad.</blue> Jale entrega justo lo que necesitamos.\""
+    },
+    "testimonials": {
+      "eyebrow": "Desde la obra",
+      "title": "Lo que dicen",
+      "q1": "\"Los veranos en Texas son brutales y hay mucha rotación en la construcción. <blue>Jale nos ayuda a cubrir vacantes rápido</blue> y no perdemos el ritmo.\"",
+      "q1_name": "Mark Rangel",
+      "q1_role": "Dueño, Spear Commercial and Industrial",
+      "q1_initials": "MR",
+      "q2": "\"Los candidatos llegan <blue>hablando español y con documentos verificados.</blue> Sin traducciones, sin confusiones. Contratamos en días, no semanas.\"",
+      "q2_name": "Casa Marina",
+      "q2_role": "Grupo de restaurantes · Oakland",
+      "q2_initials": "CM"
+    },
+    "cta": {
+      "title": "¿Listo?",
+      "line": "Abre WhatsApp. Saluda a Jale. <b>A trabajar.</b>",
+      "button": "Abrir WhatsApp",
+      "copy_line": "O copia: <b>+1 737-688-0702</b>"
+    },
+    "footer": {
+      "tagline": "Encuentra trabajo. Encuentra trabajadores. Hecho por latinos, para todos.",
+      "product": "Producto",
+      "legal": "Legal",
+      "terms": "Términos",
+      "privacy": "Privacidad",
+      "copyright": "© 2026 Jale. Hecho por latinos, para los que le echan ganas."
+    }
   },
   "auth": {
     "worker": {
@@ -180,7 +307,14 @@
         "invalid_credentials": "El correo o la contrasena no son correctos.",
         "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
         "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo."
-      }
+      },
+      "panel_bullet_1": "Candidates speak español",
+      "panel_bullet_2": "Verified documentos",
+      "panel_bullet_3": "Contrata en días, not weeks"
+    },
+    "shell": {
+      "language_toggle": "English",
+      "back_home": "Volver al inicio"
     }
   },
   "legal": {
@@ -225,6 +359,7 @@
     "subtitle": "Mensajea a candidatos por WhatsApp manteniendo la conversacion vinculada al trabajo.",
     "threads": "Conversaciones",
     "drawer_button": "Mensajes",
+    "drawer_close": "Cerrar",
     "hide": "Ocultar",
     "empty": "Todavia no hay conversaciones abiertas.",
     "empty_select": "Selecciona una conversacion.",
@@ -377,7 +512,16 @@
       "search_placeholder": "Buscar por titulo, ubicacion u oficio...",
       "back_to_dashboard": "← Volver al panel",
       "empty_title": "No se encontraron trabajos",
-      "empty_body": "Publica un empleo o limpia los filtros para volver a ver tu tablero."
+      "empty_body": "Publica un empleo o limpia los filtros para volver a ver tu tablero.",
+      "delete": {
+        "button": "Eliminar",
+        "confirm_title": "¿Eliminar este empleo?",
+        "confirm_body": "Esto elimina permanentemente \"{title}\" y sus postulaciones. No se puede deshacer.",
+        "confirm_cta": "Eliminar empleo",
+        "cancel": "Cancelar",
+        "error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérralo en su lugar.",
+        "error_generic": "No se pudo eliminar el empleo. Inténtalo de nuevo."
+      }
     },
     "filter": {
       "title": "Filtrar candidatos",
@@ -471,7 +615,11 @@
       "validation_required": "Completa los campos requeridos.",
       "validation_number": "Ingresa números válidos y no negativos.",
       "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
-      "validation_headcount": "Trabajadores necesarios debe ser al menos 1."
+      "validation_headcount": "Trabajadores necesarios debe ser al menos 1.",
+      "edit_title": "Editar trabajo",
+      "edit_save": "Guardar cambios",
+      "locked_note": "Bloqueado — este trabajo tiene postulantes",
+      "edit_error": "No se pudieron guardar los cambios. Intenta de nuevo."
     },
     "worker_profile": {
       "back": "Volver a postulantes",
@@ -557,7 +705,9 @@
     "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
     "doc_resume": "Currículum",
     "doc_driver_license": "Licencia de conducir",
-    "doc_ssn": "Tarjeta SSN / ITIN"
+    "doc_ssn": "Tarjeta SSN / ITIN",
+    "error_upload": "Error al subir el archivo. Inténtalo de nuevo.",
+    "error_submit": "Error al enviar. Inténtalo de nuevo."
   },
   "worker_applications": {
     "title": "Mis aplicaciones",
@@ -570,6 +720,11 @@
       "talking": "En conversación",
       "hired": "Contratado",
       "not_interested": "No seleccionado"
+    },
+    "stats": {
+      "total": "Postulaciones totales",
+      "active": "Activas",
+      "hired": "Contratado"
     }
   },
   "worker_home": {
@@ -582,7 +737,8 @@
       "contract": "Contrato"
     },
     "openings_count": "{open}/{total} disponibles",
-    "empty": "No hay trabajos activos en este momento."
+    "empty": "No hay trabajos activos en este momento.",
+    "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}"
   },
   "worker_job_detail": {
     "back": "← Volver a trabajos",
@@ -609,7 +765,8 @@
       "already_applied": "Ya postulaste a este trabajo.",
       "server_error": "No pudimos enviar esta postulacion ahora. Intenta de nuevo en unos minutos.",
       "apply_failed": "No pudimos enviar esta postulacion. Revisa tu perfil y documentos, e intenta de nuevo."
-    }
+    },
+    "page_title": "Detalle del empleo"
   },
   "worker_profile": {
     "title": "Mi perfil",
@@ -732,5 +889,11 @@
       "modal_message": "Has alcanzado el límite de tu plan de {limit} publicación(es) de empleo activa(s). Mejora tu plan para publicar más.",
       "cta": "Mejorar plan"
     }
+  },
+  "app_shell": {
+    "worker_workspace": "Espacio del trabajador",
+    "worker_role": "Trabajador",
+    "worker_fallback": "Tu perfil",
+    "worker_nav_main": "Menú"
   }
 }

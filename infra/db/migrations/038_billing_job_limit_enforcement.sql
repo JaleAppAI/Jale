@@ -1,4 +1,4 @@
--- 037_billing_job_limit_enforcement.sql
+-- 038_billing_job_limit_enforcement.sql
 -- Enforce reduced employer entitlements without granting jale_billing direct
 -- access to users or jobs. PostgreSQL 16 records one unavoidable creator ADMIN
 -- row for CREATEROLE-created helpers; it must never carry SET or INHERIT.

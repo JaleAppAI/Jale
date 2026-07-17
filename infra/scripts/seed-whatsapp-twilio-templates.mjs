@@ -2,6 +2,32 @@ import { SecretsManagerClient, GetSecretValueCommand, UpdateSecretCommand } from
 
 const SECRET_ID = 'jale/whatsapp/twilio';
 const REGION = process.env.AWS_REGION ?? 'us-east-2';
+const CONTENT_API_URL = 'https://content.twilio.com/v1/Content';
+
+const HELP_MENU_LIST_DEFINITIONS = {
+  help_menu_list_en: {
+    language: 'en',
+    body: 'What would you like to do?',
+    button: 'View commands',
+    items: [
+      { id: 'command:jobs', item: 'Jobs', description: 'See opportunities' },
+      { id: 'command:profile', item: 'Profile', description: 'See your profile' },
+      { id: 'command:chats', item: 'Chats', description: 'Open employer chats' },
+      { id: 'command:help', item: 'Help', description: 'Show these commands' },
+    ],
+  },
+  help_menu_list_es: {
+    language: 'es',
+    body: '¿Qué te gustaría hacer?',
+    button: 'Ver comandos',
+    items: [
+      { id: 'command:jobs', item: 'Trabajos', description: 'Ver oportunidades' },
+      { id: 'command:profile', item: 'Perfil', description: 'Ver tu perfil' },
+      { id: 'command:chats', item: 'Chats', description: 'Abrir chats con empleadores' },
+      { id: 'command:help', item: 'Ayuda', description: 'Ver estos comandos' },
+    ],
+  },
+};
 
 const NEW_TEMPLATES = {
   onboarding_voice_choice_es: 'HXc5c30aac43f61d77aed3cb7578106947',
@@ -34,12 +60,59 @@ function parseSecret(secretString) {
   }
 }
 
-function mergeTemplates(existing) {
+function mergeTemplates(existing, additional) {
   const templates = {
     ...(existing && typeof existing === 'object' ? existing : {}),
     ...NEW_TEMPLATES,
+    ...additional,
   };
   return templates;
+}
+
+/**
+ * Create a `twilio/list-picker` Content definition and return its ContentSid.
+ * Used for templates that don't have a hardcoded SID because they aren't
+ * pre-created in the Twilio console (unlike the quick-reply NEW_TEMPLATES
+ * above, which were created manually via Content Template Builder).
+ */
+async function createListPickerContent(name, definition, accountSid, authToken) {
+  const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+  const res = await fetch(CONTENT_API_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Basic ${auth}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      friendly_name: name,
+      language: definition.language,
+      types: {
+        'twilio/list-picker': {
+          body: definition.body,
+          button: definition.button,
+          items: definition.items,
+        },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Twilio Content API create failed for ${name}: HTTP ${res.status} ${text}`);
+  }
+  const json = await res.json();
+  if (!json.sid) {
+    throw new Error(`Twilio Content API create for ${name} returned no sid`);
+  }
+  return json.sid;
+}
+
+async function createMissingListPickerTemplates(existingTemplates, accountSid, authToken) {
+  const created = {};
+  for (const [name, definition] of Object.entries(HELP_MENU_LIST_DEFINITIONS)) {
+    if (existingTemplates?.[name]) continue;
+    created[name] = await createListPickerContent(name, definition, accountSid, authToken);
+  }
+  return created;
 }
 
 async function main() {
@@ -51,11 +124,19 @@ async function main() {
   }
 
   const secret = parseSecret(current.SecretString);
-  const templates = mergeTemplates(secret.templates);
+
+  const createdListPickers = await createMissingListPickerTemplates(
+    secret.templates,
+    secret.accountSid,
+    secret.authToken,
+  );
+  const expectedTemplates = { ...NEW_TEMPLATES, ...createdListPickers };
+
+  const templates = mergeTemplates(secret.templates, createdListPickers);
   const nextSecret = { ...secret, templates };
 
   const verifyBeforeWrite = Object.fromEntries(
-    Object.entries(NEW_TEMPLATES).filter(([key, value]) => templates[key] !== value),
+    Object.entries(expectedTemplates).filter(([key, value]) => templates[key] !== value),
   );
   if (Object.keys(verifyBeforeWrite).length > 0) {
     throw new Error(`Template merge failed before write: ${Object.keys(verifyBeforeWrite).join(', ')}`);
@@ -73,7 +154,7 @@ async function main() {
 
   const verified = await client.send(new GetSecretValueCommand({ SecretId: SECRET_ID }));
   const verifiedSecret = parseSecret(verified.SecretString ?? '{}');
-  const missing = Object.entries(NEW_TEMPLATES)
+  const missing = Object.entries(expectedTemplates)
     .filter(([key, value]) => verifiedSecret.templates?.[key] !== value)
     .map(([key]) => key);
 
@@ -82,7 +163,10 @@ async function main() {
   }
 
   const templateCount = Object.keys(verifiedSecret.templates ?? {}).length;
-  console.log(`Updated ${SECRET_ID} in ${REGION}; verified ${Object.keys(NEW_TEMPLATES).length} onboarding SIDs and ${templateCount} total template entries.`);
+  console.log(`Updated ${SECRET_ID} in ${REGION}; verified ${Object.keys(expectedTemplates).length} onboarding SIDs and ${templateCount} total template entries.`);
+  if (Object.keys(createdListPickers).length > 0) {
+    console.log(`Created list-picker Content templates: ${Object.keys(createdListPickers).join(', ')}`);
+  }
 }
 
 main().catch((err) => {

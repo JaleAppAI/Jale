@@ -32,7 +32,7 @@ async function asApp<T>(url: string, cognitoSub: string, internalId: string, fn:
   } finally { await client.end(); }
 }
 
-maybeDescribe('native relationship RLS recursion repair migration 039', () => {
+maybeDescribe('native relationship RLS recursion repair migration 040', () => {
   let adminUrl: string;
   let employer1: { id: string; sub: string };
   let employer2: { id: string; sub: string };

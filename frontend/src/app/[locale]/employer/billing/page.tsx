@@ -7,19 +7,18 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Button } from '@/components/ui/button';
-import { EmployerShell } from '@/components/employer/EmployerShell';
+import { AppShell } from '@/components/layout/AppShell';
 import {
   ApiError,
   EMPLOYER_PRO_PLAN_CODE,
   clearIdempotencyKey,
   getBilling,
-  getEmployerProfile,
   getIdempotencyKey,
   isDefinitiveError,
   openBillingPortal,
   startCheckout,
 } from '@/lib/api/employer';
-import type { EmployerBilling, EmployerProfileData } from '@/lib/api/employer';
+import type { EmployerBilling } from '@/lib/api/employer';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,7 +60,6 @@ export default function EmployerBillingPage() {
   const tCommon = useTranslations('common');
 
   const [billing, setBilling] = useState<EmployerBilling | null>(null);
-  const [profile, setProfile] = useState<EmployerProfileData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [checkoutBusy, setCheckoutBusy] = useState(false);
@@ -88,12 +86,6 @@ export default function EmployerBillingPage() {
         }
       })
       .finally(() => setLoading(false));
-    // Profile is used only for the shell's company name/meta — a failure here
-    // must not block or error the billing content, so it's fetched
-    // independently with no shared error state.
-    getEmployerProfile(idToken)
-      .then(setProfile)
-      .catch(() => {});
   }, [handleLegalWall, idToken, t, tCommon]);
 
   useEffect(() => {
@@ -179,19 +171,13 @@ export default function EmployerBillingPage() {
         .format(billing.display_price_minor / 100)
     : null;
 
-  const companyName = profile?.company_name?.trim() || profile?.full_name?.trim();
-  const companyMeta = [profile?.city, profile?.service_area].map((item) => item?.trim()).filter(Boolean).join(' · ');
-
   return (
-    <EmployerShell active="billing" companyName={companyName} companyMeta={companyMeta}>
+    <AppShell role="employer" title={t('title')}>
       <div className="mx-auto max-w-3xl px-4 py-6 md:px-6">
-        <div className="mb-5 flex items-center justify-between">
-          <div>
-            <Link href="/employer/dashboard" className="text-xs font-bold uppercase text-[var(--jale-ink-2)] hover:underline lg:hidden">
-              {t('back_to_dashboard')}
-            </Link>
-            <h1 className="mt-2 text-2xl font-extrabold md:text-3xl">{t('title')}</h1>
-          </div>
+        <div className="mb-5 lg:hidden">
+          <Link href="/employer/dashboard" className="text-xs font-bold uppercase text-[var(--jale-ink-2)] hover:underline">
+            {t('back_to_dashboard')}
+          </Link>
         </div>
 
         {returnState === 'success' && (
@@ -324,6 +310,6 @@ export default function EmployerBillingPage() {
           </div>
         )}
       </div>
-    </EmployerShell>
+    </AppShell>
   );
 }

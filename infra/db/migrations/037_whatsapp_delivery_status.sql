@@ -1,5 +1,5 @@
 -- ============================================================
--- 036_whatsapp_delivery_status.sql
+-- 037_whatsapp_delivery_status.sql
 -- Durable Twilio delivery lifecycle for WhatsApp outbox sends.
 -- Connect as: jale_admin (NOT the RDS master user)
 --

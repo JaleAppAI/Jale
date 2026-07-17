@@ -5,6 +5,10 @@ import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 
+// Routes that render their own chrome (AppShell for /employer|/worker,
+// AuthShell for /auth). `/legal` and `/upload` keep the global Header.
+const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth'];
+
 export function Header() {
     const locale = useLocale();
     const pathname = usePathname();
@@ -14,7 +18,14 @@ export function Header() {
     const { isAuthenticated, logout, userType } = useAuth();
     const [signingOut, setSigningOut] = useState(false);
 
-    if (pathname === '/employer/dashboard' || pathname.endsWith('/employer/dashboard')) {
+    // `usePathname` from @/i18n/navigation returns a locale-stripped path, but
+    // we strip a leading /en or /es defensively in case a raw path leaks in.
+    const pathWithoutLocale = pathname.replace(/^\/(en|es)(?=\/|$)/, '');
+    // The marketing landing page (locale root) owns its own chrome.
+    if (pathWithoutLocale === '' || pathWithoutLocale === '/') {
+        return null;
+    }
+    if (SHELL_ROUTE_PREFIXES.some((p) => pathWithoutLocale === p || pathWithoutLocale.startsWith(`${p}/`))) {
         return null;
     }
 
@@ -55,39 +66,6 @@ export function Header() {
                         </svg>
                         <span className="hidden sm:inline">{t('home')}</span>
                     </Link>
-                    {isAuthenticated && userType === 'worker' && (
-                        <nav className="hidden sm:flex items-center gap-1 mr-2">
-                            <Link
-                                href="/worker/home"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('worker_home')}
-                            </Link>
-                            <Link
-                                href="/worker/applications"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('my_applications')}
-                            </Link>
-                        </nav>
-                    )}
-                    {isAuthenticated && userType === 'employer' && (
-                        <nav className="hidden sm:flex items-center gap-1 mr-2">
-                            <Link
-                                href="/employer/dashboard"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('employer_jobs')}
-                            </Link>
-                            <Link
-                                href="/employer/conversations"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('messages')}
-                            </Link>
-                        </nav>
-                    )}
-
                     {/* Language toggle */}
                     <Link
                         href={pathname}

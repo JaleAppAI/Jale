@@ -193,6 +193,22 @@ describe('ApiStack', () => {
     });
   });
 
+  test('DELETE /employer/jobs/{jobId} exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'DELETE',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
+  test('Employer jobs delete Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer jobs hard-delete endpoint',
+    });
+  });
+
   test('PATCH /employer/profile is protected by EmployerAuthorizer', () => {
     template.hasResourceProperties('AWS::ApiGateway::Method', {
       HttpMethod: 'PATCH',

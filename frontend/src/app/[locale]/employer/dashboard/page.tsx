@@ -1,102 +1,38 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Icon } from '@/components/ui/icon';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
+import { PanelHeader } from '@/components/ui/panel-header';
+import { MetricCard } from '@/components/ui/metric-card';
+import { ProgressRow } from '@/components/ui/progress-row';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PostJobModal } from '@/components/employer/PostJobModal';
-import { EmployerShell, Icon } from '@/components/employer/EmployerShell';
-import { getEmployerProfile, getJobs } from '@/lib/api/employer';
-import type { EmployerProfileData, Job } from '@/lib/api/employer';
+import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
+import { ApiError, deleteJob, getJobs } from '@/lib/api/employer';
+import type { Job } from '@/lib/api/employer';
 import type { JobStatus } from '@/lib/status';
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
-
-function DashboardPanel({ children, className = '' }: { children: ReactNode; className?: string }) {
-    return (
-        <section className={`rounded-2xl border border-[var(--jale-divider)] bg-white shadow-[var(--shadow-card)] ${className}`}>
-            {children}
-        </section>
-    );
-}
-
-function PanelHeader({ title, action }: { title: string; action?: ReactNode }) {
-    return (
-        <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
-            <h2 className="text-base font-bold text-current">{title}</h2>
-            {action}
-        </div>
-    );
-}
-
-function DisabledPill({ children }: { children: ReactNode }) {
-    return (
-        <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[10px] font-bold uppercase text-white/70">
-            {children}
-        </span>
-    );
-}
-
-function DisabledAction({ children }: { children: ReactNode }) {
-    return (
-        <button
-            type="button"
-            disabled
-            aria-disabled="true"
-            className="inline-flex h-9 items-center justify-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-4 text-xs font-bold text-[var(--jale-ink-2)] opacity-70"
-        >
-            {children}
-        </button>
-    );
-}
-
-function MetricCard({ label, value, hint, tone = 'blue' }: { label: string; value: string | number; hint: string; tone?: 'blue' | 'teal' | 'amber' | 'ink' }) {
-    const tones = {
-        blue: 'bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]',
-        teal: 'bg-[var(--jale-teal-50)] text-[#137965]',
-        amber: 'bg-[var(--jale-warning-bg)] text-[#8a4400]',
-        ink: 'bg-[#eef0f7] text-[var(--jale-blue-900)]',
-    };
-
-    return (
-        <div className="min-h-[128px] rounded-2xl border border-[var(--jale-divider)] bg-white p-4 shadow-[0_1px_2px_rgba(0,0,0,.03)]">
-            <div className={`mb-4 inline-flex h-9 w-9 items-center justify-center rounded-xl ${tones[tone]}`}>
-                <Icon name={tone === 'teal' ? 'user' : tone === 'amber' ? 'clock' : tone === 'ink' ? 'chart' : 'briefcase'} />
-            </div>
-            <p className="text-3xl font-extrabold leading-none text-[var(--jale-ink)]">{value}</p>
-            <p className="mt-2 text-xs font-bold uppercase text-[var(--jale-ink-2)]">{label}</p>
-            <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{hint}</p>
-        </div>
-    );
-}
-
-function ProgressRow({ label, value, percent }: { label: string; value: string; percent: number }) {
-    return (
-        <div>
-            <div className="mb-2 flex items-center justify-between gap-3 text-xs font-semibold">
-                <span className="text-current">{label}</span>
-                <span className="text-current opacity-70">{value}</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-[var(--jale-paper-2)]">
-                <div className="h-full rounded-full bg-[var(--jale-blue-500)]" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
-            </div>
-        </div>
-    );
-}
 
 export default function EmployerDashboardPage() {
     const { idToken } = useAuth();
     const { handleLegalWall } = useRequireAuth();
     const t = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
+    const locale = useLocale();
 
     const [jobs, setJobs] = useState<Job[]>([]);
-    const [profile, setProfile] = useState<EmployerProfileData | null>(null);
+    const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
+    const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
@@ -106,10 +42,9 @@ export default function EmployerDashboardPage() {
     useEffect(() => {
         if (!idToken) return;
         setLoading(true);
-        Promise.all([getJobs(idToken), getEmployerProfile(idToken)])
-            .then(([nextJobs, nextProfile]) => {
+        getJobs(idToken)
+            .then((nextJobs) => {
                 setJobs(nextJobs);
-                setProfile(nextProfile);
             })
             .catch((err) => {
                 try {
@@ -145,249 +80,237 @@ export default function EmployerDashboardPage() {
     const applicantDensity = activeCount > 0 ? Math.round(totalApplicants / activeCount) : 0;
     const featuredJobs = filteredJobs.slice(0, 5);
     const recentJob = jobs[0];
-    const companyName = profile?.company_name?.trim() || profile?.full_name?.trim() || t('shell.company_fallback');
-    const contactName = profile?.contact_name?.trim() || profile?.full_name?.trim();
-    const companyMeta = [profile?.city, profile?.service_area].map((item) => item?.trim()).filter(Boolean).join(' · ');
+
+    // `new Date()` must NOT be formatted during render: the server (Lambda, UTC) and the
+    // browser (user's local timezone) can land on different calendar days, producing
+    // different strings and a hydration mismatch (React #418/#423/#425). Compute it after
+    // mount so the server HTML and the client's first render agree (empty), then fill in.
+    const [todayLabel, setTodayLabel] = useState('');
+    useEffect(() => {
+        setTodayLabel(
+            new Intl.DateTimeFormat(locale, {
+                weekday: 'long',
+                month: 'short',
+                day: 'numeric',
+            }).format(new Date()),
+        );
+    }, [locale]);
 
     function handleJobCreated(job: Job) {
         setJobs((prev) => [job, ...prev]);
         setModalOpen(false);
     }
 
+    function openDeleteDialog(job: Job) {
+        setDeletingJobId(null);
+        setDeleteError(null);
+        setJobToDelete(job);
+    }
+
+    function closeDeleteDialog() {
+        setDeletingJobId(null);
+        setDeleteError(null);
+        setJobToDelete(null);
+    }
+
+    async function handleConfirmDelete() {
+        if (!idToken || !jobToDelete || deletingJobId) return;
+
+        const target = jobToDelete;
+        setDeletingJobId(target.id);
+        setDeleteError(null);
+        try {
+            await deleteJob(idToken, target.id);
+            setJobs((cur) => cur.filter((job) => job.id !== target.id));
+            closeDeleteDialog();
+        } catch (err) {
+            if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
+                setDeleteError(t('jobs.delete.error_hired'));
+            } else {
+                setDeleteError(t('jobs.delete.error_generic'));
+            }
+        } finally {
+            setDeletingJobId(null);
+        }
+    }
+
     if (error) {
         return (
-            <main className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4">
-                <div className="rounded-2xl border border-[var(--jale-divider)] bg-white p-6 text-center shadow-[var(--shadow-card)]">
-                    <p className="text-sm font-semibold text-error">{error}</p>
-                </div>
-            </main>
+            <AppShell role="employer" title={t('shell.title')} subtitle={todayLabel}>
+                <main className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4">
+                    <div className="rounded-2xl border border-[var(--jale-divider)] bg-white p-6 text-center shadow-[var(--shadow-card)]">
+                        <p className="text-sm font-semibold text-error">{error}</p>
+                    </div>
+                </main>
+            </AppShell>
         );
     }
 
     return (
         <>
-            <EmployerShell
-                active="dashboard"
-                companyName={companyName}
-                companyMeta={companyMeta}
-                headerSubtitle={
-                    <p className="mt-1 text-sm font-semibold text-[var(--jale-ink-2)]">
-                        {contactName ? `${t('shell.title')} · ${contactName}` : t('shell.title')}
-                    </p>
-                }
-                headerActions={
-                    <>
-                        <button
-                            type="button"
-                            disabled
-                            aria-disabled="true"
-                            className="inline-flex h-10 items-center gap-2 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-4 text-xs font-bold text-[var(--jale-ink-2)] opacity-70"
-                        >
-                            <Icon name="bell" />
-                            {t('shell.alerts')}
-                        </button>
-                        <button
-                            type="button"
-                            disabled
-                            aria-disabled="true"
-                            className="inline-flex h-10 items-center gap-2 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-4 text-xs font-bold text-[var(--jale-ink-2)] opacity-70"
-                        >
-                            <Icon name="search" />
-                            {t('shell.search_workers')}
-                        </button>
-                        <Button onClick={() => setModalOpen(true)} className="h-10">
-                            <Icon name="plus" />
-                            {t('jobs.post_job')}
-                        </Button>
-                    </>
+            <AppShell
+                role="employer"
+                title={t('shell.title')}
+                subtitle={todayLabel}
+                actions={
+                    <Button onClick={() => setModalOpen(true)} className="h-10">
+                        <Icon name="plus" />
+                        {t('jobs.post_job')}
+                    </Button>
                 }
             >
                 <div className="mx-auto max-w-[1380px] px-4 py-6 md:px-6">
-                            <section className="mb-5 overflow-hidden rounded-3xl bg-[#111642] text-white shadow-[var(--shadow-card)]">
-                                <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,1.4fr)_minmax(280px,.9fr)] md:p-7">
-                                    <div>
-                                        <p className="mb-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase text-white/70">{t('hero.eyebrow')}</p>
-                                        <h2 className="text-3xl font-extrabold leading-tight md:text-4xl">{t('hero.title')}</h2>
-                                        <p className="mt-3 max-w-2xl text-sm leading-6 text-white/70">{t('hero.body')}</p>
-                                        <div className="mt-5 flex flex-wrap gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => setModalOpen(true)}
-                                                className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-bold text-[#111642] shadow-[var(--shadow-btn)] transition-all duration-150 hover:bg-white/90 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] active:scale-[0.98]"
-                                            >
-                                                <Icon name="plus" />
-                                                {t('hero.primary_cta')}
-                                            </button>
-                                            <Link
-                                                href="/employer/conversations"
-                                                className="inline-flex h-11 items-center gap-2 rounded-full border border-white/20 px-5 text-sm font-bold text-white hover:bg-white/10"
-                                            >
-                                                <Icon name="message" />
-                                                {t('hero.secondary_cta')}
-                                            </Link>
-                                        </div>
-                                    </div>
-                                    <div className="grid grid-cols-3 gap-3 rounded-2xl border border-white/10 bg-white/8 p-4">
-                                        <div>
-                                            <p className="text-2xl font-extrabold">{loading ? '-' : activeCount}</p>
-                                            <p className="mt-1 text-[11px] font-semibold uppercase text-white/60">{t('stats.active_jobs')}</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-2xl font-extrabold">{loading ? '-' : totalApplicants}</p>
-                                            <p className="mt-1 text-[11px] font-semibold uppercase text-white/60">{t('stats.total_applicants')}</p>
-                                        </div>
-                                        <div>
-                                            <p className="text-2xl font-extrabold">{loading ? '-' : totalHired}</p>
-                                            <p className="mt-1 text-[11px] font-semibold uppercase text-white/60">{t('stats.workers_hired')}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </section>
-
-                            <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                                <MetricCard label={t('stats.active_jobs')} value={loading ? '-' : activeCount} hint={t('stats.active_hint')} />
-                                <MetricCard label={t('stats.total_applicants')} value={loading ? '-' : totalApplicants} hint={t('stats.applicants_hint', { count: applicantDensity })} tone="teal" />
-                                <MetricCard label={t('stats.workers_hired')} value={loading ? '-' : totalHired} hint={t('stats.hired_hint', { count: openRoles })} tone="ink" />
-                                <MetricCard label={t('stats.paused_closed')} value={loading ? '-' : pausedCount + closedCount + filledCount} hint={t('stats.paused_closed_hint', { paused: pausedCount, closed: closedCount, filled: filledCount })} tone="amber" />
+                    <section className="mb-5 overflow-hidden rounded-3xl bg-[#111642] text-white shadow-[var(--shadow-card)]">
+                        <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,1.4fr)_minmax(280px,.9fr)] md:p-7">
+                            <div>
+                                <p className="mb-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase text-white/70">{t('hero.eyebrow')}</p>
+                                <h2 className="text-3xl font-extrabold leading-tight md:text-4xl">{t('hero.title')}</h2>
+                                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/70">{t('hero.body')}</p>
                             </div>
-
-                            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,.8fr)]">
-                                <div className="space-y-5">
-                                    <DashboardPanel>
-                                        <PanelHeader
-                                            title={t('jobs.title')}
-                                            action={<Button size="sm" onClick={() => setModalOpen(true)}><Icon name="plus" />{t('jobs.post_job')}</Button>}
-                                        />
-                                        <div className="p-5">
-                                            <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                                                <Input
-                                                    value={search}
-                                                    onChange={(e) => setSearch(e.target.value)}
-                                                    placeholder={t('jobs.search_placeholder')}
-                                                />
-                                                <div className="flex flex-wrap gap-2">
-                                                    {statusFilters.map((status) => (
-                                                        <button
-                                                            key={status}
-                                                            type="button"
-                                                            onClick={() => setStatusFilter(status)}
-                                                            className="rounded-full border px-3 py-1.5 text-xs font-bold"
-                                                            style={{
-                                                                borderColor: statusFilter === status ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
-                                                                background: statusFilter === status ? 'var(--jale-blue-50)' : 'white',
-                                                                color: statusFilter === status ? 'var(--jale-blue-700)' : 'var(--jale-ink)',
-                                                            }}
-                                                        >
-                                                            {status === 'all' ? t('jobs.status.all') : t(`jobs.status.${status}`)}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            </div>
-
-                                            {loading ? (
-                                                <p className="rounded-2xl bg-[var(--jale-paper-2)] p-5 text-sm font-semibold text-[var(--jale-ink-2)]">{tCommon('loading')}</p>
-                                            ) : featuredJobs.length > 0 ? (
-                                                <div className="overflow-hidden rounded-2xl border border-[var(--jale-divider)]">
-                                                    {featuredJobs.map((job, index) => (
-                                                        <JobPostingCard
-                                                            key={job.id}
-                                                            job={job}
-                                                            href={`/employer/jobs/${job.id}`}
-                                                            isLast={index === featuredJobs.length - 1}
-                                                        />
-                                                    ))}
-                                                </div>
-                                            ) : (
-                                                <div className="rounded-2xl border border-dashed border-[var(--jale-divider)] bg-[var(--jale-paper-2)] p-8 text-center">
-                                                    <p className="text-sm font-bold text-[var(--jale-ink)]">{t('jobs.empty_title')}</p>
-                                                    <p className="mt-2 text-sm text-[var(--jale-ink-2)]">{t('jobs.empty_body')}</p>
-                                                    <Button onClick={() => setModalOpen(true)} className="mt-5">
-                                                        <Icon name="plus" />
-                                                        {t('jobs.post_job')}
-                                                    </Button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </DashboardPanel>
-
-                                    <DashboardPanel>
-                                        <PanelHeader title={t('quick_post.title')} action={<DisabledAction>{t('disabled.label')}</DisabledAction>} />
-                                        <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                                            <div>
-                                                <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
-                                                <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('quick_post.hint')}</p>
-                                            </div>
-                                            <Button onClick={() => setModalOpen(true)}>
-                                                <Icon name="plus" />
-                                                {t('quick_post.cta')}
-                                            </Button>
-                                        </div>
-                                    </DashboardPanel>
-
-                                    <DashboardPanel>
-                                        <PanelHeader title={t('panels.applicants_title')} action={<DisabledAction>{t('disabled.coming_soon')}</DisabledAction>} />
-                                        <div className="grid gap-3 p-5 md:grid-cols-3">
-                                            {[0, 1, 2].map((item) => (
-                                                <div key={item} className="rounded-2xl border border-dashed border-[var(--jale-divider)] bg-[var(--jale-paper-2)] p-4 opacity-75">
-                                                    <p className="text-sm font-bold text-[var(--jale-ink)]">{t(`panels.applicant_stub_${item + 1}`)}</p>
-                                                    <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('panels.applicants_body')}</p>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </DashboardPanel>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.08] p-4">
+                                <div className="flex items-center justify-between gap-2">
+                                    <p className="text-sm font-bold">{t('panels.whatsapp_title')}</p>
+                                    <Link href="/employer/conversations" className="text-xs font-bold text-white/75 hover:text-white hover:underline">{t('panels.open_messages')}</Link>
                                 </div>
-
-                                <div className="space-y-5">
-                                    <DashboardPanel className="!bg-[#111642] text-white">
-                                        <PanelHeader title={t('panels.trust_title')} action={<DisabledPill>{t('disabled.preview')}</DisabledPill>} />
-                                        <div className="space-y-4 p-5">
-                                            <div className="rounded-2xl bg-white/10 p-4">
-                                                <p className="text-4xl font-extrabold">{loading ? '-' : `${hireProgress}%`}</p>
-                                                <p className="mt-1 text-xs font-semibold uppercase text-white/55">{t('panels.hiring_progress')}</p>
-                                            </div>
-                                            <ProgressRow label={t('panels.open_roles')} value={String(loading ? '-' : openRoles)} percent={Math.min(100, openRoles * 12)} />
-                                            <ProgressRow label={t('panels.applicant_flow')} value={String(loading ? '-' : totalApplicants)} percent={Math.min(100, totalApplicants * 5)} />
-                                            <p className="text-xs leading-5 text-white/60">{t('panels.trust_body')}</p>
-                                        </div>
-                                    </DashboardPanel>
-
-                                    <DashboardPanel>
-                                        <PanelHeader
-                                            title={t('panels.whatsapp_title')}
-                                            action={<Link href="/employer/conversations" className="text-xs font-bold text-[var(--jale-blue-700)] hover:underline">{t('panels.open_messages')}</Link>}
-                                        />
-                                        <div className="p-5">
-                                            <div className="rounded-2xl bg-[var(--jale-paper-2)] p-4">
-                                                <p className="text-sm font-bold text-[var(--jale-ink)]">{recentJob?.title ?? t('panels.no_recent_job')}</p>
-                                                <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('panels.whatsapp_body')}</p>
-                                            </div>
-                                            <Link
-                                                href="/employer/conversations"
-                                                className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--jale-blue-500)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-600)]"
-                                            >
-                                                <Icon name="message" />
-                                                {t('panels.open_messages')}
-                                            </Link>
-                                        </div>
-                                    </DashboardPanel>
-
-                                    <DashboardPanel>
-                                        <PanelHeader title={t('panels.hiring_status_title')} action={<DisabledAction>{t('disabled.label')}</DisabledAction>} />
-                                        <div className="space-y-4 p-5">
-                                            <ProgressRow label={t('jobs.status.active')} value={String(loading ? '-' : activeCount)} percent={jobs.length ? (activeCount / jobs.length) * 100 : 0} />
-                                            <ProgressRow label={t('jobs.status.paused')} value={String(loading ? '-' : pausedCount)} percent={jobs.length ? (pausedCount / jobs.length) * 100 : 0} />
-                                            <ProgressRow label={t('jobs.status.filled')} value={String(loading ? '-' : filledCount)} percent={jobs.length ? (filledCount / jobs.length) * 100 : 0} />
-                                        </div>
-                                    </DashboardPanel>
+                                <div className="mt-4 rounded-2xl bg-white/10 p-4">
+                                    <p className="text-sm font-bold">{recentJob?.title ?? t('panels.no_recent_job')}</p>
+                                    <p className="mt-2 text-xs leading-5 text-white/70">{t('panels.whatsapp_body')}</p>
                                 </div>
+                                <Link
+                                    href="/employer/conversations"
+                                    className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--jale-blue-500)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-600)]"
+                                >
+                                    <Icon name="message" />
+                                    {t('panels.open_messages')}
+                                </Link>
                             </div>
                         </div>
-            </EmployerShell>
+                    </section>
+
+                    <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                        <MetricCard label={t('stats.active_jobs')} value={loading ? '-' : activeCount} hint={t('stats.active_hint')} />
+                        <MetricCard label={t('stats.total_applicants')} value={loading ? '-' : totalApplicants} hint={t('stats.applicants_hint', { count: applicantDensity })} tone="teal" />
+                        <MetricCard label={t('stats.workers_hired')} value={loading ? '-' : totalHired} hint={t('stats.hired_hint', { count: openRoles })} tone="ink" />
+                        <MetricCard label={t('stats.paused_closed')} value={loading ? '-' : pausedCount + closedCount + filledCount} hint={t('stats.paused_closed_hint', { paused: pausedCount, closed: closedCount, filled: filledCount })} tone="amber" />
+                    </div>
+
+                    <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,.8fr)]">
+                        <div className="space-y-5">
+                            <DashboardPanel>
+                                <PanelHeader
+                                    title={t('jobs.title')}
+                                    action={<Button size="sm" onClick={() => setModalOpen(true)}><Icon name="plus" />{t('jobs.post_job')}</Button>}
+                                />
+                                <div className="p-5">
+                                    <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                        <Input
+                                            value={search}
+                                            onChange={(e) => setSearch(e.target.value)}
+                                            placeholder={t('jobs.search_placeholder')}
+                                        />
+                                        <div className="flex flex-wrap gap-2">
+                                            {statusFilters.map((status) => (
+                                                <button
+                                                    key={status}
+                                                    type="button"
+                                                    onClick={() => setStatusFilter(status)}
+                                                    className="rounded-full border px-3 py-1.5 text-xs font-bold"
+                                                    style={{
+                                                        borderColor: statusFilter === status ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
+                                                        background: statusFilter === status ? 'var(--jale-blue-50)' : 'white',
+                                                        color: statusFilter === status ? 'var(--jale-blue-700)' : 'var(--jale-ink)',
+                                                    }}
+                                                >
+                                                    {status === 'all' ? t('jobs.status.all') : t(`jobs.status.${status}`)}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {loading ? (
+                                        <p className="rounded-2xl bg-[var(--jale-paper-2)] p-5 text-sm font-semibold text-[var(--jale-ink-2)]">{tCommon('loading')}</p>
+                                    ) : featuredJobs.length > 0 ? (
+                                        <div className="overflow-hidden rounded-2xl border border-[var(--jale-divider)]">
+                                            {featuredJobs.map((job, index) => (
+                                                <JobPostingCard
+                                                    key={job.id}
+                                                    job={job}
+                                                    href={`/employer/jobs/${job.id}`}
+                                                    isLast={index === featuredJobs.length - 1}
+                                                    onDelete={openDeleteDialog}
+                                                />
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <div className="rounded-2xl border border-dashed border-[var(--jale-divider)] bg-[var(--jale-paper-2)] p-8 text-center">
+                                            <p className="text-sm font-bold text-[var(--jale-ink)]">{t('jobs.empty_title')}</p>
+                                            <p className="mt-2 text-sm text-[var(--jale-ink-2)]">{t('jobs.empty_body')}</p>
+                                            <Button onClick={() => setModalOpen(true)} className="mt-5">
+                                                <Icon name="plus" />
+                                                {t('jobs.post_job')}
+                                            </Button>
+                                        </div>
+                                    )}
+                                </div>
+                            </DashboardPanel>
+
+                            <DashboardPanel>
+                                <PanelHeader title={t('quick_post.title')} />
+                                <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                    <div>
+                                        <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
+                                        <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('quick_post.hint')}</p>
+                                    </div>
+                                    <Button onClick={() => setModalOpen(true)}>
+                                        <Icon name="plus" />
+                                        {t('quick_post.cta')}
+                                    </Button>
+                                </div>
+                            </DashboardPanel>
+
+                        </div>
+
+                        <div className="space-y-5">
+                            <DashboardPanel className="!bg-[#111642] text-white">
+                                <PanelHeader title={t('panels.trust_title')} />
+                                <div className="space-y-4 p-5">
+                                    <div className="rounded-2xl bg-white/10 p-4">
+                                        <p className="text-4xl font-extrabold">{loading ? '-' : `${hireProgress}%`}</p>
+                                        <p className="mt-1 text-xs font-semibold uppercase text-white/55">{t('panels.hiring_progress')}</p>
+                                    </div>
+                                    <ProgressRow label={t('panels.open_roles')} value={String(loading ? '-' : openRoles)} percent={Math.min(100, openRoles * 12)} />
+                                    <ProgressRow label={t('panels.applicant_flow')} value={String(loading ? '-' : totalApplicants)} percent={Math.min(100, totalApplicants * 5)} />
+                                    <p className="text-xs leading-5 text-white/60">{t('panels.trust_body')}</p>
+                                </div>
+                            </DashboardPanel>
+
+                            <DashboardPanel>
+                                <PanelHeader title={t('panels.hiring_status_title')} />
+                                <div className="space-y-4 p-5">
+                                    <ProgressRow label={t('jobs.status.active')} value={String(loading ? '-' : activeCount)} percent={jobs.length ? (activeCount / jobs.length) * 100 : 0} />
+                                    <ProgressRow label={t('jobs.status.paused')} value={String(loading ? '-' : pausedCount)} percent={jobs.length ? (pausedCount / jobs.length) * 100 : 0} />
+                                    <ProgressRow label={t('jobs.status.filled')} value={String(loading ? '-' : filledCount)} percent={jobs.length ? (filledCount / jobs.length) * 100 : 0} />
+                                </div>
+                            </DashboardPanel>
+                        </div>
+                    </div>
+                </div>
+            </AppShell>
 
             <PostJobModal
                 open={modalOpen}
                 onClose={() => setModalOpen(false)}
                 onJobCreated={handleJobCreated}
+            />
+
+            <DeleteJobDialog
+                key={jobToDelete?.id ?? 'closed'}
+                open={jobToDelete !== null}
+                jobTitle={jobToDelete?.title ?? ''}
+                deleting={deletingJobId === jobToDelete?.id}
+                error={deleteError}
+                onCancel={closeDeleteDialog}
+                onConfirm={handleConfirmDelete}
             />
         </>
     );

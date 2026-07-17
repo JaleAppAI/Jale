@@ -43,11 +43,12 @@ const expectedBaselineMigrations = [
   '032_work_authorization_required.sql',
   '033_pay_interval_experience_months_worker_certifications.sql',
   '034_billing_foundation.sql',
-  '035_whatsapp_support_cases.sql',
-  '036_whatsapp_delivery_status.sql',
-  '037_billing_job_limit_enforcement.sql',
-  '038_email_outbox.sql',
-  '039_rls_relationship_recursion_repair.sql',
+  '035_job_delete_grants.sql',
+  '036_whatsapp_support_cases.sql',
+  '037_whatsapp_delivery_status.sql',
+  '038_billing_job_limit_enforcement.sql',
+  '039_email_outbox.sql',
+  '040_rls_relationship_recursion_repair.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -320,7 +321,7 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain('DROP POLICY IF EXISTS worker_documents_matching_read');
   });
 
-  it('carries the 039 recursion repair forward to 020b so a fresh cluster never hits 023\'s 42P17', () => {
+  it('carries the 040 recursion repair forward to 020b so a fresh cluster never hits 023\'s 42P17', () => {
     const migration = readMigration('020b_rls_relationship_recursion_prevention.sql');
 
     expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');

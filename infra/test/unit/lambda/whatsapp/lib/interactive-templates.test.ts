@@ -103,7 +103,7 @@ describe('interactive onboarding templates', () => {
     );
   });
 
-  it('builds the help menu list-picker prompt with the plain-text help_menu fallback', () => {
+  it('builds the help menu list-picker prompt', () => {
     expect(buildHelpMenuInteractivePrompt('en')).toMatchObject({
       templateName: 'help_menu_list_en',
       variables: {},

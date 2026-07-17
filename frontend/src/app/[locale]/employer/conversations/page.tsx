@@ -5,6 +5,8 @@ import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { AppShell } from '@/components/layout/AppShell';
+import { MetricCard } from '@/components/ui/metric-card';
 import { ConversationThread } from '@/components/employer/ConversationThread';
 import {
   closeConversation,
@@ -128,36 +130,22 @@ export default function EmployerConversationsPage() {
 
   if (error) {
     return (
-      <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
-        <p className="text-sm text-error">{error}</p>
-      </main>
+      <AppShell role="employer" title={t('title')} subtitle={t('subtitle')}>
+        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center">
+          <p className="text-sm text-error">{error}</p>
+        </main>
+      </AppShell>
     );
   }
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-6">
-      <section className="mb-5 overflow-hidden rounded-xl bg-[var(--jale-blue-900)] px-5 py-5 text-white">
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase text-white/45">WhatsApp</p>
-            <h1 className="mt-1 text-2xl font-extrabold tracking-normal">
-              {t('title')}
-            </h1>
-            <p className="mt-1 max-w-2xl text-sm text-white/55">{t('subtitle')}</p>
-          </div>
-          <div className="grid grid-cols-3 gap-5 text-center">
-            <MetricValue value={openCount} label={t('status_open')} />
-            <MetricValue value={waitingCount} label={t('waiting')} />
-            <MetricValue value={activeCount} label={t('active')} />
-          </div>
-        </div>
-      </section>
-
+    <AppShell role="employer" title={t('title')} subtitle={t('subtitle')}>
+      <div className="mx-auto max-w-7xl px-4 py-6">
       <section className="mb-5 grid gap-3 md:grid-cols-4">
-        <MetricCard tone="blue" value={conversations.length} label={t('threads')} detail={t('subtitle')} />
-        <MetricCard tone="green" value={activeCount} label={t('worker_replied')} detail={t('reply_window_open')} />
-        <MetricCard tone="amber" value={waitingCount} label={t('waiting_reply')} detail={t('template_invite_sent')} />
-        <MetricCard tone="navy" value={closedCount} label={t('status_closed')} detail={t('archived_conversations')} />
+        <MetricCard variant="accent" tone="blue" value={conversations.length} label={t('threads')} hint={t('subtitle')} />
+        <MetricCard variant="accent" tone="green" value={activeCount} label={t('worker_replied')} hint={t('reply_window_open')} />
+        <MetricCard variant="accent" tone="amber" value={waitingCount} label={t('waiting_reply')} hint={t('template_invite_sent')} />
+        <MetricCard variant="accent" tone="navy" value={closedCount} label={t('status_closed')} hint={t('archived_conversations')} />
       </section>
 
       <section className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--jale-divider)] bg-white shadow-sm xl:grid-cols-[320px_minmax(0,1fr)_280px]">
@@ -262,43 +250,8 @@ export default function EmployerConversationsPage() {
           )}
         </aside>
       </section>
-    </main>
-  );
-}
-
-function MetricValue({ value, label }: { value: number; label: string }) {
-  return (
-    <div>
-      <p className="text-2xl font-extrabold leading-none text-[var(--jale-blue-500)]">{value}</p>
-      <p className="mt-1 text-[10px] font-semibold uppercase text-white/40">{label}</p>
-    </div>
-  );
-}
-
-function MetricCard({
-  tone,
-  value,
-  label,
-  detail,
-}: {
-  tone: 'blue' | 'green' | 'amber' | 'navy';
-  value: number;
-  label: string;
-  detail: string;
-}) {
-  const toneClass = {
-    blue: 'before:bg-[var(--jale-blue-500)] text-[var(--jale-blue-500)]',
-    green: 'before:bg-[var(--jale-success)] text-[var(--jale-success)]',
-    amber: 'before:bg-[var(--jale-warning)] text-[var(--jale-warning)]',
-    navy: 'before:bg-[var(--jale-blue-900)] text-[var(--jale-blue-900)]',
-  }[tone];
-
-  return (
-    <div className={`relative overflow-hidden rounded-lg border border-[var(--jale-divider)] bg-white p-4 before:absolute before:left-0 before:right-0 before:top-0 before:h-1 ${toneClass}`}>
-      <p className="text-2xl font-extrabold leading-none">{value}</p>
-      <p className="mt-2 text-sm font-bold text-[var(--jale-ink)]">{label}</p>
-      <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p>
-    </div>
+      </div>
+    </AppShell>
   );
 }
 
