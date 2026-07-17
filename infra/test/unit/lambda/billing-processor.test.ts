@@ -765,6 +765,31 @@ describe('billing processor: processEnvelope()', () => {
     expect(result.errorCode).toBe('malformed_envelope');
   });
 
+  it('malformed-envelope failure upsert never reopens a terminal processed/skipped row', async () => {
+    const upsertSqls: string[] = [];
+    const { queryMock } = makeDbMock();
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO billing_webhook_events')) upsertSqls.push(sql);
+      return Promise.resolve({ rows: [] });
+    });
+    mockGetStripe.mockResolvedValue({ subscriptions: { retrieve: jest.fn() } });
+
+    await processEnvelope({
+      eventId: EVT1,
+      eventType: 'customer.subscription.created',
+      receivedAt: new Date().toISOString(),
+      rawBody: Buffer.from('not valid json!!!', 'utf8').toString('base64'),
+    });
+
+    // The claim path guards terminal rows; the fallback failure upsert must too,
+    // or a corrupted re-delivery of an already-processed event would flip a
+    // terminal 'processed' row back to 'failed' and reopen it for reprocessing.
+    expect(upsertSqls.length).toBeGreaterThan(0);
+    for (const sql of upsertSqls) {
+      expect(sql).toMatch(/WHERE billing_webhook_events\.processing_status NOT IN \('processed', 'skipped'\)/);
+    }
+  });
+
   // ── Unknown event type → skipped ──────────────────────────────────────
 
   it('marks unknown event types as skipped and does NOT call Stripe', async () => {

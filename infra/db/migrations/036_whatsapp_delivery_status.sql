@@ -10,6 +10,20 @@
 -- live in the jale_twilio_callback-owned locked schema, fully
 -- qualified, under a catalog-only search_path; narrow public wrappers
 -- preserve prior signatures/grants for existing callers.
+--
+-- OPERATOR NOTE (lock window): the CHECK-constraint additions and the
+-- two index builds on whatsapp_outbox below run inside this single
+-- transaction WITHOUT `NOT VALID`/`CONCURRENTLY`, so they block
+-- concurrent writers to whatsapp_outbox for the duration of their
+-- table scans. This is a deliberate trade: keeping the whole migration
+-- one atomic transaction preserves the fail-closed invariant design,
+-- and at current outbox row counts the scan window is small. Apply
+-- during a low-traffic window (the 1-min admin dispatcher and 5-min
+-- sweeper/drain schedules will simply retry after commit). If
+-- whatsapp_outbox ever grows large enough that this window matters,
+-- write a NEW migration using NOT VALID + VALIDATE CONSTRAINT and
+-- CREATE INDEX CONCURRENTLY in separate transactions instead of
+-- editing this file.
 -- ============================================================
 
 BEGIN;
