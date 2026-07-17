@@ -17,6 +17,7 @@ import { MetricCard } from '@/components/ui/metric-card';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
+import { EditJobModal } from '@/components/employer/EditJobModal';
 import { ApiError, deleteJob, getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
 import type { ScoreBand } from '@/lib/match';
@@ -50,6 +51,7 @@ export default function JobDetailPage() {
   const [loadingApplicants, setLoadingApplicants] = useState(false);
   const [togglingStatus, setTogglingStatus] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -186,6 +188,9 @@ export default function JobDetailPage() {
           {t('jobs.toggle.activate')}
         </Button>
       )}
+      <Button variant="outline" size="sm" onClick={() => setEditOpen(true)} disabled={togglingStatus}>
+        {t('modal.edit_title')}
+      </Button>
       <Button variant="error" size="sm" onClick={() => setConfirmDelete(true)} disabled={togglingStatus}>
         {t('jobs.delete.button')}
       </Button>
@@ -328,6 +333,14 @@ export default function JobDetailPage() {
         }
       }}
     />
+    {job && (
+      <EditJobModal
+        open={editOpen}
+        job={job}
+        onClose={() => setEditOpen(false)}
+        onJobUpdated={(updated) => { setJob(updated); setEditOpen(false); }}
+      />
+    )}
     </>
   );
 }

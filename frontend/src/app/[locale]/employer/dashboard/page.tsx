@@ -178,7 +178,7 @@ export default function EmployerDashboardPage() {
                                 </div>
                                 <Link
                                     href="/employer/conversations"
-                                    className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-xs font-bold text-[#111642] hover:bg-white/90"
+                                    className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--jale-blue-500)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-600)]"
                                 >
                                     <Icon name="message" />
                                     {t('panels.open_messages')}

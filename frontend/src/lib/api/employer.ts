@@ -304,29 +304,28 @@ export async function getJobs(token: string): Promise<Job[]> {
   return data.jobs;
 }
 
-export async function createJob(
-  token: string,
-  data: {
-    title: string;
-    location: string;
-    job_type: string;
-    description?: string;
-    required_docs?: string[];
-    pay_min?: number | null;
-    pay_max?: number | null;
-    start_date?: string | null;
-    expected_duration?: string | null;
-    shift_schedule?: string | null;
-    transportation_required?: boolean;
-    work_authorization_required?: boolean;
-    language_preference?: Array<'any' | 'en' | 'es'>;
-    number_of_workers_needed?: number;
-    trade_category: string;
-    required_experience_years?: number | null;
-    pay_interval?: string | null;
-    certifications?: string[];
-  }
-): Promise<Job> {
+export type JobWritePayload = {
+  title: string;
+  location: string;
+  job_type: string;
+  description?: string;
+  required_docs?: string[];
+  pay_min?: number | null;
+  pay_max?: number | null;
+  start_date?: string | null;
+  expected_duration?: string | null;
+  shift_schedule?: string | null;
+  transportation_required?: boolean;
+  work_authorization_required?: boolean;
+  language_preference?: Array<'any' | 'en' | 'es'>;
+  number_of_workers_needed?: number;
+  trade_category: string;
+  required_experience_years?: number | null;
+  pay_interval?: string | null;
+  certifications?: string[];
+};
+
+export async function createJob(token: string, data: JobWritePayload): Promise<Job> {
   const res = await apiFetch('/employer/jobs', {
     method: 'POST',
     body: JSON.stringify(data),
@@ -338,6 +337,16 @@ export async function createJob(
 export async function getJob(token: string, jobId: string): Promise<EmployerJobDetail> {
   const res = await apiFetch(`/employer/jobs/${jobId}`, {}, token);
   if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
+  return res.json();
+}
+
+export async function updateJob(
+  token: string,
+  jobId: string,
+  data: JobWritePayload,
+): Promise<EmployerJobDetail> {
+  const res = await apiFetch(`/employer/jobs/${jobId}`, { method: 'PATCH', body: JSON.stringify(data) }, token);
+  if (!res.ok) throw await parseApiError(res, 'update_failed');
   return res.json();
 }
 
