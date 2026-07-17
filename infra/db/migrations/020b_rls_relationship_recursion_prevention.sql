@@ -106,6 +106,42 @@ $$;
 -- The original migration-003 policies were created without TO and therefore
 -- applied to PUBLIC, including the helper role. Retarget them to the web app
 -- role. Migration-007's worker marketplace policy has the same issue.
+-- Production reached the later schema with the migration-015 employer update
+-- policy absent. Restore that exact canonical policy before retargeting it;
+-- fresh and already-correct databases take the guarded no-op path.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_policies
+     WHERE schemaname = 'public'
+       AND tablename = 'job_applications'
+       AND policyname = 'applications_employer_update'
+  ) THEN
+    CREATE POLICY applications_employer_update
+      ON job_applications FOR UPDATE
+      USING (
+        job_id IN (
+          SELECT id FROM jobs
+           WHERE employer_id = (
+             SELECT id FROM users
+              WHERE cognito_sub = current_setting('app.current_user_id', true)
+           )
+        )
+      )
+      WITH CHECK (
+        job_id IN (
+          SELECT id FROM jobs
+           WHERE employer_id = (
+             SELECT id FROM users
+              WHERE cognito_sub = current_setting('app.current_user_id', true)
+           )
+        )
+      );
+  END IF;
+END;
+$$;
+
 ALTER POLICY jobs_employer_select       ON jobs             TO jale_admin;
 ALTER POLICY jobs_employer_insert       ON jobs             TO jale_admin;
 ALTER POLICY jobs_employer_update       ON jobs             TO jale_admin;

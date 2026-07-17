@@ -325,6 +325,8 @@ describe('migration apply order baseline', () => {
     const migration = readMigration('020b_rls_relationship_recursion_prevention.sql');
 
     expect(migration).toContain('CREATE ROLE jale_rls_relationship_reader');
+    expect(migration).toContain("policyname = 'applications_employer_update'");
+    expect(migration).toContain('CREATE POLICY applications_employer_update');
     expect(migration.match(/ALTER POLICY/g)).toHaveLength(8);
     expect(migration).toContain('CREATE SCHEMA jale_internal AUTHORIZATION jale_rls_relationship_reader');
     expect(migration).toContain('CREATE FUNCTION jale_internal.employer_has_applicant_relationship');
