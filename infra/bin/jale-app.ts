@@ -19,6 +19,12 @@ import { FrontendStack } from '../lib/stacks/frontend-stack';
 import { resolveWhatsappStatusCallbackUrl } from '../lib/whatsapp-status-callback-url';
 
 const app = new cdk.App();
+const deploymentEnvironment = app.node.tryGetContext('environment');
+if (deploymentEnvironment !== 'dev' && deploymentEnvironment !== 'production') {
+  throw new Error(
+    'CDK_ENVIRONMENT_REQUIRED: pass -c environment=dev or -c environment=production',
+  );
+}
 const skipFrontend = app.node.tryGetContext('skipFrontend') === true
   || app.node.tryGetContext('skipFrontend') === 'true';
 const bastionOnly = app.node.tryGetContext('bastionOnly') === true

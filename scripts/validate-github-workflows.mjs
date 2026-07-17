@@ -13,6 +13,8 @@ const requiredFiles = [
   '.github/workflows/_reusable-deploy.yml',
   'scripts/run-admin-migration.ps1',
   'scripts/bootstrap-admin-user.ps1',
+  'scripts/run-production-upgrade-020b-040.sh',
+  'docs/production-upgrade-020b-040.md',
 ];
 
 function fail(message) {
