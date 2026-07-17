@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useRouter } from '@/i18n/navigation';
@@ -16,7 +16,9 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { MetricCard } from '@/components/ui/metric-card';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
-import { getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
+import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
+import { EditJobModal } from '@/components/employer/EditJobModal';
+import { ApiError, deleteJob, getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
 import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
@@ -33,11 +35,13 @@ type ApplicantMatch = {
 
 export default function JobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
+  const router = useRouter();
   const { idToken } = useAuth();
   const { handleLegalWall } = useRequireAuth();
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const tMatch = useTranslations('match');
+  const locale = useLocale();
 
   const [job, setJob] = useState<EmployerJobDetail | null>(null);
   const [applicants, setApplicants] = useState<Applicant[]>([]);
@@ -47,6 +51,10 @@ export default function JobDetailPage() {
   const [loadingJob, setLoadingJob] = useState(true);
   const [loadingApplicants, setLoadingApplicants] = useState(false);
   const [togglingStatus, setTogglingStatus] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -148,7 +156,7 @@ export default function JobDetailPage() {
   };
   const jobStatus = job ? jobStatusTone(job.status) : null;
 
-  const shellActions = job ? (
+  const jobActions = job ? (
     <div className="flex flex-wrap items-center gap-2">
       <span
         className="rounded-full px-2 py-0.5 text-xs font-medium"
@@ -181,20 +189,29 @@ export default function JobDetailPage() {
           {t('jobs.toggle.activate')}
         </Button>
       )}
+      <Button variant="outline" size="sm" onClick={() => setEditOpen(true)} disabled={togglingStatus}>
+        {t('modal.edit_title')}
+      </Button>
+      <Button variant="error" size="sm" onClick={() => setConfirmDelete(true)} disabled={togglingStatus}>
+        {t('jobs.delete.button')}
+      </Button>
     </div>
   ) : undefined;
 
   return (
+    <>
     <AppShell
       role="employer"
       title={job ? job.title : t('jobs.posting_details')}
       subtitle={job ? job.location : undefined}
-      actions={shellActions}
     >
     <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
-      <Link href="/employer/dashboard" className="text-sm text-muted-foreground hover:text-foreground mb-6 inline-block">
-        {t('jobs.back_to_dashboard')}
-      </Link>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <Link href="/employer/dashboard" className="text-sm text-muted-foreground hover:text-foreground inline-block">
+          {t('jobs.back_to_dashboard')}
+        </Link>
+        {jobActions}
+      </div>
 
       {loadingJob ? (
         <p className="text-sm text-muted">{tCommon('loading')}</p>
@@ -208,7 +225,7 @@ export default function JobDetailPage() {
                 <DetailField label={t('modal.job_type')} value={jobTypeLabels[job.job_type] ?? job.job_type} />
                 <DetailField label={t('modal.trade_category')} value={job.trade_category ? t(`modal.trade.${job.trade_category}`) : t('jobs.not_specified')} />
                 <DetailField label={t('jobs.pay_range')} value={job.pay ?? t('jobs.not_specified')} />
-                <DetailField label={t('modal.start_date')} value={job.start_date ?? t('jobs.not_specified')} />
+                <DetailField label={t('modal.start_date')} value={formatStartDate(job.start_date, locale) ?? t('jobs.not_specified')} />
                 <DetailField label={t('modal.expected_duration')} value={job.expected_duration ?? t('jobs.not_specified')} />
                 <DetailField label={t('modal.shift_schedule')} value={job.shift_schedule ?? t('jobs.not_specified')} />
                 <DetailField label={t('modal.transportation_required')} value={job.transportation_required ? t('jobs.yes') : t('jobs.no')} />
@@ -292,7 +309,57 @@ export default function JobDetailPage() {
       )}
     </main>
     </AppShell>
+    <DeleteJobDialog
+      open={confirmDelete}
+      jobTitle={job?.title ?? ''}
+      deleting={deleting}
+      error={deleteError}
+      onCancel={() => {
+        if (deleting) return;
+        setConfirmDelete(false);
+        setDeleteError(null);
+      }}
+      onConfirm={async () => {
+        if (!idToken || !job || deleting) return;
+        setDeleting(true);
+        setDeleteError(null);
+        try {
+          await deleteJob(idToken, job.id);
+          router.push('/employer/dashboard');
+        } catch (err) {
+          if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
+            setDeleteError(t('jobs.delete.error_hired'));
+          } else {
+            setDeleteError(t('jobs.delete.error_generic'));
+          }
+          setDeleting(false);
+        }
+      }}
+    />
+    {job && (
+      <EditJobModal
+        open={editOpen}
+        job={job}
+        onClose={() => setEditOpen(false)}
+        onJobUpdated={(updated) => { setJob(updated); setEditOpen(false); }}
+      />
+    )}
+    </>
   );
+}
+
+// start_date is a date-only value (YYYY-MM-DD). Format it in UTC so the day
+// doesn't shift in negative-offset timezones, and localize the month name.
+function formatStartDate(value: string | null, locale: string): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString(locale === 'es' ? 'es-MX' : 'en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'UTC',
+  });
 }
 
 function DetailField({ label, value }: { label: string; value: string }) {

@@ -15,7 +15,9 @@ describe('applyWorkerToJob', () => {
     });
 
     expect(result).toEqual({ status: 'job_closed' });
-    expect(String(query.mock.calls[1][0])).toContain('FOR UPDATE');
+    // No FOR UPDATE: the row lock needs UPDATE on `jobs`, which jale_whatsapp
+    // lacks (ADR-W05). Idempotency comes from INSERT ... ON CONFLICT instead.
+    expect(String(query.mock.calls[1][0])).not.toContain('FOR UPDATE');
   });
 
   it('returns missing_documents using only vault or same-job docs', async () => {
@@ -31,7 +33,7 @@ describe('applyWorkerToJob', () => {
     });
 
     expect(result).toEqual({ status: 'missing_documents', missing_docs: ['driver_license'] });
-    expect(String(query.mock.calls[1][0])).toContain('FOR UPDATE');
+    expect(String(query.mock.calls[1][0])).not.toContain('FOR UPDATE');
     const docsSql = String(query.mock.calls[2][0]);
     expect(docsSql).toContain('job_id IS NULL OR job_id = $3::uuid');
   });
@@ -55,7 +57,7 @@ describe('applyWorkerToJob', () => {
       application: { id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' },
     });
     const copySql = String(query.mock.calls[4][0]);
-    expect(String(query.mock.calls[1][0])).toContain('FOR UPDATE');
+    expect(String(query.mock.calls[1][0])).not.toContain('FOR UPDATE');
     expect(copySql).toContain('s3_version_id');
     expect(copySql).toContain('AND (job_id IS NULL OR job_id = $1::uuid)');
   });

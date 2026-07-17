@@ -349,4 +349,92 @@ describe('employer-jobs-update', () => {
     expect(JSON.parse(res.body).error).toBe('internal_error');
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
+
+  // ---------------------------------------------------------------------------
+  // Field-edit path (no `status` in body)
+  // ---------------------------------------------------------------------------
+
+  const VALID_EDIT = {
+    title: 'Framer',
+    location: 'Austin, TX',
+    job_type: 'full-time',
+    trade_category: 'carpenter',
+    pay_min: 25,
+    pay_max: 35,
+    number_of_workers_needed: 3,
+    required_docs: ['resume'],
+  };
+
+  // Mock the current-job SELECT the edit path runs before UPDATE.
+  function mockCurrentJob(over: Partial<{ job_type: string; required_docs: string[]; applicant_count: number; hired_count: number }> = {}) {
+    const row = { job_type: 'full-time', required_docs: ['resume'], applicant_count: 0, hired_count: 0, ...over };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({ rowCount: 1, rows: [row] });
+      }
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ id: JOB_ID, ...VALID_EDIT, status: 'active', hired_count: row.hired_count, open_count: 1, applicant_count: row.applicant_count }] });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  it('edits descriptive fields and returns the updated job', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ id: JOB_ID, title: 'Framer' });
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects invalid field values with 400', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, trade_category: 'astronaut' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_trade_category');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects job_type change when the job has applicants (409 field_locked)', async () => {
+    mockCurrentJob({ applicant_count: 2, job_type: 'contract' }); // current is contract; edit sends full-time
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('field_locked');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects required_docs change when the job has applicants (409 field_locked)', async () => {
+    mockCurrentJob({ applicant_count: 1, required_docs: ['resume', 'driver_license'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) })); // edit sends ['resume']
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('field_locked');
+  });
+
+  it('allows unchanged locked fields even with applicants', async () => {
+    mockCurrentJob({ applicant_count: 5, job_type: 'full-time', required_docs: ['resume'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects openings below hired count (409 openings_below_hired)', async () => {
+    mockCurrentJob({ hired_count: 4 });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, number_of_workers_needed: 2 }) }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('openings_below_hired');
+  });
+
+  it('returns 403 when the employer does not own the job', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({ rowCount: 0, rows: [] });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('forbidden');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
 });

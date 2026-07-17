@@ -5,71 +5,20 @@ import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError, createJob, Job } from '@/lib/api/employer';
-import { splitDedupe } from '@/lib/text';
+import {
+  DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
+  type DocType, type PayInterval, type JobForm,
+  initialForm, jobFormToPayload, validateJobNumbers,
+} from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
-type DocType = 'resume' | 'driver_license';
-const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
-const LANGUAGE_OPTIONS = ['any', 'en', 'es'] as const;
-const TRADE_CATEGORIES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'drywall', 'general_labor', 'other'] as const;
-const PAY_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly', 'fixed'] as const;
-type PayInterval = typeof PAY_INTERVALS[number];
-
-type JobForm = {
-  title: string;
-  location: string;
-  job_type: 'full-time' | 'part-time' | 'contract';
-  description: string;
-  pay_min: string;
-  pay_max: string;
-  pay_interval: PayInterval;
-  start_date: string;
-  expected_duration: string;
-  shift_schedule: string;
-  transportation_required: boolean;
-  work_authorization_required: boolean;
-  language_preference: Array<'any' | 'en' | 'es'>;
-  number_of_workers_needed: string;
-  trade_category: typeof TRADE_CATEGORIES[number] | '';
-  required_experience_years: string;
-  certifications: string;
-  required_docs: Record<DocType, boolean>;
-};
-
-const initialForm: JobForm = {
-  title: '',
-  location: '',
-  job_type: 'full-time',
-  description: '',
-  pay_min: '',
-  pay_max: '',
-  pay_interval: 'hourly',
-  start_date: '',
-  expected_duration: '',
-  shift_schedule: '',
-  transportation_required: false,
-  work_authorization_required: false,
-  language_preference: ['any'],
-  number_of_workers_needed: '1',
-  trade_category: '',
-  required_experience_years: '',
-  certifications: '',
-  required_docs: { resume: false, driver_license: false },
-};
-
 interface Props {
   open: boolean;
   onClose: () => void;
   onJobCreated: (job: Job) => void;
-}
-
-function parseOptionalNumber(value: string): number | null {
-  if (!value.trim()) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : NaN;
 }
 
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
@@ -122,15 +71,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       return null;
     }
     if (step === 2) {
-      const payMin = parseOptionalNumber(form.pay_min);
-      const payMax = parseOptionalNumber(form.pay_max);
-      const workersNeeded = Number(form.number_of_workers_needed);
-      const experience = parseOptionalNumber(form.required_experience_years);
-      if (Number.isNaN(payMin) || Number.isNaN(payMax) || Number.isNaN(experience)) return t('modal.validation_number');
-      if ((payMin !== null && payMin < 0) || (payMax !== null && payMax < 0)) return t('modal.validation_number');
-      if (payMin !== null && payMax !== null && payMin > payMax) return t('modal.validation_pay_range');
-      if (!Number.isInteger(workersNeeded) || workersNeeded < 1) return t('modal.validation_headcount');
-      if (experience !== null && experience < 0) return t('modal.validation_number');
+      const code = validateJobNumbers(form);
+      if (code === 'number') return t('modal.validation_number');
+      if (code === 'pay_range') return t('modal.validation_pay_range');
+      if (code === 'headcount') return t('modal.validation_headcount');
     }
     return null;
   };
@@ -155,30 +99,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setError('');
     setLimitReached(false);
     try {
-      const pay_min = parseOptionalNumber(form.pay_min);
-      const pay_max = parseOptionalNumber(form.pay_max);
-      const required_experience_years = parseOptionalNumber(form.required_experience_years);
-      const required_docs = DOC_TYPES.filter((doc) => form.required_docs[doc]);
-      const job = await createJob(idToken!, {
-        title: form.title.trim(),
-        location: form.location.trim(),
-        job_type: form.job_type,
-        description: form.description.trim() || undefined,
-        required_docs,
-        pay_min,
-        pay_max,
-        pay_interval: form.pay_interval,
-        start_date: form.start_date || null,
-        expected_duration: form.expected_duration.trim() || null,
-        shift_schedule: form.shift_schedule.trim() || null,
-        transportation_required: form.transportation_required,
-        work_authorization_required: form.work_authorization_required,
-        language_preference: form.language_preference,
-        number_of_workers_needed: Number(form.number_of_workers_needed),
-        trade_category: form.trade_category,
-        required_experience_years,
-        certifications: splitDedupe(form.certifications),
-      });
+      const job = await createJob(idToken!, jobFormToPayload(form));
       onJobCreated(job);
       handleClose();
     } catch (err) {

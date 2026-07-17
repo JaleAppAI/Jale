@@ -31,7 +31,6 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
  */
 export const employerPrimaryNav: NavItem[] = [
     { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard', exact: true },
-    { key: 'jobs', href: '/employer/dashboard', icon: 'briefcase', labelKey: 'nav.jobs', activePrefixes: ['/employer/jobs'] },
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
 ];
 

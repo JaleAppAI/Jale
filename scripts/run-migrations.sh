@@ -75,6 +75,7 @@ MIGRATIONS=(
   "032_work_authorization_required.sql"
   "033_pay_interval_experience_months_worker_certifications.sql"
   "034_billing_foundation.sql"
+  "035_job_delete_grants.sql"
 )
 
 echo ">> Using region: $REGION"

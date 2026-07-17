@@ -66,39 +66,6 @@ export function Header() {
                         </svg>
                         <span className="hidden sm:inline">{t('home')}</span>
                     </Link>
-                    {isAuthenticated && userType === 'worker' && (
-                        <nav className="hidden sm:flex items-center gap-1 mr-2">
-                            <Link
-                                href="/worker/home"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('worker_home')}
-                            </Link>
-                            <Link
-                                href="/worker/applications"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('my_applications')}
-                            </Link>
-                        </nav>
-                    )}
-                    {isAuthenticated && userType === 'employer' && (
-                        <nav className="hidden sm:flex items-center gap-1 mr-2">
-                            <Link
-                                href="/employer/dashboard"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('employer_jobs')}
-                            </Link>
-                            <Link
-                                href="/employer/conversations"
-                                className="px-3 py-1.5 rounded-full text-sm font-semibold text-[var(--jale-ink-2)] hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] transition-colors"
-                            >
-                                {t('messages')}
-                            </Link>
-                        </nav>
-                    )}
-
                     {/* Language toggle */}
                     <Link
                         href={pathname}

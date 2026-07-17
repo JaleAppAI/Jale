@@ -227,6 +227,23 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     );
   });
 
+  test('viewer-request function redirects www to the apex domain (301)', () => {
+    const fns = template.findResources('AWS::CloudFront::Function', {
+      Properties: Match.objectLike({ Name: 'jale-strip-frontend-authorization' }),
+    });
+    const code = (Object.values(fns)[0] as {
+      Properties: { FunctionCode: string };
+    }).Properties.FunctionCode;
+
+    // Redirects only when the Host is the www alias...
+    expect(code).toContain("host === 'www.example.com'");
+    // ...to the apex over https with a 301.
+    expect(code).toContain('statusCode: 301');
+    expect(code).toContain("'https://example.com'");
+    // ...and still strips Authorization for apex (non-www) requests.
+    expect(code).toContain('delete request.headers.authorization');
+  });
+
   test('creates Route 53 A and AAAA records', () => {
     template.hasResourceProperties('AWS::Route53::RecordSet', {
       Type: 'A',

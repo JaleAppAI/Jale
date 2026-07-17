@@ -359,6 +359,7 @@
     "subtitle": "Message applicants through WhatsApp while keeping the conversation tied to the job.",
     "threads": "Conversations",
     "drawer_button": "Messages",
+    "drawer_close": "Close",
     "hide": "Hide",
     "empty": "No open conversations yet.",
     "empty_select": "Select a conversation.",
@@ -511,7 +512,16 @@
       "search_placeholder": "Search by title, location, or trade...",
       "back_to_dashboard": "← Back to Dashboard",
       "empty_title": "No jobs found",
-      "empty_body": "Post a job or clear the filters to bring your hiring board back."
+      "empty_body": "Post a job or clear the filters to bring your hiring board back.",
+      "delete": {
+        "button": "Delete",
+        "confirm_title": "Delete this job?",
+        "confirm_body": "This permanently removes \"{title}\" and its applications. This can’t be undone.",
+        "confirm_cta": "Delete job",
+        "cancel": "Cancel",
+        "error_hired": "This job has hired workers and can’t be deleted. Close it instead.",
+        "error_generic": "Couldn’t delete this job. Please try again."
+      }
     },
     "filter": {
       "title": "Filter Applicants",
@@ -605,7 +615,11 @@
       "validation_required": "Complete the required fields.",
       "validation_number": "Enter valid non-negative numbers.",
       "validation_pay_range": "Pay min cannot be greater than pay max.",
-      "validation_headcount": "Workers needed must be at least 1."
+      "validation_headcount": "Workers needed must be at least 1.",
+      "edit_title": "Edit job",
+      "edit_save": "Save changes",
+      "locked_note": "Locked — this job has applicants",
+      "edit_error": "Could not save changes. Please try again."
     },
     "worker_profile": {
       "back": "Back to applicants",

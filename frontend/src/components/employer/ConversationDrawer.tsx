@@ -112,7 +112,7 @@ export function ConversationDrawer() {
         className="fixed bottom-5 right-5 z-30 inline-flex items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-lg"
       >
         <span className="h-2 w-2 rounded-full bg-[#25D366]" />
-        {t('drawer_button')}
+        {open ? t('drawer_close') : t('drawer_button')}
       </button>
 
       {open && (
