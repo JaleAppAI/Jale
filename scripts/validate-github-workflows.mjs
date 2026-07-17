@@ -77,6 +77,8 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'w
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run build');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm test -- --runInBand');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c emailFromAddress=');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --audit-level=high');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
@@ -93,6 +95,10 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'cdk d
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '--no-change-set');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'cdk deploy');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c deletionProtection=true');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLING_EMAIL_FROM_ADDRESS');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLING_SES_VERIFIED_IDENTITY_ARN');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c emailFromAddress=');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c sesVerifiedIdentityArn=');
 
 requireIncludes('scripts/run-admin-migration.ps1', adminMigration, '026_admin_panel.sql');
 requireIncludes('scripts/run-admin-migration.ps1', adminMigration, 'jale_admin_console');
