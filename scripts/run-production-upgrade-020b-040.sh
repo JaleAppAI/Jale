@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scoped production upgrade for the schema delta after migration 034.
+# Scoped production upgrade for the reviewed schema delta after migration 034.
 # Safe default: verification only. Pass --apply explicitly to execute.
 
 set -euo pipefail
@@ -19,7 +19,7 @@ Usage:
   scripts/run-production-upgrade-020b-040.sh --expected-account-id ACCOUNT_ID [--apply]
 
 The default mode verifies migration state without applying SQL. This tool is
-pinned to us-east-2 and permits only migrations 020b and 035-040.
+pinned to us-east-2 and permits only migrations 020b and 035-041.
 EOF
 }
 
@@ -78,6 +78,7 @@ MIGRATION_FILES=(
   '038_rls_relationship_recursion_repair.sql'
   '039_whatsapp_support_cases.sql'
   '040_whatsapp_delivery_status.sql'
+  '041_whatsapp_web_worker_lookup_grant.sql'
 )
 
 for file in "${MIGRATION_FILES[@]}"; do
@@ -301,6 +302,10 @@ SQL
 )
       # COMPLETE_040_END
       ;;
+    041_*)
+      present="has_column_privilege('jale_whatsapp','public.users','tos_accepted_at','SELECT')"
+      complete="has_column_privilege('jale_whatsapp','public.users','tos_accepted_at','SELECT') AND NOT has_table_privilege('jale_whatsapp','public.users','SELECT') AND EXISTS (SELECT 1 FROM pg_class table_class JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace WHERE namespace.nspname='public' AND table_class.relname='users' AND table_class.relrowsecurity AND table_class.relforcerowsecurity) AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='users' AND policyname='wa_users_read' AND cmd='SELECT' AND roles=ARRAY['jale_whatsapp']::name[] AND qual='(user_type = ''worker''::text)' AND with_check IS NULL)"
+      ;;
     *)
       echo "UNAPPROVED_MIGRATION: $file" >&2
       return 21
@@ -327,6 +332,7 @@ MIGRATION_FILES=(
   '038_rls_relationship_recursion_repair.sql'
   '039_whatsapp_support_cases.sql'
   '040_whatsapp_delivery_status.sql'
+  '041_whatsapp_web_worker_lookup_grant.sql'
 )
 
 missing=0
@@ -361,7 +367,7 @@ done
 if [[ "$APPLY" != '1' ]]; then
   echo "VERIFY-ONLY: ${missing} reviewed migration state(s) pending. No migrations were applied."
 else
-  echo 'POSTFLIGHT_OK: production schema satisfies 020b and 035-040 invariants'
+  echo 'POSTFLIGHT_OK: production schema satisfies 020b and 035-041 invariants'
 fi
 EOF
 )
@@ -373,7 +379,7 @@ jq -n \
   '{commands: [$command], executionTimeout: [$execution_timeout]}' > "$params_path"
 comment='Jale production DB upgrade verification only'
 if [[ "$APPLY" == '1' ]]; then
-  comment='Jale scoped production DB upgrade 020b/035-040'
+  comment='Jale scoped production DB upgrade 020b/035-041'
 fi
 
 command_id=$(aws ssm send-command \

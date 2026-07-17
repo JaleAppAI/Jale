@@ -6,8 +6,15 @@ import { Client } from 'pg';
 const repoRoot = path.join(__dirname, '..', '..', '..', '..');
 const scriptPath = path.join(repoRoot, 'scripts', 'run-production-upgrade-020b-040.sh');
 const runbookPath = path.join(repoRoot, 'docs', 'production-upgrade-020b-040.md');
+const migration041Path = path.join(
+  repoRoot,
+  'infra',
+  'db',
+  'migrations',
+  '041_whatsapp_web_worker_lookup_grant.sql',
+);
 
-describe('production upgrade 020b/035-040 operator tooling', () => {
+describe('production upgrade 020b/035-041 operator tooling', () => {
   it('allows only the reviewed forward-upgrade files in exact order', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const block = script.match(/MIGRATION_FILES=\(([\s\S]*?)\)/)?.[1] ?? '';
@@ -21,6 +28,7 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
       '038_rls_relationship_recursion_repair.sql',
       '039_whatsapp_support_cases.sql',
       '040_whatsapp_delivery_status.sql',
+      '041_whatsapp_web_worker_lookup_grant.sql',
     ]);
     expect(block).not.toMatch(/001_|002_|003_|034_/);
   });
@@ -61,6 +69,7 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
 
   it('verifies a durable invariant for every migration before skipping it', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
+    const migration041 = fs.readFileSync(migration041Path, 'utf8');
 
     for (const marker of [
       'jale_internal.employer_has_applicant_relationship',
@@ -71,6 +80,7 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
       'twilio_delivery_status',
       'idx_whatsapp_outbox_twilio_message_sid',
       'record_whatsapp_delivery_status',
+      'tos_accepted_at',
     ]) {
       expect(script).toContain(marker);
     }
@@ -90,6 +100,11 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
       "has_schema_privilege('jale_admin','jale_billing_internal','USAGE')",
     );
     expect(script).not.toContain("record_whatsapp_delivery_status(character varying,text,text,text)");
+    expect(script).toContain("policyname='wa_users_read'");
+    expect(script).toContain('table_class.relrowsecurity AND table_class.relforcerowsecurity');
+    expect(script).toContain("qual='(user_type = ''worker''::text)'");
+    expect(migration041).toContain('GRANT SELECT (tos_accepted_at) ON users TO jale_whatsapp;');
+    expect(migration041).not.toMatch(/GRANT\s+SELECT\s+ON\s+users\s+TO\s+jale_whatsapp/i);
   });
 
   it('keeps credentials on the bastion and does not rotate service passwords', () => {
@@ -130,7 +145,7 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
     )?.[1];
     expect(callbackPredicate).toBeDefined();
     predicates.push(callbackPredicate!);
-    expect(predicates).toHaveLength(6);
+    expect(predicates).toHaveLength(7);
 
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
@@ -153,7 +168,7 @@ describe('production upgrade 020b/035-040 operator tooling', () => {
       await client.query('BEGIN');
       await client.query('DROP POLICY admin_cases_twilio_callback_update ON admin_cases');
       const callbackDrift = await client.query<{ complete: boolean }>(
-        `SELECT (${predicates[5]}) AS complete`,
+        `SELECT (${predicates[6]}) AS complete`,
       );
       expect(callbackDrift.rows).toEqual([{ complete: false }]);
       await client.query('ROLLBACK');
