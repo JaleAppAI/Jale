@@ -91,6 +91,7 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'environment: ${{ inputs.github-environment }}');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'plan:\n    name: Production plan\n    runs-on: ubuntu-latest\n    environment: ${{ inputs.github-environment }}');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'JaleFrontendStack');
 if (reusableDeploy.includes('JaleBastionStack')) {
   fail('.github/workflows/_reusable-deploy.yml must not deploy JaleBastionStack by default');

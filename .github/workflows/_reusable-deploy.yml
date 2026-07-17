@@ -38,6 +38,7 @@ jobs:
   plan:
     name: Production plan
     runs-on: ubuntu-latest
+    environment: ${{ inputs.github-environment }}
     env:
       AWS_REGION: ${{ inputs.aws-region }}
       AWS_PLAN_ROLE_ARN: ${{ secrets.AWS_PLAN_ROLE_ARN }}
