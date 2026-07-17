@@ -67,9 +67,9 @@ describe('database migrations', () => {
       '033',
       '034',
       '035',
+      '036',
       '037',
       '038',
-      '039',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
