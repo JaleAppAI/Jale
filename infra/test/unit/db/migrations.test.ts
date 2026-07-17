@@ -191,6 +191,16 @@ describe('database migrations', () => {
     expect(migration).toContain('jale_billing_job_enforcer column privilege invariant failed');
     expect(migration).toContain('Billing enforcer schema/function invariant failed');
     expect(migration).toContain('Billing enforcer ACL invariant failed');
+    expect(migration).toContain(
+      "acl.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'jale_admin')",
+    );
+    expect(migration).toContain("acl.privilege_type = 'USAGE'");
+    expect(migration).not.toContain(
+      "has_schema_privilege('jale_admin', 'jale_billing_internal', 'USAGE')",
+    );
+    expect(migration).not.toContain(
+      "has_function_privilege('jale_admin', enforcer_function.function_oid, 'EXECUTE')",
+    );
     expect(migration).not.toContain('ALTER ROLE jale_billing_job_enforcer');
   });
 

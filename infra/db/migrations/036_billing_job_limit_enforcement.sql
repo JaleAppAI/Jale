@@ -258,8 +258,21 @@ BEGIN
   ) OR NOT has_schema_privilege('jale_billing', 'jale_billing_internal', 'USAGE')
     OR has_schema_privilege('jale_billing', 'jale_billing_internal', 'CREATE')
     OR NOT has_function_privilege('jale_billing', enforcer_function.function_oid, 'EXECUTE')
-    OR has_schema_privilege('jale_admin', 'jale_billing_internal', 'USAGE')
-    OR has_function_privilege('jale_admin', enforcer_function.function_oid, 'EXECUTE')
+    -- RDS grants jale_admin effective rds_superuser privileges outside these ACLs.
+    -- Assert that this migration grants jale_admin neither capability directly.
+    OR EXISTS (
+      SELECT 1 FROM pg_namespace namespace,
+        LATERAL aclexplode(COALESCE(namespace.nspacl, acldefault('n', namespace.nspowner))) acl
+      WHERE namespace.nspname = 'jale_billing_internal'
+        AND acl.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'jale_admin')
+        AND acl.privilege_type = 'USAGE'
+    ) OR EXISTS (
+      SELECT 1 FROM pg_proc function,
+        LATERAL aclexplode(COALESCE(function.proacl, acldefault('f', function.proowner))) acl
+      WHERE function.oid = enforcer_function.function_oid
+        AND acl.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'jale_admin')
+        AND acl.privilege_type = 'EXECUTE'
+    )
     OR has_table_privilege('jale_billing', 'users', 'SELECT,UPDATE')
     OR has_table_privilege('jale_billing', 'jobs', 'SELECT,UPDATE') THEN
     RAISE EXCEPTION 'Billing enforcer ACL invariant failed';
