@@ -53,19 +53,31 @@ EXCEPTION WHEN duplicate_object THEN
 END;
 $$;
 
--- Temporary self-grant so this migration (running as jale_admin, the table
--- owner) can create objects owned by jale_twilio_callback. PostgreSQL 16
--- automatically records the creator as a member of a freshly-created role
--- with ADMIN OPTION — but NOT with SET or INHERIT — and `ALTER ... OWNER TO`
--- requires the ability to actually SET ROLE into the target, not just bare
--- membership. This explicit GRANT adds ONLY the temporary SET capability
--- (deliberately omitting ADMIN OPTION, which the automatic row already
--- carries and which PostgreSQL refuses to re-grant back to its own
--- grantor). It is fully un-done below with an equally explicit REVOKE
--- (`GRANTED BY`) that removes this row entirely, leaving only the single,
--- unavoidable automatic creator-membership row asserted at the bottom of
--- this migration. GRANT ROLE is idempotent for the same grantor/grantee/
--- options, so this is safe to rerun.
+-- AWS RDS creates no automatic creator membership; plain PostgreSQL may.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_auth_members membership
+    JOIN pg_catalog.pg_roles granted ON granted.oid = membership.roleid
+    JOIN pg_catalog.pg_roles member ON member.oid = membership.member
+    JOIN pg_catalog.pg_roles grantor ON grantor.oid = membership.grantor
+    WHERE granted.rolname = 'jale_twilio_callback'
+      AND member.rolname = current_user
+      AND membership.admin_option
+      AND NOT membership.inherit_option
+      AND NOT membership.set_option
+      AND grantor.rolsuper
+  ) THEN
+    EXECUTE format(
+      'GRANT jale_twilio_callback TO %I WITH ADMIN TRUE, SET FALSE, INHERIT FALSE',
+      current_user
+    );
+  END IF;
+END;
+$$;
+
+-- Temporarily add SET capability. Plain PG16 records a self-grant while RDS
+-- updates its rdsadmin grant; cleanup below safely handles both shapes.
 DO $$
 BEGIN
   EXECUTE format(
@@ -597,14 +609,8 @@ GRANT EXECUTE ON FUNCTION public.record_admin_whatsapp_delivery(UUID, TEXT, TEXT
 RESET ROLE;
 REVOKE CREATE ON SCHEMA public FROM jale_twilio_callback;
 
--- Remove the temporary migration-time SET capability entirely. The schema
--- privilege revoke is again an owner-only operation (see above) and needs
--- an active SET ROLE; the role-membership revoke is executed back as the
--- migration runner so it removes exactly the self-grant it made (via
--- GRANTED BY), leaving only the single, unavoidable PostgreSQL 16 automatic
--- creator-membership row — ADMIN=true, SET=false, INHERIT=false — asserted
--- below. Object ownership already transferred to jale_twilio_callback is
--- unaffected by revoking this membership grant.
+-- Disable SET on the selected grantor row, then remove any plain-PG self-grant.
+-- Object ownership is unaffected by updating membership options.
 SET LOCAL ROLE jale_twilio_callback;
 DO $$ BEGIN
   EXECUTE format('REVOKE ALL ON SCHEMA jale_twilio_callback FROM %I', session_user);
@@ -612,6 +618,10 @@ END $$;
 RESET ROLE;
 DO $$
 BEGIN
+  EXECUTE format(
+    'GRANT jale_twilio_callback TO %I WITH SET FALSE, INHERIT FALSE',
+    current_user
+  );
   EXECUTE format(
     'REVOKE jale_twilio_callback FROM %I GRANTED BY %I',
     current_user, current_user
@@ -641,14 +651,9 @@ BEGIN
        AND NOT rolbypassrls
   ) THEN RAISE EXCEPTION 'jale_twilio_callback role attributes are unsafe'; END IF;
 
-  -- PG16 fail-closed assertion: exactly one creator-membership row remains,
-  -- and it must be the unavoidable ADMIN=true/SET=false/INHERIT=false shape.
-  -- This migration's own temporary self-grant (added and then fully
-  -- REVOKEd ... GRANTED BY above) is deliberately excluded from this count
-  -- by construction, not by filtering here — if that REVOKE ever silently
-  -- failed to remove its row, this count check catches the drift. The
-  -- grantor of the automatic row is whichever superuser bootstrapped
-  -- jale_admin (environment-specific, so not asserted by name). Reject any
+  -- PG16 fail-closed assertion: exactly one explicit creator-membership row
+  -- remains with ADMIN=true, SET=false, INHERIT=false. The grantor is the
+  -- environment superuser (for AWS RDS this is rdsadmin). Reject any
   -- additional membership in either direction, including making the helper
   -- a member of another role.
   IF (SELECT count(*) FROM pg_catalog.pg_auth_members membership

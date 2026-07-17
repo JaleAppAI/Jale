@@ -1,7 +1,7 @@
 -- 036_billing_job_limit_enforcement.sql
 -- Enforce reduced employer entitlements without granting jale_billing direct
--- access to users or jobs. PostgreSQL 16 records one unavoidable creator ADMIN
--- row for CREATEROLE-created helpers; it must never carry SET or INHERIT.
+-- access to users or jobs. Establish one explicit creator ADMIN row on both
+-- plain PostgreSQL 16 and AWS RDS PostgreSQL 16; it never retains SET or INHERIT.
 
 BEGIN;
 
@@ -40,6 +40,22 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Existing jale_billing_job_enforcer role has unsafe memberships';
   END IF;
+
+  -- AWS RDS creates no automatic creator membership; plain PostgreSQL may.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_auth_members membership
+    JOIN pg_roles granted ON granted.oid = membership.roleid
+    JOIN pg_roles member ON member.oid = membership.member
+    JOIN pg_roles grantor ON grantor.oid = membership.grantor
+    WHERE granted.rolname = helper.rolname
+      AND member.rolname = 'jale_admin'
+      AND membership.admin_option
+      AND NOT membership.inherit_option
+      AND NOT membership.set_option
+      AND grantor.rolsuper
+  ) THEN
+    EXECUTE 'GRANT jale_billing_job_enforcer TO jale_admin WITH ADMIN TRUE, INHERIT FALSE, SET FALSE';
+  END IF;
 END;
 $$;
 
@@ -61,7 +77,9 @@ DROP POLICY IF EXISTS jobs_billing_job_enforcer_update ON jobs;
 CREATE POLICY jobs_billing_job_enforcer_update
   ON jobs FOR UPDATE TO jale_billing_job_enforcer USING (true) WITH CHECK (true);
 
-GRANT jale_billing_job_enforcer TO jale_admin;
+-- Temporarily add SET capability; cleanup handles plain PG and RDS grantors.
+GRANT jale_billing_job_enforcer TO jale_admin
+  WITH SET TRUE, INHERIT FALSE;
 
 DO $$
 DECLARE
@@ -138,7 +156,10 @@ GRANT USAGE ON SCHEMA jale_billing_internal TO jale_billing;
 GRANT EXECUTE ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs(UUID, INTEGER)
   TO jale_billing;
 RESET ROLE;
-REVOKE jale_billing_job_enforcer FROM jale_admin;
+-- Disable SET on the selected grantor row, then remove any plain-PG self-grant.
+GRANT jale_billing_job_enforcer TO jale_admin
+  WITH SET FALSE, INHERIT FALSE;
+REVOKE jale_billing_job_enforcer FROM jale_admin GRANTED BY jale_admin;
 
 DO $$
 DECLARE

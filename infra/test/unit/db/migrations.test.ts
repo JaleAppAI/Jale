@@ -175,7 +175,18 @@ describe('database migrations', () => {
     expect(migration).toContain("AND j.status = 'active'");
     expect(migration).toContain('REVOKE ALL ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
     expect(migration).toContain('GRANT EXECUTE ON FUNCTION jale_billing_internal.billing_pause_over_limit_jobs');
-    expect(migration).toContain('REVOKE jale_billing_job_enforcer FROM jale_admin');
+    expect(migration).toContain(
+      'WITH ADMIN TRUE, INHERIT FALSE, SET FALSE',
+    );
+    expect(migration).toContain(
+      'WITH SET TRUE, INHERIT FALSE',
+    );
+    expect(migration).toContain(
+      'WITH SET FALSE, INHERIT FALSE',
+    );
+    expect(migration).toContain(
+      'REVOKE jale_billing_job_enforcer FROM jale_admin GRANTED BY jale_admin',
+    );
     expect(migration).toContain('NOT membership.set_option');
     expect(migration).toContain('jale_billing_job_enforcer column privilege invariant failed');
     expect(migration).toContain('Billing enforcer schema/function invariant failed');
@@ -220,7 +231,18 @@ describe('database migrations', () => {
     expect(migration).toContain('jale_internal PUBLIC privilege invariant failed');
     expect(migration).toContain('policy.polroles = ARRAY[');
     expect(migration).toContain('NOT membership.set_option');
-    expect(migration).toContain('REVOKE jale_rls_relationship_reader FROM jale_admin');
+    expect(migration).toContain(
+      'WITH ADMIN TRUE, INHERIT FALSE, SET FALSE',
+    );
+    expect(migration).toContain(
+      'WITH SET TRUE, INHERIT FALSE',
+    );
+    expect(migration).toContain(
+      'WITH SET FALSE, INHERIT FALSE',
+    );
+    expect(migration).toContain(
+      'REVOKE jale_rls_relationship_reader FROM jale_admin GRANTED BY jale_admin',
+    );
     expect(migration).not.toContain('ALTER ROLE jale_rls_relationship_reader');
     expect(migration).not.toContain('CREATE OR REPLACE FUNCTION');
     expect(migration).not.toMatch(/\sBYPASSRLS(?:\s|;)/);
@@ -265,6 +287,15 @@ describe('database migrations', () => {
       'REVOKE ALL ON FUNCTION jale_twilio_callback.record_twilio_delivery_status',
     );
     expect(migration).toContain('NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT');
+    expect(migration).toContain(
+      "'GRANT jale_twilio_callback TO %I WITH ADMIN TRUE, SET FALSE, INHERIT FALSE'",
+    );
+    expect(migration).toContain(
+      "'GRANT jale_twilio_callback TO %I WITH SET TRUE, INHERIT FALSE'",
+    );
+    expect(migration).toContain(
+      "'GRANT jale_twilio_callback TO %I WITH SET FALSE, INHERIT FALSE'",
+    );
     expect(migration).toContain(
       "'REVOKE jale_twilio_callback FROM %I GRANTED BY %I'",
     );
@@ -399,6 +430,12 @@ describe('database migrations', () => {
     expect(migration).toContain('SET search_path = pg_catalog, pg_temp');
     expect(migration).toContain('jale_rls_relationship_reader creator membership invariant failed');
     expect(migration).toContain('Relationship predicate definition invariant failed');
+    expect(migration).toContain('WITH ADMIN TRUE, INHERIT FALSE, SET FALSE');
+    expect(migration).toContain('WITH SET TRUE, INHERIT FALSE');
+    expect(migration).toContain('WITH SET FALSE, INHERIT FALSE');
+    expect(migration).toContain(
+      'REVOKE jale_rls_relationship_reader FROM jale_admin GRANTED BY jale_admin',
+    );
     expect(migration).not.toContain('ALTER ROLE jale_rls_relationship_reader');
   });
 

@@ -42,6 +42,22 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Existing jale_rls_relationship_reader role has unsafe memberships';
   END IF;
+
+  -- AWS RDS creates no automatic creator membership; plain PostgreSQL may.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_auth_members membership
+    JOIN pg_roles granted ON granted.oid = membership.roleid
+    JOIN pg_roles member ON member.oid = membership.member
+    JOIN pg_roles grantor ON grantor.oid = membership.grantor
+    WHERE granted.rolname = helper.rolname
+      AND member.rolname = 'jale_admin'
+      AND membership.admin_option
+      AND NOT membership.inherit_option
+      AND NOT membership.set_option
+      AND grantor.rolsuper
+  ) THEN
+    EXECUTE 'GRANT jale_rls_relationship_reader TO jale_admin WITH ADMIN TRUE, INHERIT FALSE, SET FALSE';
+  END IF;
 END;
 $$;
 
@@ -71,10 +87,10 @@ CREATE POLICY jobs_relationship_reader
   ON jobs FOR SELECT TO jale_rls_relationship_reader
   USING (true);
 
--- Temporarily permit the migration owner to SET ROLE. The helper creates and
--- owns both the locked schema and function, so no ownership transfer depends
--- on CREATE privileges in public.
-GRANT jale_rls_relationship_reader TO jale_admin;
+-- Temporarily add SET capability. Plain PG16 records a self-grant while RDS
+-- updates its rdsadmin grant; cleanup below safely handles both shapes.
+GRANT jale_rls_relationship_reader TO jale_admin
+  WITH SET TRUE, INHERIT FALSE;
 
 DO $$
 DECLARE
@@ -143,7 +159,10 @@ REVOKE ALL ON FUNCTION jale_internal.employer_has_applicant_relationship(TEXT, U
 GRANT USAGE ON SCHEMA jale_internal TO jale_admin;
 GRANT EXECUTE ON FUNCTION jale_internal.employer_has_applicant_relationship(TEXT, UUID) TO jale_admin;
 RESET ROLE;
-REVOKE jale_rls_relationship_reader FROM jale_admin;
+-- Disable SET on the selected grantor row, then remove any plain-PG self-grant.
+GRANT jale_rls_relationship_reader TO jale_admin
+  WITH SET FALSE, INHERIT FALSE;
+REVOKE jale_rls_relationship_reader FROM jale_admin GRANTED BY jale_admin;
 
 CREATE POLICY users_employer_applicant_read
   ON users FOR SELECT TO jale_admin
