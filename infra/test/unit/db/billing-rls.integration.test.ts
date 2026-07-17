@@ -535,16 +535,15 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
       });
 
-      // jale_admin has no GRANT on billing_webhook_events at all (034 grants it
-      // only the four user-facing billing tables), so the denial is a hard
-      // permission error — stronger than an empty RLS result.
-      await expect(
-        asAdmin(adminUrl, employerCognitoSub, async (client) => {
-          return client.query(
-            `SELECT stripe_event_id FROM billing_webhook_events WHERE stripe_event_id = 'evt_test_admin_select_denied'`,
-          );
-        }),
-      ).rejects.toThrow(/permission denied/);
+      // Production migrations run as jale_admin, making it the table owner.
+      // FORCE RLS still denies the row, but owner-level table privilege means
+      // SELECT resolves to an empty result rather than a permission error.
+      const result = await asAdmin(adminUrl, employerCognitoSub, async (client) => {
+        return client.query(
+          `SELECT stripe_event_id FROM billing_webhook_events WHERE stripe_event_id = 'evt_test_admin_select_denied'`,
+        );
+      });
+      expect(result.rows).toHaveLength(0);
     });
   });
 
