@@ -548,7 +548,8 @@ async function persistInboxFailure(
             processing_status = 'failed',
             attempt_count     = billing_webhook_events.attempt_count + 1,
             last_error_code   = EXCLUDED.last_error_code,
-            lease_expires_at  = NULL`,
+            lease_expires_at  = NULL
+          WHERE billing_webhook_events.processing_status NOT IN ('processed', 'skipped')`,
       [eventId, eventType, objectId ?? null, errorCode],
     );
   } catch {
