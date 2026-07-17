@@ -507,3 +507,51 @@ independently (no result trusted from prior transcripts).
 Branch state: `feat/sprint16-dev-cycle-integration` at `a6401da`, clean tree,
 local-only. Unchanged boundaries: no push, no merge into `SPRINT16`, no deploy,
 no secret reads, no shared databases touched.
+
+---
+
+## Skill-augmented re-review — Sol + Terra scanners, 2026-07-16 night
+
+Seven skill-guided scanner passes (Sonnet subagents, read-only) re-examined
+`d837a10..HEAD`; every reported finding was triaged by the lead against the
+actual code. Tooling installed for this round: Semgrep 1.170.0 (venv at
+`~/.local/share/semgrep-venv`), CodeQL CLI 2.26.1 (`~/.local/share/codeql`).
+
+| Pass (skill) | Raw → survived triage | Outcome |
+|---|---|---|
+| differential-review | 2 low/info | Noted (throttling on new callback route = existing documented risk class; `last_error` stores raw err.message — matches existing pattern, no phone content) |
+| insecure-defaults | 1 low (pre-existing) | Noted (`ALLOWED_ORIGIN ?? localhost` fallback in http.ts/checkout/portal — deliberate local-dev default, CDK always injects) |
+| supabase-postgres-best-practices | 1 confirmed defect + advisories | **Fixed** (below); 036 lock-window documented; index advisories logged |
+| vercel-react/composition/web-design | 0 defects | 2 pre-existing advisories noted (double refetch on Stripe return; progress bar lacks ARIA) |
+| supply-chain-risk-auditor | 0 branch flags | js-cookie `^2.2.1` nested override verified as the cognito lib's own declared range (intentional); single-maintainer watchlist: next-intl, @hugeicons/*, tw-animate-css |
+| semgrep (important-only, 6 rulesets) | 2 raw → 0 | Both FPs in pre-existing synth-time code |
+| codeql (127-query important-only suite) | 159 raw → 9 primary → 0 | All 9 primary hits verified FPs; 24 secondary pre-existing (AdminLoginForm redirect/XSS pair worth a future dedicated pass) |
+
+### Fixes committed (`f5e49fb`)
+
+1. **billing inbox terminal-state guard (confirmed defect, medium):**
+   `persistInboxFailure`'s `ON CONFLICT DO UPDATE` unconditionally set
+   `processing_status='failed'`, so a corrupted re-delivery of an
+   already-processed Stripe event id would reopen a terminal `processed` row
+   for reprocessing. Added `WHERE processing_status NOT IN
+   ('processed','skipped')` (mirroring `claimInboxRow`) + regression test.
+2. **036 operator note (comment-only):** documented the deliberate
+   in-transaction CHECK/index lock-window trade on `whatsapp_outbox`, with the
+   instruction that future scale needs a NEW migration using
+   `NOT VALID`/`VALIDATE` + `CREATE INDEX CONCURRENTLY`.
+
+Verification after fixes: infra build clean; billing-processor + migrations
+suites 71/71. The 036 change is comment-only (no SQL semantics change; the
+fresh-cluster and native gates from the earlier review remain valid).
+
+### Follow-ups logged (not this branch)
+
+- Dedicated per-method throttling for both public WhatsApp routes.
+- FK-support indexes (`subscriptions.plan_code`/`organization_id`,
+  `billing_customers.organization_id`) when the multi-seat migration lands.
+- Keep `MAX_EMAIL_SEND_ATTEMPTS` (code) and 038's partial-index cap in sync.
+- AdminLoginForm CodeQL findings (pre-existing, admin auth surface).
+- Autovacuum tuning for outbox queue tables if churn grows.
+
+Branch state: `feat/sprint16-dev-cycle-integration` at `f5e49fb` + this docs
+commit, clean, local-only, pending user sign-off for merge into `SPRINT16`.
