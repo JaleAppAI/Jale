@@ -166,37 +166,23 @@ export default function EmployerDashboardPage() {
                                 <p className="mb-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase text-white/70">{t('hero.eyebrow')}</p>
                                 <h2 className="text-3xl font-extrabold leading-tight md:text-4xl">{t('hero.title')}</h2>
                                 <p className="mt-3 max-w-2xl text-sm leading-6 text-white/70">{t('hero.body')}</p>
-                                <div className="mt-5 flex flex-wrap gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => setModalOpen(true)}
-                                        className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-bold text-[#111642] shadow-[var(--shadow-btn)] transition-all duration-150 hover:bg-white/90 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] active:scale-[0.98]"
-                                    >
-                                        <Icon name="plus" />
-                                        {t('hero.primary_cta')}
-                                    </button>
-                                    <Link
-                                        href="/employer/conversations"
-                                        className="inline-flex h-11 items-center gap-2 rounded-full border border-white/20 px-5 text-sm font-bold text-white hover:bg-white/10"
-                                    >
-                                        <Icon name="message" />
-                                        {t('hero.secondary_cta')}
-                                    </Link>
-                                </div>
                             </div>
-                            <div className="grid grid-cols-3 gap-3 rounded-2xl border border-white/10 bg-white/8 p-4">
-                                <div>
-                                    <p className="text-2xl font-extrabold">{loading ? '-' : activeCount}</p>
-                                    <p className="mt-1 text-[11px] font-semibold uppercase text-white/60">{t('stats.active_jobs')}</p>
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.08] p-4">
+                                <div className="flex items-center justify-between gap-2">
+                                    <p className="text-sm font-bold">{t('panels.whatsapp_title')}</p>
+                                    <Link href="/employer/conversations" className="text-xs font-bold text-white/75 hover:text-white hover:underline">{t('panels.open_messages')}</Link>
                                 </div>
-                                <div>
-                                    <p className="text-2xl font-extrabold">{loading ? '-' : totalApplicants}</p>
-                                    <p className="mt-1 text-[11px] font-semibold uppercase text-white/60">{t('stats.total_applicants')}</p>
+                                <div className="mt-4 rounded-2xl bg-white/10 p-4">
+                                    <p className="text-sm font-bold">{recentJob?.title ?? t('panels.no_recent_job')}</p>
+                                    <p className="mt-2 text-xs leading-5 text-white/70">{t('panels.whatsapp_body')}</p>
                                 </div>
-                                <div>
-                                    <p className="text-2xl font-extrabold">{loading ? '-' : totalHired}</p>
-                                    <p className="mt-1 text-[11px] font-semibold uppercase text-white/60">{t('stats.workers_hired')}</p>
-                                </div>
+                                <Link
+                                    href="/employer/conversations"
+                                    className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-white px-4 text-xs font-bold text-[#111642] hover:bg-white/90"
+                                >
+                                    <Icon name="message" />
+                                    {t('panels.open_messages')}
+                                </Link>
                             </div>
                         </div>
                     </section>
@@ -295,26 +281,6 @@ export default function EmployerDashboardPage() {
                                     <ProgressRow label={t('panels.open_roles')} value={String(loading ? '-' : openRoles)} percent={Math.min(100, openRoles * 12)} />
                                     <ProgressRow label={t('panels.applicant_flow')} value={String(loading ? '-' : totalApplicants)} percent={Math.min(100, totalApplicants * 5)} />
                                     <p className="text-xs leading-5 text-white/60">{t('panels.trust_body')}</p>
-                                </div>
-                            </DashboardPanel>
-
-                            <DashboardPanel>
-                                <PanelHeader
-                                    title={t('panels.whatsapp_title')}
-                                    action={<Link href="/employer/conversations" className="text-xs font-bold text-[var(--jale-blue-700)] hover:underline">{t('panels.open_messages')}</Link>}
-                                />
-                                <div className="p-5">
-                                    <div className="rounded-2xl bg-[var(--jale-paper-2)] p-4">
-                                        <p className="text-sm font-bold text-[var(--jale-ink)]">{recentJob?.title ?? t('panels.no_recent_job')}</p>
-                                        <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('panels.whatsapp_body')}</p>
-                                    </div>
-                                    <Link
-                                        href="/employer/conversations"
-                                        className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--jale-blue-500)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-600)]"
-                                    >
-                                        <Icon name="message" />
-                                        {t('panels.open_messages')}
-                                    </Link>
                                 </div>
                             </DashboardPanel>
 
