@@ -72,6 +72,7 @@ describe('database migrations', () => {
       '038',
       '039',
       '040',
+      '041',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -333,10 +334,9 @@ describe('database migrations', () => {
     expect(migration).toContain('whatsapp_outbox_twilio_error_message_check');
   });
 
-  it('keeps migration runner scripts pointed at the current files', () => {
+  it('keeps the Bash migration runner pointed at the current files', () => {
     const expectedFiles = migrationFiles();
     const scriptPaths = [
-      path.join(__dirname, '..', '..', '..', '..', 'scripts', 'run-migrations.ps1'),
       path.join(__dirname, '..', '..', '..', '..', 'scripts', 'run-migrations.sh'),
     ];
 

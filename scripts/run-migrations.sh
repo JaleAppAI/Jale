@@ -82,6 +82,7 @@ MIGRATIONS=(
   "038_rls_relationship_recursion_repair.sql"
   "039_whatsapp_support_cases.sql"
   "040_whatsapp_delivery_status.sql"
+  "041_whatsapp_web_worker_lookup_grant.sql"
 )
 
 echo ">> Using region: $REGION"
