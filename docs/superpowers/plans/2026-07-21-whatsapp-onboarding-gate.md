@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Follow the approved design in `docs/superpowers/specs/2026-07-21-whatsapp-onboarding-gate-design.md`.
-- Use additive migration `040`; do not edit migrations `001` through `039`.
+- Use additive migration `042`; do not edit migrations `001` through `041`.
 - Do not drop or rename legacy WhatsApp columns or switch non-allowlisted workers to v2.
 - Successful OTP verification is the only identity-binding operation.
 - Only the delivery gateway may create sendable worker WhatsApp outbox rows.
@@ -20,6 +20,44 @@
 - Do not add LocalStack, a cloud sandbox, trade-change UI, or an admin dashboard.
 - Preserve optional photo/voice enrichment, but do not make it a v2 readiness requirement.
 - Keep existing untracked `demo-ready-windows/` and `reports/` untouched.
+
+---
+
+## Canonical Worktree and Ownership Contract
+
+This plan and `docs/superpowers/specs/2026-07-21-whatsapp-onboarding-gate-design.md` must exist byte-for-byte identically in both persistent branches before implementation begins. Every implementation agent reads both files before editing and follows the ownership boundary below. Requirements changes land as reviewed shared commits; agents do not create lane-local variants of either document.
+
+Shared base and reconciliation:
+
+- Refreshed `origin/main` is `6b4dbab` and is the source of truth.
+- Upstream already contains migrations `039_whatsapp_support_cases.sql`, `040_whatsapp_delivery_status.sql`, and `041_whatsapp_web_worker_lookup_grant.sql`.
+- Preserve upstream command-language, support, delivery-callback, and WhatsApp changes.
+- The onboarding migration is `042_whatsapp_onboarding_gate.sql`; all migration baselines and PostgreSQL expectations extend through `042`.
+- The confirmed `SM`-only validation defect and pre-OTP employer relay remain in scope even where upstream code overlaps the originally planned files.
+
+Persistent lanes:
+
+- Codex owns `.worktrees/wa-v2-integration` / `feat/wa-v2-integration` as merge captain. Its lane owns the shared bootstrap, migration `042`, delivery gateway and policy, FIFO/DLQ/CDK work, producer deferral and release, reset tooling, PostgreSQL gates, rollout tooling, and final integration.
+- Claude Opus owns `.worktrees/wa-v2-claude` / `feat/wa-v2-workflow` as workflow orchestrator. Its lane owns `processor.ts`, OTP-only binding, onboarding router/state handling, legal/profile/trust flow, conversation relay behavior, bilingual templates, and deterministic conversation tests.
+- Task agents use disposable worktrees and do not edit either persistent worktree directly. Cross-lane interface changes require review by both orchestrators before dependent commits land.
+- Opus freezes the workflow lane before integration. Codex merges it, runs the full build/Jest/PostgreSQL/CDK/security gate, and stops before push, deployment, RDS migrations, or worker reset.
+
+Canonical deterministic synth command:
+
+```bash
+cd infra
+CDK_DEFAULT_ACCOUNT=111111111111 \
+CDK_DEFAULT_REGION=us-east-2 \
+npx cdk synth --all \
+  -c environment=dev \
+  -c skipFrontend=true \
+  -c emailFromAddress=ci-synth@jaleapp.ai \
+  -c sesVerifiedIdentityArn=arn:aws:ses:us-east-2:111111111111:identity/jaleapp.ai \
+  -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback \
+  -c whatsappAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms
+```
+
+This mirrors the repository CI contract. Environment-less `npx cdk synth --quiet` is invalid on the refreshed base.
 
 ---
 
@@ -112,10 +150,10 @@ git commit -m "fix: lock WhatsApp identity and SID regressions"
 ### Task 2: Add the Additive V2 Data Model
 
 **Files:**
-- Create: `infra/db/migrations/040_whatsapp_onboarding_gate.sql`
+- Create: `infra/db/migrations/042_whatsapp_onboarding_gate.sql`
 - Modify: `infra/test/unit/db/migrations/apply-order.test.ts`
 - Modify: `infra/test/unit/db/migrations.test.ts`
-- Create: `infra/test/unit/db/whatsapp-onboarding-040.integration.test.ts`
+- Create: `infra/test/unit/db/whatsapp-onboarding-042.integration.test.ts`
 
 **Interfaces:**
 - Produces tables `worker_onboarding_state`, `worker_workflow_runs`, `worker_workflow_transitions`, `worker_identity_challenges`, `worker_message_intents`, `worker_domain_outbox`, `whatsapp_runtime_controls`, and `worker_reset_audit`.
@@ -123,7 +161,7 @@ git commit -m "fix: lock WhatsApp identity and SID regressions"
 
 - [ ] **Step 1: Add failing migration-structure tests**
 
-Append `040_whatsapp_onboarding_gate.sql` to `expectedBaselineMigrations` and assert every new table, lifecycle/status check, unique constraint, RLS enablement, and narrow `jale_whatsapp` grant. The integration suite must verify one active workflow per worker, unique event keys, intent deduplication, and concurrent release leasing with `FOR UPDATE SKIP LOCKED`.
+Append `042_whatsapp_onboarding_gate.sql` to `expectedBaselineMigrations` and assert every new table, lifecycle/status check, unique constraint, RLS enablement, and narrow `jale_whatsapp` grant. The integration suite must verify one active workflow per worker, unique event keys, intent deduplication, and concurrent release leasing with `FOR UPDATE SKIP LOCKED`.
 
 - [ ] **Step 2: Run structure tests and confirm failure**
 
@@ -132,9 +170,9 @@ cd infra
 npx jest test/unit/db/migrations.test.ts test/unit/db/migrations/apply-order.test.ts --runInBand
 ```
 
-Expected: FAIL because migration 040 and its tables do not exist.
+Expected: FAIL because migration 042 and its tables do not exist.
 
-- [ ] **Step 3: Add migration 040**
+- [ ] **Step 3: Add migration 042**
 
 Use UUID primary keys, `TIMESTAMPTZ`, JSONB context/payload, explicit status checks, and these canonical values:
 
@@ -161,15 +199,15 @@ Enable and force RLS. Grant `jale_whatsapp` only required columns and add worker
 ```bash
 bash /home/hermesgoma/.codex/skills/psql-migration-testbed/scripts/run-psql-migration-testbed.sh \
   --repo . -- \
-  bash -lc 'cd infra && JALE_TEST_DATABASE_URL="$JALE_TEST_DATABASE_URL" npx jest test/unit/db/migrations.test.ts test/unit/db/migrations/apply-order.test.ts test/unit/db/whatsapp-onboarding-040.integration.test.ts --runInBand'
+  bash -lc 'cd infra && JALE_TEST_DATABASE_URL="$JALE_TEST_DATABASE_URL" npx jest test/unit/db/migrations.test.ts test/unit/db/migrations/apply-order.test.ts test/unit/db/whatsapp-onboarding-042.integration.test.ts --runInBand'
 ```
 
-Expected: migrations `001` through `040` apply on PostgreSQL 16 and all three suites pass.
+Expected: migrations `001` through `042` apply on PostgreSQL 16 and all three suites pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add infra/db/migrations/040_whatsapp_onboarding_gate.sql infra/test/unit/db
+git add infra/db/migrations/042_whatsapp_onboarding_gate.sql infra/test/unit/db
 git commit -m "feat: add WhatsApp onboarding v2 data model"
 ```
 
@@ -312,7 +350,7 @@ Create `whatsapp-inbound-v2.fifo` and its DLQ rather than replacing the legacy s
 ```bash
 cd infra
 npx jest test/unit/lambda/whatsapp/webhook.test.ts test/unit/lambda/whatsapp/processor.test.ts test/unit/stacks/whatsapp-stack.test.ts --runInBand
-npx cdk synth --quiet
+CDK_DEFAULT_ACCOUNT=111111111111 CDK_DEFAULT_REGION=us-east-2 npx cdk synth --all -c environment=dev -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:us-east-2:111111111111:identity/jaleapp.ai -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms
 ```
 
 Expected: tests pass and synth produces both legacy and v2 queues without replacement of the legacy queue.
@@ -525,7 +563,7 @@ Add script:
 ```bash
 bash /home/hermesgoma/.codex/skills/psql-migration-testbed/scripts/run-psql-migration-testbed.sh \
   --repo . -- \
-  bash -lc 'cd infra && JALE_TEST_DATABASE_URL="$JALE_TEST_DATABASE_URL" npx jest test/unit/db/migrations.test.ts test/unit/db/migrations/apply-order.test.ts test/unit/db/whatsapp-onboarding-040.integration.test.ts test/unit/db/whatsapp-onboarding-concurrency.integration.test.ts test/unit/lambda/whatsapp/onboarding-v2-conversation.test.ts --runInBand'
+  bash -lc 'cd infra && JALE_TEST_DATABASE_URL="$JALE_TEST_DATABASE_URL" npx jest test/unit/db/migrations.test.ts test/unit/db/migrations/apply-order.test.ts test/unit/db/whatsapp-onboarding-042.integration.test.ts test/unit/db/whatsapp-onboarding-concurrency.integration.test.ts test/unit/lambda/whatsapp/onboarding-v2-conversation.test.ts --runInBand'
 ```
 
 - [ ] **Step 5: Commit**
@@ -569,7 +607,7 @@ Claim events with `FOR UPDATE SKIP LOCKED`, mark processing before dispatch, use
 cd infra
 npm run build
 npx jest test/unit/lambda/whatsapp/domain-outbox-drain.test.ts test/unit/stacks/whatsapp-stack.test.ts --runInBand
-npx cdk synth --quiet
+CDK_DEFAULT_ACCOUNT=111111111111 CDK_DEFAULT_REGION=us-east-2 npx cdk synth --all -c environment=dev -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:us-east-2:111111111111:identity/jaleapp.ai -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms
 ```
 
 - [ ] **Step 5: Commit**
@@ -601,11 +639,11 @@ npm test -- --runInBand
 cd ..
 bash /home/hermesgoma/.codex/skills/psql-migration-testbed/scripts/run-psql-migration-testbed.sh --repo .
 cd infra
-npx cdk synth --quiet
-npx cdk diff
+CDK_DEFAULT_ACCOUNT=111111111111 CDK_DEFAULT_REGION=us-east-2 npx cdk synth --all -c environment=dev -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:us-east-2:111111111111:identity/jaleapp.ai -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms
+CDK_DEFAULT_ACCOUNT=111111111111 CDK_DEFAULT_REGION=us-east-2 npx cdk diff --all --no-change-set -c environment=dev -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:us-east-2:111111111111:identity/jaleapp.ai -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:us-east-2:111111111111:jale-ci-whatsapp-alarms
 ```
 
-Expected: build and all tests pass; PostgreSQL migrations apply through 040; synth succeeds; diff contains only reviewed additive v2 resources and permissions. Do not deploy from this step.
+Expected: build and all tests pass; PostgreSQL migrations apply through 042; synth succeeds; diff contains only reviewed additive v2 resources and permissions. Do not deploy from this step.
 
 - [ ] **Step 3: Perform security-focused differential review**
 

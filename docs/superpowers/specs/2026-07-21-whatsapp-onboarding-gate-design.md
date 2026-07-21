@@ -4,6 +4,19 @@
 **Status:** Approved  
 **Target:** End-of-week production rollout with local verification and a one-worker production canary
 
+## Canonical Cross-Lane Contract
+
+This document and `docs/superpowers/plans/2026-07-21-whatsapp-onboarding-gate.md` are the canonical shared requirements for both persistent development branches. Every implementation agent must read both documents before editing. If implementation requires a design correction, the owning orchestrator updates both persistent branches through a reviewed integration commit rather than allowing lane-local requirements to drift.
+
+The shared development base is refreshed `origin/main` at `6b4dbab`, which already includes WhatsApp command language, support cases, delivery callbacks, and migrations through `041_whatsapp_web_worker_lookup_grant.sql`. Those upstream capabilities remain in place. The additive onboarding migration is therefore `042_whatsapp_onboarding_gate.sql`.
+
+Persistent lane ownership is:
+
+- `feat/wa-v2-integration` in `.worktrees/wa-v2-integration`: Codex merge captain, shared contracts, migration `042`, delivery gateway, producer deferral/release, FIFO infrastructure, reset tooling, database verification, and final integration.
+- `feat/wa-v2-workflow` in `.worktrees/wa-v2-claude`: Claude Opus workflow orchestrator, OTP-only identity binding, processor integration, onboarding router/state handling, profile/trust flow, bilingual templates, and deterministic conversation behavior.
+
+Neither lane may silently redefine shared types, database contracts, or delivery-policy semantics. Cross-lane interface changes are proposed against the canonical documents, reviewed by both orchestrators, and landed in the integration lane before dependent work continues. The workflow lane freezes before final merge; Codex then merges it into the integration lane and runs the complete gate. Work stops before push, deployment, RDS migration, or worker reset unless the user separately authorizes those actions.
+
 ## Objective
 
 Build a reliable WhatsApp onboarding system that accepts a newly assigned phone number, verifies the worker, completes every required onboarding step, prevents business messaging from interrupting onboarding, and releases still-valid messages after the worker becomes ready.
