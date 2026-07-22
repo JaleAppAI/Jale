@@ -983,7 +983,7 @@ async function handleTrustQuestion(
     professionKey: normalizeTrade(trade),
     questionIndex: idx,
     answerText,
-    provenance: { rubricVersion, scoringModelId: source },
+    provenance: { rubricVersion },
   });
 
   const nextStepKey = TRUST_STEP_NEXT[stepKey];

@@ -506,6 +506,10 @@ describe('trust.question.{1,2,3}', () => {
     expect(provenance).toMatchObject({ trade: 'plumber', source: 'standard' });
     expect(provenance.questionSetVersion).toBeTruthy();
     expect(provenance.rubricVersion).toBeTruthy();
+
+    // `scoring_model_id` is a canonical column another lane (the trust-scorer)
+    // owns and populates later — this router must never write to it.
+    expect(adapters._saveTrustAnswerCalls[2].input.provenance?.scoringModelId).toBeUndefined();
   });
 
   it('answer-three persistence and completeOnboarding share the SAME client/transaction, persistence first', async () => {
