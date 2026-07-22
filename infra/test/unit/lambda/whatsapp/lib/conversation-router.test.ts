@@ -276,6 +276,13 @@ describe('tryConversationRelay', () => {
   });
 
   describe('Manuel regression — unbound awaiting_otp session', () => {
+    // These tests deliberately seed mockQuery with rows the guard must never
+    // consume. clearAllMocks() (the outer beforeEach) does not purge queued
+    // mockResolvedValueOnce values, so an un-consumed seed would otherwise
+    // leak into later tests and shift their mock chains. Reset fully after
+    // each test in this block to keep that leakage from escaping.
+    afterEach(() => mockQuery.mockReset());
+
     const manuelConv = {
       ...baseConv,
       conversation_state: 'awaiting_otp' as const,
@@ -289,24 +296,46 @@ describe('tryConversationRelay', () => {
       }
     }
 
+    // Every test in this block seeds a REAL phone match — a row that
+    // resolveWorkerIdForWhatsappNumber would happily return — deliberately.
+    // The point of the Manuel regression is that a resolvable phone number
+    // must NOT be sufficient to relay an unbound session. A second seeded
+    // row (tos_version: null, i.e. ToS not yet accepted) lets the OLD
+    // fallback path — if the guard were ever removed — run all the way to
+    // the legal-wall branch and return a real (non-null) workerId, instead
+    // of crashing partway through on an unmocked query. That guarantees
+    // `expect(routed).toBeNull()` / `expect(mockQuery).not.toHaveBeenCalled()`
+    // fail as ordinary, readable assertion failures — not a TypeError — if
+    // this regression is ever reintroduced.
+    function seedPhoneMatchAndUnacceptedTos() {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: WORKER }], rowCount: 1 })         // phone match exists
+        .mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 }); // legal wall, if reached
+    }
+
     it('does not relay free text', async () => {
+      seedPhoneMatchAndUnacceptedTos();
       const routed = await tryConversationRelay(client, { ...manuelConv }, msg, deps);
       expect(routed).toBeNull();
       expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
       assertNoJobConversationSql();
       assertNoIdentityBinding();
     });
 
     it('does not present the legal prompt for CHATS', async () => {
+      seedPhoneMatchAndUnacceptedTos();
       const chatsMsg = { ...msg, body: 'CHATS' };
       const routed = await tryConversationRelay(client, { ...manuelConv }, chatsMsg, deps);
       expect(routed).toBeNull();
       expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
       assertNoJobConversationSql();
       assertNoIdentityBinding();
     });
 
     it('does not open an employer conversation from a button', async () => {
+      seedPhoneMatchAndUnacceptedTos();
       const routed = await handleEmployerConversationButton(
         client, { ...manuelConv }, msg,
         { action: 'open', conversationId: CONV_A }, deps,
@@ -314,15 +343,18 @@ describe('tryConversationRelay', () => {
       expect(routed).toBeNull();
       expect(deps.updateConversation).not.toHaveBeenCalled();
       expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('does not open an employer conversation from typed text', async () => {
+      seedPhoneMatchAndUnacceptedTos();
       const routed = await handleEmployerConversationTextAction(
         client, { ...manuelConv }, msg, 'open', deps,
       );
       expect(routed).toBeNull();
       expect(deps.updateConversation).not.toHaveBeenCalled();
       expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 });
