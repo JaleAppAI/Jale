@@ -1,4 +1,4 @@
-import { t, detectLanguage, TemplateKey } from '../../../../../lambda/whatsapp/lib/templates';
+import { t, detectLanguage, TemplateKey, Lang } from '../../../../../lambda/whatsapp/lib/templates';
 
 describe('templates.ts — t()', () => {
   it('returns the ES variant', () => {
@@ -174,5 +174,66 @@ describe('templates.ts — detectLanguage', () => {
     ['', 'es'],
   ])('detectLanguage("%s") → %s', (input, expected) => {
     expect(detectLanguage(input)).toBe(expected);
+  });
+});
+
+const V2_KEYS: TemplateKey[] = [
+  'v2_start_invitation', 'v2_start_cooldown_note',
+  'v2_otp_sent', 'v2_otp_invalid', 'v2_otp_expired', 'v2_otp_locked',
+  'v2_otp_resend_cooldown', 'v2_otp_send_cap',
+  'v2_legal_declined',
+  'v2_ask_name', 'v2_name_invalid',
+  'v2_ask_location', 'v2_location_invalid',
+  'v2_ask_custom_trade', 'v2_custom_trade_invalid',
+  'v2_gate_blocked', 'v2_language_changed', 'v2_ready',
+];
+
+describe('v2 templates', () => {
+  it.each(V2_KEYS)('%s has distinct non-empty EN and ES copy', (key) => {
+    const en = t(key, 'en');
+    const es = t(key, 'es');
+    expect(en.trim().length).toBeGreaterThan(0);
+    expect(es.trim().length).toBeGreaterThan(0);
+    expect(en).not.toBe(es);
+  });
+
+  it('v2_otp_sent interpolates the 5-minute limit', () => {
+    for (const lang of ['en', 'es'] as Lang[]) {
+      expect(t('v2_otp_sent', lang, { minutes: '5' })).toContain('5');
+      expect(t('v2_otp_sent', lang, { minutes: '5' })).not.toContain('{{');
+    }
+  });
+
+  it('v2_otp_invalid interpolates remaining attempts', () => {
+    for (const lang of ['en', 'es'] as Lang[]) {
+      const s = t('v2_otp_invalid', lang, { attempts: '2' });
+      expect(s).toContain('2');
+      expect(s).not.toContain('{{');
+    }
+  });
+
+  it('v2_otp_locked interpolates 15 minutes', () => {
+    for (const lang of ['en', 'es'] as Lang[]) {
+      const s = t('v2_otp_locked', lang, { minutes: '15' });
+      expect(s).toContain('15');
+      expect(s).not.toContain('{{');
+    }
+  });
+
+  it('v2_otp_resend_cooldown interpolates seconds', () => {
+    for (const lang of ['en', 'es'] as Lang[]) {
+      const s = t('v2_otp_resend_cooldown', lang, { seconds: '60' });
+      expect(s).toContain('60');
+      expect(s).not.toContain('{{');
+    }
+  });
+
+  it('the start invitation offers both languages and never reveals account existence', () => {
+    for (const lang of ['en', 'es'] as Lang[]) {
+      const s = t('v2_start_invitation', lang);
+      expect(s).toContain('START');
+      expect(s).toContain('EMPEZAR');
+      expect(s).not.toMatch(/existing|already|ya tienes|cuenta existente/i);
+    }
   });
 });
