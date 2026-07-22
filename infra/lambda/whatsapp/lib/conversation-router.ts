@@ -156,6 +156,11 @@ export async function tryConversationRelay(
 ): Promise<string | null> {
   if (!msg.body.trim()) return null;
 
+  // Identity-binding rule (design §4.2a): only a verified OTP binds a session.
+  // An unbound conversation must never relay into an employer thread — a phone
+  // match is not an identity (the Manuel incident).
+  if (!conv.user_id) return null;
+
   if (conv.conversation_state === 'awaiting_otp') {
     // OTP codes always go to the OTP handler.
     if (isLikelyOtpCode(msg.body)) return null;
@@ -168,13 +173,7 @@ export async function tryConversationRelay(
   // (help/profile/bare-word actions are already handled earlier in routeMessage.)
   if (isJobsKeyword(msg.body) || parseTypedJobAction(msg.body)) return null;
 
-  const workerId = conv.user_id
-    ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
-  if (!workerId) return null;
-
-  if (conv.user_id === null) {
-    console.log(JSON.stringify({ metric: 'ConversationRelayPhoneMatch', workerId }));
-  }
+  const workerId = conv.user_id;
 
   // CHATS/MENSAJES keyword: show the worker their open employer threads.
   // Must be intercepted here so it never reaches relayWorkerFreeText which
@@ -236,7 +235,7 @@ export async function handleEmployerConversationButton(
   payload: { action: 'open' | 'decline' | 'focus'; conversationId: string },
   deps: RouterDeps,
 ): Promise<string | null> {
-  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  const workerId = conv.user_id;
   if (!workerId) {
     await queueOutboxText(client, msg.messageSid, msg.from, t('start_prompt', detectLanguage(msg.body)));
     return null;
@@ -336,7 +335,7 @@ export async function handleEmployerConversationTextAction(
   action: 'open' | 'decline',
   deps: RouterDeps,
 ): Promise<string | null> {
-  const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
+  const workerId = conv.user_id;
   if (!workerId) return null;
 
   await setInternalUserRlsContext(client, workerId);

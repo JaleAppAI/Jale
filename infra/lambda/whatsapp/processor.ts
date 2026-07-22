@@ -1050,9 +1050,9 @@ async function routeMessage(
   }
 
   if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
-    const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
-    if (workerId) {
-      return await handlePickerResponse(client, conv, msg, workerId, routerDeps);
+    // Unbound sessions cannot pick — identity binding requires verified OTP.
+    if (conv.user_id) {
+      return await handlePickerResponse(client, conv, msg, conv.user_id, routerDeps);
     }
   }
 

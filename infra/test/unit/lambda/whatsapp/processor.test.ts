@@ -290,11 +290,10 @@ describe('Processor Lambda', () => {
           rows: [convRow({ conversation_state: 'new' })],
         })
         // findWebRegisteredWorker → no match (not a web-registered worker)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // tryConversationRelay: resolveWorkerIdForWhatsappNumber finds no
-        // verified-phone worker (user_id is null) → relay returns null and the
-        // built-in 'new' greeting path runs as before.
         .mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      // tryConversationRelay short-circuits on the unbound-session guard (no
+      // user_id) before ever querying — relay returns null and the built-in
+      // 'new' greeting path runs as before.
       // handleNewOrRestart begins here; we route via the 'new' → greeting path.
       // Suppressed AdminCreateUser + AdminSetUserPassword succeed.
       mockCognitoSend
@@ -2837,8 +2836,9 @@ describe('interactivePayload extraction from Body', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new2' }] }) // claim
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
         .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // INSERT conv
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // findWebRegisteredWorker → NOT FOUND
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] });       // tryConversationRelay → resolveWorkerIdForWhatsappNumber → not found
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] });       // findWebRegisteredWorker → NOT FOUND
+      // tryConversationRelay short-circuits on the unbound-session guard (no
+      // user_id) before ever querying — no resolver mock needed here.
       mockCognitoSend
         .mockResolvedValueOnce({})  // AdminCreateUser
         .mockResolvedValueOnce({})  // AdminSetUserPassword
