@@ -8,7 +8,9 @@ const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
 import {
+  AmbiguousTwilioSendError,
   drainJobAlertOutbox,
+  sendTwilioWhatsAppMessage,
   sendPendingAdminOutbox,
   sendPendingOutbox,
   _clearOutboxTwilioSecretCacheForTests,
@@ -42,6 +44,30 @@ describe('whatsapp outbox templates', () => {
 
   afterAll(() => {
     process.env = originalEnv;
+  });
+
+  it('accepts an MM-prefixed Twilio message SID', async () => {
+    const sid = `MM${'a'.repeat(32)}`;
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ sid }) });
+
+    await expect(sendTwilioWhatsAppMessage('whatsapp:+15125551234', {
+      body: 'Hello',
+      content_template: null,
+      content_variables: null,
+    })).resolves.toBe(sid);
+  });
+
+  it('keeps malformed Twilio message SIDs ambiguous', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ sid: `MM${'g'.repeat(32)}` }),
+    });
+
+    await expect(sendTwilioWhatsAppMessage('whatsapp:+15125551234', {
+      body: 'Hello',
+      content_template: null,
+      content_variables: null,
+    })).rejects.toBeInstanceOf(AmbiguousTwilioSendError);
   });
 
   it('sends Twilio Content API templates from outbox rows', async () => {

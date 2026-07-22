@@ -14,6 +14,7 @@ import { handler } from '../../../../lambda/whatsapp/status-callback';
 import * as twilioSecretModule from '../../../../lambda/whatsapp/lib/twilio-secret';
 
 const SID = `SM${'a'.repeat(32)}`;
+const MM_SID = `MM${'b'.repeat(32)}`;
 const URL = 'https://custom.example.test/prod/whatsapp/status-callback';
 
 function signature(url: string, params: Record<string, string>): string {
@@ -59,6 +60,15 @@ describe('WhatsApp status callback', () => {
     const result = await handler(event({ MessageSid: SID, SmsStatus: 'sent' }));
     expect(result.statusCode).toBe(200);
     expect(query).toHaveBeenCalledWith(expect.any(String), [SID, 'sent', null, null]);
+  });
+
+  it('accepts a signed callback with an MM-prefixed message SID', async () => {
+    const result = await handler(event({ MessageSid: MM_SID, MessageStatus: 'delivered' }));
+    expect(result.statusCode).toBe(200);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('record_twilio_delivery_status'),
+      [MM_SID, 'delivered', null, null],
+    );
   });
 
   it('rejects a signature made for a different URL before DB access', async () => {

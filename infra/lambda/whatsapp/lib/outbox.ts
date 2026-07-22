@@ -1,5 +1,5 @@
 import type { PoolClient } from 'pg';
-import type { TwilioSecret } from './twilio';
+import { isTwilioMessageSid, type TwilioSecret } from './twilio';
 import {
   getTwilioSecret,
   requireTwilioStatusCallbackUrl,
@@ -7,7 +7,6 @@ import {
 } from './twilio-secret';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
-const TWILIO_SID_RE = /^SM[0-9A-Fa-f]{32}$/;
 
 // H3: poison-message guard for the scheduled admin dispatcher. A row that Twilio
 // hard-rejects (4xx) flips to 'failed' and would otherwise be re-selected and
@@ -97,11 +96,11 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     throw new AmbiguousTwilioSendError('Twilio 2xx response body was not valid JSON');
   }
   const sid = responseBody?.sid;
-  if (!sid || typeof sid !== 'string' || !TWILIO_SID_RE.test(sid)) {
+  if (!isTwilioMessageSid(sid)) {
     // A 2xx HTTP status only means Twilio accepted the request over the
     // wire — it does not guarantee a valid message SID came back. Treat a
     // missing or malformed SID as ambiguous (never as success): the caller
-    // must not mark the row 'sent' without a real SM... SID to correlate
+    // must not mark the row 'sent' without a real SM.../MM... SID to correlate
     // delivery-status callbacks against.
     throw new AmbiguousTwilioSendError(
       `Twilio response missing a valid message SID (got: ${JSON.stringify(sid)})`,
@@ -256,7 +255,7 @@ interface ClaimedJobAlertRow {
  *      reconcile the ambiguous send using Twilio's message records.
  *   2. The Twilio send happens outside that transaction, on a separate
  *      pool connection.
- *   3. Success requires a syntactically valid `SM...` SID
+ *   3. Success requires a syntactically valid `SM...`/`MM...` SID
  *      (sendTwilioWhatsAppMessage already enforces this) — that is the
  *      only path back to 'sent'.
  *   4. AmbiguousTwilioSendError (timeout / malformed response) leaves the
