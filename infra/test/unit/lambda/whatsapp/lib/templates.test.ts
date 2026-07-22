@@ -1,4 +1,8 @@
 import { t, detectLanguage, TemplateKey, Lang } from '../../../../../lambda/whatsapp/lib/templates';
+import {
+  ACCOUNT_EXISTENCE_LEAK_PATTERN,
+  expectDistinctLanguages,
+} from './v2-copy-test-helpers';
 
 describe('templates.ts — t()', () => {
   it('returns the ES variant', () => {
@@ -181,12 +185,21 @@ const V2_KEYS: TemplateKey[] = [
   'v2_start_invitation', 'v2_start_cooldown_note',
   'v2_otp_sent', 'v2_otp_invalid', 'v2_otp_expired', 'v2_otp_locked',
   'v2_otp_resend_cooldown', 'v2_otp_send_cap',
-  'v2_legal_declined',
+  'v2_legal_prompt', 'v2_legal_declined',
   'v2_ask_name', 'v2_name_invalid',
   'v2_ask_location', 'v2_location_invalid',
   'v2_ask_custom_trade', 'v2_custom_trade_invalid',
   'v2_gate_blocked', 'v2_language_changed', 'v2_ready',
+  'v2_options_footer',
 ];
+
+// `v2_start_invitation` is deliberately bilingual in BOTH slots: a worker
+// whose language is unknown must see both START and EMPEZAR, so it cannot
+// satisfy a single-language marker check. Exempted by name, not by
+// weakening the check for everything else.
+const LANGUAGE_MARKER_EXEMPT: ReadonlySet<TemplateKey> = new Set<TemplateKey>([
+  'v2_start_invitation',
+]);
 
 describe('v2 templates', () => {
   it.each(V2_KEYS)('%s has distinct non-empty EN and ES copy', (key) => {
@@ -196,6 +209,13 @@ describe('v2 templates', () => {
     expect(es.trim().length).toBeGreaterThan(0);
     expect(en).not.toBe(es);
   });
+
+  it.each(V2_KEYS.filter((k) => !LANGUAGE_MARKER_EXEMPT.has(k)))(
+    '%s: the ES slot reads as Spanish and the EN slot reads as English',
+    (key) => {
+      expectDistinctLanguages(t(key, 'en'), t(key, 'es'));
+    },
+  );
 
   it('v2_otp_sent interpolates the 5-minute limit', () => {
     for (const lang of ['en', 'es'] as Lang[]) {
@@ -233,7 +253,7 @@ describe('v2 templates', () => {
       const s = t('v2_start_invitation', lang);
       expect(s).toContain('START');
       expect(s).toContain('EMPEZAR');
-      expect(s).not.toMatch(/existing|already|ya tienes|cuenta existente/i);
+      expect(s).not.toMatch(ACCOUNT_EXISTENCE_LEAK_PATTERN);
     }
   });
 });

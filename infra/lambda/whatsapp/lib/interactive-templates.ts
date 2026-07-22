@@ -176,9 +176,6 @@ export function buildV2LegalPrompt(
   tosUrl: string,
   privacyUrl: string,
 ): InteractivePrompt {
-  const body = lang === 'en'
-    ? `Before we continue, please review our Terms (${tosUrl}) and Privacy Policy (${privacyUrl}). Reply ACCEPT to continue, DECLINE to stop, or REVIEW TERMS to see them again.`
-    : `Antes de continuar, revisa nuestros Terminos (${tosUrl}) y nuestro Aviso de Privacidad (${privacyUrl}). Responde ACEPTAR para continuar, RECHAZAR para detenerte, o REVISAR TERMINOS para verlos otra vez.`;
   return {
     templateName: `v2_onboarding_legal_${lang}`,
     variables: {
@@ -188,7 +185,7 @@ export function buildV2LegalPrompt(
       '4': 'legal:decline',
       '5': 'legal:review',
     },
-    fallbackBody: body,
+    fallbackBody: t('v2_legal_prompt', lang, { tos_url: tosUrl, privacy_url: privacyUrl }),
   };
 }
 
@@ -198,7 +195,7 @@ export function buildV2NumberedOptionsPrompt(
   options: readonly string[],
 ): InteractivePrompt {
   const lines = options.map((o, i) => `${i + 1}. ${o}`);
-  const footer = lang === 'en' ? 'Reply with the number.' : 'Responde con el numero.';
+  const footer = t('v2_options_footer', lang);
   return {
     templateName: `v2_onboarding_options_${lang}`,
     variables: {},

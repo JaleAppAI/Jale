@@ -10,6 +10,7 @@ import {
   buildV2StartInvitationPrompt, buildV2OtpPrompt, buildV2LegalPrompt,
   buildV2NumberedOptionsPrompt, V2_FALLBACK_TRUST_QUESTIONS,
 } from '../../../../../lambda/whatsapp/lib/interactive-templates';
+import { ACCOUNT_EXISTENCE_LEAK_PATTERN } from './v2-copy-test-helpers';
 
 describe('interactive onboarding templates', () => {
   it('builds legal quick-reply prompts with the ToS URL variable', () => {
@@ -129,7 +130,7 @@ describe('buildV2StartInvitationPrompt', () => {
     expect(p.templateName).toContain('v2');
     expect(p.fallbackBody).toContain('START');
     expect(p.fallbackBody).toContain('EMPEZAR');
-    expect(p.fallbackBody).not.toMatch(/existing|already|ya tienes/i);
+    expect(p.fallbackBody).not.toMatch(ACCOUNT_EXISTENCE_LEAK_PATTERN);
   });
 });
 

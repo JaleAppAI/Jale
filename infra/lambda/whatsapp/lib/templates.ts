@@ -67,6 +67,7 @@ export type TemplateKey =
   | 'v2_otp_locked'
   | 'v2_otp_resend_cooldown'
   | 'v2_otp_send_cap'
+  | 'v2_legal_prompt'
   | 'v2_legal_declined'
   | 'v2_ask_name'
   | 'v2_name_invalid'
@@ -76,7 +77,8 @@ export type TemplateKey =
   | 'v2_custom_trade_invalid'
   | 'v2_gate_blocked'
   | 'v2_language_changed'
-  | 'v2_ready';
+  | 'v2_ready'
+  | 'v2_options_footer';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -281,6 +283,10 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
     es: 'Pediste demasiados codigos. Intenta de nuevo mas tarde.',
     en: 'You requested too many codes. Please try again later.',
   },
+  v2_legal_prompt: {
+    es: 'Antes de continuar, revisa nuestros Terminos ({{tos_url}}) y nuestro Aviso de Privacidad ({{privacy_url}}). Responde ACEPTAR para continuar, RECHAZAR para detenerte, o REVISAR TERMINOS para verlos otra vez.',
+    en: 'Before we continue, please review our Terms ({{tos_url}}) and Privacy Policy ({{privacy_url}}). Reply ACCEPT to continue, DECLINE to stop, or REVIEW TERMS to see them again.',
+  },
   v2_legal_declined: {
     es: 'Entendido. No podemos continuar sin tu aceptacion. Responde REVISAR TERMINOS cuando quieras verlos otra vez.',
     en: 'Understood. We cannot continue without your acceptance. Reply REVIEW TERMS whenever you want to see them again.',
@@ -320,6 +326,10 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_ready: {
     es: 'Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.',
     en: 'Your profile is ready. We will let you know when there is work for you.',
+  },
+  v2_options_footer: {
+    es: 'Responde con el numero.',
+    en: 'Reply with the number.',
   },
 };
 
