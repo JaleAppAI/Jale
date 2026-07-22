@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS public.worker_domain_outbox (
 CREATE INDEX IF NOT EXISTS worker_domain_outbox_status_attempt
   ON public.worker_domain_outbox (status, next_attempt_at);
 
+ALTER TABLE public.whatsapp_outbox
+  DROP CONSTRAINT IF EXISTS whatsapp_outbox_origin_check;
+ALTER TABLE public.whatsapp_outbox
+  ADD CONSTRAINT whatsapp_outbox_origin_check CHECK (
+    (inbound_message_sid IS NOT NULL AND source_type IS NULL AND source_id IS NULL)
+    OR
+    (inbound_message_sid IS NULL AND source_type IN ('admin_case', 'job_alert', 'worker_intent') AND source_id IS NOT NULL)
+  );
+
 CREATE TABLE IF NOT EXISTS public.whatsapp_runtime_controls (
   control_key TEXT PRIMARY KEY,
   enabled BOOLEAN NOT NULL DEFAULT false,
