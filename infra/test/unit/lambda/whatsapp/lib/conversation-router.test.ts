@@ -218,6 +218,17 @@ describe('tryConversationRelay', () => {
     // Identity binding requires verified OTP (design §4.2a). A phone match is
     // not an identity — the Manuel incident. The guard returns before the
     // resolver, so no SQL runs at all.
+    //
+    // Seed a REAL phone match the guard must never consume, for the same
+    // reason as the Manuel block below: without the seed, removing the guard
+    // kills this test on an unconfigured mock (TypeError) instead of failing
+    // on `expect(mockQuery).not.toHaveBeenCalled()`. Reset at the end so the
+    // un-consumed value cannot leak into the next test — clearAllMocks() does
+    // not purge queued mockResolvedValueOnce values.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: WORKER }], rowCount: 1 })         // phone match exists
+      .mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 }); // legal wall, if reached
+
     const conv = { ...baseConv, conversation_state: 'new', user_id: null };
     const routed = await tryConversationRelay(client, conv, msg, deps);
 
@@ -225,6 +236,8 @@ describe('tryConversationRelay', () => {
     expect(recordWorkerConversationReply).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
     assertNoIdentityBinding();
+
+    mockQuery.mockReset();
   });
 
   it('does NOT relay a 6-digit OTP code while awaiting_otp (falls through)', async () => {
