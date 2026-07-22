@@ -1,0 +1,146 @@
+// infra/test/unit/lambda/whatsapp/lib/onboarding-language.test.ts
+//
+// Pure module: nothing is mocked, no clock is faked. `now` is injected.
+
+import {
+  parseLanguageChoice, detectCommandLang, resolveResponseLanguage,
+  isLanguageCommand, isResendCommand, isReviewTermsCommand, isOnboardingHelpCommand,
+  classifyBlockedCommand, evaluateStartCooldown, shouldRepeatPrompt, appendSendTimestamp,
+  START_COOLDOWN_MS, START_DAILY_CAP, REPROMPT_COOLDOWN_MS,
+} from '../../../../../lambda/whatsapp/lib/onboarding-language';
+
+const T0 = new Date('2026-07-21T12:00:00.000Z');
+const at = (ms: number) => new Date(T0.getTime() + ms);
+
+describe('parseLanguageChoice', () => {
+  it('maps START to en and EMPEZAR to es', () => {
+    expect(parseLanguageChoice('START')).toBe('en');
+    expect(parseLanguageChoice('  empezar ')).toBe('es');
+  });
+
+  it('maps the interactive payloads', () => {
+    expect(parseLanguageChoice('', 'start:lang:en')).toBe('en');
+    expect(parseLanguageChoice('', 'start:lang:es')).toBe('es');
+  });
+
+  it('returns null for unrelated text', () => {
+    expect(parseLanguageChoice('hello there')).toBeNull();
+  });
+});
+
+describe('resolveResponseLanguage', () => {
+  it('answers a command in the command language', () => {
+    expect(resolveResponseLanguage('es', 'HELP', false)).toBe('en');
+    expect(resolveResponseLanguage('en', 'AYUDA', false)).toBe('es');
+  });
+
+  it('always uses the preferred language for interactive taps', () => {
+    expect(resolveResponseLanguage('es', 'HELP', true)).toBe('es');
+  });
+
+  it('uses the preferred language for non-command free text', () => {
+    expect(resolveResponseLanguage('es', 'Juan Perez', false)).toBe('es');
+  });
+});
+
+describe('command recognizers', () => {
+  it.each(['LANGUAGE', 'idioma'])('recognizes %s as the language command', (b) => {
+    expect(isLanguageCommand(b)).toBe(true);
+  });
+
+  it.each(['RESEND', 'reenviar'])('recognizes %s as resend', (b) => {
+    expect(isResendCommand(b)).toBe(true);
+  });
+
+  it.each(['REVIEW TERMS', 'revisar terminos', 'REVISAR TÉRMINOS'])(
+    'recognizes %s as review-terms', (b) => {
+      expect(isReviewTermsCommand(b)).toBe(true);
+    });
+
+  it.each(['HELP', 'ayuda'])('recognizes %s as onboarding help', (b) => {
+    expect(isOnboardingHelpCommand(b)).toBe(true);
+  });
+
+  it('does not recognize a step answer as a command', () => {
+    expect(isLanguageCommand('Juan Perez')).toBe(false);
+    expect(isResendCommand('78701')).toBe(false);
+  });
+});
+
+describe('classifyBlockedCommand', () => {
+  it.each([
+    ['JOBS', 'jobs'], ['trabajos', 'jobs'],
+    ['CHATS', 'chats'], ['mensajes', 'chats'],
+    ['PROFILE', 'profile'], ['perfil', 'profile'],
+  ])('classifies %s as %s', (body, expected) => {
+    expect(classifyBlockedCommand(body)).toBe(expected);
+  });
+
+  it('returns null for a step answer', () => {
+    expect(classifyBlockedCommand('Austin, TX')).toBeNull();
+  });
+});
+
+describe('evaluateStartCooldown', () => {
+  it('allows the first invitation', () => {
+    expect(evaluateStartCooldown([], T0)).toEqual({ allowed: true, reason: 'ok' });
+  });
+
+  it('blocks a second invitation inside 10 minutes', () => {
+    const history = [T0.toISOString()];
+    expect(evaluateStartCooldown(history, at(START_COOLDOWN_MS - 1)))
+      .toEqual({ allowed: false, reason: 'cooldown' });
+  });
+
+  it('allows one after the cooldown', () => {
+    const history = [T0.toISOString()];
+    expect(evaluateStartCooldown(history, at(START_COOLDOWN_MS)))
+      .toEqual({ allowed: true, reason: 'ok' });
+  });
+
+  it('blocks the sixth in 24 hours', () => {
+    const history = Array.from({ length: START_DAILY_CAP },
+      (_, i) => at(i * START_COOLDOWN_MS).toISOString());
+    const now = at(START_DAILY_CAP * START_COOLDOWN_MS + START_COOLDOWN_MS);
+    expect(evaluateStartCooldown(history, now))
+      .toEqual({ allowed: false, reason: 'daily_cap' });
+  });
+
+  it('does not count sends older than 24 hours', () => {
+    const history = Array.from({ length: START_DAILY_CAP },
+      (_, i) => at(i * START_COOLDOWN_MS).toISOString());
+    const now = at(25 * 60 * 60 * 1000);
+    expect(evaluateStartCooldown(history, now)).toEqual({ allowed: true, reason: 'ok' });
+  });
+});
+
+describe('shouldRepeatPrompt', () => {
+  it('is true when never repeated', () => {
+    expect(shouldRepeatPrompt(null, T0)).toBe(true);
+  });
+
+  it('is false inside 30 seconds', () => {
+    expect(shouldRepeatPrompt(T0.toISOString(), at(REPROMPT_COOLDOWN_MS - 1))).toBe(false);
+  });
+
+  it('is true after 30 seconds', () => {
+    expect(shouldRepeatPrompt(T0.toISOString(), at(REPROMPT_COOLDOWN_MS))).toBe(true);
+  });
+});
+
+describe('appendSendTimestamp', () => {
+  it('appends now and prunes entries older than 24 hours', () => {
+    const old = new Date(T0.getTime() - 25 * 60 * 60 * 1000).toISOString();
+    const result = appendSendTimestamp([old, T0.toISOString()], at(60_000));
+    expect(result).not.toContain(old);
+    expect(result).toContain(at(60_000).toISOString());
+    expect(result).toHaveLength(2);
+  });
+});
+
+describe('purity', () => {
+  it('detectCommandLang delegates without side effects', () => {
+    expect(detectCommandLang('AYUDA')).toBe('es');
+    expect(detectCommandLang('Juan Perez')).toBeNull();
+  });
+});
