@@ -50,6 +50,7 @@ const expectedBaselineMigrations = [
   '039_whatsapp_support_cases.sql',
   '040_whatsapp_delivery_status.sql',
   '041_whatsapp_web_worker_lookup_grant.sql',
+  '042_whatsapp_onboarding_gate.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -105,6 +106,50 @@ async function applyMigrationsAndReadColumns(databaseUrl: string): Promise<Map<s
 describe('migration apply order baseline', () => {
   it('locks the integrated migration baseline order', () => {
     expect(migrationFiles()).toEqual(expectedBaselineMigrations);
+  });
+
+  it('adds the WhatsApp onboarding v2 model and MM callback support in migration 042', () => {
+    const migration = readMigration(expectedBaselineMigrations.at(-1)!);
+
+    for (const tableName of [
+      'worker_onboarding_state', 'worker_workflow_runs', 'worker_workflow_transitions',
+      'worker_identity_challenges', 'worker_message_intents', 'worker_domain_outbox',
+      'whatsapp_runtime_controls', 'worker_reset_audit',
+    ]) {
+      expect(migration).toMatch(new RegExp(`CREATE TABLE IF NOT EXISTS public\\.${tableName}\\s*\\(`, 'i'));
+    }
+
+    for (const check of [
+      "CHECK (lifecycle IN ('onboarding', 'ready', 'suspended'))",
+      "CHECK (status IN ('active', 'completed', 'declined', 'cancelled', 'failed'))",
+      "CHECK (status IN ('pending', 'verified', 'expired', 'locked', 'superseded'))",
+      "CHECK (status IN ('deferred', 'eligible', 'leased', 'released', 'delivered',\n                  'expired', 'superseded', 'rejected', 'failed'))",
+      "CHECK (category IN ('onboarding', 'security', 'account', 'job_alert', 'employer_chat'))",
+      "CHECK (owner_service IN ('onboarding-v2', 'identity', 'job-alert', 'job-messaging', 'account'))",
+      "CHECK (status IN ('pending', 'processing', 'completed', 'failed'))",
+      "CHECK (event_type IN ('assessment.requested', 'worker.ready'))",
+      "CHECK (current_step_key IN ('start.choose_language', 'identity.verify_otp'))",
+      "CHECK (current_step_key IN ('start.choose_language', 'identity.verify_otp', 'legal.review', 'profile.name', 'profile.location', 'profile.trade', 'profile.custom_trade', 'trust.question.1', 'trust.question.2', 'trust.question.3'))",
+      "CHECK (preferred_language IN ('en', 'es'))",
+    ]) expect(migration).toContain(check);
+
+    for (const name of [
+      'worker_workflow_one_active', 'worker_message_intent_dedupe',
+      'worker_domain_outbox_event_key', 'worker_message_intents_release_sequence_unique',
+    ]) expect(migration).toContain(name);
+
+    for (const tableName of [
+      'worker_onboarding_state', 'worker_workflow_runs', 'worker_workflow_transitions',
+      'worker_identity_challenges', 'worker_message_intents', 'worker_domain_outbox',
+      'worker_reset_audit', 'whatsapp_runtime_controls',
+    ]) {
+      expect(migration).toContain(`ALTER TABLE public.${tableName} ENABLE ROW LEVEL SECURITY`);
+      expect(migration).toContain(`ALTER TABLE public.${tableName} FORCE ROW LEVEL SECURITY`);
+    }
+
+    expect(migration).not.toMatch(/GRANT\s+SELECT\s+ON\s+(?:public\.)?worker_/i);
+    expect(migration).toContain("'^(SM|MM)[0-9A-Fa-f]{32}$'");
+    expect(migration).toContain('lease_worker_domain_events');
   });
 
   it('defines all baseline readiness tables and spot-check columns', () => {
