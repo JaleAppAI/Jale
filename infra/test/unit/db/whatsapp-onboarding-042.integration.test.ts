@@ -143,6 +143,9 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
         expires_at: new Date(Date.now() + 60_000).toISOString(),
         locked_until: new Date(Date.now() + 60_000).toISOString(),
       })]);
+    await expect(asWhatsapp('SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)', [lockedHash,
+      JSON.stringify({ status: 'pending', locked_until: '' })]))
+      .rejects.toMatchObject({ code: '22023' });
     await expect(asWhatsapp(
       'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
       [lockedHash, workerA, conflictingConversation, 'en', 'SMlocked', '{}'],
