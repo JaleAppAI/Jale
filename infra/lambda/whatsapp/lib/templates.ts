@@ -73,6 +73,7 @@ export type TemplateKey =
   | 'v2_name_invalid'
   | 'v2_ask_location'
   | 'v2_location_invalid'
+  | 'v2_ask_trade'
   | 'v2_ask_custom_trade'
   | 'v2_custom_trade_invalid'
   | 'v2_gate_blocked'
@@ -306,6 +307,10 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_location_invalid: {
     es: 'No reconocimos esa ubicacion. Envia un codigo postal de 5 digitos o Ciudad, ST.',
     en: 'We did not recognize that location. Send a 5-digit ZIP code or City, ST.',
+  },
+  v2_ask_trade: {
+    es: 'Cual es tu oficio principal?',
+    en: 'What is your main trade?',
   },
   v2_ask_custom_trade: {
     es: 'Cual es tu oficio? Escribelo en pocas palabras.',

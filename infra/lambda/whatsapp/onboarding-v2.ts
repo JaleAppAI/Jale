@@ -60,9 +60,17 @@ import {
   buildV2StartInvitationPrompt,
   buildV2OtpPrompt,
   buildV2LegalPrompt,
+  buildV2NumberedOptionsPrompt,
+  V2_FALLBACK_TRUST_QUESTIONS,
   type InteractivePrompt,
 } from './lib/interactive-templates';
 import { normalizeCommandText } from './lib/flows';
+import {
+  normalizeTrade,
+  standardTrustQuestions,
+  getTrustOptions,
+  type ResolvedLocation,
+} from './lib/onboarding-adapters';
 
 // ── Session / message shapes the router is handed ──────────────────────
 
@@ -139,6 +147,21 @@ export interface OnboardingV2RepoDeps {
       metadata?: Record<string, unknown>;
     },
   ) => Promise<{ transitionId: string }>;
+  /**
+   * Task 5's sole call site: fired exactly once, on the SAME client/
+   * transaction as the answer-three persistence that precedes it, with the
+   * locked gate's `expectedLockVersion`. Never awaited for external work —
+   * the two domain events it enqueues are drained by other lanes.
+   */
+  completeOnboarding: (
+    client: PoolClient,
+    input: {
+      workerId: string;
+      runId: string;
+      expectedLockVersion: number;
+      assessmentProvenance: Record<string, unknown>;
+    },
+  ) => Promise<{ assessmentEventId: string; workerReadyEventId: string }>;
 }
 
 export interface OnboardingV2Deps {
@@ -206,22 +229,45 @@ const FREE_TEXT_STEPS = new Set<string>([
   'trust.question.3',
 ]);
 
-/** Steps with no real handler yet (Task 5's job) — every message at these
- * steps is consumed by the gate so `handleProfileAndTrust` is unreachable. */
-const UNIMPLEMENTED_STEPS = new Set<string>([
-  'profile.name',
-  'profile.location',
-  'profile.trade',
-  'profile.custom_trade',
-  'trust.question.1',
-  'trust.question.2',
-  'trust.question.3',
-]);
+/** Steps with no real handler yet. Task 5 implemented profile/trust, so this
+ * is empty — kept (rather than deleted) as the gate's documented extension
+ * point for a future step that isn't ready yet. */
+const UNIMPLEMENTED_STEPS = new Set<string>([]);
+
+// ── Task 5: profile/trust vocabulary + assessment provenance versions ───
+
+/** Canonical trade slugs in list-picker order; mirrors flows.ts's TRADE_KEYS
+ * (never imported directly — that module is out of this task's scope). */
+const TRADE_ORDER = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
+type StandardTrade = Exclude<(typeof TRADE_ORDER)[number], 'other'>;
+
+const TRADE_LABELS: Record<(typeof TRADE_ORDER)[number], { en: string; es: string }> = {
+  electrician: { en: 'Electrician', es: 'Electricista' },
+  plumber: { en: 'Plumber', es: 'Plomero' },
+  carpenter: { en: 'Carpenter', es: 'Carpintero' },
+  concrete: { en: 'Concrete', es: 'Concreto' },
+  painting: { en: 'Painting', es: 'Pintura' },
+  other: { en: 'Other', es: 'Otro' },
+};
+
+/** Provenance identifiers recorded on the assessment (via `completeOnboarding`'s
+ * `assessmentProvenance` payload) and on each `saveTrustAnswer` call. Bump the
+ * relevant constant when the underlying question/rubric content changes. */
+const V2_TRUST_QUESTION_SET_VERSION = 'v2-trust-questions-1';
+const V2_TRUST_FALLBACK_VERSION = 'v2-trust-fallback-1';
+const V2_TRUST_RUBRIC_VERSION = 'v2-trust-rubric-1';
+
+type BilingualQuestion = { en: string; es: string };
 
 // ── Prompt construction: single source of truth for "what does the
 //    current step ask?" ────────────────────────────────────────────────
 
-function buildPromptForStep(stepKey: string, lang: Lang, deps: OnboardingV2Deps): InteractivePrompt {
+function buildPromptForStep(
+  stepKey: string,
+  lang: Lang,
+  deps: OnboardingV2Deps,
+  stateContext?: Record<string, unknown>,
+): InteractivePrompt {
   switch (stepKey) {
     case 'start.choose_language':
       return buildV2StartInvitationPrompt(lang);
@@ -233,11 +279,30 @@ function buildPromptForStep(stepKey: string, lang: Lang, deps: OnboardingV2Deps)
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_name', lang) };
     case 'profile.location':
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_location', lang) };
+    case 'profile.trade': {
+      const options = TRADE_ORDER.map((trade) => TRADE_LABELS[trade][lang]);
+      return buildV2NumberedOptionsPrompt(lang, t('v2_ask_trade', lang), options);
+    }
     case 'profile.custom_trade':
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_custom_trade', lang) };
+    case 'trust.question.1':
+    case 'trust.question.2':
+    case 'trust.question.3':
+      return { templateName: '', variables: {}, fallbackBody: buildTrustQuestionBody(stepKey, lang, stateContext) };
     default:
       return { templateName: '', variables: {}, fallbackBody: t('v2_gate_blocked', lang) };
   }
+}
+
+/** Reads the run's in-progress trust-question set from the session's scratch
+ * context (`v2TrustQuestions`, seeded by `profile.trade`/`profile.custom_trade`);
+ * falls back to the reviewed bilingual fallback set if the context is
+ * missing (e.g. a stale reprompt after a redeploy). */
+function buildTrustQuestionBody(stepKey: string, lang: Lang, stateContext?: Record<string, unknown>): string {
+  const idx = Number(stepKey.split('.').pop()) - 1;
+  const questions = (stateContext?.v2TrustQuestions as BilingualQuestion[] | undefined) ?? V2_FALLBACK_TRUST_QUESTIONS;
+  const q = questions[idx] ?? questions[0];
+  return lang === 'en' ? q.en : q.es;
 }
 
 // ── Pre-auth delivery (Design A) ────────────────────────────────────────
@@ -283,9 +348,10 @@ async function sendStepPrompt(
   now: Date,
   sourceId: string,
   dedupeSuffix: string,
+  stateContext?: Record<string, unknown>,
 ): Promise<void> {
   const routing = STEP_ROUTING[stepKey] ?? DEFAULT_ROUTING;
-  const prompt = buildPromptForStep(stepKey, lang, deps);
+  const prompt = buildPromptForStep(stepKey, lang, deps, stateContext);
   const input: WorkerMessageIntentInput = {
     workerId,
     category: routing.category,
@@ -333,6 +399,24 @@ async function sendTemplateMessage(
   await deps.enqueueWorkerMessage(client, input, now);
 }
 
+/** Thin, named alias over `sendStepPrompt` for the trust-question steps —
+ * kept distinct (rather than inlined) so the trade/trust-set-dependent
+ * prompt path has one obvious call site to change later (e.g. a real Twilio
+ * content template for trust questions). */
+async function sendTrustPrompt(
+  client: PoolClient,
+  deps: OnboardingV2Deps,
+  workerId: string,
+  stepKey: string,
+  lang: Lang,
+  now: Date,
+  sourceId: string,
+  dedupeSuffix: string,
+  stateContext: Record<string, unknown>,
+): Promise<void> {
+  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, sourceId, dedupeSuffix, stateContext);
+}
+
 async function repeatCurrentPrompt(
   client: PoolClient,
   session: OnboardingV2Session,
@@ -346,7 +430,7 @@ async function repeatCurrentPrompt(
   const key = `v2LastPromptAt:${stepKey}`;
   const lastIso = (session.state_context?.[key] as string | undefined) ?? null;
   if (!shouldRepeatPrompt(lastIso, now)) return;
-  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, sourceId, `repeat:${now.getTime()}`);
+  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, sourceId, `repeat:${now.getTime()}`, session.state_context);
   session.state_context[key] = now.toISOString();
 }
 
@@ -635,17 +719,336 @@ async function handleLegalStep(
   return { handled: true, workerId: gate.userId, stepKey: 'legal.review' };
 }
 
-// ── Bound: profile/trust stub (Task 5 replaces this) ────────────────────
+// ── Bound: profile.name ──────────────────────────────────────────────────
+
+async function handleProfileName(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const trimmed = (msg.body ?? '').trim();
+  const valid = trimmed.length >= 2 && trimmed.length <= 100;
+  if (!valid) {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.name', lang, now, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.name' };
+  }
+
+  await deps.adapters.profile.saveName(client, gate.userId, trimmed);
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey: 'profile.name',
+    toStepKey: 'profile.location',
+    contextPatch: { nameSetAt: now.toISOString() },
+    inboundMessageSid: msg.messageSid,
+    reason: 'profile_name_set',
+  });
+  await sendStepPrompt(client, deps, updated.userId, 'profile.location', updated.preferredLanguage, now, msg.messageSid, `name:${now.getTime()}`);
+  return { handled: true, workerId: updated.userId, stepKey: 'profile.location' };
+}
+
+// ── Bound: profile.location ──────────────────────────────────────────────
+
+async function handleProfileLocation(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const resolved: ResolvedLocation | null = deps.adapters.location.resolve(msg.body ?? '');
+  if (!resolved) {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.location', lang, now, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.location' };
+  }
+
+  await deps.adapters.profile.saveLocation(client, gate.userId, resolved);
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey: 'profile.location',
+    toStepKey: 'profile.trade',
+    contextPatch: { locationSource: resolved.source },
+    inboundMessageSid: msg.messageSid,
+    reason: 'profile_location_set',
+  });
+  await sendStepPrompt(client, deps, updated.userId, 'profile.trade', updated.preferredLanguage, now, msg.messageSid, `location:${now.getTime()}`);
+  return { handled: true, workerId: updated.userId, stepKey: 'profile.trade' };
+}
+
+// ── Bound: profile.trade (list picker) ───────────────────────────────────
+
+function parseTradeChoice(msg: OnboardingV2InboundMessage): (typeof TRADE_ORDER)[number] | null {
+  if (msg.interactivePayload) {
+    const match = /^trade:(.+)$/.exec(msg.interactivePayload);
+    const candidate = match?.[1];
+    if (candidate && (TRADE_ORDER as readonly string[]).includes(candidate)) {
+      return candidate as (typeof TRADE_ORDER)[number];
+    }
+    return null;
+  }
+  const trimmed = (msg.body ?? '').trim();
+  const asIndex = Number(trimmed);
+  if (Number.isInteger(asIndex) && asIndex >= 1 && asIndex <= TRADE_ORDER.length) {
+    return TRADE_ORDER[asIndex - 1];
+  }
+  const lowered = trimmed.toLowerCase();
+  if ((TRADE_ORDER as readonly string[]).includes(lowered)) {
+    return lowered as (typeof TRADE_ORDER)[number];
+  }
+  return null;
+}
+
+async function handleProfileTrade(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const choice = parseTradeChoice(msg);
+  if (!choice) {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.trade', lang, now, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.trade' };
+  }
+
+  if (choice === 'other') {
+    await deps.adapters.profile.saveTrade(client, gate.userId, 'other');
+    const updated = await deps.repo.advanceWorkflow(client, {
+      runId: gate.runId!,
+      expectedLockVersion: gate.lockVersion!,
+      fromStepKey: 'profile.trade',
+      toStepKey: 'profile.custom_trade',
+      contextPatch: { selectedTrade: 'other' },
+      inboundMessageSid: msg.messageSid,
+      reason: 'profile_trade_other',
+    });
+    await sendStepPrompt(client, deps, updated.userId, 'profile.custom_trade', updated.preferredLanguage, now, msg.messageSid, `trade:${now.getTime()}`);
+    return { handled: true, workerId: updated.userId, stepKey: 'profile.custom_trade' };
+  }
+
+  const trade: StandardTrade = choice;
+  await deps.adapters.profile.saveTrade(client, gate.userId, trade);
+
+  const questions: BilingualQuestion[] = standardTrustQuestions(trade).map((q) => ({ en: q.q_en, es: q.q_es }));
+  session.state_context.v2ProfileTrade = trade;
+  session.state_context.v2TrustQuestions = questions;
+  session.state_context.v2TrustSource = 'standard';
+  session.state_context.v2QuestionSetVersion = V2_TRUST_QUESTION_SET_VERSION;
+  session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey: 'profile.trade',
+    toStepKey: 'trust.question.1',
+    contextPatch: { trade, trustQuestionSource: 'standard' },
+    inboundMessageSid: msg.messageSid,
+    reason: 'profile_trade_standard',
+  });
+  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', updated.preferredLanguage, now, msg.messageSid, `trade:${now.getTime()}`, session.state_context);
+  return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
+}
+
+// ── Bound: profile.custom_trade ──────────────────────────────────────────
+
+async function handleCustomTrade(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const professionRaw = (msg.body ?? '').trim();
+  if (!professionRaw) {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.custom_trade', lang, now, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.custom_trade' };
+  }
+
+  const professionKey = normalizeTrade(professionRaw);
+
+  // The generator never throws by contract (createTrustQuestionGenerator
+  // catches internally), but an injected/production adapter failing in an
+  // unexpected way must still fall back rather than fail the run.
+  let generated: BilingualQuestion[] | null = null;
+  try {
+    const result = await deps.adapters.trustQuestions.generate(client, professionRaw);
+    if (Array.isArray(result) && result.length === 3) {
+      generated = result.map((q) => ({ en: q.q_en, es: q.q_es }));
+    }
+  } catch (err) {
+    console.error(JSON.stringify({
+      metric: 'OnboardingTrustQuestionGenerationFailed',
+      reason: (err as { name?: string })?.name ?? 'unknown_error',
+    }));
+    generated = null;
+  }
+
+  const source: 'generated' | 'fallback' = generated ? 'generated' : 'fallback';
+  const questions: BilingualQuestion[] = generated ?? V2_FALLBACK_TRUST_QUESTIONS.map((q) => ({ ...q }));
+
+  await deps.adapters.profile.saveTrade(client, gate.userId, 'other');
+  session.state_context.v2ProfileTrade = professionKey;
+  session.state_context.v2TrustQuestions = questions;
+  session.state_context.v2TrustSource = source;
+  session.state_context.v2QuestionSetVersion = source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION;
+  session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey: 'profile.custom_trade',
+    toStepKey: 'trust.question.1',
+    contextPatch: { customTrade: professionKey, trustQuestionSource: source },
+    inboundMessageSid: msg.messageSid,
+    reason: 'profile_custom_trade_set',
+  });
+  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', updated.preferredLanguage, now, msg.messageSid, `custom:${now.getTime()}`, session.state_context);
+  return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
+}
+
+// ── Bound: trust.question.{1,2,3} + atomic readiness ─────────────────────
+
+const TRUST_STEP_NEXT: Record<string, WorkflowStepKey | null> = {
+  'trust.question.1': 'trust.question.2',
+  'trust.question.2': 'trust.question.3',
+  'trust.question.3': null,
+};
+
+/** Parses a 1-based option index from either a `trust:<n>` interactive
+ * payload or plain numeric text. Returns null when neither form is present. */
+function parseTrustOptionIndex(msg: OnboardingV2InboundMessage): number | null {
+  if (msg.interactivePayload) {
+    const match = /^trust:(\d+)$/.exec(msg.interactivePayload);
+    if (!match) return null;
+    return Number(match[1]);
+  }
+  const trimmed = (msg.body ?? '').trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  return Number(trimmed);
+}
+
+async function handleTrustQuestion(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+  stepKey: 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
+): Promise<RouteResult> {
+  // Idempotency: a message arriving after this run already completed (e.g. a
+  // duplicate webhook delivery of the final answer) must not re-complete it.
+  if (gate.status === 'completed') {
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  const idx = Number(stepKey.split('.').pop()) - 1; // 0-based
+  const trade = (session.state_context.v2ProfileTrade as string | undefined) ?? 'other';
+  const source = (session.state_context.v2TrustSource as string | undefined) ?? 'fallback';
+  const questionSetVersion = (session.state_context.v2QuestionSetVersion as string | undefined)
+    ?? (source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION);
+  const rubricVersion = (session.state_context.v2RubricVersion as string | undefined) ?? V2_TRUST_RUBRIC_VERSION;
+
+  let answerText: string | null = null;
+  if (source === 'standard') {
+    const options = getTrustOptions(idx, trade);
+    const optionIdx = parseTrustOptionIndex(msg);
+    if (optionIdx !== null && optionIdx >= 1 && optionIdx <= options.length) {
+      answerText = options[optionIdx - 1];
+    }
+  } else {
+    const trimmed = (msg.body ?? '').trim();
+    answerText = trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (answerText === null) {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  await deps.adapters.profile.saveTrustAnswer(client, {
+    workerId: gate.userId,
+    professionKey: normalizeTrade(trade),
+    questionIndex: idx,
+    answerText,
+    provenance: { rubricVersion, scoringModelId: source },
+  });
+
+  const nextStepKey = TRUST_STEP_NEXT[stepKey];
+  if (nextStepKey) {
+    const updated = await deps.repo.advanceWorkflow(client, {
+      runId: gate.runId!,
+      expectedLockVersion: gate.lockVersion!,
+      fromStepKey: stepKey,
+      toStepKey: nextStepKey,
+      contextPatch: { [`trustAnswer${idx + 1}At`]: now.toISOString() },
+      inboundMessageSid: msg.messageSid,
+      reason: 'trust_answer_recorded',
+    });
+    await sendTrustPrompt(client, deps, updated.userId, nextStepKey, updated.preferredLanguage, now, msg.messageSid, `trust:${now.getTime()}`, session.state_context);
+    return { handled: true, workerId: updated.userId, stepKey: nextStepKey };
+  }
+
+  // Answer three: persist (done above), then complete — same client/
+  // transaction, exactly once, no external request or send. C6's release
+  // owns the sole ready confirmation; this router enqueues nothing further.
+  await deps.repo.completeOnboarding(client, {
+    workerId: gate.userId,
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    assessmentProvenance: {
+      trade,
+      professionKey: normalizeTrade(trade),
+      source,
+      questionSetVersion,
+      rubricVersion,
+    },
+  });
+  return { handled: true, workerId: gate.userId, stepKey };
+}
+
+// ── Bound: profile/trust dispatch ────────────────────────────────────────
 
 async function handleProfileAndTrust(
-  _client: PoolClient,
-  _session: OnboardingV2Session,
-  _msg: OnboardingV2InboundMessage,
-  _deps: OnboardingV2Deps,
-  _gate: WorkerGate,
-  _stepKey: WorkflowStepKey,
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  stepKey: WorkflowStepKey,
+  lang: Lang,
+  now: Date,
 ): Promise<RouteResult> {
-  throw new Error('profile/trust steps land in Task 5');
+  switch (stepKey) {
+    case 'profile.name':
+      return handleProfileName(client, session, msg, deps, gate, lang, now);
+    case 'profile.location':
+      return handleProfileLocation(client, session, msg, deps, gate, lang, now);
+    case 'profile.trade':
+      return handleProfileTrade(client, session, msg, deps, gate, lang, now);
+    case 'profile.custom_trade':
+      return handleCustomTrade(client, session, msg, deps, gate, lang, now);
+    case 'trust.question.1':
+    case 'trust.question.2':
+    case 'trust.question.3':
+      return handleTrustQuestion(client, session, msg, deps, gate, lang, now, stepKey);
+    default:
+      // Unreachable given routeBoundStep's dispatch, but keeps this
+      // function total rather than silently falling through.
+      throw new Error(`unhandled bound step: ${stepKey}`);
+  }
 }
 
 // ── Bound-step dispatch ─────────────────────────────────────────────────
@@ -676,7 +1079,7 @@ async function routeBoundStep(
     return handleLegalStep(client, session, msg, deps, gate, lang, responseLang, now);
   }
 
-  return handleProfileAndTrust(client, session, msg, deps, gate, stepKey);
+  return handleProfileAndTrust(client, session, msg, deps, gate, stepKey, lang, now);
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────

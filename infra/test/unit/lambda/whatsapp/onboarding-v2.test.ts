@@ -71,6 +71,7 @@ function createFakePreAuthRepo() {
 function createFakeGateRepo() {
   const gates = new Map<string, WorkerGate>();
   const transitions: unknown[] = [];
+  const completions: unknown[] = [];
 
   const repo = {
     async loadWorkerGate(_client: any, workerId: string): Promise<WorkerGate | null> {
@@ -136,8 +137,26 @@ function createFakeGateRepo() {
       transitions.push(input);
       return { transitionId: `t-${transitions.length}` };
     },
+    async completeOnboarding(
+      _client: any,
+      input: { workerId: string; runId: string; expectedLockVersion: number; assessmentProvenance: Record<string, unknown> },
+    ): Promise<{ assessmentEventId: string; workerReadyEventId: string }> {
+      let found: WorkerGate | undefined;
+      for (const gate of gates.values()) {
+        if (gate.runId === input.runId) found = gate;
+      }
+      if (!found) throw new Error('workflow_lock_conflict');
+      if (found.lockVersion !== input.expectedLockVersion) {
+        throw new Error('workflow_lock_conflict');
+      }
+      completions.push({ ...input });
+      const updated: WorkerGate = { ...found, status: 'completed', lockVersion: (found.lockVersion ?? 0) + 1 };
+      gates.set(updated.userId, updated);
+      return { assessmentEventId: `assessment-${completions.length}`, workerReadyEventId: `ready-${completions.length}` };
+    },
     _gates: gates,
     _transitions: transitions,
+    _completions: completions,
   };
   return repo;
 }
@@ -212,6 +231,7 @@ function makeDeps() {
       loadWorkerGate: (c, workerId) => gateRepo.loadWorkerGate(c, workerId),
       advanceWorkflow: (c, input) => gateRepo.advanceWorkflow(c, input),
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
+      completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
     },
     enqueueWorkerMessage: gateway.enqueueWorkerMessage,
     enqueuePreAuthPrompt: preAuthDelivery.enqueuePreAuthPrompt,
@@ -622,10 +642,11 @@ describe('command gate', () => {
 
     const result = await routeOnboardingV2(client, session, makeMsg('Chata'), deps);
 
-    expect(result.stepKey).toBe('profile.name');
+    // "Chata" is a valid 2-100 char name — Task 5 accepts and advances it,
+    // rather than the gate ever classifying it as the CHATS command.
+    expect(result.stepKey).toBe('profile.location');
     const blockedLog = warnedMetrics(warnSpy).find((m) => m.metric === 'OnboardingGateBlocked');
-    expect(blockedLog).toBeTruthy();
-    expect(blockedLog.command).not.toBe('chats');
+    expect(blockedLog).toBeFalsy();
 
     warnSpy.mockRestore();
   });
@@ -681,26 +702,3 @@ describe('sending discipline', () => {
   });
 });
 
-// ── profile/trust stub ────────────────────────────────────────────────
-
-describe('profile/trust steps (Task 5 stub)', () => {
-  it('the gate consumes every message at profile/trust steps so the stub is never reached', async () => {
-    const { deps, gateRepo } = makeDeps();
-    const steps: Array<WorkerGate['currentStepKey']> = [
-      'profile.name',
-      'profile.location',
-      'profile.trade',
-      'profile.custom_trade',
-      'trust.question.1',
-      'trust.question.2',
-      'trust.question.3',
-    ];
-    for (const stepKey of steps) {
-      const gate = seedActiveGate(gateRepo, { userId: `user-${stepKey}`, currentStepKey: stepKey });
-      const session = makeSession({ user_id: gate.userId });
-      await expect(
-        routeOnboardingV2(client, session, makeMsg('some free text'), deps),
-      ).resolves.toMatchObject({ handled: true, stepKey });
-    }
-  });
-});
