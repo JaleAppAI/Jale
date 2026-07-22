@@ -269,6 +269,8 @@ DECLARE
   v_id UUID;
   v_old_status TEXT := 'pending';
   v_new_status TEXT;
+  v_old_locked_until TIMESTAMPTZ;
+  v_requested_locked_until TIMESTAMPTZ;
 BEGIN
   IF p_phone_hash IS NULL OR p_phone_hash !~ '^[0-9a-f]{64}$' THEN
     RAISE EXCEPTION 'invalid phone hash' USING ERRCODE = '22023';
@@ -281,16 +283,28 @@ BEGIN
   END IF;
 
   PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_phone_hash, 0));
-  SELECT c.id, c.status INTO v_id, v_old_status
+  SELECT c.id, c.status, c.locked_until INTO v_id, v_old_status, v_old_locked_until
     FROM public.worker_identity_challenges c
    WHERE c.phone_hash = p_phone_hash AND c.status IN ('pending', 'locked')
    ORDER BY c.created_at DESC, c.id DESC LIMIT 1 FOR UPDATE;
 
   v_new_status := COALESCE(p_patch->>'status', v_old_status, 'pending');
+  v_requested_locked_until := CASE WHEN p_patch ? 'locked_until'
+    THEN NULLIF(p_patch->>'locked_until','')::timestamptz
+    ELSE v_old_locked_until
+  END;
   IF v_new_status = 'verified'
      OR v_new_status NOT IN ('pending', 'locked', 'expired', 'superseded')
      OR (v_old_status = 'locked' AND v_new_status NOT IN ('locked', 'pending', 'expired', 'superseded')) THEN
     RAISE EXCEPTION 'invalid pre-auth status transition: % to %', v_old_status, v_new_status
+      USING ERRCODE = '22023';
+  END IF;
+
+  IF v_old_status = 'locked' AND v_old_locked_until > pg_catalog.now()
+     AND (v_new_status <> 'locked'
+       OR v_requested_locked_until IS NULL
+       OR v_requested_locked_until < v_old_locked_until) THEN
+    RAISE EXCEPTION 'active pre-auth lock cannot be cleared or reduced'
       USING ERRCODE = '22023';
   END IF;
 
@@ -306,7 +320,7 @@ BEGIN
     status = v_new_status,
     attempts = CASE WHEN p_patch ? 'attempts' THEN (p_patch->>'attempts')::integer ELSE attempts END,
     expires_at = CASE WHEN p_patch ? 'expires_at' THEN NULLIF(p_patch->>'expires_at','')::timestamptz ELSE expires_at END,
-    locked_until = CASE WHEN p_patch ? 'locked_until' THEN NULLIF(p_patch->>'locked_until','')::timestamptz ELSE locked_until END,
+    locked_until = v_requested_locked_until,
     updated_at = pg_catalog.now()
   WHERE id = v_id;
   RETURN QUERY SELECT c.* FROM public.worker_identity_challenges c WHERE c.id = v_id;
@@ -664,9 +678,9 @@ BEGIN
 
   IF EXISTS (
     SELECT 1 FROM (VALUES
-      ('worker_workflow_runs', 'worker_workflow_one_active', ARRAY['user_id']::text[], ARRAY['status', 'active']::text[]),
-      ('worker_message_intents', 'worker_message_intents_release_sequence_unique', ARRAY['user_id', 'release_sequence']::text[], ARRAY['release_sequence', 'is not null']::text[])
-    ) expected(table_name, index_name, key_columns, predicate_terms)
+      ('worker_workflow_runs', 'worker_workflow_one_active', ARRAY['user_id']::text[], '(status = ''active''::text)'),
+      ('worker_message_intents', 'worker_message_intents_release_sequence_unique', ARRAY['user_id', 'release_sequence']::text[], '(release_sequence IS NOT NULL)')
+    ) expected(table_name, index_name, key_columns, predicate)
     WHERE NOT EXISTS (
       SELECT 1
         FROM pg_catalog.pg_index idx
@@ -686,26 +700,23 @@ BEGIN
             ORDER BY key.ord
          ) = expected.key_columns
          AND idx.indpred IS NOT NULL
-         AND NOT EXISTS (
-           SELECT 1 FROM unnest(expected.predicate_terms) term
-            WHERE lower(pg_catalog.pg_get_expr(idx.indpred, idx.indrelid)) NOT LIKE '%' || term || '%'
-         )
+         AND pg_catalog.pg_get_expr(idx.indpred, idx.indrelid) = expected.predicate
     )
   ) THEN RAISE EXCEPTION 'migration 042 partial unique index self-audit failed'; END IF;
 
   FOR expected_check IN SELECT * FROM (VALUES
-    ('worker_onboarding_state', 'lifecycle', ARRAY['onboarding', 'ready', 'suspended']::text[]),
-    ('worker_workflow_runs', 'status', ARRAY['active', 'completed', 'declined', 'cancelled', 'failed']::text[]),
-    ('worker_identity_challenges', 'status', ARRAY['pending', 'verified', 'expired', 'locked', 'superseded']::text[]),
-    ('worker_message_intents', 'status', ARRAY['deferred', 'eligible', 'leased', 'released', 'delivered', 'expired', 'superseded', 'rejected', 'failed']::text[]),
-    ('worker_message_intents', 'category', ARRAY['onboarding', 'security', 'account', 'job_alert', 'employer_chat']::text[]),
-    ('worker_message_intents', 'owner_service', ARRAY['onboarding-v2', 'identity', 'job-alert', 'job-messaging', 'account']::text[]),
-    ('worker_domain_outbox', 'status', ARRAY['pending', 'processing', 'completed', 'failed']::text[]),
-    ('worker_domain_outbox', 'event_type', ARRAY['assessment.requested', 'worker.ready']::text[]),
-    ('worker_identity_challenges', 'current_step_key', ARRAY['start.choose_language', 'identity.verify_otp']::text[]),
-    ('worker_workflow_runs', 'current_step_key', ARRAY['start.choose_language', 'identity.verify_otp', 'legal.review', 'profile.name', 'profile.location', 'profile.trade', 'profile.custom_trade', 'trust.question.1', 'trust.question.2', 'trust.question.3']::text[]),
-    ('worker_workflow_runs', 'preferred_language', ARRAY['en', 'es']::text[])
-  ) AS checks(table_name, column_name, required_terms)
+    ('worker_onboarding_state', 'worker_onboarding_state_lifecycle_check', 'CHECK ((lifecycle = ANY (ARRAY[''onboarding''::text, ''ready''::text, ''suspended''::text])))'),
+    ('worker_workflow_runs', 'worker_workflow_runs_status_check', 'CHECK ((status = ANY (ARRAY[''active''::text, ''completed''::text, ''declined''::text, ''cancelled''::text, ''failed''::text])))'),
+    ('worker_identity_challenges', 'worker_identity_challenges_status_check', 'CHECK ((status = ANY (ARRAY[''pending''::text, ''verified''::text, ''expired''::text, ''locked''::text, ''superseded''::text])))'),
+    ('worker_message_intents', 'worker_message_intents_status_check', 'CHECK ((status = ANY (ARRAY[''deferred''::text, ''eligible''::text, ''leased''::text, ''released''::text, ''delivered''::text, ''expired''::text, ''superseded''::text, ''rejected''::text, ''failed''::text])))'),
+    ('worker_message_intents', 'worker_message_intents_category_check', 'CHECK ((category = ANY (ARRAY[''onboarding''::text, ''security''::text, ''account''::text, ''job_alert''::text, ''employer_chat''::text])))'),
+    ('worker_message_intents', 'worker_message_intents_owner_service_check', 'CHECK ((owner_service = ANY (ARRAY[''onboarding-v2''::text, ''identity''::text, ''job-alert''::text, ''job-messaging''::text, ''account''::text])))'),
+    ('worker_domain_outbox', 'worker_domain_outbox_status_check', 'CHECK ((status = ANY (ARRAY[''pending''::text, ''processing''::text, ''completed''::text, ''failed''::text])))'),
+    ('worker_domain_outbox', 'worker_domain_outbox_event_type_check', 'CHECK ((event_type = ANY (ARRAY[''assessment.requested''::text, ''worker.ready''::text])))'),
+    ('worker_identity_challenges', 'worker_identity_challenges_current_step_key_check', 'CHECK ((current_step_key = ANY (ARRAY[''start.choose_language''::text, ''identity.verify_otp''::text])))'),
+    ('worker_workflow_runs', 'worker_workflow_runs_current_step_key_check', 'CHECK ((current_step_key = ANY (ARRAY[''start.choose_language''::text, ''identity.verify_otp''::text, ''legal.review''::text, ''profile.name''::text, ''profile.location''::text, ''profile.trade''::text, ''profile.custom_trade''::text, ''trust.question.1''::text, ''trust.question.2''::text, ''trust.question.3''::text])))'),
+    ('worker_workflow_runs', 'worker_workflow_runs_preferred_language_check', 'CHECK ((preferred_language = ANY (ARRAY[''en''::text, ''es''::text])))')
+  ) AS checks(table_name, constraint_name, definition)
   LOOP
     IF NOT EXISTS (
       SELECT 1
@@ -715,14 +726,11 @@ BEGIN
        WHERE n.nspname = 'public'
          AND tbl.relname = expected_check.table_name
          AND con.contype = 'c'
-         AND lower(pg_catalog.pg_get_constraintdef(con.oid)) LIKE '%' || expected_check.column_name || '%'
-         AND NOT EXISTS (
-           SELECT 1 FROM unnest(expected_check.required_terms) term
-            WHERE lower(pg_catalog.pg_get_constraintdef(con.oid)) NOT LIKE '%' || term || '%'
-         )
+         AND con.conname = expected_check.constraint_name
+         AND pg_catalog.pg_get_constraintdef(con.oid) = expected_check.definition
     ) THEN
       RAISE EXCEPTION 'migration 042 check constraint self-audit failed: %.%',
-        expected_check.table_name, expected_check.column_name;
+        expected_check.table_name, expected_check.constraint_name;
     END IF;
   END LOOP;
 
