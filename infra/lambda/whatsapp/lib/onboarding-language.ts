@@ -8,7 +8,7 @@
 // comes from ./flows. Nothing here is a canonical C2/C4 symbol.
 
 import { type Lang } from './templates';
-import { normalizeCommandText, matchCommandFuzzy, detectCommandLanguage } from './flows';
+import { normalizeCommandText, detectCommandLanguage } from './flows';
 
 /** Start template cooldown: 1 per normalized phone per 10 minutes. */
 export const START_COOLDOWN_MS = 10 * 60 * 1000;
@@ -54,11 +54,50 @@ export function resolveResponseLanguage(
   return detectCommandLang(body) ?? preferred;
 }
 
+// Local Damerau-Levenshtein distance, scored against a caller-supplied word
+// set rather than flows.ts's fixed COMMAND_KEYWORDS list — so families not in
+// that list (LANGUAGE, RESEND) still get 1-edit typo tolerance. Deliberately
+// duplicated from flows.ts's private implementation rather than importing it:
+// flows.ts belongs to another lane and does not export a way to fuzzy-match
+// against an arbitrary word set.
+function damerauLevenshteinDistance(a: string, b: string): number {
+  const d: number[][] = Array.from(
+    { length: a.length + 1 },
+    () => new Array(b.length + 1).fill(0),
+  );
+  for (let i = 0; i <= a.length; i++) d[i][0] = i;
+  for (let j = 0; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost,
+      );
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      }
+    }
+  }
+  return d[a.length][b.length];
+}
+
+// Same guards as flows.ts's matchCommandFuzzy: no whitespace, minimum length
+// 4, only compare candidates sharing the first character, threshold <= 1.
+function matchFuzzyAgainst(normalized: string, words: ReadonlySet<string>): boolean {
+  if (!normalized || /\s/.test(normalized) || normalized.length < 4) return false;
+  for (const word of words) {
+    if (word[0] !== normalized[0]) continue;
+    if (damerauLevenshteinDistance(normalized, word) <= 1) return true;
+  }
+  return false;
+}
+
 function matches(body: string, words: ReadonlySet<string>): boolean {
   const n = normalizeCommandText(body);
   if (words.has(n)) return true;
-  const fuzzy = matchCommandFuzzy(n);
-  return fuzzy !== null && words.has(fuzzy);
+  return matchFuzzyAgainst(n, words);
 }
 
 const LANGUAGE_WORDS = new Set(['language', 'idioma']);
@@ -104,11 +143,14 @@ export function classifyBlockedCommand(body: string): 'jobs' | 'chats' | 'profil
   return null;
 }
 
+// `history` crosses a boundary owned by another lane's repository layer, so
+// it is treated as untrusted: non-finite, future-dated (clock skew or bad
+// data), and stale (>24h) entries are all dropped before use.
 function parseHistory(history: readonly string[], now: Date): number[] {
   const nowMs = now.getTime();
   return history
     .map((iso) => Date.parse(iso))
-    .filter((ms) => Number.isFinite(ms) && nowMs - ms < START_DAILY_WINDOW_MS)
+    .filter((ms) => Number.isFinite(ms) && ms <= nowMs && nowMs - ms < START_DAILY_WINDOW_MS)
     .sort((a, b) => b - a);
 }
 
@@ -134,8 +176,15 @@ export function shouldRepeatPrompt(lastIso: string | null | undefined, now: Date
   return now.getTime() - last >= REPROMPT_COOLDOWN_MS;
 }
 
-/** Append this send and drop anything outside the 24-hour window. */
+/**
+ * Append this send and drop anything outside the 24-hour window. Returned in
+ * ascending chronological order (oldest -> newest -> now): this array is
+ * persisted and read back by the repository layer, so callers should be able
+ * to assume chronological order rather than re-deriving it.
+ */
 export function appendSendTimestamp(history: readonly string[], now: Date): string[] {
-  const kept = parseHistory(history, now).map((ms) => new Date(ms).toISOString());
+  const kept = parseHistory(history, now)
+    .sort((a, b) => a - b)
+    .map((ms) => new Date(ms).toISOString());
   return [...kept, now.toISOString()];
 }

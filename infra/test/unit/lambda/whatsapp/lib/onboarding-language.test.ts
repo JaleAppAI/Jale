@@ -65,6 +65,18 @@ describe('command recognizers', () => {
     expect(isLanguageCommand('Juan Perez')).toBe(false);
     expect(isResendCommand('78701')).toBe(false);
   });
+
+  it('applies 1-edit fuzzy tolerance to families outside flows.ts COMMAND_KEYWORDS', () => {
+    expect(isResendCommand('resendd')).toBe(true);
+    expect(isResendCommand('reenvia')).toBe(true);
+    expect(isLanguageCommand('idiona')).toBe(true);
+    expect(isLanguageCommand('languag')).toBe(true);
+  });
+
+  it('keeps the whitespace and length guards for the fuzzy fallback', () => {
+    expect(isResendCommand('resent me')).toBe(false);
+    expect(isResendCommand('res')).toBe(false);
+  });
 });
 
 describe('classifyBlockedCommand', () => {
@@ -112,6 +124,11 @@ describe('evaluateStartCooldown', () => {
     const now = at(25 * 60 * 60 * 1000);
     expect(evaluateStartCooldown(history, now)).toEqual({ allowed: true, reason: 'ok' });
   });
+
+  it('ignores a future-dated entry (clock skew / bad data) instead of treating it as recent', () => {
+    const history = [at(60 * 60 * 1000).toISOString()]; // 1 hour in the future
+    expect(evaluateStartCooldown(history, T0)).toEqual({ allowed: true, reason: 'ok' });
+  });
 });
 
 describe('shouldRepeatPrompt', () => {
@@ -135,6 +152,16 @@ describe('appendSendTimestamp', () => {
     expect(result).not.toContain(old);
     expect(result).toContain(at(60_000).toISOString());
     expect(result).toHaveLength(2);
+  });
+
+  it('returns entries in ascending chronological order', () => {
+    const history = [at(2000).toISOString(), T0.toISOString(), at(1000).toISOString()];
+    const result = appendSendTimestamp(history, at(3000));
+    const timestamps = result.map((iso) => Date.parse(iso));
+    expect(timestamps).toEqual([...timestamps].sort((a, b) => a - b));
+    expect(result).toEqual([
+      T0.toISOString(), at(1000).toISOString(), at(2000).toISOString(), at(3000).toISOString(),
+    ]);
   });
 });
 
