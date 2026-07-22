@@ -21,7 +21,7 @@ These are binding on every task agent in this lane.
 - Read `docs/superpowers/specs/2026-07-21-whatsapp-onboarding-gate-design.md` and `docs/superpowers/plans/2026-07-21-whatsapp-onboarding-gate.md` in full before editing anything.
 - The additive migration is `042_whatsapp_onboarding_gate.sql`. Do not edit migrations `001` through `041`. Superseding a `040` function via `CREATE OR REPLACE` inside `042` is additive and allowed; editing `040` itself is not.
 - Do not drop or rename legacy WhatsApp tables or columns. Legacy flow must keep working for non-allowlisted workers.
-- Only the delivery gateway may create sendable worker-directed WhatsApp outbox rows.
+- Only the delivery gateway may create sendable worker-directed WhatsApp outbox rows. **(Contract-repair note, 2026-07-22 — Design A):** this governs *user-bound* (`source_type = 'worker_intent'`) rows via `enqueueWorkerMessage`. Pre-auth prompts (pre-OTP, no `user_id`) are a distinct, already-sanctioned origin class: the phone/`inbound_message_sid` reply row (`inbound_message_sid IS NOT NULL AND source_type IS NULL`), written by the existing legacy inbound-reply writers. Pre-auth delivery must never use the `worker_intent` origin and never mints a *new* sendable-outbox writer.
 - Successful OTP verification is the only identity-binding operation. Nothing in this lane may bind `user_id` from a phone lookup.
 - Never target RDS from a local test. The database gate uses disposable PostgreSQL 16 through `JALE_TEST_DATABASE_URL`.
 - Do not add LocalStack, a cloud sandbox, a trade-change UI, or an admin dashboard.
@@ -828,7 +828,7 @@ git add infra/lambda/whatsapp/lib infra/test/unit/lambda/whatsapp/lib
 git commit -m "feat: add WhatsApp worker delivery gateway and onboarding repository"
 ```
 
-**Handoff:** `completeOnboarding()` is what the workflow lane calls inside the same transaction that saves trust answer three. `enqueueWorkerMessage()` is the only sanctioned path for worker-directed business messages; the workflow lane creates onboarding/security intents with `ownerService: 'onboarding-v2'` and `'identity'` respectively.
+**Handoff:** `completeOnboarding()` is what the workflow lane calls inside the same transaction that saves trust answer three. `enqueueWorkerMessage()` is the only sanctioned path for worker-directed business messages. **(Contract-repair note, 2026-07-22 — Design A):** the workflow lane uses `enqueueWorkerMessage` for **bound-step** prompts only (`legal.review` onward, `ownerService: 'onboarding-v2'`/`'identity'`), where `user_id` exists. **Pre-auth** prompts (`start.choose_language`, `identity.verify_otp`, and OTP status replies) have no `user_id` — a net-new worker has no `users` row — so they deliver through the phone/`inbound_message_sid`-keyed inbound-reply gateway (`deps.enqueuePreAuthPrompt`/`enqueuePreAuthText`), not `enqueueWorkerMessage`. This does not change `enqueueWorkerMessage`'s own signature or behavior.
 
 ---
 

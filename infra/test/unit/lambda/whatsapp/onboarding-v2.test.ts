@@ -154,6 +154,23 @@ function createFakeGateway() {
   return { enqueueWorkerMessage, calls };
 }
 
+// ── Fake pre-auth delivery gateway (phone/inbound-keyed outbox, no user_id) ──
+function createFakePreAuthDelivery() {
+  const promptCalls: Array<{ inboundMessageSid: string; to: string; prompt: any }> = [];
+  const textCalls: Array<{ inboundMessageSid: string; to: string; body: string }> = [];
+  const enqueuePreAuthPrompt = jest.fn(
+    async (_client: any, inboundMessageSid: string, to: string, prompt: any) => {
+      promptCalls.push({ inboundMessageSid, to, prompt });
+    },
+  );
+  const enqueuePreAuthText = jest.fn(
+    async (_client: any, inboundMessageSid: string, to: string, body: string) => {
+      textCalls.push({ inboundMessageSid, to, body });
+    },
+  );
+  return { enqueuePreAuthPrompt, enqueuePreAuthText, promptCalls, textCalls };
+}
+
 // ── Fake Task 2 adapters ──
 function createFakeAdapters(clockRef: { now: Date }) {
   let otpSeq = 0;
@@ -183,6 +200,7 @@ function makeDeps() {
   const preAuthRepo = createFakePreAuthRepo();
   const gateRepo = createFakeGateRepo();
   const gateway = createFakeGateway();
+  const preAuthDelivery = createFakePreAuthDelivery();
   const adapters = createFakeAdapters(clockRef);
 
   const deps: OnboardingV2Deps = {
@@ -196,13 +214,15 @@ function makeDeps() {
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
     },
     enqueueWorkerMessage: gateway.enqueueWorkerMessage,
+    enqueuePreAuthPrompt: preAuthDelivery.enqueuePreAuthPrompt,
+    enqueuePreAuthText: preAuthDelivery.enqueuePreAuthText,
     hashNormalizedPhone: fakeHashNormalizedPhone,
     tosUrl: 'https://jale.example/tos',
     privacyUrl: 'https://jale.example/privacy',
     workflowVersion: 1,
   };
 
-  return { deps, preAuthRepo, gateRepo, gateway, adapters, clockRef };
+  return { deps, preAuthRepo, gateRepo, gateway, preAuthDelivery, adapters, clockRef };
 }
 
 function makeSession(overrides: Partial<OnboardingV2Session> = {}): OnboardingV2Session {
@@ -266,11 +286,63 @@ function warnedMetrics(spy: jest.SpyInstance): any[] {
     .filter(Boolean);
 }
 
+// ── pre-auth delivery: the net-new unbound worker (Design A regression) ──
+//
+// A first inbound from a phone with NO users row, NO candidate, and NO
+// pre-auth challenge is the exact shape v2 exists to onboard. Its prompts
+// have no user_id and MUST NOT be dropped or routed through the user-bound
+// intent gateway. This is the failing case the WIP router silently swallowed.
+
+describe('pre-auth delivery for a genuinely unbound (net-new) worker', () => {
+  it('delivers the start invitation via the phone-keyed pre-auth gateway — never dropped, never a user-bound intent', async () => {
+    const { deps, preAuthDelivery, gateway, gateRepo } = makeDeps();
+    // No account, no candidate, no pre-auth row.
+    const session = makeSession({ user_id: null });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('hi'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: null, stepKey: 'start.choose_language' });
+    // The invitation actually goes out — through the pre-auth gateway.
+    expect(preAuthDelivery.promptCalls).toHaveLength(1);
+    expect(preAuthDelivery.promptCalls[0].to).toBe(session.whatsapp_number);
+    // It is NOT routed through the user-bound intent gateway.
+    expect(gateway.calls).toHaveLength(0);
+    // No identity was created or bound.
+    expect(gateRepo._gates.size).toBe(0);
+  });
+
+  it('delivers the OTP prompt for an unbound worker after a language choice, via the pre-auth gateway', async () => {
+    const { deps, preAuthDelivery, gateway } = makeDeps();
+    const session = makeSession({ user_id: null });
+
+    await routeOnboardingV2(client, session, makeMsg('START'), deps);
+
+    // start invitation was NOT needed (language chosen); OTP prompt is delivered.
+    expect(preAuthDelivery.promptCalls.length).toBeGreaterThanOrEqual(1);
+    // Still no user-bound intent for a pre-auth send.
+    expect(gateway.calls).toHaveLength(0);
+  });
+
+  it('delivers an invalid-code reply for an unbound worker via the pre-auth text gateway', async () => {
+    const { deps, preAuthDelivery, gateway, adapters } = makeDeps();
+    const session = makeSession({ user_id: null });
+    await routeOnboardingV2(client, session, makeMsg('START'), deps);
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({
+      status: 'invalid', attemptsRemaining: 2, attempts: 1,
+    });
+
+    await routeOnboardingV2(client, session, makeMsg('000000'), deps);
+
+    expect(preAuthDelivery.textCalls.length).toBeGreaterThanOrEqual(1);
+    expect(gateway.calls).toHaveLength(0);
+  });
+});
+
 // ── start.choose_language ──────────────────────────────────────────────
 
 describe('start.choose_language', () => {
   it('a language choice persists preference, issues a challenge, and advances the step in ONE savePreAuthState call, with workerId null', async () => {
-    const { deps, preAuthRepo, gateway } = makeDeps();
+    const { deps, preAuthRepo, gateway, preAuthDelivery } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });
     const saveSpy = jest.spyOn(preAuthRepo, 'savePreAuthState');
 
@@ -284,10 +356,10 @@ describe('start.choose_language', () => {
     expect(patch.providerChallengeId).toBeTruthy();
     expect(patch.expiresAt).toBeTruthy();
 
-    // The OTP prompt goes out through the identity/security lane.
-    expect(gateway.calls).toHaveLength(1);
-    expect(gateway.calls[0].ownerService).toBe('identity');
-    expect(gateway.calls[0].category).toBe('security');
+    // The OTP prompt is a pre-auth (unbound) send: it goes through the
+    // phone-keyed pre-auth gateway, NOT the user-bound intent gateway.
+    expect(preAuthDelivery.promptCalls).toHaveLength(1);
+    expect(gateway.calls).toHaveLength(0);
   });
 
   it('creates no account, lifecycle row, or workflow run — workerId stays null throughout', async () => {
@@ -300,35 +372,35 @@ describe('start.choose_language', () => {
   });
 
   it('rate-limits the start invitation: cooldown blocks a resend, then the 24h daily cap blocks the 6th', async () => {
-    const { deps, gateway, clockRef } = makeDeps();
+    const { deps, preAuthDelivery, clockRef } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });
 
     await routeOnboardingV2(client, session, makeMsg('hi'), deps);
-    expect(gateway.calls).toHaveLength(1);
+    expect(preAuthDelivery.promptCalls).toHaveLength(1);
 
     clockRef.now = new Date(clockRef.now.getTime() + 2 * 60 * 1000);
     await routeOnboardingV2(client, session, makeMsg('hi'), deps);
-    expect(gateway.calls).toHaveLength(1);
+    expect(preAuthDelivery.promptCalls).toHaveLength(1);
 
     for (let i = 0; i < 4; i++) {
       clockRef.now = new Date(clockRef.now.getTime() + 11 * 60 * 1000);
       await routeOnboardingV2(client, session, makeMsg('hi'), deps);
     }
-    expect(gateway.calls).toHaveLength(5);
+    expect(preAuthDelivery.promptCalls).toHaveLength(5);
 
     clockRef.now = new Date(clockRef.now.getTime() + 11 * 60 * 1000);
     await routeOnboardingV2(client, session, makeMsg('hi'), deps);
-    expect(gateway.calls).toHaveLength(5);
+    expect(preAuthDelivery.promptCalls).toHaveLength(5);
   });
 
-  it('sends the invitation through onboarding-v2/onboarding', async () => {
-    const { deps, gateway } = makeDeps();
+  it('delivers the invitation through the phone-keyed pre-auth gateway, never a user-bound intent', async () => {
+    const { deps, gateway, preAuthDelivery } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });
 
     await routeOnboardingV2(client, session, makeMsg('hi'), deps);
 
-    expect(gateway.calls[0].ownerService).toBe('onboarding-v2');
-    expect(gateway.calls[0].category).toBe('onboarding');
+    expect(preAuthDelivery.promptCalls).toHaveLength(1);
+    expect(gateway.calls).toHaveLength(0);
   });
 });
 
@@ -576,18 +648,20 @@ describe('command gate', () => {
 // ── Sending discipline ────────────────────────────────────────────────
 
 describe('sending discipline', () => {
-  it('every outbound goes through enqueueWorkerMessage with the correct ownerService per lane', async () => {
-    const { deps, gateway, gateRepo } = makeDeps();
+  it('pre-auth sends use the phone-keyed gateway; only bound-step sends use the user-bound intent gateway (with the correct ownerService)', async () => {
+    const { deps, gateway, preAuthDelivery, gateRepo } = makeDeps();
 
-    // Pre-auth invitation -> onboarding-v2 / onboarding
+    // Pre-auth invitation and OTP prompt: no user_id, phone-keyed gateway only.
     await routeOnboardingV2(client, makeSession({ user_id: 'user-a' }), makeMsg('hi'), deps);
-    // OTP prompt -> identity / security
     await routeOnboardingV2(client, makeSession({ user_id: 'user-a' }), makeMsg('START'), deps);
+    expect(preAuthDelivery.promptCalls.length).toBeGreaterThanOrEqual(2);
+    expect(gateway.calls).toHaveLength(0);
 
+    // Bound step (legal.review): the reply is a worker-directed intent.
     const gate = seedActiveGate(gateRepo, { userId: 'user-b' });
     await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg('REVIEW TERMS'), deps);
 
-    expect(gateway.calls.length).toBeGreaterThanOrEqual(3);
+    expect(gateway.calls.length).toBeGreaterThanOrEqual(1);
     for (const call of gateway.calls) {
       expect(['onboarding-v2', 'identity']).toContain(call.ownerService);
       if (call.ownerService === 'identity') expect(call.category).toBe('security');
@@ -595,12 +669,15 @@ describe('sending discipline', () => {
     }
   });
 
-  it('never touches the outbox directly (source-level check)', () => {
+  it('never writes the outbox table directly nor calls a legacy send helper (delivery only through injected deps)', () => {
     const src = fs.readFileSync(
       path.join(__dirname, '../../../../lambda/whatsapp/onboarding-v2.ts'),
       'utf8',
     );
-    expect(src).not.toMatch(/queueText|queueOutboxText|queueInteractivePrompt|whatsapp_outbox/);
+    // Direct call/write forms — doc comments naming the injected writers are fine.
+    expect(src).not.toMatch(/\bqueueOutboxText\(|\bqueueInteractivePrompt\(|\bqueueText\(/);
+    expect(src).not.toMatch(/INSERT\s+INTO\s+whatsapp_outbox/i);
+    expect(src).not.toMatch(/from ['"]\.\/lib\/outbox['"]/);
   });
 });
 

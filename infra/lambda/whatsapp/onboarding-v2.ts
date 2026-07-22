@@ -149,6 +149,29 @@ export interface OnboardingV2Deps {
     input: WorkerMessageIntentInput,
     now?: Date,
   ) => Promise<{ intentId: string; decision: unknown }>;
+  /**
+   * Pre-auth delivery gateway (Design A). Pre-OTP steps
+   * (start.choose_language, identity.verify_otp) have no bound `user_id`
+   * — a net-new worker has no `users` row at all, and `worker_message_intents.user_id`
+   * is a NOT NULL FK — so their prompts CANNOT go through `enqueueWorkerMessage`.
+   * They travel the phone/inbound-message-keyed `whatsapp_outbox` reply origin
+   * instead (`inbound_message_sid IS NOT NULL AND source_type IS NULL`), which
+   * needs no identity, is durable, and is drained post-commit by the existing
+   * sweeper — never a direct Twilio send. In production these are the legacy
+   * `queueInteractivePrompt` / `queueOutboxText` writers; tests inject fakes.
+   */
+  enqueuePreAuthPrompt: (
+    client: PoolClient,
+    inboundMessageSid: string,
+    to: string,
+    prompt: InteractivePrompt,
+  ) => Promise<void>;
+  enqueuePreAuthText: (
+    client: PoolClient,
+    inboundMessageSid: string,
+    to: string,
+    body: string,
+  ) => Promise<void>;
   hashNormalizedPhone: (phone: string) => string;
   tosUrl: string;
   privacyUrl: string;
@@ -217,17 +240,50 @@ function buildPromptForStep(stepKey: string, lang: Lang, deps: OnboardingV2Deps)
   }
 }
 
+// ── Pre-auth delivery (Design A) ────────────────────────────────────────
+//
+// start.choose_language / identity.verify_otp have no bound user_id (a
+// net-new worker has no `users` row, and `worker_message_intents.user_id`
+// is NOT NULL), so their prompts travel the phone/inbound-keyed outbox
+// reply origin — never the user-bound intent gateway, never a direct send.
+// Interactive prompts (start invitation, OTP) carry a real Twilio content
+// template; transient status replies (invalid/expired/locked/cooldown) are
+// plain bilingual text.
+
+async function sendPreAuthPrompt(
+  client: PoolClient,
+  deps: OnboardingV2Deps,
+  msg: OnboardingV2InboundMessage,
+  stepKey: string,
+  lang: Lang,
+): Promise<void> {
+  const prompt = buildPromptForStep(stepKey, lang, deps);
+  await deps.enqueuePreAuthPrompt(client, msg.messageSid, msg.from, prompt);
+}
+
+async function sendPreAuthText(
+  client: PoolClient,
+  deps: OnboardingV2Deps,
+  msg: OnboardingV2InboundMessage,
+  lang: Lang,
+  key: TemplateKey,
+  vars: Record<string, string> = {},
+): Promise<void> {
+  await deps.enqueuePreAuthText(client, msg.messageSid, msg.from, t(key, lang, vars));
+}
+
+// ── Bound-step delivery (post-binding, user_id guaranteed) ──────────────
+
 async function sendStepPrompt(
   client: PoolClient,
   deps: OnboardingV2Deps,
-  workerId: string | null,
+  workerId: string,
   stepKey: string,
   lang: Lang,
   now: Date,
   sourceId: string,
   dedupeSuffix: string,
 ): Promise<void> {
-  if (!workerId) return;
   const routing = STEP_ROUTING[stepKey] ?? DEFAULT_ROUTING;
   const prompt = buildPromptForStep(stepKey, lang, deps);
   const input: WorkerMessageIntentInput = {
@@ -252,7 +308,7 @@ async function sendStepPrompt(
 async function sendTemplateMessage(
   client: PoolClient,
   deps: OnboardingV2Deps,
-  workerId: string | null,
+  workerId: string,
   stepKey: string,
   lang: Lang,
   key: TemplateKey,
@@ -261,7 +317,6 @@ async function sendTemplateMessage(
   sourceId: string,
   tag: string,
 ): Promise<void> {
-  if (!workerId) return;
   const routing = STEP_ROUTING[stepKey] ?? DEFAULT_ROUTING;
   const body = t(key, lang, vars);
   const input: WorkerMessageIntentInput = {
@@ -282,7 +337,7 @@ async function repeatCurrentPrompt(
   client: PoolClient,
   session: OnboardingV2Session,
   deps: OnboardingV2Deps,
-  workerId: string | null,
+  workerId: string,
   stepKey: string,
   lang: Lang,
   now: Date,
@@ -309,7 +364,7 @@ async function applyGate(
   deps: OnboardingV2Deps,
   params: {
     stepKey: string;
-    workerId: string | null;
+    workerId: string;
     lang: Lang;
     responseLang: Lang;
     now: Date;
@@ -392,7 +447,7 @@ async function handleStartStep(
       context: preAuth?.context ?? {},
     });
 
-    await sendStepPrompt(client, deps, saved.candidateUserId, 'identity.verify_otp', choice, now, msg.messageSid, saved.challengeId);
+    await sendPreAuthPrompt(client, deps, msg, 'identity.verify_otp', choice);
     return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
   }
 
@@ -405,7 +460,7 @@ async function handleStartStep(
   }
 
   const newHistory = appendSendTimestamp(history, now);
-  await sendStepPrompt(client, deps, candidateUserId, 'start.choose_language', lang, now, msg.messageSid, `${newHistory.length}`);
+  await sendPreAuthPrompt(client, deps, msg, 'start.choose_language', lang);
   await deps.repo.savePreAuthState(client, phoneHash, {
     candidateUserId,
     context: { ...(preAuth?.context ?? {}), startSendHistory: newHistory },
@@ -435,7 +490,7 @@ async function handleOtpStep(
     if (!cooldown.allowed) {
       const key: TemplateKey = cooldown.reason === 'cooldown' ? 'v2_otp_resend_cooldown' : 'v2_otp_send_cap';
       const vars: Record<string, string> = cooldown.reason === 'cooldown' ? { seconds: '60' } : {};
-      await sendTemplateMessage(client, deps, candidateUserId, 'identity.verify_otp', responseLang, key, vars, now, msg.messageSid, 'resend-blocked');
+      await sendPreAuthText(client, deps, msg, responseLang, key, vars);
       return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
     }
 
@@ -444,7 +499,7 @@ async function handleOtpStep(
       return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
     }
     const newHistory = appendSendTimestamp(history, now);
-    const saved = await deps.repo.savePreAuthState(client, phoneHash, {
+    await deps.repo.savePreAuthState(client, phoneHash, {
       providerChallengeId: issued.challengeId,
       expiresAt: issued.expiresAt,
       status: 'pending',
@@ -453,7 +508,7 @@ async function handleOtpStep(
       candidateUserId,
       context: { ...preAuth.context, otpSendHistory: newHistory },
     });
-    await sendStepPrompt(client, deps, candidateUserId, 'identity.verify_otp', lang, now, msg.messageSid, saved.challengeId);
+    await sendPreAuthPrompt(client, deps, msg, 'identity.verify_otp', lang);
     return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
   }
 
@@ -485,16 +540,16 @@ async function handleOtpStep(
     // The three-strike lockout only works if the returned attempts count is
     // persisted back through savePreAuthState — this is that persistence.
     await deps.repo.savePreAuthState(client, phoneHash, { attempts: result.attempts });
-    await sendTemplateMessage(
-      client, deps, candidateUserId, 'identity.verify_otp', responseLang,
-      'v2_otp_invalid', { attempts: String(result.attemptsRemaining) }, now, msg.messageSid, 'invalid',
+    await sendPreAuthText(
+      client, deps, msg, responseLang,
+      'v2_otp_invalid', { attempts: String(result.attemptsRemaining) },
     );
     return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
   }
 
   if (result.status === 'expired') {
     await deps.repo.savePreAuthState(client, phoneHash, { status: 'expired' });
-    await sendTemplateMessage(client, deps, candidateUserId, 'identity.verify_otp', responseLang, 'v2_otp_expired', {}, now, msg.messageSid, 'expired');
+    await sendPreAuthText(client, deps, msg, responseLang, 'v2_otp_expired');
     return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
   }
 
@@ -509,7 +564,7 @@ async function handleOtpStep(
     }));
   }
   await deps.repo.savePreAuthState(client, phoneHash, { status: 'locked', lockedUntil: result.lockedUntil });
-  await sendTemplateMessage(client, deps, candidateUserId, 'identity.verify_otp', responseLang, 'v2_otp_locked', { minutes: '15' }, now, msg.messageSid, 'locked');
+  await sendPreAuthText(client, deps, msg, responseLang, 'v2_otp_locked', { minutes: '15' });
   return { handled: true, workerId: null, stepKey: 'identity.verify_otp' };
 }
 
