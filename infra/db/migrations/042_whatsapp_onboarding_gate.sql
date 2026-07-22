@@ -187,9 +187,6 @@ CREATE POLICY worker_workflow_transitions_worker ON public.worker_workflow_trans
   WITH CHECK (EXISTS (SELECT 1 FROM public.worker_workflow_runs r WHERE r.id = run_id
     AND r.user_id::text = current_setting('app.current_internal_user_id', true)));
 DROP POLICY IF EXISTS worker_identity_challenges_worker ON public.worker_identity_challenges;
-CREATE POLICY worker_identity_challenges_worker ON public.worker_identity_challenges TO jale_whatsapp
-  USING (verified_user_id::text = current_setting('app.current_internal_user_id', true))
-  WITH CHECK (verified_user_id::text = current_setting('app.current_internal_user_id', true));
 DROP POLICY IF EXISTS worker_message_intents_worker ON public.worker_message_intents;
 CREATE POLICY worker_message_intents_worker ON public.worker_message_intents TO jale_whatsapp
   USING (user_id::text = current_setting('app.current_internal_user_id', true))
@@ -233,8 +230,6 @@ GRANT SELECT (id, run_id, from_step_key, to_step_key, inbound_message_sid, reaso
   INSERT (run_id, from_step_key, to_step_key, inbound_message_sid, reason, metadata)
   ON public.worker_workflow_transitions TO jale_whatsapp;
 REVOKE ALL ON public.worker_identity_challenges FROM jale_whatsapp;
-GRANT SELECT (id, phone_hash, provider_challenge_id, candidate_user_id, verified_user_id, preferred_language, current_step_key, context, status, attempts, expires_at, locked_until, created_at, updated_at)
-  ON public.worker_identity_challenges TO jale_whatsapp;
 REVOKE ALL ON public.worker_message_intents FROM jale_whatsapp;
 GRANT SELECT (id, user_id, category, owner_service, source_type, source_id, dedupe_key, priority, status, policy_version, decision_reason, payload, expires_at, release_sequence, leased_until, outbox_id, created_at, updated_at),
   INSERT (user_id, category, owner_service, source_type, source_id, dedupe_key, priority, status, policy_version, decision_reason, payload, expires_at, release_sequence, leased_until, outbox_id),
@@ -270,20 +265,35 @@ GRANT EXECUTE ON FUNCTION public.load_worker_pre_auth(TEXT) TO jale_whatsapp;
 CREATE OR REPLACE FUNCTION public.save_worker_pre_auth(p_phone_hash TEXT, p_patch JSONB)
 RETURNS SETOF public.worker_identity_challenges
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-DECLARE v_id UUID;
+DECLARE
+  v_id UUID;
+  v_old_status TEXT := 'pending';
+  v_new_status TEXT;
 BEGIN
   IF p_phone_hash IS NULL OR p_phone_hash !~ '^[0-9a-f]{64}$' THEN
     RAISE EXCEPTION 'invalid phone hash' USING ERRCODE = '22023';
   END IF;
   IF p_patch IS NULL OR jsonb_typeof(p_patch) <> 'object'
      OR EXISTS (SELECT 1 FROM jsonb_object_keys(p_patch) k
-       WHERE k NOT IN ('provider_challenge_id','candidate_user_id','preferred_language','current_step_key','context','status','attempts','expires_at','locked_until')) THEN
+       WHERE k NOT IN ('provider_challenge_id','candidate_user_id','preferred_language','current_step_key','context','status','attempts','expires_at','locked_until'))
+     OR (p_patch ? 'context' AND jsonb_typeof(p_patch->'context') <> 'object') THEN
     RAISE EXCEPTION 'invalid pre-auth patch' USING ERRCODE = '22023';
   END IF;
+
   PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_phone_hash, 0));
-  SELECT c.id INTO v_id FROM public.worker_identity_challenges c
-    WHERE c.phone_hash = p_phone_hash AND c.status IN ('pending', 'locked')
-    ORDER BY c.created_at DESC, c.id DESC LIMIT 1 FOR UPDATE;
+  SELECT c.id, c.status INTO v_id, v_old_status
+    FROM public.worker_identity_challenges c
+   WHERE c.phone_hash = p_phone_hash AND c.status IN ('pending', 'locked')
+   ORDER BY c.created_at DESC, c.id DESC LIMIT 1 FOR UPDATE;
+
+  v_new_status := COALESCE(p_patch->>'status', v_old_status, 'pending');
+  IF v_new_status = 'verified'
+     OR v_new_status NOT IN ('pending', 'locked', 'expired', 'superseded')
+     OR (v_old_status = 'locked' AND v_new_status NOT IN ('locked', 'pending', 'expired', 'superseded')) THEN
+    RAISE EXCEPTION 'invalid pre-auth status transition: % to %', v_old_status, v_new_status
+      USING ERRCODE = '22023';
+  END IF;
+
   IF v_id IS NULL THEN
     INSERT INTO public.worker_identity_challenges (phone_hash) VALUES (p_phone_hash) RETURNING id INTO v_id;
   END IF;
@@ -293,7 +303,7 @@ BEGIN
     preferred_language = COALESCE(p_patch->>'preferred_language', preferred_language),
     current_step_key = COALESCE(p_patch->>'current_step_key', current_step_key),
     context = CASE WHEN p_patch ? 'context' THEN p_patch->'context' ELSE context END,
-    status = COALESCE(p_patch->>'status', status),
+    status = v_new_status,
     attempts = CASE WHEN p_patch ? 'attempts' THEN (p_patch->>'attempts')::integer ELSE attempts END,
     expires_at = CASE WHEN p_patch ? 'expires_at' THEN NULLIF(p_patch->>'expires_at','')::timestamptz ELSE expires_at END,
     locked_until = CASE WHEN p_patch ? 'locked_until' THEN NULLIF(p_patch->>'locked_until','')::timestamptz ELSE locked_until END,
@@ -305,39 +315,126 @@ ALTER FUNCTION public.save_worker_pre_auth(TEXT, JSONB) OWNER TO jale_admin;
 REVOKE ALL ON FUNCTION public.save_worker_pre_auth(TEXT, JSONB) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.save_worker_pre_auth(TEXT, JSONB) TO jale_whatsapp;
 
+
+-- The verified-binding definer sets these transaction-local exact IDs before
+-- touching legacy forced-RLS tables. No phone lookup can set either value.
+DROP POLICY IF EXISTS users_onboarding_bind_definer ON public.users;
+CREATE POLICY users_onboarding_bind_definer ON public.users FOR SELECT TO jale_admin
+  USING (
+    user_type = 'worker'
+    AND id::text = current_setting('app.onboarding_bind_user_id', true)
+  );
+DROP POLICY IF EXISTS whatsapp_conversations_onboarding_bind_definer ON public.whatsapp_conversations;
+CREATE POLICY whatsapp_conversations_onboarding_bind_definer ON public.whatsapp_conversations
+  FOR UPDATE TO jale_admin
+  USING (
+    id::text = current_setting('app.onboarding_bind_conversation_id', true)
+    AND (user_id IS NULL OR user_id::text = current_setting('app.onboarding_bind_user_id', true))
+  )
+  WITH CHECK (
+    id::text = current_setting('app.onboarding_bind_conversation_id', true)
+    AND user_id::text = current_setting('app.onboarding_bind_user_id', true)
+  );
+
 CREATE OR REPLACE FUNCTION public.bind_verified_identity_and_start_workflow(
   p_phone_hash TEXT, p_verified_user_id UUID, p_conversation_id UUID,
   p_workflow_version INTEGER, p_preferred_language TEXT,
   p_inbound_message_sid TEXT, p_context JSONB DEFAULT '{}'::jsonb
 ) RETURNS TABLE (challenge_id UUID, onboarding_state_id UUID, run_id UUID)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-DECLARE v_challenge UUID; v_state UUID; v_run UUID; v_updated INTEGER;
+DECLARE
+  v_challenge UUID;
+  v_state UUID;
+  v_run UUID;
+  v_updated INTEGER;
+  v_existing_user UUID;
+  v_existing_conversation UUID;
+  v_existing_state UUID;
+  v_existing_run UUID;
 BEGIN
   IF p_phone_hash IS NULL OR p_phone_hash !~ '^[0-9a-f]{64}$' OR p_verified_user_id IS NULL
-     OR p_conversation_id IS NULL OR p_workflow_version <= 0 OR p_preferred_language NOT IN ('en','es') THEN
+     OR p_conversation_id IS NULL OR p_workflow_version <= 0 OR p_preferred_language NOT IN ('en','es')
+     OR p_context IS NULL OR jsonb_typeof(p_context) <> 'object' THEN
     RAISE EXCEPTION 'invalid verified identity binding' USING ERRCODE = '22023';
   END IF;
+
   PERFORM pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_phone_hash, 0));
-  SELECT c.id INTO v_challenge FROM public.worker_identity_challenges c
-    WHERE c.phone_hash = p_phone_hash AND c.status IN ('pending','locked')
-    ORDER BY c.created_at DESC, c.id DESC LIMIT 1 FOR UPDATE;
-  IF v_challenge IS NULL OR NOT EXISTS (SELECT 1 FROM public.users u WHERE u.id = p_verified_user_id AND u.user_type = 'worker') THEN
-    RAISE EXCEPTION 'verified challenge or worker not found' USING ERRCODE = '23503';
+
+  -- A retry after commit returns the original result. The stored exact
+  -- conversation ID prevents a same-hash replay from rebinding elsewhere.
+  SELECT c.id, c.verified_user_id,
+         NULLIF(c.context->>'bound_conversation_id', '')::uuid,
+         NULLIF(c.context->>'onboarding_state_id', '')::uuid,
+         NULLIF(c.context->>'workflow_run_id', '')::uuid
+    INTO v_challenge, v_existing_user, v_existing_conversation,
+         v_existing_state, v_existing_run
+    FROM public.worker_identity_challenges c
+   WHERE c.phone_hash = p_phone_hash AND c.status = 'verified'
+   ORDER BY c.updated_at DESC, c.id DESC LIMIT 1 FOR UPDATE;
+  IF v_challenge IS NOT NULL THEN
+    IF v_existing_user IS DISTINCT FROM p_verified_user_id
+       OR v_existing_conversation IS DISTINCT FROM p_conversation_id THEN
+      RAISE EXCEPTION 'conflicting verified identity replay' USING ERRCODE = '55000';
+    END IF;
+    SELECT s.id INTO v_state FROM public.worker_onboarding_state s
+      WHERE s.id = v_existing_state AND s.user_id = p_verified_user_id;
+    SELECT r.id INTO v_run FROM public.worker_workflow_runs r
+      WHERE r.id = v_existing_run AND r.user_id = p_verified_user_id;
+    IF v_state IS NULL OR v_run IS NULL THEN
+      RAISE EXCEPTION 'verified identity replay state is incomplete' USING ERRCODE = '55000';
+    END IF;
+    RETURN QUERY SELECT v_challenge, v_state, v_run;
+    RETURN;
   END IF;
-  UPDATE public.worker_identity_challenges SET verified_user_id = p_verified_user_id,
-    status = 'verified', updated_at = pg_catalog.now() WHERE id = v_challenge;
+
+  SELECT c.id INTO v_challenge FROM public.worker_identity_challenges c
+    WHERE c.phone_hash = p_phone_hash
+      AND c.status = 'pending'
+      AND c.provider_challenge_id IS NOT NULL
+      AND c.expires_at IS NOT NULL
+      AND c.expires_at > pg_catalog.now()
+      AND (c.locked_until IS NULL OR c.locked_until <= pg_catalog.now())
+    ORDER BY c.created_at DESC, c.id DESC LIMIT 1 FOR UPDATE;
+  IF v_challenge IS NULL THEN
+    RAISE EXCEPTION 'no bindable identity challenge' USING ERRCODE = '55000';
+  END IF;
+
+  PERFORM pg_catalog.set_config('app.onboarding_bind_user_id', p_verified_user_id::text, true);
+  PERFORM pg_catalog.set_config('app.onboarding_bind_conversation_id', p_conversation_id::text, true);
+  IF NOT EXISTS (SELECT 1 FROM public.users u WHERE u.id = p_verified_user_id AND u.user_type = 'worker') THEN
+    RAISE EXCEPTION 'verified worker not found' USING ERRCODE = '23503';
+  END IF;
+
   UPDATE public.whatsapp_conversations SET user_id = p_verified_user_id, updated_at = pg_catalog.now()
     WHERE id = p_conversation_id AND (user_id IS NULL OR user_id = p_verified_user_id);
   GET DIAGNOSTICS v_updated = ROW_COUNT;
-  IF v_updated <> 1 THEN RAISE EXCEPTION 'conversation cannot be bound' USING ERRCODE = '23503'; END IF;
+  IF v_updated <> 1 THEN RAISE EXCEPTION 'conversation cannot be bound' USING ERRCODE = '55000'; END IF;
+
+  UPDATE public.worker_identity_challenges SET
+    verified_user_id = p_verified_user_id,
+    status = 'verified',
+    context = context || jsonb_build_object('bound_conversation_id', p_conversation_id),
+    updated_at = pg_catalog.now()
+  WHERE id = v_challenge AND status = 'pending';
+  GET DIAGNOSTICS v_updated = ROW_COUNT;
+  IF v_updated <> 1 THEN RAISE EXCEPTION 'identity challenge changed during binding' USING ERRCODE = '55000'; END IF;
+
   INSERT INTO public.worker_onboarding_state (user_id, lifecycle, lifecycle_changed_at)
     VALUES (p_verified_user_id, 'onboarding', pg_catalog.now())
     ON CONFLICT (user_id) DO UPDATE SET lifecycle = 'onboarding', lifecycle_changed_at = pg_catalog.now(), updated_at = pg_catalog.now()
     RETURNING id INTO v_state;
   INSERT INTO public.worker_workflow_runs
     (user_id, workflow_version, current_step_key, status, preferred_language, context)
-    VALUES (p_verified_user_id, p_workflow_version, 'legal.review', 'active', p_preferred_language, COALESCE(p_context, '{}'::jsonb))
+    VALUES (p_verified_user_id, p_workflow_version, 'legal.review', 'active', p_preferred_language, p_context)
     RETURNING id INTO v_run;
+  UPDATE public.worker_identity_challenges SET
+    context = context || jsonb_build_object(
+      'bound_conversation_id', p_conversation_id,
+      'onboarding_state_id', v_state,
+      'workflow_run_id', v_run
+    ),
+    updated_at = pg_catalog.now()
+  WHERE id = v_challenge;
   INSERT INTO public.worker_workflow_transitions
     (run_id, from_step_key, to_step_key, inbound_message_sid, reason, metadata)
     VALUES (v_run, 'identity.verify_otp', 'legal.review', p_inbound_message_sid, 'otp_verified', '{}'::jsonb);
@@ -347,11 +444,14 @@ ALTER FUNCTION public.bind_verified_identity_and_start_workflow(TEXT, UUID, UUID
 REVOKE ALL ON FUNCTION public.bind_verified_identity_and_start_workflow(TEXT, UUID, UUID, INTEGER, TEXT, TEXT, JSONB) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.bind_verified_identity_and_start_workflow(TEXT, UUID, UUID, INTEGER, TEXT, TEXT, JSONB) TO jale_whatsapp;
 
+
 CREATE OR REPLACE FUNCTION public.lease_worker_domain_events(p_event_type TEXT, p_limit INTEGER)
 RETURNS SETOF public.worker_domain_outbox
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
-  IF p_event_type NOT IN ('assessment.requested', 'worker.ready') OR p_limit < 1 OR p_limit > 100 THEN
+  IF p_event_type IS NULL OR p_limit IS NULL
+     OR p_event_type NOT IN ('assessment.requested', 'worker.ready')
+     OR p_limit < 1 OR p_limit > 100 THEN
     RAISE EXCEPTION 'invalid domain event lease request' USING ERRCODE = '22023';
   END IF;
   RETURN QUERY
@@ -361,8 +461,7 @@ BEGIN
       AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= pg_catalog.now())
     ORDER BY e.created_at, e.id FOR UPDATE SKIP LOCKED LIMIT p_limit
   )
-  UPDATE public.worker_domain_outbox e SET status = 'processing', attempts = e.attempts + 1,
-    updated_at = pg_catalog.now() FROM candidates c WHERE e.id = c.id RETURNING e.*;
+  UPDATE public.worker_domain_outbox e SET status = 'processing', updated_at = pg_catalog.now() FROM candidates c WHERE e.id = c.id RETURNING e.*;
 END $$;
 ALTER FUNCTION public.lease_worker_domain_events(TEXT, INTEGER) OWNER TO jale_admin;
 REVOKE ALL ON FUNCTION public.lease_worker_domain_events(TEXT, INTEGER) FROM PUBLIC;
@@ -528,7 +627,9 @@ DO $$ BEGIN
 END $$;
 
 DO $$
-DECLARE fn RECORD;
+DECLARE
+  fn RECORD;
+  expected_check RECORD;
 BEGIN
   IF EXISTS (
     SELECT 1 FROM (VALUES
@@ -545,11 +646,85 @@ BEGIN
 
   IF EXISTS (
     SELECT 1 FROM (VALUES
-      ('worker_workflow_one_active'), ('worker_message_intent_dedupe'),
-      ('worker_domain_outbox_event_key'), ('worker_message_intents_release_sequence_unique')
-    ) expected(name)
-    WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c WHERE c.relname = expected.name)
-  ) THEN RAISE EXCEPTION 'migration 042 constraint self-audit failed'; END IF;
+      ('worker_message_intents', 'worker_message_intent_dedupe', 'UNIQUE (dedupe_key)'),
+      ('worker_domain_outbox', 'worker_domain_outbox_event_key', 'UNIQUE (event_key)')
+    ) expected(table_name, constraint_name, definition)
+    WHERE NOT EXISTS (
+      SELECT 1
+        FROM pg_catalog.pg_constraint con
+        JOIN pg_catalog.pg_class tbl ON tbl.oid = con.conrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = tbl.relnamespace
+       WHERE n.nspname = 'public'
+         AND tbl.relname = expected.table_name
+         AND con.conname = expected.constraint_name
+         AND con.contype = 'u'
+         AND pg_catalog.pg_get_constraintdef(con.oid) = expected.definition
+    )
+  ) THEN RAISE EXCEPTION 'migration 042 unique constraint self-audit failed'; END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM (VALUES
+      ('worker_workflow_runs', 'worker_workflow_one_active', ARRAY['user_id']::text[], ARRAY['status', 'active']::text[]),
+      ('worker_message_intents', 'worker_message_intents_release_sequence_unique', ARRAY['user_id', 'release_sequence']::text[], ARRAY['release_sequence', 'is not null']::text[])
+    ) expected(table_name, index_name, key_columns, predicate_terms)
+    WHERE NOT EXISTS (
+      SELECT 1
+        FROM pg_catalog.pg_index idx
+        JOIN pg_catalog.pg_class ind ON ind.oid = idx.indexrelid
+        JOIN pg_catalog.pg_class tbl ON tbl.oid = idx.indrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = tbl.relnamespace
+       WHERE n.nspname = 'public'
+         AND tbl.relname = expected.table_name
+         AND ind.relname = expected.index_name
+         AND idx.indisunique
+         AND ARRAY(
+           SELECT att.attname::text
+             FROM unnest(idx.indkey::smallint[]) WITH ORDINALITY AS key(attnum, ord)
+             JOIN pg_catalog.pg_attribute att
+               ON att.attrelid = tbl.oid AND att.attnum = key.attnum
+            WHERE key.ord <= idx.indnkeyatts
+            ORDER BY key.ord
+         ) = expected.key_columns
+         AND idx.indpred IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM unnest(expected.predicate_terms) term
+            WHERE lower(pg_catalog.pg_get_expr(idx.indpred, idx.indrelid)) NOT LIKE '%' || term || '%'
+         )
+    )
+  ) THEN RAISE EXCEPTION 'migration 042 partial unique index self-audit failed'; END IF;
+
+  FOR expected_check IN SELECT * FROM (VALUES
+    ('worker_onboarding_state', 'lifecycle', ARRAY['onboarding', 'ready', 'suspended']::text[]),
+    ('worker_workflow_runs', 'status', ARRAY['active', 'completed', 'declined', 'cancelled', 'failed']::text[]),
+    ('worker_identity_challenges', 'status', ARRAY['pending', 'verified', 'expired', 'locked', 'superseded']::text[]),
+    ('worker_message_intents', 'status', ARRAY['deferred', 'eligible', 'leased', 'released', 'delivered', 'expired', 'superseded', 'rejected', 'failed']::text[]),
+    ('worker_message_intents', 'category', ARRAY['onboarding', 'security', 'account', 'job_alert', 'employer_chat']::text[]),
+    ('worker_message_intents', 'owner_service', ARRAY['onboarding-v2', 'identity', 'job-alert', 'job-messaging', 'account']::text[]),
+    ('worker_domain_outbox', 'status', ARRAY['pending', 'processing', 'completed', 'failed']::text[]),
+    ('worker_domain_outbox', 'event_type', ARRAY['assessment.requested', 'worker.ready']::text[]),
+    ('worker_identity_challenges', 'current_step_key', ARRAY['start.choose_language', 'identity.verify_otp']::text[]),
+    ('worker_workflow_runs', 'current_step_key', ARRAY['start.choose_language', 'identity.verify_otp', 'legal.review', 'profile.name', 'profile.location', 'profile.trade', 'profile.custom_trade', 'trust.question.1', 'trust.question.2', 'trust.question.3']::text[]),
+    ('worker_workflow_runs', 'preferred_language', ARRAY['en', 'es']::text[])
+  ) AS checks(table_name, column_name, required_terms)
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1
+        FROM pg_catalog.pg_constraint con
+        JOIN pg_catalog.pg_class tbl ON tbl.oid = con.conrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = tbl.relnamespace
+       WHERE n.nspname = 'public'
+         AND tbl.relname = expected_check.table_name
+         AND con.contype = 'c'
+         AND lower(pg_catalog.pg_get_constraintdef(con.oid)) LIKE '%' || expected_check.column_name || '%'
+         AND NOT EXISTS (
+           SELECT 1 FROM unnest(expected_check.required_terms) term
+            WHERE lower(pg_catalog.pg_get_constraintdef(con.oid)) NOT LIKE '%' || term || '%'
+         )
+    ) THEN
+      RAISE EXCEPTION 'migration 042 check constraint self-audit failed: %.%',
+        expected_check.table_name, expected_check.column_name;
+    END IF;
+  END LOOP;
 
   FOR fn IN SELECT * FROM (VALUES
     ('public', 'load_worker_pre_auth', '25'::oidvector, 'jale_admin'),
@@ -575,6 +750,12 @@ BEGIN
      OR pg_catalog.has_table_privilege('jale_whatsapp', 'public.whatsapp_runtime_controls', 'INSERT')
      OR pg_catalog.has_table_privilege('jale_whatsapp', 'public.whatsapp_runtime_controls', 'DELETE') THEN
     RAISE EXCEPTION 'runtime controls are writable by jale_whatsapp';
+  END IF;
+
+  IF pg_catalog.has_any_column_privilege(
+       'jale_whatsapp', 'public.worker_identity_challenges', 'SELECT'
+     ) THEN
+    RAISE EXCEPTION 'worker identity challenges are directly readable by jale_whatsapp';
   END IF;
 END $$;
 

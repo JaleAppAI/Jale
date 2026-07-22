@@ -148,6 +148,15 @@ describe('migration apply order baseline', () => {
     }
 
     expect(migration).not.toMatch(/GRANT\s+SELECT\s+ON\s+(?:public\.)?worker_/i);
+    expect(migration).toContain("p_event_type IS NULL OR p_limit IS NULL");
+    expect(migration).not.toContain("attempts = e.attempts + 1");
+    expect(migration).toContain("pre-auth status transition");
+    expect(migration).not.toMatch(/GRANT SELECT \([^;]+\)\s+ON public\.worker_identity_challenges/s);
+    expect(migration).toContain("pg_catalog.pg_constraint");
+    expect(migration).toContain("pg_catalog.pg_index");
+    expect(migration).toContain("pg_catalog.pg_get_constraintdef");
+    expect(migration).toContain("pg_catalog.pg_get_expr");
+    expect(migration).toContain("has_any_column_privilege");
     expect(migration).toContain("'^(SM|MM)[0-9A-Fa-f]{32}$'");
     expect(migration).toContain('lease_worker_domain_events');
   });
