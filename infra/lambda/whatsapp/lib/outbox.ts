@@ -5,6 +5,7 @@ import {
   requireTwilioStatusCallbackUrl,
   _clearTwilioSecretCacheForTests,
 } from './twilio-secret';
+import type { RenderedOutboxMessage } from './onboarding-types';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
 
@@ -455,4 +456,47 @@ function parseTimeout(raw: string | undefined): number {
 
 export function _clearOutboxTwilioSecretCacheForTests(): void {
   _clearTwilioSecretCacheForTests();
+}
+
+/**
+ * Inserts a `whatsapp_outbox` row on behalf of a `worker_message_intents`
+ * row that the delivery-policy gate has already authorized (status
+ * 'eligible' or 'leased'). This is the only path that may write a
+ * `source_type = 'worker_intent'` outbox row — the `whatsapp_outbox_origin_check`
+ * CHECK constraint requires `inbound_message_sid IS NULL` and a non-null
+ * `source_id` for that origin, matching the params below.
+ *
+ * Ownership/errors: caller owns the transaction; no BEGIN/COMMIT here.
+ * Throws `Error('unauthorized_worker_outbox_row')` when the intent row is
+ * missing or not in an authorized status — this is a deliberate guard
+ * against writing an outbox row for a deferred/rejected/expired intent.
+ */
+export async function insertAuthorizedIntentOutbox(
+  client: PoolClient,
+  intentId: string,
+  message: RenderedOutboxMessage,
+): Promise<{ outboxId: string }> {
+  const statusResult = await client.query<{ status: string }>(
+    `SELECT status FROM worker_message_intents WHERE id = $1`,
+    [intentId],
+  );
+  const status = statusResult.rows[0]?.status;
+  if (status !== 'eligible' && status !== 'leased') {
+    throw new Error('unauthorized_worker_outbox_row');
+  }
+
+  const inserted = await client.query<{ id: string }>(
+    `INSERT INTO whatsapp_outbox
+        (inbound_message_sid, sequence, whatsapp_number, body, content_template, content_variables, source_type, source_id)
+     VALUES (NULL, 1, $1, $2, $3, $4::jsonb, 'worker_intent', $5)
+     RETURNING id`,
+    [
+      message.whatsappNumber,
+      message.body,
+      message.contentTemplate,
+      message.contentVariables ? JSON.stringify(message.contentVariables) : null,
+      intentId,
+    ],
+  );
+  return { outboxId: inserted.rows[0].id };
 }
