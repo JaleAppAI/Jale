@@ -1,0 +1,437 @@
+import type { PoolClient } from 'pg';
+import type {
+  PreferredLanguage,
+  WorkerLifecycle,
+  WorkflowRunStatus,
+  WorkflowStepKey,
+} from './onboarding-types';
+
+// ── Contract shared by every exported function in this module ──
+//
+// Caller owns the transaction: none of these functions issue BEGIN, COMMIT,
+// ROLLBACK, connect(), or release(). They also never set RLS context —
+// the caller must already have an open transaction with the correct GUC
+// (`app.current_internal_user_id`) set via `setInternalUserRlsContext`
+// before calling in. All SQL is parameterized; no value or identifier is
+// ever string-concatenated into a query.
+
+export interface WorkerGate {
+  userId: string;
+  lifecycle: WorkerLifecycle;
+  runId: string | null;
+  workflowVersion: number | null;
+  currentStepKey: WorkflowStepKey | null;
+  status: WorkflowRunStatus | null;
+  preferredLanguage: PreferredLanguage;
+  lockVersion: number | null;
+}
+
+export interface PreAuthState {
+  challengeId: string;
+  phoneHash: string;
+  providerChallengeId: string | null;
+  candidateUserId: string | null;
+  preferredLanguage: PreferredLanguage;
+  currentStepKey: 'start.choose_language' | 'identity.verify_otp';
+  context: Record<string, unknown>;
+  status: 'pending' | 'expired' | 'locked' | 'superseded';
+  attempts: number;
+  expiresAt: Date | null;
+  lockedUntil: Date | null;
+}
+
+interface WorkerGateRow {
+  user_id: string;
+  lifecycle: WorkerLifecycle;
+  run_id: string | null;
+  workflow_version: number | null;
+  current_step_key: WorkflowStepKey | null;
+  status: WorkflowRunStatus | null;
+  preferred_language: PreferredLanguage;
+  lock_version: number | null;
+}
+
+function mapGateRow(row: WorkerGateRow): WorkerGate {
+  return {
+    userId: row.user_id,
+    lifecycle: row.lifecycle,
+    runId: row.run_id,
+    workflowVersion: row.workflow_version,
+    currentStepKey: row.current_step_key,
+    status: row.status,
+    preferredLanguage: row.preferred_language,
+    lockVersion: row.lock_version,
+  };
+}
+
+/**
+ * Loads (and locks) a worker's onboarding-state + active-workflow-run gate
+ * in one round trip. Returns null when the worker has no onboarding-state
+ * row (unknown worker). Never binds identity or mutates state.
+ *
+ * Ownership/errors: caller owns the transaction; throws nothing beyond
+ * whatever the underlying `client.query` rejects with.
+ */
+export async function loadWorkerGate(
+  client: PoolClient,
+  workerId: string,
+): Promise<WorkerGate | null> {
+  const result = await client.query<WorkerGateRow>(
+    `SELECT s.user_id AS user_id,
+            s.lifecycle AS lifecycle,
+            r.id AS run_id,
+            r.workflow_version AS workflow_version,
+            r.current_step_key AS current_step_key,
+            r.status AS status,
+            COALESCE(r.preferred_language, 'es') AS preferred_language,
+            r.lock_version AS lock_version
+       FROM worker_onboarding_state s
+       LEFT JOIN worker_workflow_runs r
+         ON r.user_id = s.user_id AND r.status = 'active'
+      WHERE s.user_id = $1
+      FOR UPDATE OF s`,
+    [workerId],
+  );
+  const row = result.rows[0];
+  return row ? mapGateRow(row) : null;
+}
+
+interface IdentityChallengeRow {
+  id: string;
+  phone_hash: string;
+  provider_challenge_id: string | null;
+  candidate_user_id: string | null;
+  preferred_language: PreferredLanguage;
+  current_step_key: 'start.choose_language' | 'identity.verify_otp';
+  context: Record<string, unknown>;
+  status: 'pending' | 'expired' | 'locked' | 'superseded';
+  attempts: number;
+  expires_at: Date | null;
+  locked_until: Date | null;
+}
+
+function mapPreAuthRow(row: IdentityChallengeRow): PreAuthState {
+  return {
+    challengeId: row.id,
+    phoneHash: row.phone_hash,
+    providerChallengeId: row.provider_challenge_id,
+    candidateUserId: row.candidate_user_id,
+    preferredLanguage: row.preferred_language,
+    currentStepKey: row.current_step_key,
+    context: row.context,
+    status: row.status,
+    attempts: row.attempts,
+    expiresAt: row.expires_at,
+    lockedUntil: row.locked_until,
+  };
+}
+
+/**
+ * Loads the pending/locked pre-auth challenge for a phone hash via the
+ * SECURITY DEFINER `load_worker_pre_auth` function — `jale_whatsapp` has no
+ * direct SELECT on `worker_identity_challenges`. Keyed only by phone hash;
+ * never resolves or binds a verified worker identity. Returns null when no
+ * pending/locked row exists for the hash.
+ */
+export async function loadPreAuthStateForUpdate(
+  client: PoolClient,
+  phoneHash: string,
+): Promise<PreAuthState | null> {
+  const result = await client.query<IdentityChallengeRow>(
+    `SELECT * FROM public.load_worker_pre_auth($1)`,
+    [phoneHash],
+  );
+  const row = result.rows[0];
+  return row ? mapPreAuthRow(row) : null;
+}
+
+const PRE_AUTH_PATCH_FIELD_MAP: Array<{
+  key: keyof PreAuthState;
+  column: string;
+  serialize?: (value: unknown) => unknown;
+}> = [
+  { key: 'providerChallengeId', column: 'provider_challenge_id' },
+  { key: 'candidateUserId', column: 'candidate_user_id' },
+  { key: 'preferredLanguage', column: 'preferred_language' },
+  { key: 'currentStepKey', column: 'current_step_key' },
+  { key: 'context', column: 'context' },
+  { key: 'status', column: 'status' },
+  { key: 'attempts', column: 'attempts' },
+  {
+    key: 'expiresAt',
+    column: 'expires_at',
+    serialize: (value) => (value instanceof Date ? value.toISOString() : value),
+  },
+  {
+    key: 'lockedUntil',
+    column: 'locked_until',
+    serialize: (value) => (value instanceof Date ? value.toISOString() : value),
+  },
+];
+
+/**
+ * Saves a narrow, allow-listed patch of pre-auth fields via the SECURITY
+ * DEFINER `save_worker_pre_auth` function, keyed only by phone hash. Only
+ * fields present on `patch` are sent — this can never set `verified_user_id`
+ * or any identity-binding field; that transition only happens through
+ * `bindVerifiedIdentityAndStartWorkflow`.
+ *
+ * Throws whatever `save_worker_pre_auth` raises (e.g. an invalid status
+ * transition) if the definer function rejects the patch.
+ */
+export async function savePreAuthState(
+  client: PoolClient,
+  phoneHash: string,
+  patch: Partial<PreAuthState>,
+): Promise<PreAuthState> {
+  const patchObject: Record<string, unknown> = {};
+  for (const field of PRE_AUTH_PATCH_FIELD_MAP) {
+    if (field.key in patch) {
+      const raw = (patch as Record<string, unknown>)[field.key];
+      patchObject[field.column] = field.serialize ? field.serialize(raw) : raw;
+    }
+  }
+
+  const result = await client.query<IdentityChallengeRow>(
+    `SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)`,
+    [phoneHash, JSON.stringify(patchObject)],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    throw new Error('pre_auth_save_failed');
+  }
+  return mapPreAuthRow(row);
+}
+
+/**
+ * Binds a verified worker identity to the WhatsApp conversation and starts
+ * the onboarding workflow run (at `legal.review`) via the SECURITY DEFINER
+ * `bind_verified_identity_and_start_workflow` function. This is the only
+ * path that may attach a `user_id` to a conversation or challenge.
+ *
+ * Returns the resulting gate (never null — the definer function always
+ * creates the onboarding-state + active run rows before returning).
+ */
+export async function bindVerifiedIdentityAndStartWorkflow(
+  client: PoolClient,
+  input: {
+    conversationId: string;
+    phoneHash: string;
+    challengeId: string;
+    verifiedWorkerId: string;
+    preferredLanguage: PreferredLanguage;
+    workflowVersion: number;
+    inboundMessageSid: string;
+  },
+): Promise<WorkerGate> {
+  await client.query(
+    `SELECT * FROM public.bind_verified_identity_and_start_workflow($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+    [
+      input.phoneHash,
+      input.verifiedWorkerId,
+      input.conversationId,
+      input.workflowVersion,
+      input.preferredLanguage,
+      input.inboundMessageSid,
+      JSON.stringify({}),
+    ],
+  );
+
+  const gate = await loadWorkerGate(client, input.verifiedWorkerId);
+  if (!gate) {
+    throw new Error('worker_gate_missing_after_bind');
+  }
+  return gate;
+}
+
+/**
+ * Advances a workflow run to a new step, guarded by optimistic
+ * `lock_version`. Merges `contextPatch` into the run's JSONB context and
+ * appends exactly one transition row recording the move.
+ *
+ * A validated legal terminal status ('declined' | 'cancelled' | 'failed')
+ * may be applied via `status` while `toStepKey` still records the
+ * canonical current step.
+ *
+ * Throws `Error('workflow_lock_conflict')` when no row matches
+ * `id = runId AND lock_version = expectedLockVersion` (stale caller state
+ * or a concurrent writer already advanced the run).
+ */
+export async function advanceWorkflow(
+  client: PoolClient,
+  input: {
+    runId: string;
+    expectedLockVersion: number;
+    fromStepKey: WorkflowStepKey;
+    toStepKey: WorkflowStepKey;
+    status?: WorkflowRunStatus;
+    contextPatch: Record<string, unknown>;
+    inboundMessageSid: string;
+    reason: string;
+  },
+): Promise<WorkerGate> {
+  const result = await client.query<{ user_id: string; current_step_key: WorkflowStepKey }>(
+    `UPDATE worker_workflow_runs
+        SET current_step_key = $1,
+            status = COALESCE($2, status),
+            context = context || $3::jsonb,
+            lock_version = lock_version + 1,
+            updated_at = now()
+      WHERE id = $4 AND lock_version = $5
+      RETURNING user_id, current_step_key`,
+    [
+      input.toStepKey,
+      input.status ?? null,
+      JSON.stringify(input.contextPatch),
+      input.runId,
+      input.expectedLockVersion,
+    ],
+  );
+  if (result.rowCount === 0) {
+    throw new Error('workflow_lock_conflict');
+  }
+  const workerId = result.rows[0].user_id;
+
+  await appendTransition(client, {
+    runId: input.runId,
+    fromStepKey: input.fromStepKey,
+    toStepKey: input.toStepKey,
+    inboundMessageSid: input.inboundMessageSid,
+    reason: input.reason,
+  });
+
+  const gate = await loadWorkerGate(client, workerId);
+  if (!gate) {
+    throw new Error('worker_gate_missing_after_advance');
+  }
+  return gate;
+}
+
+/**
+ * Appends one immutable transition row to `worker_workflow_transitions`.
+ * Pure insert — never mutates the run itself.
+ */
+export async function appendTransition(
+  client: PoolClient,
+  input: {
+    runId: string;
+    fromStepKey: WorkflowStepKey | null;
+    toStepKey: WorkflowStepKey;
+    inboundMessageSid: string | null;
+    reason: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<{ transitionId: string }> {
+  const result = await client.query<{ id: string }>(
+    `INSERT INTO worker_workflow_transitions
+        (run_id, from_step_key, to_step_key, inbound_message_sid, reason, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+     RETURNING id`,
+    [
+      input.runId,
+      input.fromStepKey,
+      input.toStepKey,
+      input.inboundMessageSid,
+      input.reason,
+      JSON.stringify(input.metadata ?? {}),
+    ],
+  );
+  return { transitionId: result.rows[0].id };
+}
+
+async function insertDomainEventIdempotent(
+  client: PoolClient,
+  input: {
+    eventType: 'assessment.requested' | 'worker.ready';
+    aggregateId: string;
+    eventKey: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<string> {
+  const inserted = await client.query<{ id: string }>(
+    `INSERT INTO worker_domain_outbox (event_type, aggregate_id, event_key, payload)
+     VALUES ($1, $2, $3, $4::jsonb)
+     ON CONFLICT (event_key) DO NOTHING
+     RETURNING id`,
+    [input.eventType, input.aggregateId, input.eventKey, JSON.stringify(input.payload)],
+  );
+  if (inserted.rows[0]) {
+    return inserted.rows[0].id;
+  }
+  // A concurrent writer already claimed this event_key; look up its id.
+  const existing = await client.query<{ id: string }>(
+    `SELECT id FROM worker_domain_outbox WHERE event_key = $1`,
+    [input.eventKey],
+  );
+  return existing.rows[0].id;
+}
+
+/**
+ * Marks onboarding complete: flips lifecycle to 'ready', completes the
+ * workflow run (guarded by `expectedLockVersion`), appends one terminal
+ * transition, and idempotently enqueues the two downstream domain events
+ * (`assessment.requested`, `worker.ready`) other lanes react to.
+ *
+ * No BEGIN/COMMIT, no fetch, no AWS SDK calls — every statement runs on the
+ * caller's already-open transaction.
+ *
+ * Throws `Error('workflow_lock_conflict')` when the run update matches zero
+ * rows (stale `expectedLockVersion`).
+ */
+export async function completeOnboarding(
+  client: PoolClient,
+  input: {
+    workerId: string;
+    runId: string;
+    expectedLockVersion: number;
+    assessmentProvenance: Record<string, unknown>;
+  },
+): Promise<{ assessmentEventId: string; workerReadyEventId: string }> {
+  await client.query(
+    `UPDATE worker_onboarding_state
+        SET lifecycle = 'ready',
+            ready_at = now(),
+            lifecycle_changed_at = now(),
+            updated_at = now()
+      WHERE user_id = $1`,
+    [input.workerId],
+  );
+
+  const runResult = await client.query<{ current_step_key: WorkflowStepKey }>(
+    `UPDATE worker_workflow_runs
+        SET status = 'completed',
+            completed_at = now(),
+            lock_version = lock_version + 1,
+            updated_at = now()
+      WHERE id = $1 AND lock_version = $2
+      RETURNING current_step_key`,
+    [input.runId, input.expectedLockVersion],
+  );
+  if (runResult.rowCount === 0) {
+    throw new Error('workflow_lock_conflict');
+  }
+  const currentStepKey = runResult.rows[0].current_step_key;
+
+  await appendTransition(client, {
+    runId: input.runId,
+    fromStepKey: currentStepKey,
+    toStepKey: currentStepKey,
+    inboundMessageSid: null,
+    reason: 'onboarding_complete',
+  });
+
+  const assessmentEventId = await insertDomainEventIdempotent(client, {
+    eventType: 'assessment.requested',
+    aggregateId: input.workerId,
+    eventKey: `assessment.requested:${input.workerId}:${input.runId}`,
+    payload: input.assessmentProvenance,
+  });
+  const workerReadyEventId = await insertDomainEventIdempotent(client, {
+    eventType: 'worker.ready',
+    aggregateId: input.workerId,
+    eventKey: `worker.ready:${input.workerId}:${input.runId}`,
+    payload: {},
+  });
+
+  return { assessmentEventId, workerReadyEventId };
+}

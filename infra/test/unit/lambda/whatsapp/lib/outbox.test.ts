@@ -13,6 +13,7 @@ import {
   sendTwilioWhatsAppMessage,
   sendPendingAdminOutbox,
   sendPendingOutbox,
+  insertAuthorizedIntentOutbox,
   _clearOutboxTwilioSecretCacheForTests,
 } from '../../../../../lambda/whatsapp/lib/outbox';
 
@@ -422,5 +423,59 @@ describe('whatsapp outbox templates', () => {
       expect.stringContaining("SET status = 'failed'"),
       ['job-alert-row', expect.stringContaining('HTTP 400')],
     );
+  });
+
+  describe('insertAuthorizedIntentOutbox', () => {
+    it('inserts a worker_intent outbox row for an eligible intent', async () => {
+      query
+        .mockResolvedValueOnce({ rows: [{ status: 'eligible' }] })
+        .mockResolvedValueOnce({ rows: [{ id: 'outbox-worker-intent-1' }] });
+
+      const result = await insertAuthorizedIntentOutbox({ query } as any, 'intent-1', {
+        whatsappNumber: '+15125551234',
+        body: 'A new job is available',
+        contentTemplate: null,
+        contentVariables: null,
+      });
+
+      expect(result).toEqual({ outboxId: 'outbox-worker-intent-1' });
+      expect(query.mock.calls[0][0]).toMatch(/SELECT status FROM worker_message_intents/);
+      expect(query.mock.calls[0][1]).toEqual(['intent-1']);
+      const insertCall = query.mock.calls[1];
+      expect(insertCall[0]).toMatch(/INSERT INTO whatsapp_outbox/);
+      expect(insertCall[0]).toMatch(/'worker_intent'/);
+      expect(insertCall[1]).toEqual([
+        '+15125551234',
+        'A new job is available',
+        null,
+        null,
+        'intent-1',
+      ]);
+    });
+
+    it('throws unauthorized_worker_outbox_row when the intent is still deferred', async () => {
+      query.mockResolvedValueOnce({ rows: [{ status: 'deferred' }] });
+
+      await expect(insertAuthorizedIntentOutbox({ query } as any, 'intent-2', {
+        whatsappNumber: '+15125551234',
+        body: 'hi',
+        contentTemplate: null,
+        contentVariables: null,
+      })).rejects.toThrow('unauthorized_worker_outbox_row');
+
+      expect(query.mock.calls.filter(([sql]) =>
+        String(sql).includes('INSERT INTO whatsapp_outbox'))).toHaveLength(0);
+    });
+
+    it('throws unauthorized_worker_outbox_row when no intent row exists', async () => {
+      query.mockResolvedValueOnce({ rows: [] });
+
+      await expect(insertAuthorizedIntentOutbox({ query } as any, 'intent-missing', {
+        whatsappNumber: '+15125551234',
+        body: 'hi',
+        contentTemplate: null,
+        contentVariables: null,
+      })).rejects.toThrow('unauthorized_worker_outbox_row');
+    });
   });
 });
