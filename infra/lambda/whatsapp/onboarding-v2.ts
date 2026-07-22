@@ -15,21 +15,22 @@
  * `PreAuthState` / `WorkerGate` are owned by `./lib/onboarding-repository`
  * (Task/lane C4) and imported the same way.
  *
- * Every outbound message — pre-auth or bound, workflow or security — goes
- * through `enqueueWorkerMessage`. This module never calls any of the
- * legacy per-message send helpers and never writes to the outbox table
- * directly.
- *
- * Enqueue key for pre-auth sends: `worker_message_intents.user_id` is a
- * NOT NULL FK, and identity isn't verified/bound yet at
- * start.choose_language / identity.verify_otp, so `RouteResult.workerId`
- * (the verified/bound worker) stays null through that phase. Pre-auth
- * sends instead key off `PreAuthState.candidateUserId` — the pre-existing
- * account a phone number is being matched against (workers sign up before
- * they ever text; WhatsApp v2 verifies and binds an account that already
- * exists, it does not create one). The session's `user_id` is the best
- * available signal for that candidate and seeds `candidateUserId` the
- * first time a phone hash is touched.
+ * Outbound delivery splits by phase (Design A, contract-repaired 2026-07-22).
+ * `worker_message_intents.user_id` is a NOT NULL FK and a net-new worker has
+ * NO `users` row before verified OTP, so pre-auth prompts cannot go through
+ * `enqueueWorkerMessage`:
+ *   - Pre-auth (start.choose_language, identity.verify_otp, and the OTP
+ *     invalid/expired/locked/cooldown replies) deliver via the injected
+ *     phone/`inbound_message_sid`-keyed reply gateway
+ *     (`enqueuePreAuthPrompt` / `enqueuePreAuthText`) — no `user_id`, durable,
+ *     drained post-commit, never a direct send, never deferrable.
+ *   - Bound steps (legal.review onward, after
+ *     `bindVerifiedIdentityAndStartWorkflow`) use `enqueueWorkerMessage`,
+ *     where `user_id` is guaranteed.
+ * This module never writes the outbox table directly nor calls a legacy send
+ * helper — delivery is always through an injected dep. `candidateUserId` is
+ * persisted on the pre-auth challenge for a phone that matches a pre-existing
+ * account, but delivery NEVER depends on it (a net-new worker has none).
  */
 
 import type { PoolClient } from 'pg';
