@@ -158,6 +158,7 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain("pg_catalog.pg_get_expr");
     expect(migration).toContain("pg_catalog.pg_get_constraintdef(con.oid) = expected.definition");
     expect(migration).toContain("pg_catalog.pg_get_expr(idx.indpred, idx.indrelid) = expected.predicate");
+    expect(migration).toContain("source_type IN ('admin_case', 'job_alert', 'worker_intent')");
     expect(migration).toContain("has_any_column_privilege");
     expect(migration).toContain("'^(SM|MM)[0-9A-Fa-f]{32}$'");
     expect(migration).toContain('lease_worker_domain_events');
