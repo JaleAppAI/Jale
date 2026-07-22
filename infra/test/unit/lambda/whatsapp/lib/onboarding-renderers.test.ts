@@ -1,0 +1,488 @@
+const mockSecretsSend = jest.fn();
+jest.mock('@aws-sdk/client-secrets-manager', () => ({
+  SecretsManagerClient: jest.fn(() => ({ send: mockSecretsSend })),
+  GetSecretValueCommand: jest.fn((args) => ({ input: args, __type: 'GetSecretValue' })),
+}));
+
+const mockFetch = jest.fn();
+(global as any).fetch = mockFetch;
+
+import {
+  ALL_MESSAGE_CATEGORIES,
+  registerOnboardingRenderers,
+  createReleaseRenderer,
+  categoryRenderers,
+} from '../../../../../lambda/whatsapp/lib/onboarding-renderers';
+import {
+  _clearCategoryRenderersForTests,
+  enqueueWorkerMessage,
+} from '../../../../../lambda/whatsapp/lib/worker-delivery-gateway';
+import type {
+  MessageCategory,
+  PreferredLanguage,
+  ReleaseRenderRequest,
+  WorkerMessageIntentInput,
+} from '../../../../../lambda/whatsapp/lib/onboarding-types';
+
+const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
+const RAW_PHONE = '+15551234567';
+const OTP = '482913';
+const RAW_INBOUND = 'this is the raw inbound body the worker sent';
+
+function baseInput(overrides: Partial<WorkerMessageIntentInput> = {}): WorkerMessageIntentInput {
+  return {
+    workerId: WORKER_ID,
+    category: 'job_alert',
+    ownerService: 'job-alert',
+    sourceType: 'job',
+    sourceId: 'job-1',
+    dedupeKey: 'job_alert:job-1:worker-1',
+    priority: 5,
+    expiresAt: null,
+    payload: {},
+    ...overrides,
+  };
+}
+
+/**
+ * Mock PoolClient: answers any query with a row containing the phone/lang.
+ * `calls` records the exact SQL text issued, so tests can assert renderers
+ * query the real schema rather than trusting an unconditional stub.
+ */
+function mockClient(opts: {
+  whatsappNumber?: string | null;
+  preferredLanguage?: PreferredLanguage;
+} = {}) {
+  const whatsappNumber = opts.whatsappNumber === undefined ? RAW_PHONE : opts.whatsappNumber;
+  const preferredLanguage = opts.preferredLanguage ?? 'en';
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  const query = jest.fn(async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    return {
+      rows: [
+        {
+          whatsapp_number: whatsappNumber,
+          preferred_language: preferredLanguage,
+        },
+      ],
+    };
+  });
+  return { query, calls } as any;
+}
+
+/**
+ * Real scripted PoolClient for driving `enqueueWorkerMessage` end to end
+ * (worker-delivery-gateway.ts:69), matched by SQL substring rather than
+ * call order. Mirrors worker-delivery-gateway.test.ts's `scriptedClient`
+ * so F3's registration tests exercise the real consumer, not a role-play
+ * of "did some registration function run".
+ */
+function scriptedEnqueueClient(opts: {
+  gateRow?: Record<string, unknown> | null;
+  deferredDeliveryEnabled?: boolean;
+} = {}) {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  let intentInsertCallCount = 0;
+  const query = jest.fn(async (sql: string, params: unknown[] = []) => {
+    calls.push({ sql, params });
+    if (/INSERT INTO worker_message_intents/.test(sql)) {
+      intentInsertCallCount += 1;
+      return { rows: [{ id: `intent-${intentInsertCallCount}`, outbox_id: null }] };
+    }
+    if (/FROM worker_onboarding_state/.test(sql)) {
+      return { rows: opts.gateRow === undefined || opts.gateRow === null ? [] : [opts.gateRow] };
+    }
+    if (/FROM whatsapp_runtime_controls/.test(sql)) {
+      return {
+        rows: [{
+          control_key: 'deferred_delivery_enabled',
+          enabled: opts.deferredDeliveryEnabled ?? false,
+          phone_hashes: [],
+          global_enabled: false,
+        }],
+      };
+    }
+    if (/UPDATE worker_message_intents/.test(sql) && /SET status/.test(sql)) {
+      return { rowCount: 1, rows: [] };
+    }
+    if (/SELECT status FROM worker_message_intents/.test(sql)) {
+      return { rows: [{ status: 'eligible' }] };
+    }
+    if (/INSERT INTO whatsapp_outbox/.test(sql)) {
+      return { rows: [{ id: 'outbox-1' }] };
+    }
+    if (/UPDATE worker_message_intents SET outbox_id/.test(sql)) {
+      return { rowCount: 1, rows: [] };
+    }
+    // loadVerifiedRecipient's SELECT ... FROM users / worker_workflow_runs.
+    if (/FROM users/.test(sql)) {
+      return { rows: [{ whatsapp_number: RAW_PHONE, preferred_language: 'en' }] };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  return { query, client: { query } as any, calls };
+}
+
+const readyGateRow = {
+  user_id: WORKER_ID,
+  lifecycle: 'ready',
+  run_id: null,
+  workflow_version: null,
+  current_step_key: null,
+  status: null,
+  preferred_language: 'es',
+  lock_version: null,
+};
+
+function collectStrings(value: unknown): string[] {
+  const out: string[] = [];
+  const visit = (v: unknown) => {
+    if (typeof v === 'string') {
+      out.push(v);
+    } else if (v && typeof v === 'object') {
+      for (const child of Object.values(v)) visit(child);
+    }
+  };
+  visit(value);
+  return out;
+}
+
+function assertNoLeaks(value: unknown) {
+  const strings = collectStrings(value).join('\n');
+  expect(strings).not.toContain(OTP);
+  expect(strings).not.toContain(RAW_PHONE);
+  expect(strings).not.toContain(RAW_INBOUND);
+}
+
+describe('onboarding-renderers', () => {
+  beforeEach(() => {
+    _clearCategoryRenderersForTests();
+  });
+
+  describe('category coverage', () => {
+    it('has a renderer for every member of the canonical MessageCategory union', () => {
+      for (const category of ALL_MESSAGE_CATEGORIES) {
+        expect(categoryRenderers[category]).toBeDefined();
+        expect(typeof categoryRenderers[category]).toBe('function');
+      }
+      // Also make sure the map has no extra/missing keys vs the union array.
+      expect(Object.keys(categoryRenderers).sort()).toEqual(
+        [...ALL_MESSAGE_CATEGORIES].sort(),
+      );
+    });
+  });
+
+  describe('registerOnboardingRenderers', () => {
+    // These assert the OBSERVABLE outcome through the real consumer
+    // (enqueueWorkerMessage), not just that some call didn't throw: if
+    // registerOnboardingRenderers() is gutted to a no-op, both privileged
+    // intents resolve `renderer_unavailable` with no outbox row, and these
+    // tests fail.
+
+    it('registers the onboarding category renderer so an onboarding-v2 intent renders instead of resolving renderer_unavailable', async () => {
+      registerOnboardingRenderers();
+      const { client, calls } = scriptedEnqueueClient({ gateRow: null });
+
+      const { decision } = await enqueueWorkerMessage(
+        client,
+        baseInput({
+          category: 'onboarding',
+          ownerService: 'onboarding-v2',
+          dedupeKey: 'onboarding:reg-test:1',
+        }),
+      );
+
+      expect(decision.action).toBe('allow');
+      expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(true);
+      expect(calls.some((c) => Array.isArray(c.params) && c.params.includes('renderer_unavailable'))).toBe(false);
+    });
+
+    it('registers the security category renderer so an identity intent renders instead of resolving renderer_unavailable', async () => {
+      registerOnboardingRenderers();
+      const { client, calls } = scriptedEnqueueClient({ gateRow: null });
+
+      const { decision } = await enqueueWorkerMessage(
+        client,
+        baseInput({
+          category: 'security',
+          ownerService: 'identity',
+          dedupeKey: 'security:reg-test:1',
+        }),
+      );
+
+      expect(decision.action).toBe('allow');
+      expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(true);
+      expect(calls.some((c) => Array.isArray(c.params) && c.params.includes('renderer_unavailable'))).toBe(false);
+    });
+
+    it('is idempotent: calling it twice, including after a registry clear, still renders both privileged categories', async () => {
+      registerOnboardingRenderers();
+      registerOnboardingRenderers();
+      // Simulate a mid-suite registry clear (as another suite's beforeEach
+      // would do) followed by a warm-start re-registration.
+      _clearCategoryRenderersForTests();
+      registerOnboardingRenderers();
+
+      const onboardingClient = scriptedEnqueueClient({ gateRow: null });
+      const onboardingResult = await enqueueWorkerMessage(
+        onboardingClient.client,
+        baseInput({
+          category: 'onboarding',
+          ownerService: 'onboarding-v2',
+          dedupeKey: 'onboarding:reg-test:2',
+        }),
+      );
+      expect(onboardingResult.decision.action).toBe('allow');
+      expect(
+        onboardingClient.calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql)),
+      ).toBe(true);
+
+      const securityClient = scriptedEnqueueClient({ gateRow: null });
+      const securityResult = await enqueueWorkerMessage(
+        securityClient.client,
+        baseInput({
+          category: 'security',
+          ownerService: 'identity',
+          dedupeKey: 'security:reg-test:2',
+        }),
+      );
+      expect(securityResult.decision.action).toBe('allow');
+      expect(
+        securityClient.calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql)),
+      ).toBe(true);
+    });
+  });
+
+  describe('category renderers structural safety', () => {
+    it('renderer functions never touch network/clock globals directly (source scan)', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const src = fs.readFileSync(
+        path.join(__dirname, '../../../../../lambda/whatsapp/lib/onboarding-renderers.ts'),
+        'utf8',
+      );
+      expect(src).not.toMatch(/\bfetch\s*\(/);
+      expect(src).not.toMatch(/Date\.now\s*\(/);
+      expect(src).not.toMatch(/new Date\s*\(/);
+      expect(src).not.toMatch(/setTimeout|setInterval/);
+    });
+
+    it('uses parameterized queries only (no string-concatenated SQL)', () => {
+      const fs = require('fs');
+      const path = require('path');
+      const src = fs.readFileSync(
+        path.join(__dirname, '../../../../../lambda/whatsapp/lib/onboarding-renderers.ts'),
+        'utf8',
+      );
+      // No template-literal SQL interpolation of variables into query strings.
+      expect(src).not.toMatch(/query\(`[^`]*\$\{/);
+    });
+
+    it('resolves preferred_language from worker_workflow_runs, never from worker_onboarding_state (which has no such column)', async () => {
+      // worker_onboarding_state's real columns (migration-verified) are
+      // exactly: id, user_id, lifecycle, lifecycle_changed_at, ready_at,
+      // created_at, updated_at. preferred_language lives on
+      // worker_workflow_runs / worker_identity_challenges. A query that
+      // selects preferred_language off worker_onboarding_state throws
+      // 42703 against the real schema; this asserts the SQL shape itself,
+      // not just that a jest.fn() mock answered without validating it.
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      await categoryRenderers.onboarding(client, baseInput({ category: 'onboarding' }));
+
+      expect(client.calls.length).toBeGreaterThan(0);
+      for (const call of client.calls) {
+        if (/preferred_language/.test(call.sql)) {
+          expect(call.sql).toMatch(/worker_workflow_runs/);
+          // Must not select preferred_language off worker_onboarding_state.
+          expect(call.sql).not.toMatch(/worker_onboarding_state[\s\S]*preferred_language/);
+          const fromOnboardingState = /FROM\s+worker_onboarding_state\s+(\w+)/i.exec(call.sql);
+          if (fromOnboardingState) {
+            const alias = fromOnboardingState[1];
+            expect(call.sql).not.toMatch(new RegExp(`${alias}\\.preferred_language`));
+          }
+        }
+      }
+    });
+
+    it('each category renderer resolves recipient/lang via the client and returns null-safe output when unresolved', async () => {
+      for (const category of ALL_MESSAGE_CATEGORIES) {
+        const client = mockClient({ whatsappNumber: null });
+        const input = baseInput({ category });
+        const result = await categoryRenderers[category](client, input);
+        // When there's no verified recipient, renderer must not throw and
+        // must not fabricate a phone number.
+        if (result) {
+          assertNoLeaks(result);
+        }
+      }
+    });
+
+    it('renders a message with the resolved recipient when found, with no leaks', async () => {
+      for (const category of ALL_MESSAGE_CATEGORIES) {
+        const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+        const input = baseInput({
+          category,
+          payload: { otp: OTP, inboundBody: RAW_INBOUND },
+        });
+        const result = await categoryRenderers[category](client, input);
+        if (result) {
+          expect(result.whatsappNumber).toBe(RAW_PHONE);
+          assertNoLeaks({ body: result.body, contentTemplate: result.contentTemplate });
+        }
+      }
+    });
+  });
+
+  describe('createReleaseRenderer', () => {
+    const languages: PreferredLanguage[] = ['en', 'es'];
+
+    function jobs(count: number) {
+      return Array.from({ length: count }, (_, i) => ({
+        jobId: `job-${i}`,
+        title: `Title ${i}`,
+        companyName: `Company ${i}`,
+        score: 1,
+      }));
+    }
+
+    const kinds: ReadonlyArray<(lang: PreferredLanguage) => ReleaseRenderRequest> = [
+      (language) => ({ kind: 'onboarding_complete', workerId: WORKER_ID, language }),
+      (language) => ({
+        kind: 'account_notice',
+        workerId: WORKER_ID,
+        language,
+        sourceType: 'profile',
+        sourceId: 'notice-1',
+      }),
+      (language) => ({
+        kind: 'job_alert_digest',
+        workerId: WORKER_ID,
+        language,
+        jobs: jobs(3),
+      }),
+      (language) => ({
+        kind: 'employer_chat_single',
+        workerId: WORKER_ID,
+        language,
+        conversationId: 'conv-1',
+        companyName: 'Acme Co',
+        jobTitle: 'Electrician',
+      }),
+      (language) => ({
+        kind: 'employer_chat_summary',
+        workerId: WORKER_ID,
+        language,
+        conversationCount: 4,
+      }),
+    ];
+
+    it('handles all five kinds in both languages (10 combinations)', async () => {
+      const renderer = createReleaseRenderer();
+      let count = 0;
+      for (const buildRequest of kinds) {
+        for (const language of languages) {
+          const request = buildRequest(language);
+          const result = await renderer.render(request);
+          expect(result).toBeDefined();
+          expect(result.body !== null || result.contentTemplate !== null).toBe(true);
+          count += 1;
+        }
+      }
+      expect(count).toBe(10);
+    });
+
+    it('produces different EN and ES output for each release kind', async () => {
+      const renderer = createReleaseRenderer();
+      for (const buildRequest of kinds) {
+        const enResult = await renderer.render(buildRequest('en'));
+        const esResult = await renderer.render(buildRequest('es'));
+        const enText = JSON.stringify(enResult);
+        const esText = JSON.stringify(esResult);
+        expect(enText).not.toEqual(esText);
+      }
+    });
+
+    it('caps the job-alert digest at 10 entries and references JOBS for the full list', async () => {
+      const renderer = createReleaseRenderer();
+      const request: ReleaseRenderRequest = {
+        kind: 'job_alert_digest',
+        workerId: WORKER_ID,
+        language: 'en',
+        jobs: jobs(14),
+      };
+      const result = await renderer.render(request);
+      const text = `${result.body ?? ''} ${JSON.stringify(result.contentVariables ?? {})}`;
+
+      // Count how many of the 14 job titles appear verbatim in the output.
+      const renderedCount = jobs(14).filter((j) => text.includes(j.title)).length;
+      expect(renderedCount).toBeLessThanOrEqual(10);
+      expect(text).toContain('JOBS');
+    });
+
+    it('does not exceed the 10-entry cap even for exactly 10 or fewer jobs', async () => {
+      const renderer = createReleaseRenderer();
+      const result = await renderer.render({
+        kind: 'job_alert_digest',
+        workerId: WORKER_ID,
+        language: 'en',
+        jobs: jobs(10),
+      });
+      const text = `${result.body ?? ''} ${JSON.stringify(result.contentVariables ?? {})}`;
+      const renderedCount = jobs(10).filter((j) => text.includes(j.title)).length;
+      expect(renderedCount).toBeLessThanOrEqual(10);
+    });
+
+    it('renders the existing single-conversation invitation copy', async () => {
+      const renderer = createReleaseRenderer();
+      const result = await renderer.render({
+        kind: 'employer_chat_single',
+        workerId: WORKER_ID,
+        language: 'en',
+        conversationId: 'conv-1',
+        companyName: 'Acme Co',
+        jobTitle: 'Electrician',
+      });
+      const text = `${result.body ?? ''} ${JSON.stringify(result.contentVariables ?? {})}`;
+      expect(text).toContain('Acme Co');
+      expect(text).toContain('Electrician');
+    });
+
+    it('renders exactly one multi-employer summary message mentioning multiple employers, a View Chats action, and the CHATS/MENSAJES fallback', async () => {
+      const renderer = createReleaseRenderer();
+
+      const enResult = await renderer.render({
+        kind: 'employer_chat_summary',
+        workerId: WORKER_ID,
+        language: 'en',
+        conversationCount: 5,
+      });
+      const enText = `${enResult.body ?? ''} ${JSON.stringify(enResult.contentVariables ?? {})}`;
+      expect(enText.toUpperCase()).toContain('CHATS');
+      expect(enText).toMatch(/employer/i);
+
+      const esResult = await renderer.render({
+        kind: 'employer_chat_summary',
+        workerId: WORKER_ID,
+        language: 'es',
+        conversationCount: 5,
+      });
+      const esText = `${esResult.body ?? ''} ${JSON.stringify(esResult.contentVariables ?? {})}`;
+      expect(esText.toUpperCase()).toContain('MENSAJES');
+    });
+
+    it('release outputs never contain an OTP, raw phone number, or raw inbound message body', async () => {
+      const renderer = createReleaseRenderer();
+      for (const buildRequest of kinds) {
+        for (const language of languages) {
+          const result = await renderer.render(buildRequest(language));
+          assertNoLeaks(result);
+        }
+      }
+    });
+
+    it('release rendering performs no network/clock call (source scan covers this module too)', () => {
+      // Covered by the earlier source-scan test since both live in the same file.
+      expect(true).toBe(true);
+    });
+  });
+});
