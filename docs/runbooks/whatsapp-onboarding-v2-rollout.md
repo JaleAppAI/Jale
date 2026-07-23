@@ -376,6 +376,38 @@ To fully pull v2 back for a phone: `npm run whatsapp:controls -- --deny-phone "<
 
 ---
 
+## 10. Pre-enable verifications and known design notes (freeze-report items)
+
+Confirm these before enabling v2 for real traffic (they require the deployed
+environment and cannot be verified from the repo alone):
+
+1. **Privacy-doc URL.** The v2 legal prompt uses `https://jale.app/legal/privacy`
+   (derived by same-domain convention). Confirm it resolves to a live deployed
+   legal page — the frontend also exposes `/privacypolicy` and
+   `/legal/privacy/[version]`. Fix the prompt's URL if the deployed path differs.
+4. **Cognito username format.** The identity adapter feeds `from`
+   (`conv.whatsapp_number`, E.164) as the Cognito `USERNAME` for
+   `RespondToAuthChallenge`. Verify this matches the format the live worker pool
+   expects (chosen so the router's internal v2-enable hash matches).
+
+Known design notes (awareness only — no action required for rollout):
+
+2. **Mid-flow language override is router-local.** An `IDIOMA`/`LANGUAGE` switch
+   applies to subsequent prompts via `state_context`, but the release renderer
+   reads `worker_workflow_runs.preferred_language` from the DB — so a
+   `worker.ready` confirmation arrives in the originally-bound language until a
+   `preferred_language` mutator is added. (C4/C6-era follow-up.)
+5. **Cross-message workflow scratch** (generated trust questions, reprompt
+   cooldowns, language override) lives in `whatsapp_conversations.state_context`,
+   persisted by the processor's v2 branch in the same transaction, because
+   `WorkerGate` does not expose `worker_workflow_runs.context`. Sound given the
+   C4 contract; documented as a design split.
+
+> **Freeze item 3 (OTP hourly cap) is a separate open decision** — see the
+> pending-decision note in the integration handoff; the initial OTP challenge is
+> not counted toward the 3/hour `otpSendHistory` cap, so the effective ceiling is
+> 4 sends/hour (1 initial + 3 resends) vs. the design's "maximum three per hour."
+
 ## Handoff — recorded gate results
 
 Recorded from the Task C10 green gate (2026-07-23):
