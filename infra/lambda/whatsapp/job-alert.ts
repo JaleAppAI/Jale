@@ -1,6 +1,10 @@
 import { getDbPool } from '../lib/db';
 import { queueJobAlert } from './lib/outbox';
 import { getTwilioSecret } from './lib/twilio-secret';
+import { enqueueWorkerMessage } from './lib/worker-delivery-gateway';
+import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from './lib/runtime-controls';
+
+const JOB_ALERT_EXPIRY_MS = 72 * 60 * 60 * 1000;
 
 // ── Handler event shape ─────────────────────────────────────────
 /**
@@ -111,9 +115,48 @@ export const handler = async (
       );
     }
 
+    // v2 redirect: workers allowlisted (or globally enabled) for onboarding v2
+    // never get an immediate legacy whatsapp_outbox row here. Instead this
+    // producer defers a `job_alert` intent for the grouped worker.ready
+    // release (worker-ready-release.ts) to pick up later. The phone hash is
+    // never logged. Non-v2 workers take the pre-existing legacy path,
+    // unchanged.
+    const controls = await loadRuntimeControls(client);
+
     let queued = 0;
     let skipped = 0;
     for (const worker of workers.rows) {
+      const phoneHash = hashNormalizedPhone(worker.whatsapp_number);
+      if (isV2Enabled(controls, phoneHash)) {
+        try {
+          await enqueueWorkerMessage(client, {
+            workerId: worker.id,
+            category: 'job_alert',
+            ownerService: 'job-alert',
+            sourceType: 'job',
+            sourceId: job.id,
+            dedupeKey: `job-alert:${job.id}:${worker.id}`,
+            priority: 30,
+            expiresAt: new Date(Date.now() + JOB_ALERT_EXPIRY_MS),
+            payload: {
+              jobId: job.id,
+              title: job.title,
+              companyName: job.company,
+              score: 1,
+            },
+          });
+          queued++;
+        } catch (err) {
+          console.error('[job-alert] v2 enqueue failed for worker', {
+            workerId: worker.id,
+            jobId: job.id,
+            err: (err as Error).message,
+          });
+          skipped++;
+        }
+        continue;
+      }
+
       const templateKey = worker.language === 'en' ? 'job_alert_en' : 'job_alert_es';
       const variables = {
         '1': job.title,

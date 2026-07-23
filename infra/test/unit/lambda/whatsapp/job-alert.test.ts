@@ -258,3 +258,142 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
     expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('Job Alert Sender Lambda — v2 redirect', () => {
+  const originalEnv = process.env;
+  const V2_WORKER = 'worker-v2-uuid';
+  const V2_PHONE = '+15125559999';
+
+  // scriptedClient dispatches by SQL substring (not call order) so it stays
+  // resilient to internal reordering — same convention as
+  // worker-delivery-gateway.test.ts's scriptedClient.
+  function scriptedClient(opts: {
+    v2GlobalEnabled: boolean;
+    gateRow?: Record<string, unknown> | null;
+  }) {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const query = jest.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (/FROM jobs WHERE id = \$1/.test(sql)) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: 'job-1', title: 'Electricista', company: 'ACME',
+            location: 'Austin', pay: '$40/hr',
+          }],
+        };
+      }
+      if (/JOIN whatsapp_conversations wc/.test(sql)) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: V2_WORKER, whatsapp_number: V2_PHONE, language: 'es', main_trade: null,
+          }],
+        };
+      }
+      if (/FROM whatsapp_runtime_controls/.test(sql)) {
+        return {
+          rows: [{
+            control_key: 'onboarding_v2_enabled',
+            enabled: true,
+            phone_hashes: [],
+            global_enabled: opts.v2GlobalEnabled,
+          }],
+        };
+      }
+      if (/INSERT INTO worker_message_intents/.test(sql)) {
+        return { rows: [{ id: 'intent-1', outbox_id: null }] };
+      }
+      if (/INSERT INTO whatsapp_outbox/.test(sql) && sql.includes("'job_alert'")) {
+        return { rows: [{ id: 'outbox-legacy-1' }] };
+      }
+      if (/FROM worker_onboarding_state/.test(sql)) {
+        return { rows: opts.gateRow ? [opts.gateRow] : [] };
+      }
+      if (/UPDATE worker_message_intents/.test(sql)) {
+        return { rowCount: 1, rows: [] };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    return { query, calls };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env = {
+      ...originalEnv,
+      TWILIO_SECRET_ARN: 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/twilio',
+      DB_SECRET_ARN: 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/db',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+    };
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC12345',
+        authToken: 'test-auth-token',
+        messagingServiceSid: 'MGtest12345',
+        templates: { job_alert_es: JOB_ALERT_SID_ES, job_alert_en: JOB_ALERT_SID_EN },
+      }),
+    });
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('a v2-disabled worker follows the legacy outbox path byte-for-byte and creates no intent row', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: false });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    const result = await handler({ jobId: 'job-1' });
+
+    expect(result).toEqual({ queued: 1, skipped: 0 });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(false);
+    const legacyInsert = calls.find((c) => /INSERT INTO whatsapp_outbox/.test(c.sql) && c.sql.includes("'job_alert'"));
+    expect(legacyInsert).toBeDefined();
+  });
+
+  it('a v2-enabled worker creates exactly one worker_message_intents row with the exact dedupe key and expiry, and issues no whatsapp_outbox insert / no fetch', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: true });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+    const beforeMs = Date.now();
+
+    const result = await handler({ jobId: 'job-1' });
+
+    expect(result).toEqual({ queued: 1, skipped: 0 });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(false);
+
+    const intentInserts = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    expect(intentInserts).toHaveLength(1);
+    const params = intentInserts[0].params;
+    // (user_id, category, owner_service, source_type, source_id, dedupe_key,
+    //  priority, status, policy_version, payload, expires_at)
+    expect(params[0]).toBe(V2_WORKER);
+    expect(params[1]).toBe('job_alert');
+    expect(params[2]).toBe('job-alert');
+    expect(params[3]).toBe('job');
+    expect(params[4]).toBe('job-1');
+    expect(params[5]).toBe(`job-alert:job-1:${V2_WORKER}`);
+    expect(params[6]).toBe(30);
+    const expiresAt = params[9] as Date;
+    const expectedExpiryMs = beforeMs + 72 * 60 * 60 * 1000;
+    expect(Math.abs(expiresAt.getTime() - expectedExpiryMs)).toBeLessThan(5000);
+  });
+
+  it('a repeated producer call for a v2-enabled worker does not create a second intent (ON CONFLICT no-op)', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: true });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    await handler({ jobId: 'job-1' });
+    await handler({ jobId: 'job-1' });
+
+    const intentInserts = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    // Both calls issue the idempotent ON CONFLICT insert; the dedupe_key is
+    // identical both times, which is what the UNIQUE constraint enforces at
+    // the database layer (a real DB would return the same row id both times).
+    expect(intentInserts).toHaveLength(2);
+    expect(intentInserts[0].params[5]).toBe(intentInserts[1].params[5]);
+    expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(false);
+  });
+});

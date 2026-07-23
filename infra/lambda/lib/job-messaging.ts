@@ -1,5 +1,7 @@
 import type { PoolClient } from 'pg';
 import { sendTwilioWhatsAppMessage } from '../whatsapp/lib/outbox';
+import { enqueueWorkerMessage } from '../whatsapp/lib/worker-delivery-gateway';
+import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from '../whatsapp/lib/runtime-controls';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
 const WORKER_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -7,6 +9,8 @@ const MAX_MESSAGE_LENGTH = 2000;
 // Outbox rows stop auto-retrying at this attempt count (R8). The R7 template
 // dedupe must treat rows at the cap as dead, so the two queries share it.
 const MAX_SEND_ATTEMPTS = 5;
+// C6 employer_chat intent expiry (plan intent-parameters table).
+const EMPLOYER_CHAT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 type ConversationAccessRow = {
   id: string;
@@ -459,9 +463,31 @@ export async function queueConversationMessageFromEmployer(
      RETURNING id`,
     [conversation.id, body, canSendFreeform ? 'queued' : 'waiting_worker_reply'],
   );
+  const messageId = message.rows[0].id;
 
-  if (canSendFreeform) {
-    await queueEmployerFreeformMessage(client, conversation, message.rows[0].id, body);
+  // v2 redirect: for a v2-enabled worker, replace only the immediate
+  // whatsapp-side outbox creation below with a deferred `employer_chat`
+  // intent for the grouped worker.ready release (worker-ready-release.ts).
+  // The message row above, and the conversation/application updates below,
+  // are unchanged for both paths. The phone hash is never logged.
+  const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
+  const controls = await loadRuntimeControls(client);
+  const v2Enabled = whatsappNumber !== null && isV2Enabled(controls, hashNormalizedPhone(whatsappNumber));
+
+  if (v2Enabled) {
+    await enqueueWorkerMessage(client, {
+      workerId: conversation.worker_id,
+      category: 'employer_chat',
+      ownerService: 'job-messaging',
+      sourceType: 'job_conversation_message',
+      sourceId: messageId,
+      dedupeKey: `employer-chat:${messageId}`,
+      priority: 40,
+      expiresAt: new Date(Date.now() + EMPLOYER_CHAT_EXPIRY_MS),
+      payload: { conversationId: conversation.id },
+    });
+  } else if (canSendFreeform) {
+    await queueEmployerFreeformMessage(client, conversation, messageId, body);
   } else {
     // R7 dedupe: one un-actioned invite/resume template at a time. A new
     // template is queued only when none has been sent since the worker's
