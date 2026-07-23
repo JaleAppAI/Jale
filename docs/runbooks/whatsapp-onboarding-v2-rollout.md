@@ -475,9 +475,11 @@ fail-closed `test:whatsapp-v2-db` URL guard), base `c8dba0b`:
 > after this battery. (Adding an `afterAll` reset to that suite is a tracked
 > hygiene follow-up.)
 
-**Verified two-fixes commit SHA:** recorded in the durable local ledger
-`2026-07-22-whatsapp-v2-integration-C5-C10-ledger.md` (this runbook is part of
-that same commit, so its SHA is not self-referenced here).
+**Verified two-fixes commit SHA:** `8bb9758` — "feat(whatsapp): enforce 3 total
+OTP sends/hour and fail-close v2 DB gate" (the code + tests + package script; the
+battery above ran against that state). This SHA is recorded here by a small
+follow-up docs commit, mirroring how C10 recorded its code SHA separately. Also
+logged in the durable ledger `2026-07-22-whatsapp-v2-integration-C5-C10-ledger.md`.
 
 **Known follow-ups (do not block this rollout, but track them):**
 1. Add a scheduled stale-`worker_domain_outbox`.`status='processing'` → `pending`
