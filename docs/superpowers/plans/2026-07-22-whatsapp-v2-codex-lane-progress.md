@@ -1,25 +1,25 @@
 # WhatsApp V2 — Codex Integration Lane Progress & Handoff
 
-**Date:** 2026-07-22
-**Author of this note:** Claude Code (picking up the Codex integration lane after Codex hit its OpenAI weekly usage limit mid-run)
-**Lane branch:** `feat/wa-v2-integration` @ `c02cd28` (worktree `.worktrees/wa-v2-integration`, ahead of `origin/main` by 10 commits, 0 behind)
+**Date:** 2026-07-22 (updated after C7)
+**Lane branch:** `feat/wa-v2-integration` @ `3c3f766` (worktree `.worktrees/wa-v2-integration`)
 **Master plan:** `docs/superpowers/plans/2026-07-21-whatsapp-v2-codex-lane.md` (tasks C1–C10)
-**Companion Claude lane:** `feat/wa-v2-workflow` (worktree `.worktrees/wa-v2-claude`, Sprint18C tmux session)
+**Companion Claude lane:** `feat/wa-v2-workflow` @ `938538f` (worktree `.worktrees/wa-v2-claude`) — FROZEN, read-only until C10.
 
 ---
 
 ## 1. What this lane is
 
-Dual-orchestrator build of "WhatsApp onboarding v2". Codex runs the **integration lane**
-(`feat/wa-v2-integration`) as merge captain and owns the shared primitives (types, migration,
-repository/gateway, queue, release, drain, CLIs, DB gate, runbook) as tasks **C1–C10**. A
-separate Claude lane (`feat/wa-v2-workflow`) owns the processor / conversation-router /
-onboarding-router surface and consumes Codex's primitives. The two lanes never edit each
+Dual-orchestrator build of "WhatsApp onboarding v2". The integration lane
+(`feat/wa-v2-integration`) is merge captain and owns the shared primitives (types, migration,
+repository/gateway, queue, release, drain, CLIs, DB gate, runbook) as tasks **C1–C10**. The
+Claude workflow lane (`feat/wa-v2-workflow`) owns the processor / conversation-router /
+onboarding-router surface and consumes these primitives. The two lanes never edit each
 other's files (see *Ownership Exclusions* in the master plan).
 
-Codex's working model: for each task it creates a disposable worktree branched off the lane
-branch, dispatches a task agent to implement it TDD-style, personally runs a three-phase
-**Review 1 / Fix / Review 2** dev-cycle gate, then commits/merges into `feat/wa-v2-integration`.
+Execution model: each task is implemented TDD-first by a dispatched Sonnet subagent working
+directly in the integration worktree; the orchestrator personally runs the three-phase
+**Review 1 / Fix / Review 2** dev-cycle gate (reads every diff, re-runs the focused command
+and `npm run build`), then the commit lands on `feat/wa-v2-integration`.
 
 ---
 
@@ -27,146 +27,88 @@ branch, dispatches a task agent to implement it TDD-style, personally runs a thr
 
 ### Done and integrated into `feat/wa-v2-integration`
 
-| Task | Scope | Integration commit(s) | Status |
+| Task | Scope | Commit(s) | Status |
 | --- | --- | --- | --- |
-| Docs | Design + plans (onboarding-gate design/plan, worktree contract, dual-orchestrator plans) | `f5a5fc8`, `ee2fa89`, `cabfe3e`, `ac8432a` | ✅ merged |
-| **C1** | Accept both `SM` and `MM` Twilio SIDs in TypeScript; single exported `isTwilioMessageSid` used by `outbox.ts` + `status-callback.ts` | `1e22ac6` | ✅ integrated & verified |
-| **C2** | Shared types (`onboarding-types.ts`), runtime controls (`runtime-controls.ts`), pure delivery policy (`delivery-policy.ts`), renderer contracts | `4436ca6` | ✅ integrated & verified |
-| **C3** | Migration `042_whatsapp_onboarding_gate.sql` — additive v2 data model (8 tables, constraints, RLS + grants, lease fn, MM-capable delivery callback, fail-closed self-audit) + its integration test | `e5b56e0`, `3b0b543`, `418b70d` | ✅ integrated locally |
-| C3 follow-up | Widen `whatsapp_outbox_origin_check` to include `'worker_intent'` (cross-lane fix required by C4; see master plan line ~779) + apply-order test assertion | `c02cd28` | ✅ integrated |
+| **C1** | Accept `SM`+`MM` Twilio SIDs (`isTwilioMessageSid`) in `twilio.ts`/`outbox.ts`/`status-callback.ts` | `1e22ac6` | ✅ |
+| **C2** | Shared types, runtime controls, pure delivery policy, renderer contracts | `4436ca6` | ✅ |
+| **C3** | Migration `042` — additive v2 data model, RLS + grants, lease fn, MM callback, self-audit | `e5b56e0`,`3b0b543`,`418b70d`,`c02cd28` | ✅ |
+| **C4** | Repository primitives + worker-delivery gateway | `d1cb18a` | ✅ |
+| **C5** | FIFO inbound queue + DLQ + webhook routing + DLQ alarms | `8ad6f94` | ✅ review clean |
+| **C6** | Producer deferral + grouped worker-ready release | `55cef45` (amended from `b308b86`) | ✅ review clean after 1 fix round |
+| **C7** | Scheduled domain-event drain, release wiring, operational alarms | `3c3f766` | ✅ review clean |
 
-**Verification evidence captured before the stop:**
-- C3's own PostgreSQL suite reached **9/9 green** during its Review 2.
-- A fresh production-shaped PostgreSQL 16 chain applied migrations `001`–`042` cleanly.
-- A subsequent whole-chain bootstrap run scored **8/9**; the one failure was a
-  disposable-container **password/credential mismatch in the test harness** (second-apply
-  connection), **not** a migration or behavioral assertion. This was being fixed when the
-  usage limit hit.
-- Claude lane's unblocked subset (its Tasks 1–3) is complete, clean, and independently
-  verified (build green; 190/190 focused + 519/519 WhatsApp-tree tests; no gated symbol
-  leakage). It is correctly **stopped**, waiting for C2–C4 to land before its dependent work.
+**Verification captured at each gate:** C5 — 55/55 focused tests, tsc 0, synth emits both legacy
+and v2 FIFO queues. C6 — 67/67 focused tests, tsc 0. C7 — 65/65 focused tests, tsc 0, synth
+emits v2 queues + drain Lambda/schedule/4 alarms. All diffs stayed within each task's owned
+files; no Ownership-Exclusion file was touched; C5's queue defs untouched by C7.
 
-### Not started
+### Remaining
 
-- **C4** — repository primitives + worker-delivery gateway. Worktree `.worktrees/wa-v2-c4`
-  (branch `task/wa-v2-c4`) exists and is **clean at `c02cd28`**; no C4 files written yet.
-  **This is the next task.**
-- **C5–C10** — queue/webhook (C5), producer deferral & grouped release (C6), drain/alarms
-  (C7), operator CLIs (C8), PostgreSQL RLS/idempotency/concurrency gate (C9), rollout runbook
-  & final integration (C10). All blocked behind C4 (and each other) per the dependency graph.
+- **C8** — operator CLIs (`reset-whatsapp-onboarding-v2.ts`, `whatsapp-runtime-controls.ts`) + 2
+  package.json scripts. Depends on C3 only; independent of C5–C7. **Next task.**
+- **C9** — PostgreSQL RLS/idempotency/lease/concurrency gate
+  (`whatsapp-onboarding-concurrency.integration.test.ts`). Depends on C6 (transitively C3/C4).
+- **C10** — rollout runbook + final integration (merge frozen workflow lane, handoff verification,
+  full local gate, differential review). Depends on all + the frozen workflow lane.
 
 ---
 
-## 3. Why work stopped (blockers)
+## 3. BINDING cross-task decisions (locked during C5–C7 reviews — C8/C9/C10 MUST honor)
 
-1. **Codex OpenAI weekly usage limit reached** — 0% remaining, resets **11:33 on 28 Jul 2026**.
-   The approval/auto-reviewer service began denying commands ("You've hit your usage limit").
-2. **Codex sandbox loopback namespace error** — Codex's own sandboxed shell could not open
-   loopback sockets. NOTE: this was specific to Codex's sandbox. This host shell CAN run
-   `docker` and open TCP loopback normally, so **this does not block a Claude-run continuation.**
+1. **Release transaction/RLS model (design B):** `releaseWorkerReady(client, eventKey, deps)` is
+   caller-owned-transaction — it issues **no** BEGIN/COMMIT/ROLLBACK and throws on failure
+   (like `completeOnboarding`). The caller MUST, inside its open transaction, call
+   `setInternalUserRlsContext(client, workerId)` (workerId = the leased event's `aggregate_id`)
+   **before** calling. Forced by migration 042 FORCE RLS: `worker_message_intents_worker` =
+   `user_id = current_setting('app.current_internal_user_id',true)`, `worker_domain_outbox_worker`
+   = `aggregate_id = …`. As `jale_whatsapp` with no context every worker-scoped read returns 0
+   rows (silent no-op). This was a Critical C6 review finding, now fixed.
+2. **C7 drain flow (implemented):** per `worker.ready` event — `BEGIN; setInternalUserRlsContext(aggregate_id);
+   releaseWorkerReady(client, event_key, deps); UPDATE worker_domain_outbox SET status='completed' …; COMMIT`.
+   On throw → ROLLBACK, emit `WhatsAppReleaseFailure`, then a separate tx marks failure (attempts+1,
+   `next_attempt_at = now()+least(30s·2^(attempts-1),30min)`, status back to `'pending'` for retry;
+   `'failed'`+`WhatsAppDomainEventStuck` at attempts≥5). `lease_worker_domain_events` claims
+   `status='pending' AND (next_attempt_at IS NULL OR next_attempt_at<=now())`.
+3. **Drain renderer seam:** the drain injects a `ReleaseRenderer` via `setDomainOutboxDrainDeps(...)`.
+   Its default `unwiredRenderer` THROWS. **C10 must call `setDomainOutboxDrainDeps({ renderer: createReleaseRenderer(), … })`**
+   at module load or every `worker.ready` release fails loud.
+4. **C9 must run release/RLS scenarios under `SET ROLE jale_whatsapp` with per-worker
+   `app.current_internal_user_id`** (not as superuser), or the RLS enforcement ships behind a green gate.
+5. **C8 reset ordering:** `releaseWorkerReady` synthesizes the onboarding-complete confirmation
+   intent with dedupe key `onboarding-complete:<workerId>` (idempotent across `worker.ready` retries).
+   This is only safe across RE-onboards because C8's reset deletes `worker_message_intents` FIRST —
+   the master-plan delete order already starts there; keep it.
 
-### Leftover environment to clean up
-- Disposable container **`jale-wa-v2-bootstrap-pg16`** is still running (up ~9h,
-  `127.0.0.1:55558->5432/tcp`). Remove it once no longer needed:
-  `docker rm -f jale-wa-v2-bootstrap-pg16`.
-- Earlier C3 containers (`jale-wa-v2-c3-captain`, `jale-wa-v2-c3-review1`) may also linger —
-  check `docker ps -a --format '{{.Names}}' | grep jale-wa-v2`.
+## 4. Watch items for C9 (real Postgres) / C10
 
-**No push, no deploy, no RDS migration, no production reset occurred.** Everything stops at
-local commits, per the lane's global constraints.
+- Column grants for `jale_whatsapp` under context on `jobs` (company/status/title), the
+  `job_conversation_messages`/`job_conversations` join, and `users.whatsapp_number` — if missing,
+  the release fails under RLS; bounce to the owning task.
+- Employer-chat release eligibility currently re-checks only `job_conversations.status='open'`
+  (+ existence of job/conversation via join); the plan prose also lists job/employer/worker/
+  application — documented narrower scope, no C9 scenario coverage.
+- C7 `assessment.requested` handler is ack-only (idempotent `ON CONFLICT DO NOTHING`; no Bedrock).
+  The partial-index ON CONFLICT syntax is unexercised against real Postgres; C10 should validate.
+  The real scoring/assessment lane wiring is C10's.
+- C6 job-alert digest `score` is a hardcoded placeholder (`score:1`; no V1 scoring signal).
 
----
+## 5. Global constraints (still binding)
 
-## 4. Next task: C4 (fully unblocked at the code level)
+Additive `042` only; never edit `001`–`041`. Only the delivery gateway may create sendable
+worker-directed outbox rows. Verified OTP is the only identity-binding operation. Never target
+RDS from a local test (disposable PostgreSQL 16 via `JALE_TEST_DATABASE_URL`; persistent
+container `jale-wa-v2-pg` + volume `jale-wa-v2-pgdata` are the cache). No push, deploy, RDS
+migration, worker reset, or production Twilio/Cognito. Task agents never edit `.worktrees/wa-v2-claude`.
 
-Full spec: master plan **lines 642–833** (`### Task C4`). Summary of what to build in
-`.worktrees/wa-v2-c4` (branch `task/wa-v2-c4`):
+## 6. Resume checklist (start C8)
 
-**Create**
-- `infra/lambda/whatsapp/lib/onboarding-repository.ts`
-- `infra/lambda/whatsapp/lib/worker-delivery-gateway.ts`
-- `infra/test/unit/lambda/whatsapp/lib/onboarding-repository.test.ts`
-- `infra/test/unit/lambda/whatsapp/lib/worker-delivery-gateway.test.ts`
+1. `cd .worktrees/wa-v2-integration && git status` → clean at `3c3f766`.
+2. Read master plan **Task C8 (lines 1118–1208)** + Global Constraints.
+3. Execute C8 TDD (exact-target reset CLI + runtime-controls CLI + 2 package.json scripts); review
+   every `DELETE` for a target-ID-bound `WHERE`; `users` and `legal_consent_log` never deleted;
+   `worker_message_intents` deleted first; `--show`/reset print hashes only, never raw phones.
+4. Then C9 (real-Postgres gate, honor decision #4) and C10 (runbook + final integration, honor
+   decisions #3 and #5).
 
-**Modify**
-- `infra/lambda/whatsapp/lib/outbox.ts` — add/export `insertAuthorizedIntentOutbox(...)`
-  (inserts `source_type='worker_intent'`, `source_id=intentId`; verifies intent exists and is
-  `eligible`/`leased`, else throws `unauthorized_worker_outbox_row`). Leave every legacy
-  outbox function unchanged.
-- `infra/test/unit/lambda/whatsapp/lib/outbox.test.ts`
-
-**Key interfaces to implement exactly** (signatures in master plan):
-`loadWorkerGate`, `loadPreAuthStateForUpdate`, `savePreAuthState`,
-`bindVerifiedIdentityAndStartWorkflow`, `advanceWorkflow` (with `expectedLockVersion` guard),
-`appendTransition`, `completeOnboarding` (no `BEGIN`/`COMMIT`/`fetch`; two `worker_domain_outbox`
-rows via `ON CONFLICT (event_key) DO NOTHING`; throws `workflow_lock_conflict` on 0 rows);
-and gateway `enqueueWorkerMessage`, `registerCategoryRenderer` (+ `_clearCategoryRenderersForTests()`).
-
-**Dependencies — all present and confirmed in the C4 worktree:**
-- C2 types: `infra/lambda/whatsapp/lib/onboarding-types.ts` (defines `WorkerLifecycle`,
-  `WorkflowStepKey`, `WorkflowRunStatus`, `MessageCategory`, `OwnerService`, `IntentStatus`,
-  `PreferredLanguage`, `DELIVERY_POLICY_VERSION`, `DeliveryDecision`, `WorkerMessageIntentInput`,
-  `RenderedOutboxMessage`, `CategoryRenderer`, release renderer types).
-- C2 policy/controls: `delivery-policy.ts` (`evaluateDelivery`), `runtime-controls.ts`
-  (`loadRuntimeControls`, `isV2Enabled`, `isDeferredDeliveryEnabled`, `hashNormalizedPhone`).
-- C1 outbox: `outbox.ts` imports `isTwilioMessageSid` from `twilio.ts`.
-- C3 migration `042`: target tables `worker_onboarding_state`, `worker_workflow_runs`
-  (`lock_version`, partial unique on active run), `worker_workflow_transitions`,
-  `worker_identity_challenges`, `worker_message_intents` (dedupe constraint
-  `worker_message_intent_dedupe UNIQUE (dedupe_key)`), `worker_domain_outbox`
-  (`worker_domain_outbox_event_key UNIQUE (event_key)`), plus the widened
-  `whatsapp_outbox_origin_check` allowing `'worker_intent'`.
-
-**Do NOT touch:** `delivery-policy.ts`, `runtime-controls.ts`, migration `042`, and everything
-in the master plan's Ownership Exclusions list (processor.ts, conversation-router.ts,
-onboarding-v2.ts, templates, trust-scorer, and their tests — Claude lane).
-
-**Test-first workflow (master plan C4 Steps 1–6):**
-1. Write failing repository + gateway tests using a fake `PoolClient` that records
-   `{ text, values }` per `query()` and returns scripted results — style ref:
-   `infra/test/unit/lambda/lib/job-messaging.test.ts`. Assert the behaviors enumerated in the
-   spec (defer-on-onboarding, no outbox insert; ready+deferredDeliveryEnabled → allow + one
-   renderer call + one outbox row; dedupe → one intent/one outbox; invalid owner → reject;
-   `completeOnboarding` no BEGIN/COMMIT + lock-conflict throw + ON CONFLICT id reuse; gateway
-   never calls `fetch`; `insertAuthorizedIntentOutbox` throws on non-eligible intent).
-2. Confirm RED: `cd infra && npx jest test/unit/lambda/whatsapp/lib/onboarding-repository.test.ts test/unit/lambda/whatsapp/lib/worker-delivery-gateway.test.ts --runInBand`
-   (expect `Cannot find module` errors).
-3. Implement repo, gateway, and outbox guard. All SQL parameterized; no string-concatenated
-   predicates; no module state except the renderer registry (with test reset).
-4. GREEN: `cd infra && npx jest <the three suites> --runInBand && npm run build`.
-5. Dev-cycle Review 1 / Fix / Review 2 (orchestrator runs reviews personally — see master plan
-   "Per-Task Dev-Cycle Review Gate"). Review 1 must confirm `completeOnboarding` has no
-   `BEGIN`/`COMMIT`/`fetch`/AWS SDK call, the gateway re-reads policy from locked rows (not a
-   caller-supplied lifecycle), and no legacy outbox behavior changed.
-6. Commit: `git commit -m "feat: add WhatsApp worker delivery gateway and onboarding repository"`,
-   then merge `task/wa-v2-c4` into `feat/wa-v2-integration`.
-
-**Handoff after C4:** `completeOnboarding()` and `enqueueWorkerMessage()` become the sanctioned
-entry points the Claude workflow lane calls; C6 then branches off the post-C4 lane state.
-
----
-
-## 5. Global constraints (binding on continuation)
-
-- Read `docs/superpowers/specs/2026-07-21-whatsapp-onboarding-gate-design.md` and
-  `docs/superpowers/plans/2026-07-21-whatsapp-onboarding-gate.md` before editing.
-- Additive migration `042` only; never edit `001`–`041`. `CREATE OR REPLACE` of a `040`
-  function inside `042` is allowed; editing `040` is not.
-- Only the delivery gateway may create sendable worker-directed outbox rows.
-- Successful OTP verification is the only identity-binding operation; never bind `user_id` from
-  a phone lookup.
-- Never target RDS from a local test; DB gate uses disposable PostgreSQL 16 via
-  `JALE_TEST_DATABASE_URL`. Testbed wrapper:
-  `bash /home/hermesgoma/.codex/skills/psql-migration-testbed/scripts/run-psql-migration-testbed.sh --repo .`
-- Leave untracked `demo-ready-windows/` and `reports/` untouched.
-- Do not push, deploy, run RDS migrations, or reset any production worker. Stop at local commits.
-
----
-
-## 6. Quick resume checklist
-
-1. `cd .worktrees/wa-v2-c4 && git status` → should be clean at `c02cd28`.
-2. Confirm the leftover `jale-wa-v2-bootstrap-pg16` container's fate (reuse or `docker rm -f`).
-3. Read master plan Task C4 (lines 642–833) + design spec.
-4. Execute C4 Steps 1–6 above.
-5. Then proceed down the dependency graph: C5/C8 (parallel-eligible), C6 (after C4), C7, C9, C10.
+Durable orchestrator ledger with full per-task review evidence:
+`/home/hermesgoma/whatsapp-v2-local-records/2026-07-22-whatsapp-v2-integration-C5-C10-ledger.md`.
