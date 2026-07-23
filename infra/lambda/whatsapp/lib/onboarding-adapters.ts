@@ -28,7 +28,7 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider';
 import type { PreferredLanguage } from './onboarding-types';
 import { decodeIdTokenSub } from './jwt';
-import { reconcileWorkerCognitoAccount } from '../../auth/lib/worker-cognito-reconciliation';
+import { ensureWorkerCognitoAccount } from '../../auth/lib/worker-cognito-reconciliation';
 import {
   loadOrGenerateQuestions,
   normalizeProfession,
@@ -151,7 +151,7 @@ export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapte
         // group, and has the correct phone/user-type attributes before we
         // ask Cognito to start a CUSTOM_AUTH challenge for it. Mirrors
         // lambda/whatsapp/processor.ts:~1240.
-        await reconcileWorkerCognitoAccount({
+        await ensureWorkerCognitoAccount({
           client: cognito,
           userPoolId: deps.userPoolId,
           phone: whatsappNumber,

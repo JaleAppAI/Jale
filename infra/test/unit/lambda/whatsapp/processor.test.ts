@@ -579,17 +579,26 @@ describe('Processor Lambda', () => {
           rows: [{ has_deps: true }],
         });
 
-      await expect(
-        handler(
-          makeSqsEvent({
-            MessageSid: 'SM-otp-ok',
-            From: 'whatsapp:+15125551234',
-            Body: '123456',
-          }),
-          {} as any,
-          {} as any,
-        ),
-      ).rejects.toThrow(/aborting reconcile.*manual ops merge required/);
+      const logSpies = [console.log, console.warn, console.error].map((_method, index) =>
+        jest.spyOn(console, (['log', 'warn', 'error'] as const)[index]).mockImplementation(() => undefined));
+      try {
+        await expect(
+          handler(
+            makeSqsEvent({
+              MessageSid: 'SM-otp-ok',
+              From: 'whatsapp:+15125551234',
+              Body: '123456',
+            }),
+            {} as any,
+            {} as any,
+          ),
+        ).rejects.toThrow('reconcile_placeholder_has_dependents');
+        const captured = logSpies.flatMap((spy) => spy.mock.calls).map((args) => JSON.stringify(args)).join('\n');
+        expect(captured).not.toContain('+15125551234');
+        expect(captured).not.toContain('15125551234');
+      } finally {
+        logSpies.forEach((spy) => spy.mockRestore());
+      }
 
       // DELETE FROM users was NEVER issued
       expect(countQueryByPattern(/DELETE FROM users/i)).toBe(0);
@@ -654,6 +663,64 @@ describe('Processor Lambda', () => {
 
       // DELETE FROM users WAS issued
       expect(countQueryByPattern(/DELETE FROM users/i)).toBeGreaterThan(0);
+    });
+
+    it('creates and links a real-sub worker only after verified OTP when no user row exists', async () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({ sub: realSub })).toString('base64url');
+      const idToken = `${header}.${payload}.sig`;
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-net-new-otp' }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'awaiting_otp',
+            otp_attempts: 0,
+            otp_expires_at: new Date(Date.now() + 5 * 60 * 1000),
+            state_context: { cognito_session: 'SESSION-NET-NEW' },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no real-sub user
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no placeholder to promote
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ user_id: 'u-net-new' }],
+        }) // reconcile_worker_signup
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'u-net-new', tos_version: null }],
+        }) // link verified WhatsApp identity
+        .mockResolvedValue({ rowCount: 1, rows: [] });
+      mockCognitoSend.mockResolvedValueOnce({
+        AuthenticationResult: { IdToken: idToken },
+      });
+
+      try {
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-net-new-otp',
+            From: 'whatsapp:+15125551234',
+            Body: '123456',
+          }),
+          {} as any,
+          {} as any,
+        );
+      } catch {
+        // Later unrelated handler calls use generic mocks; this assertion is
+        // limited to the verified identity reconciliation boundary.
+      }
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT reconcile_worker_signup($1, $2, $3) AS user_id',
+        [realSub, '+15125551234', ''],
+      );
+      const reconcileIndex = mockQuery.mock.calls.findIndex(([sql]) =>
+        /reconcile_worker_signup/.test(sql as string));
+      expect(reconcileIndex).toBeGreaterThan(0);
+      expect(mockQuery.mock.calls.slice(0, reconcileIndex).some(([sql]) =>
+        /INSERT INTO users/.test(sql as string))).toBe(false);
     });
   });
 
@@ -3097,6 +3164,10 @@ describe('v2 routing branch', () => {
     );
 
     expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    const deps = mockRouteOnboardingV2.mock.calls[0][3] as { tosUrl: string; privacyUrl: string };
+    expect(deps.tosUrl).toBe('https://jaleapp.ai/legal/terms');
+    expect(deps.privacyUrl).toBe('https://jaleapp.ai/legal/privacy');
+    expect(JSON.stringify(deps)).not.toContain('jale.app');
   });
 
   it('registers onboarding/security renderers before routing, resolving real functions (not renderer_unavailable)', async () => {
@@ -3223,6 +3294,116 @@ describe('v2 routing branch', () => {
     expect(countQueryByPattern(/UPDATE users SET/i)).toBe(0);
     expect(findQueryByPattern(/UPDATE whatsapp_conversations SET conversation_state/i)).toBeUndefined();
     expect(mockCognitoSend).not.toHaveBeenCalled();
+  });
+
+  it('durably hands a ready worker to legacy idle routing before the v2 control is disabled', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockImplementation(async (_client, session: any) => {
+      session.language = 'en';
+      session.state_context = { ...session.state_context, v2Ready: true };
+      return {
+        handled: false,
+        handoff: 'ready',
+        workerId: 'worker-ready-1',
+        stepKey: 'ready',
+      };
+    });
+    mockListMatchedJobsForWorker.mockResolvedValue([
+      { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso', pay: '$22/hr' },
+    ]);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ready-jobs' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'new', user_id: 'worker-ready-1', language: 'es' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 state_context writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // recent_jobs writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // job 1 outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // job 2 outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-ready-jobs', From: FROM, Body: 'Trabajos' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'worker-ready-1', {
+      limit: 5,
+      channel: 'whatsapp',
+    });
+    expect(mockCognitoSend).not.toHaveBeenCalled();
+    expect(findQueryByPattern(/SET conversation_state = 'awaiting_otp'/i)).toBeUndefined();
+
+    const conversationWrites = mockQuery.mock.calls.filter(([sql]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string));
+    const readyWrite = conversationWrites.find(([sql]) =>
+      /user_id\s*=/.test(sql as string)
+      && /conversation_state\s*=/.test(sql as string)
+      && /language\s*=/.test(sql as string)
+      && /state_context\s*=/.test(sql as string));
+    expect(readyWrite).toBeDefined();
+    expect(readyWrite![1]).toEqual([
+      'conv-1',
+      JSON.stringify({ v2Ready: true }),
+      'worker-ready-1',
+      'en',
+      'idle',
+    ]);
+    const jobsContextWrite = conversationWrites.find(([sql]) =>
+      /last_processed_message_sid\s*=/.test(sql as string));
+    expect(JSON.parse(jobsContextWrite![1][1] as string)).toEqual({
+      v2Ready: true,
+      recent_jobs: ['job-1', 'job-2'],
+    });
+
+    mockIsV2Enabled.mockReturnValue(false);
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ready-jobs-after-disable' }] })
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({
+          conversation_state: 'idle',
+          user_id: 'worker-ready-1',
+          language: 'en',
+          state_context: { v2Ready: true, recent_jobs: ['job-1', 'job-2'] },
+        })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+    await handler(
+      makeSqsEvent({
+        MessageSid: 'SM-v2-ready-jobs-after-disable',
+        From: FROM,
+        Body: 'Jobs',
+      }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    expect(mockListMatchedJobsForWorker).toHaveBeenCalledTimes(2);
+    expect(mockListMatchedJobsForWorker).toHaveBeenLastCalledWith(
+      expect.any(Object),
+      'worker-ready-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
   });
 
   it('skips the legacy idle-language-detection write for a v2-routed idle phone', async () => {

@@ -10,12 +10,112 @@ const mockFetch = jest.fn();
 import {
   AmbiguousTwilioSendError,
   drainJobAlertOutbox,
+  drainWorkerIntentOutbox,
   sendTwilioWhatsAppMessage,
   sendPendingAdminOutbox,
   sendPendingOutbox,
   insertAuthorizedIntentOutbox,
   _clearOutboxTwilioSecretCacheForTests,
 } from '../../../../../lambda/whatsapp/lib/outbox';
+
+describe('worker-intent outbox drain', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _clearOutboxTwilioSecretCacheForTests();
+    process.env = {
+      ...originalEnv,
+      TWILIO_SECRET_ARN: 'arn:twilio',
+      TWILIO_REQUEST_TIMEOUT_MS: '4000',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+    };
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test', authToken: 'tok_test',
+        messagingServiceSid: 'MG_test', templates: {},
+      }),
+    });
+  });
+
+  afterAll(() => { process.env = originalEnv; });
+
+  it('leases through the definer RPC, sends once, and completes with the fencing token', async () => {
+    const sid = `SM${'1'.repeat(32)}`;
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ sid }) });
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'outbox-1', whatsapp_number: '+15125551234', body: 'hello',
+          content_template: null, content_variables: null, attempt_count: 1,
+          lease_token: 'lease-1',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ completed: true }] });
+    const release = jest.fn();
+    const pool = { connect: jest.fn(async () => ({ query, release })) };
+
+    await expect(drainWorkerIntentOutbox(pool as any, 25)).resolves.toEqual({
+      sent: 1, ambiguous: 0, failed: 0, leaseLost: 0,
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0]).toEqual([
+      'SELECT * FROM lease_worker_intent_outbox($1)', [25],
+    ]);
+    expect(query.mock.calls[1]).toEqual([
+      'SELECT complete_worker_intent_outbox($1, $2, $3) AS completed',
+      ['outbox-1', 'lease-1', sid],
+    ]);
+    expect(release).toHaveBeenCalledTimes(2);
+  });
+
+  it('records an ambiguous transport failure and never completes the row', async () => {
+    mockFetch.mockRejectedValueOnce(Object.assign(new Error('timeout'), { name: 'TimeoutError' }));
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'outbox-2', whatsapp_number: '+15125551234', body: 'hello',
+          content_template: null, content_variables: null, attempt_count: 1,
+          lease_token: 'lease-2',
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ failed: true }] });
+    const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
+
+    await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
+      sent: 0, ambiguous: 1, failed: 0, leaseLost: 0,
+    });
+    expect(query.mock.calls[1][0]).toBe(
+      'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
+    );
+    expect(query.mock.calls[1][1][3]).toBe(true);
+  });
+
+  it('never requeues after Twilio accepts when completion persistence fails', async () => {
+    const sid = `SM${'3'.repeat(32)}`;
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ sid }) });
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'outbox-3', whatsapp_number: '+15125551234', body: 'hello',
+          content_template: null, content_variables: null, attempt_count: 1,
+          lease_token: 'lease-3',
+        }],
+      })
+      .mockRejectedValueOnce(new Error('completion database unavailable'))
+      .mockResolvedValueOnce({ rows: [{ failed: true }] });
+    const pool = { connect: jest.fn(async () => ({ query, release: jest.fn() })) };
+
+    await expect(drainWorkerIntentOutbox(pool as any)).resolves.toEqual({
+      sent: 0, ambiguous: 1, failed: 0, leaseLost: 0,
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[2]).toEqual([
+      'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
+      ['outbox-3', 'lease-3', 'completion database unavailable', true],
+    ]);
+  });
+});
 
 describe('whatsapp outbox templates', () => {
   const originalEnv = process.env;

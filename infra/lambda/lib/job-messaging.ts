@@ -1,6 +1,8 @@
 import type { PoolClient } from 'pg';
+import { setInternalUserRlsContext } from './db';
 import { sendTwilioWhatsAppMessage } from '../whatsapp/lib/outbox';
-import { enqueueWorkerMessage } from '../whatsapp/lib/worker-delivery-gateway';
+import { categoryRenderers } from '../whatsapp/lib/onboarding-renderers';
+import { enqueueWorkerMessage, registerCategoryRenderer } from '../whatsapp/lib/worker-delivery-gateway';
 import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from '../whatsapp/lib/runtime-controls';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
@@ -475,17 +477,30 @@ export async function queueConversationMessageFromEmployer(
   const v2Enabled = whatsappNumber !== null && isV2Enabled(controls, hashNormalizedPhone(whatsappNumber));
 
   if (v2Enabled) {
-    await enqueueWorkerMessage(client, {
-      workerId: conversation.worker_id,
-      category: 'employer_chat',
-      ownerService: 'job-messaging',
-      sourceType: 'job_conversation_message',
-      sourceId: messageId,
-      dedupeKey: `employer-chat:${messageId}`,
-      priority: 40,
-      expiresAt: new Date(Date.now() + EMPLOYER_CHAT_EXPIRY_MS),
-      payload: { conversationId: conversation.id },
-    });
+    registerCategoryRenderer('employer_chat', categoryRenderers.employer_chat);
+    // The API transaction is employer-scoped, while the forced-RLS intent is
+    // worker-owned. Switch only around the enqueue and restore the employer
+    // before the conversation/application writes below.
+    await setInternalUserRlsContext(client, conversation.worker_id);
+    try {
+      await enqueueWorkerMessage(client, {
+        workerId: conversation.worker_id,
+        category: 'employer_chat',
+        ownerService: 'job-messaging',
+        sourceType: 'job_conversation_message',
+        sourceId: messageId,
+        dedupeKey: `employer-chat:${messageId}`,
+        priority: 40,
+        expiresAt: new Date(Date.now() + EMPLOYER_CHAT_EXPIRY_MS),
+        payload: {
+          conversationId: conversation.id,
+          companyName: conversation.company_name,
+          jobTitle: conversation.job_title,
+        },
+      });
+    } finally {
+      await setInternalUserRlsContext(client, employerId);
+    }
   } else if (canSendFreeform) {
     await queueEmployerFreeformMessage(client, conversation, messageId, body);
   } else {

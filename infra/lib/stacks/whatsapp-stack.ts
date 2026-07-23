@@ -75,6 +75,10 @@ export class WhatsAppStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
       this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
+    const inboundV2TransportContext =
+      this.node.tryGetContext('whatsappInboundV2TransportEnabled');
+    const inboundV2TransportEnabled =
+      inboundV2TransportContext === true || inboundV2TransportContext === 'true';
     const statusCallbackUrl = normalizeWhatsappStatusCallbackUrl(props.statusCallbackUrl);
 
     // ── Secrets Manager references ──────────────────────────────
@@ -162,13 +166,17 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         SQS_QUEUE_URL: this.inboundQueue.queueUrl,
-        WHATSAPP_INBOUND_V2_QUEUE_URL: this.inboundV2Queue.queueUrl,
+        ...(inboundV2TransportEnabled
+          ? { WHATSAPP_INBOUND_V2_QUEUE_URL: this.inboundV2Queue.queueUrl }
+          : {}),
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     twilioSecret.grantRead(this.webhookLambda.function);
     this.inboundQueue.grantSendMessages(this.webhookLambda.function);
-    this.inboundV2Queue.grantSendMessages(this.webhookLambda.function);
+    if (inboundV2TransportEnabled) {
+      this.inboundV2Queue.grantSendMessages(this.webhookLambda.function);
+    }
 
     // ── Processor Lambda ────────────────────────────────────────
     // SQS consumer — owns the conversation state machine + profile builder
@@ -285,6 +293,31 @@ export class WhatsAppStack extends cdk.Stack {
     new events.Rule(this, 'JobAlertOutboxDrainSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
       targets: [new eventTargets.LambdaFunction(jobAlertDrainLambda.function)],
+    });
+
+    const workerIntentDrainLambda = new JaleLambdaFunction(
+      this,
+      'WorkerIntentOutboxDrainLambda',
+      {
+        entry: path.join(__dirname, '../../lambda/whatsapp/worker-intent-outbox-drain.ts'),
+        description: 'Worker intent outbox drain — ordered scheduled Twilio sends',
+        vpc: props.vpc,
+        securityGroups: [props.lambdaSg],
+        timeout: 60,
+        environment: {
+          DB_SECRET_ARN: whatsappDbSecret.secretName,
+          TWILIO_SECRET_ARN: twilioSecret.secretName,
+          TWILIO_REQUEST_TIMEOUT_MS: '4000',
+          TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
+        },
+      },
+    );
+    whatsappDbSecret.grantRead(workerIntentDrainLambda.function);
+    twilioSecret.grantRead(workerIntentDrainLambda.function);
+
+    new events.Rule(this, 'WorkerIntentOutboxDrainSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new eventTargets.LambdaFunction(workerIntentDrainLambda.function)],
     });
 
     // ── C7: Domain Outbox Drain ──────────────────────────────────
@@ -519,6 +552,35 @@ export class WhatsAppStack extends cdk.Stack {
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
+
+    const workerIntentMetricFilter = (
+      id: string,
+      metricValueEquals: string,
+      metricName: string,
+    ) => new logs.MetricFilter(this, id, {
+      logGroup: workerIntentDrainLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName,
+      metricValue: '1',
+    });
+    for (const [filterId, eventName, metricName, alarmId, alarmName] of [
+      ['WorkerIntentSendUnknownMetric', 'WorkerIntentOutboxSendUnknown', 'WorkerIntentSendUnknown',
+        'WorkerIntentSendUnknownAlarm', 'WhatsAppWorkerIntentSendUnknown'],
+      ['WorkerIntentFailureMetric', 'WorkerIntentOutboxFailure', 'WorkerIntentFailures',
+        'WorkerIntentFailureAlarm', 'WhatsAppWorkerIntentFailures'],
+      ['WorkerIntentLeaseLostMetric', 'WorkerIntentOutboxLeaseLost', 'WorkerIntentLeaseLost',
+        'WorkerIntentLeaseLostAlarm', 'WhatsAppWorkerIntentLeaseLost'],
+      ['WorkerIntentBacklogAgedMetric', 'WorkerIntentOutboxBacklogAged', 'WorkerIntentBacklogAged',
+        'WorkerIntentBacklogAgedAlarm', 'WhatsAppWorkerIntentBacklogAged'],
+    ] as const) {
+      const metric = workerIntentMetricFilter(filterId, eventName, metricName);
+      alarm(
+        alarmId,
+        alarmName,
+        metric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      ).addAlarmAction(alarmAction);
+    }
 
     // Twilio-reported terminal delivery failures (failed/undelivered).
     const deliveryFailureMetric = metricFilter(

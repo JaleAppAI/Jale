@@ -72,8 +72,12 @@ function createFakeGateRepo() {
   const gates = new Map<string, WorkerGate>();
   const transitions: unknown[] = [];
   const completions: unknown[] = [];
+  const contextCalls: string[] = [];
 
   const repo = {
+    async setInternalUserRlsContext(_client: any, workerId: string): Promise<void> {
+      contextCalls.push(workerId);
+    },
     async loadWorkerGate(_client: any, workerId: string): Promise<WorkerGate | null> {
       return gates.get(workerId) ?? null;
     },
@@ -125,12 +129,31 @@ function createFakeGateRepo() {
       }
       const updated: WorkerGate = {
         ...found,
+        runId: input.status && input.status !== 'active' ? null : found.runId,
         currentStepKey: input.toStepKey as WorkerGate['currentStepKey'],
         status: (input.status as WorkerGate['status']) ?? found.status,
         lockVersion: (found.lockVersion ?? 0) + 1,
       };
       gates.set(updated.userId, updated);
       transitions.push({ ...input });
+      return updated;
+    },
+    async setRunPreferredLanguage(_client: any, input: { runId: string; expectedLockVersion: number; preferredLanguage: 'en' | 'es' }): Promise<WorkerGate> {
+      const found = [...gates.values()].find((gate) => gate.runId === input.runId);
+      if (!found || found.status !== 'active' || found.lockVersion !== input.expectedLockVersion) {
+        throw new Error('workflow_lock_conflict');
+      }
+      const updated = { ...found, preferredLanguage: input.preferredLanguage, lockVersion: (found.lockVersion ?? 0) + 1 };
+      gates.set(updated.userId, updated);
+      return updated;
+    },
+    async reactivateDeclinedLegalRun(_client: any, input: { runId: string; expectedLockVersion: number }): Promise<WorkerGate> {
+      const found = [...gates.values()].find((gate) => gate.runId === input.runId);
+      if (!found || found.status !== 'declined' || found.currentStepKey !== 'legal.review' || found.lockVersion !== input.expectedLockVersion) {
+        throw new Error('workflow_lock_conflict');
+      }
+      const updated: WorkerGate = { ...found, status: 'active', lockVersion: (found.lockVersion ?? 0) + 1 };
+      gates.set(updated.userId, updated);
       return updated;
     },
     async appendTransition(_client: any, input: unknown): Promise<{ transitionId: string }> {
@@ -157,6 +180,7 @@ function createFakeGateRepo() {
     _gates: gates,
     _transitions: transitions,
     _completions: completions,
+    _contextCalls: contextCalls,
   };
   return repo;
 }
@@ -225,11 +249,14 @@ function makeDeps() {
   const deps: OnboardingV2Deps = {
     adapters: adapters as any,
     repo: {
+      setInternalUserRlsContext: (c, workerId) => gateRepo.setInternalUserRlsContext(c, workerId),
       loadPreAuthStateForUpdate: (c, phoneHash) => preAuthRepo.loadPreAuthStateForUpdate(c, phoneHash),
       savePreAuthState: (c, phoneHash, patch) => preAuthRepo.savePreAuthState(c, phoneHash, patch),
       bindVerifiedIdentityAndStartWorkflow: (c, input) => gateRepo.bindVerifiedIdentityAndStartWorkflow(c, input),
       loadWorkerGate: (c, workerId) => gateRepo.loadWorkerGate(c, workerId),
       advanceWorkflow: (c, input) => gateRepo.advanceWorkflow(c, input),
+      setRunPreferredLanguage: (c, input) => gateRepo.setRunPreferredLanguage(c, input),
+      reactivateDeclinedLegalRun: (c, input) => gateRepo.reactivateDeclinedLegalRun(c, input),
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
       completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
     },
@@ -239,6 +266,8 @@ function makeDeps() {
     hashNormalizedPhone: fakeHashNormalizedPhone,
     tosUrl: 'https://jale.example/tos',
     privacyUrl: 'https://jale.example/privacy',
+    requiredLegalVersion: '1.0',
+    recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
     workflowVersion: 1,
   };
 
@@ -428,16 +457,25 @@ describe('start.choose_language', () => {
 
 describe('identity.verify_otp', () => {
   it('a correct code verifies and binds identity, starting the workflow at legal.review', async () => {
-    const { deps, gateRepo, adapters } = makeDeps();
+    const { deps, gateRepo, adapters, gateway } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });
     await bootstrapOtp(deps, session);
+    const contextSpy = jest.spyOn(gateRepo, 'setInternalUserRlsContext');
     const bindSpy = jest.spyOn(gateRepo, 'bindVerifiedIdentityAndStartWorkflow');
     adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'verified', workerId: 'user-1' });
+    const otpMessage = makeMsg('123456', {
+      messageSid: 'SM0123456789abcdef0123456789abcdef',
+    });
 
-    const result = await routeOnboardingV2(client, session, makeMsg('123456'), deps);
+    const result = await routeOnboardingV2(client, session, otpMessage, deps);
 
     expect(result).toEqual({ handled: true, workerId: 'user-1', stepKey: 'legal.review' });
     expect(bindSpy).toHaveBeenCalledTimes(1);
+    expect(gateRepo._contextCalls.at(-1)).toBe('user-1');
+    expect(contextSpy.mock.invocationCallOrder[0]).toBeLessThan(bindSpy.mock.invocationCallOrder[0]);
+    expect(gateway.calls).toHaveLength(1);
+    expect(gateway.calls[0].sourceId).toBe('run-user-1');
+    expect(gateway.calls[0].dedupeKey).toContain(otpMessage.messageSid);
   });
 
   it('an invalid code returns invalid and persists the RETURNED attempts count', async () => {
@@ -498,19 +536,12 @@ describe('identity.verify_otp', () => {
   });
 
   it('a phone tied to an existing worker still ends the OTP step unbound on a wrong code', async () => {
-    const { deps, gateRepo, adapters } = makeDeps();
-    const session = makeSession({ user_id: 'existing-user-1' });
-    gateRepo._gates.set('existing-user-1', {
-      userId: 'existing-user-1',
-      lifecycle: 'ready',
-      runId: null,
-      workflowVersion: null,
-      currentStepKey: null,
-      status: null,
-      preferredLanguage: 'en',
-      lockVersion: null,
-    });
+    const { deps, preAuthRepo, gateRepo, adapters } = makeDeps();
+    const session = makeSession({ user_id: null });
     await bootstrapOtp(deps, session);
+    await preAuthRepo.savePreAuthState(client, fakeHashNormalizedPhone(session.whatsapp_number), {
+      candidateUserId: 'existing-user-1',
+    });
     const bindSpy = jest.spyOn(gateRepo, 'bindVerifiedIdentityAndStartWorkflow');
     adapters.identity.verifyChallenge.mockResolvedValueOnce({
       status: 'invalid',
@@ -523,7 +554,7 @@ describe('identity.verify_otp', () => {
     expect(result.workerId).toBeNull();
     expect(result.stepKey).toBe('identity.verify_otp');
     expect(bindSpy).not.toHaveBeenCalled();
-    expect(gateRepo._gates.get('existing-user-1')?.runId).toBeNull();
+    expect(gateRepo._gates.has('existing-user-1')).toBe(false);
   });
 
   it('binds identity ONLY on the verified branch — never on invalid, expired, or locked', async () => {
@@ -552,39 +583,64 @@ describe('identity.verify_otp', () => {
 
 describe('legal.review', () => {
   it('Accept advances to profile.name', async () => {
-    const { deps, gateRepo } = makeDeps();
+    const { deps, gateRepo, gateway } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: 'user-legal-accept' });
     const session = makeSession({ user_id: gate.userId });
+    const contextSpy = jest.spyOn(gateRepo, 'setInternalUserRlsContext');
+    const loadSpy = jest.spyOn(gateRepo, 'loadWorkerGate');
+    const message = makeMsg('ACCEPT', {
+      messageSid: 'SMfedcba9876543210fedcba9876543210',
+    });
 
-    const result = await routeOnboardingV2(client, session, makeMsg('ACCEPT'), deps);
+    const result = await routeOnboardingV2(client, session, message, deps);
 
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.name' });
     expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.name');
+    expect(gateRepo._contextCalls[0]).toBe(gate.userId);
+    expect(contextSpy.mock.invocationCallOrder[0]).toBeLessThan(loadSpy.mock.invocationCallOrder[0]);
+    expect(gateway.calls[0]).toEqual(expect.objectContaining({
+      sourceId: gate.runId,
+      dedupeKey: expect.stringContaining(message.messageSid),
+    }));
   });
 
   it('Decline sets status declined while currentStepKey stays legal.review', async () => {
-    const { deps, gateRepo } = makeDeps();
+    const { deps, gateRepo, gateway } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: 'user-legal-decline' });
     const session = makeSession({ user_id: gate.userId });
+    const message = makeMsg('DECLINE', {
+      messageSid: 'SM11111111111111111111111111111111',
+    });
 
-    const result = await routeOnboardingV2(client, session, makeMsg('DECLINE'), deps);
+    const result = await routeOnboardingV2(client, session, message, deps);
 
     expect(result.stepKey).toBe('legal.review');
     const updated = gateRepo._gates.get(gate.userId);
     expect(updated?.status).toBe('declined');
     expect(updated?.currentStepKey).toBe('legal.review');
+    expect(updated?.runId).toBeNull();
+    expect(gateway.calls[0]).toEqual(expect.objectContaining({
+      sourceId: gate.runId,
+      dedupeKey: expect.stringContaining(message.messageSid),
+    }));
   });
 
   it('Review Terms stays on the step and resends the legal prompt', async () => {
-    const { deps, gateRepo, gateway } = makeDeps();
+    const { deps, gateRepo, gateway, clockRef } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: 'user-legal-review' });
     const session = makeSession({ user_id: gate.userId });
+    const message = makeMsg('REVIEW TERMS', {
+      messageSid: 'SM22222222222222222222222222222222',
+    });
 
-    const result = await routeOnboardingV2(client, session, makeMsg('REVIEW TERMS'), deps);
+    const result = await routeOnboardingV2(client, session, message, deps);
+    clockRef.now = new Date(clockRef.now.getTime() + 30_000);
+    await routeOnboardingV2(client, session, message, deps);
 
     expect(result.stepKey).toBe('legal.review');
     expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('legal.review');
     expect(gateway.calls.length).toBeGreaterThan(0);
+    expect(new Set(gateway.calls.map((call) => call.dedupeKey)).size).toBe(1);
   });
 });
 
@@ -666,6 +722,44 @@ describe('command gate', () => {
   });
 });
 
+describe('terminal lifecycle routing', () => {
+  it('returns an explicit ready handoff for a completed ready worker without onboarding sends', async () => {
+    const { deps, gateRepo, gateway, preAuthDelivery } = makeDeps();
+    const gate = seedActiveGate(gateRepo, {
+      userId: 'ready-user',
+      lifecycle: 'ready',
+      status: 'completed',
+      currentStepKey: 'trust.question.3',
+      lockVersion: 8,
+    });
+
+    const result = await routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg('JOBS'), deps);
+
+    expect(result).toEqual({ handled: false, handoff: 'ready', workerId: gate.userId, stepKey: 'ready' });
+    expect(gateway.calls).toHaveLength(0);
+    expect(preAuthDelivery.promptCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ['suspended active', { lifecycle: 'suspended', status: 'active' }],
+    ['ready active', { lifecycle: 'ready', status: 'active' }],
+    ['onboarding completed', { lifecycle: 'onboarding', status: 'completed' }],
+  ] as const)('fails closed for %s instead of restarting or routing onboarding', async (_label, overrides) => {
+    const { deps, gateRepo, gateway, preAuthDelivery, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, {
+      userId: `inconsistent-${overrides.lifecycle}-${overrides.status}`,
+      lifecycle: overrides.lifecycle,
+      status: overrides.status,
+    });
+
+    await expect(routeOnboardingV2(client, makeSession({ user_id: gate.userId }), makeMsg('START'), deps))
+      .rejects.toThrow('onboarding_gate_inconsistent');
+    expect(gateway.calls).toHaveLength(0);
+    expect(preAuthDelivery.promptCalls).toHaveLength(0);
+    expect(adapters.identity.issueChallenge).not.toHaveBeenCalled();
+  });
+});
+
 // ── Sending discipline ────────────────────────────────────────────────
 
 describe('sending discipline', () => {
@@ -701,4 +795,3 @@ describe('sending discipline', () => {
     expect(src).not.toMatch(/from ['"]\.\/lib\/outbox['"]/);
   });
 });
-

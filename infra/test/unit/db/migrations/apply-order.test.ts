@@ -51,6 +51,7 @@ const expectedBaselineMigrations = [
   '040_whatsapp_delivery_status.sql',
   '041_whatsapp_web_worker_lookup_grant.sql',
   '042_whatsapp_onboarding_gate.sql',
+  '043_whatsapp_worker_intent_transport.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -109,7 +110,7 @@ describe('migration apply order baseline', () => {
   });
 
   it('adds the WhatsApp onboarding v2 model and MM callback support in migration 042', () => {
-    const migration = readMigration(expectedBaselineMigrations.at(-1)!);
+    const migration = readMigration('042_whatsapp_onboarding_gate.sql');
 
     for (const tableName of [
       'worker_onboarding_state', 'worker_workflow_runs', 'worker_workflow_transitions',
@@ -162,6 +163,10 @@ describe('migration apply order baseline', () => {
     expect(migration).toContain("has_any_column_privilege");
     expect(migration).toContain("'^(SM|MM)[0-9A-Fa-f]{32}$'");
     expect(migration).toContain('lease_worker_domain_events');
+    expect(migration).toContain('is_worker_ready_for_v2_delivery');
+    expect(migration).toContain(
+      'REVOKE ALL ON FUNCTION public.is_worker_ready_for_v2_delivery(UUID) FROM PUBLIC',
+    );
   });
 
   it('defines all baseline readiness tables and spot-check columns', () => {

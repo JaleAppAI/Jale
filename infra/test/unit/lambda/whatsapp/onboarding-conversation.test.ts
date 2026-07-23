@@ -320,6 +320,21 @@ function fakeQuery(sql: string, params: unknown[] = []): { rowCount: number; row
   }
 
   // ── users: ToS/privacy acceptance ────────────────────────────────────
+  if (/UPDATE users\s+SET tos_version = \$2/i.test(sql)) {
+    const [id, version] = params as string[];
+    if (
+      user
+      && user.id === id
+      && (user.tos_version !== version || user.privacy_version !== version)
+    ) {
+      user.tos_version = version;
+      user.tos_accepted_at = new Date().toISOString();
+      user.privacy_version = version;
+      user.privacy_accepted_at = new Date().toISOString();
+      return { rowCount: 1, rows: [] };
+    }
+    return { rowCount: 0, rows: [] };
+  }
   if (/UPDATE users\s+SET tos_version = \$1/i.test(sql)) {
     const [version, cognitoSub] = params as string[];
     if (user && user.cognito_sub === cognitoSub && user.tos_version !== version) {

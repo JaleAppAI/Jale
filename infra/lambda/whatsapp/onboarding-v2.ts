@@ -95,15 +95,19 @@ export interface OnboardingV2InboundMessage {
   interactivePayload?: string;
 }
 
-export interface RouteResult {
-  handled: true;
-  workerId: string | null;
-  stepKey: string;
-}
+export type RouteResult =
+  | { handled: true; workerId: string | null; stepKey: string }
+  | {
+      handled: false;
+      handoff: 'ready';
+      workerId: string;
+      stepKey: 'ready';
+    };
 
 // ── Locally-composed deps (no canonical types redeclared here) ─────────
 
 export interface OnboardingV2RepoDeps {
+  setInternalUserRlsContext: (client: PoolClient, workerId: string) => Promise<void>;
   loadPreAuthStateForUpdate: (
     client: PoolClient,
     phoneHash: string,
@@ -138,6 +142,11 @@ export interface OnboardingV2RepoDeps {
       inboundMessageSid: string;
       reason: string;
     },
+  ) => Promise<WorkerGate>;
+  setRunPreferredLanguage: (client: PoolClient, input: { runId: string; expectedLockVersion: number; preferredLanguage: PreferredLanguage }) => Promise<WorkerGate>;
+  reactivateDeclinedLegalRun: (
+    client: PoolClient,
+    input: { runId: string; expectedLockVersion: number },
   ) => Promise<WorkerGate>;
   appendTransition: (
     client: PoolClient,
@@ -202,6 +211,11 @@ export interface OnboardingV2Deps {
   tosUrl: string;
   privacyUrl: string;
   workflowVersion: number;
+  requiredLegalVersion: string;
+  recordLegalAcceptance: (
+    client: PoolClient,
+    input: { workerId: string; documentVersion: string },
+  ) => Promise<void>;
 }
 
 // ── Step routing table: which lane (owner/category/priority) a step's
@@ -349,8 +363,9 @@ async function sendStepPrompt(
   stepKey: string,
   lang: Lang,
   now: Date,
-  sourceId: string,
-  dedupeSuffix: string,
+  workflowRunId: string,
+  inboundMessageSid: string,
+  _dedupeSuffix: string,
   stateContext?: Record<string, unknown>,
 ): Promise<void> {
   const routing = STEP_ROUTING[stepKey] ?? DEFAULT_ROUTING;
@@ -360,8 +375,8 @@ async function sendStepPrompt(
     category: routing.category,
     ownerService: routing.ownerService,
     sourceType: `onboarding_v2:${stepKey}`,
-    sourceId,
-    dedupeKey: `v2:prompt:${stepKey}:${workerId}:${dedupeSuffix}`,
+    sourceId: workflowRunId,
+    dedupeKey: `v2:prompt:${stepKey}:${workerId}:${inboundMessageSid}`,
     priority: routing.priority,
     expiresAt: null,
     payload: {
@@ -383,7 +398,8 @@ async function sendTemplateMessage(
   key: TemplateKey,
   vars: Record<string, string>,
   now: Date,
-  sourceId: string,
+  workflowRunId: string,
+  inboundMessageSid: string,
   tag: string,
 ): Promise<void> {
   const routing = STEP_ROUTING[stepKey] ?? DEFAULT_ROUTING;
@@ -393,8 +409,8 @@ async function sendTemplateMessage(
     category: routing.category,
     ownerService: routing.ownerService,
     sourceType: `onboarding_v2:${key}`,
-    sourceId,
-    dedupeKey: `v2:${key}:${workerId}:${tag}:${now.getTime()}`,
+    sourceId: workflowRunId,
+    dedupeKey: `v2:${key}:${workerId}:${inboundMessageSid}:${tag}`,
     priority: routing.priority,
     expiresAt: null,
     payload: { body, lang },
@@ -413,11 +429,12 @@ async function sendTrustPrompt(
   stepKey: string,
   lang: Lang,
   now: Date,
-  sourceId: string,
+  workflowRunId: string,
+  inboundMessageSid: string,
   dedupeSuffix: string,
   stateContext: Record<string, unknown>,
 ): Promise<void> {
-  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, sourceId, dedupeSuffix, stateContext);
+  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, workflowRunId, inboundMessageSid, dedupeSuffix, stateContext);
 }
 
 async function repeatCurrentPrompt(
@@ -428,12 +445,13 @@ async function repeatCurrentPrompt(
   stepKey: string,
   lang: Lang,
   now: Date,
-  sourceId: string,
+  workflowRunId: string,
+  inboundMessageSid: string,
 ): Promise<void> {
   const key = `v2LastPromptAt:${stepKey}`;
   const lastIso = (session.state_context?.[key] as string | undefined) ?? null;
   if (!shouldRepeatPrompt(lastIso, now)) return;
-  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, sourceId, `repeat:${now.getTime()}`, session.state_context);
+  await sendStepPrompt(client, deps, workerId, stepKey, lang, now, workflowRunId, inboundMessageSid, `repeat:${now.getTime()}`, session.state_context);
   session.state_context[key] = now.toISOString();
 }
 
@@ -452,18 +470,20 @@ async function applyGate(
   params: {
     stepKey: string;
     workerId: string;
+    workflowRunId: string;
+    expectedLockVersion: number;
     lang: Lang;
     responseLang: Lang;
     now: Date;
   },
 ): Promise<RouteResult | null> {
-  const { stepKey, workerId, lang, responseLang, now } = params;
+  const { stepKey, workerId, workflowRunId, expectedLockVersion, lang, responseLang, now } = params;
   const isInteractive = Boolean(msg.interactivePayload);
   const body = msg.body ?? '';
 
   if (!isInteractive && isOnboardingHelpCommand(body)) {
-    await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, msg.messageSid, 'help');
-    await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, msg.messageSid);
+    await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, workflowRunId, msg.messageSid, 'help');
+    await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, workflowRunId, msg.messageSid);
     return { handled: true, workerId, stepKey };
   }
 
@@ -472,7 +492,12 @@ async function applyGate(
     // unlike JOBS/TRABAJOS-style commands whose reply merely matches the
     // typed language.
     const cmdLang = detectLanguageSelectionCommand(body) ?? detectCommandLang(body) ?? responseLang;
-    await sendTemplateMessage(client, deps, workerId, stepKey, cmdLang, 'v2_language_changed', {}, now, msg.messageSid, 'lang');
+    await deps.repo.setRunPreferredLanguage(client, {
+      runId: workflowRunId,
+      expectedLockVersion,
+      preferredLanguage: cmdLang,
+    });
+    await sendTemplateMessage(client, deps, workerId, stepKey, cmdLang, 'v2_language_changed', {}, now, workflowRunId, msg.messageSid, 'lang');
     // IDIOMA/LANGUAGE is the one command that persists a preference change
     // (unlike JOBS/CHATS/PROFILE, whose reply is transient) — per the spec's
     // "LANGUAGE/IDIOMA persists the new preference." The override lives in
@@ -494,8 +519,8 @@ async function applyGate(
 
   if (!isInteractive && isResendCommand(body) && stepKey !== 'identity.verify_otp') {
     console.warn(JSON.stringify({ metric: 'OnboardingGateBlocked', command: 'resend', stepKey }));
-    await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, msg.messageSid, 'resend');
-    await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, msg.messageSid);
+    await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, workflowRunId, msg.messageSid, 'resend');
+    await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, workflowRunId, msg.messageSid);
     return { handled: true, workerId, stepKey };
   }
 
@@ -503,16 +528,16 @@ async function applyGate(
     const blocked = classifyBlockedCommand(body);
     if (blocked) {
       console.warn(JSON.stringify({ metric: 'OnboardingGateBlocked', command: blocked, stepKey }));
-      await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, msg.messageSid, blocked);
-      await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, msg.messageSid);
+      await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, workflowRunId, msg.messageSid, blocked);
+      await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, workflowRunId, msg.messageSid);
       return { handled: true, workerId, stepKey };
     }
   }
 
   if (UNIMPLEMENTED_STEPS.has(stepKey)) {
     console.warn(JSON.stringify({ metric: 'OnboardingGateBlocked', command: 'unrelated', stepKey }));
-    await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, msg.messageSid, 'unrelated');
-    await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, msg.messageSid);
+    await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, workflowRunId, msg.messageSid, 'unrelated');
+    await repeatCurrentPrompt(client, session, deps, workerId, stepKey, lang, now, workflowRunId, msg.messageSid);
     return { handled: true, workerId, stepKey };
   }
 
@@ -597,7 +622,8 @@ async function handleOtpStep(
   const responseLang = resolveResponseLanguage(lang, msg.body, isInteractive);
   const candidateUserId = preAuth.candidateUserId ?? session.user_id ?? null;
 
-  if (!isInteractive && isResendCommand(msg.body)) {
+  const isResend = msg.interactivePayload === 'otp:resend' || (!isInteractive && isResendCommand(msg.body));
+  if (isResend) {
     const history = readHistory(preAuth.context, 'otpSendHistory');
     // OTP resend has its own (tighter) cadence — 60s cooldown, 3/hour cap —
     // distinct from the 10min/5-per-day start-invitation policy.
@@ -636,6 +662,7 @@ async function handleOtpStep(
   });
 
   if (result.status === 'verified') {
+    await deps.repo.setInternalUserRlsContext(client, result.workerId);
     // The ONLY call site in this file for bindVerifiedIdentityAndStartWorkflow.
     const gate = await deps.repo.bindVerifiedIdentityAndStartWorkflow(client, {
       conversationId: session.id,
@@ -647,7 +674,7 @@ async function handleOtpStep(
       inboundMessageSid: msg.messageSid,
     });
     const stepKey = gate.currentStepKey ?? 'legal.review';
-    await sendStepPrompt(client, deps, gate.userId, stepKey, gate.preferredLanguage, now, msg.messageSid, `bind:${now.getTime()}`);
+    await sendStepPrompt(client, deps, gate.userId, stepKey, gate.preferredLanguage, now, gate.runId!, msg.messageSid, `bind:${now.getTime()}`);
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
@@ -718,7 +745,25 @@ async function handleLegalStep(
     ? msg.interactivePayload === 'legal:review'
     : isReviewTermsCommand(msg.body);
 
+  if (gate.status === 'declined') {
+    if (review) {
+      const reactivated = await deps.repo.reactivateDeclinedLegalRun(client, {
+        runId: gate.runId!,
+        expectedLockVersion: gate.lockVersion!,
+      });
+      await sendStepPrompt(client, deps, reactivated.userId, 'legal.review', effectiveLang(session, reactivated), now, reactivated.runId!, msg.messageSid, `review:${now.getTime()}`);
+      return { handled: true, workerId: reactivated.userId, stepKey: 'legal.review' };
+    }
+
+    await sendTemplateMessage(client, deps, gate.userId, 'legal.review', effectiveLang(session, gate), 'v2_legal_declined', {}, now, gate.runId!, msg.messageSid, 'declined');
+    return { handled: true, workerId: gate.userId, stepKey: 'legal.review' };
+  }
+
   if (accept) {
+    await deps.recordLegalAcceptance(client, {
+      workerId: gate.userId,
+      documentVersion: deps.requiredLegalVersion,
+    });
     const updated = await deps.repo.advanceWorkflow(client, {
       runId: gate.runId!,
       expectedLockVersion: gate.lockVersion!,
@@ -728,7 +773,7 @@ async function handleLegalStep(
       inboundMessageSid: msg.messageSid,
       reason: 'legal_accept',
     });
-    await sendStepPrompt(client, deps, updated.userId, 'profile.name', effectiveLang(session, updated), now, msg.messageSid, `accept:${now.getTime()}`);
+    await sendStepPrompt(client, deps, updated.userId, 'profile.name', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `accept:${now.getTime()}`);
     return { handled: true, workerId: updated.userId, stepKey: 'profile.name' };
   }
 
@@ -743,7 +788,7 @@ async function handleLegalStep(
       inboundMessageSid: msg.messageSid,
       reason: 'legal_decline',
     });
-    await sendTemplateMessage(client, deps, updated.userId, 'legal.review', effectiveLang(session, updated), 'v2_legal_declined', {}, now, msg.messageSid, 'declined');
+    await sendTemplateMessage(client, deps, updated.userId, 'legal.review', effectiveLang(session, updated), 'v2_legal_declined', {}, now, gate.runId!, msg.messageSid, 'declined');
     return { handled: true, workerId: updated.userId, stepKey: 'legal.review' };
   }
 
@@ -751,9 +796,9 @@ async function handleLegalStep(
   // the legal prompt (subject to the reprompt cooldown for unrecognized
   // input so a chatty worker doesn't get spammed).
   if (review) {
-    await sendStepPrompt(client, deps, gate.userId, 'legal.review', lang, now, msg.messageSid, `review:${now.getTime()}`);
+    await sendStepPrompt(client, deps, gate.userId, 'legal.review', lang, now, gate.runId!, msg.messageSid, `review:${now.getTime()}`);
   } else {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, 'legal.review', lang, now, msg.messageSid);
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'legal.review', lang, now, gate.runId!, msg.messageSid);
   }
   return { handled: true, workerId: gate.userId, stepKey: 'legal.review' };
 }
@@ -772,7 +817,7 @@ async function handleProfileName(
   const trimmed = (msg.body ?? '').trim();
   const valid = trimmed.length >= 2 && trimmed.length <= 100;
   if (!valid) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.name', lang, now, msg.messageSid);
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.name', lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey: 'profile.name' };
   }
 
@@ -786,7 +831,7 @@ async function handleProfileName(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_name_set',
   });
-  await sendStepPrompt(client, deps, updated.userId, 'profile.location', effectiveLang(session, updated), now, msg.messageSid, `name:${now.getTime()}`);
+  await sendStepPrompt(client, deps, updated.userId, 'profile.location', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `name:${now.getTime()}`);
   return { handled: true, workerId: updated.userId, stepKey: 'profile.location' };
 }
 
@@ -803,7 +848,7 @@ async function handleProfileLocation(
 ): Promise<RouteResult> {
   const resolved: ResolvedLocation | null = deps.adapters.location.resolve(msg.body ?? '');
   if (!resolved) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.location', lang, now, msg.messageSid);
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.location', lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey: 'profile.location' };
   }
 
@@ -817,7 +862,7 @@ async function handleProfileLocation(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_location_set',
   });
-  await sendStepPrompt(client, deps, updated.userId, 'profile.trade', effectiveLang(session, updated), now, msg.messageSid, `location:${now.getTime()}`);
+  await sendStepPrompt(client, deps, updated.userId, 'profile.trade', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `location:${now.getTime()}`);
   return { handled: true, workerId: updated.userId, stepKey: 'profile.trade' };
 }
 
@@ -855,7 +900,7 @@ async function handleProfileTrade(
 ): Promise<RouteResult> {
   const choice = parseTradeChoice(msg);
   if (!choice) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.trade', lang, now, msg.messageSid);
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.trade', lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey: 'profile.trade' };
   }
 
@@ -870,7 +915,7 @@ async function handleProfileTrade(
       inboundMessageSid: msg.messageSid,
       reason: 'profile_trade_other',
     });
-    await sendStepPrompt(client, deps, updated.userId, 'profile.custom_trade', effectiveLang(session, updated), now, msg.messageSid, `trade:${now.getTime()}`);
+    await sendStepPrompt(client, deps, updated.userId, 'profile.custom_trade', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `trade:${now.getTime()}`);
     return { handled: true, workerId: updated.userId, stepKey: 'profile.custom_trade' };
   }
 
@@ -893,7 +938,7 @@ async function handleProfileTrade(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_trade_standard',
   });
-  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, msg.messageSid, `trade:${now.getTime()}`, session.state_context);
+  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `trade:${now.getTime()}`, session.state_context);
   return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
 }
 
@@ -910,7 +955,7 @@ async function handleCustomTrade(
 ): Promise<RouteResult> {
   const professionRaw = (msg.body ?? '').trim();
   if (!professionRaw) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.custom_trade', lang, now, msg.messageSid);
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.custom_trade', lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey: 'profile.custom_trade' };
   }
 
@@ -952,7 +997,7 @@ async function handleCustomTrade(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_custom_trade_set',
   });
-  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, msg.messageSid, `custom:${now.getTime()}`, session.state_context);
+  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `custom:${now.getTime()}`, session.state_context);
   return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
 }
 
@@ -1013,7 +1058,7 @@ async function handleTrustQuestion(
   }
 
   if (answerText === null) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, msg.messageSid);
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
@@ -1036,7 +1081,7 @@ async function handleTrustQuestion(
       inboundMessageSid: msg.messageSid,
       reason: 'trust_answer_recorded',
     });
-    await sendTrustPrompt(client, deps, updated.userId, nextStepKey, effectiveLang(session, updated), now, msg.messageSid, `trust:${now.getTime()}`, session.state_context);
+    await sendTrustPrompt(client, deps, updated.userId, nextStepKey, effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `trust:${now.getTime()}`, session.state_context);
     return { handled: true, workerId: updated.userId, stepKey: nextStepKey };
   }
 
@@ -1111,7 +1156,9 @@ async function routeBoundStep(
   const gateResult = await applyGate(client, session, msg, deps, {
     stepKey,
     workerId: gate.userId,
+    workflowRunId: gate.runId!,
     lang,
+    expectedLockVersion: gate.lockVersion!,
     responseLang,
     now,
   });
@@ -1135,9 +1182,24 @@ export async function routeOnboardingV2(
   const now = deps.adapters.clock.now();
   const phoneHash = deps.hashNormalizedPhone(msg.from);
 
+  if (session.user_id) {
+    await deps.repo.setInternalUserRlsContext(client, session.user_id);
+  }
   const gate = session.user_id ? await deps.repo.loadWorkerGate(client, session.user_id) : null;
-  if (gate && gate.runId && gate.currentStepKey) {
-    return routeBoundStep(client, session, msg, deps, gate, now);
+  if (gate) {
+    if (gate.lifecycle === 'ready' && gate.status === 'completed' && gate.runId) {
+      session.language = gate.preferredLanguage;
+      return { handled: false, handoff: 'ready', workerId: gate.userId, stepKey: 'ready' };
+    }
+    if (
+      gate.lifecycle === 'onboarding'
+      && gate.runId
+      && gate.currentStepKey
+      && (gate.status === 'active' || (gate.status === 'declined' && gate.currentStepKey === 'legal.review'))
+    ) {
+      return routeBoundStep(client, session, msg, deps, gate, now);
+    }
+    throw new Error('onboarding_gate_inconsistent');
   }
 
   const preAuth = await deps.repo.loadPreAuthStateForUpdate(client, phoneHash);

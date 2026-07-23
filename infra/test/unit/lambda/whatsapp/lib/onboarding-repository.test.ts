@@ -4,6 +4,8 @@ import {
   savePreAuthState,
   bindVerifiedIdentityAndStartWorkflow,
   advanceWorkflow,
+  setRunPreferredLanguage,
+  reactivateDeclinedLegalRun,
   appendTransition,
   completeOnboarding,
 } from '../../../../../lambda/whatsapp/lib/onboarding-repository';
@@ -58,8 +60,14 @@ describe('loadWorkerGate', () => {
     });
     const sql = query.mock.calls[0][0] as string;
     expect(sql).toMatch(/worker_onboarding_state/);
+    expect(sql).toMatch(/LEFT JOIN LATERAL/);
+    expect(sql).toMatch(/ORDER BY \(candidate\.status = 'active'\) DESC/);
+    expect(sql).not.toMatch(/ON r\.user_id = s\.user_id AND r\.status = 'active'/);
     expect(sql).toMatch(/FOR UPDATE/);
   });
+
+  // The active-first/latest lateral join also returns declined/completed rows
+  // when no active run exists; row mapping is status-agnostic.
 });
 
 describe('pre-auth state (phone-hash keyed, never binds identity)', () => {
@@ -239,6 +247,88 @@ describe('advanceWorkflow', () => {
     // No transition should be appended on a failed lock guard.
     expect(query.mock.calls.filter(([sql]) =>
       /INSERT INTO worker_workflow_transitions/.test(sql))).toHaveLength(0);
+  });
+});
+
+describe('setRunPreferredLanguage', () => {
+  it('updates the authoritative run language behind the optimistic lock and reloads the gate', async () => {
+    const { query, client } = makeClient();
+    query
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ user_id: WORKER_ID }],
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          user_id: WORKER_ID,
+          lifecycle: 'onboarding',
+          run_id: RUN_ID,
+          workflow_version: 1,
+          current_step_key: 'legal.review',
+          status: 'active',
+          preferred_language: 'en',
+          lock_version: 1,
+        }],
+      });
+
+    const gate = await setRunPreferredLanguage(client, {
+      runId: RUN_ID,
+      expectedLockVersion: 0,
+      preferredLanguage: 'en',
+    });
+
+    const updateCall = query.mock.calls[0];
+    expect(updateCall[0]).toMatch(/preferred_language = \$1/);
+    expect(updateCall[0]).toMatch(/lock_version = lock_version \+ 1/);
+    expect(updateCall[0]).toMatch(/status = 'active'/);
+    expect(updateCall[1]).toEqual(['en', RUN_ID, 0]);
+    expect(gate.preferredLanguage).toBe('en');
+    expect(gate.lockVersion).toBe(1);
+  });
+
+  it('throws workflow_lock_conflict when the run is stale', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+    await expect(setRunPreferredLanguage(client, {
+      runId: RUN_ID,
+      expectedLockVersion: 4,
+
+
+      preferredLanguage: 'es',
+    })).rejects.toThrow('workflow_lock_conflict');
+
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('reactivateDeclinedLegalRun', () => {
+  it('reactivates only the locked declined legal run and reloads its gate', async () => {
+    const { query, client } = makeClient();
+    query
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ user_id: WORKER_ID }] })
+      .mockResolvedValueOnce({ rows: [{
+        user_id: WORKER_ID,
+        lifecycle: 'onboarding',
+        run_id: RUN_ID,
+        workflow_version: 1,
+        current_step_key: 'legal.review',
+        status: 'active',
+        preferred_language: 'en',
+        lock_version: 2,
+      }] });
+
+    const gate = await reactivateDeclinedLegalRun(client, {
+      runId: RUN_ID,
+      expectedLockVersion: 1,
+    });
+
+    const update = query.mock.calls[0];
+    expect(update[0]).toMatch(/status = 'active'/);
+    expect(update[0]).toMatch(/status = 'declined'/);
+    expect(update[0]).toMatch(/current_step_key = 'legal.review'/);
+    expect(update[1]).toEqual([RUN_ID, 1]);
+    expect(gate).toEqual(expect.objectContaining({ status: 'active', runId: RUN_ID }));
   });
 });
 

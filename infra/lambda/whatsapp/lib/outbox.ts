@@ -28,7 +28,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
   content_variables: Record<string, string> | null;
-}): Promise<string | null> {
+}): Promise<string> {
   const secret = await getTwilioSecret();
   const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
   const formValues: Record<string, string> = {
@@ -368,6 +368,128 @@ export async function drainJobAlertOutbox(
   }
 
   return { sent, ambiguous, failed };
+}
+
+interface LeasedWorkerIntentOutboxRow {
+  id: string;
+  whatsapp_number: string;
+  body: string | null;
+  content_template: string | null;
+  content_variables: Record<string, string> | null;
+  attempt_count: number;
+  lease_token: string;
+}
+
+/**
+ * Sends rows claimed by migration 043's SECURITY DEFINER RPC. The database
+ * owns ordering, retry/backoff, and fencing; network I/O starts only after
+ * the claim call has committed.
+ */
+export async function drainWorkerIntentOutbox(
+  pool: { connect(): Promise<PoolClient> },
+  limit = 10,
+): Promise<{ sent: number; ambiguous: number; failed: number; leaseLost: number }> {
+  const leaseClient = await pool.connect();
+  let leased: LeasedWorkerIntentOutboxRow[];
+  try {
+    const result = await leaseClient.query<LeasedWorkerIntentOutboxRow>(
+      'SELECT * FROM lease_worker_intent_outbox($1)', [limit],
+    );
+    leased = result.rows;
+  } finally {
+    leaseClient.release();
+  }
+
+  let sent = 0;
+  let ambiguous = 0;
+  let failed = 0;
+  let leaseLost = 0;
+
+  const recordFailure = async (
+    row: LeasedWorkerIntentOutboxRow,
+    error: unknown,
+    isAmbiguous: boolean,
+  ): Promise<void> => {
+    const message = error instanceof Error ? error.message : String(error);
+    const resultClient = await pool.connect();
+    try {
+      const failure = await resultClient.query<{ failed: boolean }>(
+        'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
+        [row.id, row.lease_token, message, isAmbiguous],
+      );
+      if (failure.rows[0]?.failed !== true) {
+        leaseLost += 1;
+        throw new Error(`worker_intent_lease_lost:${row.id}`);
+      }
+    } finally {
+      resultClient.release();
+    }
+  };
+
+  for (const row of leased) {
+    let sid: string;
+    try {
+      sid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
+    } catch (error) {
+      const isAmbiguous = error instanceof AmbiguousTwilioSendError;
+      await recordFailure(row, error, isAmbiguous);
+      if (isAmbiguous) ambiguous += 1;
+      else failed += 1;
+      continue;
+    }
+
+    try {
+      const resultClient = await pool.connect();
+      try {
+        const completion = await resultClient.query<{ completed: boolean }>(
+          'SELECT complete_worker_intent_outbox($1, $2, $3) AS completed',
+          [row.id, row.lease_token, sid],
+        );
+        if (completion.rows[0]?.completed !== true) {
+          leaseLost += 1;
+          throw new Error(`worker_intent_lease_lost:${row.id}`);
+        }
+      } finally {
+        resultClient.release();
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('worker_intent_lease_lost:')) {
+        throw error;
+      }
+      // Twilio already returned a valid SID. Any persistence failure after
+      // provider acceptance is terminally ambiguous and must never requeue.
+      await recordFailure(row, error, true);
+      ambiguous += 1;
+      continue;
+    }
+
+    sent += 1;
+  }
+
+  return { sent, ambiguous, failed, leaseLost };
+}
+
+export async function countAgedWorkerIntentOutbox(
+  pool: { connect(): Promise<PoolClient> },
+  ageHours = 24,
+): Promise<number> {
+  if (!Number.isInteger(ageHours) || ageHours < 1 || ageHours > 168) {
+    throw new Error('worker_intent_backlog_age_hours_invalid');
+  }
+  const client = await pool.connect();
+  try {
+    const result = await client.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM whatsapp_outbox
+        WHERE source_type = 'worker_intent'
+          AND status = 'pending'
+          AND created_at < now() - ($1 || ' hours')::interval`,
+      [String(ageHours)],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  } finally {
+    client.release();
+  }
 }
 
 export async function sendPendingAdminOutbox(

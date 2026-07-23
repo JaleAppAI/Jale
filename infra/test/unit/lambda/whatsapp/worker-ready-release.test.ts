@@ -327,6 +327,54 @@ describe('releaseWorkerReady', () => {
     }
   });
 
+  it('ranks job alerts by the score in the canonical payload jobs array', async () => {
+    const intents = [
+      intentRow({
+        id: 'ja-low',
+        source_id: 'job-low',
+        payload: {
+          jobs: [{
+            jobId: 'job-low',
+            title: 'Low match',
+            companyName: 'ACME',
+            score: 1,
+          }],
+        },
+        created_at: new Date(NOW.getTime() + 1000),
+      }),
+      intentRow({
+        id: 'ja-high',
+        source_id: 'job-high',
+        payload: {
+          jobs: [{
+            jobId: 'job-high',
+            title: 'High match',
+            companyName: 'ACME',
+            score: 99,
+          }],
+        },
+        created_at: new Date(NOW.getTime() - 1000),
+      }),
+    ];
+    const jobs: JobRow[] = [
+      { id: 'job-low', status: 'active', title: 'Low match', company: 'ACME' },
+      { id: 'job-high', status: 'active', title: 'High match', company: 'ACME' },
+    ];
+    const { client } = scriptedClient({ eventStatus: 'processing', intents, jobs });
+    const { render, requests } = recordingRenderer();
+
+    await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+    const digest = requests.find((request) => request.kind === 'job_alert_digest');
+    expect(digest).toMatchObject({
+      kind: 'job_alert_digest',
+      jobs: [
+        expect.objectContaining({ jobId: 'job-high', score: 99 }),
+        expect.objectContaining({ jobId: 'job-low', score: 1 }),
+      ],
+    });
+  });
+
   it('renders employer_chat_single for one unread conversation', async () => {
     const intents = [
       intentRow({
@@ -360,7 +408,7 @@ describe('releaseWorkerReady', () => {
       message_id: `msg-${n}`, conversation_id: `conv-${n}`, conversation_status: 'open',
       job_title: 'Plomero', company_name: 'ACME',
     }));
-    const { client } = scriptedClient({ eventStatus: 'processing', intents, chats });
+    const { client, intents: finalIntents } = scriptedClient({ eventStatus: 'processing', intents, chats });
     const { render, requests } = recordingRenderer();
 
     await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
@@ -372,6 +420,9 @@ describe('releaseWorkerReady', () => {
     if (summaries[0].kind === 'employer_chat_summary') {
       expect(summaries[0].conversationCount).toBe(3);
     }
+    const correlatedOutboxIds = intents.map((intent) => (finalIntents.get(intent.id) as any).outbox_id);
+    expect(correlatedOutboxIds).toHaveLength(3);
+    expect(new Set(correlatedOutboxIds)).toEqual(new Set(['outbox-2']));
   });
 
   it('records render requests in group order: onboarding -> account -> job digest -> employer', async () => {

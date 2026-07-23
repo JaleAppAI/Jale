@@ -14,7 +14,7 @@ const migration041Path = path.join(
   '041_whatsapp_web_worker_lookup_grant.sql',
 );
 
-describe('production upgrade 020b/035-041 operator tooling', () => {
+describe('production upgrade 020b/035-043 operator tooling', () => {
   it('allows only the reviewed forward-upgrade files in exact order', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const block = script.match(/MIGRATION_FILES=\(([\s\S]*?)\)/)?.[1] ?? '';
@@ -29,6 +29,8 @@ describe('production upgrade 020b/035-041 operator tooling', () => {
       '039_whatsapp_support_cases.sql',
       '040_whatsapp_delivery_status.sql',
       '041_whatsapp_web_worker_lookup_grant.sql',
+      '042_whatsapp_onboarding_gate.sql',
+      '043_whatsapp_worker_intent_transport.sql',
     ]);
     expect(block).not.toMatch(/001_|002_|003_|034_/);
   });
@@ -81,6 +83,11 @@ describe('production upgrade 020b/035-041 operator tooling', () => {
       'idx_whatsapp_outbox_twilio_message_sid',
       'record_whatsapp_delivery_status',
       'tos_accepted_at',
+      'worker_onboarding_state',
+      'bind_verified_identity_and_start_workflow',
+      'worker_intent_lease_token',
+      'lease_worker_intent_outbox',
+      'whatsapp_outbox_worker_intent_delivery_state',
     ]) {
       expect(script).toContain(marker);
     }
@@ -105,6 +112,17 @@ describe('production upgrade 020b/035-041 operator tooling', () => {
     expect(script).toContain("qual='(user_type = ''worker''::text)'");
     expect(migration041).toContain('GRANT SELECT (tos_accepted_at) ON users TO jale_whatsapp;');
     expect(migration041).not.toMatch(/GRANT\s+SELECT\s+ON\s+users\s+TO\s+jale_whatsapp/i);
+    expect(script).toContain('# COMPLETE_042_BEGIN');
+    expect(script).toContain('# COMPLETE_043_BEGIN');
+    expect(script).toContain("owner.rolname='jale_admin'");
+    expect(script).toContain("owner.rolname='jale_twilio_callback'");
+    expect(script).toContain("NOT has_function_privilege('public',function.oid,'EXECUTE')");
+    expect(script).toContain("NOT has_column_privilege('jale_whatsapp','public.whatsapp_outbox','worker_intent_lease_token','UPDATE')");
+    expect(script).toContain("NOT has_column_privilege('jale_whatsapp','public.whatsapp_outbox','worker_intent_leased_until','UPDATE')");
+    expect(script).toContain("member.rolname='jale_admin'");
+    expect(script).not.toContain('member.rolname=current_user');
+    expect(script).toContain("policy.permissive='RESTRICTIVE'");
+    expect(script).toContain("trigger.tgname='whatsapp_outbox_worker_intent_delivery_state'");
   });
 
   it('keeps credentials on the bastion and does not rotate service passwords', () => {
@@ -140,20 +158,27 @@ describe('production upgrade 020b/035-041 operator tooling', () => {
   maybeIt('executes every completion predicate against the fully migrated schema', async () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const predicates = [...script.matchAll(/^\s+complete="([^"]+)"$/gm)].map((match) => match[1]);
-    const callbackPredicate = script.match(
-      /# COMPLETE_040_BEGIN[\s\S]*?complete=\$\(cat <<'SQL'\n([\s\S]*?)\nSQL\n\)[\s\S]*?# COMPLETE_040_END/,
-    )?.[1];
-    expect(callbackPredicate).toBeDefined();
-    predicates.push(callbackPredicate!);
-    expect(predicates).toHaveLength(7);
+    for (const migration of ['040', '042', '043']) {
+      const predicate = script.match(
+        new RegExp(
+          `# COMPLETE_${migration}_BEGIN[\\s\\S]*?complete=\\$\\(cat <<'SQL'\\n([\\s\\S]*?)\\nSQL\\n\\)[\\s\\S]*?# COMPLETE_${migration}_END`,
+        ),
+      )?.[1];
+      expect(predicate).toBeDefined();
+      predicates.push(predicate!);
+    }
+    expect(predicates).toHaveLength(9);
 
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();
     try {
-      for (const predicate of predicates) {
+      for (const [predicateIndex, predicate] of predicates.entries()) {
         const result = await client.query<{ complete: boolean }>(
           `SELECT (${predicate}) AS complete`,
         );
+        if (result.rows[0]?.complete !== true) {
+          throw new Error(`completion predicate ${predicateIndex} was false`);
+        }
         expect(result.rows).toEqual([{ complete: true }]);
       }
 
@@ -171,6 +196,24 @@ describe('production upgrade 020b/035-041 operator tooling', () => {
         `SELECT (${predicates[6]}) AS complete`,
       );
       expect(callbackDrift.rows).toEqual([{ complete: false }]);
+      await client.query('ROLLBACK');
+
+      await client.query('BEGIN');
+      await client.query('ALTER TABLE worker_onboarding_state NO FORCE ROW LEVEL SECURITY');
+      const onboardingDrift = await client.query<{ complete: boolean }>(
+        `SELECT (${predicates[7]}) AS complete`,
+      );
+      expect(onboardingDrift.rows).toEqual([{ complete: false }]);
+      await client.query('ROLLBACK');
+
+      await client.query('BEGIN');
+      await client.query(
+        'DROP POLICY whatsapp_outbox_worker_intent_rpc_only ON whatsapp_outbox',
+      );
+      const transportDrift = await client.query<{ complete: boolean }>(
+        `SELECT (${predicates[8]}) AS complete`,
+      );
+      expect(transportDrift.rows).toEqual([{ complete: false }]);
       await client.query('ROLLBACK');
     } finally {
       await client.end();

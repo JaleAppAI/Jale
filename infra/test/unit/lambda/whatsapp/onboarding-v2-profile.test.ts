@@ -86,7 +86,12 @@ function createFakeGateRepo() {
       }
       completions.push({ ...input });
       completionClients.push(completeClient);
-      const updated: WorkerGate = { ...found, status: 'completed', lockVersion: (found.lockVersion ?? 0) + 1 };
+      const updated: WorkerGate = {
+        ...found,
+        lifecycle: 'ready',
+        status: 'completed',
+        lockVersion: (found.lockVersion ?? 0) + 1,
+      };
       gates.set(updated.userId, updated);
       return { assessmentEventId: `assessment-${completions.length}`, workerReadyEventId: `ready-${completions.length}` };
     },
@@ -172,11 +177,22 @@ function makeDeps() {
   const deps: OnboardingV2Deps = {
     adapters: adapters as any,
     repo: {
+      setInternalUserRlsContext: async () => undefined,
       loadPreAuthStateForUpdate: async () => null,
       savePreAuthState: async (_c, _phoneHash, patch) => patch as any,
       bindVerifiedIdentityAndStartWorkflow: (c, input) => gateRepo.bindVerifiedIdentityAndStartWorkflow(),
       loadWorkerGate: (c, workerId) => gateRepo.loadWorkerGate(c, workerId),
       advanceWorkflow: (c, input) => gateRepo.advanceWorkflow(c, input),
+      setRunPreferredLanguage: async (_c, input) => {
+        const found = [...gateRepo._gates.values()].find((candidate) => candidate.runId === input.runId);
+        if (!found) throw new Error('workflow_lock_conflict');
+        return found;
+      },
+      reactivateDeclinedLegalRun: async (_c, input) => {
+        const found = [...gateRepo._gates.values()].find((candidate) => candidate.runId === input.runId);
+        if (!found) throw new Error('workflow_lock_conflict');
+        return found;
+      },
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
       completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
     },
@@ -186,6 +202,8 @@ function makeDeps() {
     hashNormalizedPhone: fakeHashNormalizedPhone,
     tosUrl: 'https://jale.example/tos',
     privacyUrl: 'https://jale.example/privacy',
+    requiredLegalVersion: '1.0',
+    recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
     workflowVersion: 1,
   };
 
@@ -562,7 +580,12 @@ describe('trust.question.{1,2,3}', () => {
 
     const result = await routeOnboardingV2(client, session, makeMsg('1'), deps);
 
-    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.3' });
+    expect(result).toEqual({
+      handled: false,
+      handoff: 'ready',
+      workerId: gate.userId,
+      stepKey: 'ready',
+    });
     expect(gateRepo._completions).toHaveLength(1);
   });
 

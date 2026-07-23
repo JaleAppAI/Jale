@@ -119,13 +119,37 @@ CREATE TABLE IF NOT EXISTS public.worker_domain_outbox (
   attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   next_attempt_at TIMESTAMPTZ,
   last_error TEXT,
+  leased_until TIMESTAMPTZ,
+  lease_token UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT worker_domain_outbox_event_key UNIQUE (event_key)
 );
+ALTER TABLE public.worker_domain_outbox
+  ADD COLUMN IF NOT EXISTS leased_until TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS lease_token UUID;
+ALTER TABLE public.worker_domain_outbox
+  DROP CONSTRAINT IF EXISTS worker_domain_outbox_lease_consistency;
+-- Upgrade safety for a claim created before ownership fencing existed.
+UPDATE public.worker_domain_outbox
+   SET status='pending', next_attempt_at=COALESCE(next_attempt_at, now()),
+       leased_until=NULL, lease_token=NULL, updated_at=now()
+ WHERE status='processing' AND (leased_until IS NULL OR lease_token IS NULL);
+UPDATE public.worker_domain_outbox
+   SET leased_until=NULL, lease_token=NULL
+ WHERE status <> 'processing' AND (leased_until IS NOT NULL OR lease_token IS NOT NULL);
+ALTER TABLE public.worker_domain_outbox
+  ADD CONSTRAINT worker_domain_outbox_lease_consistency CHECK (
+    (status='processing' AND leased_until IS NOT NULL AND lease_token IS NOT NULL)
+    OR (status <> 'processing' AND leased_until IS NULL AND lease_token IS NULL)
+  );
 CREATE INDEX IF NOT EXISTS worker_domain_outbox_status_attempt
   ON public.worker_domain_outbox (status, next_attempt_at);
 
+CREATE INDEX IF NOT EXISTS worker_domain_outbox_due_lease
+  ON public.worker_domain_outbox
+    (event_type, status, next_attempt_at, leased_until, created_at)
+  WHERE status IN ('pending', 'processing');
 ALTER TABLE public.whatsapp_outbox
   DROP CONSTRAINT IF EXISTS whatsapp_outbox_origin_check;
 ALTER TABLE public.whatsapp_outbox
@@ -207,6 +231,12 @@ CREATE POLICY worker_domain_outbox_worker ON public.worker_domain_outbox TO jale
 DROP POLICY IF EXISTS worker_reset_audit_worker ON public.worker_reset_audit;
 CREATE POLICY worker_reset_audit_worker ON public.worker_reset_audit FOR SELECT TO jale_whatsapp
   USING (user_id::text = current_setting('app.current_internal_user_id', true));
+DROP POLICY IF EXISTS worker_reset_audit_admin_read ON public.worker_reset_audit;
+CREATE POLICY worker_reset_audit_admin_read ON public.worker_reset_audit
+  FOR SELECT TO jale_admin USING (true);
+DROP POLICY IF EXISTS worker_reset_audit_admin_insert ON public.worker_reset_audit;
+CREATE POLICY worker_reset_audit_admin_insert ON public.worker_reset_audit
+  FOR INSERT TO jale_admin WITH CHECK (true);
 DROP POLICY IF EXISTS whatsapp_runtime_controls_read ON public.whatsapp_runtime_controls;
 CREATE POLICY whatsapp_runtime_controls_read ON public.whatsapp_runtime_controls FOR SELECT TO jale_whatsapp
   USING (true);
@@ -245,9 +275,9 @@ GRANT SELECT (id, user_id, category, owner_service, source_type, source_id, dedu
   UPDATE (status, decision_reason, release_sequence, leased_until, outbox_id, updated_at)
   ON public.worker_message_intents TO jale_whatsapp;
 REVOKE ALL ON public.worker_domain_outbox FROM jale_whatsapp;
-GRANT SELECT (id, event_type, aggregate_id, event_key, payload, status, attempts, next_attempt_at, last_error, created_at, updated_at),
+GRANT SELECT (id, event_type, aggregate_id, event_key, payload, status, attempts, next_attempt_at, last_error, leased_until, lease_token, created_at, updated_at),
   INSERT (event_type, aggregate_id, event_key, payload, status, attempts, next_attempt_at, last_error),
-  UPDATE (status, attempts, next_attempt_at, last_error, updated_at)
+  UPDATE (status, attempts, next_attempt_at, last_error, leased_until, lease_token, updated_at)
   ON public.worker_domain_outbox TO jale_whatsapp;
 REVOKE ALL ON public.worker_reset_audit FROM jale_whatsapp;
 GRANT SELECT (id, user_id, phone_hash, operator, reason, table_counts, dry_run, created_at)
@@ -255,6 +285,22 @@ GRANT SELECT (id, user_id, phone_hash, operator, reason, table_counts, dry_run, 
 REVOKE ALL ON public.whatsapp_runtime_controls FROM jale_whatsapp;
 GRANT SELECT (control_key, enabled, phone_hashes, global_enabled)
   ON public.whatsapp_runtime_controls TO jale_whatsapp;
+
+-- Cross-worker job-alert discovery needs one non-sensitive readiness bit.
+-- Keep the forced-RLS table worker-scoped and expose only that boolean.
+CREATE OR REPLACE FUNCTION public.is_worker_ready_for_v2_delivery(p_user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM public.worker_onboarding_state s
+     WHERE s.user_id = p_user_id
+       AND s.lifecycle = 'ready'
+  )
+$$;
+ALTER FUNCTION public.is_worker_ready_for_v2_delivery(UUID) OWNER TO jale_admin;
+REVOKE ALL ON FUNCTION public.is_worker_ready_for_v2_delivery(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.is_worker_ready_for_v2_delivery(UUID) TO jale_whatsapp;
 
 CREATE OR REPLACE FUNCTION public.load_worker_pre_auth(p_phone_hash TEXT)
 RETURNS SETOF public.worker_identity_challenges
@@ -468,6 +514,8 @@ REVOKE ALL ON FUNCTION public.bind_verified_identity_and_start_workflow(TEXT, UU
 GRANT EXECUTE ON FUNCTION public.bind_verified_identity_and_start_workflow(TEXT, UUID, UUID, INTEGER, TEXT, TEXT, JSONB) TO jale_whatsapp;
 
 
+-- Fifteen minutes is safely longer than the drain Lambda's 60-second maximum
+-- runtime while still making a hard-crashed invocation recoverable.
 CREATE OR REPLACE FUNCTION public.lease_worker_domain_events(p_event_type TEXT, p_limit INTEGER)
 RETURNS SETOF public.worker_domain_outbox
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -479,12 +527,47 @@ BEGIN
   END IF;
   RETURN QUERY
   WITH candidates AS (
-    SELECT e.id FROM public.worker_domain_outbox e
-    WHERE e.event_type = p_event_type AND e.status = 'pending'
-      AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= pg_catalog.now())
-    ORDER BY e.created_at, e.id FOR UPDATE SKIP LOCKED LIMIT p_limit
+    SELECT e.id, e.status, e.attempts
+      FROM public.worker_domain_outbox e
+     WHERE e.event_type = p_event_type
+       AND (
+         (e.status = 'pending'
+           AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= pg_catalog.now()))
+         OR (e.status = 'processing' AND e.leased_until <= pg_catalog.now())
+       )
+     ORDER BY e.created_at, e.id
+     FOR UPDATE OF e SKIP LOCKED
+     LIMIT p_limit
+  ), updated AS (
+    UPDATE public.worker_domain_outbox e
+       SET attempts = CASE
+             WHEN c.status = 'processing' THEN c.attempts + 1
+             ELSE c.attempts
+           END,
+           status = CASE
+             WHEN c.status = 'processing' AND c.attempts + 1 >= 5 THEN 'failed'
+             ELSE 'processing'
+           END,
+           leased_until = CASE
+             WHEN c.status = 'processing' AND c.attempts + 1 >= 5 THEN NULL
+             ELSE pg_catalog.now() + interval '15 minutes'
+           END,
+           lease_token = CASE
+             WHEN c.status = 'processing' AND c.attempts + 1 >= 5 THEN NULL
+             ELSE pg_catalog.gen_random_uuid()
+           END,
+           next_attempt_at = NULL,
+           last_error = CASE
+             WHEN c.status = 'processing' AND c.attempts + 1 >= 5
+               THEN 'domain event lease expired at retry cap'
+             ELSE e.last_error
+           END,
+           updated_at = pg_catalog.now()
+      FROM candidates c
+     WHERE e.id = c.id
+     RETURNING e.*
   )
-  UPDATE public.worker_domain_outbox e SET status = 'processing', updated_at = pg_catalog.now() FROM candidates c WHERE e.id = c.id RETURNING e.*;
+  SELECT u.* FROM updated u WHERE u.status = 'processing';
 END $$;
 ALTER FUNCTION public.lease_worker_domain_events(TEXT, INTEGER) OWNER TO jale_admin;
 REVOKE ALL ON FUNCTION public.lease_worker_domain_events(TEXT, INTEGER) FROM PUBLIC;
@@ -744,6 +827,7 @@ BEGIN
   END LOOP;
 
   FOR fn IN SELECT * FROM (VALUES
+    ('public', 'is_worker_ready_for_v2_delivery', '2950'::oidvector, 'jale_admin'),
     ('public', 'load_worker_pre_auth', '25'::oidvector, 'jale_admin'),
     ('public', 'save_worker_pre_auth', '25 3802'::oidvector, 'jale_admin'),
     ('public', 'bind_verified_identity_and_start_workflow', '25 2950 2950 23 25 25 3802'::oidvector, 'jale_admin'),
@@ -773,6 +857,51 @@ BEGIN
        'jale_whatsapp', 'public.worker_identity_challenges', 'SELECT'
      ) THEN
     RAISE EXCEPTION 'worker identity challenges are directly readable by jale_whatsapp';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_policies
+     WHERE schemaname='public' AND tablename='worker_reset_audit'
+       AND policyname='worker_reset_audit_admin_read' AND cmd='SELECT'
+       AND roles = ARRAY['jale_admin']::name[]
+  ) OR NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_policies
+     WHERE schemaname='public' AND tablename='worker_reset_audit'
+       AND policyname='worker_reset_audit_admin_insert' AND cmd='INSERT'
+       AND roles = ARRAY['jale_admin']::name[]
+  ) THEN
+    RAISE EXCEPTION 'worker reset audit admin policy self-audit failed';
+  END IF;
+
+  IF pg_catalog.has_table_privilege('jale_whatsapp', 'public.worker_reset_audit', 'INSERT') THEN
+    RAISE EXCEPTION 'worker reset audit is writable by jale_whatsapp';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM (VALUES ('leased_until'), ('lease_token')) expected(column_name)
+     WHERE NOT EXISTS (
+       SELECT 1
+         FROM pg_catalog.pg_attribute a
+         JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='public' AND c.relname='worker_domain_outbox'
+          AND a.attname=expected.column_name AND a.attnum > 0 AND NOT a.attisdropped
+     )
+  ) THEN
+    RAISE EXCEPTION 'domain event lease column self-audit failed';
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_catalog.pg_index i
+      JOIN pg_catalog.pg_class idx ON idx.oid=i.indexrelid
+      JOIN pg_catalog.pg_class tbl ON tbl.oid=i.indrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid=tbl.relnamespace
+     WHERE n.nspname='public' AND tbl.relname='worker_domain_outbox'
+       AND idx.relname='worker_domain_outbox_due_lease'
+       AND i.indisvalid AND i.indpred IS NOT NULL
+  ) THEN
+    RAISE EXCEPTION 'domain event due-lease index self-audit failed';
   END IF;
 END $$;
 

@@ -87,7 +87,13 @@ function scriptedEnqueueClient(opts: {
     calls.push({ sql, params });
     if (/INSERT INTO worker_message_intents/.test(sql)) {
       intentInsertCallCount += 1;
-      return { rows: [{ id: `intent-${intentInsertCallCount}`, outbox_id: null }] };
+      return {
+        rows: [{
+          id: `intent-${intentInsertCallCount}`,
+          outbox_id: null,
+          status: 'deferred',
+        }],
+      };
     }
     if (/FROM worker_onboarding_state/.test(sql)) {
       return { rows: opts.gateRow === undefined || opts.gateRow === null ? [] : [opts.gateRow] };

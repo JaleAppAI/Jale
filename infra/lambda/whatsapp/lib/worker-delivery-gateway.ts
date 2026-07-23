@@ -43,6 +43,19 @@ const STATUS_BY_DECISION_ACTION: Record<DeliveryDecision['action'], IntentStatus
   expire: 'expired',
 };
 
+function decisionForTerminalStatus(status: IntentStatus): DeliveryDecision {
+  switch (status) {
+    case 'leased':
+    case 'released':
+    case 'delivered':
+      return { action: 'allow', reason: 'worker_ready' };
+    case 'expired':
+      return { action: 'expire', reason: 'intent_expired' };
+    default:
+      return { action: 'reject', reason: 'invalid_owner' };
+  }
+}
+
 /**
  * Idempotently claims a `worker_message_intents` row for `input.dedupeKey`,
  * evaluates the delivery-policy decision against the worker's *locked*
@@ -71,14 +84,24 @@ export async function enqueueWorkerMessage(
   input: WorkerMessageIntentInput,
   now: Date = new Date(),
 ): Promise<{ intentId: string; decision: DeliveryDecision }> {
-  const inserted = await client.query<{ id: string; outbox_id: string | null }>(
-    `INSERT INTO worker_message_intents
-        (user_id, category, owner_service, source_type, source_id, dedupe_key,
-         priority, status, policy_version, payload, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'deferred', $8, $9::jsonb, $10)
-     ON CONFLICT ON CONSTRAINT worker_message_intent_dedupe
-       DO UPDATE SET updated_at = now()
-     RETURNING id, outbox_id`,
+  const inserted = await client.query<{ id: string; outbox_id: string | null; status: IntentStatus }>(
+    `WITH attempted AS (
+       INSERT INTO worker_message_intents
+          (user_id, category, owner_service, source_type, source_id, dedupe_key,
+           priority, status, policy_version, payload, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'deferred', $8, $9::jsonb, $10)
+       ON CONFLICT ON CONSTRAINT worker_message_intent_dedupe
+         DO UPDATE SET updated_at = now()
+           WHERE worker_message_intents.status IN ('deferred', 'eligible')
+       RETURNING id, outbox_id, status
+     )
+     SELECT id, outbox_id, status FROM attempted
+     UNION ALL
+     SELECT existing.id, existing.outbox_id, existing.status
+       FROM worker_message_intents existing
+      WHERE existing.dedupe_key = $6
+        AND NOT EXISTS (SELECT 1 FROM attempted)
+     LIMIT 1`,
     [
       input.workerId,
       input.category,
@@ -92,8 +115,13 @@ export async function enqueueWorkerMessage(
       input.expiresAt,
     ],
   );
-  const intentId = inserted.rows[0].id;
-  const alreadyMaterialized = inserted.rows[0].outbox_id !== null;
+  const intent = inserted.rows[0];
+  if (!intent) throw new Error('worker_intent_claim_missing');
+  const intentId = intent.id;
+  const alreadyMaterialized = intent.outbox_id !== null;
+  if (intent.status !== 'deferred' && intent.status !== 'eligible') {
+    return { intentId, decision: decisionForTerminalStatus(intent.status) };
+  }
 
   const gate = await loadWorkerGate(client, input.workerId);
   const controls = await loadRuntimeControls(client);
@@ -113,7 +141,8 @@ export async function enqueueWorkerMessage(
   await client.query(
     `UPDATE worker_message_intents
         SET status = $1, decision_reason = $2, updated_at = now()
-      WHERE id = $3`,
+      WHERE id = $3
+        AND status IN ('deferred', 'eligible')`,
     [status, decision.reason, intentId],
   );
 
@@ -124,10 +153,12 @@ export async function enqueueWorkerMessage(
     if (!rendered) {
       await client.query(
         `UPDATE worker_message_intents
-            SET decision_reason = $1, updated_at = now()
-          WHERE id = $2`,
-        ['renderer_unavailable', intentId],
+            SET status = $1, decision_reason = $2, updated_at = now()
+          WHERE id = $3
+            AND status = 'eligible'`,
+        ['rejected', 'renderer_unavailable', intentId],
       );
+      throw new Error(`renderer_unavailable:${input.category}`);
     } else {
       const { outboxId } = await insertAuthorizedIntentOutbox(client, intentId, rendered);
       await client.query(

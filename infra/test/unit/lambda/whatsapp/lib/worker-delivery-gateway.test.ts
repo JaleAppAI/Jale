@@ -12,7 +12,7 @@ import {
   registerCategoryRenderer,
   _clearCategoryRenderersForTests,
 } from '../../../../../lambda/whatsapp/lib/worker-delivery-gateway';
-import type { WorkerMessageIntentInput, RenderedOutboxMessage } from '../../../../../lambda/whatsapp/lib/onboarding-types';
+import type { WorkerMessageIntentInput, RenderedOutboxMessage, IntentStatus } from '../../../../../lambda/whatsapp/lib/onboarding-types';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
 
@@ -41,6 +41,7 @@ function scriptedClient(opts: {
   gateRow?: Record<string, unknown> | null;
   deferredDeliveryEnabled?: boolean;
   intentStatusForOutboxCheck?: string;
+  existingIntentStatus?: IntentStatus;
   /**
    * outbox_id to RETURN from successive calls to the intent INSERT, in
    * order (simulating the row already being materialized by a prior
@@ -57,7 +58,7 @@ function scriptedClient(opts: {
       const sequence = opts.intentOutboxIdSequence ?? [null];
       const outboxId = sequence[Math.min(intentInsertCallCount, sequence.length - 1)];
       intentInsertCallCount += 1;
-      return { rows: [{ id: 'intent-1', outbox_id: outboxId }] };
+      return { rows: [{ id: 'intent-1', outbox_id: outboxId, status: opts.existingIntentStatus ?? 'deferred' }] };
     }
     if (/FROM worker_onboarding_state/.test(sql)) {
       return { rows: opts.gateRow === undefined || opts.gateRow === null ? [] : [opts.gateRow] };
@@ -157,19 +158,51 @@ describe('enqueueWorkerMessage', () => {
     expect(outboxInserts[0].params[outboxInserts[0].params.length - 1]).toBe('intent-1');
   });
 
-  it('leaves the intent eligible with renderer_unavailable when no renderer is registered', async () => {
+  it('rejects and throws when an allowed category has no registered renderer', async () => {
     const { client, calls } = scriptedClient({
       gateRow: readyGateRow,
       deferredDeliveryEnabled: true,
     });
 
-    const { decision } = await enqueueWorkerMessage(client, baseInput());
+    await expect(enqueueWorkerMessage(client, baseInput()))
+      .rejects.toThrow('renderer_unavailable:job_alert');
 
-    expect(decision).toEqual({ action: 'allow', reason: 'worker_ready' });
     expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(false);
     const renderUnavailableUpdate = calls.find((c) =>
       Array.isArray(c.params) && c.params.includes('renderer_unavailable'));
-    expect(renderUnavailableUpdate).toBeDefined();
+    expect(renderUnavailableUpdate?.params).toEqual(['rejected', 'renderer_unavailable', 'intent-1']);
+  });
+
+  it.each([
+    'leased',
+    'released',
+    'delivered',
+    'expired',
+    'superseded',
+    'rejected',
+    'failed',
+  ] as IntentStatus[])('keeps a conflicting %s intent immutable even when outbox_id is null', async (status) => {
+    const { client, calls } = scriptedClient({
+      existingIntentStatus: status,
+      intentOutboxIdSequence: [null],
+      gateRow: readyGateRow,
+      deferredDeliveryEnabled: true,
+    });
+    const renderer = jest.fn(async () => ({
+      whatsappNumber: '+15125551234',
+      body: 'must not render',
+      contentTemplate: null,
+      contentVariables: null,
+    }));
+    registerCategoryRenderer('job_alert', renderer);
+
+    await enqueueWorkerMessage(client, baseInput());
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toMatch(/WHERE worker_message_intents\.status IN \('deferred', 'eligible'\)/);
+    expect(renderer).not.toHaveBeenCalled();
+    expect(calls.some((call) => /UPDATE worker_message_intents/.test(call.sql))).toBe(false);
+    expect(calls.some((call) => /INSERT INTO whatsapp_outbox/.test(call.sql))).toBe(false);
   });
 
   it('dedupe pair (1/2): two calls with the same dedupeKey on the deferred path produce one intent row and zero outbox rows', async () => {

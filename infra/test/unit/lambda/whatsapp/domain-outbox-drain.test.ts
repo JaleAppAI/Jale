@@ -34,6 +34,8 @@ interface FakeDomainEventRow {
   attempts: number;
   next_attempt_at: string | null;
   last_error: string | null;
+  lease_token: string;
+  leased_until: Date;
   created_at: Date;
 }
 
@@ -48,6 +50,8 @@ function makeEvent(overrides: Partial<FakeDomainEventRow> = {}): FakeDomainEvent
     attempts: 0,
     next_attempt_at: null,
     last_error: null,
+    lease_token: '11111111-1111-4111-8111-111111111111',
+    leased_until: new Date(NOW.getTime() + 15 * 60 * 1000),
     created_at: NOW,
     ...overrides,
   };
@@ -62,10 +66,12 @@ function makeEvent(overrides: Partial<FakeDomainEventRow> = {}): FakeDomainEvent
 function scriptClient(opts: {
   readyRows?: FakeDomainEventRow[];
   assessmentRows?: FakeDomainEventRow[];
+  updateRowCount?: number;
 }) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   const readyRows = opts.readyRows ?? [];
   const assessmentRows = opts.assessmentRows ?? [];
+  const updateRowCount = opts.updateRowCount ?? 1;
 
   mockQuery.mockReset();
   mockQuery.mockImplementation(async (sql: string, params: unknown[] = []) => {
@@ -87,7 +93,7 @@ function scriptClient(opts: {
     }
 
     if (/UPDATE worker_domain_outbox/.test(sql)) {
-      return { rows: [], rowCount: 1 };
+      return { rows: [], rowCount: updateRowCount };
     }
 
     if (/INSERT INTO worker_trust_assessments/.test(sql)) {
@@ -185,6 +191,9 @@ describe('domain-outbox-drain', () => {
     expect(rlsIdx).toBeGreaterThan(beginIdx);
     expect(completeIdx).toBeGreaterThan(rlsIdx);
     expect(commitIdx).toBeGreaterThan(completeIdx);
+    expect(calls[completeIdx].sql).toMatch(/status\s*=\s*'processing'/);
+    expect(calls[completeIdx].sql).toMatch(/lease_token\s*=\s*\$2/);
+    expect(calls[completeIdx].params).toEqual([event.event_key, event.lease_token]);
 
     // RLS context must be set to the leased event's aggregate_id (the workerId).
     const rlsParams = calls[rlsIdx].params;
@@ -212,6 +221,9 @@ describe('domain-outbox-drain', () => {
       expect.arrayContaining([event.event_key, 2]),
     );
     expect(failureUpdate!.sql).toMatch(/next_attempt_at/);
+    expect(failureUpdate!.sql).toMatch(/status\s*=\s*'processing'/);
+    expect(failureUpdate!.sql).toMatch(/lease_token\s*=\s*\$5/);
+    expect(failureUpdate!.params).toEqual(expect.arrayContaining([event.lease_token]));
 
     const metricLines = logLines.filter((l) => l.includes('WhatsAppReleaseFailure'));
     expect(metricLines.length).toBeGreaterThanOrEqual(1);
@@ -232,6 +244,9 @@ describe('domain-outbox-drain', () => {
     expect(failureUpdate!.params).toEqual(
       expect.arrayContaining([event.event_key, MAX_DOMAIN_EVENT_ATTEMPTS]),
     );
+    expect(failureUpdate!.sql).toMatch(/status\s*=\s*'processing'/);
+    expect(failureUpdate!.sql).toMatch(/lease_token\s*=\s*\$4/);
+    expect(failureUpdate!.params).toEqual(expect.arrayContaining([event.lease_token]));
 
     const stuckLines = logLines.filter((l) => l.includes('WhatsAppDomainEventStuck'));
     expect(stuckLines.length).toBeGreaterThanOrEqual(1);
@@ -257,6 +272,23 @@ describe('domain-outbox-drain', () => {
       /UPDATE worker_domain_outbox/.test(s) && /status\s*=\s*'completed'/.test(s));
     expect(rlsIdx).toBeGreaterThanOrEqual(0);
     expect(completeIdx).toBeGreaterThan(rlsIdx);
+    expect(calls[completeIdx].sql).toMatch(/status\s*=\s*'processing'/);
+    expect(calls[completeIdx].sql).toMatch(/lease_token\s*=\s*\$2/);
+    expect(calls[completeIdx].params).toEqual([event.event_key, event.lease_token]);
+  });
+
+  it('rejects a stale owner when its lease token no longer owns the event', async () => {
+    const event = makeEvent();
+    const calls = scriptClient({ readyRows: [event], updateRowCount: 0 });
+    mockReleaseWorkerReady.mockResolvedValue({ released: 1, expired: 0, superseded: 0, failed: 0 });
+
+    await expect(runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW }))
+      .rejects.toThrow('domain_event_lease_lost');
+
+    const updates = calls.filter((c) => /UPDATE worker_domain_outbox/.test(c.sql));
+    expect(updates.length).toBeGreaterThanOrEqual(2);
+    expect(updates.every((c) => c.params.includes(event.lease_token))).toBe(true);
+    expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(true);
   });
 
   it('assessment.requested with no profession_key is acknowledged (marked completed) without inserting a trust-assessment row', async () => {

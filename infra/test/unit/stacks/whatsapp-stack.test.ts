@@ -161,28 +161,32 @@ describe('WhatsAppStack', () => {
       });
     });
 
-    test('webhook Lambda has WHATSAPP_INBOUND_V2_QUEUE_URL env var', () => {
-      template.hasResourceProperties('AWS::Lambda::Function', {
-        Description: Match.stringLikeRegexp('.*webhook.*signature.*'),
-        Environment: Match.objectLike({
-          Variables: Match.objectLike({
-            WHATSAPP_INBOUND_V2_QUEUE_URL: Match.anyValue(),
-          }),
-        }),
-      });
+    test('webhook Lambda omits the v2 FIFO URL by default', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const webhook = Object.values(functions).find((resource: any) =>
+        resource.Properties?.Description?.includes('webhook receiver')) as any;
+      expect(webhook).toBeDefined();
+      expect(webhook.Properties.Environment.Variables)
+        .not.toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
     });
 
-    test('webhook Lambda role can sqs:SendMessage to the v2 queue', () => {
-      template.hasResourceProperties('AWS::IAM::Policy', {
-        PolicyDocument: Match.objectLike({
-          Statement: Match.arrayWith([
-            Match.objectLike({
-              Action: Match.arrayWith(['sqs:SendMessage']),
-              Effect: 'Allow',
-            }),
-          ]),
-        }),
-      });
+    test('webhook role keeps legacy send permission but has no v2 FIFO send grant by default', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const webhook = Object.values(functions).find((resource: any) =>
+        resource.Properties?.Description?.includes('webhook receiver')) as any;
+      const webhookRoleId = webhook.Properties.Role['Fn::GetAtt'][0];
+      const queues = template.findResources('AWS::SQS::Queue');
+      const queueId = (name: string) => Object.entries(queues)
+        .find(([, resource]: [string, any]) => resource.Properties?.QueueName === name)?.[0];
+      const policies = Object.values(template.findResources('AWS::IAM::Policy'))
+        .filter((policy: any) => policy.Properties?.Roles?.some(
+          (role: any) => role.Ref === webhookRoleId,
+        ));
+      const serialized = JSON.stringify(policies);
+
+      expect(serialized).toContain(queueId('whatsapp-inbound-queue'));
+      expect(serialized).not.toContain(queueId('whatsapp-inbound-v2.fifo'));
+      expect(serialized).toContain('sqs:SendMessage');
     });
 
     test('WhatsAppInboundV2DlqDepth alarm exists on ApproximateNumberOfMessagesVisible for the v2 DLQ, wired to the alarm topic', () => {
@@ -205,8 +209,19 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 10 Lambda functions including the status callback, job-alert drain, and domain outbox drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 10);
+  test('Stack creates 11 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 11);
+  });
+
+  test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('.*Worker intent outbox drain.*'),
+      Environment: Match.objectLike({ Variables: Match.objectLike({
+        DB_SECRET_ARN: Match.anyValue(), TWILIO_SECRET_ARN: Match.anyValue(),
+        TWILIO_STATUS_CALLBACK_URL: Match.anyValue(),
+      }) }),
+    });
+    template.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(1 minute)' });
   });
 
   test('job alert outbox drain runs on a 5-minute schedule', () => {
@@ -398,12 +413,12 @@ describe('WhatsAppStack', () => {
     expect(methodsOnResource(statusCallbackLogicalId).length).toBeGreaterThan(0);
   });
 
-  test('all seven WhatsAppStack outbound senders and callback use the exact configured URL', () => {
+  test('all WhatsAppStack outbound senders and callback use the exact configured URL', () => {
     const functions = template.findResources('AWS::Lambda::Function');
     const configured = Object.values(functions).filter((resource: any) =>
       resource.Properties?.Environment?.Variables?.TWILIO_STATUS_CALLBACK_URL
         === 'https://callbacks.example.test/prod/whatsapp/status-callback');
-    expect(configured).toHaveLength(8);
+    expect(configured).toHaveLength(9);
   });
 
   test('both ApiStack employer-conversation senders use the exact configured URL', () => {

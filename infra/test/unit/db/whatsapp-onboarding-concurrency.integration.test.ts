@@ -18,7 +18,10 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { Client, type PoolClient } from 'pg';
 
-import { enqueueWorkerMessage } from '../../../lambda/whatsapp/lib/worker-delivery-gateway';
+import {
+  enqueueWorkerMessage,
+  registerCategoryRenderer,
+} from '../../../lambda/whatsapp/lib/worker-delivery-gateway';
 import { insertAuthorizedIntentOutbox } from '../../../lambda/whatsapp/lib/outbox';
 import {
   completeOnboarding,
@@ -156,8 +159,62 @@ async function enableDeferredDelivery(): Promise<void> {
 }
 
 maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', () => {
+  type RuntimeControlSnapshot = {
+    control_key: string;
+    enabled: boolean;
+    phone_hashes: string[];
+    global_enabled: boolean;
+    updated_by: string | null;
+    updated_at: string;
+  };
+  let runtimeControlSnapshot: RuntimeControlSnapshot[] | null = null;
+
   beforeAll(async () => {
-    await withSuperuser((c) => applyLocalRlsRecursionWorkaround(c));
+    await withSuperuser(async (c) => {
+      await applyLocalRlsRecursionWorkaround(c);
+      const snapshot = await c.query<RuntimeControlSnapshot>(`
+        SELECT control_key, enabled, phone_hashes, global_enabled, updated_by,
+               updated_at::text AS updated_at
+          FROM whatsapp_runtime_controls
+         WHERE control_key = ANY($1::text[])
+         ORDER BY control_key
+      `, [['deferred_delivery_enabled', 'onboarding_v2_enabled']]);
+      expect(snapshot.rows).toHaveLength(2);
+      runtimeControlSnapshot = snapshot.rows;
+    });
+  });
+
+  afterAll(async () => {
+    if (!runtimeControlSnapshot) return;
+    await withSuperuser(async (c) => {
+      await c.query('BEGIN');
+      try {
+        for (const control of runtimeControlSnapshot!) {
+          const restored = await c.query(`
+            UPDATE whatsapp_runtime_controls
+               SET enabled=$2, phone_hashes=$3, global_enabled=$4,
+                   updated_by=$5, updated_at=$6::timestamptz
+             WHERE control_key=$1
+          `, [
+            control.control_key, control.enabled, control.phone_hashes,
+            control.global_enabled, control.updated_by, control.updated_at,
+          ]);
+          expect(restored.rowCount).toBe(1);
+        }
+        await c.query('COMMIT');
+      } catch (error) {
+        await c.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      }
+      const verified = await c.query<RuntimeControlSnapshot>(`
+        SELECT control_key, enabled, phone_hashes, global_enabled, updated_by,
+               updated_at::text AS updated_at
+          FROM whatsapp_runtime_controls
+         WHERE control_key = ANY($1::text[])
+         ORDER BY control_key
+      `, [['deferred_delivery_enabled', 'onboarding_v2_enabled']]);
+      expect(verified.rows).toEqual(runtimeControlSnapshot);
+    });
   });
 
   // ── Scenario 0: Pre-auth RLS boundary ──────────────────────────────────
@@ -386,6 +443,12 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
     it('a second enqueueWorkerMessage with the same dedupeKey yields exactly one intent row', async () => {
       const client = await connectAsWhatsapp(workerId);
       try {
+        registerCategoryRenderer('onboarding', async () => ({
+          whatsappNumber: '+15550002002',
+          body: 'onboarding complete',
+          contentTemplate: null,
+          contentVariables: null,
+        }));
         const input: WorkerMessageIntentInput = {
           workerId,
           category: 'onboarding',

@@ -126,6 +126,67 @@ describe('IdentityAdapter.issueChallenge', () => {
     }
   });
 
+  it('creates a missing Cognito worker before initiating custom auth', async () => {
+    const phone = 'whatsapp:+15125550100';
+    const commandOrder: string[] = [];
+    mockCognitoDispatch({
+      AdminGetUser: () => {
+        commandOrder.push('get');
+        if (commandOrder.filter((entry) => entry === 'get').length === 1) {
+          throw Object.assign(new Error('not found'), { name: 'UserNotFoundException' });
+        }
+        return happyAdminGetUserResponse(phone);
+      },
+      AdminCreateUser: () => {
+        commandOrder.push('create');
+        return {};
+      },
+      AdminSetUserPassword: () => {
+        commandOrder.push('set-password');
+        return {};
+      },
+      AdminAddUserToGroup: () => {
+        commandOrder.push('add-group');
+        return {};
+      },
+      InitiateAuth: () => {
+        commandOrder.push('initiate');
+        return { Session: 'new-session' };
+      },
+    });
+
+    const identity = createIdentityAdapter({
+      userPoolId: 'pool-1',
+      clientId: 'client-1',
+      clock,
+      reconcileUserRow,
+    });
+
+    await expect(identity.issueChallenge({
+      whatsappNumber: phone,
+      lang: 'en',
+    })).resolves.toEqual(expect.objectContaining({
+      status: 'sent',
+      challengeId: 'new-session',
+    }));
+
+    expect(commandOrder).toEqual([
+      'get',
+      'create',
+      'set-password',
+      'get',
+      'add-group',
+      'initiate',
+    ]);
+    const create = mockCognitoSend.mock.calls
+      .map(([command]) => command)
+      .find((command) => command.__type === 'AdminCreateUser');
+    expect(create.input).toEqual(expect.objectContaining({
+      Username: phone,
+      MessageAction: 'SUPPRESS',
+    }));
+  });
+
   it('surfaces a Cognito throttle error as throttled, never throws', async () => {
     mockCognitoDispatch({
       AdminGetUser: () => happyAdminGetUserResponse('whatsapp:+15125550100'),

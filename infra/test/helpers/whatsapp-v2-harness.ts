@@ -286,6 +286,38 @@ function createFakeGateRepo(conversations: ReturnType<typeof createFakeConversat
       });
       return updated;
     },
+    async setRunPreferredLanguage(_client: PoolClient, input: { runId: string; expectedLockVersion: number; preferredLanguage: PreferredLanguage }): Promise<WorkerGate> {
+      let found: WorkerGate | undefined;
+      for (const gate of gates.values()) {
+        if (gate.runId === input.runId) found = gate;
+      }
+      if (!found || found.status !== 'active' || found.lockVersion !== input.expectedLockVersion) {
+        throw new Error('workflow_lock_conflict');
+      }
+      const updated: WorkerGate = {
+        ...found,
+        preferredLanguage: input.preferredLanguage,
+        lockVersion: (found.lockVersion ?? 0) + 1,
+      };
+      gates.set(updated.userId, updated);
+      return updated;
+    },
+    async reactivateDeclinedLegalRun(_client: PoolClient, input: { runId: string; expectedLockVersion: number }): Promise<WorkerGate> {
+      let found: WorkerGate | undefined;
+      for (const gate of gates.values()) {
+        if (gate.runId === input.runId) found = gate;
+      }
+      if (!found || found.status !== 'declined' || found.currentStepKey !== 'legal.review' || found.lockVersion !== input.expectedLockVersion) {
+        throw new Error('workflow_lock_conflict');
+      }
+      const updated: WorkerGate = {
+        ...found,
+        status: 'active',
+        lockVersion: (found.lockVersion ?? 0) + 1,
+      };
+      gates.set(updated.userId, updated);
+      return updated;
+    },
     async appendTransition(
       _client: PoolClient,
       input: {
@@ -640,6 +672,7 @@ export class WhatsAppV2Harness {
   private readonly deps: OnboardingV2Deps;
   private readonly processedSids = new Map<string, RouteResult>();
   private readonly sent: SentMessage[] = [];
+  private readonly canonicalLegalConsents: Array<{ workerId: string; documentVersion: string }> = [];
   private locationFailing = false;
 
   constructor(options: HarnessOptions = {}) {
@@ -665,12 +698,15 @@ export class WhatsAppV2Harness {
         profile: this.profileFake.profile,
       },
       repo: {
+        setInternalUserRlsContext: async () => undefined,
         loadPreAuthStateForUpdate: (c, phoneHash) => this.preAuthRepo.loadPreAuthStateForUpdate(c, phoneHash),
         savePreAuthState: (c, phoneHash, patch) => this.preAuthRepo.savePreAuthState(c, phoneHash, patch),
         bindVerifiedIdentityAndStartWorkflow: (c, input) =>
           this.gateRepo.bindVerifiedIdentityAndStartWorkflow(c, input),
         loadWorkerGate: (c, workerId) => this.gateRepo.loadWorkerGate(c, workerId),
         advanceWorkflow: (c, input) => this.gateRepo.advanceWorkflow(c, input as any),
+        setRunPreferredLanguage: (c, input) => this.gateRepo.setRunPreferredLanguage(c, input),
+        reactivateDeclinedLegalRun: (c, input) => this.gateRepo.reactivateDeclinedLegalRun(c, input),
         appendTransition: (c, input) => this.gateRepo.appendTransition(c, input as any),
         completeOnboarding: (c, input) => this.gateRepo.completeOnboarding(c, input),
       },
@@ -686,6 +722,10 @@ export class WhatsAppV2Harness {
       hashNormalizedPhone: fakeHashNormalizedPhone,
       tosUrl: 'https://jale.example/tos',
       privacyUrl: 'https://jale.example/privacy',
+      requiredLegalVersion: '1.0',
+      recordLegalAcceptance: async (_client, input) => {
+        this.canonicalLegalConsents.push(input);
+      },
       workflowVersion: 1,
     };
 
@@ -985,6 +1025,10 @@ export class WhatsAppV2Harness {
     return this.getTransitions().filter((t) => t.reason === 'legal_accept');
   }
 
+
+  getCanonicalLegalConsents(): Array<{ workerId: string; documentVersion: string }> {
+    return [...this.canonicalLegalConsents];
+  }
   /** Every time the legal.review prompt itself was presented (initial
    * bind-time send, an explicit Review Terms resend, or a gate reprompt) —
    * counted from actual sends, not inferred from transitions. */

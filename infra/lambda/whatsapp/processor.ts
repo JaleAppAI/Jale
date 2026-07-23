@@ -109,9 +109,12 @@ import {
   bindVerifiedIdentityAndStartWorkflow,
   loadWorkerGate,
   advanceWorkflow,
+  setRunPreferredLanguage,
+  reactivateDeclinedLegalRun,
   appendTransition,
   completeOnboarding,
 } from './lib/onboarding-repository';
+import { recordCanonicalWhatsAppConsent } from './lib/legal-consent';
 import { enqueueWorkerMessage } from './lib/worker-delivery-gateway';
 import { registerOnboardingRenderers } from './lib/onboarding-renderers';
 import { createOnboardingV2Adapters } from './lib/onboarding-adapters';
@@ -246,8 +249,8 @@ async function queueInteractivePrompt(
 
 // Canonical legal URLs — the v2 branch's OnboardingV2Deps.tosUrl/privacyUrl
 // reuse these same constants so both lanes point at the same documents.
-const LEGAL_TOS_URL = 'https://jale.app/legal/tos';
-const LEGAL_PRIVACY_URL = 'https://jale.app/legal/privacy';
+const LEGAL_TOS_URL = 'https://jaleapp.ai/legal/terms';
+const LEGAL_PRIVACY_URL = 'https://jaleapp.ai/legal/privacy';
 
 // v2 onboarding workflow version passed to bindVerifiedIdentityAndStartWorkflow
 // / advanceWorkflow (matches the workflowVersion used across Tasks 4/5's
@@ -545,7 +548,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const mediaContentType = params.MediaContentType0;
 
   if (!from || !messageSid) {
-    console.warn('[processor] skipping: missing From/MessageSid', { messageSid, from });
+    console.warn('[processor] skipping malformed inbound record', { hasMessageSid: Boolean(messageSid), hasFrom: Boolean(from) });
     return;
   }
 
@@ -696,7 +699,7 @@ function extractInteractivePayload(raw: string | undefined): string | undefined 
 
 function findKnownPayload(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return /^(legal|profile|trust|media|conversation|command):/.test(value) ? value : undefined;
+    return /^(legal|profile|trust|media|conversation|command|otp):/.test(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -1052,6 +1055,7 @@ async function routeMessage(
     const v2Deps: OnboardingV2Deps = {
       adapters: createOnboardingV2Adapters({ reconcileUserRow, cognitoClient: cognito }),
       repo: {
+        setInternalUserRlsContext,
         loadPreAuthStateForUpdate,
         savePreAuthState,
         bindVerifiedIdentityAndStartWorkflow,
@@ -1062,6 +1066,8 @@ async function routeMessage(
         // logic mismatch — the real function only ever receives values
         // from the closed union anyway.
         advanceWorkflow: advanceWorkflow as OnboardingV2RepoDeps['advanceWorkflow'],
+        reactivateDeclinedLegalRun,
+        setRunPreferredLanguage,
         appendTransition,
         completeOnboarding,
       },
@@ -1075,6 +1081,8 @@ async function routeMessage(
       tosUrl: LEGAL_TOS_URL,
       privacyUrl: LEGAL_PRIVACY_URL,
       workflowVersion: WHATSAPP_V2_WORKFLOW_VERSION,
+      requiredLegalVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
+      recordLegalAcceptance: recordCanonicalWhatsAppConsent,
     };
 
     const v2Session: OnboardingV2Session = {
@@ -1095,19 +1103,30 @@ async function routeMessage(
 
     const result = await routeOnboardingV2(client, v2Session, v2Message, v2Deps);
 
-    // The router mutates session.state_context in place (generated trust
-    // questions, reprompt-cooldown timestamps, ...). Persist it back in the
-    // SAME tx so it survives to the next inbound message — skipping this
-    // makes generated content vanish on the next turn. conversation_state
-    // is deliberately left untouched: the v2 decision is keyed on the phone
-    // hash in runtime controls, independent of the legacy enum, and v2's
-    // own step/lifecycle bookkeeping lives in onboarding-state/workflow-run
-    // rows (C4), not in whatsapp_conversations.conversation_state.
+    if (result.handled) {
+      // The router mutates state_context in place (trust questions, prompt
+      // cooldowns, ...). Persist it in the same transaction for the next turn.
+      await updateConversation(client, conv.id, {
+        state_context: v2Session.state_context as unknown as ProfileStateContext,
+      });
+      return result.workerId;
+    }
+
+    // Ready workers continue through the established idle command/callback
+    // router below. Persist that compatibility state atomically with the v2
+    // context so a later rollout-control disable cannot expose a stale legacy
+    // onboarding state on the next inbound message.
     await updateConversation(client, conv.id, {
       state_context: v2Session.state_context as unknown as ProfileStateContext,
+      user_id: result.workerId,
+      language: v2Session.language,
+      conversation_state: 'idle',
     });
 
-    return result.workerId;
+    conv.user_id = result.workerId;
+    conv.conversation_state = 'idle';
+    conv.language = v2Session.language;
+    conv.state_context = v2Session.state_context as unknown as ProfileStateContext;
   }
 
   const from = msg.from;
@@ -1548,10 +1567,7 @@ async function reissueOtp(
   clientId: string,
   reason: 'missing_session' | 'expired_session',
 ): Promise<void> {
-  console.log('[processor] reissuing OTP', {
-    reason,
-    whatsappNumber: conv.whatsapp_number,
-  });
+  console.log('[processor] reissuing OTP', { reason });
   const init = await cognito.send(new InitiateAuthCommand({
     AuthFlow: AuthFlowType.CUSTOM_AUTH,
     ClientId: clientId,
@@ -1618,9 +1634,7 @@ async function reconcileUserRow(
     );
     const placeholderUserId = placeholder.rows[0]?.id;
     if (placeholderUserId && await hasPlaceholderDependents(client, placeholderUserId)) {
-      throw new Error(
-        `reconcileUserRow: placeholder for ${whatsappNumber} has dependent legal_consent_log or job_applications rows; aborting reconcile — manual ops merge required`,
-      );
+      throw new Error('reconcile_placeholder_has_dependents');
     }
     // Case B: remove the orphan placeholder. The RLS policy
     // `wa_users_delete_placeholder` filters by
@@ -1650,9 +1664,31 @@ async function reconcileUserRow(
     [realSub, whatsappNumber],
   );
   if ((promoted.rowCount ?? 0) === 0) {
-    throw new Error(
-      `reconcileUserRow: neither real-sub row nor placeholder found for ${whatsappNumber}`,
+    const reconciled = await client.query<{ user_id: string }>(
+      'SELECT reconcile_worker_signup($1, $2, $3) AS user_id',
+      [realSub, whatsappNumber, ''],
     );
+    const userId = reconciled.rows[0]?.user_id;
+    if (!userId) {
+      throw new Error('reconcileUserRow: verified worker reconciliation returned no user');
+    }
+    const linked = await client.query<{ id: string; tos_version: string | null }>(
+      `UPDATE users
+          SET whatsapp_number = $2,
+              whatsapp_linked_at = now()
+        WHERE id = $1
+          AND cognito_sub = $3
+          AND user_type = 'worker'
+        RETURNING id, tos_version`,
+      [userId, whatsappNumber, realSub],
+    );
+    if ((linked.rowCount ?? 0) === 0) {
+      throw new Error('reconcileUserRow: verified worker linkage failed');
+    }
+    return {
+      userId: linked.rows[0].id,
+      tosVersion: linked.rows[0].tos_version,
+    };
   }
   return {
     userId: promoted.rows[0].id,
@@ -1684,44 +1720,13 @@ async function handleAwaitingLegal(
     return;
   }
 
-  // Accept: do the consent transaction using setRlsContext (same as accept-tos.ts).
-  // jale_whatsapp has UPDATE grants on tos/privacy columns directly (no jale_consent role).
+  // Accept inside processRecord's caller-owned transaction. The shared helper
+  // updates canonical versions and repairs any missing immutable audit rows.
   if (!conv.user_id) throw new Error('user_id missing on awaiting_legal');
-  const userRow = await client.query<{ cognito_sub: string }>(
-    `SELECT cognito_sub FROM users WHERE id = $1`,
-    [conv.user_id],
-  );
-  if (userRow.rowCount === 0) throw new Error('user missing at consent time');
-  const cognitoSub = userRow.rows[0].cognito_sub;
-  const requiredVersion = process.env.REQUIRED_TOS_VERSION ?? '1.0';
-
-  // Consent transaction (Fix Plan v3): runs inside processRecord's outer tx.
-  // No inner BEGIN/COMMIT; any throw propagates up and the outer tx rolls
-  // back the entire message including the claim.
-  // `setRlsContext` uses `set_config('app.current_user_id', $1, true)` —
-  // its scope is the current tx, which is processRecord's outer tx here.
-  await setRlsContext(client, cognitoSub);
-  const upd = await client.query(
-    `UPDATE users
-        SET tos_version = $1, tos_accepted_at = now(),
-            privacy_version = $1, privacy_accepted_at = now()
-      WHERE cognito_sub = $2 AND tos_version IS DISTINCT FROM $1`,
-    [requiredVersion, cognitoSub],
-  );
-  if (upd.rowCount && upd.rowCount > 0) {
-    await client.query(
-      `INSERT INTO legal_consent_log
-          (user_id, document_type, document_version, ip_address, user_agent)
-       SELECT id, 'tos', $1, NULL, 'whatsapp' FROM users WHERE cognito_sub = $2`,
-      [requiredVersion, cognitoSub],
-    );
-    await client.query(
-      `INSERT INTO legal_consent_log
-          (user_id, document_type, document_version, ip_address, user_agent)
-       SELECT id, 'privacy', $1, NULL, 'whatsapp' FROM users WHERE cognito_sub = $2`,
-      [requiredVersion, cognitoSub],
-    );
-  }
+  await recordCanonicalWhatsAppConsent(client, {
+    workerId: conv.user_id,
+    documentVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
+  });
 
   // Proceed to profile builder
   await enterProfileBuilderOrIdle(client, conv, conv.user_id, msg.from, msg.messageSid);

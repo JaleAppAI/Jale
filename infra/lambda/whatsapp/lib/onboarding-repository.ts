@@ -86,8 +86,15 @@ export async function loadWorkerGate(
             COALESCE(r.preferred_language, 'es') AS preferred_language,
             r.lock_version AS lock_version
        FROM worker_onboarding_state s
-       LEFT JOIN worker_workflow_runs r
-         ON r.user_id = s.user_id AND r.status = 'active'
+       LEFT JOIN LATERAL (
+         SELECT candidate.*
+           FROM worker_workflow_runs candidate
+          WHERE candidate.user_id = s.user_id
+          ORDER BY (candidate.status = 'active') DESC,
+                   candidate.created_at DESC,
+                   candidate.id DESC
+          LIMIT 1
+       ) r ON true
       WHERE s.user_id = $1
       FOR UPDATE OF s`,
     [workerId],
@@ -303,6 +310,68 @@ export async function advanceWorkflow(
   const gate = await loadWorkerGate(client, workerId);
   if (!gate) {
     throw new Error('worker_gate_missing_after_advance');
+  }
+  return gate;
+}
+
+/**
+ * Persists the workflow run's authoritative language preference without
+ * advancing its current step. The optimistic lock prevents a stale command
+ * from overwriting a concurrent workflow transition.
+ */
+export async function setRunPreferredLanguage(
+  client: PoolClient,
+  input: {
+    runId: string;
+    expectedLockVersion: number;
+    preferredLanguage: PreferredLanguage;
+  },
+): Promise<WorkerGate> {
+  const result = await client.query<{ user_id: string }>(
+    `UPDATE worker_workflow_runs
+        SET preferred_language = $1,
+            lock_version = lock_version + 1,
+            updated_at = now()
+      WHERE id = $2
+        AND lock_version = $3
+        AND status = 'active'
+      RETURNING user_id`,
+    [input.preferredLanguage, input.runId, input.expectedLockVersion],
+  );
+  if (result.rowCount === 0) {
+    throw new Error('workflow_lock_conflict');
+  }
+
+  const gate = await loadWorkerGate(client, result.rows[0].user_id);
+  if (!gate) {
+    throw new Error('worker_gate_missing_after_language_update');
+  }
+  return gate;
+}
+
+export async function reactivateDeclinedLegalRun(
+  client: PoolClient,
+  input: { runId: string; expectedLockVersion: number },
+): Promise<WorkerGate> {
+  const result = await client.query<{ user_id: string }>(
+    `UPDATE worker_workflow_runs
+        SET status = 'active',
+            lock_version = lock_version + 1,
+            updated_at = now()
+      WHERE id = $1
+        AND lock_version = $2
+        AND status = 'declined'
+        AND current_step_key = 'legal.review'
+      RETURNING user_id`,
+    [input.runId, input.expectedLockVersion],
+  );
+  if ((result.rowCount ?? 0) === 0) {
+    throw new Error('workflow_lock_conflict');
+  }
+
+  const gate = await loadWorkerGate(client, result.rows[0].user_id);
+  if (!gate) {
+    throw new Error('worker_gate_missing_after_reactivation');
   }
   return gate;
 }

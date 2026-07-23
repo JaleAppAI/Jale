@@ -59,6 +59,24 @@ interface WorkingIntent {
   createdAt: Date;
 }
 
+function readJobAlertScore(intent: WorkingIntent): number {
+  const jobs = intent.payload.jobs;
+  if (Array.isArray(jobs)) {
+    const matchingJob = jobs.find(
+      (candidate): candidate is Record<string, unknown> =>
+        typeof candidate === 'object'
+        && candidate !== null
+        && candidate.jobId === intent.sourceId,
+    );
+    if (matchingJob && typeof matchingJob.score === 'number') {
+      return matchingJob.score;
+    }
+  }
+
+  // Preserve compatibility with intents queued before the canonical jobs[] payload.
+  return typeof intent.payload.score === 'number' ? intent.payload.score : 0;
+}
+
 // evaluateDelivery's 'allow' action is handled separately (the intent survives);
 // this maps its other three actions onto the corresponding worker_message_intents
 // status.
@@ -332,8 +350,8 @@ export async function releaseWorkerReady(
   // ── Group 3: job_alert — at most the ten strongest still-valid matches. ──
   const jobAlertSurvivors = survivors.filter((i) => i.category === 'job_alert');
   const jobAlertSorted = [...jobAlertSurvivors].sort((a, b) => {
-    const scoreA = typeof a.payload.score === 'number' ? (a.payload.score as number) : 0;
-    const scoreB = typeof b.payload.score === 'number' ? (b.payload.score as number) : 0;
+    const scoreA = readJobAlertScore(a);
+    const scoreB = readJobAlertScore(b);
     if (scoreB !== scoreA) return scoreB - scoreA;
     return b.createdAt.getTime() - a.createdAt.getTime();
   });
@@ -399,7 +417,7 @@ export async function releaseWorkerReady(
     // ordering `withinGroupOrder` applies for release_sequence allocation.
     const jobs: ReleaseJobSummary[] = jobAlertKept.map((intent) => {
       const job = jobById.get(intent.sourceId)!;
-      const score = typeof intent.payload.score === 'number' ? (intent.payload.score as number) : 0;
+      const score = readJobAlertScore(intent);
       return { jobId: intent.sourceId, title: job.title, companyName: job.company, score };
     });
     renderPlan.push({
@@ -465,7 +483,7 @@ export async function releaseWorkerReady(
           `UPDATE worker_message_intents
               SET status = 'released', release_sequence = $1, outbox_id = $2, updated_at = now()
             WHERE id = $3`,
-          [sequence, intent.id === primary.id ? outboxId : null, intent.id],
+          [sequence, outboxId, intent.id],
         );
         released++;
       }

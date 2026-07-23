@@ -89,6 +89,7 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
 
   afterAll(async () => {
     await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB]]);
+    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB]]);
     await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash]]);
     await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation]]);
     await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB]]);
@@ -255,6 +256,84 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     expect(attempts.rows.every((row) => row.attempts === 0)).toBe(true);
   });
 
+  test('expired domain-event leases are reclaimed with a new token while fresh and stale owners are fenced', async () => {
+    const eventKey = `lease-recovery-042-${randomUUID()}`;
+    await setup.query(`INSERT INTO worker_domain_outbox (event_type, aggregate_id, event_key)
+      VALUES ('worker.ready', $1, $2)`, [workerA, eventKey]);
+    const first = await asWhatsapp<{ event_key: string; lease_token: string; leased_until: Date; attempts: number }>(
+      `SELECT event_key, lease_token, leased_until, attempts FROM public.lease_worker_domain_events('worker.ready', 1)`);
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0].event_key).toBe(eventKey);
+    expect(first.rows[0].lease_token).toMatch(/^[0-9a-f-]{36}$/);
+    expect(new Date(first.rows[0].leased_until).getTime()).toBeGreaterThan(Date.now() + 60_000);
+    expect(first.rows[0].attempts).toBe(0);
+    expect((await asWhatsapp(`SELECT event_key FROM public.lease_worker_domain_events('worker.ready', 1)`)).rows).toHaveLength(0);
+    await setup.query(`UPDATE worker_domain_outbox SET leased_until = now() - interval '1 second' WHERE event_key = $1`, [eventKey]);
+    const reclaimed = await asWhatsapp<{ event_key: string; lease_token: string; attempts: number }>(
+      `SELECT event_key, lease_token, attempts FROM public.lease_worker_domain_events('worker.ready', 1)`);
+    expect(reclaimed.rows).toHaveLength(1);
+    expect(reclaimed.rows[0].event_key).toBe(eventKey);
+    expect(reclaimed.rows[0].lease_token).not.toBe(first.rows[0].lease_token);
+    expect(reclaimed.rows[0].attempts).toBe(1);
+    const staleOwner = await asWhatsapp(
+      `UPDATE worker_domain_outbox SET status='completed', leased_until=NULL, lease_token=NULL
+        WHERE event_key=$1 AND status='processing' AND lease_token=$2`,
+      [eventKey, first.rows[0].lease_token], workerA);
+    expect(staleOwner.rowCount).toBe(0);
+    const currentOwner = await asWhatsapp(
+      `UPDATE worker_domain_outbox SET status='completed', leased_until=NULL, lease_token=NULL
+        WHERE event_key=$1 AND status='processing' AND lease_token=$2`,
+      [eventKey, reclaimed.rows[0].lease_token], workerA);
+    expect(currentOwner.rowCount).toBe(1);
+  });
+
+  test('an expired processing event reaches the retry cap instead of being leased forever', async () => {
+    const eventKey = `lease-cap-042-${randomUUID()}`;
+    await setup.query(`INSERT INTO worker_domain_outbox
+      (event_type, aggregate_id, event_key, status, attempts, leased_until, lease_token)
+      VALUES ('worker.ready', $1, $2, 'processing', 4, now() - interval '1 second', gen_random_uuid())`,
+    [workerA, eventKey]);
+    expect((await asWhatsapp(
+      `SELECT event_key FROM public.lease_worker_domain_events('worker.ready', 1)`)).rows).toHaveLength(0);
+    const terminal = await setup.query<{
+      status: string; attempts: number; leased_until: Date | null; lease_token: string | null;
+    }>(`SELECT status, attempts, leased_until, lease_token FROM worker_domain_outbox WHERE event_key=$1`, [eventKey]);
+    expect(terminal.rows).toEqual([{ status: 'failed', attempts: 5, leased_until: null, lease_token: null }]);
+  });
+
+  test('reset audit has narrow admin read/insert policies while WhatsApp remains worker-scoped read-only', async () => {
+    const auditId = randomUUID();
+    await setup.query('BEGIN');
+    try {
+      await setup.query('SET LOCAL ROLE jale_admin');
+      await setup.query(`INSERT INTO worker_reset_audit
+        (id, user_id, phone_hash, operator, reason, dry_run)
+        VALUES ($1, $2, $3, 'c9-test', 'policy regression', true)`, [auditId, workerA, hashA]);
+      expect((await setup.query<{ id: string }>(
+        'SELECT id FROM worker_reset_audit WHERE id=$1', [auditId])).rows).toEqual([{ id: auditId }]);
+      await setup.query('COMMIT');
+    } catch (error) {
+      await setup.query('ROLLBACK');
+      throw error;
+    }
+    expect((await asWhatsapp<{ id: string }>(
+      'SELECT id FROM worker_reset_audit WHERE id=$1', [auditId], workerA)).rows).toEqual([{ id: auditId }]);
+    expect((await asWhatsapp<{ id: string }>(
+      'SELECT id FROM worker_reset_audit WHERE id=$1', [auditId], workerB)).rows).toHaveLength(0);
+    await expect(asWhatsapp(
+      `INSERT INTO worker_reset_audit (user_id, phone_hash, operator, reason, dry_run)
+       VALUES ($1, $2, 'whatsapp', 'must fail', true)`, [workerA, hashA], workerA))
+      .rejects.toMatchObject({ code: '42501' });
+    const policies = await setup.query<{ policyname: string; cmd: string }>(
+      `SELECT policyname, cmd FROM pg_policies
+        WHERE schemaname='public' AND tablename='worker_reset_audit' ORDER BY policyname`);
+    expect(policies.rows).toEqual(expect.arrayContaining([
+      { policyname: 'worker_reset_audit_admin_insert', cmd: 'INSERT' },
+      { policyname: 'worker_reset_audit_admin_read', cmd: 'SELECT' },
+      { policyname: 'worker_reset_audit_worker', cmd: 'SELECT' },
+    ]));
+  });
+
   test('migration 042 executes cleanly a second time as the plain migration owner', async () => {
     const ownerUrl = new URL(databaseUrl!);
     ownerUrl.username = 'jale_admin';
@@ -298,5 +377,64 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     await expect(asWhatsapp(`UPDATE whatsapp_runtime_controls SET enabled = true
       WHERE control_key = 'onboarding_v2_enabled'`, [], workerA))
       .rejects.toMatchObject({ code: '42501' });
+  });
+
+  test('job-alert readiness exposes only the ready boolean across forced RLS', async () => {
+    await setup.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle, ready_at)
+      VALUES ($1, 'ready', now()), ($2, 'onboarding', NULL)
+      ON CONFLICT (user_id) DO UPDATE SET
+        lifecycle = EXCLUDED.lifecycle,
+        ready_at = EXCLUDED.ready_at`, [workerA, workerB]);
+
+    const readiness = await asWhatsapp<{ ready_a: boolean; ready_b: boolean }>(
+      `SELECT public.is_worker_ready_for_v2_delivery($1) AS ready_a,
+              public.is_worker_ready_for_v2_delivery($2) AS ready_b`,
+      [workerA, workerB],
+    );
+    expect(readiness.rows).toEqual([{ ready_a: true, ready_b: false }]);
+    expect((await asWhatsapp(
+      'SELECT user_id FROM worker_onboarding_state WHERE user_id = $1', [workerA], workerB,
+    )).rows).toHaveLength(0);
+  });
+
+  test('producer contexts insert worker intents and restore employer scope under forced RLS', async () => {
+    const jobSource = randomUUID();
+    const chatSource = randomUUID();
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL ROLE jale_whatsapp');
+      await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerA]);
+      await client.query(`INSERT INTO worker_message_intents
+        (user_id, category, owner_service, source_type, source_id, dedupe_key, priority, policy_version)
+        VALUES ($1, 'job_alert', 'job-alert', 'job', $2, $3, 30, 1)`,
+      [workerA, jobSource, `job-alert-force-rls-${jobSource}`]);
+      await client.query('COMMIT');
+
+      await client.query('BEGIN');
+      await client.query('SET LOCAL ROLE jale_whatsapp');
+      await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerB]);
+      await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerA]);
+      await client.query(`INSERT INTO worker_message_intents
+        (user_id, category, owner_service, source_type, source_id, dedupe_key, priority, policy_version)
+        VALUES ($1, 'employer_chat', 'job-messaging', 'job_conversation_message', $2, $3, 40, 1)`,
+      [workerA, chatSource, `employer-chat-force-rls-${chatSource}`]);
+      await client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [workerB]);
+      expect((await client.query<{ restored: string }>(
+        `SELECT current_setting('app.current_internal_user_id', true) AS restored`,
+      )).rows).toEqual([{ restored: workerB }]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      await client.end();
+    }
+
+    expect((await setup.query<{ count: string }>(
+      'SELECT count(*) FROM worker_message_intents WHERE source_id = ANY($1::uuid[])',
+      [[jobSource, chatSource]],
+    )).rows).toEqual([{ count: '2' }]);
   });
 });

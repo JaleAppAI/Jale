@@ -53,6 +53,8 @@ interface LeasedDomainEventRow {
   event_key: string;
   payload: Record<string, unknown> | null;
   attempts: number;
+  lease_token: string;
+  leased_until: Date | string;
   created_at: Date | string;
 }
 
@@ -138,23 +140,30 @@ async function markFailure(client: PoolClient, event: LeasedDomainEventRow, err:
   await client.query('BEGIN');
   try {
     await setInternalUserRlsContext(client, event.aggregate_id);
+    let updatedRows = 0;
     if (atCap) {
-      await client.query(
+      const result = await client.query(
         `UPDATE worker_domain_outbox
-            SET status = 'failed', attempts = $2, last_error = $3, updated_at = now()
-          WHERE event_key = $1`,
-        [event.event_key, attempts, message],
+            SET status='failed', attempts=$2, last_error=$3,
+                leased_until=NULL, lease_token=NULL, next_attempt_at=NULL, updated_at=now()
+          WHERE event_key=$1 AND status='processing' AND lease_token=$4`,
+        [event.event_key, attempts, message, event.lease_token],
       );
+      updatedRows = result.rowCount ?? 0;
     } else {
       const delay = backoffMs(attempts);
-      await client.query(
+      const result = await client.query(
         `UPDATE worker_domain_outbox
-            SET status = 'pending', attempts = $2, last_error = $3,
-                next_attempt_at = now() + ($4 || ' milliseconds')::interval,
-                updated_at = now()
-          WHERE event_key = $1`,
-        [event.event_key, attempts, message, String(delay)],
+            SET status='pending', attempts=$2, last_error=$3,
+                next_attempt_at=now() + ($4 || ' milliseconds')::interval,
+                leased_until=NULL, lease_token=NULL, updated_at=now()
+          WHERE event_key=$1 AND status='processing' AND lease_token=$5`,
+        [event.event_key, attempts, message, String(delay), event.lease_token],
       );
+      updatedRows = result.rowCount ?? 0;
+    }
+    if (updatedRows !== 1) {
+      throw new Error('domain_event_lease_lost');
     }
     await client.query('COMMIT');
   } catch (markErr) {
@@ -183,10 +192,14 @@ async function processWorkerReady(
     await client.query('BEGIN');
     await setInternalUserRlsContext(client, event.aggregate_id);
     await releaseWorkerReady(client, event.event_key, { renderer: deps.renderer, now: deps.now });
-    await client.query(
-      `UPDATE worker_domain_outbox SET status = 'completed', updated_at = now() WHERE event_key = $1`,
-      [event.event_key],
+    const completion = await client.query(
+      `UPDATE worker_domain_outbox
+          SET status='completed', leased_until=NULL, lease_token=NULL,
+              next_attempt_at=NULL, updated_at=now()
+        WHERE event_key=$1 AND status='processing' AND lease_token=$2`,
+      [event.event_key, event.lease_token],
     );
+    if (completion.rowCount !== 1) throw new Error('domain_event_lease_lost');
     await client.query('COMMIT');
     return true;
   } catch (err) {
@@ -234,10 +247,14 @@ async function processAssessmentRequested(
       );
     }
 
-    await client.query(
-      `UPDATE worker_domain_outbox SET status = 'completed', updated_at = now() WHERE event_key = $1`,
-      [event.event_key],
+    const completion = await client.query(
+      `UPDATE worker_domain_outbox
+          SET status='completed', leased_until=NULL, lease_token=NULL,
+              next_attempt_at=NULL, updated_at=now()
+        WHERE event_key=$1 AND status='processing' AND lease_token=$2`,
+      [event.event_key, event.lease_token],
     );
+    if (completion.rowCount !== 1) throw new Error('domain_event_lease_lost');
     await client.query('COMMIT');
     return true;
   } catch (err) {

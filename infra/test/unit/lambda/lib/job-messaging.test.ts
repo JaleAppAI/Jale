@@ -326,7 +326,7 @@ describe('queueConversationMessageFromEmployer v2 redirect', () => {
         };
       }
       if (/INSERT INTO worker_message_intents/.test(sql)) {
-        return { rows: [{ id: 'intent-1', outbox_id: null }] };
+        return { rows: [{ id: 'intent-1', outbox_id: null, status: 'deferred' }] };
       }
       if (/FROM worker_onboarding_state/.test(sql)) {
         return { rows: [] };
@@ -367,12 +367,33 @@ describe('queueConversationMessageFromEmployer v2 redirect', () => {
     expect(params[4]).toBe('msg-v2-1');
     expect(params[5]).toBe('employer-chat:msg-v2-1');
     expect(params[6]).toBe(40);
+    expect(JSON.parse(params[8] as string)).toEqual({
+      conversationId: CONV_A,
+      companyName: 'ACME',
+      jobTitle: 'Plomero',
+    });
     const expiresAt = params[9] as Date;
     const expectedExpiryMs = beforeMs + 7 * 24 * 60 * 60 * 1000;
     expect(Math.abs(expiresAt.getTime() - expectedExpiryMs)).toBeLessThan(5000);
 
     // job_conversation_messages insert (unchanged) still happened.
     expect(calls.some((c) => /INSERT INTO job_conversation_messages/.test(c.sql))).toBe(true);
+
+    const workerContextIndex = calls.findIndex((c) =>
+      c.sql.includes("set_config('app.current_internal_user_id'") &&
+      c.params[0] === WORKER);
+    const intentIndex = calls.findIndex((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    const restoredEmployerContextIndex = calls.findIndex((c, index) =>
+      index > intentIndex &&
+      c.sql.includes("set_config('app.current_internal_user_id'") &&
+      c.params[0] === EMPLOYER);
+    const conversationUpdateIndex = calls.findIndex((c) =>
+      /UPDATE job_conversations/.test(c.sql));
+    expect(workerContextIndex).toBeGreaterThanOrEqual(0);
+    expect(intentIndex).toBeGreaterThan(workerContextIndex);
+    expect(restoredEmployerContextIndex).toBeGreaterThan(intentIndex);
+    expect(conversationUpdateIndex).toBeGreaterThan(restoredEmployerContextIndex);
+
   });
 
   it('a repeated employer send for a v2-enabled worker does not create a second intent for the same message', async () => {

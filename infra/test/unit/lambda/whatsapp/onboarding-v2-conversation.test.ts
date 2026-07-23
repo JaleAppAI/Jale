@@ -142,6 +142,7 @@ describe('IDIOMA/LANGUAGE mid-flow preference change persists', () => {
     expect(h.getState().gate?.preferredLanguage).toBe('en');
 
     await h.sendText('IDIOMA');
+    expect(h.getState().gate?.preferredLanguage).toBe('es');
     const confirmSend = h.getSentMessages().at(-1);
     expect(confirmSend?.lang).toBe('es');
 
@@ -164,6 +165,7 @@ describe('IDIOMA/LANGUAGE mid-flow preference change persists', () => {
     await h.driveToStep('legal.review', { lang: 'es' });
 
     await h.sendText('LANGUAGE');
+    expect(h.getState().gate?.preferredLanguage).toBe('en');
     expect(h.getSentMessages().at(-1)?.lang).toBe('en');
 
     await h.sendText('ACCEPT');
@@ -230,6 +232,23 @@ describe('OTP lifecycle', () => {
     const result = await h.sendText('999999');
     expect(result.stepKey).toBe('identity.verify_otp');
     expect(result.workerId).toBeNull();
+  });
+
+  it('treats the otp:resend button as a resend without consuming a verification attempt', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110059' });
+    await h.sendText('START');
+    const priorChallengeId = h.getState().preAuth?.providerChallengeId;
+    const priorAttempts = h.getState().preAuth?.attempts;
+
+    h.advanceTime(61 * 1000);
+    await h.pressButton('otp:resend', { body: 'Resend' });
+    const resentChallengeId = h.getState().preAuth?.providerChallengeId;
+    expect(resentChallengeId).not.toBe(priorChallengeId);
+    expect(h.getState().preAuth?.attempts).toBe(priorAttempts);
+
+    await h.pressButton('otp:resend', { body: 'Resend' });
+    expect(h.getState().preAuth?.providerChallengeId).toBe(resentChallengeId);
+    expect(h.getState().preAuth?.attempts).toBe(priorAttempts);
   });
 
   it('enforces a 60-second resend cooldown', async () => {
@@ -358,6 +377,10 @@ describe('legal.review', () => {
     await h.sendText('ACCEPT');
     expect(h.getState().gate?.currentStepKey).toBe('profile.name');
     expect(h.getLegalConsents()).toHaveLength(1);
+    expect(h.getCanonicalLegalConsents()).toEqual([{
+      workerId: h.getState().workerId,
+      documentVersion: '1.0',
+    }]);
   });
 
   it('Decline stays on legal.review with status declined and records no consent', async () => {
@@ -367,6 +390,25 @@ describe('legal.review', () => {
     expect(h.getState().gate?.currentStepKey).toBe('legal.review');
     expect(h.getState().gate?.status).toBe('declined');
     expect(h.getLegalConsents()).toHaveLength(0);
+  });
+
+  it('REVIEW TERMS reactivates the same declined legal run without restarting OTP', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110083' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    const before = h.getState();
+
+    await h.sendText('DECLINE');
+    expect(h.getState().gate?.status).toBe('declined');
+
+    await h.sendText('REVIEW TERMS');
+    const recovered = h.getState();
+    expect(recovered.gate?.status).toBe('active');
+    expect(recovered.gate?.runId).toBe(before.gate?.runId);
+    expect(recovered.gate?.currentStepKey).toBe('legal.review');
+    expect(recovered.gate?.preferredLanguage).toBe('en');
+    expect(recovered.preAuth?.challengeId).toBe(before.preAuth?.challengeId);
+    expect(h.getLegalConsents()).toHaveLength(0);
+    expect(h.getLegalPromptPresentations().length).toBeGreaterThanOrEqual(2);
   });
 
   it('Review Terms re-presents the prompt, stays on the step, and records no consent', async () => {
