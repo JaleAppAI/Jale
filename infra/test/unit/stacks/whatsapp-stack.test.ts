@@ -205,8 +205,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 9 Lambda functions including the status callback and job-alert drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 9);
+  test('Stack creates 10 Lambda functions including the status callback, job-alert drain, and domain outbox drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 10);
   });
 
   test('job alert outbox drain runs on a 5-minute schedule', () => {
@@ -424,6 +424,146 @@ describe('WhatsAppStack', () => {
       AlarmName: 'WhatsAppDeliveryFailures',
       Threshold: 1,
       AlarmActions: Match.anyValue(),
+    });
+  });
+
+  // ── C7: scheduled domain-event drain, release wiring, operational alarms ──
+  describe('C7: DomainOutboxDrainLambda', () => {
+    const findFunctionByDescription = (regex: RegExp): [string, any] => {
+      const fns = template.findResources('AWS::Lambda::Function');
+      const entry = Object.entries(fns).find(([, r]: [string, any]) =>
+        regex.test(r.Properties?.Description ?? ''));
+      if (!entry) throw new Error(`no Lambda function matching ${regex}`);
+      return entry as [string, any];
+    };
+
+    test('DomainOutboxDrainLambda exists', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('.*[Dd]omain.*outbox.*drain.*'),
+      });
+    });
+
+    test('DomainOutboxDrainLambda runs on a rate(1 minute) EventBridge schedule', () => {
+      const [drainLogicalId] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const rules = template.findResources('AWS::Events::Rule', {
+        Properties: { ScheduleExpression: 'rate(1 minute)' },
+      });
+      const targetsDrain = Object.values(rules).some((rule: any) =>
+        (rule.Properties.Targets || []).some((t: any) => t.Arn?.['Fn::GetAtt']?.[0] === drainLogicalId));
+      expect(targetsDrain).toBe(true);
+    });
+
+    test("drain function's role can read ONLY the WhatsApp DB secret — not the Twilio secret, and no other secretsmanager:GetSecretValue resource", () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const secretGetStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('secretsmanager:GetSecretValue');
+        });
+
+      const resources = secretGetStatements.map((s: any) => JSON.stringify(s.Resource));
+
+      const dbSecretArn = JSON.stringify({
+        'Fn::Join': ['', [
+          'arn:', { Ref: 'AWS::Partition' }, ':secretsmanager:', { Ref: 'AWS::Region' },
+          ':', { Ref: 'AWS::AccountId' }, ':secret:jale/whatsapp/db-??????',
+        ]],
+      });
+
+      // Exactly the WhatsApp DB secret — no more, no less.
+      expect(resources).toEqual([dbSecretArn]);
+      for (const r of resources) {
+        expect(r).not.toContain('jale/whatsapp/twilio');
+      }
+    });
+
+    test('drain function has no TWILIO_SECRET_ARN or TWILIO_STATUS_CALLBACK_URL env var (never sends via Twilio)', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const variables = drainFn.Properties.Environment?.Variables ?? {};
+      expect(variables.TWILIO_SECRET_ARN).toBeUndefined();
+      expect(variables.TWILIO_STATUS_CALLBACK_URL).toBeUndefined();
+    });
+
+    test.each([
+      ['WhatsAppDomainEventsStuck'],
+      ['WhatsAppReleaseFailures'],
+      ['WhatsAppDeferredBacklogAge'],
+      ['WhatsAppOtpLockRate'],
+    ])('%s alarm exists, wired to the alarm topic', (alarmName) => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        AlarmActions: Match.anyValue(),
+      });
+    });
+
+    test('WhatsAppOtpLock metric filter is installed on the PROCESSOR log group, not the drain log group', () => {
+      // Resolve the LogGroup logical id actually wired to each Lambda Function's
+      // LoggingConfig.LogGroup (the JaleLambdaFunction construct passes its own
+      // logs.LogGroup explicitly, so this ref is authoritative — unlike guessing
+      // logical ids from construct id naming).
+      const logGroupLogicalIdForFunction = (description: RegExp): string => {
+        const [logicalId] = findFunctionByDescription(description);
+        const fnResource = (template.findResources('AWS::Lambda::Function') as Record<string, any>)[logicalId];
+        const ref = fnResource.Properties.LoggingConfig?.LogGroup?.Ref;
+        if (!ref) throw new Error(`no LoggingConfig.LogGroup ref found for ${logicalId}`);
+        return ref;
+      };
+
+      const processorLogGroupId = logGroupLogicalIdForFunction(/SQS processor/i);
+      const drainLogGroupId = logGroupLogicalIdForFunction(/domain.*outbox.*drain/i);
+      expect(processorLogGroupId).not.toEqual(drainLogGroupId);
+
+      const otpFilter = Object.values(template.findResources('AWS::Logs::MetricFilter')).find((f: any) =>
+        f.Properties.MetricTransformations?.some((t: any) => t.MetricName === 'OtpLockRate'
+          || t.MetricName === 'WhatsAppOtpLockRate'));
+      expect(otpFilter).toBeDefined();
+      expect((otpFilter as any).Properties.LogGroupName.Ref).toBe(processorLogGroupId);
+    });
+
+    test('metric filters for the three drain-owned metrics exist in the Jale/WhatsApp namespace', () => {
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'DomainEventStuck', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'ReleaseFailures', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'DeferredBacklogAge', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+    });
+  });
+
+  // ── C5 v2 queue/DLQ resources must remain present and unchanged by C7 ──
+  describe('C7 regression: C5 v2 queue/DLQ resources unchanged', () => {
+    test('v2 FIFO inbound queue and DLQ still exist with their original properties', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+        VisibilityTimeout: 360,
+        RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
+      });
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2-dlq.fifo',
+        FifoQueue: true,
+        MessageRetentionPeriod: 14 * 24 * 60 * 60,
+      });
+    });
+
+    test('total SQS queue count is still exactly 4 (legacy pair + v2 pair — the drain adds none)', () => {
+      template.resourceCountIs('AWS::SQS::Queue', 4);
     });
   });
 

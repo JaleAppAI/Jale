@@ -287,6 +287,30 @@ export class WhatsAppStack extends cdk.Stack {
       targets: [new eventTargets.LambdaFunction(jobAlertDrainLambda.function)],
     });
 
+    // ── C7: Domain Outbox Drain ──────────────────────────────────
+    // Scheduled every 1 minute: leases worker_domain_outbox events
+    // (migration 042's lease_worker_domain_events) written by the workflow
+    // lane's completeOnboarding(), and dispatches worker.ready to C6's
+    // releaseWorkerReady() and assessment.requested to an ack-only insert
+    // (no Bedrock call — jale_ai owns scoring). This drain never sends via
+    // Twilio, so it is granted only the WhatsApp DB secret — no Twilio
+    // secret, no Twilio IAM permission.
+    const domainOutboxDrainLambda = new JaleLambdaFunction(this, 'DomainOutboxDrainLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/domain-outbox-drain.ts'),
+      description: 'Domain outbox drain — scheduled worker.ready / assessment.requested event processing',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+      },
+    });
+    whatsappDbSecret.grantRead(domainOutboxDrainLambda.function);
+
+    new events.Rule(this, 'DomainOutboxDrainSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new eventTargets.LambdaFunction(domainOutboxDrainLambda.function)],
+    });
+
     // ── Job Message Outbox Sweeper ──────────────────────────────
     // EventBridge every 5 min: retries stale/failed-under-cap job_message_outbox
     // rows (R8 retry driver for employer-initiated sends). Connects as
@@ -544,6 +568,59 @@ export class WhatsAppStack extends cdk.Stack {
         period: cdk.Duration.minutes(5),
         statistic: 'Maximum',
       }),
+    ).addAlarmAction(alarmAction);
+
+    // ── C7: domain-event drain + release operational alarms ─────
+    // Resolution #9 (observability ownership): C7 installs the drain's own
+    // metrics on the drain Lambda's log group, and installs WhatsAppOtpLock
+    // — emitted by the workflow lane's identity handler when a challenge
+    // transitions to `locked` — on the PROCESSOR log group, not the drain's.
+    const drainMetricFilter = (id: string, metricValueEquals: string, metricName: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: domainOutboxDrainLambda.logGroup,
+        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        metricNamespace: 'Jale/WhatsApp',
+        metricName,
+        metricValue: '1',
+      });
+
+    const domainEventStuckMetric = drainMetricFilter(
+      'WhatsAppDomainEventStuckMetric', 'WhatsAppDomainEventStuck', 'DomainEventStuck',
+    );
+    alarm(
+      'WhatsAppDomainEventsStuckAlarm', 'WhatsAppDomainEventsStuck',
+      domainEventStuckMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    const releaseFailureMetric = drainMetricFilter(
+      'WhatsAppReleaseFailureMetric', 'WhatsAppReleaseFailure', 'ReleaseFailures',
+    );
+    alarm(
+      'WhatsAppReleaseFailuresAlarm', 'WhatsAppReleaseFailures',
+      releaseFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    const deferredBacklogAgedMetric = drainMetricFilter(
+      'WhatsAppDeferredBacklogAgedMetric', 'WhatsAppDeferredBacklogAged', 'DeferredBacklogAge',
+    );
+    alarm(
+      'WhatsAppDeferredBacklogAgeAlarm', 'WhatsAppDeferredBacklogAge',
+      deferredBacklogAgedMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // WhatsAppOtpLock is emitted by the workflow lane's identity handler
+    // INSIDE the processor Lambda (not the drain) — the filter must live on
+    // the processor's log group.
+    const otpLockMetric = new logs.MetricFilter(this, 'WhatsAppOtpLockMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOtpLock'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'OtpLockRate',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppOtpLockRateAlarm', 'WhatsAppOtpLockRate',
+      otpLockMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────
