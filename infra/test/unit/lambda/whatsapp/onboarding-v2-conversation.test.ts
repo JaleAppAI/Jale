@@ -234,13 +234,12 @@ describe('OTP lifecycle', () => {
 
   it('enforces a 60-second resend cooldown', async () => {
     const h = createWhatsAppV2Harness({ phone: '+15551110053' });
-    // The initial START-triggered challenge is NOT tracked under
-    // `otpSendHistory` (that key is only appended by the RESEND branch
-    // itself) — so the cooldown/cap only bite starting from the FIRST
-    // explicit RESEND.
+    // The initial START-triggered challenge is recorded in `otpSendHistory`
+    // (send #1 of the hourly cap), but this test stays under the 3/hour cap
+    // and only exercises the 60-second cooldown between successive resends.
     await h.sendText('START');
     h.advanceTime(61 * 1000);
-    await h.sendText('RESEND'); // resend #1 — always allowed (empty history)
+    await h.sendText('RESEND'); // resend #1 — past the 60s cooldown, still under cap
     const firstResendId = h.getState().preAuth?.providerChallengeId;
 
     await h.sendText('RESEND'); // resend #2, immediate — under 60s, blocked
@@ -251,20 +250,21 @@ describe('OTP lifecycle', () => {
     expect(h.getState().preAuth?.providerChallengeId).not.toBe(firstResendId);
   });
 
-  it('caps OTP sends at 3 per hour', async () => {
+  it('caps OTP sends at 3 total per hour — the initial challenge counts', async () => {
     const h = createWhatsAppV2Harness({ phone: '+15551110054' });
-    await h.sendText('START'); // not counted toward otpSendHistory
+    // The initial START-triggered challenge IS the first of the three hourly
+    // sends: it is recorded in `otpSendHistory`, so only two further RESENDs
+    // are allowed before the cap bites.
+    await h.sendText('START'); // send #1 of 3 (initial challenge)
 
     h.advanceTime(61 * 1000);
-    await h.sendText('RESEND'); // resend #1 of 3
+    await h.sendText('RESEND'); // send #2 of 3
     h.advanceTime(61 * 1000);
-    await h.sendText('RESEND'); // resend #2 of 3
-    h.advanceTime(61 * 1000);
-    await h.sendText('RESEND'); // resend #3 of 3
+    await h.sendText('RESEND'); // send #3 of 3
     const idAfterThird = h.getState().preAuth?.providerChallengeId;
 
     h.advanceTime(61 * 1000);
-    await h.sendText('RESEND'); // resend #4 — blocked, cap reached
+    await h.sendText('RESEND'); // send #4 — blocked, cap reached
     expect(h.getState().preAuth?.providerChallengeId).toBe(idAfterThird);
   });
 

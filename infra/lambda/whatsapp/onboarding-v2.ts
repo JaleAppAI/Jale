@@ -540,6 +540,13 @@ async function handleStartStep(
       return { handled: true, workerId: null, stepKey: 'start.choose_language' };
     }
 
+    // The initial challenge is the first of the three hourly OTP sends, so its
+    // timestamp is recorded in `otpSendHistory` here — the same key the RESEND
+    // branch appends to. This caps the flow at three total sends per hour
+    // (initial + two resends), not four.
+    const otpHistory = readHistory(preAuth?.context, 'otpSendHistory');
+    const newOtpHistory = appendSendTimestamp(otpHistory, now);
+
     // Challenge id + expiry persisted in the SAME patch that advances the
     // step — exactly one savePreAuthState call for this whole branch.
     const saved = await deps.repo.savePreAuthState(client, phoneHash, {
@@ -550,7 +557,7 @@ async function handleStartStep(
       status: 'pending',
       attempts: 0,
       candidateUserId,
-      context: preAuth?.context ?? {},
+      context: { ...(preAuth?.context ?? {}), otpSendHistory: newOtpHistory },
     });
 
     await sendPreAuthPrompt(client, deps, msg, 'identity.verify_otp', choice);

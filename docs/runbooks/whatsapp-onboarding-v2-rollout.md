@@ -80,6 +80,21 @@ available as one command once the persistent testbed is up and
 
 ```bash
 cd infra && npm run test:whatsapp-v2-db
+#   Expected (URL exported): 2 passed suites — migration 042 + onboarding
+#     concurrency actually execute (no `CONCERN:`/skip lines).
+```
+
+This command is **fail-closed**: it runs through
+`scripts/run-whatsapp-v2-db-tests.sh`, which exits non-zero (never printing the
+URL) when `JALE_TEST_DATABASE_URL` is unset or empty — because both integration
+suites SKIP without a database URL, so a bare `jest` invocation would exit 0
+without verifying anything. With the URL unset it prints and exits 1:
+
+```
+run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is not set (or empty).
+  Refusing to run: the migration-042 and concurrency suites SKIP without a
+  database URL and jest would otherwise exit 0 without verifying anything.
+  ...
 ```
 
 Deterministic CDK synth and diff (use verbatim; an environment-less
@@ -403,10 +418,16 @@ Known design notes (awareness only — no action required for rollout):
    `WorkerGate` does not expose `worker_workflow_runs.context`. Sound given the
    C4 contract; documented as a design split.
 
-> **Freeze item 3 (OTP hourly cap) is a separate open decision** — see the
-> pending-decision note in the integration handoff; the initial OTP challenge is
-> not counted toward the 3/hour `otpSendHistory` cap, so the effective ceiling is
-> 4 sends/hour (1 initial + 3 resends) vs. the design's "maximum three per hour."
+> **Freeze item 3 (OTP hourly cap) — RESOLVED.** The initial OTP challenge is now
+> recorded in the `otpSendHistory` cap alongside resends (`handleStartStep` in
+> `lambda/whatsapp/onboarding-v2.ts` appends the initial send timestamp in the
+> same `savePreAuthState` patch that advances to `identity.verify_otp`). The
+> effective ceiling is the design's **maximum three total sends per phone per
+> hour** (1 initial + 2 resends); the third resend is refused with
+> `v2_otp_send_cap`. All lockout, resend-cooldown, transaction, and
+> no-pre-OTP-binding invariants are unchanged. Covered by
+> `onboarding-v2-conversation.test.ts` → "caps OTP sends at 3 total per hour — the
+> initial challenge counts."
 
 ## Handoff — recorded gate results
 
@@ -429,6 +450,35 @@ merge `d052423` + drain-renderer wiring `d120cfa`). The final C10 integration
 commit adds only this runbook and the `test:whatsapp-v2-db` package script (no
 code change; the script was validated green above).
 
+### Final two-fixes battery (2026-07-23)
+
+Re-run after the two user-decided fixes (OTP 3-total-sends/hour enforcement +
+fail-closed `test:whatsapp-v2-db` URL guard), base `c8dba0b`:
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Build | `npm run build` | tsc exit 0 (clean) |
+| Unit suite | `npx jest --runInBand` | **1607 passed**, 0 failed (131 suites + 1 skipped; +4 from the new guard test vs. the 1603 baseline; DB-integration suites skip without a URL) |
+| v2 lambda suite | `npm run test:whatsapp-v2` | 7 suites / **251 passed** |
+| DB Gate 1 (migrated) | `bootstrap-testbed.sh --verify` (run FIRST) + `jest test/unit/db …` | **14/14** verify probes PASS; 10 suites / 99 passed, **0 CONCERN** |
+| DB Gate 2 (clean apply) | `bootstrap-testbed.sh --ephemeral --empty … apply-order` | 26 passed, 1 skipped |
+| DB Gate 3 (034 upgrade) | `bootstrap-testbed.sh --ephemeral --bare … billing-034-upgrade` | 14 passed |
+| v2 DB gate (guarded) | `npm run test:whatsapp-v2-db` (under Gate-1 testbed URL) | 2 suites / **26 passed, 0 skipped** — migration-042 + concurrency actually executed. Unset/empty URL → **exit 1**, no URL printed. |
+| Synth | canonical `cdk synth --all` | exit 0; **additive** — v2 FIFO pair + `DomainOutboxDrain` Lambda + `rate(1 minute)` + v2 alarms; legacy queue unchanged (template inspection) |
+| Differential review | inline DEEP + independent Sonnet pass | **0 Critical / 0 Important**; see `2026-07-23-whatsapp-v2-final-two-fixes-differential-review.md` |
+
+> **Gate 1 ordering note:** run `bootstrap-testbed.sh --verify` (the 14 probes)
+> **before** the migrated jest suites. The C9 concurrency suite enables
+> `deferred_delivery_enabled` in `whatsapp_runtime_controls` without restoring it,
+> so a `--verify` run *after* the suites fails the "both runtime controls seeded
+> and disabled" probe. The persistent testbed is left with both controls disabled
+> after this battery. (Adding an `afterAll` reset to that suite is a tracked
+> hygiene follow-up.)
+
+**Verified two-fixes commit SHA:** recorded in the durable local ledger
+`2026-07-22-whatsapp-v2-integration-C5-C10-ledger.md` (this runbook is part of
+that same commit, so its SHA is not self-referenced here).
+
 **Known follow-ups (do not block this rollout, but track them):**
 1. Add a scheduled stale-`worker_domain_outbox`.`status='processing'` → `pending`
    recovery sweep (mirroring the AI trust-scorer's 15-minute recovery cron), so a
@@ -437,6 +487,11 @@ code change; the script was validated green above).
 2. Two pre-existing raw-phone log lines in `processor.ts` (`:548` missing-From
    warn, `:1551` legacy `reissueOtp`) predate v2; scrub them in a legacy-cleanup
    pass.
+3. The C9 concurrency integration suite
+   (`whatsapp-onboarding-concurrency.integration.test.ts`) enables
+   `deferred_delivery_enabled` via `enableDeferredDelivery()` and never restores
+   it. Add an `afterAll` that resets both runtime controls to disabled so the
+   persistent testbed stays clean regardless of gate order.
 
 **Do not push, deploy, migrate RDS, or reset any worker without separate user
 authorization.**
