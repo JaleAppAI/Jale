@@ -31,7 +31,7 @@
     "@types/jest": "^30",
     "@types/node": "^24.10.1",
     "@types/pg": "^8.20.0",
-    "aws-cdk": "2.1113.0",
+    "aws-cdk": "^2.1133.0",
     "dotenv": "^17.4.2",
     "esbuild": "^0.28.1",
     "jest": "^30",
@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-ses": "3.1040.0",
-    "aws-cdk-lib": "^2.244.0",
+    "aws-cdk-lib": "^2.262.0",
     "constructs": "^10.5.0",
     "pg": "^8.20.0",
     "stripe": "22.3.0"
