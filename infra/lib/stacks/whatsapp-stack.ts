@@ -61,6 +61,8 @@ export interface WhatsAppStackProps extends cdk.StackProps {
 export class WhatsAppStack extends cdk.Stack {
   public readonly inboundQueue: sqs.Queue;
   public readonly inboundDlq: sqs.Queue;
+  public readonly inboundV2Queue: sqs.Queue;
+  public readonly inboundV2Dlq: sqs.Queue;
   public readonly webhookLambda: JaleLambdaFunction;
   public readonly processorLambda: JaleLambdaFunction;
   public readonly jobAlertLambda: JaleLambdaFunction;
@@ -114,6 +116,31 @@ export class WhatsAppStack extends cdk.Stack {
       },
     });
 
+    // ── v2 SQS FIFO DLQ + inbound queue (additive) ────────────────
+    // Inbound v2 events serialize per-phone-hash through a FIFO queue so a
+    // single worker's messages process strictly in order. The legacy
+    // standard queue/DLQ above are untouched; this is a parallel path
+    // selected in the webhook only when WHATSAPP_INBOUND_V2_QUEUE_URL is set.
+    this.inboundV2Dlq = new sqs.Queue(this, 'WhatsAppInboundV2Dlq', {
+      queueName: 'whatsapp-inbound-v2-dlq.fifo',
+      fifo: true,
+      contentBasedDeduplication: false,
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    this.inboundV2Queue = new sqs.Queue(this, 'WhatsAppInboundV2Queue', {
+      queueName: 'whatsapp-inbound-v2.fifo',
+      fifo: true,
+      contentBasedDeduplication: false,
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      visibilityTimeout: cdk.Duration.seconds(360),
+      deadLetterQueue: {
+        queue: this.inboundV2Dlq,
+        maxReceiveCount: 5,
+      },
+    });
+
     // ── Webhook Lambda ──────────────────────────────────────────
     // Public-facing: validates Twilio X-Twilio-Signature and pushes the raw
     // body to SQS. No DB, no Twilio API calls.
@@ -135,11 +162,13 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         SQS_QUEUE_URL: this.inboundQueue.queueUrl,
+        WHATSAPP_INBOUND_V2_QUEUE_URL: this.inboundV2Queue.queueUrl,
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     twilioSecret.grantRead(this.webhookLambda.function);
     this.inboundQueue.grantSendMessages(this.webhookLambda.function);
+    this.inboundV2Queue.grantSendMessages(this.webhookLambda.function);
 
     // ── Processor Lambda ────────────────────────────────────────
     // SQS consumer — owns the conversation state machine + profile builder
@@ -174,6 +203,16 @@ export class WhatsAppStack extends cdk.Stack {
     this.processorLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(this.inboundQueue, {
         batchSize: 1,
+      }),
+    );
+
+    // v2 FIFO event source — ReportBatchItemFailures lets a single failed
+    // message be retried/redriven without stalling or discarding the rest of
+    // the per-phone-hash message group ordering.
+    this.processorLambda.function.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.inboundV2Queue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
       }),
     );
 
@@ -487,6 +526,24 @@ export class WhatsAppStack extends cdk.Stack {
     alarm(
       'WhatsAppStatusCallbackUnknownSidAlarm', 'WhatsAppStatusCallbackUnknownSids',
       unknownSidMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // v2 inbound DLQ health — depth (messages stuck after exhausting
+    // maxReceiveCount) and age (oldest stuck message) on the v2 DLQ.
+    alarm(
+      'WhatsAppInboundV2DlqDepthAlarm', 'WhatsAppInboundV2DlqDepth',
+      this.inboundV2Dlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Maximum',
+      }),
+    ).addAlarmAction(alarmAction);
+
+    alarm(
+      'WhatsAppInboundV2DlqAgeAlarm', 'WhatsAppInboundV2DlqAge',
+      this.inboundV2Dlq.metricApproximateAgeOfOldestMessage({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Maximum',
+      }),
     ).addAlarmAction(alarmAction);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────

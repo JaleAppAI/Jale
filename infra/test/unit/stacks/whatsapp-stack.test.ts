@@ -72,8 +72,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── SQS infrastructure ─────────────────────────────────────────
-  test('Stack creates exactly 2 SQS queues (inbound + DLQ)', () => {
-    template.resourceCountIs('AWS::SQS::Queue', 2);
+  test('Stack creates exactly 4 SQS queues (legacy inbound + DLQ, v2 FIFO inbound + DLQ)', () => {
+    template.resourceCountIs('AWS::SQS::Queue', 4);
   });
 
   test('Inbound SQS queue exists with 360s visibility timeout', () => {
@@ -96,6 +96,111 @@ describe('WhatsAppStack', () => {
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'whatsapp-inbound-dlq',
       KmsMasterKeyId: 'alias/aws/sqs',
+    });
+  });
+
+  // ── v2 FIFO SQS infrastructure (additive) ───────────────────────
+  describe('v2 FIFO inbound queue and DLQ', () => {
+    test('v2 FIFO inbound queue exists with ContentBasedDeduplication false', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+      });
+    });
+
+    test('v2 FIFO DLQ exists with 14-day retention', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2-dlq.fifo',
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+        MessageRetentionPeriod: 14 * 24 * 60 * 60,
+      });
+    });
+
+    test('v2 queue redrive policy has maxReceiveCount 5', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        RedrivePolicy: Match.objectLike({
+          maxReceiveCount: 5,
+        }),
+      });
+    });
+
+    test('v2 queue and DLQ both use KMS-managed encryption', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        KmsMasterKeyId: 'alias/aws/sqs',
+      });
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2-dlq.fifo',
+        KmsMasterKeyId: 'alias/aws/sqs',
+      });
+    });
+
+    test('v2 queue has a 360s visibility timeout', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        VisibilityTimeout: 360,
+      });
+    });
+
+    test('legacy inbound queue is untouched: still exists with maxReceiveCount 3', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-queue',
+        RedrivePolicy: Match.objectLike({
+          maxReceiveCount: 3,
+        }),
+      });
+    });
+
+    test('EventSourceMapping wires the v2 queue to the processor Lambda with BatchSize 1 and ReportBatchItemFailures', () => {
+      template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+        BatchSize: 1,
+        FunctionResponseTypes: ['ReportBatchItemFailures'],
+      });
+    });
+
+    test('webhook Lambda has WHATSAPP_INBOUND_V2_QUEUE_URL env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('.*webhook.*signature.*'),
+        Environment: Match.objectLike({
+          Variables: Match.objectLike({
+            WHATSAPP_INBOUND_V2_QUEUE_URL: Match.anyValue(),
+          }),
+        }),
+      });
+    });
+
+    test('webhook Lambda role can sqs:SendMessage to the v2 queue', () => {
+      template.hasResourceProperties('AWS::IAM::Policy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Action: Match.arrayWith(['sqs:SendMessage']),
+              Effect: 'Allow',
+            }),
+          ]),
+        }),
+      });
+    });
+
+    test('WhatsAppInboundV2DlqDepth alarm exists on ApproximateNumberOfMessagesVisible for the v2 DLQ, wired to the alarm topic', () => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'WhatsAppInboundV2DlqDepth',
+        MetricName: 'ApproximateNumberOfMessagesVisible',
+        Namespace: 'AWS/SQS',
+        AlarmActions: Match.anyValue(),
+      });
+    });
+
+    test('WhatsAppInboundV2DlqAge alarm exists on ApproximateAgeOfOldestMessage for the v2 DLQ, wired to the alarm topic', () => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'WhatsAppInboundV2DlqAge',
+        MetricName: 'ApproximateAgeOfOldestMessage',
+        Namespace: 'AWS/SQS',
+        AlarmActions: Match.anyValue(),
+      });
     });
   });
 
