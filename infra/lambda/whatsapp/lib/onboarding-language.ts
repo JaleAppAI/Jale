@@ -17,6 +17,13 @@ export const START_DAILY_CAP = 5;
 export const START_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Invalid-answer reprompt cooldown: 30 seconds. */
 export const REPROMPT_COOLDOWN_MS = 30 * 1000;
+/** OTP resend cooldown: 60 seconds (canonical value table — distinct from
+ * the 10-minute start-invitation cooldown; the two histories are tracked
+ * under separate context keys, `startSendHistory` vs `otpSendHistory`). */
+export const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+/** OTP sends per phone per hour. */
+export const OTP_RESEND_HOURLY_CAP = 3;
+export const OTP_RESEND_WINDOW_MS = 60 * 60 * 1000;
 
 export interface StartCooldownResult {
   allowed: boolean;
@@ -100,7 +107,9 @@ function matches(body: string, words: ReadonlySet<string>): boolean {
   return matchFuzzyAgainst(n, words);
 }
 
-const LANGUAGE_WORDS = new Set(['language', 'idioma']);
+const LANGUAGE_WORD_EN = new Set(['language']);
+const LANGUAGE_WORD_ES = new Set(['idioma']);
+const LANGUAGE_WORDS = new Set([...LANGUAGE_WORD_EN, ...LANGUAGE_WORD_ES]);
 const RESEND_WORDS = new Set(['resend', 'reenviar']);
 // normalizeCommandText lowercases but does not strip accents.
 const REVIEW_TERMS_WORDS = new Set([
@@ -110,6 +119,19 @@ const HELP_WORDS = new Set(['help', 'ayuda']);
 
 export function isLanguageCommand(body: string): boolean {
   return matches(body, LANGUAGE_WORDS);
+}
+
+/**
+ * Unlike JOBS/TRABAJOS or HELP/AYUDA (whose reply merely matches the
+ * command's language), IDIOMA/LANGUAGE is dual-purpose: the specific word
+ * chosen names the target language, exactly like the START/EMPEZAR choice
+ * at `start.choose_language`. Returns null when `isLanguageCommand` is
+ * false — callers should always guard with that first.
+ */
+export function detectLanguageSelectionCommand(body: string): Lang | null {
+  if (matches(body, LANGUAGE_WORD_EN)) return 'en';
+  if (matches(body, LANGUAGE_WORD_ES)) return 'es';
+  return null;
 }
 
 export function isResendCommand(body: string): boolean {
@@ -145,27 +167,50 @@ export function classifyBlockedCommand(body: string): 'jobs' | 'chats' | 'profil
 
 // `history` crosses a boundary owned by another lane's repository layer, so
 // it is treated as untrusted: non-finite, future-dated (clock skew or bad
-// data), and stale (>24h) entries are all dropped before use.
-function parseHistory(history: readonly string[], now: Date): number[] {
+// data), and entries outside the caller's window are all dropped before use.
+function parseHistory(history: readonly string[], now: Date, windowMs: number): number[] {
   const nowMs = now.getTime();
   return history
     .map((iso) => Date.parse(iso))
-    .filter((ms) => Number.isFinite(ms) && ms <= nowMs && nowMs - ms < START_DAILY_WINDOW_MS)
+    .filter((ms) => Number.isFinite(ms) && ms <= nowMs && nowMs - ms < windowMs)
     .sort((a, b) => b - a);
 }
 
-/** Cooldown is checked before the daily cap: the nearer limit wins. */
+/** Cooldown is checked before the cap: the nearer limit wins. Shared shape
+ * for both the start-invitation policy (10 min / 5 per 24h) and the OTP
+ * resend policy (60 sec / 3 per hour) — same arithmetic, different windows. */
+function evaluateCooldown(
+  history: readonly string[],
+  now: Date,
+  cooldownMs: number,
+  cap: number,
+  windowMs: number,
+): StartCooldownResult {
+  const recent = parseHistory(history, now, windowMs);
+  if (recent.length === 0) return { allowed: true, reason: 'ok' };
+  if (now.getTime() - recent[0] < cooldownMs) {
+    return { allowed: false, reason: 'cooldown' };
+  }
+  if (recent.length >= cap) return { allowed: false, reason: 'daily_cap' };
+  return { allowed: true, reason: 'ok' };
+}
+
+/** Start-invitation policy: 1 per 10 minutes, at most 5 per 24 hours. */
 export function evaluateStartCooldown(
   history: readonly string[],
   now: Date,
 ): StartCooldownResult {
-  const recent = parseHistory(history, now);
-  if (recent.length === 0) return { allowed: true, reason: 'ok' };
-  if (now.getTime() - recent[0] < START_COOLDOWN_MS) {
-    return { allowed: false, reason: 'cooldown' };
-  }
-  if (recent.length >= START_DAILY_CAP) return { allowed: false, reason: 'daily_cap' };
-  return { allowed: true, reason: 'ok' };
+  return evaluateCooldown(history, now, START_COOLDOWN_MS, START_DAILY_CAP, START_DAILY_WINDOW_MS);
+}
+
+/** OTP resend policy: 1 per 60 seconds, at most 3 per hour. Distinct from
+ * `evaluateStartCooldown` — the OTP resend cadence is tighter (canonical
+ * values table) than the start-invitation cadence. */
+export function evaluateOtpResendCooldown(
+  history: readonly string[],
+  now: Date,
+): StartCooldownResult {
+  return evaluateCooldown(history, now, OTP_RESEND_COOLDOWN_MS, OTP_RESEND_HOURLY_CAP, OTP_RESEND_WINDOW_MS);
 }
 
 /** True when the current prompt may be repeated (30-second reprompt cooldown). */
@@ -183,7 +228,11 @@ export function shouldRepeatPrompt(lastIso: string | null | undefined, now: Date
  * to assume chronological order rather than re-deriving it.
  */
 export function appendSendTimestamp(history: readonly string[], now: Date): string[] {
-  const kept = parseHistory(history, now)
+  // Pruned against the wider of the two windows this history might be
+  // evaluated under (start-invitation 24h vs OTP-resend 1h); each
+  // `evaluate*Cooldown` call re-filters to its own narrower window before
+  // checking the cap, so over-retaining here is harmless.
+  const kept = parseHistory(history, now, START_DAILY_WINDOW_MS)
     .sort((a, b) => a - b)
     .map((ms) => new Date(ms).toISOString());
   return [...kept, now.toISOString()];

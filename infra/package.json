@@ -10,7 +10,8 @@
     "test": "jest",
     "cdk": "cdk",
     "deploy": "npm run test && npx cdk deploy",
-    "test:integration": "jest --config jest.integration.config.js"
+    "test:integration": "jest --config jest.integration.config.js",
+    "test:whatsapp-v2": "jest test/unit/lambda/whatsapp/onboarding-v2.test.ts test/unit/lambda/whatsapp/onboarding-v2-profile.test.ts test/unit/lambda/whatsapp/onboarding-v2-conversation.test.ts test/unit/lambda/whatsapp/processor.test.ts test/unit/lambda/whatsapp/lib/onboarding-language.test.ts test/unit/lambda/whatsapp/lib/onboarding-renderers.test.ts test/unit/lambda/whatsapp/lib/onboarding-adapters.test.ts --runInBand"
   },
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1040.0",

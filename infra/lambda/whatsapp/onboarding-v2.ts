@@ -49,11 +49,13 @@ import {
   detectCommandLang,
   resolveResponseLanguage,
   isLanguageCommand,
+  detectLanguageSelectionCommand,
   isResendCommand,
   isReviewTermsCommand,
   isOnboardingHelpCommand,
   classifyBlockedCommand,
   evaluateStartCooldown,
+  evaluateOtpResendCooldown,
   shouldRepeatPrompt,
   appendSendTimestamp,
 } from './lib/onboarding-language';
@@ -466,8 +468,27 @@ async function applyGate(
   }
 
   if (!isInteractive && isLanguageCommand(body)) {
-    const cmdLang = detectCommandLang(body) ?? responseLang;
+    // The word itself names the target language (like START/EMPEZAR),
+    // unlike JOBS/TRABAJOS-style commands whose reply merely matches the
+    // typed language.
+    const cmdLang = detectLanguageSelectionCommand(body) ?? detectCommandLang(body) ?? responseLang;
     await sendTemplateMessage(client, deps, workerId, stepKey, cmdLang, 'v2_language_changed', {}, now, msg.messageSid, 'lang');
+    // IDIOMA/LANGUAGE is the one command that persists a preference change
+    // (unlike JOBS/CHATS/PROFILE, whose reply is transient) — per the spec's
+    // "LANGUAGE/IDIOMA persists the new preference." The override lives in
+    // state_context — durable across turns via the processor's per-message
+    // writeback (Task 6) — because the bound workflow run's
+    // `preferred_language` column (`worker_workflow_runs.preferred_language`,
+    // owned by the C4 repository lane) has no exposed mutator here.
+    //
+    // KNOWN CROSS-LANE GAP (flag for C6): the release renderer's
+    // `loadVerifiedRecipient` (lib/onboarding-renderers.ts) reads language
+    // from that SAME DB column, not from this override — so a worker who
+    // switches languages mid-onboarding gets subsequent v2 prompts in the
+    // new language but C6's eventual `worker.ready` release-lane
+    // confirmation in the ORIGINAL bound language, unless C4/C6 add a real
+    // column mutator this router can call instead of this in-lane override.
+    session.state_context.v2PreferredLanguageOverride = cmdLang;
     return { handled: true, workerId, stepKey };
   }
 
@@ -571,7 +592,9 @@ async function handleOtpStep(
 
   if (!isInteractive && isResendCommand(msg.body)) {
     const history = readHistory(preAuth.context, 'otpSendHistory');
-    const cooldown = evaluateStartCooldown(history, now);
+    // OTP resend has its own (tighter) cadence — 60s cooldown, 3/hour cap —
+    // distinct from the 10min/5-per-day start-invitation policy.
+    const cooldown = evaluateOtpResendCooldown(history, now);
     if (!cooldown.allowed) {
       const key: TemplateKey = cooldown.reason === 'cooldown' ? 'v2_otp_resend_cooldown' : 'v2_otp_send_cap';
       const vars: Record<string, string> = cooldown.reason === 'cooldown' ? { seconds: '60' } : {};
@@ -659,6 +682,14 @@ function normalizedEquals(body: string, words: readonly string[]): boolean {
   return words.includes(normalizeCommandText(body));
 }
 
+/** A durable IDIOMA/LANGUAGE override (see applyGate) takes precedence over
+ * whatever preferred_language the run was bound with — used for every
+ * subsequent step prompt, not just the confirmation reply itself. */
+function effectiveLang(session: OnboardingV2Session, gate: WorkerGate): Lang {
+  return (session.state_context?.v2PreferredLanguageOverride as Lang | undefined)
+    ?? gate.preferredLanguage;
+}
+
 async function handleLegalStep(
   client: PoolClient,
   session: OnboardingV2Session,
@@ -690,7 +721,7 @@ async function handleLegalStep(
       inboundMessageSid: msg.messageSid,
       reason: 'legal_accept',
     });
-    await sendStepPrompt(client, deps, updated.userId, 'profile.name', updated.preferredLanguage, now, msg.messageSid, `accept:${now.getTime()}`);
+    await sendStepPrompt(client, deps, updated.userId, 'profile.name', effectiveLang(session, updated), now, msg.messageSid, `accept:${now.getTime()}`);
     return { handled: true, workerId: updated.userId, stepKey: 'profile.name' };
   }
 
@@ -705,7 +736,7 @@ async function handleLegalStep(
       inboundMessageSid: msg.messageSid,
       reason: 'legal_decline',
     });
-    await sendTemplateMessage(client, deps, updated.userId, 'legal.review', updated.preferredLanguage, 'v2_legal_declined', {}, now, msg.messageSid, 'declined');
+    await sendTemplateMessage(client, deps, updated.userId, 'legal.review', effectiveLang(session, updated), 'v2_legal_declined', {}, now, msg.messageSid, 'declined');
     return { handled: true, workerId: updated.userId, stepKey: 'legal.review' };
   }
 
@@ -748,7 +779,7 @@ async function handleProfileName(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_name_set',
   });
-  await sendStepPrompt(client, deps, updated.userId, 'profile.location', updated.preferredLanguage, now, msg.messageSid, `name:${now.getTime()}`);
+  await sendStepPrompt(client, deps, updated.userId, 'profile.location', effectiveLang(session, updated), now, msg.messageSid, `name:${now.getTime()}`);
   return { handled: true, workerId: updated.userId, stepKey: 'profile.location' };
 }
 
@@ -779,7 +810,7 @@ async function handleProfileLocation(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_location_set',
   });
-  await sendStepPrompt(client, deps, updated.userId, 'profile.trade', updated.preferredLanguage, now, msg.messageSid, `location:${now.getTime()}`);
+  await sendStepPrompt(client, deps, updated.userId, 'profile.trade', effectiveLang(session, updated), now, msg.messageSid, `location:${now.getTime()}`);
   return { handled: true, workerId: updated.userId, stepKey: 'profile.trade' };
 }
 
@@ -832,7 +863,7 @@ async function handleProfileTrade(
       inboundMessageSid: msg.messageSid,
       reason: 'profile_trade_other',
     });
-    await sendStepPrompt(client, deps, updated.userId, 'profile.custom_trade', updated.preferredLanguage, now, msg.messageSid, `trade:${now.getTime()}`);
+    await sendStepPrompt(client, deps, updated.userId, 'profile.custom_trade', effectiveLang(session, updated), now, msg.messageSid, `trade:${now.getTime()}`);
     return { handled: true, workerId: updated.userId, stepKey: 'profile.custom_trade' };
   }
 
@@ -855,7 +886,7 @@ async function handleProfileTrade(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_trade_standard',
   });
-  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', updated.preferredLanguage, now, msg.messageSid, `trade:${now.getTime()}`, session.state_context);
+  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, msg.messageSid, `trade:${now.getTime()}`, session.state_context);
   return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
 }
 
@@ -914,7 +945,7 @@ async function handleCustomTrade(
     inboundMessageSid: msg.messageSid,
     reason: 'profile_custom_trade_set',
   });
-  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', updated.preferredLanguage, now, msg.messageSid, `custom:${now.getTime()}`, session.state_context);
+  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, msg.messageSid, `custom:${now.getTime()}`, session.state_context);
   return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
 }
 
@@ -998,7 +1029,7 @@ async function handleTrustQuestion(
       inboundMessageSid: msg.messageSid,
       reason: 'trust_answer_recorded',
     });
-    await sendTrustPrompt(client, deps, updated.userId, nextStepKey, updated.preferredLanguage, now, msg.messageSid, `trust:${now.getTime()}`, session.state_context);
+    await sendTrustPrompt(client, deps, updated.userId, nextStepKey, effectiveLang(session, updated), now, msg.messageSid, `trust:${now.getTime()}`, session.state_context);
     return { handled: true, workerId: updated.userId, stepKey: nextStepKey };
   }
 
@@ -1063,7 +1094,10 @@ async function routeBoundStep(
   now: Date,
 ): Promise<RouteResult> {
   const stepKey = gate.currentStepKey as WorkflowStepKey;
-  const lang: Lang = gate.preferredLanguage;
+  // A durable IDIOMA/LANGUAGE override (see applyGate) takes precedence over
+  // the run's originally-bound preferred_language.
+  const lang: Lang = (session.state_context?.v2PreferredLanguageOverride as Lang | undefined)
+    ?? gate.preferredLanguage;
   const isInteractive = Boolean(msg.interactivePayload);
   const responseLang = resolveResponseLanguage(lang, msg.body, isInteractive);
 
