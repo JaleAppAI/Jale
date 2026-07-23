@@ -147,6 +147,15 @@ describe('parseResetArgs', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('never echoes a misplaced bare (non `--`) value in the error message, even if it is phone-shaped', () => {
+    const result = parseResetArgs([PHONE, '--reason', REASON, '--dry-run']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain(PHONE);
+      expect(result.error).toBe('Unrecognized argument (redacted)');
+    }
+  });
+
   it('rejects a second --user-id', () => {
     const result = parseResetArgs([
       '--user-id', USER_ID,

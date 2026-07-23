@@ -69,7 +69,14 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
 
   const flag = argv[0];
   if (!KNOWN_FLAGS.has(flag)) {
-    return { ok: false, error: `Unrecognized flag: ${flag}` };
+    // Never echo a bare (non `--`) argument — a misplaced positional value
+    // could be a raw phone number.
+    return {
+      ok: false,
+      error: flag.startsWith('--')
+        ? `Unrecognized flag: ${flag}`
+        : 'Unrecognized argument (redacted)',
+    };
   }
   if (argv.length > 2) {
     return { ok: false, error: 'Only one action flag is allowed per invocation' };
@@ -90,7 +97,11 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
   if (flag === '--enable' || flag === '--disable') {
     const controlKey = CONTROL_KEY_MAP[value];
     if (!controlKey) {
-      return { ok: false, error: `Unknown control name: ${value}` };
+      // Never echo the supplied value — it could be a misplaced raw phone.
+      return {
+        ok: false,
+        error: 'Unknown control name (must be onboarding_v2 or deferred_delivery)',
+      };
     }
     return {
       ok: true,

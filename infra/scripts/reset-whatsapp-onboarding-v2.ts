@@ -79,7 +79,14 @@ export function parseResetArgs(argv: string[]): ParseResetArgsResult {
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (!known.has(flag)) {
-      return { ok: false, error: `Unrecognized flag: ${flag}` };
+      // Never echo a bare (non `--`) argument — a misplaced positional value
+      // could be a raw phone number.
+      return {
+        ok: false,
+        error: flag.startsWith('--')
+          ? `Unrecognized flag: ${flag}`
+          : 'Unrecognized argument (redacted)',
+      };
     }
     if (flag === '--dry-run') {
       dryRunFlag = true;
@@ -277,7 +284,9 @@ export async function runReset(
     );
 
     if (resolved.rows.length !== 1) {
-      await client.query('ROLLBACK');
+      // Let the single outer catch below issue the ROLLBACK — issuing one
+      // here too would emit a harmless but noisy "no transaction in
+      // progress" NOTICE against a real Postgres connection.
       throw new Error(
         'No matching worker found for the supplied --user-id and --phone (verified phone mismatch or user not found).',
       );

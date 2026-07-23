@@ -93,6 +93,24 @@ describe('parseControlsArgs', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('never echoes a misplaced bare (non `--`) value in the error message, even if it is phone-shaped', () => {
+    const result = parseControlsArgs([PHONE]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain(PHONE);
+      expect(result.error).toBe('Unrecognized argument (redacted)');
+    }
+  });
+
+  it('never echoes a phone-shaped value passed as an unknown control name', () => {
+    const result = parseControlsArgs(['--enable', PHONE]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain(PHONE);
+      expect(result.error).toBe('Unknown control name (must be onboarding_v2 or deferred_delivery)');
+    }
+  });
+
   it('rejects no flags at all', () => {
     const result = parseControlsArgs([]);
     expect(result.ok).toBe(false);
