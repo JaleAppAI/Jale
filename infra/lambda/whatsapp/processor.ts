@@ -102,6 +102,26 @@ import {
 } from './lib/media';
 import { decodeIdTokenSub } from './lib/jwt';
 import { handleBuildingCustomTrust } from './handlers/custom-trust';
+import { loadRuntimeControls, isV2Enabled, hashNormalizedPhone } from './lib/runtime-controls';
+import {
+  loadPreAuthStateForUpdate,
+  savePreAuthState,
+  bindVerifiedIdentityAndStartWorkflow,
+  loadWorkerGate,
+  advanceWorkflow,
+  appendTransition,
+  completeOnboarding,
+} from './lib/onboarding-repository';
+import { enqueueWorkerMessage } from './lib/worker-delivery-gateway';
+import { registerOnboardingRenderers } from './lib/onboarding-renderers';
+import { createOnboardingV2Adapters } from './lib/onboarding-adapters';
+import {
+  routeOnboardingV2,
+  type OnboardingV2Deps,
+  type OnboardingV2RepoDeps,
+  type OnboardingV2Session,
+  type OnboardingV2InboundMessage,
+} from './onboarding-v2';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const cognito = new CognitoIdentityProviderClient({});
@@ -224,6 +244,16 @@ async function queueInteractivePrompt(
   );
 }
 
+// Canonical legal URLs — the v2 branch's OnboardingV2Deps.tosUrl/privacyUrl
+// reuse these same constants so both lanes point at the same documents.
+const LEGAL_TOS_URL = 'https://jale.app/legal/tos';
+const LEGAL_PRIVACY_URL = 'https://jale.app/legal/privacy';
+
+// v2 onboarding workflow version passed to bindVerifiedIdentityAndStartWorkflow
+// / advanceWorkflow (matches the workflowVersion used across Tasks 4/5's
+// onboarding-v2 tests and the 042 migration's CHECK).
+const WHATSAPP_V2_WORKFLOW_VERSION = 1;
+
 async function queueLegalPrompt(
   client: PoolClient,
   inboundMessageSid: string,
@@ -234,7 +264,7 @@ async function queueLegalPrompt(
     client,
     inboundMessageSid,
     to,
-    buildLegalInteractivePrompt(lang, 'https://jale.app/legal/tos'),
+    buildLegalInteractivePrompt(lang, LEGAL_TOS_URL),
   );
 }
 
@@ -1004,6 +1034,82 @@ async function routeMessage(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<string | null> {
+  // ── Task 6: fail-closed v2 branch ───────────────────────────────────────
+  //
+  // The v2 decision is read from DB-backed runtime controls (never an env
+  // var) and keyed on a SHA-256 hash of the normalized phone (never the raw
+  // phone). This sits before ANY legacy handling — a v2-enabled phone must
+  // never touch the legacy state machine. No try/catch: once a phone
+  // selects v2, any missing dependency or error in the v2 path propagates
+  // out of routeMessage so the caller's existing tx rolls back and SQS
+  // retries. This runs inside the existing claim/db_committed transaction;
+  // it opens no BEGIN/COMMIT of its own.
+  const runtimeControls = await loadRuntimeControls(client);
+  const phoneHash = hashNormalizedPhone(conv.whatsapp_number);
+  if (isV2Enabled(runtimeControls, phoneHash)) {
+    registerOnboardingRenderers();
+
+    const v2Deps: OnboardingV2Deps = {
+      adapters: createOnboardingV2Adapters({ reconcileUserRow, cognitoClient: cognito }),
+      repo: {
+        loadPreAuthStateForUpdate,
+        savePreAuthState,
+        bindVerifiedIdentityAndStartWorkflow,
+        loadWorkerGate,
+        // Cast: onboarding-repository.ts's `status` param is the narrower
+        // WorkflowRunStatus union; OnboardingV2RepoDeps's assumed contract
+        // types it as `string`. A cross-lane interface detail, not a
+        // logic mismatch — the real function only ever receives values
+        // from the closed union anyway.
+        advanceWorkflow: advanceWorkflow as OnboardingV2RepoDeps['advanceWorkflow'],
+        appendTransition,
+        completeOnboarding,
+      },
+      enqueueWorkerMessage,
+      // Design A: pre-auth steps have no bound user_id, so their prompts
+      // travel the same phone/inbound-message-keyed outbox writers the
+      // legacy relay/legal paths already use — never a new outbox writer.
+      enqueuePreAuthPrompt: queueInteractivePrompt,
+      enqueuePreAuthText: queueText,
+      hashNormalizedPhone,
+      tosUrl: LEGAL_TOS_URL,
+      privacyUrl: LEGAL_PRIVACY_URL,
+      workflowVersion: WHATSAPP_V2_WORKFLOW_VERSION,
+    };
+
+    const v2Session: OnboardingV2Session = {
+      id: conv.id,
+      user_id: conv.user_id,
+      whatsapp_number: conv.whatsapp_number,
+      language: conv.language,
+      conversation_state: conv.conversation_state,
+      state_context: conv.state_context as unknown as Record<string, unknown>,
+    };
+
+    const v2Message: OnboardingV2InboundMessage = {
+      from: conv.whatsapp_number,
+      body: msg.body,
+      messageSid: msg.messageSid,
+      interactivePayload: msg.interactivePayload,
+    };
+
+    const result = await routeOnboardingV2(client, v2Session, v2Message, v2Deps);
+
+    // The router mutates session.state_context in place (generated trust
+    // questions, reprompt-cooldown timestamps, ...). Persist it back in the
+    // SAME tx so it survives to the next inbound message — skipping this
+    // makes generated content vanish on the next turn. conversation_state
+    // is deliberately left untouched: the v2 decision is keyed on the phone
+    // hash in runtime controls, independent of the legacy enum, and v2's
+    // own step/lifecycle bookkeeping lives in onboarding-state/workflow-run
+    // rows (C4), not in whatsapp_conversations.conversation_state.
+    await updateConversation(client, conv.id, {
+      state_context: v2Session.state_context as unknown as ProfileStateContext,
+    });
+
+    return result.workerId;
+  }
+
   const from = msg.from;
 
   // Answer typed commands/messages in the language the worker used, regardless
@@ -1050,9 +1156,9 @@ async function routeMessage(
   }
 
   if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
-    const workerId = conv.user_id ?? await resolveWorkerIdForWhatsappNumber(client, msg.from);
-    if (workerId) {
-      return await handlePickerResponse(client, conv, msg, workerId, routerDeps);
+    // Unbound sessions cannot pick — identity binding requires verified OTP.
+    if (conv.user_id) {
+      return await handlePickerResponse(client, conv, msg, conv.user_id, routerDeps);
     }
   }
 

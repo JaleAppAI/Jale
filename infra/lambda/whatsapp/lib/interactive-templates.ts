@@ -135,3 +135,70 @@ function trustQuestionBody(step: number, lang: Lang): string {
   }
   return lang === 'es' ? 'Que trabajo haces mas?' : 'What work do you do most?';
 }
+
+// ── V2 workflow builders (additive; legacy builders above are unchanged) ──
+
+/** Reviewed bilingual fallback set used when the question generator fails. */
+export const V2_FALLBACK_TRUST_QUESTIONS: ReadonlyArray<{ en: string; es: string }> = [
+  {
+    en: 'How many years have you worked in this trade?',
+    es: 'Cuantos anos has trabajado en este oficio?',
+  },
+  {
+    en: 'What tools or equipment do you bring to a job?',
+    es: 'Que herramientas o equipo llevas a un trabajo?',
+  },
+  {
+    en: 'Describe a job you finished that you are proud of.',
+    es: 'Describe un trabajo que terminaste y del que estas orgulloso.',
+  },
+];
+
+export function buildV2StartInvitationPrompt(lang: Lang): InteractivePrompt {
+  return {
+    templateName: `v2_onboarding_start_${lang}`,
+    variables: {},
+    fallbackBody: t('v2_start_invitation', lang),
+  };
+}
+
+export function buildV2OtpPrompt(lang: Lang, minutes: string): InteractivePrompt {
+  const resendLabel = lang === 'en' ? 'Resend' : 'Reenviar';
+  return {
+    templateName: `v2_onboarding_otp_${lang}`,
+    variables: { '1': minutes, '2': 'otp:resend', '3': resendLabel },
+    fallbackBody: t('v2_otp_sent', lang, { minutes }),
+  };
+}
+
+export function buildV2LegalPrompt(
+  lang: Lang,
+  tosUrl: string,
+  privacyUrl: string,
+): InteractivePrompt {
+  return {
+    templateName: `v2_onboarding_legal_${lang}`,
+    variables: {
+      '1': tosUrl,
+      '2': privacyUrl,
+      '3': 'legal:accept',
+      '4': 'legal:decline',
+      '5': 'legal:review',
+    },
+    fallbackBody: t('v2_legal_prompt', lang, { tos_url: tosUrl, privacy_url: privacyUrl }),
+  };
+}
+
+export function buildV2NumberedOptionsPrompt(
+  lang: Lang,
+  question: string,
+  options: readonly string[],
+): InteractivePrompt {
+  const lines = options.map((o, i) => `${i + 1}. ${o}`);
+  const footer = t('v2_options_footer', lang);
+  return {
+    templateName: `v2_onboarding_options_${lang}`,
+    variables: {},
+    fallbackBody: [question, ...lines, footer].join('\n'),
+  };
+}

@@ -457,9 +457,27 @@ state before OTP and the canonical user-bound `WorkerGate` after OTP. `deps` com
 external adapters with canonical C4 repository/gateway operations and Task 3 renderers; it does
 not mirror shared types.
 
-**Sending rule:** every outbound prompt calls `enqueueWorkerMessage` with `ownerService:
-'onboarding-v2'` for workflow prompts or `'identity'` for OTP/security prompts. The router never
-calls a direct queue/outbox helper. Task 3 renderers are registered once by Task 6.
+**Sending rule (contract-repaired 2026-07-22 — Design A):** outbound delivery splits by phase,
+because `worker_message_intents.user_id` is a NOT NULL FK and a net-new worker has **no** `users`
+row before verified OTP:
+
+- **Pre-auth prompts** (`start.choose_language`, `identity.verify_otp`, and the OTP
+  invalid/expired/locked/cooldown replies) travel the phone/`inbound_message_sid`-keyed
+  `whatsapp_outbox` reply origin (`inbound_message_sid IS NOT NULL AND source_type IS NULL`) via the
+  injected pre-auth delivery gateway — `deps.enqueuePreAuthPrompt` (interactive/templated) and
+  `deps.enqueuePreAuthText` (plain bilingual text). No `user_id`, durable, drained post-commit by
+  the existing sweeper, never a direct Twilio send. In production these are the sanctioned legacy
+  `queueInteractivePrompt` / `queueOutboxText` inbound-reply writers (wired in Task 6); the router
+  never writes the outbox table itself. Routing the OTP through this path is also *safer* than
+  `enqueueWorkerMessage`, which could **defer** a security prompt by lifecycle — an OTP must never
+  be deferred.
+- **Bound-step prompts** (`legal.review` onward, after `bindVerifiedIdentityAndStartWorkflow`) call
+  `enqueueWorkerMessage` with `ownerService: 'onboarding-v2'` for workflow prompts or `'identity'`
+  for security prompts. Here `user_id` is guaranteed.
+
+Rejected: making `user_id` nullable (Design B — breaks the `worker_message_intents` RLS isolation
+and release-sequence semantics) and any placeholder/pre-bound user (Design C — creates identity
+before verified OTP; absolutely forbidden). Task 3 renderers are registered once by Task 6.
 
 **Behavioral contract:**
 
@@ -495,9 +513,12 @@ preferred language.
 - [ ] **Step 1: Write the failing transition-table tests.** One fake-deps factory backed by
   in-memory repository/gateway fakes and a controllable clock. Cover every bullet above, and
   additionally assert: the gate blocks all six blocked-command spellings; the challenge id is
-  persisted in the same patch that advances the step; `enqueueWorkerMessage` is called for every
-  outbound with the correct `ownerService`; `queueText` / `queueOutboxText` /
-  `queueInteractivePrompt` are never called; a phone with an existing worker still ends the OTP
+  persisted in the same patch that advances the step; pre-auth prompts go through
+  `deps.enqueuePreAuthPrompt`/`enqueuePreAuthText` (never `enqueueWorkerMessage`), and — the
+  regression that exposed the blocker — a **genuinely unbound net-new worker** (`session.user_id`
+  null, no candidate, no pre-auth row) still has its invitation delivered, not silently dropped;
+  bound-step prompts call `enqueueWorkerMessage` with the correct `ownerService`; the router never
+  writes the outbox table directly nor calls a legacy send helper; a phone with an existing worker still ends the OTP
   step unbound when the code is wrong; the `WhatsAppOtpLock` event appears exactly once and
   contains no OTP or phone.
 
@@ -505,8 +526,9 @@ preferred language.
   `cd infra && npx jest test/unit/lambda/whatsapp/onboarding-v2.test.ts --runInBand`
   Expected **FAIL**: `Cannot find module '../../../../lambda/whatsapp/onboarding-v2'`.
 
-- [ ] **Step 3: Implement.** Structure: a `sendStepPrompt` helper (single source of truth for
-  "what does the current step ask?", routed through `enqueueWorkerMessage`), a
+- [ ] **Step 3: Implement.** Structure: `sendPreAuthPrompt`/`sendPreAuthText` helpers for the
+  unbound phase (phone-keyed gateway), a `sendStepPrompt` helper for bound steps (single source of
+  truth for "what does the current step ask?", routed through `enqueueWorkerMessage`), a
   `repeatCurrentPrompt` wrapper enforcing the 30-second cooldown, an `applyGate` function returning
   a result when it consumed the message or `null` to fall through, then the step dispatch. Add a
   `handleProfileAndTrust` stub that throws `new Error('profile/trust steps land in Task 5')` —
