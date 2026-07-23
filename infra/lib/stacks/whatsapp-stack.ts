@@ -324,10 +324,11 @@ export class WhatsAppStack extends cdk.Stack {
     // Scheduled every 1 minute: leases worker_domain_outbox events
     // (migration 042's lease_worker_domain_events) written by the workflow
     // lane's completeOnboarding(), and dispatches worker.ready to C6's
-    // releaseWorkerReady() and assessment.requested to an ack-only insert
-    // (no Bedrock call — jale_ai owns scoring). This drain never sends via
-    // Twilio, so it is granted only the WhatsApp DB secret — no Twilio
-    // secret, no Twilio IAM permission.
+    // releaseWorkerReady() and assessment.requested to the existing
+    // AiStack TrustScorer SQS queue (no Bedrock call — jale_ai owns
+    // scoring). This drain never sends via Twilio, so it gets only the
+    // WhatsApp DB secret (no Twilio secret, no Twilio IAM permission) plus
+    // least-privilege sqs:SendMessage on the trust-assessment queue.
     const domainOutboxDrainLambda = new JaleLambdaFunction(this, 'DomainOutboxDrainLambda', {
       entry: path.join(__dirname, '../../lambda/whatsapp/domain-outbox-drain.ts'),
       description: 'Domain outbox drain — scheduled worker.ready / assessment.requested event processing',
@@ -335,9 +336,15 @@ export class WhatsAppStack extends cdk.Stack {
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
       },
     });
     whatsappDbSecret.grantRead(domainOutboxDrainLambda.function);
+    // Least-privilege: this drain only sends assessment.requested payloads
+    // onward to TrustScorer — it never consumes from the queue itself, so
+    // it gets sqs:SendMessage only (no ReceiveMessage/DeleteMessage), and no
+    // Twilio secret access.
+    props.trustAssessmentQueue.grantSendMessages(domainOutboxDrainLambda.function);
 
     new events.Rule(this, 'DomainOutboxDrainSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),

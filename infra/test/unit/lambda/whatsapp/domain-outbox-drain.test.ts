@@ -67,11 +67,13 @@ function scriptClient(opts: {
   readyRows?: FakeDomainEventRow[];
   assessmentRows?: FakeDomainEventRow[];
   updateRowCount?: number;
+  pendingAssessmentRow?: { id: string } | null;
 }) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   const readyRows = opts.readyRows ?? [];
   const assessmentRows = opts.assessmentRows ?? [];
   const updateRowCount = opts.updateRowCount ?? 1;
+  const pendingAssessmentRow = 'pendingAssessmentRow' in opts ? opts.pendingAssessmentRow : { id: 'wta-1' };
 
   mockQuery.mockReset();
   mockQuery.mockImplementation(async (sql: string, params: unknown[] = []) => {
@@ -96,8 +98,8 @@ function scriptClient(opts: {
       return { rows: [], rowCount: updateRowCount };
     }
 
-    if (/INSERT INTO worker_trust_assessments/.test(sql)) {
-      return { rows: [], rowCount: 1 };
+    if (/SELECT id FROM worker_trust_assessments/.test(sql)) {
+      return { rows: pendingAssessmentRow ? [pendingAssessmentRow] : [] };
     }
 
     return { rows: [] };
@@ -252,19 +254,25 @@ describe('domain-outbox-drain', () => {
     expect(stuckLines.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('sets RLS context before the terminal UPDATE on the assessment.requested completion path too', async () => {
+  it('sets RLS context before the resolve SELECT and the terminal UPDATE on the assessment.requested completion path too', async () => {
     const event = makeEvent({
       id: 'a-1',
       event_type: 'assessment.requested',
       event_key: `assessment.requested:${WORKER_ID}:1`,
-      payload: { profession_key: 'painter', answers: [] },
+      payload: { professionKey: 'painter' },
     });
-    const calls = scriptClient({ readyRows: [], assessmentRows: [event] });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+    const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-1' } });
 
-    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW });
+    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
 
     expect(result.completed).toBe(1);
     expect(mockReleaseWorkerReady).not.toHaveBeenCalled();
+    expect(dispatchAssessment).toHaveBeenCalledWith({
+      assessmentId: 'wta-1',
+      userId: WORKER_ID,
+      professionKey: 'painter',
+    });
 
     const sqlSequence = calls.map((c) => c.sql);
     const rlsIdx = sqlSequence.findIndex((s) => /set_config\('app\.current_internal_user_id'/.test(s));
@@ -291,20 +299,150 @@ describe('domain-outbox-drain', () => {
     expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(true);
   });
 
-  it('assessment.requested with no profession_key is acknowledged (marked completed) without inserting a trust-assessment row', async () => {
+  it('assessment.requested with a missing professionKey fails closed: no dispatch, event NOT completed, markFailure invoked', async () => {
     const event = makeEvent({
       id: 'a-2',
       event_type: 'assessment.requested',
       event_key: `assessment.requested:${WORKER_ID}:2`,
       payload: {},
     });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
     const calls = scriptClient({ readyRows: [], assessmentRows: [event] });
 
-    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW });
+    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
 
-    expect(result.completed).toBe(1);
-    const insertCalls = calls.filter((c) => /INSERT INTO worker_trust_assessments/.test(c.sql));
-    expect(insertCalls).toHaveLength(0);
+    expect(result.completed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(dispatchAssessment).not.toHaveBeenCalled();
+    const completeCalls = calls.filter((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'completed'/.test(c.sql));
+    expect(completeCalls).toHaveLength(0);
+    const pendingRetryUpdate = calls.find((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'pending'/.test(c.sql));
+    expect(pendingRetryUpdate).toBeDefined();
+  });
+
+  it('assessment.requested with no pending worker_trust_assessments row fails closed: no dispatch, markFailure invoked', async () => {
+    const event = makeEvent({
+      id: 'a-3',
+      event_type: 'assessment.requested',
+      event_key: `assessment.requested:${WORKER_ID}:3`,
+      payload: { professionKey: 'painter' },
+    });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+    const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: null });
+
+    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
+
+    expect(result.completed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(dispatchAssessment).not.toHaveBeenCalled();
+    const pendingRetryUpdate = calls.find((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'pending'/.test(c.sql));
+    expect(pendingRetryUpdate).toBeDefined();
+  });
+
+  it('sends to SQS BEFORE marking the event completed: dispatch throws → completion UPDATE never runs, markFailure invoked', async () => {
+    const event = makeEvent({
+      id: 'a-4',
+      event_type: 'assessment.requested',
+      event_key: `assessment.requested:${WORKER_ID}:4`,
+      payload: { professionKey: 'painter' },
+    });
+    const dispatchAssessment = jest.fn().mockRejectedValue(new Error('trust_assessment_queue_url_not_configured'));
+    const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-4' } });
+
+    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
+
+    expect(result.completed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(dispatchAssessment).toHaveBeenCalledTimes(1);
+    const completeCalls = calls.filter((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'completed'/.test(c.sql));
+    expect(completeCalls).toHaveLength(0);
+    expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(true);
+    const pendingRetryUpdate = calls.find((c) =>
+      /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'pending'/.test(c.sql));
+    expect(pendingRetryUpdate).toBeDefined();
+
+    const metricLines = logLines.filter((l) => l.includes('WhatsAppAssessmentDispatchFailure'));
+    expect(metricLines.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a rejected dispatchAssessment (SQS failure) is retried via markFailure and counted failed by runDrain', async () => {
+    const event = makeEvent({
+      id: 'a-5',
+      event_type: 'assessment.requested',
+      event_key: `assessment.requested:${WORKER_ID}:5`,
+      payload: { professionKey: 'electrician' },
+      attempts: 1,
+    });
+    const dispatchAssessment = jest.fn().mockRejectedValue(new Error('sqs unavailable'));
+    scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-5' } });
+
+    const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
+
+    expect(result.failed).toBe(1);
+    expect(result.completed).toBe(0);
+  });
+
+  it('duplicate handling: dispatchAssessment is called again on a re-leased assessment event with the same payload, harmlessly, and a completed event is not re-leased', async () => {
+    const event = makeEvent({
+      id: 'a-6',
+      event_type: 'assessment.requested',
+      event_key: `assessment.requested:${WORKER_ID}:6`,
+      payload: { professionKey: 'plumber' },
+    });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+
+    // First pass: event is leased and processed successfully.
+    scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-6' } });
+    const first = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
+    expect(first.completed).toBe(1);
+    expect(dispatchAssessment).toHaveBeenCalledTimes(1);
+
+    // Simulate a crash-before-commit re-lease: the SAME event is leased again
+    // (e.g. its lease expired before the completion UPDATE landed). Dispatch
+    // fires again — harmless because TrustScorer idempotently claims the row.
+    scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-6' } });
+    const second = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
+    expect(second.completed).toBe(1);
+    expect(dispatchAssessment).toHaveBeenCalledTimes(2);
+    expect(dispatchAssessment).toHaveBeenNthCalledWith(2, {
+      assessmentId: 'wta-6',
+      userId: WORKER_ID,
+      professionKey: 'plumber',
+    });
+
+    // A completed event is never re-leased by lease_worker_domain_events
+    // (its `status` is no longer 'pending') — that guarantee lives in the
+    // DB function itself (migration 042), not in this Lambda; this test
+    // only asserts the drain does not itself re-process anything the fake
+    // lease call does not hand it, i.e. an empty assessmentRows batch
+    // yields zero additional dispatch calls.
+    scriptClient({ readyRows: [], assessmentRows: [] });
+    const third = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment });
+    expect(third.claimed).toBe(0);
+    expect(dispatchAssessment).toHaveBeenCalledTimes(2);
+  });
+
+  it('defaultDispatchAssessment fails closed with trust_assessment_queue_url_not_configured when TRUST_ASSESSMENT_QUEUE_URL is unset, before touching the AWS SDK', async () => {
+    const originalUrl = process.env.TRUST_ASSESSMENT_QUEUE_URL;
+    delete process.env.TRUST_ASSESSMENT_QUEUE_URL;
+    jest.resetModules();
+    jest.doMock('@aws-sdk/client-sqs', () => {
+      throw new Error('must not import @aws-sdk/client-sqs when the queue URL is unconfigured');
+    });
+    try {
+      const mod = await import('../../../../lambda/whatsapp/domain-outbox-drain');
+      await expect(
+        mod.defaultDispatchAssessment({ assessmentId: 'x', userId: 'y', professionKey: 'z' }),
+      ).rejects.toThrow('trust_assessment_queue_url_not_configured');
+    } finally {
+      jest.dontMock('@aws-sdk/client-sqs');
+      if (originalUrl !== undefined) process.env.TRUST_ASSESSMENT_QUEUE_URL = originalUrl;
+      jest.resetModules();
+    }
   });
 
   it('the drain never calls fetch', async () => {

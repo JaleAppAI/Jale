@@ -505,6 +505,52 @@ describe('WhatsAppStack', () => {
       expect(variables.TWILIO_STATUS_CALLBACK_URL).toBeUndefined();
     });
 
+    test('drain function has TRUST_ASSESSMENT_QUEUE_URL in its environment', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const variables = drainFn.Properties.Environment?.Variables ?? {};
+      expect(variables.TRUST_ASSESSMENT_QUEUE_URL).toBeDefined();
+    });
+
+    test("drain function's role is granted sqs:SendMessage on the trust-assessment queue and NOT sqs:ReceiveMessage/DeleteMessage (least privilege)", () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const sqsStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.some((a: string) => typeof a === 'string' && a.startsWith('sqs:'));
+        });
+
+      expect(sqsStatements.length).toBeGreaterThan(0);
+      const allActions = sqsStatements.flatMap((s: any) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+      expect(allActions).toContain('sqs:SendMessage');
+      expect(allActions).not.toContain('sqs:ReceiveMessage');
+      expect(allActions).not.toContain('sqs:DeleteMessage');
+    });
+
+    test('drain function role still reads ONLY the WhatsApp DB secret — the SQS grant adds no additional secretsmanager:GetSecretValue resource', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const secretGetStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('secretsmanager:GetSecretValue');
+        });
+      const resources = secretGetStatements.map((s: any) => JSON.stringify(s.Resource));
+      for (const r of resources) {
+        expect(r).not.toContain('jale/whatsapp/twilio');
+      }
+    });
+
     test.each([
       ['WhatsAppDomainEventsStuck'],
       ['WhatsAppReleaseFailures'],

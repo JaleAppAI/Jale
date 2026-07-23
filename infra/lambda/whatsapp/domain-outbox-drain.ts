@@ -13,13 +13,13 @@
 //     `aggregate_id` (== workerId) BEFORE it is invoked — see the BEGIN /
 //     setInternalUserRlsContext / releaseWorkerReady / UPDATE...completed /
 //     COMMIT sequence in processWorkerReady() below.
-//   - `assessment.requested` events are acknowledged only: this Lambda does
-//     NOT call Bedrock and does NOT score anything. The workflow lane
-//     already inserts the pending `worker_trust_assessments` row during the
-//     trust questions; scoring is jale_ai's job (wired in a later task).
-//     This handler's INSERT is a defensive, idempotent no-op in the normal
-//     flow — see the plan's assessment.requested section. C10 owns wiring
-//     the real scoring/assessment lane.
+//   - `assessment.requested` events resolve the pending `worker_trust_assessments`
+//     row (already inserted by the workflow lane during the trust questions)
+//     and dispatch `{ assessmentId, userId, professionKey }` to the existing
+//     TrustScorer SQS queue — BEFORE marking the event completed. This
+//     Lambda never calls Bedrock and never scores anything itself; jale_ai
+//     (TrustScorer) owns scoring and is idempotent against duplicate
+//     messages.
 //
 // Renderer: `releaseWorkerReady` needs a `ReleaseRenderer`. C2's
 // `createReleaseRenderer()` (workflow lane) is not merged into this branch
@@ -58,9 +58,55 @@ interface LeasedDomainEventRow {
   created_at: Date | string;
 }
 
+export interface AssessmentDispatchPayload {
+  assessmentId: string;
+  userId: string;
+  professionKey: string;
+}
+
 export interface DomainOutboxDrainDeps {
   renderer: ReleaseRenderer;
   now?: () => Date;
+  dispatchAssessment?: (payload: AssessmentDispatchPayload) => Promise<void>;
+}
+
+/**
+ * Default assessment dispatcher: sends `{ assessmentId, userId,
+ * professionKey }` to the TrustScorer SQS queue (`props.trustAssessmentQueue`
+ * in whatsapp-stack.ts, already consumed by `lambda/ai/trust-scorer.ts`).
+ * Fails closed if the queue URL is not configured — never silently no-ops.
+ * Uses the repo's existing dynamic-import SQS idiom (see processor.ts) and a
+ * module-scoped client for warm-start reuse.
+ */
+let sqsClientPromise: Promise<import('@aws-sdk/client-sqs').SQSClient> | undefined;
+
+async function getSqsClient(): Promise<import('@aws-sdk/client-sqs').SQSClient> {
+  if (!sqsClientPromise) {
+    sqsClientPromise = (async () => {
+      const { SQSClient } = await import('@aws-sdk/client-sqs');
+      return new SQSClient({});
+    })();
+  }
+  return sqsClientPromise;
+}
+
+export async function defaultDispatchAssessment(payload: AssessmentDispatchPayload): Promise<void> {
+  const queueUrl = process.env.TRUST_ASSESSMENT_QUEUE_URL;
+  if (!queueUrl) {
+    throw new Error('trust_assessment_queue_url_not_configured');
+  }
+  const { SendMessageCommand } = await import('@aws-sdk/client-sqs');
+  const client = await getSqsClient();
+  await client.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({
+        assessmentId: payload.assessmentId,
+        userId: payload.userId,
+        professionKey: payload.professionKey,
+      }),
+    }),
+  );
 }
 
 // Placeholder until C10 wires the real createReleaseRenderer() (workflow
@@ -211,41 +257,63 @@ async function processWorkerReady(
 }
 
 /**
- * Dispatches one `assessment.requested` event. No Bedrock call, no scoring
- * — the workflow lane already inserted the pending worker_trust_assessments
- * row during the trust questions. This is an idempotent acknowledge:
- *   - payload carries a string `profession_key` → INSERT a pending row,
- *     ON CONFLICT DO NOTHING against the existing active-assessment unique
- *     index (a no-op in the normal flow, since the workflow lane's row
- *     already exists).
- *   - otherwise → mark the event completed without inserting.
- * Either way, RLS context is set to aggregate_id first because the
- * terminal UPDATE on worker_domain_outbox is RLS-gated on aggregate_id
- * (the worker_trust_assessments INSERT itself needs no context — its
- * `wta_whatsapp_pending_rows` policy is USING true).
+ * Dispatches one `assessment.requested` event: resolves the pending
+ * `worker_trust_assessments` row inserted by the workflow lane during the
+ * trust questions (in the same transaction that emitted this event, per
+ * `completeOnboarding()`), and sends `{ assessmentId, userId, professionKey }`
+ * to the TrustScorer SQS queue BEFORE marking the event completed — all in
+ * the same transaction, per the plan's ordering contract. No Bedrock call,
+ * no scoring here; jale_ai (TrustScorer) owns that and idempotently claims
+ * the pending row, so a duplicate SQS send from a re-leased event is
+ * harmless.
+ *
+ * Fails closed (throws, never dispatches, never completes the event) when:
+ *   - the payload's `professionKey` is missing/not a string
+ *     (`assessment_provenance_missing_profession_key`)
+ *   - no matching pending/scoring/scored row is found
+ *     (`assessment_pending_row_not_found`)
+ *   - the dispatch itself throws (e.g. queue URL unconfigured)
+ * On any failure: ROLLBACK, emit WhatsAppAssessmentDispatchFailure (safe
+ * scalars only), then markFailure() in its own transaction (capped retry).
+ *
+ * RLS context is set to aggregate_id (== userId) first — the resolve SELECT
+ * and the terminal UPDATE on worker_domain_outbox both run under it (the
+ * `worker_trust_assessments` SELECT policy `wta_whatsapp_pending_rows` is
+ * USING(true), so the context is not strictly required for that query, but
+ * setting it once up front keeps the transaction's RLS posture uniform).
  */
 async function processAssessmentRequested(
   client: PoolClient,
   event: LeasedDomainEventRow,
+  deps: DomainOutboxDrainDeps,
 ): Promise<boolean> {
+  const dispatch = deps.dispatchAssessment ?? defaultDispatchAssessment;
   try {
     await client.query('BEGIN');
     await setInternalUserRlsContext(client, event.aggregate_id);
 
     const payload = event.payload ?? {};
-    const professionKey = typeof payload.profession_key === 'string' && payload.profession_key
-      ? payload.profession_key
+    const professionKey = typeof payload.professionKey === 'string' && payload.professionKey
+      ? payload.professionKey
       : null;
-
-    if (professionKey) {
-      const answers = Array.isArray(payload.answers) ? payload.answers : [];
-      await client.query(
-        `INSERT INTO worker_trust_assessments (id, user_id, profession_key, answers, status, created_at)
-         VALUES (gen_random_uuid(), $1, $2, $3::jsonb, 'pending', now())
-         ON CONFLICT (user_id, profession_key) WHERE status IN ('pending','scoring','scored') DO NOTHING`,
-        [event.aggregate_id, professionKey, JSON.stringify(answers)],
-      );
+    if (!professionKey) {
+      throw new Error('assessment_provenance_missing_profession_key');
     }
+
+    const resolved = await client.query<{ id: string }>(
+      `SELECT id FROM worker_trust_assessments
+        WHERE user_id = $1 AND profession_key = $2
+          AND status IN ('pending','scoring','scored')
+        ORDER BY created_at DESC LIMIT 1`,
+      [event.aggregate_id, professionKey],
+    );
+    const row = resolved.rows[0];
+    if (!row) {
+      throw new Error('assessment_pending_row_not_found');
+    }
+    const assessmentId = row.id;
+
+    await dispatch({ assessmentId, userId: event.aggregate_id, professionKey });
 
     const completion = await client.query(
       `UPDATE worker_domain_outbox
@@ -259,6 +327,7 @@ async function processAssessmentRequested(
     return true;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);
+    console.log(JSON.stringify({ metric: 'WhatsAppAssessmentDispatchFailure', event_type: event.event_type }));
     await markFailure(client, event, err);
     return false;
   }
@@ -297,7 +366,7 @@ export async function runDrain(
 
       const ok = event.event_type === 'worker.ready'
         ? await processWorkerReady(client, event, deps)
-        : await processAssessmentRequested(client, event);
+        : await processAssessmentRequested(client, event, deps);
 
       if (ok) completed += 1;
       else failed += 1;
