@@ -8,7 +8,7 @@ import type {
   ReleaseRenderer,
 } from './lib/onboarding-types';
 import { DELIVERY_POLICY_VERSION } from './lib/onboarding-types';
-import { loadWorkerGate } from './lib/onboarding-repository';
+import { loadWorkerGate, type WorkerGate } from './lib/onboarding-repository';
 import { loadRuntimeControls } from './lib/runtime-controls';
 import { evaluateDelivery } from './lib/delivery-policy';
 import { insertAuthorizedIntentOutbox } from './lib/outbox';
@@ -85,6 +85,20 @@ const STATUS_BY_NON_ALLOW_ACTION: Record<'defer' | 'reject' | 'expire', IntentSt
   reject: 'rejected',
   expire: 'expired',
 };
+
+// The eligibility reload's "worker still ready" predicate (job_alert,
+// employer_chat). `WorkerLifecycle` is exactly 'onboarding' | 'ready' |
+// 'suspended' (onboarding-types.ts). 'onboarding' is intentionally exempted
+// here — that transient pre-ready state is already handled by
+// evaluateDelivery's own `lifecycle === 'onboarding'` -> defer/'worker_onboarding'
+// path (see the "marks a survivor no longer allowed as deferred" test), so a
+// worker mid-onboarding must keep deferring, not get permanently superseded.
+// This predicate only fires for a genuinely non-ready, non-transient state:
+// 'suspended', or no gate row at all (gate === null).
+function isWorkerNotReadyForRelease(gate: WorkerGate | null): boolean {
+  const lifecycle = gate?.lifecycle;
+  return lifecycle !== 'ready' && lifecycle !== 'onboarding';
+}
 
 function toDate(value: Date | string | null): Date | null {
   if (value === null || value === undefined) return null;
@@ -248,6 +262,18 @@ export async function releaseWorkerReady(
     : [];
   const jobById = new Map(jobRows.map((r) => [r.id, r]));
 
+  // Mirrors the producer's own dedup guard (job-alert.ts:101-104): a worker
+  // who has since applied to the job no longer needs the alert.
+  const appliedJobRows = jobAlertIntents.length
+    ? (
+        await client.query<{ job_id: string }>(
+          `SELECT job_id FROM job_applications WHERE worker_id = $1 AND job_id = ANY($2::uuid[])`,
+          [workerId, jobAlertIntents.map((i) => i.sourceId)],
+        )
+      ).rows
+    : [];
+  const appliedJobIds = new Set(appliedJobRows.map((r) => r.job_id));
+
   const employerChatIntents = working.filter((i) => i.category === 'employer_chat');
   const chatRows = employerChatIntents.length
     ? (
@@ -255,19 +281,29 @@ export async function releaseWorkerReady(
           message_id: string;
           conversation_id: string;
           conversation_status: string;
+          job_status: string;
           job_title: string;
           company_name: string;
+          employer_exists: boolean;
+          application_exists: boolean;
         }>(
           `SELECT jcm.id AS message_id,
                   jc.id AS conversation_id,
                   jc.status AS conversation_status,
+                  j.status AS job_status,
                   j.title AS job_title,
-                  employer_display_name(jc.employer_id) AS company_name
+                  employer_display_name(jc.employer_id) AS company_name,
+                  (eu.id IS NOT NULL) AS employer_exists,
+                  EXISTS (
+                    SELECT 1 FROM job_applications ja
+                     WHERE ja.job_id = jc.job_id AND ja.worker_id = $2
+                  ) AS application_exists
              FROM job_conversation_messages jcm
              JOIN job_conversations jc ON jc.id = jcm.conversation_id
              JOIN jobs j ON j.id = jc.job_id
+             LEFT JOIN users eu ON eu.id = jc.employer_id
             WHERE jcm.id = ANY($1::uuid[])`,
-          [employerChatIntents.map((i) => i.sourceId)],
+          [employerChatIntents.map((i) => i.sourceId), workerId],
         )
       ).rows
     : [];
@@ -284,9 +320,44 @@ export async function releaseWorkerReady(
         superseded++;
         continue;
       }
+      if (isWorkerNotReadyForRelease(gate)) {
+        await discard(intent, 'superseded', 'worker_not_ready');
+        superseded++;
+        continue;
+      }
+      if (appliedJobIds.has(intent.sourceId)) {
+        await discard(intent, 'superseded', 'worker_already_applied');
+        superseded++;
+        continue;
+      }
     } else if (intent.category === 'employer_chat') {
       const chat = chatByMessageId.get(intent.sourceId);
-      if (!chat || chat.conversation_status !== 'open') {
+      if (!chat) {
+        await discard(intent, 'superseded', 'message_missing');
+        superseded++;
+        continue;
+      }
+      if (chat.job_status !== 'active') {
+        await discard(intent, 'superseded', 'job_not_active');
+        superseded++;
+        continue;
+      }
+      if (!chat.employer_exists) {
+        await discard(intent, 'superseded', 'employer_missing');
+        superseded++;
+        continue;
+      }
+      if (isWorkerNotReadyForRelease(gate)) {
+        await discard(intent, 'superseded', 'worker_not_ready');
+        superseded++;
+        continue;
+      }
+      if (!chat.application_exists) {
+        await discard(intent, 'superseded', 'application_missing');
+        superseded++;
+        continue;
+      }
+      if (chat.conversation_status !== 'open') {
         await discard(intent, 'superseded', 'conversation_closed');
         superseded++;
         continue;

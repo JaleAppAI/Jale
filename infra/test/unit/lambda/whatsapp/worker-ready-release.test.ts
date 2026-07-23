@@ -25,6 +25,12 @@ interface ChatSourceRow {
   conversation_status: string;
   job_title: string;
   company_name: string;
+  // All three default to the "still eligible" value when omitted, so
+  // existing test fixtures that predate these predicates keep passing
+  // unchanged.
+  job_status?: string;
+  employer_exists?: boolean;
+  application_exists?: boolean;
 }
 
 /**
@@ -51,10 +57,15 @@ function scriptedClient(opts: {
   preferredLanguage?: string;
   whatsappNumber?: string | null;
   maxExistingSequence?: number | null;
+  /** job_ids the worker has already applied to (job_applications rows). */
+  appliedJobIds?: string[];
+  /** When true, the worker_onboarding_state lookup returns zero rows (loadWorkerGate resolves null). */
+  noGateRow?: boolean;
 }) {
   const intents = new Map(opts.intents.map((i) => [i.id, { ...i }]));
   const jobsById = new Map((opts.jobs ?? []).map((j) => [j.id, j]));
   const chatsByMessageId = new Map((opts.chats ?? []).map((c) => [c.message_id, c]));
+  const appliedJobIds = new Set(opts.appliedJobIds ?? []);
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   const outboxRows: Array<{ id: string; intentId: string; params: unknown[] }> = [];
   // Mirrors the worker_message_intent_dedupe UNIQUE constraint: the
@@ -119,6 +130,9 @@ function scriptedClient(opts: {
     }
 
     if (/FROM worker_onboarding_state/.test(sql)) {
+      if (opts.noGateRow) {
+        return { rows: [] };
+      }
       return {
         rows: [{
           user_id: WORKER_ID,
@@ -151,7 +165,25 @@ function scriptedClient(opts: {
 
     if (/FROM job_conversation_messages jcm/.test(sql)) {
       const ids = params[0] as string[];
-      return { rows: ids.map((id) => chatsByMessageId.get(id)).filter(Boolean) as ChatSourceRow[] };
+      const rows = ids
+        .map((id) => chatsByMessageId.get(id))
+        .filter(Boolean)
+        .map((c) => ({
+          ...(c as ChatSourceRow),
+          job_status: (c as ChatSourceRow).job_status ?? 'active',
+          employer_exists: (c as ChatSourceRow).employer_exists ?? true,
+          application_exists: (c as ChatSourceRow).application_exists ?? true,
+        }));
+      return { rows };
+    }
+
+    // job_alert's "already applied" reload — distinct from the employer_chat
+    // combined query above, which embeds its own job_applications EXISTS
+    // subquery but never matches this substring (no `WHERE worker_id = $1
+    // AND job_id = ANY` shape there).
+    if (/FROM job_applications WHERE worker_id = \$1 AND job_id = ANY/.test(sql)) {
+      const ids = params[1] as string[];
+      return { rows: ids.filter((id) => appliedJobIds.has(id)).map((id) => ({ job_id: id })) };
     }
 
     if (/SET status = \$1, decision_reason = \$2/.test(sql)) {
@@ -569,5 +601,228 @@ describe('releaseWorkerReady', () => {
     const onboardingIntents = [...finalIntents.values()].filter((i) => i.category === 'onboarding');
     expect(onboardingIntents).toHaveLength(1);
     expect(onboardingIntents[0].status).toBe('released');
+  });
+
+  // ── O2: release-time eligibility reload ──────────────────────────
+
+  describe('job_alert release-time eligibility', () => {
+    it('discards a job_alert intent for a suspended worker with worker_not_ready, never rendering it', async () => {
+      const intents = [
+        intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', priority: 30, payload: { score: 5 } }),
+      ];
+      const jobs = [{ id: 'job-1', status: 'active', title: 'A', company: 'C' }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents, jobs, lifecycle: 'suspended',
+      });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ja-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ja-1') as any).decision_reason).toBe('worker_not_ready');
+      const jobAlertRequests = (render.mock.calls as any[]).map((c) => c[0]).filter((r) => r.kind === 'job_alert_digest');
+      expect(jobAlertRequests).toHaveLength(0);
+      expect(outboxRows.some((r) => r.intentId === 'ja-1')).toBe(false);
+    });
+
+    it('discards a job_alert intent with no gate row at all with worker_not_ready', async () => {
+      const intents = [
+        intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', priority: 30, payload: { score: 5 } }),
+      ];
+      const jobs = [{ id: 'job-1', status: 'active', title: 'A', company: 'C' }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents, jobs, noGateRow: true,
+      });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ja-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ja-1') as any).decision_reason).toBe('worker_not_ready');
+      expect(outboxRows.some((r) => r.intentId === 'ja-1')).toBe(false);
+    });
+
+    it('discards a job_alert intent the worker already applied to with worker_already_applied', async () => {
+      const intents = [
+        intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', priority: 30, payload: { score: 5 } }),
+      ];
+      const jobs = [{ id: 'job-1', status: 'active', title: 'A', company: 'C' }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents, jobs, appliedJobIds: ['job-1'],
+      });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ja-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ja-1') as any).decision_reason).toBe('worker_already_applied');
+      const jobAlertRequests = (render.mock.calls as any[]).map((c) => c[0]).filter((r) => r.kind === 'job_alert_digest');
+      expect(jobAlertRequests).toHaveLength(0);
+      expect(outboxRows.some((r) => r.intentId === 'ja-1')).toBe(false);
+    });
+
+    it('still releases a job_alert intent for a ready worker who has not applied (happy path)', async () => {
+      const intents = [
+        intentRow({ id: 'ja-1', category: 'job_alert', source_id: 'job-1', priority: 30, payload: { score: 5 } }),
+      ];
+      const jobs = [{ id: 'job-1', status: 'active', title: 'A', company: 'C' }];
+      const { client, intents: finalIntents } = scriptedClient({
+        eventStatus: 'processing', intents, jobs, lifecycle: 'ready', appliedJobIds: [],
+      });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ja-1')?.status).toBe('released');
+      expect(requests.some((r) => r.kind === 'job_alert_digest')).toBe(true);
+    });
+  });
+
+  describe('employer_chat release-time eligibility', () => {
+    it('discards an employer_chat intent whose message no longer exists with message_missing', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-gone', priority: 40,
+        }),
+      ];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({ eventStatus: 'processing', intents, chats: [] });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('message_missing');
+      expect(render.mock.calls.some((c: any[]) => c[0].kind !== 'onboarding_complete')).toBe(false);
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+    });
+
+    it('discards an employer_chat intent for a closed job with job_not_active', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        }),
+      ];
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', company_name: 'ACME', job_status: 'closed',
+      }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({ eventStatus: 'processing', intents, chats });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('job_not_active');
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+    });
+
+    it('discards an employer_chat intent for a missing employer with employer_missing', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        }),
+      ];
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', company_name: 'ACME', employer_exists: false,
+      }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({ eventStatus: 'processing', intents, chats });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('employer_missing');
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+    });
+
+    it('discards an employer_chat intent for a suspended worker with worker_not_ready', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        }),
+      ];
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', company_name: 'ACME',
+      }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({
+        eventStatus: 'processing', intents, chats, lifecycle: 'suspended',
+      });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('worker_not_ready');
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+    });
+
+    it('discards an employer_chat intent with no application on file with application_missing', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        }),
+      ];
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', company_name: 'ACME', application_exists: false,
+      }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({ eventStatus: 'processing', intents, chats });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('application_missing');
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+    });
+
+    it('discards an employer_chat intent for a closed conversation with conversation_closed', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        }),
+      ];
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'closed',
+        job_title: 'Plomero', company_name: 'ACME',
+      }];
+      const { client, intents: finalIntents, outboxRows } = scriptedClient({ eventStatus: 'processing', intents, chats });
+      const { render } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
+      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('conversation_closed');
+      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+    });
+
+    it('still releases an employer_chat intent when the job is active, employer exists, worker is ready, and an application is on file (happy path)', async () => {
+      const intents = [
+        intentRow({
+          id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
+          source_type: 'job_conversation_message', source_id: 'msg-1', priority: 40,
+        }),
+      ];
+      const chats = [{
+        message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
+        job_title: 'Plomero', company_name: 'ACME',
+        job_status: 'active', employer_exists: true, application_exists: true,
+      }];
+      const { client, intents: finalIntents } = scriptedClient({ eventStatus: 'processing', intents, chats });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(finalIntents.get('ec-1')?.status).toBe('released');
+      expect(requests.some((r) => r.kind === 'employer_chat_single')).toBe(true);
+    });
   });
 });
