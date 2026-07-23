@@ -12,6 +12,8 @@ const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
+
 describe('employer-jobs-detail', () => {
   const originalEnv = process.env;
 
@@ -30,12 +32,22 @@ describe('employer-jobs-detail', () => {
 
   const baseEvent = {
     requestContext: { authorizer: { claims: { sub: 'employer-sub-1' } } },
-    pathParameters: { jobId: 'job-1' },
+    pathParameters: { jobId: JOB_ID },
   } as unknown as APIGatewayProxyEvent;
+
+  it('returns 400 when jobId is not a valid UUID', async () => {
+    const res = await handler({
+      requestContext: { authorizer: { claims: { sub: 'employer-sub-1' } } },
+      pathParameters: { jobId: 'not-a-uuid' },
+    } as unknown as APIGatewayProxyEvent);
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_job_id');
+  });
 
   it('returns full job posting details', async () => {
     const row = {
-      id: 'job-1',
+      id: JOB_ID,
       title: 'Forklift Driver',
       location: 'Houston',
       job_type: 'full-time',
@@ -62,7 +74,7 @@ describe('employer-jobs-detail', () => {
       if (sql.includes('SELECT id, title, location')) {
         return Promise.resolve({
           rows: [{
-            id: 'job-1',
+            id: JOB_ID,
             title: 'Painter',
             location: 'Austin',
             job_type: 'contract',

@@ -71,6 +71,8 @@ describe('employer candidate ranking', () => {
           },
         ],
       })
+      // Dedicated COUNT query for the true applicant total.
+      .mockResolvedValueOnce({ rows: [{ total: '2' }] })
       .mockResolvedValueOnce({ rows: [] });
 
     const result = await listEmployerCandidates(makeClient(query), 'job-1', { limit: 10 });
@@ -91,6 +93,55 @@ describe('employer candidate ranking', () => {
       'Trade match',
       'Relevant skills: conduit, panels, wiring',
     ]));
+  });
+
+  it('reports the true applicant total even when applicants exceed the shortlist cap', async () => {
+    const makeRow = (i: number) => ({
+      application_id: `app-${i}`,
+      worker_id: `worker-${i}`,
+      full_name: `Worker ${i}`,
+      phone: null,
+      status: 'submitted',
+      applied_at: '2026-05-11T00:00:00.000Z',
+      skills: ['paint'],
+      profile_skills: [],
+      bio: '',
+      location: 'Houston',
+      availability: 'part_time',
+      profile_years_experience: 3,
+      main_trade: 'painting',
+      main_trade_other: null,
+      user_years_experience: '2-4',
+      user_availability: 'part_time',
+      city: 'Houston',
+      trust_score: 30,
+    });
+
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'job-1',
+          title: 'Painter',
+          location: 'Houston',
+          job_type: 'full-time',
+          description: 'Need painting help.',
+          required_docs: [],
+          created_at: '2026-05-10T00:00:00.000Z',
+        }],
+      })
+      // Shortlist query is capped (LIMIT shortlistLimit), so it only returns
+      // a subset of the true applicant pool.
+      .mockResolvedValueOnce({
+        rows: Array.from({ length: 5 }, (_, i) => makeRow(i)),
+      })
+      // Dedicated COUNT query reports the true, uncapped applicant total.
+      .mockResolvedValueOnce({ rows: [{ total: '400' }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await listEmployerCandidates(makeClient(query), 'job-1', { limit: 10 });
+
+    expect(result.response.total).toBe(400);
+    expect(result.response.candidates.length).toBeLessThanOrEqual(10);
   });
 
   it('does not query raw trust answers or trust rationale', async () => {
@@ -197,6 +248,8 @@ describe('employer candidate ranking', () => {
           },
         ],
       })
+      // Dedicated COUNT query for the true applicant total.
+      .mockResolvedValueOnce({ rows: [{ total: '1' }] })
       .mockResolvedValueOnce({
         rows: [{
           worker_id: 'worker-1',

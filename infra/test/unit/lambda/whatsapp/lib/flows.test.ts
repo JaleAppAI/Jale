@@ -139,6 +139,21 @@ describe('flows.ts — detectCommandLanguage', () => {
   });
 });
 
+describe('detectCommandLanguage — shared menu words do not flip language', () => {
+  it('returns null for "chats" (Spanish menu also uses it)', () => {
+    expect(detectCommandLanguage('chats')).toBeNull();
+  });
+  it('returns null for a numbered "info" action', () => {
+    expect(detectCommandLanguage('1 info')).toBeNull();
+  });
+  it('still detects unambiguous English', () => {
+    expect(detectCommandLanguage('jobs')).toBe('en');
+  });
+  it('still detects unambiguous Spanish', () => {
+    expect(detectCommandLanguage('trabajos')).toBe('es');
+  });
+});
+
 describe('flows.ts — normalizeCommandText', () => {
   test.each([
     ['help.', 'help'],

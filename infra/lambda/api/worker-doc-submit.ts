@@ -34,34 +34,36 @@ export const handler = async (
     const pool = await getDbPool();
     client = await pool.connect();
 
-    const tokenState = await client.query(
-      `SELECT token.used,
-              token.expires_at > now() AS unexpired,
-              EXISTS (
-                SELECT 1
-                FROM document_upload_token_slots slots
-                WHERE slots.token_hash = token.token_hash
-                  AND slots.confirmed_at IS NOT NULL
-              ) AS has_confirmed_documents
-       FROM document_upload_tokens token
-       WHERE token.token_hash = $1`,
+    const result = await client.query(
+      `UPDATE document_upload_tokens token
+          SET used = true, used_at = COALESCE(used_at, now())
+        WHERE token.token_hash = $1
+          AND token.expires_at > now()
+          AND EXISTS (
+            SELECT 1 FROM document_upload_token_slots slots
+            WHERE slots.token_hash = token.token_hash
+              AND slots.confirmed_at IS NOT NULL
+          )
+        RETURNING token.used`,
       [tokenHash],
     );
-
-    if (tokenState.rows.length === 0 || tokenState.rows[0].unexpired !== true) {
-      return {
-        statusCode: 401,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'invalid_token' }),
-      };
-    }
-
-    const state = tokenState.rows[0];
-    if (state.used === true && state.has_confirmed_documents === true) {
+    if (result.rowCount === 1) {
       return {
         statusCode: 200,
         headers: CORS_HEADERS,
         body: JSON.stringify({ success: true }),
+      };
+    }
+
+    const exists = await client.query(
+      `SELECT (expires_at > now()) AS unexpired FROM document_upload_tokens WHERE token_hash = $1`,
+      [tokenHash],
+    );
+    if (exists.rows.length === 0 || exists.rows[0].unexpired !== true) {
+      return {
+        statusCode: 401,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'invalid_token' }),
       };
     }
 

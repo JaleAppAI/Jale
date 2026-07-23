@@ -24,6 +24,7 @@ import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import { applicationStatusTone, jobStatusTone } from '@/lib/status';
 import type { WritableJobStatus } from '@/lib/status';
+import { formatStartDate } from '@/lib/date';
 
 export const dynamic = 'force-dynamic';
 
@@ -338,6 +339,7 @@ export default function JobDetailPage() {
     />
     {job && (
       <EditJobModal
+        key={`${job.id}:${editOpen}`}
         open={editOpen}
         job={job}
         onClose={() => setEditOpen(false)}
@@ -346,20 +348,6 @@ export default function JobDetailPage() {
     )}
     </>
   );
-}
-
-// start_date is a date-only value (YYYY-MM-DD). Format it in UTC so the day
-// doesn't shift in negative-offset timezones, and localize the month name.
-function formatStartDate(value: string | null, locale: string): string | null {
-  if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString(locale === 'es' ? 'es-MX' : 'en-US', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    timeZone: 'UTC',
-  });
 }
 
 function DetailField({ label, value }: { label: string; value: string }) {

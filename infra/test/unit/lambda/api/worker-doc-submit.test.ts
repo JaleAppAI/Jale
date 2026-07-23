@@ -25,8 +25,51 @@ describe('worker-doc-submit Lambda', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('returns 401 if token is missing from the database', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [] });
+  it('marks the token used and returns 200 when at least one document slot is confirmed', async () => {
+    mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ used: true }] }); // UPDATE ... RETURNING token.used
+
+    const res = await handler(makeEvent({ token: 'valid-token' }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+    const updateSql = mockQuery.mock.calls[0][0] as string;
+    expect(updateSql).toContain('UPDATE document_upload_tokens');
+    expect(updateSql).toContain('SET used = true');
+    expect(updateSql).toContain('used_at = COALESCE(used_at, now())');
+    expect(updateSql).toContain('slots.confirmed_at IS NOT NULL');
+    expect(mockRelease).toHaveBeenCalled();
+    // Only the single UPDATE query was needed -- no fallback existence check.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('is idempotent: a second submit on an already-used token still returns 200', async () => {
+    // The token is already `used = true` from the first submit, but it
+    // remains unexpired and still has a confirmed slot, so the UPDATE's
+    // WHERE clause matches again and re-affirms success.
+    mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [{ used: true }] });
+
+    const res = await handler(makeEvent({ token: 'valid-token' }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ success: true });
+  });
+
+  it('returns 409 confirm_required when the token is live but has no confirmed slots', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // UPDATE matches nothing (no confirmed slot)
+      .mockResolvedValueOnce({ rows: [{ unexpired: true }] }); // existence/expiry check
+
+    const res = await handler(makeEvent({ token: 'valid-token' }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('confirm_required');
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('returns 401 if the token is missing from the database', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // UPDATE matches nothing
+      .mockResolvedValueOnce({ rows: [] }); // existence/expiry check finds nothing
 
     const res = await handler(makeEvent({ token: 'bad' }));
 
@@ -34,53 +77,14 @@ describe('worker-doc-submit Lambda', () => {
     expect(JSON.parse(res.body).error).toBe('invalid_token');
   });
 
-  it('returns 401 if token is expired', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ used: false, unexpired: false, has_confirmed_documents: false }],
-    });
+  it('returns 401 if the token is expired', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // UPDATE matches nothing (expired)
+      .mockResolvedValueOnce({ rows: [{ unexpired: false }] }); // existence/expiry check
 
     const res = await handler(makeEvent({ token: 'expired-token' }));
 
     expect(res.statusCode).toBe(401);
     expect(JSON.parse(res.body).error).toBe('invalid_token');
-  });
-
-  it('returns 409 confirm_required for a live token that confirm has not consumed', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ used: false, unexpired: true, has_confirmed_documents: false }],
-    });
-
-    const res = await handler(makeEvent({ token: 'valid-token' }));
-
-    expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body).error).toBe('confirm_required');
-  });
-
-  it('returns 200 for a token already consumed by confirm with a confirmed slot', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ used: true, unexpired: true, has_confirmed_documents: true }],
-    });
-
-    const res = await handler(makeEvent({ token: 'valid-token' }));
-
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ success: true });
-    expect(mockRelease).toHaveBeenCalled();
-  });
-
-  it('never marks a token used from the legacy submit endpoint', async () => {
-    mockQuery.mockResolvedValueOnce({
-      rows: [{ used: false, unexpired: true, has_confirmed_documents: false }],
-    });
-
-    await handler(makeEvent({ token: 'valid-token' }));
-
-    const executedSql = mockQuery.mock.calls
-      .map(([sql]) => String(sql))
-      .join('\n');
-    expect(executedSql).not.toContain('SET used = true');
-    expect(executedSql).not.toContain('used_at = now()');
-    expect(mockQuery).not.toHaveBeenCalledWith('BEGIN');
-    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 });

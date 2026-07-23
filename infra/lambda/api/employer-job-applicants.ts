@@ -5,6 +5,7 @@ import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -19,6 +20,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const jobId = event.pathParameters?.jobId;
     if (!jobId) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_job_id' }) };
+    }
+    if (!UUID_REGEX.test(jobId)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_id' }) };
     }
 
     const pool = await getDbPool();
