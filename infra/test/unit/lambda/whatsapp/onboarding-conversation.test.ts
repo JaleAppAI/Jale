@@ -193,6 +193,17 @@ function fakeQuery(sql: string, params: unknown[] = []): { rowCount: number; row
     return { rowCount: 0, rows: [] };
   }
 
+  // ── Task 6 v2 routing branch decision ────────────────────────────────
+  //
+  // routeMessage's fail-closed v2 branch reads DB-backed runtime controls
+  // before any legacy handling. This suite drives only legacy phones, so
+  // every real row lookup here comes back empty (no whatsapp_runtime_controls
+  // row for this test's phone) — isV2Enabled then fails closed to disabled
+  // and the state machine below runs bit-identically to before Task 6.
+  if (/FROM whatsapp_runtime_controls/i.test(sql)) {
+    return { rowCount: 0, rows: [] };
+  }
+
   // ── whatsapp_processed_messages claim lifecycle ─────────────────────
   if (/INSERT INTO whatsapp_processed_messages/i.test(sql)) {
     const [sid, whatsappNumber] = params as string[];
