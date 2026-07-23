@@ -1,10 +1,9 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool } from '../lib/db';
-import { parseFormBody, validateTwilioSignature } from './lib/twilio';
+import { isTwilioMessageSid, parseFormBody, validateTwilioSignature } from './lib/twilio';
 import { getTwilioSecret, requireTwilioStatusCallbackUrl } from './lib/twilio-secret';
 
 const MAX_BODY_BYTES = 16 * 1024;
-const SID_RE = /^SM[0-9A-Fa-f]{32}$/;
 const STATUS_RE = /^(queued|accepted|sent|delivered|read|undelivered|failed)$/;
 const ERROR_CODE_RE = /^[0-9]{1,10}$/;
 
@@ -60,7 +59,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const status = (params.MessageStatus ?? params.SmsStatus)?.trim().toLowerCase();
   const errorCode = params.ErrorCode?.trim() || null;
   const errorMessage = params.ErrorMessage?.trim() || null;
-  if (!sid || !SID_RE.test(sid)
+  if (!isTwilioMessageSid(sid)
       || !status || !STATUS_RE.test(status)
       || (errorCode !== null && !ERROR_CODE_RE.test(errorCode))
       || (errorMessage !== null && errorMessage.length > 1000)) {

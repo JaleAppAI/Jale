@@ -8,10 +8,15 @@ jest.mock('@aws-sdk/client-secrets-manager', () => ({
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const mockConnect = jest.fn();
+const mockSetInternalUserRlsContext = jest.fn(
+  (client: { query: (sql: string, params?: unknown[]) => Promise<unknown> }, userId: string) =>
+    client.query(`SELECT set_config('app.current_internal_user_id', $1, true)`, [userId]),
+);
 
 jest.mock('../../../../lambda/lib/db', () => ({
   getDbPool: jest.fn(() => Promise.resolve({ connect: mockConnect })),
   setRlsContext: jest.fn(),
+  setInternalUserRlsContext: mockSetInternalUserRlsContext,
 }));
 
 // job-alert.ts is producer-only: it must never call Twilio (fetch). All
@@ -91,6 +96,7 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
           whatsapp_number: '+15125551234',
           language: 'es',
           main_trade: 'electrician',
+          legacy_ready: true,
         }],
       })
       .mockResolvedValueOnce({ rows: [{ id: 'outbox-claimed' }] }); // queueJobAlert INSERT
@@ -131,7 +137,7 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
         rowCount: 1,
         rows: [{
           id: 'w1', whatsapp_number: '+15125550000',
-          language: 'en', main_trade: 'electrician',
+          language: 'en', main_trade: 'electrician', legacy_ready: true,
         }],
       })
       .mockResolvedValueOnce({ rows: [{ id: 'outbox-claimed' }] });
@@ -152,8 +158,8 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
       .mockResolvedValueOnce({
         rowCount: 2,
         rows: [
-          { id: 'w1', whatsapp_number: '+1001', language: 'es', main_trade: null },
-          { id: 'w2', whatsapp_number: '+1002', language: 'en', main_trade: null },
+          { id: 'w1', whatsapp_number: '+1001', language: 'es', main_trade: null, legacy_ready: true },
+          { id: 'w2', whatsapp_number: '+1002', language: 'en', main_trade: null, legacy_ready: true },
         ],
       })
       .mockResolvedValueOnce({ rows: [{ id: 'outbox-1' }] })
@@ -175,8 +181,8 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
       .mockResolvedValueOnce({
         rowCount: 2,
         rows: [
-          { id: 'w1', whatsapp_number: '+1001', language: 'es', main_trade: null },
-          { id: 'w2', whatsapp_number: '+1002', language: 'en', main_trade: null },
+          { id: 'w1', whatsapp_number: '+1001', language: 'es', main_trade: null, legacy_ready: true },
+          { id: 'w2', whatsapp_number: '+1002', language: 'en', main_trade: null, legacy_ready: true },
         ],
       })
       .mockResolvedValueOnce({ rows: [{ id: 'outbox-1' }] })
@@ -216,7 +222,7 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
       })
       .mockResolvedValueOnce({
         rowCount: 1,
-        rows: [{ id: 'w1', whatsapp_number: '+1001', language: 'es', main_trade: null }],
+        rows: [{ id: 'w1', whatsapp_number: '+1001', language: 'es', main_trade: null, legacy_ready: true }],
       });
 
     const { handler: freshHandler } = require('../../../../lambda/whatsapp/job-alert');
@@ -235,6 +241,26 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
 
     expect(result).toEqual({ queued: 0, skipped: 0 });
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('selects v2-ready workers even when they have no legacy idle conversation', async () => {
+    mockQuery
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: 'j1', title: 'T', company: 'C', location: 'L', pay: '$1' }],
+      })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+    await handler({ jobId: 'j1' });
+
+    const candidateSelect = mockQuery.mock.calls.find(([sql]) =>
+      /FROM users u/.test(sql) && /job_applications/.test(sql));
+    expect(candidateSelect).toBeDefined();
+    expect(candidateSelect![0]).toContain('LEFT JOIN whatsapp_conversations wc');
+    expect(candidateSelect![0]).toContain('public.is_worker_ready_for_v2_delivery(u.id)');
+    expect(candidateSelect![0]).toMatch(
+      /\(wc\.conversation_state = 'idle'\s+OR public\.is_worker_ready_for_v2_delivery\(u\.id\)\)/,
+    );
   });
 
   it('releases the DB client even on success', async () => {
@@ -256,5 +282,213 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
     await expect(handler({ jobId: 'j1' })).rejects.toThrow('db down');
 
     expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Job Alert Sender Lambda — v2 redirect', () => {
+  const originalEnv = process.env;
+  const V2_WORKER = 'worker-v2-uuid';
+  const V2_PHONE = '+15125559999';
+
+  // scriptedClient dispatches by SQL substring (not call order) so it stays
+  // resilient to internal reordering — same convention as
+  // worker-delivery-gateway.test.ts's scriptedClient.
+  function scriptedClient(opts: {
+    v2GlobalEnabled: boolean;
+    gateRow?: Record<string, unknown> | null;
+    workers?: Array<{ id: string; whatsapp_number: string; language: 'en' | 'es'; main_trade: null; legacy_ready?: boolean | null }>;
+    failWorkerIds?: readonly string[];
+  }) {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const query = jest.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (/FROM jobs WHERE id = \$1/.test(sql)) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: 'job-1', title: 'Electricista', company: 'ACME',
+            location: 'Austin', pay: '$40/hr',
+          }],
+        };
+      }
+      if (/JOIN whatsapp_conversations wc/.test(sql)) {
+        const rows = opts.workers ?? [{
+          id: V2_WORKER, whatsapp_number: V2_PHONE, language: 'es' as const, main_trade: null, legacy_ready: true,
+        }];
+        return { rowCount: rows.length, rows };
+      }
+      if (/FROM whatsapp_runtime_controls/.test(sql)) {
+        return {
+          rows: [{
+            control_key: 'onboarding_v2_enabled',
+            enabled: true,
+            phone_hashes: [],
+            global_enabled: opts.v2GlobalEnabled,
+          }],
+        };
+      }
+      if (/INSERT INTO worker_message_intents/.test(sql)) {
+        const workerId = params[0] as string;
+        if (opts.failWorkerIds?.includes(workerId)) throw new Error(`intent failure ${workerId}`);
+        return { rows: [{ id: `intent-${workerId}`, outbox_id: null, status: 'deferred' }] };
+      }
+      if (/INSERT INTO whatsapp_outbox/.test(sql) && sql.includes("'job_alert'")) {
+        return { rows: [{ id: 'outbox-legacy-1' }] };
+      }
+      if (/FROM worker_onboarding_state/.test(sql)) {
+        return { rows: opts.gateRow ? [opts.gateRow] : [] };
+      }
+      if (/UPDATE worker_message_intents/.test(sql)) {
+        return { rowCount: 1, rows: [] };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    return { query, calls };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env = {
+      ...originalEnv,
+      TWILIO_SECRET_ARN: 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/twilio',
+      DB_SECRET_ARN: 'arn:aws:secretsmanager:us-east-2:123:secret:jale/whatsapp/db',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+    };
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC12345',
+        authToken: 'test-auth-token',
+        messagingServiceSid: 'MGtest12345',
+        templates: { job_alert_es: JOB_ALERT_SID_ES, job_alert_en: JOB_ALERT_SID_EN },
+      }),
+    });
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('a v2-disabled worker follows the legacy outbox path byte-for-byte and creates no intent row', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: false });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    const result = await handler({ jobId: 'job-1' });
+
+    expect(result).toEqual({ queued: 1, skipped: 0 });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(false);
+    const legacyInsert = calls.find((c) => /INSERT INTO whatsapp_outbox/.test(c.sql) && c.sql.includes("'job_alert'"));
+    expect(legacyInsert).toBeDefined();
+  });
+
+
+  it('does not send a v2-ready-only candidate through the legacy outbox when rollout is disabled', async () => {
+    const { query, calls } = scriptedClient({
+      v2GlobalEnabled: false,
+      workers: [{
+        id: V2_WORKER,
+        whatsapp_number: V2_PHONE,
+        language: 'es',
+        main_trade: null,
+        legacy_ready: null,
+      }],
+    });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    await expect(handler({ jobId: 'job-1' })).resolves.toEqual({ queued: 0, skipped: 1 });
+    expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(false);
+  });
+  it('a v2-enabled worker creates exactly one worker_message_intents row with the exact dedupe key and expiry, and issues no whatsapp_outbox insert / no fetch', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: true });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+    const beforeMs = Date.now();
+
+    const result = await handler({ jobId: 'job-1' });
+
+    expect(result).toEqual({ queued: 1, skipped: 0 });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(false);
+
+    const intentInserts = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    expect(intentInserts).toHaveLength(1);
+    const params = intentInserts[0].params;
+    // (user_id, category, owner_service, source_type, source_id, dedupe_key,
+    //  priority, status, policy_version, payload, expires_at)
+    expect(params[0]).toBe(V2_WORKER);
+    expect(params[1]).toBe('job_alert');
+    expect(params[2]).toBe('job-alert');
+    expect(params[3]).toBe('job');
+    expect(params[4]).toBe('job-1');
+    expect(params[5]).toBe(`job-alert:job-1:${V2_WORKER}`);
+    expect(params[6]).toBe(30);
+    expect(JSON.parse(params[8] as string)).toEqual({
+      jobs: [{
+        jobId: 'job-1',
+        title: 'Electricista',
+        companyName: 'ACME',
+        score: 1,
+      }],
+    });
+    const expiresAt = params[9] as Date;
+    const expectedExpiryMs = beforeMs + 72 * 60 * 60 * 1000;
+    expect(Math.abs(expiresAt.getTime() - expectedExpiryMs)).toBeLessThan(5000);
+    const beginIndex = calls.findIndex((c) => c.sql === 'BEGIN');
+    const contextIndex = calls.findIndex((c) =>
+      c.sql.includes("set_config('app.current_internal_user_id'") &&
+      c.params[0] === V2_WORKER);
+    const intentIndex = calls.findIndex((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    const commitIndex = calls.findIndex((c) => c.sql === 'COMMIT');
+    expect(beginIndex).toBeGreaterThanOrEqual(0);
+    expect(contextIndex).toBeGreaterThan(beginIndex);
+    expect(intentIndex).toBeGreaterThan(contextIndex);
+    expect(commitIndex).toBeGreaterThan(intentIndex);
+  });
+
+  it('a repeated producer call for a v2-enabled worker does not create a second intent (ON CONFLICT no-op)', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: true });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    await handler({ jobId: 'job-1' });
+    await handler({ jobId: 'job-1' });
+
+    const intentInserts = calls.filter((c) => /INSERT INTO worker_message_intents/.test(c.sql));
+    // Both calls issue the idempotent ON CONFLICT insert; the dedupe_key is
+    // identical both times, which is what the UNIQUE constraint enforces at
+    // the database layer (a real DB would return the same row id both times).
+    expect(intentInserts).toHaveLength(2);
+    expect(intentInserts[0].params[5]).toBe(intentInserts[1].params[5]);
+    expect(calls.some((c) => /INSERT INTO whatsapp_outbox/.test(c.sql))).toBe(false);
+  });
+  it('attempts every v2 worker, then rejects with a stable aggregate when any enqueue fails', async () => {
+    const workers = [
+      { id: 'worker-c', whatsapp_number: '+15125550003', language: 'es' as const, main_trade: null },
+      { id: 'worker-a', whatsapp_number: '+15125550001', language: 'es' as const, main_trade: null },
+      { id: 'worker-b', whatsapp_number: '+15125550002', language: 'en' as const, main_trade: null },
+    ];
+    const { query, calls } = scriptedClient({
+      v2GlobalEnabled: true,
+      workers,
+      failWorkerIds: ['worker-c', 'worker-a'],
+    });
+    mockConnect.mockResolvedValue({ query, release: mockRelease });
+
+    let caught: unknown;
+    try {
+      await handler({ jobId: 'job-1' });
+    } catch (error) {
+      caught = error;
+    }
+
+    const attemptedWorkerIds = calls
+      .filter((c) => /INSERT INTO worker_message_intents/.test(c.sql))
+      .map((c) => c.params[0]);
+    expect(attemptedWorkerIds).toEqual(['worker-c', 'worker-a', 'worker-b']);
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect(caught).toMatchObject({ message: 'job_alert_fanout_failed' });
+    expect((caught as AggregateError).errors.map((error) => (error as Error).message)).toEqual([
+      'worker-a: intent failure worker-a',
+      'worker-c: intent failure worker-c',
+    ]);
   });
 });

@@ -18,6 +18,10 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+export function isTwilioMessageSid(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:SM|MM)[0-9a-fA-F]{32}$/.test(value);
+}
+
 /**
  * Validates a Twilio webhook signature.
  *

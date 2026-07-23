@@ -57,7 +57,29 @@ export type TemplateKey =
   // Support command
   | 'support_ack'
   | 'support_ack_existing'
-  | 'support_needs_signup';
+  | 'support_needs_signup'
+  // ── V2 workflow (additive; legacy keys above are unchanged) ──
+  | 'v2_start_invitation'
+  | 'v2_start_cooldown_note'
+  | 'v2_otp_sent'
+  | 'v2_otp_invalid'
+  | 'v2_otp_expired'
+  | 'v2_otp_locked'
+  | 'v2_otp_resend_cooldown'
+  | 'v2_otp_send_cap'
+  | 'v2_legal_prompt'
+  | 'v2_legal_declined'
+  | 'v2_ask_name'
+  | 'v2_name_invalid'
+  | 'v2_ask_location'
+  | 'v2_location_invalid'
+  | 'v2_ask_trade'
+  | 'v2_ask_custom_trade'
+  | 'v2_custom_trade_invalid'
+  | 'v2_gate_blocked'
+  | 'v2_language_changed'
+  | 'v2_ready'
+  | 'v2_options_footer';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -228,6 +250,91 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   support_needs_signup: {
     es: 'Para pedir ayuda, primero termina tu registro. Envia "Hola" para empezar.',
     en: 'To request help, please finish signing up first. Send "Hello" to get started.',
+  },
+
+  v2_start_invitation: {
+    es: 'Jale: trabajo en construccion por WhatsApp.\n\nResponde EMPEZAR para continuar en espanol, o START to continue in English.',
+    en: 'Jale: construction work over WhatsApp.\n\nReply START to continue in English, o responde EMPEZAR para continuar en espanol.',
+  },
+  v2_start_cooldown_note: {
+    es: 'Ya te enviamos una invitacion hace poco. Espera unos minutos e intenta de nuevo.',
+    en: 'We already sent you an invitation recently. Please wait a few minutes and try again.',
+  },
+  v2_otp_sent: {
+    es: 'Te enviamos un codigo por SMS. Responde aqui con el codigo. Vence en {{minutes}} minutos.',
+    en: 'We sent you a code by SMS. Reply here with the code. It expires in {{minutes}} minutes.',
+  },
+  v2_otp_invalid: {
+    es: 'Ese codigo no es correcto. Te quedan {{attempts}} intentos.',
+    en: 'That code is not correct. You have {{attempts}} attempts left.',
+  },
+  v2_otp_expired: {
+    es: 'Ese codigo ya vencio. Responde REENVIAR para recibir uno nuevo.',
+    en: 'That code has expired. Reply RESEND to get a new one.',
+  },
+  v2_otp_locked: {
+    es: 'Demasiados intentos. Intenta de nuevo en {{minutes}} minutos.',
+    en: 'Too many attempts. Try again in {{minutes}} minutes.',
+  },
+  v2_otp_resend_cooldown: {
+    es: 'Espera {{seconds}} segundos antes de pedir otro codigo.',
+    en: 'Please wait {{seconds}} seconds before requesting another code.',
+  },
+  v2_otp_send_cap: {
+    es: 'Pediste demasiados codigos. Intenta de nuevo mas tarde.',
+    en: 'You requested too many codes. Please try again later.',
+  },
+  v2_legal_prompt: {
+    es: 'Antes de continuar, revisa nuestros Terminos ({{tos_url}}) y nuestro Aviso de Privacidad ({{privacy_url}}). Responde ACEPTAR para continuar, RECHAZAR para detenerte, o REVISAR TERMINOS para verlos otra vez.',
+    en: 'Before we continue, please review our Terms ({{tos_url}}) and Privacy Policy ({{privacy_url}}). Reply ACCEPT to continue, DECLINE to stop, or REVIEW TERMS to see them again.',
+  },
+  v2_legal_declined: {
+    es: 'Entendido. No podemos continuar sin tu aceptacion. Responde REVISAR TERMINOS cuando quieras verlos otra vez.',
+    en: 'Understood. We cannot continue without your acceptance. Reply REVIEW TERMS whenever you want to see them again.',
+  },
+  v2_ask_name: {
+    es: 'Como te llamas? Escribe tu nombre completo.',
+    en: 'What is your name? Send your full name.',
+  },
+  v2_name_invalid: {
+    es: 'Necesitamos un nombre de 2 a 100 caracteres. Intenta de nuevo.',
+    en: 'We need a name between 2 and 100 characters. Please try again.',
+  },
+  v2_ask_location: {
+    es: 'En que ciudad trabajas? Envia tu codigo postal o Ciudad, ST.',
+    en: 'Where do you work? Send your ZIP code or City, ST.',
+  },
+  v2_location_invalid: {
+    es: 'No reconocimos esa ubicacion. Envia un codigo postal de 5 digitos o Ciudad, ST.',
+    en: 'We did not recognize that location. Send a 5-digit ZIP code or City, ST.',
+  },
+  v2_ask_trade: {
+    es: 'Cual es tu oficio principal?',
+    en: 'What is your main trade?',
+  },
+  v2_ask_custom_trade: {
+    es: 'Cual es tu oficio? Escribelo en pocas palabras.',
+    en: 'What is your trade? Describe it in a few words.',
+  },
+  v2_custom_trade_invalid: {
+    es: 'Necesitamos el nombre de tu oficio. Intenta de nuevo.',
+    en: 'We need the name of your trade. Please try again.',
+  },
+  v2_gate_blocked: {
+    es: 'Primero terminemos tu registro. Responde a la pregunta de arriba para continuar.',
+    en: 'Let us finish signing you up first. Answer the question above to continue.',
+  },
+  v2_language_changed: {
+    es: 'Listo, seguimos en espanol.',
+    en: 'Done, we will continue in English.',
+  },
+  v2_ready: {
+    es: 'Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.',
+    en: 'Your profile is ready. We will let you know when there is work for you.',
+  },
+  v2_options_footer: {
+    es: 'Responde con el numero.',
+    en: 'Reply with the number.',
   },
 };
 

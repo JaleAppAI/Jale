@@ -1,13 +1,13 @@
 import type { PoolClient } from 'pg';
-import type { TwilioSecret } from './twilio';
+import { isTwilioMessageSid, type TwilioSecret } from './twilio';
 import {
   getTwilioSecret,
   requireTwilioStatusCallbackUrl,
   _clearTwilioSecretCacheForTests,
 } from './twilio-secret';
+import type { RenderedOutboxMessage } from './onboarding-types';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
-const TWILIO_SID_RE = /^SM[0-9A-Fa-f]{32}$/;
 
 // H3: poison-message guard for the scheduled admin dispatcher. A row that Twilio
 // hard-rejects (4xx) flips to 'failed' and would otherwise be re-selected and
@@ -28,7 +28,7 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
   content_variables: Record<string, string> | null;
-}): Promise<string | null> {
+}): Promise<string> {
   const secret = await getTwilioSecret();
   const url = `https://api.twilio.com/2010-04-01/Accounts/${secret.accountSid}/Messages.json`;
   const formValues: Record<string, string> = {
@@ -97,11 +97,11 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     throw new AmbiguousTwilioSendError('Twilio 2xx response body was not valid JSON');
   }
   const sid = responseBody?.sid;
-  if (!sid || typeof sid !== 'string' || !TWILIO_SID_RE.test(sid)) {
+  if (!isTwilioMessageSid(sid)) {
     // A 2xx HTTP status only means Twilio accepted the request over the
     // wire — it does not guarantee a valid message SID came back. Treat a
     // missing or malformed SID as ambiguous (never as success): the caller
-    // must not mark the row 'sent' without a real SM... SID to correlate
+    // must not mark the row 'sent' without a real SM.../MM... SID to correlate
     // delivery-status callbacks against.
     throw new AmbiguousTwilioSendError(
       `Twilio response missing a valid message SID (got: ${JSON.stringify(sid)})`,
@@ -256,7 +256,7 @@ interface ClaimedJobAlertRow {
  *      reconcile the ambiguous send using Twilio's message records.
  *   2. The Twilio send happens outside that transaction, on a separate
  *      pool connection.
- *   3. Success requires a syntactically valid `SM...` SID
+ *   3. Success requires a syntactically valid `SM...`/`MM...` SID
  *      (sendTwilioWhatsAppMessage already enforces this) — that is the
  *      only path back to 'sent'.
  *   4. AmbiguousTwilioSendError (timeout / malformed response) leaves the
@@ -370,6 +370,128 @@ export async function drainJobAlertOutbox(
   return { sent, ambiguous, failed };
 }
 
+interface LeasedWorkerIntentOutboxRow {
+  id: string;
+  whatsapp_number: string;
+  body: string | null;
+  content_template: string | null;
+  content_variables: Record<string, string> | null;
+  attempt_count: number;
+  lease_token: string;
+}
+
+/**
+ * Sends rows claimed by migration 043's SECURITY DEFINER RPC. The database
+ * owns ordering, retry/backoff, and fencing; network I/O starts only after
+ * the claim call has committed.
+ */
+export async function drainWorkerIntentOutbox(
+  pool: { connect(): Promise<PoolClient> },
+  limit = 10,
+): Promise<{ sent: number; ambiguous: number; failed: number; leaseLost: number }> {
+  const leaseClient = await pool.connect();
+  let leased: LeasedWorkerIntentOutboxRow[];
+  try {
+    const result = await leaseClient.query<LeasedWorkerIntentOutboxRow>(
+      'SELECT * FROM lease_worker_intent_outbox($1)', [limit],
+    );
+    leased = result.rows;
+  } finally {
+    leaseClient.release();
+  }
+
+  let sent = 0;
+  let ambiguous = 0;
+  let failed = 0;
+  let leaseLost = 0;
+
+  const recordFailure = async (
+    row: LeasedWorkerIntentOutboxRow,
+    error: unknown,
+    isAmbiguous: boolean,
+  ): Promise<void> => {
+    const message = error instanceof Error ? error.message : String(error);
+    const resultClient = await pool.connect();
+    try {
+      const failure = await resultClient.query<{ failed: boolean }>(
+        'SELECT fail_worker_intent_outbox($1, $2, $3, $4) AS failed',
+        [row.id, row.lease_token, message, isAmbiguous],
+      );
+      if (failure.rows[0]?.failed !== true) {
+        leaseLost += 1;
+        throw new Error(`worker_intent_lease_lost:${row.id}`);
+      }
+    } finally {
+      resultClient.release();
+    }
+  };
+
+  for (const row of leased) {
+    let sid: string;
+    try {
+      sid = await sendTwilioWhatsAppMessage(`whatsapp:${row.whatsapp_number}`, row);
+    } catch (error) {
+      const isAmbiguous = error instanceof AmbiguousTwilioSendError;
+      await recordFailure(row, error, isAmbiguous);
+      if (isAmbiguous) ambiguous += 1;
+      else failed += 1;
+      continue;
+    }
+
+    try {
+      const resultClient = await pool.connect();
+      try {
+        const completion = await resultClient.query<{ completed: boolean }>(
+          'SELECT complete_worker_intent_outbox($1, $2, $3) AS completed',
+          [row.id, row.lease_token, sid],
+        );
+        if (completion.rows[0]?.completed !== true) {
+          leaseLost += 1;
+          throw new Error(`worker_intent_lease_lost:${row.id}`);
+        }
+      } finally {
+        resultClient.release();
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('worker_intent_lease_lost:')) {
+        throw error;
+      }
+      // Twilio already returned a valid SID. Any persistence failure after
+      // provider acceptance is terminally ambiguous and must never requeue.
+      await recordFailure(row, error, true);
+      ambiguous += 1;
+      continue;
+    }
+
+    sent += 1;
+  }
+
+  return { sent, ambiguous, failed, leaseLost };
+}
+
+export async function countAgedWorkerIntentOutbox(
+  pool: { connect(): Promise<PoolClient> },
+  ageHours = 24,
+): Promise<number> {
+  if (!Number.isInteger(ageHours) || ageHours < 1 || ageHours > 168) {
+    throw new Error('worker_intent_backlog_age_hours_invalid');
+  }
+  const client = await pool.connect();
+  try {
+    const result = await client.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM whatsapp_outbox
+        WHERE source_type = 'worker_intent'
+          AND status = 'pending'
+          AND created_at < now() - ($1 || ' hours')::interval`,
+      [String(ageHours)],
+    );
+    return Number(result.rows[0]?.count ?? 0);
+  } finally {
+    client.release();
+  }
+}
+
 export async function sendPendingAdminOutbox(
   client: PoolClient,
   limit = 25,
@@ -456,4 +578,47 @@ function parseTimeout(raw: string | undefined): number {
 
 export function _clearOutboxTwilioSecretCacheForTests(): void {
   _clearTwilioSecretCacheForTests();
+}
+
+/**
+ * Inserts a `whatsapp_outbox` row on behalf of a `worker_message_intents`
+ * row that the delivery-policy gate has already authorized (status
+ * 'eligible' or 'leased'). This is the only path that may write a
+ * `source_type = 'worker_intent'` outbox row — the `whatsapp_outbox_origin_check`
+ * CHECK constraint requires `inbound_message_sid IS NULL` and a non-null
+ * `source_id` for that origin, matching the params below.
+ *
+ * Ownership/errors: caller owns the transaction; no BEGIN/COMMIT here.
+ * Throws `Error('unauthorized_worker_outbox_row')` when the intent row is
+ * missing or not in an authorized status — this is a deliberate guard
+ * against writing an outbox row for a deferred/rejected/expired intent.
+ */
+export async function insertAuthorizedIntentOutbox(
+  client: PoolClient,
+  intentId: string,
+  message: RenderedOutboxMessage,
+): Promise<{ outboxId: string }> {
+  const statusResult = await client.query<{ status: string }>(
+    `SELECT status FROM worker_message_intents WHERE id = $1`,
+    [intentId],
+  );
+  const status = statusResult.rows[0]?.status;
+  if (status !== 'eligible' && status !== 'leased') {
+    throw new Error('unauthorized_worker_outbox_row');
+  }
+
+  const inserted = await client.query<{ id: string }>(
+    `INSERT INTO whatsapp_outbox
+        (inbound_message_sid, sequence, whatsapp_number, body, content_template, content_variables, source_type, source_id)
+     VALUES (NULL, 1, $1, $2, $3, $4::jsonb, 'worker_intent', $5)
+     RETURNING id`,
+    [
+      message.whatsappNumber,
+      message.body,
+      message.contentTemplate,
+      message.contentVariables ? JSON.stringify(message.contentVariables) : null,
+      intentId,
+    ],
+  );
+  return { outboxId: inserted.rows[0].id };
 }

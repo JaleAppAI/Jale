@@ -219,8 +219,8 @@ CREATE POLICY admin_case_events_twilio_callback_insert ON public.admin_case_even
   FOR INSERT TO jale_twilio_callback WITH CHECK (true);
 
 REVOKE ALL ON public.job_conversation_messages FROM jale_twilio_callback;
-GRANT SELECT (twilio_message_sid, status, sent_at, delivered_at),
-      UPDATE (status, sent_at, delivered_at)
+GRANT SELECT (id, twilio_message_sid, status, sent_at, delivered_at),
+      UPDATE (twilio_message_sid, status, sent_at, delivered_at)
   ON public.job_conversation_messages TO jale_twilio_callback;
 DROP POLICY IF EXISTS job_messages_twilio_callback ON public.job_conversation_messages;
 DROP POLICY IF EXISTS job_messages_twilio_callback_select ON public.job_conversation_messages;
@@ -284,7 +284,7 @@ ALTER TABLE whatsapp_outbox
   ADD CONSTRAINT whatsapp_outbox_origin_check CHECK (
     (inbound_message_sid IS NOT NULL AND source_type IS NULL AND source_id IS NULL)
     OR
-    (inbound_message_sid IS NULL AND source_type IN ('admin_case', 'job_alert') AND source_id IS NOT NULL)
+    (inbound_message_sid IS NULL AND source_type IN ('admin_case', 'job_alert', 'worker_intent') AND source_id IS NOT NULL)
   );
 
 DROP FUNCTION IF EXISTS jale_twilio_callback.record_whatsapp_delivery_status(TEXT, TEXT, TEXT, TEXT);

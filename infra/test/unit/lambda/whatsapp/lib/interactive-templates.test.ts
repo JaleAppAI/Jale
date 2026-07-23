@@ -5,7 +5,12 @@ import {
   buildProfileInteractivePrompt,
   buildTrustInteractivePrompt,
 } from '../../../../../lambda/whatsapp/lib/interactive-templates';
-import { t } from '../../../../../lambda/whatsapp/lib/templates';
+import { t, type Lang } from '../../../../../lambda/whatsapp/lib/templates';
+import {
+  buildV2StartInvitationPrompt, buildV2OtpPrompt, buildV2LegalPrompt,
+  buildV2NumberedOptionsPrompt, V2_FALLBACK_TRUST_QUESTIONS,
+} from '../../../../../lambda/whatsapp/lib/interactive-templates';
+import { ACCOUNT_EXISTENCE_LEAK_PATTERN } from './v2-copy-test-helpers';
 
 describe('interactive onboarding templates', () => {
   it('builds legal quick-reply prompts with the ToS URL variable', () => {
@@ -114,5 +119,61 @@ describe('interactive onboarding templates', () => {
       variables: {},
       fallbackBody: t('help_menu', 'es'),
     });
+  });
+});
+
+const LANGS: Lang[] = ['en', 'es'];
+
+describe('buildV2StartInvitationPrompt', () => {
+  it.each(LANGS)('offers both language choices in %s', (lang) => {
+    const p = buildV2StartInvitationPrompt(lang);
+    expect(p.templateName).toContain('v2');
+    expect(p.fallbackBody).toContain('START');
+    expect(p.fallbackBody).toContain('EMPEZAR');
+    expect(p.fallbackBody).not.toMatch(ACCOUNT_EXISTENCE_LEAK_PATTERN);
+  });
+});
+
+describe('buildV2OtpPrompt', () => {
+  it.each(LANGS)('interpolates the expiry and offers resend in %s', (lang) => {
+    const p = buildV2OtpPrompt(lang, '5');
+    expect(p.fallbackBody).toContain('5');
+    expect(p.fallbackBody).not.toContain('{{');
+    expect(JSON.stringify(p)).toContain('otp:resend');
+  });
+});
+
+describe('buildV2LegalPrompt', () => {
+  it.each(LANGS)('carries Terms and Privacy in variables and fallback in %s', (lang) => {
+    const p = buildV2LegalPrompt(lang, 'https://jale.app/terms', 'https://jale.app/privacy');
+    const vars = Object.values(p.variables);
+    expect(vars).toContain('https://jale.app/terms');
+    expect(vars).toContain('https://jale.app/privacy');
+    expect(p.fallbackBody).toContain('https://jale.app/terms');
+    expect(p.fallbackBody).toContain('https://jale.app/privacy');
+    const serialized = JSON.stringify(p);
+    expect(serialized).toContain('legal:accept');
+    expect(serialized).toContain('legal:decline');
+    expect(serialized).toContain('legal:review');
+  });
+});
+
+describe('buildV2NumberedOptionsPrompt', () => {
+  it.each(LANGS)('numbers each option from 1 in %s', (lang) => {
+    const p = buildV2NumberedOptionsPrompt(lang, 'Pick one', ['Alpha', 'Beta', 'Gamma']);
+    expect(p.fallbackBody).toContain('1. Alpha');
+    expect(p.fallbackBody).toContain('2. Beta');
+    expect(p.fallbackBody).toContain('3. Gamma');
+  });
+});
+
+describe('V2_FALLBACK_TRUST_QUESTIONS', () => {
+  it('has exactly three reviewed bilingual questions with EN != ES', () => {
+    expect(V2_FALLBACK_TRUST_QUESTIONS).toHaveLength(3);
+    for (const q of V2_FALLBACK_TRUST_QUESTIONS) {
+      expect(q.en.trim().length).toBeGreaterThan(0);
+      expect(q.es.trim().length).toBeGreaterThan(0);
+      expect(q.en).not.toBe(q.es);
+    }
   });
 });

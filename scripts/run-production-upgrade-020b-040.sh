@@ -19,7 +19,7 @@ Usage:
   scripts/run-production-upgrade-020b-040.sh --expected-account-id ACCOUNT_ID [--apply]
 
 The default mode verifies migration state without applying SQL. This tool is
-pinned to us-east-2 and permits only migrations 020b and 035-041.
+pinned to us-east-2 and permits only migrations 020b and 035-043.
 EOF
 }
 
@@ -79,6 +79,8 @@ MIGRATION_FILES=(
   '039_whatsapp_support_cases.sql'
   '040_whatsapp_delivery_status.sql'
   '041_whatsapp_web_worker_lookup_grant.sql'
+  '042_whatsapp_onboarding_gate.sql'
+  '043_whatsapp_worker_intent_transport.sql'
 )
 
 for file in "${MIGRATION_FILES[@]}"; do
@@ -230,7 +232,7 @@ AND EXISTS (SELECT 1 FROM pg_auth_members membership
   JOIN pg_roles member ON member.oid=membership.member
   JOIN pg_roles grantor ON grantor.oid=membership.grantor
   WHERE granted.rolname='jale_twilio_callback'
-    AND member.rolname=current_user
+    AND member.rolname='jale_admin'
     AND membership.admin_option
     AND NOT membership.inherit_option
     AND NOT membership.set_option
@@ -306,6 +308,199 @@ SQL
       present="has_column_privilege('jale_whatsapp','public.users','tos_accepted_at','SELECT')"
       complete="has_column_privilege('jale_whatsapp','public.users','tos_accepted_at','SELECT') AND NOT has_table_privilege('jale_whatsapp','public.users','SELECT') AND EXISTS (SELECT 1 FROM pg_class table_class JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace WHERE namespace.nspname='public' AND table_class.relname='users' AND table_class.relrowsecurity AND table_class.relforcerowsecurity) AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='public' AND tablename='users' AND policyname='wa_users_read' AND cmd='SELECT' AND roles=ARRAY['jale_whatsapp']::name[] AND qual='(user_type = ''worker''::text)' AND with_check IS NULL)"
       ;;
+    042_*)
+      present="to_regclass('public.worker_onboarding_state') IS NOT NULL OR to_regprocedure('public.bind_verified_identity_and_start_workflow(text,uuid,uuid,integer,text,text,jsonb)') IS NOT NULL"
+      # COMPLETE_042_BEGIN
+      complete=$(cat <<'SQL'
+(SELECT count(*) FROM pg_class table_class
+  JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace
+  JOIN pg_roles owner ON owner.oid=table_class.relowner
+  WHERE namespace.nspname='public'
+    AND table_class.relname IN ('worker_onboarding_state','worker_workflow_runs',
+      'worker_workflow_transitions','worker_identity_challenges',
+      'worker_message_intents','worker_domain_outbox','worker_reset_audit',
+      'whatsapp_runtime_controls')
+    AND table_class.relkind='r' AND owner.rolname='jale_admin'
+    AND table_class.relrowsecurity AND table_class.relforcerowsecurity)=8
+AND (SELECT count(*) FROM pg_index index
+  JOIN pg_class index_relation ON index_relation.oid=index.indexrelid
+  WHERE index.indisvalid AND index.indpred IS NOT NULL
+    AND ((index.indrelid='public.worker_workflow_runs'::regclass
+          AND index_relation.relname='worker_workflow_one_active'
+          AND index.indisunique
+          AND pg_get_indexdef(index.indexrelid) LIKE '%(user_id) WHERE (status = ''active''::text)')
+      OR (index.indrelid='public.worker_message_intents'::regclass
+          AND index_relation.relname='worker_message_intents_release_sequence_unique'
+          AND index.indisunique
+          AND pg_get_indexdef(index.indexrelid) LIKE '%(user_id, release_sequence) WHERE (release_sequence IS NOT NULL)')
+      OR (index.indrelid='public.worker_domain_outbox'::regclass
+          AND index_relation.relname='worker_domain_outbox_due_lease'
+          AND pg_get_indexdef(index.indexrelid) LIKE '%(event_type, status, next_attempt_at, leased_until, created_at)%'
+          AND pg_get_expr(index.indpred,index.indrelid) LIKE '%pending%processing%')))=3
+AND (SELECT count(*) FROM pg_constraint con
+  JOIN pg_class table_class ON table_class.oid=con.conrelid
+  JOIN pg_namespace namespace ON namespace.oid=table_class.relnamespace
+  WHERE namespace.nspname='public' AND con.convalidated
+    AND ((table_class.relname='worker_message_intents'
+          AND con.conname='worker_message_intent_dedupe' AND con.contype='u')
+      OR (table_class.relname='worker_domain_outbox'
+          AND con.conname IN ('worker_domain_outbox_event_key',
+            'worker_domain_outbox_lease_consistency'))
+      OR (table_class.relname='whatsapp_outbox'
+          AND con.conname='whatsapp_outbox_origin_check')))=4
+AND (SELECT count(*) FROM pg_proc function
+  JOIN pg_namespace namespace ON namespace.oid=function.pronamespace
+  JOIN pg_roles owner ON owner.oid=function.proowner
+  WHERE namespace.nspname='public'
+    AND ((function.proname='is_worker_ready_for_v2_delivery'
+          AND function.proargtypes='2950'::oidvector)
+      OR (function.proname='load_worker_pre_auth'
+          AND function.proargtypes='25'::oidvector)
+      OR (function.proname='save_worker_pre_auth'
+          AND function.proargtypes='25 3802'::oidvector)
+      OR (function.proname='bind_verified_identity_and_start_workflow'
+          AND function.proargtypes='25 2950 2950 23 25 25 3802'::oidvector)
+      OR (function.proname='lease_worker_domain_events'
+          AND function.proargtypes='25 23'::oidvector))
+    AND owner.rolname='jale_admin' AND function.prosecdef
+    AND function.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+    AND has_function_privilege('jale_whatsapp',function.oid,'EXECUTE')
+    AND NOT has_function_privilege('public',function.oid,'EXECUTE'))=5
+AND EXISTS (SELECT 1 FROM pg_proc function
+  JOIN pg_namespace namespace ON namespace.oid=function.pronamespace
+  JOIN pg_roles owner ON owner.oid=function.proowner
+  WHERE namespace.nspname='jale_twilio_callback'
+    AND function.proname='record_whatsapp_delivery_status'
+    AND function.proargtypes='25 25 25 25'::oidvector
+    AND owner.rolname='jale_twilio_callback' AND function.prosecdef
+    AND function.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+    AND has_function_privilege('jale_whatsapp',function.oid,'EXECUTE')
+    AND NOT has_function_privilege('public',function.oid,'EXECUTE'))
+AND (SELECT count(*) FROM pg_policies policy
+  WHERE policy.schemaname='public'
+    AND ((policy.tablename='worker_onboarding_state'
+          AND policy.policyname IN ('worker_onboarding_state_worker','worker_onboarding_state_definer'))
+      OR (policy.tablename='worker_workflow_runs'
+          AND policy.policyname IN ('worker_workflow_runs_worker','worker_workflow_runs_definer'))
+      OR (policy.tablename='worker_workflow_transitions'
+          AND policy.policyname IN ('worker_workflow_transitions_worker','worker_workflow_transitions_definer'))
+      OR (policy.tablename='worker_identity_challenges'
+          AND policy.policyname='worker_identity_challenges_definer')
+      OR (policy.tablename='worker_message_intents'
+          AND policy.policyname='worker_message_intents_worker')
+      OR (policy.tablename='worker_domain_outbox'
+          AND policy.policyname IN ('worker_domain_outbox_worker','worker_domain_outbox_definer'))
+      OR (policy.tablename='worker_reset_audit'
+          AND policy.policyname IN ('worker_reset_audit_worker','worker_reset_audit_admin_read','worker_reset_audit_admin_insert'))
+      OR (policy.tablename='whatsapp_runtime_controls'
+          AND policy.policyname IN ('whatsapp_runtime_controls_read','whatsapp_runtime_controls_definer'))
+      OR (policy.tablename='users'
+          AND policy.policyname='users_onboarding_bind_definer')
+      OR (policy.tablename='whatsapp_conversations'
+          AND policy.policyname='whatsapp_conversations_onboarding_bind_definer'))
+    AND (((policy.policyname IN ('worker_onboarding_state_worker','worker_workflow_runs_worker',
+          'worker_workflow_transitions_worker','worker_message_intents_worker',
+          'worker_domain_outbox_worker','worker_reset_audit_worker','whatsapp_runtime_controls_read'))
+          AND policy.roles=ARRAY['jale_whatsapp']::name[])
+      OR ((policy.policyname IN ('worker_onboarding_state_definer','worker_workflow_runs_definer',
+          'worker_workflow_transitions_definer','worker_identity_challenges_definer',
+          'worker_domain_outbox_definer','worker_reset_audit_admin_read',
+          'worker_reset_audit_admin_insert','whatsapp_runtime_controls_definer',
+          'users_onboarding_bind_definer','whatsapp_conversations_onboarding_bind_definer'))
+          AND policy.roles=ARRAY['jale_admin']::name[])))=17
+AND NOT has_table_privilege('jale_whatsapp','public.whatsapp_runtime_controls','INSERT')
+AND NOT has_table_privilege('jale_whatsapp','public.whatsapp_runtime_controls','UPDATE')
+AND NOT has_table_privilege('jale_whatsapp','public.whatsapp_runtime_controls','DELETE')
+AND NOT has_any_column_privilege('jale_whatsapp','public.worker_identity_challenges','SELECT')
+AND NOT has_table_privilege('jale_whatsapp','public.worker_reset_audit','INSERT')
+AND (SELECT count(*) FROM public.whatsapp_runtime_controls
+  WHERE control_key IN ('onboarding_v2_enabled','deferred_delivery_enabled'))=2
+SQL
+)
+      # COMPLETE_042_END
+      ;;
+    043_*)
+      present="EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='whatsapp_outbox' AND column_name IN ('worker_intent_lease_token','worker_intent_leased_until')) OR to_regprocedure('public.lease_worker_intent_outbox(integer)') IS NOT NULL"
+      # COMPLETE_043_BEGIN
+      complete=$(cat <<'SQL'
+(SELECT count(*) FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='whatsapp_outbox'
+    AND ((column_name='worker_intent_lease_token' AND udt_name='uuid')
+      OR (column_name='worker_intent_leased_until' AND udt_name='timestamptz')))=2
+AND EXISTS (SELECT 1 FROM pg_constraint con
+  WHERE con.conrelid='public.whatsapp_outbox'::regclass
+    AND con.conname='whatsapp_outbox_worker_intent_lease_consistency'
+    AND con.contype='c' AND con.convalidated
+    AND pg_get_constraintdef(con.oid) LIKE '%worker_intent_lease_token%'
+    AND pg_get_constraintdef(con.oid) LIKE '%worker_intent_leased_until%'
+    AND pg_get_constraintdef(con.oid) LIKE '%send_unknown%')
+AND (SELECT count(*) FROM pg_index index
+  JOIN pg_class index_relation ON index_relation.oid=index.indexrelid
+  WHERE index.indisvalid AND index.indpred IS NOT NULL
+    AND ((index_relation.relname='idx_whatsapp_outbox_worker_intent_due'
+          AND pg_get_indexdef(index.indexrelid) LIKE '%(next_attempt_at, created_at, id)%'
+          AND pg_get_expr(index.indpred,index.indrelid) LIKE '%worker_intent%pending%')
+      OR (index_relation.relname='idx_worker_message_intents_outbox_id'
+          AND pg_get_indexdef(index.indexrelid) LIKE '%(outbox_id) WHERE (outbox_id IS NOT NULL)'))
+    AND ((index.indrelid='public.whatsapp_outbox'::regclass
+          AND index_relation.relname='idx_whatsapp_outbox_worker_intent_due')
+      OR (index.indrelid='public.worker_message_intents'::regclass
+          AND index_relation.relname='idx_worker_message_intents_outbox_id')))=2
+AND EXISTS (SELECT 1 FROM pg_policies policy
+  WHERE policy.schemaname='public' AND policy.tablename='whatsapp_outbox'
+    AND policy.policyname='whatsapp_outbox_worker_intent_rpc_only'
+    AND policy.cmd='UPDATE' AND policy.permissive='RESTRICTIVE'
+    AND policy.roles=ARRAY['jale_whatsapp']::name[]
+    AND policy.qual='(source_type IS DISTINCT FROM ''worker_intent''::text)'
+    AND policy.with_check='(source_type IS DISTINCT FROM ''worker_intent''::text)')
+AND NOT has_table_privilege('jale_whatsapp','public.whatsapp_outbox','UPDATE')
+AND has_column_privilege('jale_whatsapp','public.whatsapp_outbox','status','UPDATE')
+AND NOT has_column_privilege('jale_whatsapp','public.whatsapp_outbox','worker_intent_lease_token','UPDATE')
+AND NOT has_column_privilege('jale_whatsapp','public.whatsapp_outbox','worker_intent_leased_until','UPDATE')
+AND EXISTS (SELECT 1 FROM pg_policies policy
+  WHERE policy.schemaname='public' AND policy.tablename='worker_message_intents'
+    AND policy.policyname='worker_message_intents_definer'
+    AND policy.roles=ARRAY['jale_admin']::name[])
+AND (SELECT count(*) FROM pg_policies policy
+  WHERE policy.schemaname='public' AND policy.tablename='worker_message_intents'
+    AND policy.policyname IN ('worker_message_intents_twilio_callback_select',
+      'worker_message_intents_twilio_callback_update')
+    AND policy.roles=ARRAY['jale_twilio_callback']::name[])=2
+AND (SELECT count(*) FROM pg_proc function
+  JOIN pg_namespace namespace ON namespace.oid=function.pronamespace
+  JOIN pg_roles owner ON owner.oid=function.proowner
+  WHERE namespace.nspname='public'
+    AND ((function.proname='lease_worker_intent_outbox'
+          AND function.proargtypes='23'::oidvector)
+      OR (function.proname='complete_worker_intent_outbox'
+          AND function.proargtypes='2950 2950 25'::oidvector)
+      OR (function.proname='fail_worker_intent_outbox'
+          AND function.proargtypes='2950 2950 25 16'::oidvector))
+    AND owner.rolname='jale_admin' AND function.prosecdef
+    AND function.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+    AND has_function_privilege('jale_whatsapp',function.oid,'EXECUTE')
+    AND NOT has_function_privilege('public',function.oid,'EXECUTE'))=3
+AND EXISTS (SELECT 1 FROM pg_proc function
+  JOIN pg_namespace namespace ON namespace.oid=function.pronamespace
+  JOIN pg_roles owner ON owner.oid=function.proowner
+  JOIN pg_trigger trigger ON trigger.tgfoid=function.oid
+  WHERE namespace.nspname='jale_twilio_callback'
+    AND function.proname='propagate_worker_intent_delivery_state'
+    AND function.proargtypes=''::oidvector
+    AND owner.rolname='jale_twilio_callback' AND function.prosecdef
+    AND function.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+    AND NOT has_function_privilege('public',function.oid,'EXECUTE')
+    AND trigger.tgname='whatsapp_outbox_worker_intent_delivery_state'
+    AND trigger.tgrelid='public.whatsapp_outbox'::regclass
+    AND NOT trigger.tgisinternal AND trigger.tgenabled <> 'D')
+AND NOT has_table_privilege('jale_twilio_callback','public.worker_message_intents','SELECT')
+AND NOT has_table_privilege('jale_twilio_callback','public.worker_message_intents','UPDATE')
+AND has_column_privilege('jale_twilio_callback','public.worker_message_intents','outbox_id','SELECT')
+AND has_column_privilege('jale_twilio_callback','public.worker_message_intents','status','UPDATE')
+SQL
+)
+      # COMPLETE_043_END
+      ;;
     *)
       echo "UNAPPROVED_MIGRATION: $file" >&2
       return 21
@@ -333,8 +528,9 @@ MIGRATION_FILES=(
   '039_whatsapp_support_cases.sql'
   '040_whatsapp_delivery_status.sql'
   '041_whatsapp_web_worker_lookup_grant.sql'
+  '042_whatsapp_onboarding_gate.sql'
+  '043_whatsapp_worker_intent_transport.sql'
 )
-
 missing=0
 for file in "${MIGRATION_FILES[@]}"; do
   [[ -f "$work_dir/$file" ]] || { echo "MIGRATION_FILE_MISSING: $file"; exit 24; }
@@ -367,7 +563,7 @@ done
 if [[ "$APPLY" != '1' ]]; then
   echo "VERIFY-ONLY: ${missing} reviewed migration state(s) pending. No migrations were applied."
 else
-  echo 'POSTFLIGHT_OK: production schema satisfies 020b and 035-041 invariants'
+  echo 'POSTFLIGHT_OK: production schema satisfies 020b and 035-043 invariants'
 fi
 EOF
 )
@@ -379,7 +575,7 @@ jq -n \
   '{commands: [$command], executionTimeout: [$execution_timeout]}' > "$params_path"
 comment='Jale production DB upgrade verification only'
 if [[ "$APPLY" == '1' ]]; then
-  comment='Jale scoped production DB upgrade 020b/035-041'
+  comment='Jale scoped production DB upgrade 020b/035-043'
 fi
 
 command_id=$(aws ssm send-command \
