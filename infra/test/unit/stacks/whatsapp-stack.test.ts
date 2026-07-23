@@ -554,6 +554,7 @@ describe('WhatsAppStack', () => {
     test.each([
       ['WhatsAppDomainEventsStuck'],
       ['WhatsAppReleaseFailures'],
+      ['WhatsAppAssessmentDispatchFailures'],
       ['WhatsAppDeferredBacklogAge'],
       ['WhatsAppOtpLockRate'],
     ])('%s alarm exists, wired to the alarm topic', (alarmName) => {

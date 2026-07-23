@@ -669,6 +669,18 @@ export class WhatsAppStack extends cdk.Stack {
       releaseFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
+    // Lane C2: symmetric with WhatsAppReleaseFailures — surfaces transient
+    // assessment.requested → TrustScorer SQS dispatch failures (emitted by the
+    // drain on any dispatch/completion error) before they retry to the
+    // WhatsAppDomainEventStuck cap.
+    const assessmentDispatchFailureMetric = drainMetricFilter(
+      'WhatsAppAssessmentDispatchFailureMetric', 'WhatsAppAssessmentDispatchFailure', 'AssessmentDispatchFailures',
+    );
+    alarm(
+      'WhatsAppAssessmentDispatchFailuresAlarm', 'WhatsAppAssessmentDispatchFailures',
+      assessmentDispatchFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
     const deferredBacklogAgedMetric = drainMetricFilter(
       'WhatsAppDeferredBacklogAgedMetric', 'WhatsAppDeferredBacklogAged', 'DeferredBacklogAge',
     );
