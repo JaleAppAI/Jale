@@ -10,7 +10,9 @@
     "test": "jest",
     "cdk": "cdk",
     "deploy": "npm run test && npx cdk deploy",
-    "test:integration": "jest --config jest.integration.config.js"
+    "test:integration": "jest --config jest.integration.config.js",
+    "reset:whatsapp-v2": "ts-node scripts/reset-whatsapp-onboarding-v2.ts",
+    "whatsapp:controls": "ts-node scripts/whatsapp-runtime-controls.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1040.0",
