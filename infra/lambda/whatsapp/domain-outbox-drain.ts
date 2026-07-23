@@ -35,6 +35,7 @@ import type { Pool, PoolClient } from 'pg';
 import { getDbPool, setInternalUserRlsContext } from '../lib/db';
 import { releaseWorkerReady } from './worker-ready-release';
 import type { ReleaseRenderer } from './lib/onboarding-types';
+import { createReleaseRenderer } from './lib/onboarding-renderers';
 
 export const MAX_DOMAIN_EVENT_ATTEMPTS = 5;
 export const DOMAIN_EVENT_BATCH_LIMIT = 25;
@@ -299,3 +300,12 @@ export const handler = async (): Promise<{ claimed: number; completed: number; f
   const pool = await getDbPool();
   return runDrain(pool, activeDeps);
 };
+
+// C10 wiring seam (binding decision #3): now that the workflow lane's
+// `createReleaseRenderer()` is merged into this branch, replace the unwired
+// placeholder with the real renderer once at module load. The production
+// `handler` reads `activeDeps`; unit tests bypass this by calling
+// `runDrain(pool, explicitDeps)` directly, so this line does not affect them.
+// `createReleaseRenderer()` is a pure factory (no DB/network/clock at
+// construction), so calling it at import is safe.
+setDomainOutboxDrainDeps({ renderer: createReleaseRenderer() });
