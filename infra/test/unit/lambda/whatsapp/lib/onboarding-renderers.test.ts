@@ -339,6 +339,88 @@ describe('onboarding-renderers', () => {
     });
   });
 
+  describe('payload-carried prompt copy (post-OTP dead-end regression)', () => {
+    // Regression: the onboarding/security category renderers used to ignore
+    // the intent payload and always send their default copy. Every
+    // post-bind step prompt (legal.review, profile.*, trust.*) therefore
+    // went out as the terminal "Your profile is ready." message, dead-ending
+    // onboarding immediately after OTP verification.
+
+    it('renders the step prompt carried in an onboarding intent payload, not the completion copy', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        sourceType: 'onboarding_v2:legal.review',
+        payload: {
+          templateName: 'v2_legal_review',
+          variables: { '1': 'https://tos.example', '2': 'https://privacy.example' },
+          fallbackBody: 'Please review our terms of service before continuing.',
+          lang: 'en',
+        },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result).not.toBeNull();
+      expect(result!.body).toBe('Please review our terms of service before continuing.');
+      expect(result!.contentTemplate).toBe('v2_legal_review');
+      expect(result!.contentVariables).toEqual({
+        '1': 'https://tos.example',
+        '2': 'https://privacy.example',
+      });
+      expect(result!.body).not.toContain('profile is ready');
+    });
+
+    it('renders plain text carried as payload.body (sendTemplateMessage shape)', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        sourceType: 'onboarding_v2:v2_ready',
+        payload: { body: 'Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.', lang: 'es' },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.body).toBe('Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.');
+      expect(result!.contentTemplate).toBeNull();
+    });
+
+    it('keeps the completion copy as the fallback for an onboarding intent with no payload copy', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({ category: 'onboarding', ownerService: 'onboarding-v2', payload: {} });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.body).toContain('Your profile is ready');
+    });
+
+    it('security intents honor payload copy and keep the security notice as fallback', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const withPayload = await categoryRenderers.security(
+        client,
+        baseInput({
+          category: 'security',
+          ownerService: 'identity',
+          payload: { fallbackBody: 'Enter the 6-digit code we sent you.' },
+        }),
+      );
+      expect(withPayload!.body).toBe('Enter the 6-digit code we sent you.');
+
+      const withoutPayload = await categoryRenderers.security(
+        client,
+        baseInput({ category: 'security', ownerService: 'identity', payload: {} }),
+      );
+      expect(withoutPayload!.body).toContain('Security notice');
+    });
+
+    it('non-string payload fields are ignored rather than rendered', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        payload: { fallbackBody: 42, body: { nested: true }, templateName: '', variables: 'not-an-object' },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.body).toContain('Your profile is ready');
+    });
+  });
+
   describe('createReleaseRenderer', () => {
     const languages: PreferredLanguage[] = ['en', 'es'];
 
