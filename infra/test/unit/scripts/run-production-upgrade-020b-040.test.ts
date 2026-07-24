@@ -14,7 +14,7 @@ const migration041Path = path.join(
   '041_whatsapp_web_worker_lookup_grant.sql',
 );
 
-describe('production upgrade 020b/035-043 operator tooling', () => {
+describe('production upgrade 020b/035-044 operator tooling', () => {
   it('allows only the reviewed forward-upgrade files in exact order', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const block = script.match(/MIGRATION_FILES=\(([\s\S]*?)\)/)?.[1] ?? '';
@@ -31,8 +31,13 @@ describe('production upgrade 020b/035-043 operator tooling', () => {
       '041_whatsapp_web_worker_lookup_grant.sql',
       '042_whatsapp_onboarding_gate.sql',
       '043_whatsapp_worker_intent_transport.sql',
+      '044_whatsapp_active_workflow_rebind.sql',
     ]);
     expect(block).not.toMatch(/001_|002_|003_|034_/);
+    expect(script).toContain('044_*)');
+    expect(script).toContain("strpos(function.prosrc,'v_created_run BOOLEAN := false') > 0");
+    expect(script).toContain("strpos(function.prosrc,'IF v_run IS NULL THEN') > 0");
+    expect(script).toContain("strpos(function.prosrc,'IF v_created_run THEN') > 0");
   });
 
   it('is verify-only by default and requires an explicit --apply flag to mutate', () => {

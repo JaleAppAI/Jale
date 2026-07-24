@@ -61,15 +61,18 @@ async function asWhatsapp<T extends QueryResultRow = QueryResultRow>(
 maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
   const workerA = randomUUID();
   const workerB = randomUUID();
+  const workerRebind = randomUUID();
   const sourceA = randomUUID();
   const sourceB = randomUUID();
   const conversationA = randomUUID();
   const conversationB = randomUUID();
   const conflictingConversation = randomUUID();
+  const rebindConversation = randomUUID();
   const hashA = 'a'.repeat(64);
   const hashB = 'b'.repeat(64);
   const lockedHash = 'c'.repeat(64);
   const expiredHash = 'd'.repeat(64);
+  const rebindHash = 'e'.repeat(64);
   let setup: Client;
 
   beforeAll(async () => {
@@ -77,22 +80,27 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     await setup.connect();
     await applyLocalRlsRecursionWorkaround(setup);
     await setup.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES
-      ($1, $2, 'worker'), ($3, $4, 'worker')`,
-    [workerA, `v2-a-${workerA}`, workerB, `v2-b-${workerB}`]);
+      ($1, $2, 'worker'), ($3, $4, 'worker'), ($5, $6, 'worker')`,
+    [
+      workerA, `v2-a-${workerA}`,
+      workerB, `v2-b-${workerB}`,
+      workerRebind, `v2-rebind-${workerRebind}`,
+    ]);
     await setup.query(`INSERT INTO whatsapp_conversations
       (id, user_id, whatsapp_number, conversation_state) VALUES
       ($1, NULL, '+15550000421', 'awaiting_otp'),
       ($2, NULL, '+15550000422', 'awaiting_otp'),
-      ($3, NULL, '+15550000423', 'awaiting_otp')`,
-    [conversationA, conversationB, conflictingConversation]);
+      ($3, NULL, '+15550000423', 'awaiting_otp'),
+      ($4, NULL, '+15550000424', 'awaiting_otp')`,
+    [conversationA, conversationB, conflictingConversation, rebindConversation]);
   });
 
   afterAll(async () => {
-    await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB]]);
-    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB]]);
-    await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash]]);
-    await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation]]);
-    await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB]]);
+    await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind]]);
+    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind]]);
+    await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash, rebindHash]]);
+    await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation, rebindConversation]]);
+    await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB, workerRebind]]);
     await setup.end();
   });
 
@@ -199,6 +207,46 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     const raced = await Promise.all([asWhatsapp(sql, argsB), asWhatsapp(sql, argsB)]);
     expect(raced[0].rows).toEqual(raced[1].rows);
     expect(raced[0].rows).toHaveLength(1);
+  });
+
+  test('verified binding reuses an existing active workflow run', async () => {
+    const existingRun = randomUUID();
+    await setup.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle)
+      VALUES ($1, 'onboarding')`, [workerRebind]);
+    await setup.query(`INSERT INTO worker_workflow_runs
+      (id, user_id, workflow_version, current_step_key, status, preferred_language)
+      VALUES ($1, $2, 2, 'profile.trade', 'active', 'es')`,
+    [existingRun, workerRebind]);
+    await asWhatsapp('SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)', [rebindHash,
+      JSON.stringify({
+        provider_challenge_id: 'provider-rebind',
+        current_step_key: 'identity.verify_otp',
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+      })]);
+
+    const result = await asWhatsapp<{ challenge_id: string; onboarding_state_id: string; run_id: string }>(
+      'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
+      [rebindHash, workerRebind, rebindConversation, 'en', 'SMrebind', '{}'],
+    );
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].run_id).toBe(existingRun);
+    const activeRuns = await setup.query<{ id: string; current_step_key: string; preferred_language: string }>(
+      `SELECT id, current_step_key, preferred_language
+         FROM worker_workflow_runs
+        WHERE user_id = $1 AND status = 'active'`,
+      [workerRebind],
+    );
+    expect(activeRuns.rows).toEqual([{
+      id: existingRun,
+      current_step_key: 'profile.trade',
+      preferred_language: 'es',
+    }]);
+    const conversation = await setup.query<{ user_id: string }>(
+      'SELECT user_id FROM whatsapp_conversations WHERE id = $1',
+      [rebindConversation],
+    );
+    expect(conversation.rows).toEqual([{ user_id: workerRebind }]);
   });
 
   test('pre-auth functions expose only one exact validated hash', async () => {

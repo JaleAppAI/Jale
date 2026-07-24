@@ -19,7 +19,7 @@ Usage:
   scripts/run-production-upgrade-020b-040.sh --expected-account-id ACCOUNT_ID [--apply]
 
 The default mode verifies migration state without applying SQL. This tool is
-pinned to us-east-2 and permits only migrations 020b and 035-043.
+pinned to us-east-2 and permits only migrations 020b and 035-044.
 EOF
 }
 
@@ -81,6 +81,7 @@ MIGRATION_FILES=(
   '041_whatsapp_web_worker_lookup_grant.sql'
   '042_whatsapp_onboarding_gate.sql'
   '043_whatsapp_worker_intent_transport.sql'
+  '044_whatsapp_active_workflow_rebind.sql'
 )
 
 for file in "${MIGRATION_FILES[@]}"; do
@@ -501,6 +502,28 @@ SQL
 )
       # COMPLETE_043_END
       ;;
+    044_*)
+      present="EXISTS (SELECT 1 FROM pg_proc function JOIN pg_namespace namespace ON namespace.oid=function.pronamespace WHERE namespace.nspname='public' AND function.proname='bind_verified_identity_and_start_workflow' AND function.proargtypes='25 2950 2950 23 25 25 3802'::oidvector AND strpos(function.prosrc,'v_created_run') > 0)"
+      complete=$(cat <<'SQL'
+EXISTS (
+  SELECT 1 FROM pg_proc function
+  JOIN pg_namespace namespace ON namespace.oid=function.pronamespace
+  JOIN pg_roles owner ON owner.oid=function.proowner
+  WHERE namespace.nspname='public'
+    AND function.proname='bind_verified_identity_and_start_workflow'
+    AND function.proargtypes='25 2950 2950 23 25 25 3802'::oidvector
+    AND owner.rolname='jale_admin' AND function.prosecdef
+    AND function.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+    AND has_function_privilege('jale_whatsapp',function.oid,'EXECUTE')
+    AND NOT has_function_privilege('public',function.oid,'EXECUTE')
+    AND strpos(function.prosrc,'v_created_run BOOLEAN := false') > 0
+    AND strpos(function.prosrc,'r.status = ''active''') > 0
+    AND strpos(function.prosrc,'IF v_run IS NULL THEN') > 0
+    AND strpos(function.prosrc,'IF v_created_run THEN') > 0
+)
+SQL
+)
+      ;;
     *)
       echo "UNAPPROVED_MIGRATION: $file" >&2
       return 21
@@ -530,6 +553,7 @@ MIGRATION_FILES=(
   '041_whatsapp_web_worker_lookup_grant.sql'
   '042_whatsapp_onboarding_gate.sql'
   '043_whatsapp_worker_intent_transport.sql'
+  '044_whatsapp_active_workflow_rebind.sql'
 )
 missing=0
 for file in "${MIGRATION_FILES[@]}"; do
@@ -563,7 +587,7 @@ done
 if [[ "$APPLY" != '1' ]]; then
   echo "VERIFY-ONLY: ${missing} reviewed migration state(s) pending. No migrations were applied."
 else
-  echo 'POSTFLIGHT_OK: production schema satisfies 020b and 035-043 invariants'
+  echo 'POSTFLIGHT_OK: production schema satisfies 020b and 035-044 invariants'
 fi
 EOF
 )
@@ -575,7 +599,7 @@ jq -n \
   '{commands: [$command], executionTimeout: [$execution_timeout]}' > "$params_path"
 comment='Jale production DB upgrade verification only'
 if [[ "$APPLY" == '1' ]]; then
-  comment='Jale scoped production DB upgrade 020b/035-043'
+  comment='Jale scoped production DB upgrade 020b/035-044'
 fi
 
 command_id=$(aws ssm send-command \
