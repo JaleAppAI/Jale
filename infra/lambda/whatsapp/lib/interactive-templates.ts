@@ -162,11 +162,20 @@ export function buildV2StartInvitationPrompt(lang: Lang): InteractivePrompt {
   };
 }
 
+/**
+ * One variable: `{{1}}` is the expiry in minutes. The resend button's payload
+ * (`otp:resend`, matched verbatim in handleOtpStep) and its label are static
+ * per-language properties of the approved template, not variables — there is a
+ * separate template per language, so nothing about the button varies at send
+ * time. Keeping the count at one is what makes `v2_onboarding_otp_*` safe to
+ * register: a registered template invoked with the wrong variable count is a
+ * Twilio 400, and outbox.ts's `__fallback_body` rescue only covers a MISSING
+ * ContentSid, so it cannot save a rejected payload.
+ */
 export function buildV2OtpPrompt(lang: Lang, minutes: string): InteractivePrompt {
-  const resendLabel = lang === 'en' ? 'Resend' : 'Reenviar';
   return {
     templateName: `v2_onboarding_otp_${lang}`,
-    variables: { '1': minutes, '2': 'otp:resend', '3': resendLabel },
+    variables: { '1': minutes },
     fallbackBody: t('v2_otp_sent', lang, { minutes }),
   };
 }

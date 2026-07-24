@@ -135,11 +135,26 @@ describe('buildV2StartInvitationPrompt', () => {
 });
 
 describe('buildV2OtpPrompt', () => {
-  it.each(LANGS)('interpolates the expiry and offers resend in %s', (lang) => {
+  it.each(LANGS)('interpolates the expiry into the fallback in %s', (lang) => {
     const p = buildV2OtpPrompt(lang, '5');
     expect(p.fallbackBody).toContain('5');
     expect(p.fallbackBody).not.toContain('{{');
-    expect(JSON.stringify(p)).toContain('otp:resend');
+  });
+
+  // Locks the contract the approved v2_onboarding_otp_* template must be built
+  // against. The resend button (payload 'otp:resend') is baked into the
+  // template per language, so exactly one variable travels at send time —
+  // a mismatch here is a Twilio 400 that __fallback_body cannot rescue.
+  it.each(LANGS)('sends exactly one variable, the expiry minutes, in %s', (lang) => {
+    const p = buildV2OtpPrompt(lang, '5');
+    expect(p.templateName).toBe(`v2_onboarding_otp_${lang}`);
+    expect(p.variables).toEqual({ '1': '5' });
+  });
+
+  it('never passes the resend payload or label as a variable', () => {
+    const p = buildV2OtpPrompt('en', '5');
+    expect(Object.values(p.variables)).not.toContain('otp:resend');
+    expect(Object.values(p.variables)).not.toContain('Resend');
   });
 });
 
