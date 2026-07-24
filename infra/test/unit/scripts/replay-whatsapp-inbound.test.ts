@@ -21,6 +21,7 @@ const TEXT = 'Your private message';
 const DLQ_URL = 'https://sqs.us-east-1.amazonaws.com/123/inbound-dlq.fifo';
 const QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123/inbound.fifo';
 const DLQ_ARN = 'arn:aws:sqs:us-east-1:123:inbound-dlq.fifo';
+const QUEUE_ARN = 'arn:aws:sqs:us-east-1:123:inbound.fifo';
 
 function body(sid = MESSAGE_SID): string {
   return `MessageSid=${sid}&From=${encodeURIComponent(PHONE)}&Body=${encodeURIComponent(`${TEXT} ${OTP}`)}`;
@@ -36,6 +37,7 @@ function message(overrides: Partial<Message> = {}): Message {
       // SQS replaces a FIFO message's original dedupe id with the original
       // SQS MessageId when it moves the record to a FIFO DLQ.
       MessageDeduplicationId: 'sqs-target',
+      DeadLetterQueueSourceArn: QUEUE_ARN,
       ApproximateReceiveCount: '3',
       SentTimestamp: '1720000000000',
       ApproximateFirstReceiveTimestamp: '1720000001000',
@@ -94,7 +96,7 @@ function receiveSequence(
       }
       return {
         Attributes: {
-          QueueArn: 'arn:aws:sqs:us-east-1:123:inbound.fifo',
+          QueueArn: QUEUE_ARN,
           FifoQueue: String(options.fifo ?? true),
           RedrivePolicy: JSON.stringify({ deadLetterTargetArn: options.destinationRedriveArn ?? DLQ_ARN }),
         },
@@ -303,6 +305,28 @@ describe('replayWhatsappInbound', () => {
     expect(result.kind).toBe('queue_binding_failed');
     expect(commands.filter((c) => c instanceof GetQueueAttributesCommand)).toHaveLength(2);
     expect(commands.some((c) => c instanceof ReceiveMessageCommand)).toBe(false);
+  });
+
+  it('rejects a selected record redriven from another FIFO source sharing the same DLQ', async () => {
+    const sharedDlqRecord = message({
+      Attributes: {
+        ...message().Attributes,
+        DeadLetterQueueSourceArn: 'arn:aws:sqs:us-east-1:123:another-inbound.fifo',
+      },
+    });
+    const { client, commands } = receiveSequence([[sharedDlqRecord]]);
+    const result = await replayWhatsappInbound(client, {
+      target: { kind: 'message_sid', value: MESSAGE_SID },
+      dlqUrl: DLQ_URL,
+      queueUrl: QUEUE_URL,
+      execute: true,
+    });
+    expect(result.kind).toBe('source_queue_mismatch');
+    expect(commands.some((c) => c instanceof SendMessageCommand || c instanceof DeleteMessageCommand)).toBe(false);
+    const restored = commands
+      .filter((c): c is ChangeMessageVisibilityBatchCommand => c instanceof ChangeMessageVisibilityBatchCommand)
+      .flatMap((c) => c.input.Entries ?? []);
+    expect(restored.map((entry) => entry.ReceiptHandle)).toContain('receipt-target');
   });
 
   it('fails closed and restores the target when exact MessageSid DB state is unavailable on execute', async () => {

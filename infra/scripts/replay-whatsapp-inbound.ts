@@ -40,6 +40,7 @@ export type InboundReplayResultKind =
   | 'not_found'
   | 'validation_failed'
   | 'queue_binding_failed'
+  | 'source_queue_mismatch'
   | 'db_state_unavailable'
   | 'target_not_group_head'
   | 'scan_failed'
@@ -112,11 +113,15 @@ function validateTarget(message: Message): ValidatedTarget | null {
   return { body: message.Body, messageSid: parsedBody.messageSid, groupId, receiptHandle: message.ReceiptHandle };
 }
 
+export interface QueueBinding {
+  destinationQueueArn: string;
+}
+
 export async function validateQueueBinding(
   client: SqsCommandClient,
   dlqUrl: string,
   queueUrl: string,
-): Promise<boolean> {
+): Promise<QueueBinding | null> {
   try {
     const dlq = await client.send(new GetQueueAttributesCommand({
       QueueUrl: dlqUrl,
@@ -127,11 +132,12 @@ export async function validateQueueBinding(
       AttributeNames: ['QueueArn', 'FifoQueue', 'RedrivePolicy'],
     })) as { Attributes?: Record<string, string> };
     const dlqArn = dlq.Attributes?.QueueArn;
-    if (!dlqArn || dlq.Attributes?.FifoQueue !== 'true' || destination.Attributes?.FifoQueue !== 'true') return false;
+    const destinationQueueArn = destination.Attributes?.QueueArn;
+    if (!dlqArn || !destinationQueueArn || dlq.Attributes?.FifoQueue !== 'true' || destination.Attributes?.FifoQueue !== 'true') return null;
     const redrive = JSON.parse(destination.Attributes?.RedrivePolicy ?? '{}') as { deadLetterTargetArn?: unknown };
-    return redrive.deadLetterTargetArn === dlqArn;
+    return redrive.deadLetterTargetArn === dlqArn ? { destinationQueueArn } : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -243,7 +249,8 @@ export async function replayWhatsappInbound(client: SqsCommandClient, args: Inbo
   const held: Message[] = [];
   let targetMessage: Message | undefined;
   if (!Number.isInteger(maxBatches) || maxBatches < 1) return { kind: 'scan_failed' };
-  if (!(await validateQueueBinding(client, args.dlqUrl, args.queueUrl))) {
+  const queueBinding = await validateQueueBinding(client, args.dlqUrl, args.queueUrl);
+  if (!queueBinding) {
     log('queue binding failed: require FIFO destination redriven to the exact supplied FIFO DLQ');
     return { kind: 'queue_binding_failed' };
   }
@@ -282,6 +289,13 @@ export async function replayWhatsappInbound(client: SqsCommandClient, args: Inbo
     const restored = await restoreVisibility(client, args.dlqUrl, held);
     log(restored ? 'target validation failed; source message left intact' : 'visibility restoration failed');
     return { kind: restored ? 'validation_failed' : 'visibility_restore_failed' };
+  }
+  if (targetMessage.Attributes?.DeadLetterQueueSourceArn !== queueBinding.destinationQueueArn) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored
+      ? 'source queue mismatch: selected DLQ record did not originate from the authorized destination queue'
+      : 'visibility restoration failed');
+    return { kind: restored ? 'source_queue_mismatch' : 'visibility_restore_failed' };
   }
   const firstInGroup = held.find((message) => message.Attributes?.MessageGroupId === validated.groupId);
   if (firstInGroup !== targetMessage) {
