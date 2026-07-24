@@ -194,25 +194,34 @@ function isDigestJobArray(value: unknown): value is DigestJob[] {
  * verification.
  */
 function buildPayloadMessage(payload: Record<string, unknown>): ReleaseRenderedMessage | null {
+  // whatsapp_outbox enforces `body_or_template`: a row carries EITHER body
+  // OR (content_template + content_variables), never both. Real interactive
+  // prompts (buildV2OtpPrompt et al.) always populate templateName and
+  // fallbackBody together, so templateName must win outright — sending both
+  // trips the DB check constraint (23514) and drops the message silently
+  // from the worker's point of view.
+  const contentTemplate =
+    typeof payload.templateName === 'string' && payload.templateName !== ''
+      ? payload.templateName
+      : null;
+  if (contentTemplate) {
+    let contentVariables: Record<string, string> = {};
+    if (payload.variables && typeof payload.variables === 'object') {
+      const entries = Object.entries(payload.variables as Record<string, unknown>).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      );
+      contentVariables = Object.fromEntries(entries);
+    }
+    return { body: null, contentTemplate, contentVariables };
+  }
   const body =
     typeof payload.fallbackBody === 'string' && payload.fallbackBody !== ''
       ? payload.fallbackBody
       : typeof payload.body === 'string' && payload.body !== ''
         ? payload.body
         : null;
-  const contentTemplate =
-    typeof payload.templateName === 'string' && payload.templateName !== ''
-      ? payload.templateName
-      : null;
-  if (body === null && contentTemplate === null) return null;
-  let contentVariables: Record<string, string> | null = null;
-  if (contentTemplate && payload.variables && typeof payload.variables === 'object') {
-    const entries = Object.entries(payload.variables as Record<string, unknown>).filter(
-      (entry): entry is [string, string] => typeof entry[1] === 'string',
-    );
-    contentVariables = Object.fromEntries(entries);
-  }
-  return { body, contentTemplate, contentVariables };
+  if (body === null) return null;
+  return { body, contentTemplate: null, contentVariables: null };
 }
 
 const renderOnboarding: CategoryRenderer = async (client, input) => {

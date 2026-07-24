@@ -361,13 +361,42 @@ describe('onboarding-renderers', () => {
       });
       const result = await categoryRenderers.onboarding(client, input);
       expect(result).not.toBeNull();
-      expect(result!.body).toBe('Please review our terms of service before continuing.');
       expect(result!.contentTemplate).toBe('v2_legal_review');
       expect(result!.contentVariables).toEqual({
         '1': 'https://tos.example',
         '2': 'https://privacy.example',
       });
-      expect(result!.body).not.toContain('profile is ready');
+      // whatsapp_outbox_body_or_template requires body IS NULL when a
+      // content_template is set — a real interactive prompt (e.g. the OTP
+      // send) always carries templateName + fallbackBody together, so
+      // sending both here previously violated the DB check constraint
+      // (23514) and silently dropped every templated step prompt, including
+      // the OTP prompt itself.
+      expect(result!.body).toBeNull();
+    });
+
+    it('never emits both body and contentTemplate (whatsapp_outbox_body_or_template invariant)', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      // Shape of buildV2OtpPrompt's output as enqueued by sendPreAuthPrompt:
+      // templateName and fallbackBody are always both present.
+      const input = baseInput({
+        category: 'security',
+        ownerService: 'identity',
+        sourceType: 'onboarding_v2:identity.verify_otp',
+        payload: {
+          templateName: 'v2_onboarding_otp_en',
+          variables: { '1': '5', '2': 'otp:resend', '3': 'Resend' },
+          fallbackBody: 'We sent you a 6-digit code. It expires in 5 minutes.',
+          lang: 'en',
+        },
+      });
+      const result = await categoryRenderers.security(client, input);
+      expect(result).not.toBeNull();
+      const hasBody = result!.body !== null;
+      const hasTemplate = result!.contentTemplate !== null && result!.contentVariables !== null;
+      expect(hasBody).toBe(false);
+      expect(hasTemplate).toBe(true);
+      expect(hasBody && hasTemplate).toBe(false);
     });
 
     it('renders plain text carried as payload.body (sendTemplateMessage shape)', async () => {
