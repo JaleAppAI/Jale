@@ -180,17 +180,54 @@ function isDigestJobArray(value: unknown): value is DigestJob[] {
   );
 }
 
+/**
+ * Renders the message the enqueuing lane actually asked for, when the
+ * intent payload carries one. `sendStepPrompt` (onboarding-v2.ts) enqueues
+ * step prompts as `{ templateName, variables, fallbackBody, lang }`;
+ * `sendTemplateMessage` enqueues plain text as `{ body, lang }`. Returns
+ * null when the payload carries no message copy, so the category's default
+ * copy applies (the pre-payload behavior).
+ *
+ * Ignoring the payload here is what shipped originally — every post-bind
+ * step prompt (legal.review, profile.*, trust.*) was delivered as the
+ * terminal "profile is ready" copy, dead-ending onboarding right after OTP
+ * verification.
+ */
+function buildPayloadMessage(payload: Record<string, unknown>): ReleaseRenderedMessage | null {
+  const body =
+    typeof payload.fallbackBody === 'string' && payload.fallbackBody !== ''
+      ? payload.fallbackBody
+      : typeof payload.body === 'string' && payload.body !== ''
+        ? payload.body
+        : null;
+  const contentTemplate =
+    typeof payload.templateName === 'string' && payload.templateName !== ''
+      ? payload.templateName
+      : null;
+  if (body === null && contentTemplate === null) return null;
+  let contentVariables: Record<string, string> | null = null;
+  if (contentTemplate && payload.variables && typeof payload.variables === 'object') {
+    const entries = Object.entries(payload.variables as Record<string, unknown>).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    );
+    contentVariables = Object.fromEntries(entries);
+  }
+  return { body, contentTemplate, contentVariables };
+}
+
 const renderOnboarding: CategoryRenderer = async (client, input) => {
   const recipient = await loadVerifiedRecipient(client, input.workerId);
   if (!recipient) return null;
-  const message = buildOnboardingCompleteMessage(toLang(recipient.language));
+  const message =
+    buildPayloadMessage(input.payload) ?? buildOnboardingCompleteMessage(toLang(recipient.language));
   return { whatsappNumber: recipient.whatsappNumber, ...message };
 };
 
 const renderSecurity: CategoryRenderer = async (client, input) => {
   const recipient = await loadVerifiedRecipient(client, input.workerId);
   if (!recipient) return null;
-  const message = buildSecurityNoticeMessage(toLang(recipient.language));
+  const message =
+    buildPayloadMessage(input.payload) ?? buildSecurityNoticeMessage(toLang(recipient.language));
   return { whatsappNumber: recipient.whatsappNumber, ...message };
 };
 
