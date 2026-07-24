@@ -54,6 +54,8 @@ function makeFakeClient(opts: {
   rows?: OutboxRow[];
   lifecycle?: string | null;
   intentCounts?: Array<{ status: string; count: number }>;
+  /** Force the UPDATE's affected-row count, simulating a lost compare-and-swap race. */
+  updateRowCount?: number;
 } = {}): { client: Queryable; calls: Array<{ text: string; values: unknown[] }> } {
   const rows = opts.rows ?? [makeRow()];
   const calls: Array<{ text: string; values: unknown[] }> = [];
@@ -69,7 +71,7 @@ function makeFakeClient(opts: {
           row.leased_until = null;
           row.lease_token = null;
         }
-        return { rows: [], rowCount: row ? 1 : 0 };
+        return { rows: [], rowCount: opts.updateRowCount ?? (row ? 1 : 0) };
       }
 
       if (/FROM\s+worker_domain_outbox/i.test(text)) {
@@ -370,5 +372,37 @@ describe('replayDomainEvent — replay state', () => {
     // Redacted payload summary should mention key names + types only.
     expect(printed).toMatch(/phone/);
     expect(printed).toMatch(/string/);
+  });
+});
+
+describe('replayDomainEvent — compare-and-swap safety (TOCTOU)', () => {
+  it('guards the UPDATE on the state observed at SELECT time', async () => {
+    const { client, calls } = makeFakeClient({ rows: [makeRow({ status: 'failed' })] });
+
+    await replayDomainEvent(client, ROW_ID, true, { now: () => new Date('2026-07-22T12:00:00.000Z') });
+
+    const update = calls.find((c) => /UPDATE\s+worker_domain_outbox/i.test(c.text));
+    expect(update).toBeDefined();
+    // The WHERE clause must re-assert the status we based the decision on, so an
+    // event that completes between the SELECT and the UPDATE is not reset.
+    expect(update!.text).toMatch(/WHERE[\s\S]*status\s*=/i);
+    expect(update!.values).toContain('failed');
+  });
+
+  it('reports a conflict instead of claiming success when the guard matches zero rows', async () => {
+    const logs: string[] = [];
+    const logSpy = jest.spyOn(console, 'log').mockImplementation((...a) => { logs.push(a.join(' ')); });
+    const errSpy = jest.spyOn(console, 'error').mockImplementation((...a) => { logs.push(a.join(' ')); });
+    try {
+      const { client } = makeFakeClient({ rows: [makeRow({ status: 'failed' })], updateRowCount: 0 });
+
+      const result = await replayDomainEvent(client, ROW_ID, true, { now: () => new Date('2026-07-22T12:00:00.000Z') });
+
+      expect(result.kind).toBe('replay_conflict');
+      expect(logs.join('\n')).not.toMatch(/Replayed:/);
+    } finally {
+      logSpy.mockRestore();
+      errSpy.mockRestore();
+    }
   });
 });

@@ -110,7 +110,8 @@ export type ReplayResultKind =
   | 'already_completed'
   | 'event_in_flight'
   | 'dry_run'
-  | 'executed';
+  | 'executed'
+  | 'replay_conflict';
 
 export interface ReplayResult {
   kind: ReplayResultKind;
@@ -247,15 +248,33 @@ export async function replayDomainEvent(
     return { kind: 'dry_run' };
   }
 
-  await client.query(
+  // Compare-and-swap on the exact state this decision was based on. The drain
+  // runs every minute, so the event can legitimately be leased or completed in
+  // the window between the SELECT above and this UPDATE; without this guard a
+  // just-completed event could be reset to 'pending', violating the tool's
+  // "never disturb an already-successful record" contract. `event_key` and
+  // `payload` are never in the SET list — the idempotency key and original
+  // payload are always reused as-is.
+  const updated = await client.query(
     `UPDATE worker_domain_outbox
         SET status = 'pending',
             leased_until = NULL,
             lease_token = NULL,
             next_attempt_at = $2
-      WHERE id = $1`,
-    [row.id, now()],
+      WHERE id = $1
+        AND status = $3
+        AND lease_token IS NOT DISTINCT FROM $4`,
+    [row.id, now(), row.status, row.lease_token ?? null],
   );
+
+  if ((updated.rowCount ?? 0) !== 1) {
+    console.error(
+      'replay_conflict: the event changed state between inspection and replay '
+        + '(it may have been leased or completed by the drain). Nothing was mutated; re-run to inspect current state.',
+    );
+    return { kind: 'replay_conflict' };
+  }
+
   console.log(`Replayed: worker_domain_outbox.id=${row.id} reset to pending (event_key unchanged).`);
   return { kind: 'executed' };
 }
@@ -265,6 +284,7 @@ function resolveExitCode(result: ReplayResult): number {
     case 'not_found':
     case 'ambiguous_id':
     case 'event_in_flight':
+    case 'replay_conflict':
       return 1;
     default:
       return 0;

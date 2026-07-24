@@ -28,6 +28,7 @@ import { randomUUID } from 'node:crypto';
 import { Client, type PoolClient } from 'pg';
 
 import { retriggerDeferredReadyWorkers } from '../../../lambda/whatsapp/lib/delivery-retrigger-sweep';
+import { replayDomainEvent } from '../../../scripts/replay-domain-event';
 import { releaseWorkerReady } from '../../../lambda/whatsapp/worker-ready-release';
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
 import type { ReleaseRenderRequest, ReleaseRenderedMessage } from '../../../lambda/whatsapp/lib/onboarding-types';
@@ -399,4 +400,71 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
       30_000,
     );
   });
+
+  // O3: the replay CLI's write path under a REAL jale_admin connection and real
+  // FORCE RLS. Unit tests use a fake client that cannot model RLS — this is the
+  // gate that would catch an always-false / RLS-blocked mutation (the class of
+  // bug the C9 gate caught for employer_chat eligibility).
+  describe('exact-ID replay (O3) under real RLS as jale_admin', () => {
+    const workerId = randomUUID();
+    const failedKey = `worker.ready:replay-failed:${workerId}`;
+    const completedKey = `worker.ready:replay-done:${workerId}`;
+
+    beforeAll(async () => {
+      await withSuperuser(async (c) => {
+        await c.query(
+          `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number) VALUES ($1, $2, 'worker', $3)`,
+          [workerId, `o3-replay-${workerId}`, '+15550092201'],
+        );
+        await c.query(
+          `INSERT INTO worker_domain_outbox (event_type, aggregate_id, event_key, payload, status, attempts)
+           VALUES ('worker.ready', $1, $2, $3::jsonb, 'failed', 2)`,
+          [workerId, failedKey, JSON.stringify({ kind: 'worker_ready', note: 'original' })],
+        );
+        await c.query(
+          `INSERT INTO worker_domain_outbox (event_type, aggregate_id, event_key, payload, status)
+           VALUES ('worker.ready', $1, $2, '{}'::jsonb, 'completed')`,
+          [workerId, completedKey],
+        );
+      });
+    });
+
+    afterAll(async () => {
+      await withSuperuser(async (c) => {
+        await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
+        await c.query('DELETE FROM users WHERE id = $1', [workerId]);
+      });
+    });
+
+    it('resets a failed event to pending, preserving event_key and payload', async () => {
+      const result = await withJaleAdmin((c) =>
+        replayDomainEvent(c as unknown as Parameters<typeof replayDomainEvent>[0], failedKey, true),
+      );
+      expect(result.kind).toBe('executed');
+
+      const after = await withSuperuser((c) =>
+        c.query<{ status: string; event_key: string; payload: Record<string, unknown>; lease_token: string | null }>(
+          'SELECT status, event_key, payload, lease_token FROM worker_domain_outbox WHERE event_key = $1',
+          [failedKey],
+        ),
+      );
+      expect(after.rows[0].status).toBe('pending');
+      expect(after.rows[0].event_key).toBe(failedKey);
+      expect(after.rows[0].payload).toEqual({ kind: 'worker_ready', note: 'original' });
+      expect(after.rows[0].lease_token).toBeNull();
+    });
+
+    it('treats an already-completed event as a safe no-op', async () => {
+      const result = await withJaleAdmin((c) =>
+        replayDomainEvent(c as unknown as Parameters<typeof replayDomainEvent>[0], completedKey, true),
+      );
+      expect(result.kind).toBe('already_completed');
+
+      const after = await withSuperuser((c) =>
+        c.query<{ status: string }>('SELECT status FROM worker_domain_outbox WHERE event_key = $1', [completedKey]),
+      );
+      expect(after.rows[0].status).toBe('completed');
+    });
+  });
+
 });
