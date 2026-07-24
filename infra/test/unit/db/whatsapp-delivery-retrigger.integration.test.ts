@@ -115,6 +115,24 @@ async function withJaleAdmin<T>(fn: (client: Client) => Promise<T>): Promise<T> 
   }
 }
 
+/** Deliberately omits worker RLS context: replay is an admin-only operation. */
+async function withUnauthorizedWhatsapp<T>(fn: (client: Client) => Promise<T>): Promise<T> {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL ROLE jale_whatsapp");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw err;
+  } finally {
+    await client.end();
+  }
+}
+
 function pc(client: Client): PoolClient {
   return client as unknown as PoolClient;
 }
@@ -401,6 +419,148 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
     );
   });
 
+  describe('processing-trigger enable race', () => {
+    const workerId = randomUUID();
+    const originalEventKey = `worker.ready:processing-race:${workerId}`;
+
+    beforeAll(async () => {
+      await withSuperuser(async (c) => {
+        await c.query(
+          `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number)
+           VALUES ($1, $2, 'worker', $3)`,
+          [workerId, `o1-race-worker-${workerId}`, '+15550091102'],
+        );
+        await c.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle) VALUES ($1, 'ready')`, [workerId]);
+        await c.query(
+          `INSERT INTO worker_workflow_runs (user_id, workflow_version, current_step_key, status)
+           VALUES ($1, 1, 'trust.question.3', 'completed')`,
+          [workerId],
+        );
+        await c.query(
+          `INSERT INTO worker_domain_outbox (event_type, aggregate_id, event_key, status)
+           VALUES ('worker.ready', $1, $2, 'pending')`,
+          [workerId, originalEventKey],
+        );
+        await c.query(
+          `INSERT INTO worker_message_intents
+             (user_id, category, owner_service, source_type, source_id, dedupe_key,
+              priority, status, policy_version, payload)
+           VALUES ($1, 'account', 'account', 'password_change', $1, $2,
+                   20, 'deferred', 1, '{}'::jsonb)`,
+          [workerId, `o1-race-account-${workerId}`],
+        );
+      });
+    });
+
+    afterAll(async () => {
+      await withSuperuser(async (c) => {
+        await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
+        await c.query('DELETE FROM users WHERE id = $1', [workerId]);
+      });
+    });
+
+    it(
+      'enqueues a replacement while the old trigger is processing, then releases business work exactly once',
+      async () => {
+        await withSuperuser((c) =>
+          c.query(`UPDATE whatsapp_runtime_controls SET enabled = true WHERE control_key = 'deferred_delivery_enabled'`),
+        );
+
+        let allowOldWorkerToFinish!: () => void;
+        const oldWorkerMayFinish = new Promise<void>((resolve) => { allowOldWorkerToFinish = resolve; });
+        let announceOldWorkerLeased!: () => void;
+        const oldWorkerLeased = new Promise<void>((resolve) => { announceOldWorkerLeased = resolve; });
+
+        const readyWorker = (async (): Promise<number> => {
+          const workerClient = new Client({ connectionString: databaseUrl });
+          await workerClient.connect();
+          try {
+            await workerClient.query('BEGIN');
+            await workerClient.query('SET LOCAL ROLE jale_whatsapp');
+            const leased = await workerClient.query<{
+              event_key: string;
+              lease_token: string;
+            }>(`SELECT * FROM lease_worker_domain_events($1, $2)`, ['worker.ready', 1]);
+            expect(leased.rows).toHaveLength(1);
+            expect(leased.rows[0].event_key).toBe(originalEventKey);
+            await workerClient.query('COMMIT');
+            announceOldWorkerLeased();
+
+            await oldWorkerMayFinish;
+            await workerClient.query('BEGIN');
+            await workerClient.query('SET LOCAL ROLE jale_whatsapp');
+            await setInternalUserRlsContext(workerClient, workerId);
+            const { render } = recordingRenderer();
+            const released = await releaseWorkerReady(pc(workerClient), originalEventKey, {
+              renderer: { render },
+              now: () => FIXED_NOW,
+            });
+            const completion = await workerClient.query(
+              `UPDATE worker_domain_outbox
+                  SET status='completed', leased_until=NULL, lease_token=NULL,
+                      next_attempt_at=NULL, updated_at=now()
+                WHERE event_key=$1 AND status='processing' AND lease_token=$2`,
+              [originalEventKey, leased.rows[0].lease_token],
+            );
+            expect(completion.rowCount).toBe(1);
+            await workerClient.query('COMMIT');
+            return released.released;
+          } catch (err) {
+            await workerClient.query('ROLLBACK').catch(() => undefined);
+            throw err;
+          } finally {
+            await workerClient.end();
+          }
+        })();
+
+        await oldWorkerLeased;
+        try {
+          const processing = await withSuperuser((c) =>
+            c.query<{ status: string }>('SELECT status FROM worker_domain_outbox WHERE event_key = $1', [originalEventKey]),
+          );
+          expect(processing.rows[0].status).toBe('processing');
+
+          const sweep = await withJaleAdmin((c) =>
+            retriggerDeferredReadyWorkers(pc(c), { sweepRunId: 'o1-processing-race' }),
+          );
+          expect(sweep).toEqual({ workersSwept: 1, eventsEnqueued: 1 });
+
+          const replacement = await withSuperuser((c) =>
+            c.query<{ status: string }>('SELECT status FROM worker_domain_outbox WHERE event_key = $1', [
+              `worker.ready:sweep:${workerId}:o1-processing-race`,
+            ]),
+          );
+          expect(replacement.rows).toEqual([{ status: 'pending' }]);
+        } finally {
+          allowOldWorkerToFinish();
+        }
+
+        expect(await readyWorker).toBe(2);
+        expect(await drainAllWorkerReady(databaseUrl!)).toEqual({ totalReleased: 0, cycles: 1 });
+
+        const releaseState = await withSuperuser(async (c) => {
+          const intents = await c.query<{ category: string; release_sequence: number }>(
+            `SELECT category, release_sequence FROM worker_message_intents
+              WHERE user_id = $1 AND status = 'released' ORDER BY release_sequence`,
+            [workerId],
+          );
+          const businessOutbox = await c.query<{ count: number }>(
+            `SELECT count(*)::int AS count FROM worker_message_intents i
+               JOIN whatsapp_outbox o ON o.id = i.outbox_id
+              WHERE i.user_id = $1 AND i.category <> 'onboarding'`,
+            [workerId],
+          );
+          return { intents: intents.rows, businessOutbox: businessOutbox.rows[0].count };
+        });
+        expect(releaseState.intents.map((row) => row.release_sequence)).toEqual([1, 2]);
+        expect(new Set(releaseState.intents.map((row) => row.release_sequence)).size).toBe(2);
+        expect(releaseState.intents.filter((row) => row.category !== 'onboarding')).toHaveLength(1);
+        expect(releaseState.businessOutbox).toBe(1);
+      },
+      30_000,
+    );
+  });
+
   // O3: the replay CLI's write path under a REAL jale_admin connection and real
   // FORCE RLS. Unit tests use a fake client that cannot model RLS — this is the
   // gate that would catch an always-false / RLS-blocked mutation (the class of
@@ -464,6 +624,103 @@ maybeDescribe('WhatsApp v2 deferred delivery re-trigger sweep (O1)', () => {
         c.query<{ status: string }>('SELECT status FROM worker_domain_outbox WHERE event_key = $1', [completedKey]),
       );
       expect(after.rows[0].status).toBe('completed');
+    });
+  });
+
+  describe('exact-ID replay authorization and drain idempotency under real RLS', () => {
+    const workerId = randomUUID();
+    const unauthorizedKey = `worker.ready:replay-unauthorized:${workerId}`;
+    const replayKey = `worker.ready:replay-idempotent:${workerId}`;
+
+    beforeAll(async () => {
+      await withSuperuser(async (c) => {
+        await c.query(
+          `INSERT INTO users (id, cognito_sub, user_type, whatsapp_number)
+           VALUES ($1, $2, 'worker', $3)`,
+          [workerId, `o3-replay-hardening-${workerId}`, '+15550092202'],
+        );
+        await c.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle) VALUES ($1, 'ready')`, [workerId]);
+        await c.query(
+          `INSERT INTO worker_workflow_runs (user_id, workflow_version, current_step_key, status)
+           VALUES ($1, 1, 'trust.question.3', 'completed')`,
+          [workerId],
+        );
+        await c.query(
+          `INSERT INTO worker_domain_outbox
+             (event_type, aggregate_id, event_key, payload, status, attempts, last_error)
+           VALUES
+             ('worker.ready', $1, $2, '{}'::jsonb, 'failed', 2, 'fixture failure'),
+             ('worker.ready', $1, $3, '{}'::jsonb, 'failed', 2, 'fixture failure')`,
+          [workerId, unauthorizedKey, replayKey],
+        );
+        await c.query(
+          `INSERT INTO worker_message_intents
+             (user_id, category, owner_service, source_type, source_id, dedupe_key,
+              priority, status, policy_version, payload)
+           VALUES ($1, 'account', 'account', 'password_change', $1, $2,
+                   20, 'deferred', 1, '{}'::jsonb)`,
+          [workerId, `o3-replay-account-${workerId}`],
+        );
+      });
+    });
+
+    afterAll(async () => {
+      await withSuperuser(async (c) => {
+        await c.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = $1', [workerId]);
+        await c.query('DELETE FROM users WHERE id = $1', [workerId]);
+      });
+    });
+
+    it('prevents jale_whatsapp without worker context from replaying a failed event', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+      const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await withUnauthorizedWhatsapp((c) =>
+          replayDomainEvent(c as unknown as Parameters<typeof replayDomainEvent>[0], unauthorizedKey, true),
+        );
+        expect(result.kind).toBe('not_found');
+      } finally {
+        logSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+
+      const after = await withSuperuser((c) =>
+        c.query<{ status: string; attempts: number; last_error: string }>(
+          'SELECT status, attempts, last_error FROM worker_domain_outbox WHERE event_key = $1',
+          [unauthorizedKey],
+        ),
+      );
+      expect(after.rows).toEqual([{ status: 'failed', attempts: 2, last_error: 'fixture failure' }]);
+    });
+
+    it('replay, real release, and repeated replay/drain are idempotent', async () => {
+      const firstReplay = await withJaleAdmin((c) =>
+        replayDomainEvent(c as unknown as Parameters<typeof replayDomainEvent>[0], replayKey, true),
+      );
+      expect(firstReplay.kind).toBe('executed');
+      expect(await drainAllWorkerReady(databaseUrl!)).toEqual({ totalReleased: 2, cycles: 1 });
+
+      const readCounts = () => withSuperuser(async (c) => {
+        const intents = await c.query<{ count: number }>(
+          'SELECT count(*)::int AS count FROM worker_message_intents WHERE user_id = $1',
+          [workerId],
+        );
+        const outbox = await c.query<{ count: number }>(
+          `SELECT count(*)::int AS count FROM whatsapp_outbox o
+             JOIN worker_message_intents i ON i.outbox_id = o.id WHERE i.user_id = $1`,
+          [workerId],
+        );
+        return { intents: intents.rows[0].count, outbox: outbox.rows[0].count };
+      });
+      const countsAfterFirst = await readCounts();
+      expect(countsAfterFirst).toEqual({ intents: 2, outbox: 2 });
+
+      const secondReplay = await withJaleAdmin((c) =>
+        replayDomainEvent(c as unknown as Parameters<typeof replayDomainEvent>[0], replayKey, true),
+      );
+      expect(secondReplay.kind).toBe('already_completed');
+      expect(await drainAllWorkerReady(databaseUrl!)).toEqual({ totalReleased: 0, cycles: 0 });
+      expect(await readCounts()).toEqual(countsAfterFirst);
     });
   });
 
