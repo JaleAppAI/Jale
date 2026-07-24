@@ -180,6 +180,13 @@ function isDigestJobArray(value: unknown): value is DigestJob[] {
   );
 }
 
+/** Reserved `content_variables` key `sendTwilioWhatsAppMessage` (outbox.ts)
+ * reads for the plain-text fallback when a `content_template` has no
+ * registered Twilio ContentSid; stripped before the real Twilio send when a
+ * ContentSid is found. `queueInteractivePrompt` (processor.ts, the pre-auth
+ * path) has always paired every templated send with this key. */
+const FALLBACK_BODY_KEY = '__fallback_body';
+
 /**
  * Renders the message the enqueuing lane actually asked for, when the
  * intent payload carries one. `sendStepPrompt` (onboarding-v2.ts) enqueues
@@ -211,6 +218,12 @@ function buildPayloadMessage(payload: Record<string, unknown>): ReleaseRenderedM
         (entry): entry is [string, string] => typeof entry[1] === 'string',
       );
       contentVariables = Object.fromEntries(entries);
+    }
+    // Without this, an unregistered/renamed Twilio ContentSid hard-fails the
+    // send (outbox.ts throws 'Twilio template missing') instead of degrading
+    // to plain text, even though the prompt builder always supplies one.
+    if (typeof payload.fallbackBody === 'string' && payload.fallbackBody !== '') {
+      contentVariables = { ...contentVariables, [FALLBACK_BODY_KEY]: payload.fallbackBody };
     }
     return { body: null, contentTemplate, contentVariables };
   }
