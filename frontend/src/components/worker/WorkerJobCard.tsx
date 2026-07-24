@@ -1,9 +1,10 @@
 'use client';
 
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Card } from '@/components/ui/card';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { Link } from '@/i18n/navigation';
+import { formatStartDate } from '@/lib/date';
 import type { Job } from '@/lib/api/worker';
 import { humanizeReasonCode, normalizeMatchScore, scoreBandForScore, truncateMatchReason } from '@/lib/match';
 
@@ -43,6 +44,7 @@ function getInitials(name: string) {
 export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
   const t = useTranslations('worker_home');
   const tMatch = useTranslations('match');
+  const locale = useLocale();
   const initials = getInitials(job.company_name ?? 'JB');
   const pay = job.pay && job.pay !== 'Pay not specified' ? job.pay : null;
   const matchScore = normalizeMatchScore(job.match_score);
@@ -78,7 +80,7 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
 
           <div className="mt-2 flex flex-wrap gap-1.5 text-xs" style={{ color: 'var(--jale-ink-2)' }}>
             {pay && <span>{pay}</span>}
-            {job.start_date && <span>{job.start_date}</span>}
+            {job.start_date && <span>{formatStartDate(job.start_date, locale) ?? job.start_date}</span>}
             {job.shift_schedule && <span>{job.shift_schedule}</span>}
             {job.open_count != null && job.number_of_workers_needed != null && (
               <span>{t('openings_count', { open: job.open_count, total: job.number_of_workers_needed })}</span>

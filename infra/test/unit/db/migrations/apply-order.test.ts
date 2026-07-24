@@ -52,6 +52,8 @@ const expectedBaselineMigrations = [
   '041_whatsapp_web_worker_lookup_grant.sql',
   '042_whatsapp_onboarding_gate.sql',
   '043_whatsapp_worker_intent_transport.sql',
+  '044_job_message_outbox_send_unknown.sql',
+  '045_applications_employer_update_repair.sql',
 ];
 
 function migrationFiles(): string[] {

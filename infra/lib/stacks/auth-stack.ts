@@ -212,7 +212,7 @@ export class AuthStack extends cdk.Stack {
     });
 
     // ── Worker Cognito Pool ──
-    const isProd = this.node.tryGetContext('environment') === 'prod';
+    const isProd = this.node.tryGetContext('environment') === 'production';
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
       signInAliases: { phone: true },

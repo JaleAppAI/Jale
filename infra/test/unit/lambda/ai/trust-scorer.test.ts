@@ -152,6 +152,24 @@ describe('scoreAssessment', () => {
     expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'COMMIT')).toBe(false);
   });
 
+  it('rolls back without updating user score if assessment update matches no rows (lost race with recovery)', async () => {
+    mockDbQuery
+      .mockResolvedValueOnce({ rowCount: 1 }) // claim
+      .mockResolvedValueOnce({ rows: [{ answers: [] }] }) // select answers
+      .mockResolvedValueOnce({ rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 0 }) // assessment UPDATE guarded by status='scoring' -- no longer scoring
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK
+    mockBedrockSend.mockResolvedValueOnce({
+      output: { message: { content: [{ text: JSON.stringify(VALID_SCORE) }] } },
+    });
+
+    await scoreAssessment({ assessmentId: 'abc', userId: 'u1', professionKey: 'electrician' });
+
+    expect(mockDbQuery.mock.calls.some(([sql]) => sql.includes('UPDATE users'))).toBe(false);
+    expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'ROLLBACK')).toBe(true);
+    expect(mockDbQuery.mock.calls.some(([sql]) => sql === 'COMMIT')).toBe(false);
+  });
+
   it('validates score sum matches competency_score', async () => {
     const badScore = { ...VALID_SCORE, competency_score: 99 };
     mockDbQuery

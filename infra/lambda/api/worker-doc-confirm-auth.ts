@@ -1,9 +1,11 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
+const s3 = new S3Client({});
 const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
 const VALID_MIME = new Set(['application/pdf', 'image/jpeg', 'image/png']);
 
@@ -46,6 +48,28 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const userRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
     if (userRes.rows.length === 0) { await client.query('COMMIT'); return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_found' }) }; }
     const workerId: string = userRes.rows[0].id;
+
+    // Vault uploads are only ever issued under the caller's own prefix
+    // (see worker-doc-upload-url-auth.ts). Reject any client-supplied
+    // s3_key that doesn't fall under it to prevent an IDOR where a worker
+    // claims another user's uploaded object as their own document.
+    const expectedPrefix = `documents/vault/${workerId}/`;
+    if (typeof s3_key !== 'string' || !s3_key.startsWith(expectedPrefix)) {
+      await client.query('COMMIT');
+      return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
+    }
+
+    try {
+      const head = await s3.send(new HeadObjectCommand({ Bucket: process.env.DOCUMENTS_BUCKET!, Key: s3_key }));
+      if (head.ContentType !== mime_type || !head.ServerSideEncryption
+          || head.ContentLength == null || head.ContentLength <= 0) {
+        await client.query('COMMIT');
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_upload' }) };
+      }
+    } catch {
+      await client.query('COMMIT');
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'uploaded_object_not_found' }) };
+    }
 
     // Switch to worker_documents RLS convention (user.id::text).
     await setInternalUserRlsContext(client, workerId);

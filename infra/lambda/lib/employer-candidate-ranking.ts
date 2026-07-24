@@ -350,6 +350,12 @@ export async function listEmployerCandidates(
     .sort((a, b) => b.match_score - a.match_score || new Date(a.applied_at).getTime() - new Date(b.applied_at).getTime())
     .slice(0, limit);
 
+  const countResult = await client.query<{ total: string }>(
+    `SELECT count(*)::text AS total FROM job_applications WHERE job_id = $1`,
+    [jobId],
+  );
+  const totalApplicants = Number(countResult.rows[0]?.total ?? deterministic.length);
+
   const sourceHash = buildEmployerCandidateSourceHash({
     job: {
       id: job.id,
@@ -379,7 +385,7 @@ export async function listEmployerCandidates(
       ranking_status: useCache ? 'llm_cached' : 'deterministic',
       ranking_version: useCache ? LLM_RANKING_VERSION : SQL_RANKING_VERSION,
       candidates: useCache ? cachedCandidates : deterministic,
-      total: candidatesResult.rowCount ?? deterministic.length,
+      total: totalApplicants,
       computed_at: useCache ? new Date(cacheRows[0].computed_at).toISOString() : new Date().toISOString(),
     },
     sourceHash,

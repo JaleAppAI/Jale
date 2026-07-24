@@ -12,9 +12,11 @@ const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
-const makeEvent = (queryStringParameters?: Record<string, string>) => ({
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
+
+const makeEvent = (queryStringParameters?: Record<string, string>, pathParameters: Record<string, string> = { jobId: JOB_ID }) => ({
   requestContext: { authorizer: { claims: { sub: 'employer-sub' } } },
-  pathParameters: { jobId: 'job-uuid' },
+  pathParameters,
   queryStringParameters,
 } as unknown as APIGatewayProxyEvent);
 
@@ -27,6 +29,12 @@ describe('employer-job-applicants Lambda', () => {
     });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+  });
+
+  it('returns 400 when jobId is not a valid UUID', async () => {
+    const res = await handler(makeEvent(undefined, { jobId: 'not-a-uuid' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_job_id');
   });
 
   it('reads ordered skills from worker_skills instead of worker_profiles.skills', async () => {

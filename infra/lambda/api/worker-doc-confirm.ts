@@ -148,9 +148,9 @@ export const handler = async (
     await client.query("SELECT set_config('app.current_internal_user_id', $1, true)", [worker_id]);
 
     const confirmResult = await client.query(
-      `WITH consumed_token AS (
-         UPDATE document_upload_tokens token
-         SET used = true, used_at = now()
+      `WITH valid_token AS (
+         SELECT token.worker_id, token.job_id
+         FROM document_upload_tokens token
          WHERE token.token_hash = $1
            AND token.used = false
            AND token.expires_at > now()
@@ -160,13 +160,12 @@ export const handler = async (
              WHERE ja.job_id = token.job_id
                AND ja.worker_id = token.worker_id
            )
-         RETURNING token.worker_id, token.job_id
        ),
        confirmed_slot AS (
          UPDATE document_upload_token_slots slots
          SET confirmed_at = now(),
              s3_version_id = $6
-         FROM consumed_token token
+         FROM valid_token token
          WHERE slots.token_hash = $1
            AND slots.doc_type = $2
            AND slots.issued_s3_key = $3

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { Link } from '@/i18n/navigation';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { ProfileCompleteModal, ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
 import { apiFetch, isLegalWallError } from '@/lib/api';
+import { formatStartDate } from '@/lib/date';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
 import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
@@ -30,6 +31,7 @@ export default function WorkerJobDetailPage() {
   const { handleLegalWall } = useRequireAuth();
   const t = useTranslations('worker_job_detail');
   const tCommon = useTranslations('common');
+  const locale = useLocale();
 
   const [job, setJob] = useState<JobDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -195,7 +197,7 @@ export default function WorkerJobDetailPage() {
 
             <div className="grid gap-3 text-sm md:grid-cols-3">
               {job.pay && job.pay !== 'Pay not specified' && <Detail label={t('pay_range')} value={job.pay} />}
-              {job.start_date && <Detail label={t('start_date')} value={job.start_date} />}
+              {job.start_date && <Detail label={t('start_date')} value={formatStartDate(job.start_date, locale) ?? job.start_date} />}
               {job.expected_duration && <Detail label={t('expected_duration')} value={job.expected_duration} />}
               {job.shift_schedule && <Detail label={t('shift_schedule')} value={job.shift_schedule} />}
               {job.number_of_workers_needed !== undefined && (
