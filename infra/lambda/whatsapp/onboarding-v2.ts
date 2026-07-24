@@ -63,7 +63,7 @@ import {
   buildV2StartInvitationPrompt,
   buildV2OtpPrompt,
   buildV2LegalPrompt,
-  buildV2NumberedOptionsPrompt,
+  buildV2TradePrompt,
   V2_FALLBACK_TRUST_QUESTIONS,
   type InteractivePrompt,
 } from './lib/interactive-templates';
@@ -298,7 +298,7 @@ function buildPromptForStep(
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_location', lang) };
     case 'profile.trade': {
       const options = TRADE_ORDER.map((trade) => TRADE_LABELS[trade][lang]);
-      return buildV2NumberedOptionsPrompt(lang, t('v2_ask_trade', lang), options);
+      return buildV2TradePrompt(lang, t('v2_ask_trade', lang), options);
     }
     case 'profile.custom_trade':
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_custom_trade', lang) };
@@ -868,9 +868,17 @@ async function handleProfileLocation(
 
 // ── Bound: profile.trade (list picker) ───────────────────────────────────
 
+/**
+ * Accepts both payload dialects, because `profile.trade` now renders V1's
+ * approved `onboarding_trade_*` template (see buildV2TradePrompt), whose taps
+ * arrive as `profile:main_trade:<trade>` — V1's format, per
+ * parseProfilePayloadAnswer in flows.ts. The original `trade:<trade>` form is
+ * still accepted so any session already prompted with the old template keeps
+ * working, and numeric/plain replies still cover the plain-text fallback.
+ */
 function parseTradeChoice(msg: OnboardingV2InboundMessage): (typeof TRADE_ORDER)[number] | null {
   if (msg.interactivePayload) {
-    const match = /^trade:(.+)$/.exec(msg.interactivePayload);
+    const match = /^(?:trade|profile:main_trade):(.+)$/.exec(msg.interactivePayload);
     const candidate = match?.[1];
     if (candidate && (TRADE_ORDER as readonly string[]).includes(candidate)) {
       return candidate as (typeof TRADE_ORDER)[number];

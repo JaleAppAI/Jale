@@ -8,7 +8,7 @@ import {
 import { t, type Lang } from '../../../../../lambda/whatsapp/lib/templates';
 import {
   buildV2StartInvitationPrompt, buildV2OtpPrompt, buildV2LegalPrompt,
-  buildV2NumberedOptionsPrompt, V2_FALLBACK_TRUST_QUESTIONS,
+  buildV2NumberedOptionsPrompt, buildV2TradePrompt, V2_FALLBACK_TRUST_QUESTIONS,
 } from '../../../../../lambda/whatsapp/lib/interactive-templates';
 import { ACCOUNT_EXISTENCE_LEAK_PATTERN } from './v2-copy-test-helpers';
 
@@ -144,17 +144,46 @@ describe('buildV2OtpPrompt', () => {
 });
 
 describe('buildV2LegalPrompt', () => {
-  it.each(LANGS)('carries Terms and Privacy in variables and fallback in %s', (lang) => {
+  // These assertions encode V1's Twilio contract, which is the only proof we
+  // have that the send is accepted: a REGISTERED template invoked with the
+  // wrong variable count is a Twilio 400, and outbox.ts's __fallback_body
+  // rescue only covers a MISSING ContentSid — it cannot save a rejected
+  // payload. buildLegalInteractivePrompt (V1, live in prod) sends exactly one
+  // variable to this template, so v2 must too.
+  it.each(LANGS)('reuses V1\'s registered onboarding_legal template in %s', (lang) => {
     const p = buildV2LegalPrompt(lang, 'https://jale.app/terms', 'https://jale.app/privacy');
-    const vars = Object.values(p.variables);
-    expect(vars).toContain('https://jale.app/terms');
-    expect(vars).toContain('https://jale.app/privacy');
+    expect(p.templateName).toBe(`onboarding_legal_${lang}`);
+    expect(p.variables).toEqual({ '1': 'https://jale.app/terms' });
+    expect(Object.keys(p.variables)).toHaveLength(1);
+  });
+
+  it.each(LANGS)('keeps both links in the plain-text fallback in %s', (lang) => {
+    const p = buildV2LegalPrompt(lang, 'https://jale.app/terms', 'https://jale.app/privacy');
     expect(p.fallbackBody).toContain('https://jale.app/terms');
     expect(p.fallbackBody).toContain('https://jale.app/privacy');
-    const serialized = JSON.stringify(p);
-    expect(serialized).toContain('legal:accept');
-    expect(serialized).toContain('legal:decline');
-    expect(serialized).toContain('legal:review');
+    expect(p.fallbackBody).not.toContain('{{');
+  });
+
+  it('never passes button payloads as variables (the approved template bakes them in)', () => {
+    const serialized = JSON.stringify(buildV2LegalPrompt('en', 'https://t', 'https://p'));
+    expect(serialized).not.toContain('legal:accept');
+    expect(serialized).not.toContain('legal:decline');
+  });
+});
+
+describe('buildV2TradePrompt', () => {
+  it.each(LANGS)('reuses V1\'s registered onboarding_trade template with zero variables in %s', (lang) => {
+    // buildProfileInteractivePrompt (V1) sends this template no variables.
+    const p = buildV2TradePrompt(lang, 'Pick one', ['Alpha', 'Beta']);
+    expect(p.templateName).toBe(`onboarding_trade_${lang}`);
+    expect(p.variables).toEqual({});
+  });
+
+  it.each(LANGS)('numbers each option in the fallback body in %s', (lang) => {
+    const p = buildV2TradePrompt(lang, 'Pick one', ['Alpha', 'Beta', 'Gamma']);
+    expect(p.fallbackBody).toContain('1. Alpha');
+    expect(p.fallbackBody).toContain('2. Beta');
+    expect(p.fallbackBody).toContain('3. Gamma');
   });
 });
 
