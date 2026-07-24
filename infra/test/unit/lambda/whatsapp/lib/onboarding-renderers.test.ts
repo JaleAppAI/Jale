@@ -362,9 +362,17 @@ describe('onboarding-renderers', () => {
       const result = await categoryRenderers.onboarding(client, input);
       expect(result).not.toBeNull();
       expect(result!.contentTemplate).toBe('v2_legal_review');
+      // __fallback_body must ride along in contentVariables: outbox.ts's
+      // sendTwilioWhatsAppMessage reads it to degrade to plain text when the
+      // named ContentSid isn't registered with Twilio (the case for every
+      // v2_-prefixed template today — none exist in the Twilio secret yet),
+      // stripping it before any real templated send. Without it here, an
+      // unregistered template hard-throws ('Twilio template missing')
+      // instead of degrading, exactly what broke prod after the first fix.
       expect(result!.contentVariables).toEqual({
         '1': 'https://tos.example',
         '2': 'https://privacy.example',
+        __fallback_body: 'Please review our terms of service before continuing.',
       });
       // whatsapp_outbox_body_or_template requires body IS NULL when a
       // content_template is set — a real interactive prompt (e.g. the OTP
@@ -397,6 +405,29 @@ describe('onboarding-renderers', () => {
       expect(hasBody).toBe(false);
       expect(hasTemplate).toBe(true);
       expect(hasBody && hasTemplate).toBe(false);
+    });
+
+    it('carries fallbackBody through as content_variables.__fallback_body so an unregistered Twilio template degrades to plain text instead of hard-failing', async () => {
+      // outbox.ts's sendTwilioWhatsAppMessage: if secret.templates has no
+      // ContentSid for content_template, it sends content_variables
+      // .__fallback_body as plain Body instead, and only throws
+      // 'Twilio template missing' when that key is absent too. Every
+      // v2_-prefixed template name is unregistered in Twilio today, so this
+      // key is what keeps every step prompt actually deliverable in prod.
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        payload: {
+          templateName: 'v2_onboarding_legal_en',
+          variables: { '1': 'https://jale.app/legal/tos' },
+          fallbackBody: 'Please review our terms of service before continuing.',
+        },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.contentVariables?.__fallback_body).toBe(
+        'Please review our terms of service before continuing.',
+      );
     });
 
     it('renders plain text carried as payload.body (sendTemplateMessage shape)', async () => {
