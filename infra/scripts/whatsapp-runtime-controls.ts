@@ -21,6 +21,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { hashNormalizedPhone } from '../lambda/whatsapp/lib/runtime-controls';
+import { retriggerDeferredReadyWorkers } from '../lambda/whatsapp/lib/delivery-retrigger-sweep';
 
 export interface Queryable {
   query(
@@ -165,12 +166,51 @@ export async function runControlsAction(
   }
 
   if (action.kind === 'enable' || action.kind === 'disable') {
-    await client.query(
-      `UPDATE whatsapp_runtime_controls
-          SET enabled = $2, updated_by = $3, updated_at = now()
-        WHERE control_key = $1`,
-      [action.controlKey, action.kind === 'enable', operator],
-    );
+    // O1 (deferred re-trigger sweep, D1): enabling `deferred_delivery_enabled`
+    // must also re-emit `worker.ready` events for any ready worker whose
+    // business intents piled up as 'deferred' while the control was off —
+    // see delivery-retrigger-sweep.ts for why that re-trigger is required at
+    // all. `--disable` must NEVER sweep (there would be nothing useful to
+    // enqueue, and it would just churn events that immediately re-defer).
+    //
+    // Atomicity choice (binding for this CLI): the enable UPDATE and the
+    // sweep run in ONE explicit transaction on this same connection. If the
+    // sweep throws, the whole transaction rolls back, so the control is
+    // never left "enabled but not yet retriggered" — a state an operator
+    // could easily miss, since nothing else prompts a re-run. This is safe
+    // to prefer over "sweep is independently re-runnable, so let enable
+    // commit alone": the sweep IS also independently re-runnable (see the
+    // idempotency reasoning in delivery-retrigger-sweep.ts) and every
+    // subsequent `--enable deferred_delivery` invocation still finds and
+    // enqueues any still-outstanding deferred intents, but there is no
+    // reason to accept a silent partial success when a single transaction
+    // gives us all-or-nothing for free.
+    const shouldSweep = action.kind === 'enable' && action.controlKey === 'deferred_delivery_enabled';
+
+    if (!shouldSweep) {
+      await client.query(
+        `UPDATE whatsapp_runtime_controls
+            SET enabled = $2, updated_by = $3, updated_at = now()
+          WHERE control_key = $1`,
+        [action.controlKey, action.kind === 'enable', operator],
+      );
+      return;
+    }
+
+    await client.query('BEGIN');
+    try {
+      await client.query(
+        `UPDATE whatsapp_runtime_controls
+            SET enabled = $2, updated_by = $3, updated_at = now()
+          WHERE control_key = $1`,
+        [action.controlKey, true, operator],
+      );
+      await retriggerDeferredReadyWorkers(client as unknown as Parameters<typeof retriggerDeferredReadyWorkers>[0]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    }
     return;
   }
 

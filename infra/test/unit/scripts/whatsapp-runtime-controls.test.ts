@@ -12,11 +12,12 @@ function hashPhone(phone: string): string {
   return createHash('sha256').update(phone.trim()).digest('hex');
 }
 
-function makeFakeClient(): {
+function makeFakeClient(opts: { eligibleSweepWorkerIds?: string[] } = {}): {
   client: Queryable;
   calls: Array<{ text: string; values: unknown[] }>;
 } {
   const calls: Array<{ text: string; values: unknown[] }> = [];
+  const remainingSweepWorkerIds = [...(opts.eligibleSweepWorkerIds ?? [])];
   const client: Queryable = {
     query: async (text: string, values: unknown[] = []) => {
       calls.push({ text, values });
@@ -38,6 +39,19 @@ function makeFakeClient(): {
           ],
           rowCount: 2,
         };
+      }
+      // The sweep's eligible-workers SELECT (delivery-retrigger-sweep.ts).
+      // Once "inserted" for a worker (mirrored below), stop returning it —
+      // same convergence contract as the real NOT EXISTS guard.
+      if (/SELECT DISTINCT s\.user_id/.test(text)) {
+        const rows = remainingSweepWorkerIds.map((id) => ({ user_id: id }));
+        return { rows, rowCount: rows.length };
+      }
+      if (/INSERT INTO worker_domain_outbox/.test(text)) {
+        const workerId = values[0] as string;
+        const idx = remainingSweepWorkerIds.indexOf(workerId);
+        if (idx >= 0) remainingSweepWorkerIds.splice(idx, 1);
+        return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 1 };
     },
@@ -198,5 +212,82 @@ describe('runControlsAction', () => {
 
     const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
     expect(update!.values).toContain('operator-luis');
+  });
+
+  // ── O1: --enable deferred_delivery must retrigger the deferred-intent sweep ──
+  describe('--enable deferred_delivery retrigger sweep (O1)', () => {
+    it('runs the sweep (issues its eligible-workers SELECT and enqueues fresh worker.ready events) after enabling', async () => {
+      const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1', 'worker-2'] });
+
+      await runControlsAction(client, { kind: 'enable', controlKey: 'deferred_delivery_enabled' }, 'test-operator');
+
+      const sweepSelect = calls.find((c) => /SELECT DISTINCT s\.user_id/.test(c.text));
+      expect(sweepSelect).toBeDefined();
+
+      const sweepInserts = calls.filter((c) => /INSERT INTO worker_domain_outbox/.test(c.text));
+      expect(sweepInserts).toHaveLength(2);
+      expect(sweepInserts.map((c) => c.values[1])).toEqual([
+        expect.stringMatching(/^worker\.ready:sweep:worker-1:/),
+        expect.stringMatching(/^worker\.ready:sweep:worker-2:/),
+      ]);
+    });
+
+    it('wraps the enable UPDATE and the sweep in one transaction (BEGIN ... COMMIT)', async () => {
+      const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
+
+      await runControlsAction(client, { kind: 'enable', controlKey: 'deferred_delivery_enabled' }, 'test-operator');
+
+      const texts = calls.map((c) => c.text.trim());
+      expect(texts[0]).toBe('BEGIN');
+      expect(texts[texts.length - 1]).toBe('COMMIT');
+      expect(texts).not.toContain('ROLLBACK');
+    });
+
+    it('runs no sweep query when there is nothing eligible (still commits the enable)', async () => {
+      const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: [] });
+
+      await runControlsAction(client, { kind: 'enable', controlKey: 'deferred_delivery_enabled' }, 'test-operator');
+
+      const sweepSelect = calls.find((c) => /SELECT DISTINCT s\.user_id/.test(c.text));
+      expect(sweepSelect).toBeDefined(); // the sweep still issues its one empty-result probe
+      const sweepInserts = calls.filter((c) => /INSERT INTO worker_domain_outbox/.test(c.text));
+      expect(sweepInserts).toHaveLength(0);
+      const texts = calls.map((c) => c.text.trim());
+      expect(texts[texts.length - 1]).toBe('COMMIT');
+    });
+
+    it('--enable onboarding_v2 does NOT run the sweep', async () => {
+      const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
+
+      await runControlsAction(client, { kind: 'enable', controlKey: 'onboarding_v2_enabled' }, 'test-operator');
+
+      const sweepSelect = calls.find((c) => /SELECT DISTINCT s\.user_id/.test(c.text));
+      expect(sweepSelect).toBeUndefined();
+    });
+
+    it('--disable deferred_delivery does NOT run the sweep', async () => {
+      const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
+
+      await runControlsAction(client, { kind: 'disable', controlKey: 'deferred_delivery_enabled' }, 'test-operator');
+
+      const sweepSelect = calls.find((c) => /SELECT DISTINCT s\.user_id/.test(c.text));
+      expect(sweepSelect).toBeUndefined();
+      const texts = calls.map((c) => c.text.trim());
+      expect(texts).not.toContain('BEGIN');
+      expect(texts).not.toContain('COMMIT');
+    });
+
+    it('never logs a raw phone number regardless of which action ran', async () => {
+      const { client } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      try {
+        await runControlsAction(client, { kind: 'enable', controlKey: 'deferred_delivery_enabled' }, 'test-operator');
+        const printed = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+        expect(printed).not.toContain(PHONE);
+      } finally {
+        logSpy.mockRestore();
+      }
+    });
   });
 });
