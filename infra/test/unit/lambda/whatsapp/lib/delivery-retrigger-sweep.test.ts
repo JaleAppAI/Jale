@@ -6,26 +6,26 @@ import { retriggerDeferredReadyWorkers } from '../../../../../lambda/whatsapp/li
  * scriptedClient() convention in worker-ready-release.test.ts. It models
  * exactly the two statements the sweep issues:
  *   1. the eligible-workers SELECT (ready lifecycle + deferred business
- *      intent + no outstanding pending/processing worker.ready), and
+ *      intent + no worker.ready emitted by this sweep generation), and
  *   2. the per-worker worker_domain_outbox INSERT ... ON CONFLICT DO NOTHING.
  *
  * `eligibleWorkerIds` is consumed like a real backing table would be: once a
  * worker.ready event has been "inserted" for a worker, that worker is
  * removed from future SELECT results — mirroring the sweep's own
- * `NOT EXISTS (... pending/processing worker.ready ...)` guard against the
+ * `NOT EXISTS (... current-generation worker.ready ...)` guard against the
  * real schema.
  */
 function scriptedClient(opts: {
   eligibleWorkerIds: string[];
-  /** worker ids that already have a pending/processing worker.ready row. */
-  alreadyPendingWorkerIds?: string[];
+  /** worker ids that already have this sweep generation's worker.ready row. */
+  alreadyCurrentSweepWorkerIds?: string[];
   /** event_keys that already exist (INSERT should be a no-op ON CONFLICT). */
   existingEventKeys?: Set<string>;
 }) {
   const remaining = opts.eligibleWorkerIds.filter(
-    (id) => !(opts.alreadyPendingWorkerIds ?? []).includes(id),
+    (id) => !(opts.alreadyCurrentSweepWorkerIds ?? []).includes(id),
   );
-  const pendingIds = new Set(opts.alreadyPendingWorkerIds ?? []);
+  const currentSweepIds = new Set(opts.alreadyCurrentSweepWorkerIds ?? []);
   const existingEventKeys = opts.existingEventKeys ?? new Set<string>();
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   const insertedEventKeys: string[] = [];
@@ -36,7 +36,7 @@ function scriptedClient(opts: {
     if (/SELECT DISTINCT s\.user_id/.test(sql)) {
       const limit = params[1] as number;
       const rows = remaining
-        .filter((id) => !pendingIds.has(id))
+        .filter((id) => !currentSweepIds.has(id))
         .slice(0, limit)
         .map((id) => ({ user_id: id }));
       return { rows, rowCount: rows.length };
@@ -49,7 +49,7 @@ function scriptedClient(opts: {
       }
       existingEventKeys.add(eventKey);
       insertedEventKeys.push(eventKey);
-      pendingIds.add(workerId); // subsequent SELECTs no longer see this worker
+      currentSweepIds.add(workerId); // subsequent SELECTs no longer see this worker
       return { rows: [], rowCount: 1 };
     }
 
@@ -86,7 +86,7 @@ describe('retriggerDeferredReadyWorkers', () => {
     }
   });
 
-  it('the eligible-workers SELECT filters to lifecycle=ready, deferred business-category intents, and excludes workers with an outstanding pending/processing worker.ready', async () => {
+  it('the eligible-workers SELECT excludes only this sweep generation, never unrelated pending or processing events', async () => {
     const client = scriptedClient({ eligibleWorkerIds: ['worker-1'] });
 
     await retriggerDeferredReadyWorkers(client, { sweepRunId: 'run-1' });
@@ -99,7 +99,8 @@ describe('retriggerDeferredReadyWorkers', () => {
     expect(selectCall!.sql).toMatch(/i\.category = ANY/);
     expect(selectCall!.params[0]).toEqual(['account', 'job_alert', 'employer_chat']);
     expect(selectCall!.sql).toMatch(/NOT EXISTS/);
-    expect(selectCall!.sql).toMatch(/o\.status IN \('pending', 'processing'\)/);
+    expect(selectCall!.sql).toMatch(/o\.event_key = 'worker\.ready:sweep:' \|\| s\.user_id::text \|\| ':' \|\| \$3/);
+    expect(selectCall!.params[2]).toBe('run-1');
   });
 
   it('never includes onboarding or security categories in the eligibility filter', async () => {
@@ -113,10 +114,10 @@ describe('retriggerDeferredReadyWorkers', () => {
     expect(categories).not.toContain('security');
   });
 
-  it('skips workers that already have an outstanding pending/processing worker.ready event', async () => {
+  it('skips workers that already have a worker.ready event from the same sweep generation', async () => {
     const client = scriptedClient({
       eligibleWorkerIds: ['worker-1', 'worker-2'],
-      alreadyPendingWorkerIds: ['worker-1'],
+      alreadyCurrentSweepWorkerIds: ['worker-1'],
     });
 
     const result = await retriggerDeferredReadyWorkers(client, { sweepRunId: 'run-1' });

@@ -43,9 +43,9 @@ import type { MessageCategory } from './onboarding-types';
 //     releaseWorkerReady() call will simply find zero eligible intents left
 //     to release (0 released, 0 expired/superseded/failed) — never a
 //     duplicate send.
-//   - The `NOT EXISTS` guard below is a pure efficiency measure (fewer
-//     redundant events/drain cycles), never a correctness dependency.
-//
+//   - The `NOT EXISTS` guard matches only this sweep generation. It makes
+//     internal paging terminate after each worker is inserted, while unrelated
+//     pending/processing events never suppress this enable operation safety trigger.
 // RLS precondition: this function is designed to run as `jale_admin`, which
 // already holds definer policies (USING true) on every table it touches —
 // `worker_onboarding_state_definer` and `worker_domain_outbox_definer`
@@ -121,11 +121,11 @@ export async function retriggerDeferredReadyWorkers(
               FROM worker_domain_outbox o
              WHERE o.aggregate_id = s.user_id
                AND o.event_type = 'worker.ready'
-               AND o.status IN ('pending', 'processing')
+               AND o.event_key = 'worker.ready:sweep:' || s.user_id::text || ':' || $3
           )
         ORDER BY s.user_id
         LIMIT $2`,
-      [BUSINESS_CATEGORIES, limit],
+      [BUSINESS_CATEGORIES, limit, sweepRunId],
     );
 
     if (eligible.rows.length === 0) break;
