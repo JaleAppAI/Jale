@@ -664,6 +664,16 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
     const employerId = randomUUID();
     let runId: string;
     let jobId: string;
+    // A SECOND job, used only by the job_alert intent. The employer_chat
+    // fixture below needs a job_applications row (job_conversations.application_id
+    // is NOT NULL REFERENCES job_applications), but release-time job_alert
+    // eligibility now discards an alert whose worker has ALREADY APPLIED to that
+    // job ('worker_already_applied' — it re-evaluates the producer's own match
+    // predicate in job-alert.ts, which excludes applicants). Those two states
+    // never co-occur in production for the same job, so the alert uses its own
+    // unapplied job. This keeps the scenario's real subject — release_sequence
+    // ordering across all four categories — exactly as before.
+    let alertJobId: string;
     let applicationId: string;
     let conversationId: string;
     let messageId: string;
@@ -686,6 +696,12 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
           [employerId],
         );
         jobId = job.rows[0].id;
+        const alertJob = await c.query<{ id: string }>(
+          `INSERT INTO jobs (employer_id, title, company, location, job_type, status)
+           VALUES ($1, 'Roofer', 'Acme Co', 'Austin, TX', 'contract', 'active') RETURNING id`,
+          [employerId],
+        );
+        alertJobId = alertJob.rows[0].id;
         const application = await c.query<{ id: string }>(
           `INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'pending') RETURNING id`,
           [jobId, workerId],
@@ -724,7 +740,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
           `INSERT INTO worker_message_intents
              (user_id, category, owner_service, source_type, source_id, dedupe_key, priority, status, policy_version, payload)
            VALUES ($1, 'job_alert', 'job-alert', 'job', $2, $3, 30, 'deferred', 1, $4::jsonb)`,
-          [workerId, jobId, `c9-s5-jobalert-${workerId}`, JSON.stringify({ score: 88 })],
+          [workerId, alertJobId, `c9-s5-jobalert-${workerId}`, JSON.stringify({ score: 88 })],
         );
         await c.query(
           `INSERT INTO worker_message_intents
@@ -752,7 +768,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
         await c.query('DELETE FROM job_conversation_messages WHERE conversation_id = $1', [conversationId]);
         await c.query('DELETE FROM job_conversations WHERE id = $1', [conversationId]);
         await c.query('DELETE FROM job_applications WHERE id = $1', [applicationId]);
-        await c.query('DELETE FROM jobs WHERE id = $1', [jobId]);
+        await c.query('DELETE FROM jobs WHERE id = ANY($1::uuid[])', [[jobId, alertJobId]]);
         await c.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerId, employerId]]);
       });
     });

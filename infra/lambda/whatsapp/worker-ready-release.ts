@@ -284,16 +284,27 @@ export async function releaseWorkerReady(
           job_status: string;
           job_title: string;
           company_name: string;
-          employer_exists: boolean;
           application_exists: boolean;
         }>(
+          // Employer eligibility is enforced STRUCTURALLY, not by a readable
+          // predicate here: `job_conversations.employer_id` is FK ON DELETE
+          // RESTRICT and `jobs.employer_id` is FK ON DELETE CASCADE, so an
+          // employer account cannot disappear while this conversation and its
+          // job still exist — and if one ever did, the job would cascade away
+          // and this row would fail the `jobs` join ('message_missing') or the
+          // job-active check. Deliberately NOT joined to `users`: the drain
+          // runs as `jale_whatsapp`, whose only users policy is
+          // `wa_users_read USING (user_type = 'worker')`, so an employer row is
+          // invisible under RLS and any users-based employer predicate is
+          // unconditionally false in production — silently discarding every
+          // employer_chat release. (Caught by the C9 concurrency gate,
+          // scenario 5; unit tests with a fake client cannot see it.)
           `SELECT jcm.id AS message_id,
                   jc.id AS conversation_id,
                   jc.status AS conversation_status,
                   j.status AS job_status,
                   j.title AS job_title,
                   employer_display_name(jc.employer_id) AS company_name,
-                  (eu.id IS NOT NULL) AS employer_exists,
                   EXISTS (
                     SELECT 1 FROM job_applications ja
                      WHERE ja.job_id = jc.job_id AND ja.worker_id = $2
@@ -301,7 +312,6 @@ export async function releaseWorkerReady(
              FROM job_conversation_messages jcm
              JOIN job_conversations jc ON jc.id = jcm.conversation_id
              JOIN jobs j ON j.id = jc.job_id
-             LEFT JOIN users eu ON eu.id = jc.employer_id
             WHERE jcm.id = ANY($1::uuid[])`,
           [employerChatIntents.map((i) => i.sourceId), workerId],
         )
@@ -339,11 +349,6 @@ export async function releaseWorkerReady(
       }
       if (chat.job_status !== 'active') {
         await discard(intent, 'superseded', 'job_not_active');
-        superseded++;
-        continue;
-      }
-      if (!chat.employer_exists) {
-        await discard(intent, 'superseded', 'employer_missing');
         superseded++;
         continue;
       }

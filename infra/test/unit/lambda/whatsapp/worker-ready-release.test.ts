@@ -29,7 +29,6 @@ interface ChatSourceRow {
   // existing test fixtures that predate these predicates keep passing
   // unchanged.
   job_status?: string;
-  employer_exists?: boolean;
   application_exists?: boolean;
 }
 
@@ -171,7 +170,6 @@ function scriptedClient(opts: {
         .map((c) => ({
           ...(c as ChatSourceRow),
           job_status: (c as ChatSourceRow).job_status ?? 'active',
-          employer_exists: (c as ChatSourceRow).employer_exists ?? true,
           application_exists: (c as ChatSourceRow).application_exists ?? true,
         }));
       return { rows };
@@ -718,7 +716,17 @@ describe('releaseWorkerReady', () => {
       expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
     });
 
-    it('discards an employer_chat intent for a missing employer with employer_missing', async () => {
+    // Regression guard (C9 concurrency gate scenario 5): the employer_chat
+    // eligibility reload must NEVER predicate on a `users` row. The drain runs
+    // as `jale_whatsapp`, whose only users policy is
+    // `wa_users_read USING (user_type = 'worker')`, so an employer row is
+    // invisible under RLS — any users-based employer predicate is
+    // unconditionally false in production and silently discards every
+    // employer_chat release. Employer existence is instead guaranteed
+    // structurally (job_conversations.employer_id FK ON DELETE RESTRICT,
+    // jobs.employer_id FK ON DELETE CASCADE). A fake client cannot model RLS,
+    // so this asserts the SQL shape directly.
+    it('never joins users for employer eligibility (RLS would make it always-false)', async () => {
       const intents = [
         intentRow({
           id: 'ec-1', category: 'employer_chat', owner_service: 'job-messaging',
@@ -727,16 +735,18 @@ describe('releaseWorkerReady', () => {
       ];
       const chats = [{
         message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
-        job_title: 'Plomero', company_name: 'ACME', employer_exists: false,
+        job_title: 'Plomero', company_name: 'ACME',
       }];
-      const { client, intents: finalIntents, outboxRows } = scriptedClient({ eventStatus: 'processing', intents, chats });
+      const { client, calls, intents: finalIntents } = scriptedClient({ eventStatus: 'processing', intents, chats });
       const { render } = recordingRenderer();
 
       await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
 
-      expect(finalIntents.get('ec-1')?.status).toBe('superseded');
-      expect((finalIntents.get('ec-1') as any).decision_reason).toBe('employer_missing');
-      expect(outboxRows.some((r) => r.intentId === 'ec-1')).toBe(false);
+      const chatReload = calls.find((c) => /FROM job_conversation_messages jcm/.test(c.sql));
+      expect(chatReload).toBeDefined();
+      expect(chatReload!.sql).not.toMatch(/\busers\b/);
+      // …and the intent still releases on the happy path.
+      expect(finalIntents.get('ec-1')?.status).toBe('released');
     });
 
     it('discards an employer_chat intent for a suspended worker with worker_not_ready', async () => {
@@ -814,7 +824,7 @@ describe('releaseWorkerReady', () => {
       const chats = [{
         message_id: 'msg-1', conversation_id: 'conv-1', conversation_status: 'open',
         job_title: 'Plomero', company_name: 'ACME',
-        job_status: 'active', employer_exists: true, application_exists: true,
+        job_status: 'active', application_exists: true,
       }];
       const { client, intents: finalIntents } = scriptedClient({ eventStatus: 'processing', intents, chats });
       const { render, requests } = recordingRenderer();
