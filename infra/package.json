@@ -5,6 +5,7 @@
     "infra": "bin/infra.js"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-cdk-brace-expansion.mjs",
     "build": "tsc",
     "watch": "tsc -w",
     "test": "jest",
@@ -47,5 +48,8 @@
     "constructs": "^10.5.0",
     "pg": "^8.20.0",
     "stripe": "22.3.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }
