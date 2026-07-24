@@ -1,6 +1,7 @@
 import {
   ChangeMessageVisibilityBatchCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
   type Message,
@@ -8,6 +9,7 @@ import {
 import {
   parseInboundReplayArgs,
   replayWhatsappInbound,
+  type DbQueryable,
   type SqsCommandClient,
 } from '../../../scripts/replay-whatsapp-inbound';
 
@@ -18,6 +20,7 @@ const OTP = '482913';
 const TEXT = 'Your private message';
 const DLQ_URL = 'https://sqs.us-east-1.amazonaws.com/123/inbound-dlq.fifo';
 const QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123/inbound.fifo';
+const DLQ_ARN = 'arn:aws:sqs:us-east-1:123:inbound-dlq.fifo';
 
 function body(sid = MESSAGE_SID): string {
   return `MessageSid=${sid}&From=${encodeURIComponent(PHONE)}&Body=${encodeURIComponent(`${TEXT} ${OTP}`)}`;
@@ -30,7 +33,9 @@ function message(overrides: Partial<Message> = {}): Message {
     Body: body(),
     Attributes: {
       MessageGroupId: 'private-user-group',
-      MessageDeduplicationId: MESSAGE_SID,
+      // SQS replaces a FIFO message's original dedupe id with the original
+      // SQS MessageId when it moves the record to a FIFO DLQ.
+      MessageDeduplicationId: 'sqs-target',
       ApproximateReceiveCount: '3',
       SentTimestamp: '1720000000000',
       ApproximateFirstReceiveTimestamp: '1720000001000',
@@ -41,10 +46,27 @@ function message(overrides: Partial<Message> = {}): Message {
 
 type Handler = (command: unknown) => Promise<unknown>;
 
+const AVAILABLE_DB: DbQueryable = {
+  query: async () => ({
+    rows: [{
+      status: 'failed',
+      first_seen_at: '2026-07-23T10:00:00.000Z',
+      updated_at: '2026-07-23T10:05:00.000Z',
+      completed_at: null,
+      has_last_error: true,
+      conversation_state: 'profile',
+      workflow_status: 'active',
+      current_step_key: 'profile.name',
+    }],
+    rowCount: 1,
+  }),
+};
+
 function fakeClient(handler: Handler): { client: SqsCommandClient; commands: unknown[] } {
   const commands: unknown[] = [];
   return {
     client: {
+      db: AVAILABLE_DB,
       send: async (command: unknown) => {
         commands.push(command);
         return handler(command);
@@ -56,10 +78,28 @@ function fakeClient(handler: Handler): { client: SqsCommandClient; commands: unk
 
 function receiveSequence(
   batches: Message[][],
-  options: { sendError?: Error; deleteError?: Error; visibilityFailures?: string[] } = {},
+  options: {
+    sendError?: Error;
+    deleteError?: Error;
+    visibilityFailures?: string[];
+    destinationRedriveArn?: string;
+    fifo?: boolean;
+  } = {},
 ): ReturnType<typeof fakeClient> {
   let receiveIndex = 0;
   return fakeClient(async (command) => {
+    if (command instanceof GetQueueAttributesCommand) {
+      if (command.input.QueueUrl === DLQ_URL) {
+        return { Attributes: { QueueArn: DLQ_ARN, FifoQueue: String(options.fifo ?? true) } };
+      }
+      return {
+        Attributes: {
+          QueueArn: 'arn:aws:sqs:us-east-1:123:inbound.fifo',
+          FifoQueue: String(options.fifo ?? true),
+          RedrivePolicy: JSON.stringify({ deadLetterTargetArn: options.destinationRedriveArn ?? DLQ_ARN }),
+        },
+      };
+    }
     if (command instanceof ReceiveMessageCommand) {
       return { Messages: batches[receiveIndex++] ?? [] };
     }
@@ -138,6 +178,7 @@ describe('replayWhatsappInbound', () => {
         Body: body(OTHER_SID),
         Attributes: {
           ...message().Attributes,
+          MessageGroupId: `other-group-${i}`,
           MessageDeduplicationId: OTHER_SID,
         },
       }),
@@ -172,7 +213,8 @@ describe('replayWhatsappInbound', () => {
     const printed = output.join('\n');
     expect(printed).toContain(MESSAGE_SID);
     expect(printed).toContain('sqs-target');
-    expect(printed).toContain('DB-state unavailable');
+    expect(printed).toContain('DB status: failed');
+    expect(printed).toContain('workflow status: active');
     expect(printed).not.toContain(PHONE);
     expect(printed).not.toContain(OTP);
     expect(printed).not.toContain(TEXT);
@@ -187,7 +229,7 @@ describe('replayWhatsappInbound', () => {
       MessageId: 'sqs-other',
       ReceiptHandle: 'receipt-other',
       Body: body(OTHER_SID),
-      Attributes: { ...message().Attributes, MessageDeduplicationId: OTHER_SID },
+      Attributes: { ...message().Attributes, MessageGroupId: 'other-group', MessageDeduplicationId: 'sqs-other' },
     });
     const { client, commands } = receiveSequence([[nonTarget, target]]);
 
@@ -218,6 +260,103 @@ describe('replayWhatsappInbound', () => {
       .map((entry) => entry.ReceiptHandle);
     expect(visibilityHandles).toContain('receipt-other');
     expect(visibilityHandles).not.toContain('receipt-target');
+  });
+
+  it('accepts AWS FIFO DLQ rewritten dedupe id but rejects unrelated dedupe metadata', async () => {
+    const rewritten = message({
+      MessageId: 'original-sqs-id',
+      Attributes: { ...message().Attributes, MessageDeduplicationId: 'original-sqs-id' },
+    });
+    const accepted = receiveSequence([[rewritten]]);
+    const result = await replayWhatsappInbound(accepted.client, {
+      target: { kind: 'sqs_message_id', value: 'original-sqs-id' },
+      dlqUrl: DLQ_URL,
+      queueUrl: QUEUE_URL,
+      execute: true,
+    });
+    expect(result.kind).toBe('executed');
+    const send = accepted.commands.find((c): c is SendMessageCommand => c instanceof SendMessageCommand);
+    expect(send?.input.MessageDeduplicationId).toBe(MESSAGE_SID);
+
+    const invalid = receiveSequence([[message({
+      Attributes: { ...message().Attributes, MessageDeduplicationId: 'unrelated-id' },
+    })]]);
+    const rejected = await replayWhatsappInbound(invalid.client, {
+      target: { kind: 'sqs_message_id', value: 'sqs-target' },
+      dlqUrl: DLQ_URL,
+      queueUrl: QUEUE_URL,
+      execute: true,
+    });
+    expect(rejected.kind).toBe('validation_failed');
+  });
+
+  it('rejects a destination not authorized to redrive to the supplied FIFO DLQ before receiving', async () => {
+    const { client, commands } = receiveSequence([[message()]], {
+      destinationRedriveArn: 'arn:aws:sqs:us-east-1:123:different-dlq.fifo',
+    });
+    const result = await replayWhatsappInbound(client, {
+      target: { kind: 'message_sid', value: MESSAGE_SID },
+      dlqUrl: DLQ_URL,
+      queueUrl: QUEUE_URL,
+      execute: true,
+    });
+    expect(result.kind).toBe('queue_binding_failed');
+    expect(commands.filter((c) => c instanceof GetQueueAttributesCommand)).toHaveLength(2);
+    expect(commands.some((c) => c instanceof ReceiveMessageCommand)).toBe(false);
+  });
+
+  it('fails closed and restores the target when exact MessageSid DB state is unavailable on execute', async () => {
+    const { client, commands } = receiveSequence([[message()]]);
+    const unavailableDb: DbQueryable = { query: async () => { throw new Error(`db failed ${PHONE}`); } };
+    const output: string[] = [];
+    const result = await replayWhatsappInbound(
+      client,
+      {
+        target: { kind: 'message_sid', value: MESSAGE_SID },
+        dlqUrl: DLQ_URL,
+        queueUrl: QUEUE_URL,
+        execute: true,
+      },
+      { db: unavailableDb, log: (line) => output.push(line) },
+    );
+    expect(result.kind).toBe('db_state_unavailable');
+    expect(commands.some((c) => c instanceof SendMessageCommand || c instanceof DeleteMessageCommand)).toBe(false);
+    expect(commands.some((c) => c instanceof ChangeMessageVisibilityBatchCommand)).toBe(true);
+    expect(output.join('\n')).not.toContain(PHONE);
+  });
+
+  it('never reorders a target behind more than ten same-group messages and instructs replaying the visible group head', async () => {
+    const predecessors = Array.from({ length: 10 }, (_, index) => message({
+      MessageId: `predecessor-${index}`,
+      ReceiptHandle: `predecessor-receipt-${index}`,
+      Body: body(OTHER_SID),
+      Attributes: {
+        ...message().Attributes,
+        MessageGroupId: 'same-group',
+        MessageDeduplicationId: `predecessor-${index}`,
+      },
+    }));
+    // Once the first ten same-group records are held invisible, SQS cannot
+    // expose the eleventh record from that group. It returns no target.
+    const { client, commands } = receiveSequence([predecessors, []]);
+    const output: string[] = [];
+    const result = await replayWhatsappInbound(
+      client,
+      {
+        target: { kind: 'message_sid', value: MESSAGE_SID },
+        dlqUrl: DLQ_URL,
+        queueUrl: QUEUE_URL,
+        execute: true,
+      },
+      { maxBatches: 2, log: (line) => output.push(line) },
+    );
+    expect(result.kind).toBe('not_found');
+    expect(commands.some((c) => c instanceof SendMessageCommand || c instanceof DeleteMessageCommand)).toBe(false);
+    expect(output.join('\n')).toMatch(/group head.*first/i);
+    const restored = commands
+      .filter((c): c is ChangeMessageVisibilityBatchCommand => c instanceof ChangeMessageVisibilityBatchCommand)
+      .flatMap((c) => c.input.Entries ?? []);
+    expect(restored).toHaveLength(10);
   });
 
   it('restores held messages and returns nonzero result when target is absent at scan cap', async () => {

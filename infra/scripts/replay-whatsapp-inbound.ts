@@ -1,12 +1,16 @@
 import {
   ChangeMessageVisibilityBatchCommand,
   DeleteMessageCommand,
+  GetQueueAttributesCommand,
   ReceiveMessageCommand,
   SendMessageCommand,
   SQSClient,
   type Message,
 } from '@aws-sdk/client-sqs';
 import { createHash } from 'crypto';
+import { Client } from 'pg';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const MESSAGE_SID_PATTERN = /^(?:SM|MM)[0-9a-fA-F]{32}$/;
 const FROM_PATTERN = /^whatsapp:\+[1-9]\d{7,14}$/;
@@ -35,14 +39,20 @@ export type InboundReplayResultKind =
   | 'executed'
   | 'not_found'
   | 'validation_failed'
+  | 'queue_binding_failed'
+  | 'db_state_unavailable'
+  | 'target_not_group_head'
   | 'scan_failed'
   | 'visibility_restore_failed'
   | 'send_failed'
   | 'destination_accepted_source_not_deleted';
 
 export interface InboundReplayResult { kind: InboundReplayResultKind }
-export interface SqsCommandClient { send(command: unknown): Promise<unknown> }
-export interface ReplayWhatsappInboundOptions { maxBatches?: number; log?: (line: string) => void }
+export interface DbQueryable {
+  query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
+}
+export interface SqsCommandClient { send(command: unknown): Promise<unknown>; db?: DbQueryable }
+export interface ReplayWhatsappInboundOptions { maxBatches?: number; log?: (line: string) => void; db?: DbQueryable }
 
 export function parseInboundReplayArgs(argv: string[]): ParseInboundReplayArgsResult {
   const values = new Map<string, string>();
@@ -93,13 +103,84 @@ function matchesTarget(message: Message, target: InboundReplayTarget): boolean {
   return target.kind === 'sqs_message_id' ? message.MessageId === target.value : parseBody(message.Body)?.messageSid === target.value;
 }
 
-interface ValidatedTarget { body: string; messageSid: string; groupId: string; deduplicationId: string; receiptHandle: string }
+interface ValidatedTarget { body: string; messageSid: string; groupId: string; receiptHandle: string }
 function validateTarget(message: Message): ValidatedTarget | null {
   const parsedBody = parseBody(message.Body);
   const groupId = message.Attributes?.MessageGroupId;
   const deduplicationId = message.Attributes?.MessageDeduplicationId;
-  if (!parsedBody || message.Body === undefined || !message.ReceiptHandle || !groupId || !deduplicationId || deduplicationId !== parsedBody.messageSid) return null;
-  return { body: message.Body, messageSid: parsedBody.messageSid, groupId, deduplicationId, receiptHandle: message.ReceiptHandle };
+  if (!parsedBody || message.Body === undefined || !message.MessageId || !message.ReceiptHandle || !groupId || !deduplicationId || deduplicationId !== message.MessageId) return null;
+  return { body: message.Body, messageSid: parsedBody.messageSid, groupId, receiptHandle: message.ReceiptHandle };
+}
+
+export async function validateQueueBinding(
+  client: SqsCommandClient,
+  dlqUrl: string,
+  queueUrl: string,
+): Promise<boolean> {
+  try {
+    const dlq = await client.send(new GetQueueAttributesCommand({
+      QueueUrl: dlqUrl,
+      AttributeNames: ['QueueArn', 'FifoQueue'],
+    })) as { Attributes?: Record<string, string> };
+    const destination = await client.send(new GetQueueAttributesCommand({
+      QueueUrl: queueUrl,
+      AttributeNames: ['QueueArn', 'FifoQueue', 'RedrivePolicy'],
+    })) as { Attributes?: Record<string, string> };
+    const dlqArn = dlq.Attributes?.QueueArn;
+    if (!dlqArn || dlq.Attributes?.FifoQueue !== 'true' || destination.Attributes?.FifoQueue !== 'true') return false;
+    const redrive = JSON.parse(destination.Attributes?.RedrivePolicy ?? '{}') as { deadLetterTargetArn?: unknown };
+    return redrive.deadLetterTargetArn === dlqArn;
+  } catch {
+    return false;
+  }
+}
+
+export interface InboundDbState {
+  status: string;
+  firstSeenAt: unknown;
+  updatedAt: unknown;
+  completedAt: unknown;
+  hasLastError: boolean;
+  conversationState: string | null;
+  workflowStatus: string | null;
+  currentStepKey: string | null;
+}
+
+export async function inspectInboundDbState(db: DbQueryable, messageSid: string): Promise<InboundDbState> {
+  const result = await db.query(
+    `SELECT p.status, p.first_seen_at, p.updated_at, p.completed_at,
+            (p.last_error IS NOT NULL) AS has_last_error,
+            c.conversation_state,
+            w.status AS workflow_status, w.current_step_key
+       FROM whatsapp_processed_messages p
+       LEFT JOIN whatsapp_conversations c ON c.id = p.conversation_id
+       LEFT JOIN LATERAL (
+         SELECT r.status, r.current_step_key
+           FROM worker_workflow_runs r
+          WHERE r.user_id = c.user_id
+          ORDER BY r.updated_at DESC
+          LIMIT 1
+       ) w ON true
+      WHERE p.message_sid = $1`,
+    [messageSid],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return {
+      status: 'unclaimed', firstSeenAt: null, updatedAt: null, completedAt: null,
+      hasLastError: false, conversationState: null, workflowStatus: null, currentStepKey: null,
+    };
+  }
+  return {
+    status: String(row.status),
+    firstSeenAt: row.first_seen_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+    hasLastError: row.has_last_error === true,
+    conversationState: typeof row.conversation_state === 'string' ? row.conversation_state : null,
+    workflowStatus: typeof row.workflow_status === 'string' ? row.workflow_status : null,
+    currentStepKey: typeof row.current_step_key === 'string' ? row.current_step_key : null,
+  };
 }
 
 function chunks<T>(items: T[], size: number): T[][] {
@@ -137,7 +218,23 @@ function printTargetState(message: Message, validated: ValidatedTarget, log: (li
   log(`sent timestamp: ${safeTimestamp(message.Attributes?.SentTimestamp)}`);
   log(`first receive timestamp: ${safeTimestamp(message.Attributes?.ApproximateFirstReceiveTimestamp)}`);
   log(`MessageGroupId sha256: ${createHash('sha256').update(validated.groupId).digest('hex')}`);
-  log('DB-state unavailable');
+}
+
+function safeDbValue(value: unknown): string {
+  if (value === null || value === undefined) return 'unavailable';
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === 'string' && /^[a-zA-Z0-9_.:-]+$/.test(value) ? value : 'unavailable';
+}
+
+function printDbState(state: InboundDbState, log: (line: string) => void): void {
+  log(`DB status: ${safeDbValue(state.status)}`);
+  log(`DB first seen: ${safeDbValue(state.firstSeenAt)}`);
+  log(`DB updated: ${safeDbValue(state.updatedAt)}`);
+  log(`DB completed: ${safeDbValue(state.completedAt)}`);
+  log(`DB last error present: ${state.hasLastError}`);
+  log(`conversation state: ${safeDbValue(state.conversationState)}`);
+  log(`workflow status: ${safeDbValue(state.workflowStatus)}`);
+  log(`workflow step: ${safeDbValue(state.currentStepKey)}`);
 }
 
 export async function replayWhatsappInbound(client: SqsCommandClient, args: InboundReplayArgs, options: ReplayWhatsappInboundOptions = {}): Promise<InboundReplayResult> {
@@ -146,6 +243,10 @@ export async function replayWhatsappInbound(client: SqsCommandClient, args: Inbo
   const held: Message[] = [];
   let targetMessage: Message | undefined;
   if (!Number.isInteger(maxBatches) || maxBatches < 1) return { kind: 'scan_failed' };
+  if (!(await validateQueueBinding(client, args.dlqUrl, args.queueUrl))) {
+    log('queue binding failed: require FIFO destination redriven to the exact supplied FIFO DLQ');
+    return { kind: 'queue_binding_failed' };
+  }
   for (let batchIndex = 0; batchIndex < maxBatches && !targetMessage; batchIndex += 1) {
     let response: { Messages?: Message[] };
     try {
@@ -173,7 +274,7 @@ export async function replayWhatsappInbound(client: SqsCommandClient, args: Inbo
   }
   if (!targetMessage) {
     const restored = await restoreVisibility(client, args.dlqUrl, held);
-    log(restored ? 'target not found within bounded scan; held messages restored' : 'visibility restoration failed');
+    log(restored ? 'target not found among visible FIFO group heads; held messages restored. Messages behind a group head cannot be selected safely: replay that group head first, then invoke again' : 'visibility restoration failed');
     return { kind: restored ? 'not_found' : 'visibility_restore_failed' };
   }
   const validated = validateTarget(targetMessage);
@@ -182,7 +283,27 @@ export async function replayWhatsappInbound(client: SqsCommandClient, args: Inbo
     log(restored ? 'target validation failed; source message left intact' : 'visibility restoration failed');
     return { kind: restored ? 'validation_failed' : 'visibility_restore_failed' };
   }
+  const firstInGroup = held.find((message) => message.Attributes?.MessageGroupId === validated.groupId);
+  if (firstInGroup !== targetMessage) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored
+      ? 'target is not the visible FIFO group head; replay that group head first, then invoke again'
+      : 'visibility restoration failed');
+    return { kind: restored ? 'target_not_group_head' : 'visibility_restore_failed' };
+  }
   printTargetState(targetMessage, validated, log);
+  try {
+    const db = options.db ?? client.db;
+    if (!db) throw new Error('DB seam unavailable');
+    const dbState = await inspectInboundDbState(db, validated.messageSid);
+    printDbState(dbState, log);
+  } catch {
+    log('DB-state unavailable (details redacted)');
+    if (args.execute) {
+      const restored = await restoreVisibility(client, args.dlqUrl, held);
+      return { kind: restored ? 'db_state_unavailable' : 'visibility_restore_failed' };
+    }
+  }
   if (!args.execute) {
     const restored = await restoreVisibility(client, args.dlqUrl, held);
     log(restored ? 'DRY RUN: no message sent or deleted' : 'visibility restoration failed');
@@ -199,7 +320,7 @@ export async function replayWhatsappInbound(client: SqsCommandClient, args: Inbo
       QueueUrl: args.queueUrl,
       MessageBody: validated.body,
       MessageGroupId: validated.groupId,
-      MessageDeduplicationId: validated.deduplicationId,
+      MessageDeduplicationId: validated.messageSid,
     }));
   } catch {
     const restored = await restoreVisibility(client, args.dlqUrl, [targetMessage]);
@@ -223,8 +344,23 @@ function exitCode(result: InboundReplayResult): number {
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   const parsed = parseInboundReplayArgs(argv);
   if (!parsed.ok) { console.error(parsed.error); process.exitCode = 1; return; }
-  const result = await replayWhatsappInbound(new SQSClient({}) as SqsCommandClient, parsed.value);
-  process.exitCode = exitCode(result);
+  const db = new Client({
+    host: process.env.DB_HOST ?? 'localhost',
+    port: parseInt(process.env.DB_PORT ?? '5432', 10),
+    database: process.env.DB_NAME ?? 'jale',
+    user: process.env.DB_USER ?? 'jale_admin',
+    password: process.env.DB_PASSWORD,
+    ssl: process.env.DB_SSL === 'true'
+      ? { rejectUnauthorized: true, ca: fs.readFileSync(path.join(__dirname, '../lambda/lib/rds-ca-bundle.pem'), 'utf-8') }
+      : false,
+  });
+  await db.connect();
+  try {
+    const result = await replayWhatsappInbound(new SQSClient({}) as SqsCommandClient, parsed.value, { db });
+    process.exitCode = exitCode(result);
+  } finally {
+    await db.end();
+  }
 }
 
 if (require.main === module) {
