@@ -87,6 +87,7 @@ MIGRATIONS=(
   "043_whatsapp_worker_intent_transport.sql"
   "044_job_message_outbox_send_unknown.sql"
   "045_applications_employer_update_repair.sql"
+  "046_whatsapp_active_workflow_rebind.sql"
 )
 
 echo ">> Using region: $REGION"
