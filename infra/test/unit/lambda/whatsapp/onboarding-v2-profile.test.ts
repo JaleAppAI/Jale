@@ -395,6 +395,73 @@ describe('profile.trade', () => {
 
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.trade' });
   });
+
+  // profile.trade renders V1's approved onboarding_trade_* template, whose
+  // taps arrive in V1's payload dialect (profile:main_trade:<trade>, per
+  // parseProfilePayloadAnswer in flows.ts). Before this was accepted, every
+  // tap on the real template fell through to the reprompt branch and the
+  // worker could never get past the trade step using the buttons.
+  it('accepts V1\'s profile:main_trade payload from the approved template', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-trade-v1-payload', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(
+      client,
+      session,
+      makeMsg('', { interactivePayload: 'profile:main_trade:plumber' }),
+      deps,
+    );
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(adapters._saveTradeCalls[0].trade).toBe('plumber');
+  });
+
+  it('accepts V1\'s profile:main_trade payload for "other"', async () => {
+    const { deps, gateRepo } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-trade-v1-other', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(
+      client,
+      session,
+      makeMsg('', { interactivePayload: 'profile:main_trade:other' }),
+      deps,
+    );
+
+    expect(result.stepKey).toBe('profile.custom_trade');
+  });
+
+  it('still accepts the original trade: payload for in-flight sessions', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-trade-legacy-payload', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(
+      client,
+      session,
+      makeMsg('', { interactivePayload: 'trade:carpenter' }),
+      deps,
+    );
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(adapters._saveTradeCalls[0].trade).toBe('carpenter');
+  });
+
+  it('rejects a well-formed payload naming an unknown trade', async () => {
+    const { deps, gateRepo } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-trade-unknown-payload', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(
+      client,
+      session,
+      makeMsg('', { interactivePayload: 'profile:main_trade:astronaut' }),
+      deps,
+    );
+
+    expect(result.stepKey).toBe('profile.trade');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════

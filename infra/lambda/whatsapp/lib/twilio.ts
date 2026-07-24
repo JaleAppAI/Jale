@@ -128,6 +128,19 @@ export interface TwilioSecret {
     onboarding_voice_choice_en?: string;
     trust_choice_es?: string;
     trust_choice_en?: string;
+    // v2 onboarding funnel. Every other v2 step reuses an approved template
+    // above (legal -> onboarding_legal_*, trade -> onboarding_trade_*) or is a
+    // free-text step that sends no template at all. Until a ContentSid is
+    // present under these exact keys, sendTwilioWhatsAppMessage falls back to
+    // the prompt's plain text — so seeding the secret is what switches them on,
+    // with no code change. Variable counts are fixed by the builders in
+    // interactive-templates.ts and MUST match the approved template:
+    //   v2_onboarding_start_*  0 variables, buttons start:lang:en|es
+    //   v2_onboarding_otp_*    1 variable ({{1}} = expiry minutes), button otp:resend
+    v2_onboarding_start_es?: string;
+    v2_onboarding_start_en?: string;
+    v2_onboarding_otp_es?: string;
+    v2_onboarding_otp_en?: string;
     employer_message_invite_es?: string;
     employer_message_invite_en?: string;
     employer_message_resume_es?: string;
