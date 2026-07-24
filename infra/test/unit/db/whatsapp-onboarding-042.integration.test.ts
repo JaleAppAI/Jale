@@ -68,11 +68,17 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
   const conversationB = randomUUID();
   const conflictingConversation = randomUUID();
   const rebindConversation = randomUUID();
+  const workerOrphan = randomUUID();
+  const workerCascade = randomUUID();
+  const conversationOrphan = randomUUID();
+  const conversationCascade = randomUUID();
   const hashA = 'a'.repeat(64);
   const hashB = 'b'.repeat(64);
   const lockedHash = 'c'.repeat(64);
   const expiredHash = 'd'.repeat(64);
   const rebindHash = 'e'.repeat(64);
+  const orphanHash = 'f'.repeat(64);
+  const cascadeHash = '9'.repeat(64);
   let setup: Client;
 
   beforeAll(async () => {
@@ -93,14 +99,22 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
       ($3, NULL, '+15550000423', 'awaiting_otp'),
       ($4, NULL, '+15550000424', 'awaiting_otp')`,
     [conversationA, conversationB, conflictingConversation, rebindConversation]);
+    await setup.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES
+      ($1, $2, 'worker'), ($3, $4, 'worker')`,
+    [workerOrphan, `v2-orphan-${workerOrphan}`, workerCascade, `v2-cascade-${workerCascade}`]);
+    await setup.query(`INSERT INTO whatsapp_conversations
+      (id, user_id, whatsapp_number, conversation_state) VALUES
+      ($1, NULL, '+15550000425', 'awaiting_otp'),
+      ($2, NULL, '+15550000426', 'awaiting_otp')`,
+    [conversationOrphan, conversationCascade]);
   });
 
   afterAll(async () => {
-    await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind]]);
-    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind]]);
-    await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash, rebindHash]]);
-    await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation, rebindConversation]]);
-    await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB, workerRebind]]);
+    await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind, workerOrphan, workerCascade]]);
+    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind, workerOrphan, workerCascade]]);
+    await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash, rebindHash, orphanHash, cascadeHash]]);
+    await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation, rebindConversation, conversationOrphan, conversationCascade]]);
+    await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB, workerRebind, workerOrphan, workerCascade]]);
     await setup.end();
   });
 
@@ -247,6 +261,66 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
       [rebindConversation],
     );
     expect(conversation.rows).toEqual([{ user_id: workerRebind }]);
+  });
+
+  test('deleting a worker cascades away its identity challenges (045 hardening)', async () => {
+    // Migration 045 flips the verified_user_id FK to ON DELETE CASCADE so a
+    // verified challenge cannot outlive the worker it was bound to.
+    await setup.query(`INSERT INTO worker_identity_challenges (phone_hash, status, verified_user_id)
+      VALUES ($1, 'verified', $2)`, [cascadeHash, workerCascade]);
+    expect((await setup.query(
+      'SELECT 1 FROM worker_identity_challenges WHERE phone_hash = $1', [cascadeHash])).rowCount).toBe(1);
+
+    await setup.query('DELETE FROM users WHERE id = $1', [workerCascade]);
+
+    expect((await setup.query(
+      'SELECT 1 FROM worker_identity_challenges WHERE phone_hash = $1', [cascadeHash])).rowCount).toBe(0);
+  });
+
+  test('self-heals an orphaned verified challenge so a deleted worker can re-onboard (045)', async () => {
+    // Simulate a verified challenge left orphaned by a pre-045 deletion: its
+    // bound identity is gone (verified_user_id NULL, context points at rows that
+    // no longer exist), but the row survives with status='verified'. Before 045
+    // this raised 'conflicting verified identity replay' on every re-signon.
+    await setup.query(`INSERT INTO worker_identity_challenges
+      (phone_hash, status, verified_user_id, context)
+      VALUES ($1, 'verified', NULL, $2::jsonb)`,
+    [orphanHash, JSON.stringify({
+      bound_conversation_id: randomUUID(),
+      onboarding_state_id: randomUUID(),
+      workflow_run_id: randomUUID(),
+    })]);
+    // The worker restarts sign-on: a fresh pending challenge is created.
+    await asWhatsapp('SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)', [orphanHash,
+      JSON.stringify({
+        provider_challenge_id: 'provider-orphan', current_step_key: 'identity.verify_otp',
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+      })]);
+
+    // Binding must SUCCEED: the orphan is superseded, a fresh run is created.
+    const result = await asWhatsapp<{ challenge_id: string; onboarding_state_id: string; run_id: string }>(
+      'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
+      [orphanHash, workerOrphan, conversationOrphan, 'es', 'SMorphan', '{}']);
+    expect(result.rows).toHaveLength(1);
+
+    // The stale row is now superseded, and the fresh run belongs to workerOrphan.
+    const superseded = await setup.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM worker_identity_challenges
+        WHERE phone_hash = $1 AND status = 'superseded'`, [orphanHash]);
+    expect(superseded.rows).toEqual([{ count: '1' }]);
+    const run = await setup.query<{ user_id: string }>(
+      'SELECT user_id FROM worker_workflow_runs WHERE id = $1', [result.rows[0].run_id]);
+    expect(run.rows).toEqual([{ user_id: workerOrphan }]);
+  });
+
+  test('preserves the replay guard for a still-live verified identity (045)', async () => {
+    // Regression guard: self-heal must NOT weaken same-hash hijack protection.
+    // hashA is already verified+bound to workerA (live) from the earlier test;
+    // a different worker/conversation on the same hash must still be rejected.
+    await expect(asWhatsapp(
+      'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
+      [hashA, workerB, conversationA, 'en', 'SMlive-conflict', '{}'],
+    )).rejects.toMatchObject({ code: '55000' });
   });
 
   test('pre-auth functions expose only one exact validated hash', async () => {
