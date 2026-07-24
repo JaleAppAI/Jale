@@ -14,7 +14,8 @@
     "test:whatsapp-v2": "jest test/unit/lambda/whatsapp/onboarding-v2.test.ts test/unit/lambda/whatsapp/onboarding-v2-profile.test.ts test/unit/lambda/whatsapp/onboarding-v2-conversation.test.ts test/unit/lambda/whatsapp/processor.test.ts test/unit/lambda/whatsapp/lib/onboarding-language.test.ts test/unit/lambda/whatsapp/lib/onboarding-renderers.test.ts test/unit/lambda/whatsapp/lib/onboarding-adapters.test.ts --runInBand",
     "test:whatsapp-v2-db": "bash scripts/run-whatsapp-v2-db-tests.sh",
     "reset:whatsapp-v2": "ts-node scripts/reset-whatsapp-onboarding-v2.ts",
-    "whatsapp:controls": "ts-node scripts/whatsapp-runtime-controls.ts"
+    "whatsapp:controls": "ts-node scripts/whatsapp-runtime-controls.ts",
+    "replay:whatsapp-domain-event": "ts-node scripts/replay-domain-event.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1040.0",
