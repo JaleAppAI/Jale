@@ -7,6 +7,7 @@ const describeWithDatabase = databaseUrl ? describe : describe.skip;
 function whatsappUrl(source: string): string {
   const url = new URL(source);
   url.username = 'jale_whatsapp';
+  url.password = 'test-whatsapp-pw';
   return url.toString();
 }
 
