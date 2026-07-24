@@ -89,8 +89,10 @@ $MigrationFiles = @(
     '039_whatsapp_support_cases.sql',
     '040_whatsapp_delivery_status.sql',
     '041_whatsapp_web_worker_lookup_grant.sql',
-    '042_job_message_outbox_send_unknown.sql',
-    '043_applications_employer_update_repair.sql'
+    '042_whatsapp_onboarding_gate.sql',
+    '043_whatsapp_worker_intent_transport.sql',
+    '044_job_message_outbox_send_unknown.sql',
+    '045_applications_employer_update_repair.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

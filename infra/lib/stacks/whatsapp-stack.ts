@@ -61,6 +61,8 @@ export interface WhatsAppStackProps extends cdk.StackProps {
 export class WhatsAppStack extends cdk.Stack {
   public readonly inboundQueue: sqs.Queue;
   public readonly inboundDlq: sqs.Queue;
+  public readonly inboundV2Queue: sqs.Queue;
+  public readonly inboundV2Dlq: sqs.Queue;
   public readonly webhookLambda: JaleLambdaFunction;
   public readonly processorLambda: JaleLambdaFunction;
   public readonly jobAlertLambda: JaleLambdaFunction;
@@ -73,6 +75,10 @@ export class WhatsAppStack extends cdk.Stack {
     const tosVersion = this.node.tryGetContext('requiredTosVersion') ?? '1.0';
     const allowedOrigin =
       this.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai';
+    const inboundV2TransportContext =
+      this.node.tryGetContext('whatsappInboundV2TransportEnabled');
+    const inboundV2TransportEnabled =
+      inboundV2TransportContext === true || inboundV2TransportContext === 'true';
     const statusCallbackUrl = normalizeWhatsappStatusCallbackUrl(props.statusCallbackUrl);
 
     // ── Secrets Manager references ──────────────────────────────
@@ -114,6 +120,31 @@ export class WhatsAppStack extends cdk.Stack {
       },
     });
 
+    // ── v2 SQS FIFO DLQ + inbound queue (additive) ────────────────
+    // Inbound v2 events serialize per-phone-hash through a FIFO queue so a
+    // single worker's messages process strictly in order. The legacy
+    // standard queue/DLQ above are untouched; this is a parallel path
+    // selected in the webhook only when WHATSAPP_INBOUND_V2_QUEUE_URL is set.
+    this.inboundV2Dlq = new sqs.Queue(this, 'WhatsAppInboundV2Dlq', {
+      queueName: 'whatsapp-inbound-v2-dlq.fifo',
+      fifo: true,
+      contentBasedDeduplication: false,
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    this.inboundV2Queue = new sqs.Queue(this, 'WhatsAppInboundV2Queue', {
+      queueName: 'whatsapp-inbound-v2.fifo',
+      fifo: true,
+      contentBasedDeduplication: false,
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      visibilityTimeout: cdk.Duration.seconds(360),
+      deadLetterQueue: {
+        queue: this.inboundV2Dlq,
+        maxReceiveCount: 5,
+      },
+    });
+
     // ── Webhook Lambda ──────────────────────────────────────────
     // Public-facing: validates Twilio X-Twilio-Signature and pushes the raw
     // body to SQS. No DB, no Twilio API calls.
@@ -135,11 +166,17 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         SQS_QUEUE_URL: this.inboundQueue.queueUrl,
+        ...(inboundV2TransportEnabled
+          ? { WHATSAPP_INBOUND_V2_QUEUE_URL: this.inboundV2Queue.queueUrl }
+          : {}),
         ALLOWED_ORIGIN: allowedOrigin,
       },
     });
     twilioSecret.grantRead(this.webhookLambda.function);
     this.inboundQueue.grantSendMessages(this.webhookLambda.function);
+    if (inboundV2TransportEnabled) {
+      this.inboundV2Queue.grantSendMessages(this.webhookLambda.function);
+    }
 
     // ── Processor Lambda ────────────────────────────────────────
     // SQS consumer — owns the conversation state machine + profile builder
@@ -174,6 +211,16 @@ export class WhatsAppStack extends cdk.Stack {
     this.processorLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(this.inboundQueue, {
         batchSize: 1,
+      }),
+    );
+
+    // v2 FIFO event source — ReportBatchItemFailures lets a single failed
+    // message be retried/redriven without stalling or discarding the rest of
+    // the per-phone-hash message group ordering.
+    this.processorLambda.function.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.inboundV2Queue, {
+        batchSize: 1,
+        reportBatchItemFailures: true,
       }),
     );
 
@@ -246,6 +293,62 @@ export class WhatsAppStack extends cdk.Stack {
     new events.Rule(this, 'JobAlertOutboxDrainSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
       targets: [new eventTargets.LambdaFunction(jobAlertDrainLambda.function)],
+    });
+
+    const workerIntentDrainLambda = new JaleLambdaFunction(
+      this,
+      'WorkerIntentOutboxDrainLambda',
+      {
+        entry: path.join(__dirname, '../../lambda/whatsapp/worker-intent-outbox-drain.ts'),
+        description: 'Worker intent outbox drain — ordered scheduled Twilio sends',
+        vpc: props.vpc,
+        securityGroups: [props.lambdaSg],
+        timeout: 60,
+        environment: {
+          DB_SECRET_ARN: whatsappDbSecret.secretName,
+          TWILIO_SECRET_ARN: twilioSecret.secretName,
+          TWILIO_REQUEST_TIMEOUT_MS: '4000',
+          TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
+        },
+      },
+    );
+    whatsappDbSecret.grantRead(workerIntentDrainLambda.function);
+    twilioSecret.grantRead(workerIntentDrainLambda.function);
+
+    new events.Rule(this, 'WorkerIntentOutboxDrainSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new eventTargets.LambdaFunction(workerIntentDrainLambda.function)],
+    });
+
+    // ── C7: Domain Outbox Drain ──────────────────────────────────
+    // Scheduled every 1 minute: leases worker_domain_outbox events
+    // (migration 042's lease_worker_domain_events) written by the workflow
+    // lane's completeOnboarding(), and dispatches worker.ready to C6's
+    // releaseWorkerReady() and assessment.requested to the existing
+    // AiStack TrustScorer SQS queue (no Bedrock call — jale_ai owns
+    // scoring). This drain never sends via Twilio, so it gets only the
+    // WhatsApp DB secret (no Twilio secret, no Twilio IAM permission) plus
+    // least-privilege sqs:SendMessage on the trust-assessment queue.
+    const domainOutboxDrainLambda = new JaleLambdaFunction(this, 'DomainOutboxDrainLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/domain-outbox-drain.ts'),
+      description: 'Domain outbox drain — scheduled worker.ready / assessment.requested event processing',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
+      },
+    });
+    whatsappDbSecret.grantRead(domainOutboxDrainLambda.function);
+    // Least-privilege: this drain only sends assessment.requested payloads
+    // onward to TrustScorer — it never consumes from the queue itself, so
+    // it gets sqs:SendMessage only (no ReceiveMessage/DeleteMessage), and no
+    // Twilio secret access.
+    props.trustAssessmentQueue.grantSendMessages(domainOutboxDrainLambda.function);
+
+    new events.Rule(this, 'DomainOutboxDrainSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new eventTargets.LambdaFunction(domainOutboxDrainLambda.function)],
     });
 
     // ── Job Message Outbox Sweeper ──────────────────────────────
@@ -457,6 +560,35 @@ export class WhatsAppStack extends cdk.Stack {
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       });
 
+    const workerIntentMetricFilter = (
+      id: string,
+      metricValueEquals: string,
+      metricName: string,
+    ) => new logs.MetricFilter(this, id, {
+      logGroup: workerIntentDrainLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName,
+      metricValue: '1',
+    });
+    for (const [filterId, eventName, metricName, alarmId, alarmName] of [
+      ['WorkerIntentSendUnknownMetric', 'WorkerIntentOutboxSendUnknown', 'WorkerIntentSendUnknown',
+        'WorkerIntentSendUnknownAlarm', 'WhatsAppWorkerIntentSendUnknown'],
+      ['WorkerIntentFailureMetric', 'WorkerIntentOutboxFailure', 'WorkerIntentFailures',
+        'WorkerIntentFailureAlarm', 'WhatsAppWorkerIntentFailures'],
+      ['WorkerIntentLeaseLostMetric', 'WorkerIntentOutboxLeaseLost', 'WorkerIntentLeaseLost',
+        'WorkerIntentLeaseLostAlarm', 'WhatsAppWorkerIntentLeaseLost'],
+      ['WorkerIntentBacklogAgedMetric', 'WorkerIntentOutboxBacklogAged', 'WorkerIntentBacklogAged',
+        'WorkerIntentBacklogAgedAlarm', 'WhatsAppWorkerIntentBacklogAged'],
+    ] as const) {
+      const metric = workerIntentMetricFilter(filterId, eventName, metricName);
+      alarm(
+        alarmId,
+        alarmName,
+        metric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      ).addAlarmAction(alarmAction);
+    }
+
     // Twilio-reported terminal delivery failures (failed/undelivered).
     const deliveryFailureMetric = metricFilter(
       'WhatsAppDeliveryFailureMetric', 'WhatsAppDeliveryFailure', 'DeliveryFailures',
@@ -487,6 +619,89 @@ export class WhatsAppStack extends cdk.Stack {
     alarm(
       'WhatsAppStatusCallbackUnknownSidAlarm', 'WhatsAppStatusCallbackUnknownSids',
       unknownSidMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // v2 inbound DLQ health — depth (messages stuck after exhausting
+    // maxReceiveCount) and age (oldest stuck message) on the v2 DLQ.
+    alarm(
+      'WhatsAppInboundV2DlqDepthAlarm', 'WhatsAppInboundV2DlqDepth',
+      this.inboundV2Dlq.metricApproximateNumberOfMessagesVisible({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Maximum',
+      }),
+    ).addAlarmAction(alarmAction);
+
+    alarm(
+      'WhatsAppInboundV2DlqAgeAlarm', 'WhatsAppInboundV2DlqAge',
+      this.inboundV2Dlq.metricApproximateAgeOfOldestMessage({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Maximum',
+      }),
+    ).addAlarmAction(alarmAction);
+
+    // ── C7: domain-event drain + release operational alarms ─────
+    // Resolution #9 (observability ownership): C7 installs the drain's own
+    // metrics on the drain Lambda's log group, and installs WhatsAppOtpLock
+    // — emitted by the workflow lane's identity handler when a challenge
+    // transitions to `locked` — on the PROCESSOR log group, not the drain's.
+    const drainMetricFilter = (id: string, metricValueEquals: string, metricName: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: domainOutboxDrainLambda.logGroup,
+        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        metricNamespace: 'Jale/WhatsApp',
+        metricName,
+        metricValue: '1',
+      });
+
+    const domainEventStuckMetric = drainMetricFilter(
+      'WhatsAppDomainEventStuckMetric', 'WhatsAppDomainEventStuck', 'DomainEventStuck',
+    );
+    alarm(
+      'WhatsAppDomainEventsStuckAlarm', 'WhatsAppDomainEventsStuck',
+      domainEventStuckMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    const releaseFailureMetric = drainMetricFilter(
+      'WhatsAppReleaseFailureMetric', 'WhatsAppReleaseFailure', 'ReleaseFailures',
+    );
+    alarm(
+      'WhatsAppReleaseFailuresAlarm', 'WhatsAppReleaseFailures',
+      releaseFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // Lane C2: symmetric with WhatsAppReleaseFailures — surfaces transient
+    // assessment.requested → TrustScorer SQS dispatch failures (emitted by the
+    // drain on any dispatch/completion error) before they retry to the
+    // WhatsAppDomainEventStuck cap.
+    const assessmentDispatchFailureMetric = drainMetricFilter(
+      'WhatsAppAssessmentDispatchFailureMetric', 'WhatsAppAssessmentDispatchFailure', 'AssessmentDispatchFailures',
+    );
+    alarm(
+      'WhatsAppAssessmentDispatchFailuresAlarm', 'WhatsAppAssessmentDispatchFailures',
+      assessmentDispatchFailureMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    const deferredBacklogAgedMetric = drainMetricFilter(
+      'WhatsAppDeferredBacklogAgedMetric', 'WhatsAppDeferredBacklogAged', 'DeferredBacklogAge',
+    );
+    alarm(
+      'WhatsAppDeferredBacklogAgeAlarm', 'WhatsAppDeferredBacklogAge',
+      deferredBacklogAgedMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // WhatsAppOtpLock is emitted by the workflow lane's identity handler
+    // INSIDE the processor Lambda (not the drain) — the filter must live on
+    // the processor's log group.
+    const otpLockMetric = new logs.MetricFilter(this, 'WhatsAppOtpLockMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOtpLock'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'OtpLockRate',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppOtpLockRateAlarm', 'WhatsAppOtpLockRate',
+      otpLockMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────

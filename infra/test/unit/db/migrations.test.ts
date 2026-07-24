@@ -75,6 +75,8 @@ describe('database migrations', () => {
       '041',
       '042',
       '043',
+      '044',
+      '045',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -294,8 +296,13 @@ describe('database migrations', () => {
       'utf8',
     );
     expect(migration).toContain('record_whatsapp_delivery_status');
+    expect(migration).toContain(
+      'GRANT SELECT (id, twilio_message_sid, status, sent_at, delivered_at),\n' +
+      '      UPDATE (twilio_message_sid, status, sent_at, delivered_at)\n' +
+      '  ON public.job_conversation_messages TO jale_twilio_callback;',
+    );
     expect(migration).toContain('record_twilio_delivery_status');
-    expect(migration).toContain("source_type IN ('admin_case', 'job_alert')");
+    expect(migration).toContain("source_type IN ('admin_case', 'job_alert', 'worker_intent')");
     expect(migration).toContain('FROM public.job_conversation_messages');
     // Review-1 correction: the privileged implementation lives in the
     // locked jale_twilio_callback schema (fully qualified, catalog-only
@@ -370,16 +377,16 @@ describe('database migrations', () => {
     }
   });
 
-  it('widens job_message_outbox.status to a terminal send_unknown in migration 042', () => {
+  it('widens job_message_outbox.status to a terminal send_unknown in migration 044', () => {
     const migration = fs.readFileSync(
-      path.join(migrationsDir, '042_job_message_outbox_send_unknown.sql'), 'utf8',
+      path.join(migrationsDir, '044_job_message_outbox_send_unknown.sql'), 'utf8',
     );
     expect(migration).toContain("CHECK (status IN ('pending', 'sent', 'failed', 'send_unknown'))");
   });
 
-  it('idempotently restores applications_employer_update in migration 043', () => {
+  it('idempotently restores applications_employer_update in migration 045', () => {
     const migration = fs.readFileSync(
-      path.join(migrationsDir, '043_applications_employer_update_repair.sql'), 'utf8',
+      path.join(migrationsDir, '045_applications_employer_update_repair.sql'), 'utf8',
     );
     expect(migration).toContain('CREATE POLICY applications_employer_update');
     expect(migration).toContain('IF NOT EXISTS');

@@ -1,4 +1,4 @@
--- 042_job_message_outbox_send_unknown.sql
+-- 044_job_message_outbox_send_unknown.sql
 -- Add terminal 'send_unknown' to job_message_outbox.status so an ambiguous
 -- Twilio send (accepted-but-timed-out) can be parked without auto-retry,
 -- matching whatsapp_outbox / email_outbox. The existing partial sweep index

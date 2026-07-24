@@ -10,6 +10,7 @@ import {
   reconstructWebhookUrl,
   type TwilioSecret,
 } from './lib/twilio';
+import { hashNormalizedPhone } from './lib/runtime-controls';
 
 // Module-level clients — reused across warm invocations
 const sqs = new SQSClient({});
@@ -96,15 +97,37 @@ export const handler = async (
 
     // 4. Push to SQS for async processing. Store raw body to preserve form
     //    encoding for the processor (it re-parses for consistency).
-    const queueUrl = process.env.SQS_QUEUE_URL;
-    if (!queueUrl) throw new Error('SQS_QUEUE_URL env var not set');
+    //
+    // v2 routing: when WHATSAPP_INBOUND_V2_QUEUE_URL is set, deliver via the
+    // FIFO queue instead, keyed by a one-way hash of the normalized phone
+    // (never the raw phone — no digit sequence from it may reach a queue
+    // attribute or a log line) with MessageSid dedup. When unset, the legacy
+    // standard-queue path below is byte-identical to today.
+    const v2QueueUrl = process.env.WHATSAPP_INBOUND_V2_QUEUE_URL;
 
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: queueUrl,
-        MessageBody: rawBody,
-      }),
-    );
+    if (v2QueueUrl) {
+      const normalizedFrom = params.From.replace(/^whatsapp:/, '')
+        .trim()
+        .toLowerCase();
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: v2QueueUrl,
+          MessageBody: rawBody,
+          MessageGroupId: hashNormalizedPhone(normalizedFrom),
+          MessageDeduplicationId: params.MessageSid,
+        }),
+      );
+    } else {
+      const queueUrl = process.env.SQS_QUEUE_URL;
+      if (!queueUrl) throw new Error('SQS_QUEUE_URL env var not set');
+
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: rawBody,
+        }),
+      );
+    }
 
     console.log('[webhook] queued', {
       messageSid: params.MessageSid,

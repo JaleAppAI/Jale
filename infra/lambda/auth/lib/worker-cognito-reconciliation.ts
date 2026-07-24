@@ -1,5 +1,6 @@
 import {
   AdminAddUserToGroupCommand,
+  AdminCreateUserCommand,
   AdminEnableUserCommand,
   AdminGetUserCommand,
   AdminSetUserPasswordCommand,
@@ -13,6 +14,48 @@ type CognitoClient = {
 };
 
 const cognito = new CognitoIdentityProviderClient({});
+
+export async function ensureWorkerCognitoAccount(input: {
+  client?: CognitoClient;
+  userPoolId: string;
+  phone: string;
+}): Promise<{ cognitoSub: string; storedName?: string }> {
+  const client = input.client ?? cognito;
+  try {
+    return await reconcileWorkerCognitoAccount({ ...input, client });
+  } catch (err) {
+    if ((err as { name?: string } | undefined)?.name !== 'UserNotFoundException') {
+      throw err;
+    }
+  }
+
+  const password = randomPermanentPassword();
+  try {
+    await client.send(new AdminCreateUserCommand({
+      UserPoolId: input.userPoolId,
+      Username: input.phone,
+      MessageAction: 'SUPPRESS',
+      TemporaryPassword: password,
+      UserAttributes: [
+        { Name: 'phone_number', Value: input.phone },
+        { Name: 'phone_number_verified', Value: 'true' },
+        { Name: 'custom:user_type', Value: 'worker' },
+      ],
+    }));
+    await client.send(new AdminSetUserPasswordCommand({
+      UserPoolId: input.userPoolId,
+      Username: input.phone,
+      Password: password,
+      Permanent: true,
+    }));
+  } catch (err) {
+    if ((err as { name?: string } | undefined)?.name !== 'UsernameExistsException') {
+      throw err;
+    }
+  }
+
+  return reconcileWorkerCognitoAccount({ ...input, client });
+}
 
 export async function reconcileWorkerCognitoAccount(input: {
   client?: CognitoClient;

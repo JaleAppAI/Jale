@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
-import { createHmac } from 'node:crypto';
+import { createHmac, createHash } from 'node:crypto';
 
 // Mock AWS SDK clients BEFORE importing the handler
 const mockSqsSend = jest.fn();
@@ -231,6 +231,102 @@ describe('Webhook Lambda', () => {
 
     expect(result.statusCode).toBe(200);
     expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  });
+
+  describe('v2 FIFO queue routing', () => {
+    const expectedGroupId = (rawFrom: string) =>
+      createHash('sha256')
+        .update(rawFrom.replace(/^whatsapp:/, '').trim().toLowerCase())
+        .digest('hex');
+
+    it('routes to the v2 FIFO queue with hashed MessageGroupId and MessageSid dedup when WHATSAPP_INBOUND_V2_QUEUE_URL is set', async () => {
+      process.env.WHATSAPP_INBOUND_V2_QUEUE_URL =
+        'https://sqs.us-east-2.amazonaws.com/123/whatsapp-inbound-v2.fifo';
+
+      const from = 'whatsapp:+15125551234';
+      const event = buildSignedEvent({
+        AccountSid: accountSid,
+        From: from,
+        Body: 'Hola',
+        MessageSid: 'SM-v2-1',
+      });
+
+      const result = await handler(event);
+
+      expect(result.statusCode).toBe(200);
+      expect(mockSqsSend).toHaveBeenCalledTimes(1);
+      expect(mockSqsSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            QueueUrl: process.env.WHATSAPP_INBOUND_V2_QUEUE_URL,
+            MessageBody: event.body,
+            MessageGroupId: expectedGroupId(from),
+            MessageDeduplicationId: 'SM-v2-1',
+          }),
+        }),
+      );
+    });
+
+    it('never includes any digit sequence from the raw phone in MessageGroupId', async () => {
+      process.env.WHATSAPP_INBOUND_V2_QUEUE_URL =
+        'https://sqs.us-east-2.amazonaws.com/123/whatsapp-inbound-v2.fifo';
+
+      const from = 'whatsapp:+15125551234';
+      const event = buildSignedEvent({
+        AccountSid: accountSid,
+        From: from,
+        Body: 'Hola',
+        MessageSid: 'SM-v2-2',
+      });
+
+      await handler(event);
+
+      const call = mockSqsSend.mock.calls[0][0];
+      const groupId: string = call.input.MessageGroupId;
+      const digitRuns = from.match(/\d+/g) ?? [];
+      for (const run of digitRuns) {
+        expect(groupId).not.toContain(run);
+      }
+    });
+
+    it('uses the legacy standard queue with byte-identical payload when WHATSAPP_INBOUND_V2_QUEUE_URL is unset', async () => {
+      delete process.env.WHATSAPP_INBOUND_V2_QUEUE_URL;
+
+      const event = buildSignedEvent({
+        AccountSid: accountSid,
+        From: 'whatsapp:+15125551234',
+        Body: 'Hola',
+        MessageSid: 'SM-legacy-1',
+      });
+
+      const result = await handler(event);
+
+      expect(result.statusCode).toBe(200);
+      expect(mockSqsSend).toHaveBeenCalledTimes(1);
+      expect(mockSqsSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: {
+            QueueUrl: process.env.SQS_QUEUE_URL,
+            MessageBody: event.body,
+          },
+        }),
+      );
+    });
+
+    it('returns 403 and enqueues nothing to either queue on invalid signature, even with v2 configured', async () => {
+      process.env.WHATSAPP_INBOUND_V2_QUEUE_URL =
+        'https://sqs.us-east-2.amazonaws.com/123/whatsapp-inbound-v2.fifo';
+
+      const event = buildSignedEvent(
+        { AccountSid: accountSid, From: 'whatsapp:+15125551234', Body: 'Hola', MessageSid: 'SM-bad' },
+        { tamper: true },
+      );
+
+      const result = await handler(event);
+
+      expect(result.statusCode).toBe(403);
+      expect(mockSqsSend).not.toHaveBeenCalled();
+    });
   });
 
   it('uses X-Forwarded-Host for URL reconstruction when present', async () => {

@@ -74,11 +74,67 @@ jest.mock('../../../../lambda/lib/job-matching', () => ({
   listMatchedJobsForWorker: mockListMatchedJobsForWorker,
 }));
 
+// ── v2 routing branch mocks ──────────────────────────────────────────────
+//
+// The v2 decision (loadRuntimeControls/isV2Enabled/hashNormalizedPhone) and
+// the router itself (routeOnboardingV2) are mocked so legacy tests never
+// issue a real `whatsapp_runtime_controls` query (which would shift every
+// strict `mockResolvedValueOnce` chain in this file) and so the "v2 routing
+// branch" describe block below can assert call counts/args precisely.
+// registerCategoryRenderer is spied-but-real (jest.requireActual) so the
+// "renderers registered before routing" assertions exercise the real
+// registry; onboarding-renderers itself stays real for the same reason.
+const mockLoadRuntimeControls = jest.fn();
+const mockIsV2Enabled = jest.fn();
+const mockHashNormalizedPhone = jest.fn((phone: any) => `hash:${phone}`);
+jest.mock('../../../../lambda/whatsapp/lib/runtime-controls', () => ({
+  loadRuntimeControls: (client: unknown) => mockLoadRuntimeControls(client),
+  isV2Enabled: (controls: unknown, phoneHash: unknown) => mockIsV2Enabled(controls, phoneHash),
+  hashNormalizedPhone: (phone: unknown) => mockHashNormalizedPhone(phone),
+}));
+
+const mockRouteOnboardingV2 = jest.fn();
+jest.mock('../../../../lambda/whatsapp/onboarding-v2', () => ({
+  routeOnboardingV2: (client: unknown, session: unknown, msg: unknown, deps: unknown) =>
+    mockRouteOnboardingV2(client, session, msg, deps),
+}));
+
+const mockCreateOnboardingV2Adapters = jest.fn();
+jest.mock('../../../../lambda/whatsapp/lib/onboarding-adapters', () => ({
+  createOnboardingV2Adapters: (deps: unknown) => mockCreateOnboardingV2Adapters(deps),
+}));
+
+jest.mock('../../../../lambda/whatsapp/lib/onboarding-repository', () => ({
+  loadPreAuthStateForUpdate: jest.fn(),
+  savePreAuthState: jest.fn(),
+  bindVerifiedIdentityAndStartWorkflow: jest.fn(),
+  loadWorkerGate: jest.fn(),
+  advanceWorkflow: jest.fn(),
+  appendTransition: jest.fn(),
+  completeOnboarding: jest.fn(),
+}));
+
+const mockEnqueueWorkerMessage = jest.fn();
+const mockRegisterCategoryRenderer = jest.fn();
+jest.mock('../../../../lambda/whatsapp/lib/worker-delivery-gateway', () => {
+  const actual = jest.requireActual('../../../../lambda/whatsapp/lib/worker-delivery-gateway');
+  return {
+    ...actual,
+    registerCategoryRenderer: (category: unknown, renderer: unknown) => {
+      mockRegisterCategoryRenderer(category, renderer);
+      return actual.registerCategoryRenderer(category, renderer);
+    },
+    enqueueWorkerMessage: (client: unknown, input: unknown, now?: unknown) =>
+      mockEnqueueWorkerMessage(client, input, now),
+  };
+});
+
 const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
 import { handler } from '../../../../lambda/whatsapp/processor';
 import { t } from '../../../../lambda/whatsapp/lib/templates';
+import { _clearCategoryRenderersForTests } from '../../../../lambda/whatsapp/lib/worker-delivery-gateway';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -176,6 +232,19 @@ describe('Processor Lambda', () => {
       ok: true,
       json: async () => ({ sid: 'SM11111111111111111111111111111111' }),
     });
+
+    // v2 routing branch: disabled by default so every legacy test in this
+    // file runs the state machine exactly as before. Individual "v2 routing
+    // branch" tests override these to exercise the enabled path.
+    mockLoadRuntimeControls.mockResolvedValue({ disabled: true });
+    mockIsV2Enabled.mockReturnValue(false);
+    mockHashNormalizedPhone.mockImplementation((phone: string) => `hash:${phone}`);
+    mockRouteOnboardingV2.mockReset();
+    mockCreateOnboardingV2Adapters.mockReset();
+    mockCreateOnboardingV2Adapters.mockReturnValue({});
+    mockEnqueueWorkerMessage.mockReset();
+    mockRegisterCategoryRenderer.mockClear();
+    _clearCategoryRenderersForTests();
   });
 
   afterAll(() => {
@@ -290,11 +359,10 @@ describe('Processor Lambda', () => {
           rows: [convRow({ conversation_state: 'new' })],
         })
         // findWebRegisteredWorker → no match (not a web-registered worker)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // tryConversationRelay: resolveWorkerIdForWhatsappNumber finds no
-        // verified-phone worker (user_id is null) → relay returns null and the
-        // built-in 'new' greeting path runs as before.
         .mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      // tryConversationRelay short-circuits on the unbound-session guard (no
+      // user_id) before ever querying — relay returns null and the built-in
+      // 'new' greeting path runs as before.
       // handleNewOrRestart begins here; we route via the 'new' → greeting path.
       // Suppressed AdminCreateUser + AdminSetUserPassword succeed.
       mockCognitoSend
@@ -511,17 +579,26 @@ describe('Processor Lambda', () => {
           rows: [{ has_deps: true }],
         });
 
-      await expect(
-        handler(
-          makeSqsEvent({
-            MessageSid: 'SM-otp-ok',
-            From: 'whatsapp:+15125551234',
-            Body: '123456',
-          }),
-          {} as any,
-          {} as any,
-        ),
-      ).rejects.toThrow(/aborting reconcile.*manual ops merge required/);
+      const logSpies = [console.log, console.warn, console.error].map((_method, index) =>
+        jest.spyOn(console, (['log', 'warn', 'error'] as const)[index]).mockImplementation(() => undefined));
+      try {
+        await expect(
+          handler(
+            makeSqsEvent({
+              MessageSid: 'SM-otp-ok',
+              From: 'whatsapp:+15125551234',
+              Body: '123456',
+            }),
+            {} as any,
+            {} as any,
+          ),
+        ).rejects.toThrow('reconcile_placeholder_has_dependents');
+        const captured = logSpies.flatMap((spy) => spy.mock.calls).map((args) => JSON.stringify(args)).join('\n');
+        expect(captured).not.toContain('+15125551234');
+        expect(captured).not.toContain('15125551234');
+      } finally {
+        logSpies.forEach((spy) => spy.mockRestore());
+      }
 
       // DELETE FROM users was NEVER issued
       expect(countQueryByPattern(/DELETE FROM users/i)).toBe(0);
@@ -586,6 +663,64 @@ describe('Processor Lambda', () => {
 
       // DELETE FROM users WAS issued
       expect(countQueryByPattern(/DELETE FROM users/i)).toBeGreaterThan(0);
+    });
+
+    it('creates and links a real-sub worker only after verified OTP when no user row exists', async () => {
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({ sub: realSub })).toString('base64url');
+      const idToken = `${header}.${payload}.sig`;
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-net-new-otp' }] })
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'awaiting_otp',
+            otp_attempts: 0,
+            otp_expires_at: new Date(Date.now() + 5 * 60 * 1000),
+            state_context: { cognito_session: 'SESSION-NET-NEW' },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no real-sub user
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no placeholder to promote
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ user_id: 'u-net-new' }],
+        }) // reconcile_worker_signup
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'u-net-new', tos_version: null }],
+        }) // link verified WhatsApp identity
+        .mockResolvedValue({ rowCount: 1, rows: [] });
+      mockCognitoSend.mockResolvedValueOnce({
+        AuthenticationResult: { IdToken: idToken },
+      });
+
+      try {
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-net-new-otp',
+            From: 'whatsapp:+15125551234',
+            Body: '123456',
+          }),
+          {} as any,
+          {} as any,
+        );
+      } catch {
+        // Later unrelated handler calls use generic mocks; this assertion is
+        // limited to the verified identity reconciliation boundary.
+      }
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT reconcile_worker_signup($1, $2, $3) AS user_id',
+        [realSub, '+15125551234', ''],
+      );
+      const reconcileIndex = mockQuery.mock.calls.findIndex(([sql]) =>
+        /reconcile_worker_signup/.test(sql as string));
+      expect(reconcileIndex).toBeGreaterThan(0);
+      expect(mockQuery.mock.calls.slice(0, reconcileIndex).some(([sql]) =>
+        /INSERT INTO users/.test(sql as string))).toBe(false);
     });
   });
 
@@ -2837,8 +2972,9 @@ describe('interactivePayload extraction from Body', () => {
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new2' }] }) // claim
         .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
         .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // INSERT conv
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // findWebRegisteredWorker → NOT FOUND
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] });       // tryConversationRelay → resolveWorkerIdForWhatsappNumber → not found
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] });       // findWebRegisteredWorker → NOT FOUND
+      // tryConversationRelay short-circuits on the unbound-session guard (no
+      // user_id) before ever querying — no resolver mock needed here.
       mockCognitoSend
         .mockResolvedValueOnce({})  // AdminCreateUser
         .mockResolvedValueOnce({})  // AdminSetUserPassword
@@ -2889,5 +3025,544 @@ describe('interactivePayload extraction from Body', () => {
       expect(mockCognitoSend).not.toHaveBeenCalled();
       expect(findQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBeDefined();
     });
+  });
+});
+
+// ── v2 routing branch (Task 6, fail-closed processor integration) ──────────
+//
+// Top-level (not nested under `describe('Processor Lambda', ...)`) and
+// entirely self-contained: its own beforeEach sets every env var and mock
+// this suite needs, independent of any other describe block's setup.
+describe('v2 routing branch', () => {
+  const originalEnv = process.env;
+  const PHONE = '+15125551234';
+  const FROM = `whatsapp:${PHONE}`;
+
+  function makeFifoSqsRecord(
+    params: Record<string, string>,
+    groupId: string,
+    dedupeId: string,
+  ): any {
+    return {
+      messageId: 'sqs-fifo-1',
+      receiptHandle: '',
+      body: new URLSearchParams(params).toString(),
+      attributes: { MessageGroupId: groupId } as any,
+      messageAttributes: {} as any,
+      md5OfBody: '',
+      eventSource: 'aws:sqs',
+      eventSourceARN: '',
+      awsRegion: 'us-east-2',
+      messageDeduplicationId: dedupeId,
+    };
+  }
+
+  function makeFifoSqsEvent(
+    params: Record<string, string>,
+    groupId: string,
+    dedupeId: string,
+  ): any {
+    return { Records: [makeFifoSqsRecord(params, groupId, dedupeId)] };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockQuery.mockReset();
+    mockConnect.mockReset();
+    mockRelease.mockReset();
+    mockListMatchedJobsForWorker.mockReset();
+    process.env = {
+      ...originalEnv,
+      WORKER_POOL_ID: 'pool-abc',
+      WORKER_CLIENT_ID: 'client-abc',
+      TWILIO_SECRET_ARN: 'arn:twilio',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+      DB_SECRET_ARN: 'arn:db',
+      REQUIRED_TOS_VERSION: '1.0',
+    };
+
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ sid: 'SM11111111111111111111111111111111' }),
+    });
+
+    mockLoadRuntimeControls.mockResolvedValue({ disabled: true });
+    mockIsV2Enabled.mockReturnValue(false);
+    mockHashNormalizedPhone.mockImplementation((phone: string) => `hash:${phone}`);
+    mockRouteOnboardingV2.mockReset();
+    mockCreateOnboardingV2Adapters.mockReset();
+    mockCreateOnboardingV2Adapters.mockReturnValue({});
+    mockEnqueueWorkerMessage.mockReset();
+    mockRegisterCategoryRenderer.mockClear();
+    _clearCategoryRenderersForTests();
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('does not call routeOnboardingV2 and runs legacy when controls report the phone disabled', async () => {
+    mockIsV2Enabled.mockReturnValue(false);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-off' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'idle', language: 'es' })],
+      }) // SELECT conv FOR UPDATE (existing)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox (help prompt)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: none pending
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-off', From: FROM, Body: 'ayuda' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
+    expect(findQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBeDefined();
+  });
+
+  it('calls routeOnboardingV2 exactly once when controls report the phone enabled', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'start.choose_language',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-on' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'new', language: 'es' })],
+      }) // SELECT conv FOR UPDATE (existing)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: none pending
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-on', From: FROM, Body: 'hola' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    const deps = mockRouteOnboardingV2.mock.calls[0][3] as { tosUrl: string; privacyUrl: string };
+    expect(deps.tosUrl).toBe('https://jaleapp.ai/legal/terms');
+    expect(deps.privacyUrl).toBe('https://jaleapp.ai/legal/privacy');
+    expect(JSON.stringify(deps)).not.toContain('jale.app');
+  });
+
+  it('registers onboarding/security renderers before routing, resolving real functions (not renderer_unavailable)', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'start.choose_language',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-reg' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-reg', From: FROM, Body: 'hola' }),
+      {} as any,
+      {} as any,
+    );
+
+    const registeredCategories = mockRegisterCategoryRenderer.mock.calls.map(([cat]) => cat);
+    expect(registeredCategories).toEqual(expect.arrayContaining(['onboarding', 'security']));
+    for (const [, renderer] of mockRegisterCategoryRenderer.mock.calls) {
+      expect(typeof renderer).toBe('function');
+    }
+    // Registration happened strictly before the router ran.
+    const lastRegisterOrder = Math.max(
+      ...mockRegisterCategoryRenderer.mock.invocationCallOrder,
+    );
+    const routeOrder = mockRouteOnboardingV2.mock.invocationCallOrder[0];
+    expect(lastRegisterOrder).toBeLessThan(routeOrder);
+  });
+
+  it('passes hashNormalizedPhone output to isV2Enabled and never the raw phone', async () => {
+    mockIsV2Enabled.mockReturnValue(false);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-hash' }] })
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'idle', language: 'es' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // help-prompt outbox insert
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-hash', From: FROM, Body: 'ayuda' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockHashNormalizedPhone).toHaveBeenCalledWith(PHONE);
+    const hashResult = mockHashNormalizedPhone.mock.results[0].value;
+    expect(mockIsV2Enabled).toHaveBeenCalledWith(expect.anything(), hashResult);
+    for (const call of mockIsV2Enabled.mock.calls) {
+      expect(call).not.toContain(PHONE);
+      expect(call).not.toContain(FROM);
+    }
+  });
+
+  it('opens exactly one BEGIN and one COMMIT for a v2-routed message', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'start.choose_language',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-tx' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-tx', From: FROM, Body: 'hola' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(countQueryByPattern(/^\s*BEGIN\s*$/i)).toBe(1);
+    expect(countQueryByPattern(/^\s*COMMIT\s*$/i)).toBe(1);
+  });
+
+  it('runs no legacy state-transition SQL for a v2-routed phone', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'legal.review',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-nolegacy' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context only)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-nolegacy', From: FROM, Body: 'hola' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
+    expect(countQueryByPattern(/UPDATE users SET/i)).toBe(0);
+    expect(findQueryByPattern(/UPDATE whatsapp_conversations SET conversation_state/i)).toBeUndefined();
+    expect(mockCognitoSend).not.toHaveBeenCalled();
+  });
+
+  it('durably hands a ready worker to legacy idle routing before the v2 control is disabled', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockImplementation(async (_client, session: any) => {
+      session.language = 'en';
+      session.state_context = { ...session.state_context, v2Ready: true };
+      return {
+        handled: false,
+        handoff: 'ready',
+        workerId: 'worker-ready-1',
+        stepKey: 'ready',
+      };
+    });
+    mockListMatchedJobsForWorker.mockResolvedValue([
+      { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso', pay: '$22/hr' },
+    ]);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ready-jobs' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'new', user_id: 'worker-ready-1', language: 'es' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 state_context writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // recent_jobs writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // job 1 outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // job 2 outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-ready-jobs', From: FROM, Body: 'Trabajos' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'worker-ready-1', {
+      limit: 5,
+      channel: 'whatsapp',
+    });
+    expect(mockCognitoSend).not.toHaveBeenCalled();
+    expect(findQueryByPattern(/SET conversation_state = 'awaiting_otp'/i)).toBeUndefined();
+
+    const conversationWrites = mockQuery.mock.calls.filter(([sql]) =>
+      /UPDATE whatsapp_conversations SET/i.test(sql as string));
+    const readyWrite = conversationWrites.find(([sql]) =>
+      /user_id\s*=/.test(sql as string)
+      && /conversation_state\s*=/.test(sql as string)
+      && /language\s*=/.test(sql as string)
+      && /state_context\s*=/.test(sql as string));
+    expect(readyWrite).toBeDefined();
+    expect(readyWrite![1]).toEqual([
+      'conv-1',
+      JSON.stringify({ v2Ready: true }),
+      'worker-ready-1',
+      'en',
+      'idle',
+    ]);
+    const jobsContextWrite = conversationWrites.find(([sql]) =>
+      /last_processed_message_sid\s*=/.test(sql as string));
+    expect(JSON.parse(jobsContextWrite![1][1] as string)).toEqual({
+      v2Ready: true,
+      recent_jobs: ['job-1', 'job-2'],
+    });
+
+    mockIsV2Enabled.mockReturnValue(false);
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ready-jobs-after-disable' }] })
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({
+          conversation_state: 'idle',
+          user_id: 'worker-ready-1',
+          language: 'en',
+          state_context: { v2Ready: true, recent_jobs: ['job-1', 'job-2'] },
+        })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+    await handler(
+      makeSqsEvent({
+        MessageSid: 'SM-v2-ready-jobs-after-disable',
+        From: FROM,
+        Body: 'Jobs',
+      }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    expect(mockListMatchedJobsForWorker).toHaveBeenCalledTimes(2);
+    expect(mockListMatchedJobsForWorker).toHaveBeenLastCalledWith(
+      expect.any(Object),
+      'worker-ready-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+  });
+
+  it('skips the legacy idle-language-detection write for a v2-routed idle phone', async () => {
+    // Guards placement: the v2 branch must sit above routeMessage's
+    // idle-language-detection block (its own legacy UPDATE), not just above
+    // the state-machine switch. conv.language is 'es' and the body is an
+    // English greeting, which WOULD trigger a legacy `language` UPDATE if
+    // this message ever reached that block.
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'start.choose_language',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-idle-lang' }] })
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'idle', language: 'es' })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context only)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-idle-lang', From: FROM, Body: 'hello' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    expect(findQueryByPattern(/UPDATE whatsapp_conversations SET language/i)).toBeUndefined();
+  });
+
+  it('propagates a v2-path error out of the handler, rolls back, and never falls through to legacy', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockRejectedValue(new Error('v2 dependency missing'));
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-err' }] }) // claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // SELECT conv
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // ROLLBACK
+
+    await expect(
+      handler(
+        makeSqsEvent({ MessageSid: 'SM-v2-err', From: FROM, Body: 'hola' }),
+        {} as any,
+        {} as any,
+      ),
+    ).rejects.toThrow('v2 dependency missing');
+
+    expect(countQueryByPattern(/^\s*ROLLBACK\s*$/i)).toBe(1);
+    expect(countQueryByPattern(/^\s*COMMIT\s*$/i)).toBe(0);
+    expect(mockCognitoSend).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('routes to v2 with every WHATSAPP_* env var unset, when the control is enabled', async () => {
+    const withoutWhatsappEnv = { ...process.env };
+    for (const key of Object.keys(withoutWhatsappEnv)) {
+      if (key.startsWith('WHATSAPP_')) delete withoutWhatsappEnv[key];
+    }
+    process.env = withoutWhatsappEnv;
+
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'start.choose_language',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-noenv' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-noenv', From: FROM, Body: 'hola' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes a FIFO-shaped SQS record through the v2 branch exactly once', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'start.choose_language',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-fifo' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeFifoSqsEvent(
+        { MessageSid: 'SM-v2-fifo', From: FROM, Body: 'hola' },
+        'group-1',
+        'dedupe-1',
+      ),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists a v2 router state_context mutation back via updateConversation', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockImplementation(async (_client: any, session: any) => {
+      session.state_context = {
+        ...session.state_context,
+        v2TrustQuestions: ['custom question 1'],
+      };
+      return { handled: true, workerId: null, stepKey: 'trust.question.1' };
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ctx' }] })
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'building_custom_trust', state_context: {} })],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-ctx', From: FROM, Body: 'answer' }),
+      {} as any,
+      {} as any,
+    );
+
+    const writebackParams = findQueryByPattern(/UPDATE whatsapp_conversations SET state_context/i);
+    expect(writebackParams).toBeDefined();
+    const serialized = (writebackParams as unknown[])[1] as string;
+    expect(serialized).toContain('v2TrustQuestions');
+    expect(serialized).toContain('custom question 1');
   });
 });

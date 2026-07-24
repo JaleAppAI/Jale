@@ -1,0 +1,382 @@
+import {
+  ChangeMessageVisibilityBatchCommand,
+  DeleteMessageCommand,
+  GetQueueAttributesCommand,
+  ReceiveMessageCommand,
+  SendMessageCommand,
+  SQSClient,
+  type Message,
+} from '@aws-sdk/client-sqs';
+import { createHash } from 'crypto';
+import { Client } from 'pg';
+import * as fs from 'fs';
+import * as path from 'path';
+
+const MESSAGE_SID_PATTERN = /^(?:SM|MM)[0-9a-fA-F]{32}$/;
+const FROM_PATTERN = /^whatsapp:\+[1-9]\d{7,14}$/;
+const UNSAFE_EXACT_TARGET = /[,?*%[\]]|\.\./;
+const VALUE_FLAGS = new Set(['--message-sid', '--sqs-message-id', '--dlq-url', '--queue-url']);
+const ALL_FLAGS = new Set([...VALUE_FLAGS, '--execute']);
+const DEFAULT_MAX_BATCHES = 10;
+
+export type InboundReplayTarget =
+  | { kind: 'message_sid'; value: string }
+  | { kind: 'sqs_message_id'; value: string };
+
+export interface InboundReplayArgs {
+  target: InboundReplayTarget;
+  dlqUrl: string;
+  queueUrl: string;
+  execute: boolean;
+}
+
+export type ParseInboundReplayArgsResult =
+  | { ok: true; value: InboundReplayArgs }
+  | { ok: false; error: string };
+
+export type InboundReplayResultKind =
+  | 'dry_run'
+  | 'executed'
+  | 'not_found'
+  | 'validation_failed'
+  | 'queue_binding_failed'
+  | 'source_queue_mismatch'
+  | 'db_state_unavailable'
+  | 'target_not_group_head'
+  | 'scan_failed'
+  | 'visibility_restore_failed'
+  | 'send_failed'
+  | 'destination_accepted_source_not_deleted';
+
+export interface InboundReplayResult { kind: InboundReplayResultKind }
+export interface DbQueryable {
+  query(text: string, values?: unknown[]): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
+}
+export interface SqsCommandClient { send(command: unknown): Promise<unknown>; db?: DbQueryable }
+export interface ReplayWhatsappInboundOptions { maxBatches?: number; log?: (line: string) => void; db?: DbQueryable }
+
+export function parseInboundReplayArgs(argv: string[]): ParseInboundReplayArgsResult {
+  const values = new Map<string, string>();
+  let execute = false;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!ALL_FLAGS.has(arg)) return { ok: false, error: arg.startsWith('--') ? `Unknown flag: ${arg}` : 'Unexpected positional value' };
+    if (arg === '--execute') {
+      if (execute) return { ok: false, error: 'Duplicate flag: --execute' };
+      execute = true;
+      continue;
+    }
+    if (values.has(arg)) return { ok: false, error: `Duplicate flag: ${arg}` };
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) return { ok: false, error: `Missing value for ${arg}` };
+    values.set(arg, value);
+    index += 1;
+  }
+  const messageSid = values.get('--message-sid');
+  const sqsMessageId = values.get('--sqs-message-id');
+  if (Boolean(messageSid) === Boolean(sqsMessageId)) return { ok: false, error: 'Exactly one target is required' };
+  const dlqUrl = values.get('--dlq-url');
+  const queueUrl = values.get('--queue-url');
+  if (!dlqUrl || !queueUrl) return { ok: false, error: '--dlq-url and --queue-url are required' };
+  if (dlqUrl === queueUrl) return { ok: false, error: 'Source and destination queue URLs must differ' };
+  let target: InboundReplayTarget;
+  if (messageSid !== undefined) {
+    if (!MESSAGE_SID_PATTERN.test(messageSid)) return { ok: false, error: 'Invalid MessageSid' };
+    target = { kind: 'message_sid', value: messageSid };
+  } else {
+    if (!sqsMessageId || sqsMessageId.trim().length === 0 || UNSAFE_EXACT_TARGET.test(sqsMessageId)) return { ok: false, error: 'Invalid exact SQS MessageId' };
+    target = { kind: 'sqs_message_id', value: sqsMessageId };
+  }
+  return { ok: true, value: { target, dlqUrl, queueUrl, execute } };
+}
+
+interface ParsedInboundBody { messageSid: string; from: string }
+function parseBody(rawBody: string | undefined): ParsedInboundBody | null {
+  if (rawBody === undefined) return null;
+  const params = new URLSearchParams(rawBody);
+  const messageSids = params.getAll('MessageSid');
+  const fromValues = params.getAll('From');
+  if (messageSids.length !== 1 || fromValues.length !== 1 || !MESSAGE_SID_PATTERN.test(messageSids[0]) || !FROM_PATTERN.test(fromValues[0])) return null;
+  return { messageSid: messageSids[0], from: fromValues[0] };
+}
+
+function matchesTarget(message: Message, target: InboundReplayTarget): boolean {
+  return target.kind === 'sqs_message_id' ? message.MessageId === target.value : parseBody(message.Body)?.messageSid === target.value;
+}
+
+interface ValidatedTarget { body: string; messageSid: string; groupId: string; receiptHandle: string }
+function validateTarget(message: Message): ValidatedTarget | null {
+  const parsedBody = parseBody(message.Body);
+  const groupId = message.Attributes?.MessageGroupId;
+  const deduplicationId = message.Attributes?.MessageDeduplicationId;
+  if (!parsedBody || message.Body === undefined || !message.MessageId || !message.ReceiptHandle || !groupId || !deduplicationId || deduplicationId !== message.MessageId) return null;
+  return { body: message.Body, messageSid: parsedBody.messageSid, groupId, receiptHandle: message.ReceiptHandle };
+}
+
+export interface QueueBinding {
+  destinationQueueArn: string;
+}
+
+export async function validateQueueBinding(
+  client: SqsCommandClient,
+  dlqUrl: string,
+  queueUrl: string,
+): Promise<QueueBinding | null> {
+  try {
+    const dlq = await client.send(new GetQueueAttributesCommand({
+      QueueUrl: dlqUrl,
+      AttributeNames: ['QueueArn', 'FifoQueue'],
+    })) as { Attributes?: Record<string, string> };
+    const destination = await client.send(new GetQueueAttributesCommand({
+      QueueUrl: queueUrl,
+      AttributeNames: ['QueueArn', 'FifoQueue', 'RedrivePolicy'],
+    })) as { Attributes?: Record<string, string> };
+    const dlqArn = dlq.Attributes?.QueueArn;
+    const destinationQueueArn = destination.Attributes?.QueueArn;
+    if (!dlqArn || !destinationQueueArn || dlq.Attributes?.FifoQueue !== 'true' || destination.Attributes?.FifoQueue !== 'true') return null;
+    const redrive = JSON.parse(destination.Attributes?.RedrivePolicy ?? '{}') as { deadLetterTargetArn?: unknown };
+    return redrive.deadLetterTargetArn === dlqArn ? { destinationQueueArn } : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface InboundDbState {
+  status: string;
+  firstSeenAt: unknown;
+  updatedAt: unknown;
+  completedAt: unknown;
+  hasLastError: boolean;
+  conversationState: string | null;
+  workflowStatus: string | null;
+  currentStepKey: string | null;
+}
+
+export async function inspectInboundDbState(db: DbQueryable, messageSid: string): Promise<InboundDbState> {
+  const result = await db.query(
+    `SELECT p.status, p.first_seen_at, p.updated_at, p.completed_at,
+            (p.last_error IS NOT NULL) AS has_last_error,
+            c.conversation_state,
+            w.status AS workflow_status, w.current_step_key
+       FROM whatsapp_processed_messages p
+       LEFT JOIN whatsapp_conversations c ON c.id = p.conversation_id
+       LEFT JOIN LATERAL (
+         SELECT r.status, r.current_step_key
+           FROM worker_workflow_runs r
+          WHERE r.user_id = c.user_id
+          ORDER BY r.updated_at DESC
+          LIMIT 1
+       ) w ON true
+      WHERE p.message_sid = $1`,
+    [messageSid],
+  );
+  const row = result.rows[0];
+  if (!row) {
+    return {
+      status: 'unclaimed', firstSeenAt: null, updatedAt: null, completedAt: null,
+      hasLastError: false, conversationState: null, workflowStatus: null, currentStepKey: null,
+    };
+  }
+  return {
+    status: String(row.status),
+    firstSeenAt: row.first_seen_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at,
+    hasLastError: row.has_last_error === true,
+    conversationState: typeof row.conversation_state === 'string' ? row.conversation_state : null,
+    workflowStatus: typeof row.workflow_status === 'string' ? row.workflow_status : null,
+    currentStepKey: typeof row.current_step_key === 'string' ? row.current_step_key : null,
+  };
+}
+
+function chunks<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < items.length; index += size) result.push(items.slice(index, index + size));
+  return result;
+}
+
+async function restoreVisibility(client: SqsCommandClient, queueUrl: string, messages: Message[]): Promise<boolean> {
+  const handles = messages.map((message) => message.ReceiptHandle).filter((value): value is string => Boolean(value));
+  if (handles.length !== messages.length) return false;
+  for (const batch of chunks(handles, 10)) {
+    try {
+      const response = await client.send(new ChangeMessageVisibilityBatchCommand({
+        QueueUrl: queueUrl,
+        Entries: batch.map((ReceiptHandle, index) => ({ Id: String(index), ReceiptHandle, VisibilityTimeout: 0 })),
+      })) as { Failed?: Array<{ Id?: string }> };
+      if ((response.Failed?.length ?? 0) > 0) return false;
+    } catch { return false; }
+  }
+  return true;
+}
+
+function safeTimestamp(value: string | undefined): string {
+  if (!value || !/^\d+$/.test(value)) return 'unavailable';
+  const timestamp = new Date(Number(value));
+  return Number.isNaN(timestamp.getTime()) ? 'unavailable' : timestamp.toISOString();
+}
+
+function printTargetState(message: Message, validated: ValidatedTarget, log: (line: string) => void): void {
+  log('--- inbound WhatsApp DLQ target ---');
+  log(`SQS MessageId: ${message.MessageId ?? 'unavailable'}`);
+  log(`MessageSid: ${validated.messageSid}`);
+  log(`receive count: ${message.Attributes?.ApproximateReceiveCount ?? 'unavailable'}`);
+  log(`sent timestamp: ${safeTimestamp(message.Attributes?.SentTimestamp)}`);
+  log(`first receive timestamp: ${safeTimestamp(message.Attributes?.ApproximateFirstReceiveTimestamp)}`);
+  log(`MessageGroupId sha256: ${createHash('sha256').update(validated.groupId).digest('hex')}`);
+}
+
+function safeDbValue(value: unknown): string {
+  if (value === null || value === undefined) return 'unavailable';
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === 'string' && /^[a-zA-Z0-9_.:-]+$/.test(value) ? value : 'unavailable';
+}
+
+function printDbState(state: InboundDbState, log: (line: string) => void): void {
+  log(`DB status: ${safeDbValue(state.status)}`);
+  log(`DB first seen: ${safeDbValue(state.firstSeenAt)}`);
+  log(`DB updated: ${safeDbValue(state.updatedAt)}`);
+  log(`DB completed: ${safeDbValue(state.completedAt)}`);
+  log(`DB last error present: ${state.hasLastError}`);
+  log(`conversation state: ${safeDbValue(state.conversationState)}`);
+  log(`workflow status: ${safeDbValue(state.workflowStatus)}`);
+  log(`workflow step: ${safeDbValue(state.currentStepKey)}`);
+}
+
+export async function replayWhatsappInbound(client: SqsCommandClient, args: InboundReplayArgs, options: ReplayWhatsappInboundOptions = {}): Promise<InboundReplayResult> {
+  const log = options.log ?? ((line: string) => console.log(line));
+  const maxBatches = options.maxBatches ?? DEFAULT_MAX_BATCHES;
+  const held: Message[] = [];
+  let targetMessage: Message | undefined;
+  if (!Number.isInteger(maxBatches) || maxBatches < 1) return { kind: 'scan_failed' };
+  const queueBinding = await validateQueueBinding(client, args.dlqUrl, args.queueUrl);
+  if (!queueBinding) {
+    log('queue binding failed: require FIFO destination redriven to the exact supplied FIFO DLQ');
+    return { kind: 'queue_binding_failed' };
+  }
+  for (let batchIndex = 0; batchIndex < maxBatches && !targetMessage; batchIndex += 1) {
+    let response: { Messages?: Message[] };
+    try {
+      response = await client.send(new ReceiveMessageCommand({
+        QueueUrl: args.dlqUrl,
+        MaxNumberOfMessages: 10,
+        VisibilityTimeout: 300,
+        WaitTimeSeconds: 0,
+        MessageSystemAttributeNames: ['All'],
+        MessageAttributeNames: ['All'],
+      })) as { Messages?: Message[] };
+    } catch {
+      const restored = await restoreVisibility(client, args.dlqUrl, held);
+      log(restored ? 'scan failed; held messages restored' : 'visibility restoration failed after scan error');
+      return { kind: restored ? 'scan_failed' : 'visibility_restore_failed' };
+    }
+    const messages = response.Messages ?? [];
+    held.push(...messages);
+    if (messages.some((message) => !message.ReceiptHandle)) {
+      const restored = await restoreVisibility(client, args.dlqUrl, held);
+      return { kind: restored ? 'scan_failed' : 'visibility_restore_failed' };
+    }
+    targetMessage = messages.find((message) => matchesTarget(message, args.target));
+    if (messages.length === 0) break;
+  }
+  if (!targetMessage) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored ? 'target not found among visible FIFO group heads; held messages restored. Messages behind a group head cannot be selected safely: replay that group head first, then invoke again' : 'visibility restoration failed');
+    return { kind: restored ? 'not_found' : 'visibility_restore_failed' };
+  }
+  const validated = validateTarget(targetMessage);
+  if (!validated) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored ? 'target validation failed; source message left intact' : 'visibility restoration failed');
+    return { kind: restored ? 'validation_failed' : 'visibility_restore_failed' };
+  }
+  if (targetMessage.Attributes?.DeadLetterQueueSourceArn !== queueBinding.destinationQueueArn) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored
+      ? 'source queue mismatch: selected DLQ record did not originate from the authorized destination queue'
+      : 'visibility restoration failed');
+    return { kind: restored ? 'source_queue_mismatch' : 'visibility_restore_failed' };
+  }
+  const firstInGroup = held.find((message) => message.Attributes?.MessageGroupId === validated.groupId);
+  if (firstInGroup !== targetMessage) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored
+      ? 'target is not the visible FIFO group head; replay that group head first, then invoke again'
+      : 'visibility restoration failed');
+    return { kind: restored ? 'target_not_group_head' : 'visibility_restore_failed' };
+  }
+  printTargetState(targetMessage, validated, log);
+  try {
+    const db = options.db ?? client.db;
+    if (!db) throw new Error('DB seam unavailable');
+    const dbState = await inspectInboundDbState(db, validated.messageSid);
+    printDbState(dbState, log);
+  } catch {
+    log('DB-state unavailable (details redacted)');
+    if (args.execute) {
+      const restored = await restoreVisibility(client, args.dlqUrl, held);
+      return { kind: restored ? 'db_state_unavailable' : 'visibility_restore_failed' };
+    }
+  }
+  if (!args.execute) {
+    const restored = await restoreVisibility(client, args.dlqUrl, held);
+    log(restored ? 'DRY RUN: no message sent or deleted' : 'visibility restoration failed');
+    return { kind: restored ? 'dry_run' : 'visibility_restore_failed' };
+  }
+  const nonTargets = held.filter((message) => message !== targetMessage);
+  if (!(await restoreVisibility(client, args.dlqUrl, nonTargets))) {
+    await restoreVisibility(client, args.dlqUrl, [targetMessage]);
+    log('visibility restoration failed before replay; no message sent or deleted');
+    return { kind: 'visibility_restore_failed' };
+  }
+  try {
+    await client.send(new SendMessageCommand({
+      QueueUrl: args.queueUrl,
+      MessageBody: validated.body,
+      MessageGroupId: validated.groupId,
+      MessageDeduplicationId: validated.messageSid,
+    }));
+  } catch {
+    const restored = await restoreVisibility(client, args.dlqUrl, [targetMessage]);
+    log(restored ? 'destination send failed; source message restored and left intact' : 'visibility restoration failed after send failure');
+    return { kind: restored ? 'send_failed' : 'visibility_restore_failed' };
+  }
+  try {
+    await client.send(new DeleteMessageCommand({ QueueUrl: args.dlqUrl, ReceiptHandle: validated.receiptHandle }));
+  } catch {
+    log('partial failure: destination accepted message; source not deleted');
+    return { kind: 'destination_accepted_source_not_deleted' };
+  }
+  log('replay executed: destination accepted message and exact DLQ record deleted');
+  return { kind: 'executed' };
+}
+
+function exitCode(result: InboundReplayResult): number {
+  return result.kind === 'dry_run' || result.kind === 'executed' ? 0 : 1;
+}
+
+export async function main(argv = process.argv.slice(2)): Promise<void> {
+  const parsed = parseInboundReplayArgs(argv);
+  if (!parsed.ok) { console.error(parsed.error); process.exitCode = 1; return; }
+  const db = new Client({
+    host: process.env.DB_HOST ?? 'localhost',
+    port: parseInt(process.env.DB_PORT ?? '5432', 10),
+    database: process.env.DB_NAME ?? 'jale',
+    user: process.env.DB_USER ?? 'jale_admin',
+    password: process.env.DB_PASSWORD,
+    ssl: process.env.DB_SSL === 'true'
+      ? { rejectUnauthorized: true, ca: fs.readFileSync(path.join(__dirname, '../lambda/lib/rds-ca-bundle.pem'), 'utf-8') }
+      : false,
+  });
+  await db.connect();
+  try {
+    const result = await replayWhatsappInbound(new SQSClient({}) as SqsCommandClient, parsed.value, { db });
+    process.exitCode = exitCode(result);
+  } finally {
+    await db.end();
+  }
+}
+
+if (require.main === module) {
+  void main().catch(() => { console.error('unexpected replay failure (details redacted)'); process.exitCode = 1; });
+}

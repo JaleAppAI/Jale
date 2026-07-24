@@ -1,0 +1,35 @@
+# Local WhatsApp v2 PostgreSQL testbed.
+#
+# This container is bootstrapped by ./bootstrap-testbed.sh, which applies the
+# migration chain as the plain non-superuser `jale_admin` owner — the production
+# ownership model. Starting this service alone gives you an EMPTY database; it is
+# not usable until the bootstrap has run.
+#
+#   docker compose -f docker-compose.wa-v2.yml up -d
+#   ./bootstrap-testbed.sh --verify
+#
+# Never point this at RDS. The published port binds to 127.0.0.1 only.
+
+services:
+  wa-v2-pg:
+    image: postgres:16
+    container_name: jale-wa-v2-pg
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: jale
+    ports:
+      # Host-local only. 55442 mirrors migration 042 and avoids the existing
+      # 55432 (billing), 55433 (w2-native), and 55439 (release) containers.
+      - "127.0.0.1:55442:5432"
+    volumes:
+      - jale-wa-v2-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d jale"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  jale-wa-v2-pgdata:
+    name: jale-wa-v2-pgdata

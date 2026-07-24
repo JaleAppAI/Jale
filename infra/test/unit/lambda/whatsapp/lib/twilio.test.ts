@@ -1,9 +1,34 @@
 import {
+  isTwilioMessageSid,
   validateTwilioSignature,
   parseFormBody,
   reconstructWebhookUrl,
 } from '../../../../../lambda/whatsapp/lib/twilio';
 import { createHmac } from 'node:crypto';
+
+describe('twilio.ts — isTwilioMessageSid', () => {
+  it.each([
+    `SM${'a'.repeat(32)}`,
+    `MM${'0'.repeat(32)}`,
+    `MM${'A1b2C3d4'.repeat(4)}`,
+  ])('accepts Twilio messaging SID %s', (sid) => {
+    expect(isTwilioMessageSid(sid)).toBe(true);
+  });
+
+  it.each([
+    `SM${'a'.repeat(31)}`,
+    `SM${'a'.repeat(33)}`,
+    `XX${'a'.repeat(32)}`,
+    `SM${'G'.repeat(32)}`,
+    ` SM${'a'.repeat(32)}`,
+    `SM${'a'.repeat(32)} `,
+    null,
+    undefined,
+    12345,
+  ])('rejects %p', (value) => {
+    expect(isTwilioMessageSid(value)).toBe(false);
+  });
+});
 
 describe('twilio.ts — validateTwilioSignature', () => {
   // Test vector derived from Twilio's documented algorithm. Any valid

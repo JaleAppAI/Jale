@@ -108,6 +108,14 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'WHATS
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'JALE_WHATSAPP_STATUS_CALLBACK_URL');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappAlarmTopicArn=');
+const productionFifoTransportContexts =
+  reusableDeploy.match(/-c whatsappInboundV2TransportEnabled=true/g) ?? [];
+if (productionFifoTransportContexts.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must enable WhatsApp v2 FIFO transport ' +
+      'for all 4 production CDK plan/diff/deploy commands',
+  );
+}
 
 requireIncludes('scripts/run-admin-migration.ps1', adminMigration, '026_admin_panel.sql');
 requireIncludes('scripts/run-admin-migration.ps1', adminMigration, 'jale_admin_console');

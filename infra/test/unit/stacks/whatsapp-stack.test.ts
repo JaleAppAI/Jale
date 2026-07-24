@@ -72,8 +72,8 @@ describe('WhatsAppStack', () => {
   });
 
   // ── SQS infrastructure ─────────────────────────────────────────
-  test('Stack creates exactly 2 SQS queues (inbound + DLQ)', () => {
-    template.resourceCountIs('AWS::SQS::Queue', 2);
+  test('Stack creates exactly 4 SQS queues (legacy inbound + DLQ, v2 FIFO inbound + DLQ)', () => {
+    template.resourceCountIs('AWS::SQS::Queue', 4);
   });
 
   test('Inbound SQS queue exists with 360s visibility timeout', () => {
@@ -99,9 +99,129 @@ describe('WhatsAppStack', () => {
     });
   });
 
+  // ── v2 FIFO SQS infrastructure (additive) ───────────────────────
+  describe('v2 FIFO inbound queue and DLQ', () => {
+    test('v2 FIFO inbound queue exists with ContentBasedDeduplication false', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+      });
+    });
+
+    test('v2 FIFO DLQ exists with 14-day retention', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2-dlq.fifo',
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+        MessageRetentionPeriod: 14 * 24 * 60 * 60,
+      });
+    });
+
+    test('v2 queue redrive policy has maxReceiveCount 5', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        RedrivePolicy: Match.objectLike({
+          maxReceiveCount: 5,
+        }),
+      });
+    });
+
+    test('v2 queue and DLQ both use KMS-managed encryption', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        KmsMasterKeyId: 'alias/aws/sqs',
+      });
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2-dlq.fifo',
+        KmsMasterKeyId: 'alias/aws/sqs',
+      });
+    });
+
+    test('v2 queue has a 360s visibility timeout', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        VisibilityTimeout: 360,
+      });
+    });
+
+    test('legacy inbound queue is untouched: still exists with maxReceiveCount 3', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-queue',
+        RedrivePolicy: Match.objectLike({
+          maxReceiveCount: 3,
+        }),
+      });
+    });
+
+    test('EventSourceMapping wires the v2 queue to the processor Lambda with BatchSize 1 and ReportBatchItemFailures', () => {
+      template.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+        BatchSize: 1,
+        FunctionResponseTypes: ['ReportBatchItemFailures'],
+      });
+    });
+
+    test('webhook Lambda omits the v2 FIFO URL by default', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const webhook = Object.values(functions).find((resource: any) =>
+        resource.Properties?.Description?.includes('webhook receiver')) as any;
+      expect(webhook).toBeDefined();
+      expect(webhook.Properties.Environment.Variables)
+        .not.toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
+    });
+
+    test('webhook role keeps legacy send permission but has no v2 FIFO send grant by default', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const webhook = Object.values(functions).find((resource: any) =>
+        resource.Properties?.Description?.includes('webhook receiver')) as any;
+      const webhookRoleId = webhook.Properties.Role['Fn::GetAtt'][0];
+      const queues = template.findResources('AWS::SQS::Queue');
+      const queueId = (name: string) => Object.entries(queues)
+        .find(([, resource]: [string, any]) => resource.Properties?.QueueName === name)?.[0];
+      const policies = Object.values(template.findResources('AWS::IAM::Policy'))
+        .filter((policy: any) => policy.Properties?.Roles?.some(
+          (role: any) => role.Ref === webhookRoleId,
+        ));
+      const serialized = JSON.stringify(policies);
+
+      expect(serialized).toContain(queueId('whatsapp-inbound-queue'));
+      expect(serialized).not.toContain(queueId('whatsapp-inbound-v2.fifo'));
+      expect(serialized).toContain('sqs:SendMessage');
+    });
+
+    test('WhatsAppInboundV2DlqDepth alarm exists on ApproximateNumberOfMessagesVisible for the v2 DLQ, wired to the alarm topic', () => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'WhatsAppInboundV2DlqDepth',
+        MetricName: 'ApproximateNumberOfMessagesVisible',
+        Namespace: 'AWS/SQS',
+        AlarmActions: Match.anyValue(),
+      });
+    });
+
+    test('WhatsAppInboundV2DlqAge alarm exists on ApproximateAgeOfOldestMessage for the v2 DLQ, wired to the alarm topic', () => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'WhatsAppInboundV2DlqAge',
+        MetricName: 'ApproximateAgeOfOldestMessage',
+        Namespace: 'AWS/SQS',
+        AlarmActions: Match.anyValue(),
+      });
+    });
+  });
+
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 9 Lambda functions including the status callback and job-alert drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 9);
+  test('Stack creates 11 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 11);
+  });
+
+  test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('.*Worker intent outbox drain.*'),
+      Environment: Match.objectLike({ Variables: Match.objectLike({
+        DB_SECRET_ARN: Match.anyValue(), TWILIO_SECRET_ARN: Match.anyValue(),
+        TWILIO_STATUS_CALLBACK_URL: Match.anyValue(),
+      }) }),
+    });
+    template.hasResourceProperties('AWS::Events::Rule', { ScheduleExpression: 'rate(1 minute)' });
   });
 
   test('job alert outbox drain runs on a 5-minute schedule', () => {
@@ -293,12 +413,12 @@ describe('WhatsAppStack', () => {
     expect(methodsOnResource(statusCallbackLogicalId).length).toBeGreaterThan(0);
   });
 
-  test('all seven WhatsAppStack outbound senders and callback use the exact configured URL', () => {
+  test('all WhatsAppStack outbound senders and callback use the exact configured URL', () => {
     const functions = template.findResources('AWS::Lambda::Function');
     const configured = Object.values(functions).filter((resource: any) =>
       resource.Properties?.Environment?.Variables?.TWILIO_STATUS_CALLBACK_URL
         === 'https://callbacks.example.test/prod/whatsapp/status-callback');
-    expect(configured).toHaveLength(8);
+    expect(configured).toHaveLength(9);
   });
 
   test('both ApiStack employer-conversation senders use the exact configured URL', () => {
@@ -319,6 +439,193 @@ describe('WhatsAppStack', () => {
       AlarmName: 'WhatsAppDeliveryFailures',
       Threshold: 1,
       AlarmActions: Match.anyValue(),
+    });
+  });
+
+  // ── C7: scheduled domain-event drain, release wiring, operational alarms ──
+  describe('C7: DomainOutboxDrainLambda', () => {
+    const findFunctionByDescription = (regex: RegExp): [string, any] => {
+      const fns = template.findResources('AWS::Lambda::Function');
+      const entry = Object.entries(fns).find(([, r]: [string, any]) =>
+        regex.test(r.Properties?.Description ?? ''));
+      if (!entry) throw new Error(`no Lambda function matching ${regex}`);
+      return entry as [string, any];
+    };
+
+    test('DomainOutboxDrainLambda exists', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('.*[Dd]omain.*outbox.*drain.*'),
+      });
+    });
+
+    test('DomainOutboxDrainLambda runs on a rate(1 minute) EventBridge schedule', () => {
+      const [drainLogicalId] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const rules = template.findResources('AWS::Events::Rule', {
+        Properties: { ScheduleExpression: 'rate(1 minute)' },
+      });
+      const targetsDrain = Object.values(rules).some((rule: any) =>
+        (rule.Properties.Targets || []).some((t: any) => t.Arn?.['Fn::GetAtt']?.[0] === drainLogicalId));
+      expect(targetsDrain).toBe(true);
+    });
+
+    test("drain function's role can read ONLY the WhatsApp DB secret — not the Twilio secret, and no other secretsmanager:GetSecretValue resource", () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const secretGetStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('secretsmanager:GetSecretValue');
+        });
+
+      const resources = secretGetStatements.map((s: any) => JSON.stringify(s.Resource));
+
+      const dbSecretArn = JSON.stringify({
+        'Fn::Join': ['', [
+          'arn:', { Ref: 'AWS::Partition' }, ':secretsmanager:', { Ref: 'AWS::Region' },
+          ':', { Ref: 'AWS::AccountId' }, ':secret:jale/whatsapp/db-??????',
+        ]],
+      });
+
+      // Exactly the WhatsApp DB secret — no more, no less.
+      expect(resources).toEqual([dbSecretArn]);
+      for (const r of resources) {
+        expect(r).not.toContain('jale/whatsapp/twilio');
+      }
+    });
+
+    test('drain function has no TWILIO_SECRET_ARN or TWILIO_STATUS_CALLBACK_URL env var (never sends via Twilio)', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const variables = drainFn.Properties.Environment?.Variables ?? {};
+      expect(variables.TWILIO_SECRET_ARN).toBeUndefined();
+      expect(variables.TWILIO_STATUS_CALLBACK_URL).toBeUndefined();
+    });
+
+    test('drain function has TRUST_ASSESSMENT_QUEUE_URL in its environment', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const variables = drainFn.Properties.Environment?.Variables ?? {};
+      expect(variables.TRUST_ASSESSMENT_QUEUE_URL).toBeDefined();
+    });
+
+    test("drain function's role is granted sqs:SendMessage on the trust-assessment queue and NOT sqs:ReceiveMessage/DeleteMessage (least privilege)", () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const sqsStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.some((a: string) => typeof a === 'string' && a.startsWith('sqs:'));
+        });
+
+      expect(sqsStatements.length).toBeGreaterThan(0);
+      const allActions = sqsStatements.flatMap((s: any) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
+      expect(allActions).toContain('sqs:SendMessage');
+      expect(allActions).not.toContain('sqs:ReceiveMessage');
+      expect(allActions).not.toContain('sqs:DeleteMessage');
+    });
+
+    test('drain function role still reads ONLY the WhatsApp DB secret — the SQS grant adds no additional secretsmanager:GetSecretValue resource', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const secretGetStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('secretsmanager:GetSecretValue');
+        });
+      const resources = secretGetStatements.map((s: any) => JSON.stringify(s.Resource));
+      for (const r of resources) {
+        expect(r).not.toContain('jale/whatsapp/twilio');
+      }
+    });
+
+    test.each([
+      ['WhatsAppDomainEventsStuck'],
+      ['WhatsAppReleaseFailures'],
+      ['WhatsAppAssessmentDispatchFailures'],
+      ['WhatsAppDeferredBacklogAge'],
+      ['WhatsAppOtpLockRate'],
+    ])('%s alarm exists, wired to the alarm topic', (alarmName) => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        AlarmActions: Match.anyValue(),
+      });
+    });
+
+    test('WhatsAppOtpLock metric filter is installed on the PROCESSOR log group, not the drain log group', () => {
+      // Resolve the LogGroup logical id actually wired to each Lambda Function's
+      // LoggingConfig.LogGroup (the JaleLambdaFunction construct passes its own
+      // logs.LogGroup explicitly, so this ref is authoritative — unlike guessing
+      // logical ids from construct id naming).
+      const logGroupLogicalIdForFunction = (description: RegExp): string => {
+        const [logicalId] = findFunctionByDescription(description);
+        const fnResource = (template.findResources('AWS::Lambda::Function') as Record<string, any>)[logicalId];
+        const ref = fnResource.Properties.LoggingConfig?.LogGroup?.Ref;
+        if (!ref) throw new Error(`no LoggingConfig.LogGroup ref found for ${logicalId}`);
+        return ref;
+      };
+
+      const processorLogGroupId = logGroupLogicalIdForFunction(/SQS processor/i);
+      const drainLogGroupId = logGroupLogicalIdForFunction(/domain.*outbox.*drain/i);
+      expect(processorLogGroupId).not.toEqual(drainLogGroupId);
+
+      const otpFilter = Object.values(template.findResources('AWS::Logs::MetricFilter')).find((f: any) =>
+        f.Properties.MetricTransformations?.some((t: any) => t.MetricName === 'OtpLockRate'
+          || t.MetricName === 'WhatsAppOtpLockRate'));
+      expect(otpFilter).toBeDefined();
+      expect((otpFilter as any).Properties.LogGroupName.Ref).toBe(processorLogGroupId);
+    });
+
+    test('metric filters for the three drain-owned metrics exist in the Jale/WhatsApp namespace', () => {
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'DomainEventStuck', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'ReleaseFailures', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+      template.hasResourceProperties('AWS::Logs::MetricFilter', {
+        MetricTransformations: Match.arrayWith([
+          Match.objectLike({ MetricName: 'DeferredBacklogAge', MetricNamespace: 'Jale/WhatsApp' }),
+        ]),
+      });
+    });
+  });
+
+  // ── C5 v2 queue/DLQ resources must remain present and unchanged by C7 ──
+  describe('C7 regression: C5 v2 queue/DLQ resources unchanged', () => {
+    test('v2 FIFO inbound queue and DLQ still exist with their original properties', () => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2.fifo',
+        FifoQueue: true,
+        ContentBasedDeduplication: false,
+        VisibilityTimeout: 360,
+        RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
+      });
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: 'whatsapp-inbound-v2-dlq.fifo',
+        FifoQueue: true,
+        MessageRetentionPeriod: 14 * 24 * 60 * 60,
+      });
+    });
+
+    test('total SQS queue count is still exactly 4 (legacy pair + v2 pair — the drain adds none)', () => {
+      template.resourceCountIs('AWS::SQS::Queue', 4);
     });
   });
 
