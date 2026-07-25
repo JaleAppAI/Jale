@@ -10,7 +10,7 @@ describe('AuthStack', () => {
   beforeAll(() => {
     const app = new cdk.App({
       context: {
-        environment: 'prod',
+        environment: 'production',
         otpSmsFromNumber: '+15125550123',
         otpSmsRequestTimeoutMs: 3500,
         otpSmsValidityPeriodSeconds: 180,
@@ -296,6 +296,17 @@ describe('AuthStack', () => {
     const employerPool = Object.values(pools)[0] as any;
     expect(employerPool.Properties.EmailConfiguration).toBeUndefined();
   });
+
+  test('production disables ADMIN_USER_PASSWORD_AUTH on both pool clients', () => {
+    const clients = template.findResources('AWS::Cognito::UserPoolClient');
+    const flows = Object.values(clients).map(
+      (c) => (c.Properties as { ExplicitAuthFlows?: string[] }).ExplicitAuthFlows ?? [],
+    );
+    expect(flows.length).toBe(2);
+    for (const f of flows) {
+      expect(f).not.toContain('ALLOW_ADMIN_USER_PASSWORD_AUTH');
+    }
+  });
 });
 
 // ── Employer pool: SES developer email configuration ──────────────────────────
@@ -305,7 +316,7 @@ describe('AuthStack — employer SES email', () => {
   beforeAll(() => {
     const app = new cdk.App({
       context: {
-        environment: 'prod',
+        environment: 'production',
         otpSmsFromNumber: '+15125550123',
         otpSmsRequestTimeoutMs: 3500,
         otpSmsValidityPeriodSeconds: 180,

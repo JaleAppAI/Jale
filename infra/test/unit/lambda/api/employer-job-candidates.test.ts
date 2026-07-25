@@ -18,9 +18,11 @@ const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const mockSqsSend = jest.fn();
 
+const JOB_ID = '11111111-1111-4111-8111-111111111111';
+
 const makeEvent = (overrides: Partial<APIGatewayProxyEvent> = {}) => ({
   requestContext: { authorizer: { claims: { sub: 'employer-sub' } } },
-  pathParameters: { jobId: 'job-uuid' },
+  pathParameters: { jobId: JOB_ID },
   queryStringParameters: null,
   ...overrides,
 } as unknown as APIGatewayProxyEvent);
@@ -61,6 +63,12 @@ describe('employer-job-candidates Lambda', () => {
     expect(JSON.parse(res.body).error).toBe('missing_job_id');
   });
 
+  it('returns 400 when jobId is not a valid UUID', async () => {
+    const res = await handler(makeEvent({ pathParameters: { jobId: 'not-a-uuid' } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_job_id');
+  });
+
   it('returns 403 when RLS ownership check cannot see the job', async () => {
     mockQuery
       .mockResolvedValueOnce({})
@@ -90,7 +98,7 @@ describe('employer-job-candidates Lambda', () => {
     mockQuery
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
-      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: JOB_ID }], rowCount: 1 })
       .mockResolvedValueOnce({});
     mockListEmployerCandidates.mockResolvedValue({
       sourceHash: 'hash-1',
@@ -108,7 +116,7 @@ describe('employer-job-candidates Lambda', () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).ranking_status).toBe('deterministic');
-    expect(mockListEmployerCandidates).toHaveBeenCalledWith(expect.any(Object), 'job-uuid', { limit: 25, includeContact: true });
+    expect(mockListEmployerCandidates).toHaveBeenCalledWith(expect.any(Object), JOB_ID, { limit: 25, includeContact: true });
     expect(mockSqsSend).toHaveBeenCalledWith(expect.any(SendMessageCommand));
     expect(mockQuery.mock.calls.map(([q]) => q)).toContain('COMMIT');
   });
@@ -117,7 +125,7 @@ describe('employer-job-candidates Lambda', () => {
     mockQuery
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] })
-      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: JOB_ID }], rowCount: 1 })
       .mockResolvedValueOnce({});
     mockListEmployerCandidates.mockResolvedValue({
       sourceHash: 'hash-1',

@@ -76,6 +76,10 @@ describe('database migrations', () => {
       '042',
       '043',
       '044',
+      '045',
+      '046',
+      '047',
+      '048',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -364,6 +368,31 @@ describe('database migrations', () => {
       expect(script).not.toContain('006_whatsapp_reliability.sql');
       expect(script).not.toContain('007_trust_signal_layer.sql');
     }
+  });
+
+  it('keeps the PowerShell migration runner pointed at the current files', () => {
+    const expectedFiles = migrationFiles();
+    const ps1 = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', '..', 'scripts', 'run-migrations.ps1'), 'utf8',
+    );
+    for (const file of expectedFiles) {
+      expect(ps1).toContain(file);
+    }
+  });
+
+  it('widens job_message_outbox.status to a terminal send_unknown in migration 044', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '044_job_message_outbox_send_unknown.sql'), 'utf8',
+    );
+    expect(migration).toContain("CHECK (status IN ('pending', 'sent', 'failed', 'send_unknown'))");
+  });
+
+  it('idempotently restores applications_employer_update in migration 045', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '045_applications_employer_update_repair.sql'), 'utf8',
+    );
+    expect(migration).toContain('CREATE POLICY applications_employer_update');
+    expect(migration).toContain('IF NOT EXISTS');
   });
 
   it('keeps WhatsApp template outbox migration independent from matching materialization tables', () => {

@@ -85,7 +85,11 @@ MIGRATIONS=(
   "041_whatsapp_web_worker_lookup_grant.sql"
   "042_whatsapp_onboarding_gate.sql"
   "043_whatsapp_worker_intent_transport.sql"
-  "044_whatsapp_active_workflow_rebind.sql"
+  "044_job_message_outbox_send_unknown.sql"
+  "045_applications_employer_update_repair.sql"
+  "046_whatsapp_active_workflow_rebind.sql"
+  "047_whatsapp_identity_challenge_delete_hardening.sql"
+  "048_worker_domain_outbox_user_fk.sql"
 )
 
 echo ">> Using region: $REGION"

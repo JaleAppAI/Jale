@@ -69,7 +69,7 @@ describe('worker-doc-confirm Lambda', () => {
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 
-  it('returns 200 and atomically consumes token while inserting the verified document row', async () => {
+  it('returns 200, validates the token without marking it used, and inserts the verified document row', async () => {
     mockS3Send.mockResolvedValueOnce(headResult);
     mockQuery
       .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
@@ -89,13 +89,15 @@ describe('worker-doc-confirm Lambda', () => {
       },
     });
     expect(mockQuery).toHaveBeenCalledWith('BEGIN');
-    expect(mockQuery).toHaveBeenCalledWith(
-      expect.stringContaining('SET used = true, used_at = now()'),
-      expect.arrayContaining(['version-1', 'resume.pdf', 102400]),
-    );
     const atomicSql = mockQuery.mock.calls.find(([sql]) =>
-      typeof sql === 'string' && sql.includes('WITH consumed_token AS')
+      typeof sql === 'string' && sql.includes('WITH valid_token AS')
     )?.[0] as string;
+    expect(atomicSql).toBeDefined();
+    // Confirming a slot must only validate the token, never mutate `used` --
+    // that would burn the token for every other still-pending document slot.
+    expect(atomicSql).not.toContain('SET used = true');
+    expect(atomicSql).not.toContain('used_at');
+    expect(atomicSql).not.toMatch(/UPDATE\s+document_upload_tokens/);
     expect(atomicSql).toContain('token.used = false');
     expect(atomicSql).toContain('token.expires_at > now()');
     expect(atomicSql).toContain('slots.issued_s3_key = $3');
@@ -107,7 +109,62 @@ describe('worker-doc-confirm Lambda', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
-  it('returns 409 without inserting when a race consumes the token before the guarded write', async () => {
+  it('allows confirming a second document slot on the same still-unused token', async () => {
+    // Regression test for the multi-document upload bug: one token covers
+    // multiple doc-type slots, and the frontend confirms them sequentially
+    // on the same token. Confirming the first slot must not burn the token,
+    // so the second slot's confirm succeeds (200) instead of failing the
+    // `token.used = false` guard with a 409.
+    const secondBody = {
+      ...validBody,
+      doc_type: 'driver_license',
+      s3_key: 'documents/job-1/worker-1/driver_license/uuid2.pdf',
+      file_name: 'license.pdf',
+    };
+    const secondSlotRow = {
+      ...slotRow,
+      doc_type: 'driver_license',
+      issued_s3_key: 'documents/job-1/worker-1/driver_license/uuid2.pdf',
+    };
+
+    // First confirm (resume slot).
+    mockS3Send.mockResolvedValueOnce(headResult);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({}) // set_config RLS
+      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-1' }] }) // guarded CTE
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const firstRes = await handler(makeEvent(validBody));
+    expect(firstRes.statusCode).toBe(200);
+
+    // Second confirm (driver_license slot) on the SAME token. The slot
+    // lookup still finds `token.used = false` because the fixed
+    // implementation never mutated it above.
+    mockS3Send.mockResolvedValueOnce(headResult);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [secondSlotRow] }) // slot lookup
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({}) // set_config RLS
+      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-2' }] }) // guarded CTE
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const secondRes = await handler(makeEvent(secondBody));
+
+    expect(secondRes.statusCode).toBe(200);
+    expect(JSON.parse(secondRes.body)).toEqual({ success: true });
+
+    const allAtomicSql = mockQuery.mock.calls
+      .filter(([sql]) => typeof sql === 'string' && sql.includes('valid_token'))
+      .map(([sql]) => sql as string);
+    expect(allAtomicSql).toHaveLength(2);
+    for (const sql of allAtomicSql) {
+      expect(sql).not.toContain('SET used = true');
+    }
+  });
+
+  it('returns 409 without inserting when a race confirms the slot before the guarded write', async () => {
     mockS3Send.mockResolvedValueOnce(headResult);
     mockQuery
       .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup

@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from './db';
-import { sendTwilioWhatsAppMessage } from '../whatsapp/lib/outbox';
+import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError } from '../whatsapp/lib/outbox';
 import { categoryRenderers } from '../whatsapp/lib/onboarding-renderers';
 import { enqueueWorkerMessage, registerCategoryRenderer } from '../whatsapp/lib/worker-delivery-gateway';
 import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from '../whatsapp/lib/runtime-controls';
@@ -891,16 +891,17 @@ export async function sendPendingJobMessageOutbox(
       } catch (err) {
         failedConversations.add(row.conversation_id);
         lastError = err as Error;
-        console.log(JSON.stringify({ metric: 'JobMessageOutboxSendFailed', outboxId: row.id }));
+        const ambiguous = err instanceof AmbiguousTwilioSendError;
+        console.log(JSON.stringify({ metric: 'JobMessageOutboxSendFailed', outboxId: row.id, ambiguous }));
         await client.query(
           `UPDATE job_message_outbox
-              SET status = 'failed',
+              SET status = $1,
                   attempt_count = attempt_count + 1,
-                  last_error = $1
-            WHERE id = $2`,
-          [(err as Error).message, row.id],
+                  last_error = $2
+            WHERE id = $3`,
+          [ambiguous ? 'send_unknown' : 'failed', (err as Error).message, row.id],
         );
-        if (row.message_id) {
+        if (row.message_id && !ambiguous) {
           await client.query(
             `UPDATE job_conversation_messages
                 SET status = 'failed'

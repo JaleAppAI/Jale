@@ -181,7 +181,7 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
 
     await client.query('BEGIN');
     transactionStarted = true;
-    await client.query(
+    const assessmentUpdate = await client.query(
       `UPDATE worker_trust_assessments
        SET status = 'scored',
            competency_score = $1,
@@ -190,7 +190,7 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
            rubric_version = $4,
            scoring_model_id = $5,
            scored_at = now()
-       WHERE id = $6`,
+       WHERE id = $6 AND status = 'scoring'`,
       [
         scored.competency_score,
         JSON.stringify(scored.score_components),
@@ -200,6 +200,14 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
         event.assessmentId,
       ],
     );
+    if (assessmentUpdate.rowCount === 0) {
+      await client.query('ROLLBACK');
+      transactionStarted = false;
+      console.log('[trust-scorer] skipped write; assessment no longer scoring', {
+        assessmentId: event.assessmentId,
+      });
+      return;
+    }
     const userUpdate = await client.query(
       'UPDATE users SET trade_competency_score = $1 WHERE id = $2',
       [scored.competency_score, event.userId],

@@ -421,8 +421,9 @@ export function isAccept(text: string, lang: Lang): boolean {
 // language the worker wrote it in. Canonical command keywords mirror
 // COMMAND_KEYWORDS, split by language, plus common singular/verb forms.
 const EN_LANG_WORDS = new Set([
-  'help', 'commands', 'command', 'jobs', 'job', 'profile', 'skip', 'chats',
-  'close', 'accept', 'yes', 'decline', 'info',
+  // 'chats'/'info' are shared with the Spanish menu (templates.ts) — not a language signal.
+  'help', 'commands', 'command', 'jobs', 'job', 'profile', 'skip',
+  'close', 'accept', 'yes', 'decline',
 ]);
 const ES_LANG_WORDS = new Set([
   'ayuda', 'comandos', 'comando', 'trabajos', 'trabajo', 'empleos', 'empleo',

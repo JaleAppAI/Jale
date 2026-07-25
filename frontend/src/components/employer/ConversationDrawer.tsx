@@ -102,6 +102,7 @@ export function ConversationDrawer() {
     setConversation(detail.conversation);
     setMessages(detail.messages);
     setConversations((current) => current.filter((item) => item.id !== selectedId));
+    setSelectedId(null);
   }
 
   return (

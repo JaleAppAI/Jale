@@ -1,8 +1,15 @@
 const mockQuery = jest.fn();
 const client: any = { query: mockQuery };
+class MockAmbiguousTwilioSendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AmbiguousTwilioSendError';
+  }
+}
 jest.mock('../../../../lambda/whatsapp/lib/outbox', () => ({
   sendTwilioWhatsAppMessage: jest.fn(),
   queueOutboxText: jest.fn(),
+  AmbiguousTwilioSendError: MockAmbiguousTwilioSendError,
 }));
 import { recordWorkerConversationReply, queueConversationMessageFromEmployer, closeWorkerConversation } from '../../../../lambda/lib/job-messaging';
 
@@ -99,7 +106,7 @@ describe('recordWorkerConversationReply (focused-thread)', () => {
 });
 
 import { sendPendingJobMessageOutbox } from '../../../../lambda/lib/job-messaging';
-import { sendTwilioWhatsAppMessage } from '../../../../lambda/whatsapp/lib/outbox';
+import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError } from '../../../../lambda/whatsapp/lib/outbox';
 
 const CONV_B2 = 'bbbbbbbb-0000-0000-0000-00000000000c';
 
@@ -141,6 +148,55 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
       .mockRejectedValueOnce(new Error('total outage'));
     await expect(sendPendingJobMessageOutbox(client, { actorUserId: WORKER }))
       .rejects.toThrow('total outage');
+  });
+
+  it('parks an ambiguous (accepted-but-timed-out) send as send_unknown, not failed, and leaves the message row alone', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: 'a1', content_template: null, content_variables: null },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
+    (sendTwilioWhatsAppMessage as jest.Mock)
+      .mockRejectedValueOnce(new AmbiguousTwilioSendError('Twilio request timed out')) // o1 ambiguous
+      .mockResolvedValue('SMxx');                          // o2 succeeds (avoids total-outage rethrow)
+
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
+
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql));
+    expect(outboxUpdate).toBeDefined();
+    expect(outboxUpdate![1]).toEqual(['send_unknown', 'Twilio request timed out', 'o1']);
+
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
+    expect(messageUpdate).toBeUndefined();
+  });
+
+  it('marks a normal (non-ambiguous) send error as failed, including the message row', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: 'a1', content_template: null, content_variables: null },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
+    (sendTwilioWhatsAppMessage as jest.Mock)
+      .mockRejectedValueOnce(new Error('Twilio 400 bad request'))  // o1 fails
+      .mockResolvedValue('SMxx');                                 // o2 succeeds (avoids total-outage rethrow)
+
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
+
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql));
+    expect(outboxUpdate).toBeDefined();
+    expect(outboxUpdate![1]).toEqual(['failed', 'Twilio 400 bad request', 'o1']);
+
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
+    expect(messageUpdate).toBeDefined();
+    expect(messageUpdate![1]).toEqual(['m1']);
   });
 });
 
