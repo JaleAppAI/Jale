@@ -42,6 +42,7 @@ import {
   getTrustOptions,
   buildTrustQuestion,
 } from './flows';
+import { upsertWorkerProfileFromUsers } from './profile-flow';
 
 // ── Local constants ────────────────────────────────────────────────────
 //
@@ -309,7 +310,39 @@ export interface ProfilePersistenceAdapter {
   saveName(client: PoolClient, workerId: string, name: string): Promise<void>;
   saveLocation(client: PoolClient, workerId: string, location: ResolvedLocation): Promise<void>;
   saveTrade(client: PoolClient, workerId: string, trade: string): Promise<void>;
+  /**
+   * Defect 1 fix: persists the worker's raw, un-normalized typed profession
+   * (e.g. "welder") into `users.main_trade_other` alongside
+   * `main_trade = 'other'`. V1 already does this; V2's `handleCustomTrade`
+   * previously normalized the text and threw the raw value away, which also
+   * starved `upsertWorkerProfileFromUsers`'s starter-skill seed (it refuses
+   * to seed the literal string 'other' and needs `main_trade_other` to seed
+   * anything meaningful for a custom trade).
+   */
+  saveCustomTrade(client: PoolClient, workerId: string, rawProfession: string): Promise<void>;
+  saveExperience(client: PoolClient, workerId: string, yearsExperience: string): Promise<void>;
+  saveTransportation(client: PoolClient, workerId: string, hasTransportation: boolean): Promise<void>;
+  saveAvailability(client: PoolClient, workerId: string, availability: string): Promise<void>;
   saveTrustAnswer(client: PoolClient, input: TrustAnswerInput): Promise<void>;
+  /**
+   * Defect 2 fix: the canonical "profile complete -> about to hand off to
+   * trust" sync point. Calls the canonical `upsertWorkerProfileFromUsers`
+   * projection (never re-implements it) and then reports whether the
+   * resulting `worker_profiles`/`worker_skills` state has everything the
+   * product needs (name, a skill, availability, location) so the caller can
+   * fail closed rather than advance a worker into `trust.question.1` — and
+   * eventually `ready` — with a profile the web app / matching engine will
+   * reject.
+   */
+  syncProfileForTrustHandoff(client: PoolClient, workerId: string): Promise<ProfileSyncResult>;
+}
+
+/** Result of the pre-trust `syncProfileForTrustHandoff` gate. `missing` lists
+ * which required fields are still absent after the sync ran, for structured
+ * logging by the caller. */
+export interface ProfileSyncResult {
+  ready: boolean;
+  missing: string[];
 }
 
 /**
@@ -321,11 +354,25 @@ export interface ProfilePersistenceAdapter {
  * to record which question set / scoring model produced the assessment —
  * route provenance through those columns rather than inventing new storage.
  */
+/**
+ * Defect 3 fix: 'voice' is reserved for a later chunk (voice-answered trust
+ * questions) — not implemented here. Typing the field as a union now, rather
+ * than a bare 'text' literal, means that later addition only needs a new
+ * caller value, not a widened type.
+ */
+export type TrustAnswerSource = 'text' | 'voice';
+
 export interface TrustAnswerInput {
   workerId: string;
   professionKey: string;
   questionIndex: number;
+  /** Bilingual question text, threaded through so `trust-scorer.ts`'s
+   * `{ q_en, answer_text }` read (trust-scorer.ts:~154) resolves to real
+   * text instead of `undefined`. */
+  qEn: string;
+  qEs: string;
   answerText: string;
+  answerSource: TrustAnswerSource;
   provenance?: { rubricVersion?: string; scoringModelId?: string };
 }
 
@@ -345,6 +392,14 @@ export function createProfilePersistenceAdapter(
     },
 
     async saveLocation(client, workerId, location) {
+      // Defect 2 fix: a worker who hasn't hit the trust-handoff sync point
+      // yet (or any earlier profile step) may have NO `worker_profiles` row
+      // at all. The UPDATE below silently touches zero rows in that case.
+      // Guaranteeing the row via the canonical projection first makes this
+      // UPDATE meaningful for every worker, not just ones lucky enough to
+      // already have a row.
+      await upsertWorkerProfileFromUsers(client, workerId);
+
       const source = toWorkerLocationSource(location.source);
       const locationText =
         location.source === 'city_state' && location.city && location.state
@@ -375,8 +430,68 @@ export function createProfilePersistenceAdapter(
       );
     },
 
+    async saveCustomTrade(client, workerId, rawProfession) {
+      await client.query(
+        `UPDATE users SET main_trade = 'other', main_trade_other = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, rawProfession],
+      );
+    },
+
+    async syncProfileForTrustHandoff(client, workerId) {
+      // Reuse the canonical projection — never re-implement its SQL here.
+      // This also (re-)seeds `worker_skills` from `main_trade_other`/
+      // `main_trade`, which only works once `saveCustomTrade` has actually
+      // written the raw profession text (Defect 1 fix).
+      await upsertWorkerProfileFromUsers(client, workerId);
+
+      const profileResult = await client.query<{
+        full_name: string | null;
+        availability: string | null;
+        location: string | null;
+      }>(
+        `SELECT full_name, availability, location FROM worker_profiles WHERE user_id = $1`,
+        [workerId],
+      );
+      const skillResult = await client.query<{ count: string | number }>(
+        `SELECT count(*)::int AS count FROM worker_skills WHERE worker_id = $1`,
+        [workerId],
+      );
+
+      const profile = profileResult.rows[0] ?? null;
+      const skillCount = Number(skillResult.rows[0]?.count ?? 0);
+
+      const missing: string[] = [];
+      if (!profile || !profile.full_name) missing.push('full_name');
+      if (skillCount === 0) missing.push('skill');
+      if (!profile || !profile.availability) missing.push('availability');
+      if (!profile || !profile.location) missing.push('location');
+
+      return { ready: missing.length === 0, missing };
+    },
+
+    async saveExperience(client, workerId, yearsExperience) {
+      await client.query(
+        `UPDATE users SET years_experience = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, yearsExperience],
+      );
+    },
+
+    async saveTransportation(client, workerId, hasTransportation) {
+      await client.query(
+        `UPDATE users SET has_transportation = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, hasTransportation],
+      );
+    },
+
+    async saveAvailability(client, workerId, availability) {
+      await client.query(
+        `UPDATE users SET availability = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, availability],
+      );
+    },
+
     async saveTrustAnswer(client, input) {
-      const { workerId, professionKey, questionIndex, answerText, provenance } = input;
+      const { workerId, professionKey, questionIndex, qEn, qEs, answerText, answerSource, provenance } = input;
 
       // Mirrors handlers/custom-trust.ts:282's shape: answers accumulate in
       // the assessment row's `answers` JSONB array, one row per
@@ -395,7 +510,10 @@ export function createProfilePersistenceAdapter(
 
       const newAnswer = {
         question_index: questionIndex,
+        q_en: qEn,
+        q_es: qEs,
         answer_text: answerText,
+        answer_source: answerSource,
         answered_at: clock.now().toISOString(),
       };
 

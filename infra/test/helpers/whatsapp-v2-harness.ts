@@ -573,11 +573,26 @@ interface SavedProfile {
   name?: string;
   location?: { city: string | null; state: string | null; postalCode: string | null; source: string };
   trade?: string;
-  trustAnswers: Array<{ questionIndex: number; answerText: string; provenance?: Record<string, unknown> }>;
+  tradeOther?: string;
+  yearsExperience?: string;
+  hasTransportation?: boolean;
+  availability?: string;
+  trustAnswers: Array<{
+    questionIndex: number;
+    qEn?: string;
+    qEs?: string;
+    answerText: string;
+    answerSource?: string;
+    provenance?: Record<string, unknown>;
+  }>;
 }
 
 function createFakeProfileAdapter() {
   const profiles = new Map<string, SavedProfile>();
+  const syncCalls: string[] = [];
+  // Overridable per-test: which fields `syncProfileForTrustHandoff` reports
+  // missing (defaults to "always ready" so existing flows aren't affected).
+  let missingFieldsOverride: string[] | null = null;
 
   function ensure(workerId: string): SavedProfile {
     let p = profiles.get(workerId);
@@ -599,18 +614,55 @@ function createFakeProfileAdapter() {
       async saveTrade(_client: PoolClient, workerId: string, trade: string): Promise<void> {
         ensure(workerId).trade = trade;
       },
+      async saveCustomTrade(_client: PoolClient, workerId: string, rawProfession: string): Promise<void> {
+        const p = ensure(workerId);
+        p.trade = 'other';
+        p.tradeOther = rawProfession;
+      },
+      async saveExperience(_client: PoolClient, workerId: string, yearsExperience: string): Promise<void> {
+        ensure(workerId).yearsExperience = yearsExperience;
+      },
+      async saveTransportation(_client: PoolClient, workerId: string, hasTransportation: boolean): Promise<void> {
+        ensure(workerId).hasTransportation = hasTransportation;
+      },
+      async saveAvailability(_client: PoolClient, workerId: string, availability: string): Promise<void> {
+        ensure(workerId).availability = availability;
+      },
+      async syncProfileForTrustHandoff(
+        _client: PoolClient,
+        workerId: string,
+      ): Promise<{ ready: boolean; missing: string[] }> {
+        syncCalls.push(workerId);
+        const missing = missingFieldsOverride ?? [];
+        return { ready: missing.length === 0, missing };
+      },
       async saveTrustAnswer(
         _client: PoolClient,
-        input: { workerId: string; questionIndex: number; answerText: string; provenance?: Record<string, unknown> },
+        input: {
+          workerId: string;
+          questionIndex: number;
+          qEn?: string;
+          qEs?: string;
+          answerText: string;
+          answerSource?: string;
+          provenance?: Record<string, unknown>;
+        },
       ): Promise<void> {
         ensure(input.workerId).trustAnswers.push({
           questionIndex: input.questionIndex,
+          qEn: input.qEn,
+          qEs: input.qEs,
           answerText: input.answerText,
+          answerSource: input.answerSource,
           provenance: input.provenance,
         });
       },
     },
     _profiles: profiles,
+    _syncCalls: syncCalls,
+    setMissingFields(missing: string[] | null): void {
+      missingFieldsOverride = missing;
+    },
   };
 }
 
@@ -683,6 +735,34 @@ export class WhatsAppV2Harness {
     this.gateway = createFakeWorkerGateway(this.gateRepo);
     this.identityFake = createFakeIdentity(this.clockRef);
     this.conversations.ensure(this.conversationId, this.phone);
+
+    // The router now reads the persisted profile directly, via the REAL
+    // loadProfileFromDb (lib/profile-flow.ts) — a `client.query(...)` call,
+    // not another injected adapter fake — to resolve which profile field is
+    // next (resolveNextProfileStep). HARNESS_CLIENT is a single shared
+    // module-level object (see its header comment / the identity assertion
+    // in onboarding-v2-conversation.test.ts), so its `.query` is rebound
+    // here, per harness construction, to this instance's own fake profile
+    // store. Tests only ever drive one harness at a time, so this rebind is
+    // safe: it stays pointed at whichever harness constructed it last.
+    (HARNESS_CLIENT as unknown as { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }> }).query =
+      async (_sql: string, params: unknown[]) => {
+        const workerId = params[0] as string;
+        const p = this.profileFake._profiles.get(workerId);
+        return {
+          rows: [
+            {
+              full_name: p?.name ?? null,
+              city: p?.location ? (p.location.city ?? p.location.postalCode) : null,
+              main_trade: p?.trade ?? null,
+              main_trade_other: null,
+              years_experience: p?.yearsExperience ?? null,
+              has_transportation: p?.hasTransportation ?? null,
+              availability: p?.availability ?? null,
+            },
+          ],
+        };
+      };
 
     this.deps = {
       adapters: {
@@ -913,6 +993,9 @@ export class WhatsAppV2Harness {
       'profile.location',
       'profile.trade',
       ...(trade === 'other' ? (['profile.custom_trade'] as WorkflowStepKey[]) : []),
+      'profile.experience',
+      'profile.transportation',
+      'profile.availability',
       'trust.question.1',
       'trust.question.2',
       'trust.question.3',
@@ -950,6 +1033,11 @@ export class WhatsAppV2Harness {
           break;
         case 'profile.custom_trade':
           await this.sendText(opts.customProfession ?? 'dog groomer');
+          break;
+        case 'profile.experience':
+        case 'profile.transportation':
+        case 'profile.availability':
+          await this.sendText('1');
           break;
         case 'trust.question.1':
         case 'trust.question.2':
@@ -1042,5 +1130,18 @@ export class WhatsAppV2Harness {
     const id = workerId ?? this.currentWorkerId();
     if (!id) return null;
     return this.profileFake._profiles.get(id) ?? null;
+  }
+
+  /** How many times `profile.syncProfileForTrustHandoff` has been invoked
+   * (the pre-trust-handoff profile sync/gate). */
+  getProfileSyncCallCount(): number {
+    return this.profileFake._syncCalls.length;
+  }
+
+  /** Makes the next `syncProfileForTrustHandoff` call(s) report these fields
+   * as missing (fail-closed gate testing). Pass `null` to reset to "always
+   * ready". */
+  setProfileSyncMissingFields(missing: string[] | null): void {
+    this.profileFake.setMissingFields(missing);
   }
 }

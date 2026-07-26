@@ -42,6 +42,13 @@ describe('complete onboarding end to end', () => {
     expect(h.getState().gate?.currentStepKey).toBe('profile.trade');
 
     await h.sendText('plumber');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.experience');
+
+    // V1/V2 parity: years_experience, has_transportation, availability are
+    // now asked before trust, same as the '1'-answer canned path.
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
 
     await h.sendText('1');
@@ -68,6 +75,11 @@ describe('complete onboarding end to end', () => {
     expect(h.getWorkerProfile()?.location).toEqual({ city: null, state: null, postalCode: '78701', source: 'zip' });
 
     await h.sendText('electrician');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.experience');
+
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
 
     await h.sendText('1');
@@ -473,6 +485,9 @@ describe('profile.trade: all six choices, custom trade, and the AI-question fall
     await h.sendText('Jose Martinez');
     await h.sendText('78701');
     await h.sendText(trade);
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getWorkerProfile()?.trade).toBe(trade);
   });
@@ -487,6 +502,9 @@ describe('profile.trade: all six choices, custom trade, and the AI-question fall
     expect(h.getState().gate?.currentStepKey).toBe('profile.custom_trade');
 
     await h.sendText('dog groomer');
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     const questions = h.getState().stateContext.v2TrustQuestions as Array<{ en: string; es: string }>;
     expect(questions).toHaveLength(3);
@@ -503,6 +521,9 @@ describe('profile.trade: all six choices, custom trade, and the AI-question fall
 
     h.failAdapter('trustQuestions');
     await h.sendText('dog groomer');
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
 
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getState().stateContext.v2TrustSource).toBe('fallback');
@@ -591,6 +612,9 @@ describe('atomic readiness', () => {
     h.failAdapter('trustQuestions');
     await h.sendText('dog groomer');
     expect(h.getState().stateContext.v2TrustSource).toBe('fallback');
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
 
     await h.sendText('answer one');
     await h.sendText('answer two');

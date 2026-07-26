@@ -456,18 +456,48 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     ]));
   });
 
-  test('migration 042 executes cleanly a second time as the plain migration owner', async () => {
+  test('replaying migrations 042 then 050 leaves the widened step constraint intact', async () => {
+    // 042 alone is NO LONGER replayable once 050 has run: 042's self-audit
+    // asserts its own ten-value current_step_key CHECK verbatim, and 050
+    // deliberately widens that constraint to seventeen keys. That is by
+    // design — 042 is applied in real environments and must not be edited.
+    //
+    // What actually has to hold is (a) a failed 042 replay is transactional,
+    // so it can never leave the constraint half-migrated, and (b) replaying
+    // the chain in order converges on the widened constraint. Operators
+    // replay the chain, never a single file in isolation.
     const ownerUrl = new URL(databaseUrl!);
     ownerUrl.username = 'jale_admin';
     ownerUrl.password = 'test-admin-pw';
     const owner = new Client({ connectionString: ownerUrl.toString() });
     await owner.connect();
     try {
-      const migration = fs.readFileSync(
-        path.join(__dirname, '..', '..', '..', 'db', 'migrations', '042_whatsapp_onboarding_gate.sql'),
+      const read = (file: string) => fs.readFileSync(
+        path.join(__dirname, '..', '..', '..', 'db', 'migrations', file),
         'utf8',
       );
-      await owner.query(migration);
+
+      await expect(owner.query(read('042_whatsapp_onboarding_gate.sql')))
+        .rejects.toThrow(/migration 042 check constraint self-audit failed/);
+
+      // 042 opens its own BEGIN, so the aborted transaction is still open on
+      // this session. Discard it exactly as an operator's psql session would.
+      await owner.query('ROLLBACK');
+
+      // The failed replay rolled back: the widened constraint is untouched.
+      const afterFailure = await owner.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+          WHERE conname = 'worker_workflow_runs_current_step_key_check'`,
+      );
+      expect(afterFailure.rows[0].def).toContain('profile.availability');
+
+      // Replaying 050 is idempotent and converges on the same end state.
+      await owner.query(read('050_whatsapp_v2_profile_steps.sql'));
+      const afterReplay = await owner.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+          WHERE conname = 'worker_workflow_runs_current_step_key_check'`,
+      );
+      expect(afterReplay.rows[0].def).toBe(afterFailure.rows[0].def);
     } finally {
       await owner.end();
     }
