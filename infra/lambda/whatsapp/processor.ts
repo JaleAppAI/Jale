@@ -117,6 +117,7 @@ import {
 import { recordCanonicalWhatsAppConsent } from './lib/legal-consent';
 import { enqueueWorkerMessage } from './lib/worker-delivery-gateway';
 import { registerOnboardingRenderers } from './lib/onboarding-renderers';
+import { publishOutboxWakes, type PostCommitWakeSignals } from './lib/outbox-wake';
 import { createOnboardingV2Adapters } from './lib/onboarding-adapters';
 import {
   routeOnboardingV2,
@@ -546,6 +547,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const mediaUrl = params.MediaUrl0;
   const mediaSid = params.MediaSid0;
   const mediaContentType = params.MediaContentType0;
+  const wakeSignals: PostCommitWakeSignals = { workerIntent: false, domain: false };
 
   if (!from || !messageSid) {
     console.warn('[processor] skipping malformed inbound record', { hasMessageSid: Boolean(messageSid), hasFrom: Boolean(from) });
@@ -647,7 +649,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         mediaUrl,
         mediaSid,
         mediaContentType,
-      });
+      }, wakeSignals);
       jobOutboxActorUserId = routedWorkerId ?? jobOutboxActorUserId;
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
@@ -676,6 +678,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
 
     // Phase 2 — outside the tx, do the Twilio sends. If any throw, SQS
     // retry resumes from 'db_committed'. No DB rollback: the state is
+    await publishOutboxWakes(wakeSignals);
     // already durably committed.
     await sendPendingOutbox(client, messageSid);
     if (jobOutboxActorUserId) {
@@ -1036,6 +1039,7 @@ async function routeMessage(
   client: PoolClient,
   conv: ConversationRow,
   msg: IncomingMessage,
+  wakeSignals: PostCommitWakeSignals,
 ): Promise<string | null> {
   // ── Task 6: fail-closed v2 branch ───────────────────────────────────────
   //
@@ -1069,9 +1073,19 @@ async function routeMessage(
         reactivateDeclinedLegalRun,
         setRunPreferredLanguage,
         appendTransition,
-        completeOnboarding,
+        completeOnboarding: async (repoClient, input) => {
+          const result = await completeOnboarding(repoClient, input);
+          wakeSignals.domain = true;
+          return result;
+        },
       },
-      enqueueWorkerMessage,
+      enqueueWorkerMessage: async (gatewayClient, input, now) => {
+        const result = await enqueueWorkerMessage(gatewayClient, input, now);
+        if (result.outboxMaterialized) {
+          wakeSignals.workerIntent = true;
+        }
+        return result;
+      },
       // Design A: pre-auth steps have no bound user_id, so their prompts
       // travel the same phone/inbound-message-keyed outbox writers the
       // legacy relay/legal paths already use — never a new outbox writer.

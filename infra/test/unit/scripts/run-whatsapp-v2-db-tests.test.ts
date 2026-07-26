@@ -8,6 +8,7 @@ const scriptPath = path.join(infraRoot, 'scripts', 'run-whatsapp-v2-db-tests.sh'
 
 const SUITE_042 = 'test/unit/db/whatsapp-onboarding-042.integration.test.ts';
 const SUITE_CONCURRENCY = 'test/unit/db/whatsapp-onboarding-concurrency.integration.test.ts';
+const SUITE_049 = 'test/unit/db/whatsapp-flow-049.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -22,10 +23,10 @@ function runGuard(overrides: NodeJS.ProcessEnv): ReturnType<typeof spawnSync> {
 }
 
 describe('test:whatsapp-v2-db fail-closed URL guard', () => {
-  it('invokes exactly the migration-042 and concurrency suites in-band', () => {
+  it('invokes exactly the migration-042, concurrency, and migration-049 suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
-    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY]);
+    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(

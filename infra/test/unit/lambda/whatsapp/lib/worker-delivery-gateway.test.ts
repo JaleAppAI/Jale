@@ -147,10 +147,11 @@ describe('enqueueWorkerMessage', () => {
     const renderer = jest.fn(async () => rendered);
     registerCategoryRenderer('job_alert', renderer);
 
-    const { intentId, decision } = await enqueueWorkerMessage(client, baseInput());
+    const { intentId, decision, outboxMaterialized } = await enqueueWorkerMessage(client, baseInput());
 
     expect(intentId).toBe('intent-1');
     expect(decision).toEqual({ action: 'allow', reason: 'worker_ready' });
+    expect(outboxMaterialized).toBe(true);
     expect(renderer).toHaveBeenCalledTimes(1);
     const outboxInserts = calls.filter((c) => /INSERT INTO whatsapp_outbox/.test(c.sql));
     expect(outboxInserts).toHaveLength(1);
@@ -247,6 +248,8 @@ describe('enqueueWorkerMessage', () => {
     expect(second.intentId).toBe('intent-1');
     expect(first.decision).toEqual({ action: 'allow', reason: 'worker_ready' });
     expect(second.decision).toEqual({ action: 'allow', reason: 'worker_ready' });
+    expect(first.outboxMaterialized).toBe(true);
+    expect(second.outboxMaterialized).toBe(false);
     expect(renderer).toHaveBeenCalledTimes(1);
     const outboxInserts = calls.filter((c) => /INSERT INTO whatsapp_outbox/.test(c.sql));
     expect(outboxInserts).toHaveLength(1);

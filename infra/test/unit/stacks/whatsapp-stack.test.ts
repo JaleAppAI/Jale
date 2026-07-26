@@ -72,10 +72,70 @@ describe('WhatsAppStack', () => {
   });
 
   // ── SQS infrastructure ─────────────────────────────────────────
-  test('Stack creates exactly 4 SQS queues (legacy inbound + DLQ, v2 FIFO inbound + DLQ)', () => {
-    template.resourceCountIs('AWS::SQS::Queue', 4);
+  test('Stack creates inbound and wake queues with a DLQ for each lane', () => {
+    template.resourceCountIs('AWS::SQS::Queue', 8);
   });
 
+describe('event-driven outbox wake queues', () => {
+    test.each([
+      ['whatsapp-worker-intent-wake', 360],
+      ['whatsapp-domain-outbox-wake', 360],
+    ])('%s is KMS encrypted with a recovery DLQ', (queueName, visibilityTimeout) => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: queueName,
+        KmsMasterKeyId: 'alias/aws/sqs',
+        VisibilityTimeout: visibilityTimeout,
+        RedrivePolicy: Match.objectLike({ maxReceiveCount: 5 }),
+      });
+    });
+
+    test.each([
+      ['whatsapp-worker-intent-wake-dlq'],
+      ['whatsapp-domain-outbox-wake-dlq'],
+    ])('%s retains failures for 14 days', (queueName) => {
+      template.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: queueName,
+        KmsMasterKeyId: 'alias/aws/sqs',
+        MessageRetentionPeriod: 1209600,
+      });
+    });
+
+    test('processor receives both wake queue URLs', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const processor = Object.values(functions).find((resource: any) =>
+        /SQS processor/.test(resource.Properties?.Description ?? '')) as any;
+      expect(processor.Properties.Environment.Variables.WORKER_INTENT_WAKE_QUEUE_URL).toBeDefined();
+      expect(processor.Properties.Environment.Variables.DOMAIN_OUTBOX_WAKE_QUEUE_URL).toBeDefined();
+    });
+
+    test('both drains have SQS event-source mappings in addition to recovery schedules', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const workerEntry = Object.entries(functions).find(([, resource]: [string, any]) =>
+        /Worker intent outbox drain/.test(resource.Properties?.Description ?? ''))!;
+      const domainEntry = Object.entries(functions).find(([, resource]: [string, any]) =>
+        /Domain outbox drain/.test(resource.Properties?.Description ?? ''))!;
+      const mappings = Object.values(template.findResources('AWS::Lambda::EventSourceMapping')) as any[];
+
+      expect(mappings.some((mapping) => mapping.Properties.FunctionName.Ref === workerEntry[0]
+        && mapping.Properties.BatchSize === 1)).toBe(true);
+      expect(mappings.some((mapping) => mapping.Properties.FunctionName.Ref === domainEntry[0]
+        && mapping.Properties.BatchSize === 1)).toBe(true);
+    });
+
+    test.each([
+      ['WhatsAppWorkerIntentWakeDlqDepth', 1],
+      ['WhatsAppDomainOutboxWakeDlqDepth', 1],
+      ['WhatsAppWorkerIntentWakeAge', 15],
+      ['WhatsAppDomainOutboxWakeAge', 15],
+      ['WhatsAppOutboxWakeFailures', 1],
+    ])('%s alarm exists and is actionable', (alarmName, threshold) => {
+      template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: alarmName,
+        Threshold: threshold,
+        AlarmActions: Match.anyValue(),
+      });
+    });
+  });
   test('Inbound SQS queue exists with 360s visibility timeout', () => {
     template.hasResourceProperties('AWS::SQS::Queue', {
       QueueName: 'whatsapp-inbound-queue',
@@ -511,7 +571,7 @@ describe('WhatsAppStack', () => {
       expect(variables.TRUST_ASSESSMENT_QUEUE_URL).toBeDefined();
     });
 
-    test("drain function's role is granted sqs:SendMessage on the trust-assessment queue and NOT sqs:ReceiveMessage/DeleteMessage (least privilege)", () => {
+    test("drain role sends downstream and consumes only its own domain wake queue", () => {
       const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
       const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
       const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
@@ -528,8 +588,18 @@ describe('WhatsAppStack', () => {
       expect(sqsStatements.length).toBeGreaterThan(0);
       const allActions = sqsStatements.flatMap((s: any) => (Array.isArray(s.Action) ? s.Action : [s.Action]));
       expect(allActions).toContain('sqs:SendMessage');
-      expect(allActions).not.toContain('sqs:ReceiveMessage');
-      expect(allActions).not.toContain('sqs:DeleteMessage');
+      expect(allActions).toContain('sqs:ReceiveMessage');
+      expect(allActions).toContain('sqs:DeleteMessage');
+
+      const consumeStatements = sqsStatements.filter((statement: any) => {
+        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+        return actions.includes('sqs:ReceiveMessage');
+      });
+      expect(consumeStatements).toHaveLength(1);
+      const consumeResources = JSON.stringify(consumeStatements.map((statement: any) => statement.Resource));
+      expect(consumeResources).toContain('DomainOutboxWakeQueue');
+      expect(consumeResources).not.toContain('WorkerIntentWakeQueue');
+      expect(consumeResources).not.toContain('TrustAssessment');
     });
 
     test('drain function role still reads ONLY the WhatsApp DB secret — the SQS grant adds no additional secretsmanager:GetSecretValue resource', () => {
@@ -624,8 +694,8 @@ describe('WhatsAppStack', () => {
       });
     });
 
-    test('total SQS queue count is still exactly 4 (legacy pair + v2 pair — the drain adds none)', () => {
-      template.resourceCountIs('AWS::SQS::Queue', 4);
+    test('total SQS queue count includes both durable wake queue/DLQ pairs', () => {
+      template.resourceCountIs('AWS::SQS::Queue', 8);
     });
   });
 

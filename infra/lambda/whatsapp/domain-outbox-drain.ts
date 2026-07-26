@@ -37,6 +37,7 @@ import { releaseWorkerReady } from './worker-ready-release';
 import type { ReleaseRenderer } from './lib/onboarding-types';
 import { createReleaseRenderer } from './lib/onboarding-renderers';
 
+import { publishWorkerIntentWake } from './lib/outbox-wake';
 export const MAX_DOMAIN_EVENT_ATTEMPTS = 5;
 export const DOMAIN_EVENT_BATCH_LIMIT = 25;
 
@@ -352,13 +353,14 @@ export function setDomainOutboxDrainDeps(deps: DomainOutboxDrainDeps): void {
 export async function runDrain(
   pool: Pool,
   deps: DomainOutboxDrainDeps = defaultDeps,
-): Promise<{ claimed: number; completed: number; failed: number }> {
+): Promise<{ claimed: number; completed: number; failed: number; readyCompleted: number }> {
   const now = deps.now ? deps.now() : new Date();
   const client = await pool.connect();
   try {
     const leased = await leaseBatch(client, DOMAIN_EVENT_BATCH_LIMIT);
 
     let completed = 0;
+    let readyCompleted = 0;
     let failed = 0;
 
     for (const event of leased) {
@@ -368,11 +370,14 @@ export async function runDrain(
         ? await processWorkerReady(client, event, deps)
         : await processAssessmentRequested(client, event, deps);
 
-      if (ok) completed += 1;
+      if (ok) {
+        completed += 1;
+        if (event.event_type === 'worker.ready') readyCompleted += 1;
+      }
       else failed += 1;
     }
 
-    return { claimed: leased.length, completed, failed };
+    return { claimed: leased.length, completed, failed, readyCompleted };
   } finally {
     client.release();
   }
@@ -382,9 +387,13 @@ export async function runDrain(
 // the plan's `handler: () => Promise<...>` interface) — EventBridge invokes
 // this with a ScheduledEvent as its first argument, which must NEVER be
 // mistaken for `deps` (see the comment on `activeDeps` above).
-export const handler = async (): Promise<{ claimed: number; completed: number; failed: number }> => {
+export const handler = async (): Promise<{ claimed: number; completed: number; failed: number; readyCompleted: number }> => {
   const pool = await getDbPool();
-  return runDrain(pool, activeDeps);
+  const result = await runDrain(pool, activeDeps);
+  if (result.readyCompleted > 0) {
+    await publishWorkerIntentWake();
+  }
+  return result;
 };
 
 // C10 wiring seam (binding decision #3): now that the workflow lane's

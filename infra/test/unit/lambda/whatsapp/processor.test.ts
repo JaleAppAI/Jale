@@ -129,6 +129,11 @@ jest.mock('../../../../lambda/whatsapp/lib/worker-delivery-gateway', () => {
   };
 });
 
+const mockPublishOutboxWakes = jest.fn();
+jest.mock('../../../../lambda/whatsapp/lib/outbox-wake', () => ({
+  publishOutboxWakes: (signals: unknown) => mockPublishOutboxWakes(signals),
+}));
+
 const mockFetch = jest.fn();
 (global as any).fetch = mockFetch;
 
@@ -243,6 +248,8 @@ describe('Processor Lambda', () => {
     mockCreateOnboardingV2Adapters.mockReset();
     mockCreateOnboardingV2Adapters.mockReturnValue({});
     mockEnqueueWorkerMessage.mockReset();
+    mockPublishOutboxWakes.mockReset();
+    mockPublishOutboxWakes.mockResolvedValue({ sent: 0, failed: 0 });
     mockRegisterCategoryRenderer.mockClear();
     _clearCategoryRenderersForTests();
   });
@@ -3102,6 +3109,8 @@ describe('v2 routing branch', () => {
     mockCreateOnboardingV2Adapters.mockReset();
     mockCreateOnboardingV2Adapters.mockReturnValue({});
     mockEnqueueWorkerMessage.mockReset();
+    mockPublishOutboxWakes.mockReset();
+    mockPublishOutboxWakes.mockResolvedValue({ sent: 0, failed: 0 });
     mockRegisterCategoryRenderer.mockClear();
     _clearCategoryRenderersForTests();
   });
@@ -3266,6 +3275,98 @@ describe('v2 routing branch', () => {
     expect(countQueryByPattern(/^\s*COMMIT\s*$/i)).toBe(1);
   });
 
+  it('publishes a worker-intent wake only after a newly materialized v2 outbox row commits', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockEnqueueWorkerMessage.mockResolvedValue({
+      intentId: 'intent-1',
+      decision: { action: 'allow', reason: 'worker_onboarding' },
+      outboxMaterialized: true,
+    });
+    mockRouteOnboardingV2.mockImplementation(async (client: unknown, _session: unknown, _msg: unknown, deps: any) => {
+      await deps.enqueueWorkerMessage(client, { category: 'onboarding' });
+      return { handled: true, workerId: null, stepKey: 'profile.name' };
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-worker-wake' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', user_id: 'worker-1' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-worker-wake', From: FROM, Body: 'Accept' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockPublishOutboxWakes).toHaveBeenCalledWith({ workerIntent: true, domain: false });
+    const commitIndex = mockQuery.mock.calls.findIndex(([sql]) => /^COMMIT$/.test(sql as string));
+    expect(commitIndex).toBeGreaterThanOrEqual(0);
+    expect(mockQuery.mock.invocationCallOrder[commitIndex])
+      .toBeLessThan(mockPublishOutboxWakes.mock.invocationCallOrder[0]);
+  });
+
+  it('publishes a domain wake only after v2 onboarding completion commits', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockImplementation(async (client: unknown, _session: unknown, _msg: unknown, deps: any) => {
+      await deps.repo.completeOnboarding(client, 'worker-1');
+      return { handled: true, workerId: null, stepKey: 'complete' };
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-domain-wake' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', user_id: 'worker-1' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-domain-wake', From: FROM, Body: 'Continue' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockPublishOutboxWakes).toHaveBeenCalledWith({ workerIntent: false, domain: true });
+    const commitIndex = mockQuery.mock.calls.findIndex(([sql]) => /^COMMIT$/.test(sql as string));
+    expect(commitIndex).toBeGreaterThanOrEqual(0);
+    expect(mockQuery.mock.invocationCallOrder[commitIndex])
+      .toBeLessThan(mockPublishOutboxWakes.mock.invocationCallOrder[0]);
+  });
+
+  it('does not publish a wake when the transaction rolls back after materializing work', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockEnqueueWorkerMessage.mockResolvedValue({
+      intentId: 'intent-2',
+      decision: { action: 'allow', reason: 'worker_onboarding' },
+      outboxMaterialized: true,
+    });
+    mockRouteOnboardingV2.mockImplementation(async (client: unknown, _session: unknown, _msg: unknown, deps: any) => {
+      await deps.enqueueWorkerMessage(client, { category: 'onboarding' });
+      throw new Error('transition failed');
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-worker-rollback' }] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', user_id: 'worker-1' })] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+    await expect(handler(
+      makeSqsEvent({ MessageSid: 'SM-v2-worker-rollback', From: FROM, Body: 'Accept' }),
+      {} as any,
+      {} as any,
+    )).rejects.toThrow('transition failed');
+
+    expect(countQueryByPattern(/^ROLLBACK$/)).toBe(1);
+    expect(mockPublishOutboxWakes).not.toHaveBeenCalled();
+  });
   it('runs no legacy state-transition SQL for a v2-routed phone', async () => {
     mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
