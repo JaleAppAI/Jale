@@ -5,7 +5,8 @@
 import {
   parseLanguageChoice, detectCommandLang, resolveResponseLanguage,
   isLanguageCommand, isResendCommand, isReviewTermsCommand, isOnboardingHelpCommand,
-  classifyBlockedCommand, evaluateStartCooldown, shouldRepeatPrompt, appendSendTimestamp,
+  classifyBlockedCommand, classifyBlockedCommandExact,
+  evaluateStartCooldown, shouldRepeatPrompt, appendSendTimestamp,
   START_COOLDOWN_MS, START_DAILY_CAP, REPROMPT_COOLDOWN_MS,
 } from '../../../../../lambda/whatsapp/lib/onboarding-language';
 
@@ -90,6 +91,37 @@ describe('classifyBlockedCommand', () => {
 
   it('returns null for a step answer', () => {
     expect(classifyBlockedCommand('Austin, TX')).toBeNull();
+  });
+
+  it('fuzzy-catches a near-miss name — precisely the behavior that makes it unsafe at free-text steps', () => {
+    expect(classifyBlockedCommand('Chata')).toBe('chats');
+  });
+});
+
+describe('classifyBlockedCommandExact', () => {
+  it.each([
+    ['JOBS', 'jobs'], ['jobs', 'jobs'], ['trabajos', 'jobs'], ['TRABAJOS', 'jobs'],
+    ['CHATS', 'chats'], ['chats', 'chats'], ['mensajes', 'chats'], ['MENSAJES', 'chats'],
+    ['PROFILE', 'profile'], ['profile', 'profile'], ['perfil', 'profile'], ['PERFIL', 'profile'],
+  ])('classifies exact %s as %s', (body, expected) => {
+    expect(classifyBlockedCommandExact(body)).toBe(expected);
+  });
+
+  it.each(['Chata', 'trabjos', 'profil'])(
+    'returns null for the near-miss %s that fuzzy matching (classifyBlockedCommand) would catch',
+    (body) => {
+      expect(classifyBlockedCommand(body)).not.toBeNull();
+      expect(classifyBlockedCommandExact(body)).toBeNull();
+    },
+  );
+
+  it('returns null for "Perla" — not actually within fuzzy edit-distance 1 of "perfil"/"profile", but still exercised as a plausible false-positive name', () => {
+    expect(classifyBlockedCommandExact('Perla')).toBeNull();
+  });
+
+  it('returns null for ordinary free text', () => {
+    expect(classifyBlockedCommandExact('Austin, TX')).toBeNull();
+    expect(classifyBlockedCommandExact('Juan Perez')).toBeNull();
   });
 });
 

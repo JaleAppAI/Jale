@@ -302,6 +302,72 @@ describe('profile.name', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// Gate: exact-only blocked-command classification at free-text steps
+//
+// Regression coverage for the data-integrity bug where typing a reserved
+// command word (JOBS/CHATS/PROFILE) at a free-text step got saved as answer
+// data, and for the "Chata"/"Perla" false-positive that fuzzy matching would
+// have caused if applyGate simply called classifyBlockedCommand everywhere.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('applyGate: exact-only classification at free-text steps', () => {
+  it.each(['profile.name', 'profile.custom_trade'] as const)(
+    'at %s, an exact blocked command (JOBS) is not persisted as an answer and does not advance',
+    async (stepKey) => {
+      const { deps, gateRepo, adapters } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: `user-blocked-${stepKey}`, currentStepKey: stepKey });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('JOBS'), deps);
+
+      expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey });
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe(stepKey);
+      expect(adapters._saveNameCalls).toHaveLength(0);
+      expect(adapters._saveTradeCalls).toHaveLength(0);
+      expect(adapters._saveTrustAnswerCalls).toHaveLength(0);
+    },
+  );
+
+  it('at profile.name, the legitimate name "Chata" is accepted and saved normally — the regression this design prevents', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-chata', currentStepKey: 'profile.name' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('Chata'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveNameCalls).toHaveLength(1);
+    expect(adapters._saveNameCalls[0].name).toBe('Chata');
+  });
+
+  it('at profile.location (a structured step), fuzzy blocked-command matching still applies unchanged: "trabjos" (typo of trabajos/jobs) is blocked, not resolved as a location', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-structured-fuzzy', currentStepKey: 'profile.location' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('trabjos'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveLocationCalls).toHaveLength(0);
+  });
+
+  it('at profile.name (a free-text step), the same fuzzy typo "trabjos" is NOT caught by the exact-only guard (no fuzzy fallback at free-text steps)', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-freetext-fuzzy', currentStepKey: 'profile.name' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('trabjos'), deps);
+
+    // Not blocked by the gate: it falls through to the name answer handler
+    // and is treated as ordinary (if odd-looking) free text, exactly as any
+    // other non-command name-shaped string would be.
+    expect(result.stepKey).not.toBe('profile.name');
+    expect(adapters._saveNameCalls).toHaveLength(1);
+    expect(adapters._saveNameCalls[0].name).toBe('trabjos');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // profile.location
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -680,6 +746,21 @@ describe('trust.question.{1,2,3}', () => {
 
     expect(result.stepKey).toBe('trust.question.1');
   });
+
+  it.each(['trust.question.1', 'trust.question.2', 'trust.question.3'] as const)(
+    'at %s, an exact blocked command (CHATS) is not persisted as a trust answer and does not advance',
+    async (stepKey) => {
+      const { deps, gateRepo, adapters } = makeDeps();
+      const gate = seedStandardTrustGate(gateRepo, `user-trust-blocked-${stepKey}`, stepKey);
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('CHATS'), deps);
+
+      expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey });
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe(stepKey);
+      expect(adapters._saveTrustAnswerCalls).toHaveLength(0);
+    },
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════

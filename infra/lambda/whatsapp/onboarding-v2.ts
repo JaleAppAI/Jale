@@ -54,6 +54,7 @@ import {
   isReviewTermsCommand,
   isOnboardingHelpCommand,
   classifyBlockedCommand,
+  classifyBlockedCommandExact,
   evaluateStartCooldown,
   evaluateOtpResendCooldown,
   shouldRepeatPrompt,
@@ -237,7 +238,9 @@ const DEFAULT_ROUTING = STEP_ROUTING['legal.review'];
 
 /** Free-text answer steps: a blocked-command fuzzy match here would swallow
  * legitimate answers (e.g. the name "Chata" matching "chats" at
- * edit-distance 1), so blocked-command classification is skipped entirely. */
+ * edit-distance 1), so these steps are gated with the exact-only
+ * `classifyBlockedCommandExact` instead of the fuzzy `classifyBlockedCommand`
+ * used everywhere else — see `applyGate`. */
 const FREE_TEXT_STEPS = new Set<string>([
   'profile.name',
   'profile.custom_trade',
@@ -534,8 +537,14 @@ async function applyGate(
     return { handled: true, workerId, stepKey };
   }
 
-  if (!isInteractive && !FREE_TEXT_STEPS.has(stepKey)) {
-    const blocked = classifyBlockedCommand(body);
+  if (!isInteractive) {
+    // Free-text answer steps (name, custom trade, trust questions) use the
+    // exact-only classifier so a legitimate answer like "Chata" can never be
+    // fuzzy-matched into the `chats` command; every other step keeps the
+    // fuzzy classifier so typo'd commands ("trabjos") still get caught.
+    const blocked = FREE_TEXT_STEPS.has(stepKey)
+      ? classifyBlockedCommandExact(body)
+      : classifyBlockedCommand(body);
     if (blocked) {
       console.warn(JSON.stringify({ metric: 'OnboardingGateBlocked', command: blocked, stepKey }));
       await sendTemplateMessage(client, deps, workerId, stepKey, responseLang, 'v2_gate_blocked', {}, now, workflowRunId, msg.messageSid, blocked);
