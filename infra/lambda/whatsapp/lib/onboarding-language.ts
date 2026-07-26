@@ -165,6 +165,29 @@ export function classifyBlockedCommand(body: string): 'jobs' | 'chats' | 'profil
   return null;
 }
 
+/**
+ * Exact-match-only sibling of `classifyBlockedCommand`, for use at free-text
+ * answer steps (the worker's name, custom trade, trust-question answers).
+ * Fuzzy matching is correct at structured steps — a worker who fumbles
+ * "trabjos" should still get the jobs command — but at a free-text step it is
+ * a data-integrity hazard: a worker legitimately named "Chata" would have
+ * their name eaten by the `chats` fuzzy match (edit distance 1), and someone
+ * named "Perla" could trip `perfil`. That is why this variant exists and why
+ * it must stay exact-only forever — do NOT "simplify" it into a call to
+ * `classifyBlockedCommand`, which would silently reintroduce that bug.
+ *
+ * Reuses the same `BLOCKED_COMMANDS` vocabulary table as
+ * `classifyBlockedCommand` (no duplicated word lists) but skips
+ * `matchFuzzyAgainst` entirely.
+ */
+export function classifyBlockedCommandExact(body: string): 'jobs' | 'chats' | 'profile' | null {
+  const n = normalizeCommandText(body);
+  for (const [words, family] of BLOCKED_COMMANDS) {
+    if (words.has(n)) return family;
+  }
+  return null;
+}
+
 // `history` crosses a boundary owned by another lane's repository layer, so
 // it is treated as untrusted: non-finite, future-dated (clock skew or bad
 // data), and entries outside the caller's window are all dropped before use.

@@ -20,7 +20,38 @@ import type {
 } from '../../../../lambda/whatsapp/lib/onboarding-repository';
 import type { WorkerMessageIntentInput } from '../../../../lambda/whatsapp/lib/onboarding-types';
 
-const client = {} as any;
+// The router now resolves the next profile step via the REAL
+// loadProfileFromDb (lib/profile-flow.ts) — a `client.query(...)` call — so
+// the shared fake client needs a minimal in-memory `users` row per worker.
+// `profileDb` is written to by the fake ProfilePersistenceAdapter's save*
+// methods below (createFakeAdapters) and read back by `client.query`.
+const profileDb = new Map<string, Record<string, string | boolean | null>>();
+
+function setProfileDbField(workerId: string, field: string, value: string | boolean | null): void {
+  const row = profileDb.get(workerId) ?? {};
+  row[field] = value;
+  profileDb.set(workerId, row);
+}
+
+const client = {
+  query: async (_sql: string, params: unknown[]) => {
+    const workerId = params[0] as string;
+    const row = profileDb.get(workerId) ?? {};
+    return {
+      rows: [
+        {
+          full_name: row.full_name ?? null,
+          city: row.city ?? null,
+          main_trade: row.main_trade ?? null,
+          main_trade_other: row.main_trade_other ?? null,
+          years_experience: row.years_experience ?? null,
+          has_transportation: row.has_transportation ?? null,
+          availability: row.availability ?? null,
+        },
+      ],
+    };
+  },
+} as any;
 
 // ── Fake phone hashing (deterministic, no real sha256 needed for tests) ──
 function fakeHashNormalizedPhone(phone: string): string {
@@ -191,7 +222,7 @@ function createFakeGateway() {
   const enqueueWorkerMessage = jest.fn(
     async (_client: any, input: WorkerMessageIntentInput, _now?: Date) => {
       calls.push(input);
-      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const } };
+      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const }, outboxMaterialized: true };
     },
   );
   return { enqueueWorkerMessage, calls };
@@ -230,9 +261,29 @@ function createFakeAdapters(clockRef: { now: Date }) {
     location: { resolve: jest.fn() },
     trustQuestions: { generate: jest.fn() },
     profile: {
-      saveName: jest.fn(),
-      saveLocation: jest.fn(),
-      saveTrade: jest.fn(),
+      saveName: jest.fn(async (_c: any, workerId: string, name: string) => {
+        setProfileDbField(workerId, 'full_name', name);
+      }),
+      saveLocation: jest.fn(async (_c: any, workerId: string, location: { city: string | null; postalCode: string | null }) => {
+        setProfileDbField(workerId, 'city', location.city ?? location.postalCode);
+      }),
+      saveTrade: jest.fn(async (_c: any, workerId: string, trade: string) => {
+        setProfileDbField(workerId, 'main_trade', trade);
+      }),
+      saveCustomTrade: jest.fn(async (_c: any, workerId: string, rawProfession: string) => {
+        setProfileDbField(workerId, 'main_trade', 'other');
+        setProfileDbField(workerId, 'main_trade_other', rawProfession);
+      }),
+      saveExperience: jest.fn(async (_c: any, workerId: string, yearsExperience: string) => {
+        setProfileDbField(workerId, 'years_experience', yearsExperience);
+      }),
+      saveTransportation: jest.fn(async (_c: any, workerId: string, hasTransportation: boolean) => {
+        setProfileDbField(workerId, 'has_transportation', hasTransportation);
+      }),
+      saveAvailability: jest.fn(async (_c: any, workerId: string, availability: string) => {
+        setProfileDbField(workerId, 'availability', availability);
+      }),
+      syncProfileForTrustHandoff: jest.fn().mockResolvedValue({ ready: true, missing: [] }),
       saveTrustAnswer: jest.fn(),
     },
   };

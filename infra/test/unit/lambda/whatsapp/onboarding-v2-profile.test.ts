@@ -16,8 +16,44 @@ import type {
 import type { WorkerGate } from '../../../../lambda/whatsapp/lib/onboarding-repository';
 import type { WorkerMessageIntentInput } from '../../../../lambda/whatsapp/lib/onboarding-types';
 import type { ResolvedLocation } from '../../../../lambda/whatsapp/lib/onboarding-adapters';
+import type { ProfileField } from '../../../../lambda/whatsapp/lib/flows';
 
-const client = { marker: 'the-shared-client' } as any;
+// The router now resolves the next profile step via the REAL
+// loadProfileFromDb (lib/profile-flow.ts) — a `client.query(...)` call, not
+// another injected adapter fake — so the shared fake client needs a minimal
+// in-memory `users` row per worker. `profileDb` is written to by the fake
+// ProfilePersistenceAdapter's save* methods below (createFakeAdapters) and
+// read back by `client.query`, mirroring what a real UPDATE-then-SELECT
+// round trip would see. Tests give each worker a unique id, so a single
+// module-level map never leaks state between cases.
+const profileDb = new Map<string, Partial<Record<ProfileField, string | boolean | null>>>();
+
+function setProfileDbField(workerId: string, field: ProfileField, value: string | boolean | null): void {
+  const row = profileDb.get(workerId) ?? {};
+  row[field] = value;
+  profileDb.set(workerId, row);
+}
+
+const client = {
+  marker: 'the-shared-client',
+  query: async (_sql: string, params: unknown[]) => {
+    const workerId = params[0] as string;
+    const row = profileDb.get(workerId) ?? {};
+    return {
+      rows: [
+        {
+          full_name: row.full_name ?? null,
+          city: row.city ?? null,
+          main_trade: row.main_trade ?? null,
+          main_trade_other: row.main_trade_other ?? null,
+          years_experience: row.years_experience ?? null,
+          has_transportation: row.has_transportation ?? null,
+          availability: row.availability ?? null,
+        },
+      ],
+    };
+  },
+} as any;
 
 function fakeHashNormalizedPhone(phone: string): string {
   return `hash:${phone}`;
@@ -109,7 +145,7 @@ function createFakeGateway() {
   const enqueueWorkerMessage = jest.fn(
     async (_client: any, input: WorkerMessageIntentInput, _now?: Date) => {
       calls.push(input);
-      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const } };
+      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const }, outboxMaterialized: true };
     },
   );
   return { enqueueWorkerMessage, calls };
@@ -127,7 +163,16 @@ function createFakeAdapters(clockRef: { now: Date }) {
   const saveNameCalls: Array<{ client: any; workerId: string; name: string }> = [];
   const saveLocationCalls: Array<{ client: any; workerId: string; location: ResolvedLocation }> = [];
   const saveTradeCalls: Array<{ client: any; workerId: string; trade: string }> = [];
+  const saveCustomTradeCalls: Array<{ client: any; workerId: string; rawProfession: string }> = [];
+  const saveExperienceCalls: Array<{ client: any; workerId: string; yearsExperience: string }> = [];
+  const saveTransportationCalls: Array<{ client: any; workerId: string; hasTransportation: boolean }> = [];
+  const saveAvailabilityCalls: Array<{ client: any; workerId: string; availability: string }> = [];
   const saveTrustAnswerCalls: Array<{ client: any; input: any }> = [];
+  const syncProfileCalls: Array<{ client: any; workerId: string }> = [];
+  // Overridable per-test: what syncProfileForTrustHandoff reports (defaults
+  // to "always ready" so every pre-existing test that never touches this is
+  // unaffected).
+  let missingFieldsOverride: string[] | null = null;
 
   return {
     clock: { now: () => clockRef.now },
@@ -149,12 +194,40 @@ function createFakeAdapters(clockRef: { now: Date }) {
     profile: {
       saveName: jest.fn(async (c: any, workerId: string, name: string) => {
         saveNameCalls.push({ client: c, workerId, name });
+        setProfileDbField(workerId, 'full_name', name);
       }),
       saveLocation: jest.fn(async (c: any, workerId: string, location: ResolvedLocation) => {
         saveLocationCalls.push({ client: c, workerId, location });
+        setProfileDbField(workerId, 'city', location.city ?? location.postalCode);
       }),
       saveTrade: jest.fn(async (c: any, workerId: string, trade: string) => {
         saveTradeCalls.push({ client: c, workerId, trade });
+        setProfileDbField(workerId, 'main_trade', trade);
+      }),
+      saveExperience: jest.fn(async (c: any, workerId: string, yearsExperience: string) => {
+        saveExperienceCalls.push({ client: c, workerId, yearsExperience });
+        setProfileDbField(workerId, 'years_experience', yearsExperience);
+      }),
+      saveTransportation: jest.fn(async (c: any, workerId: string, hasTransportation: boolean) => {
+        saveTransportationCalls.push({ client: c, workerId, hasTransportation });
+        setProfileDbField(workerId, 'has_transportation', hasTransportation);
+      }),
+      saveAvailability: jest.fn(async (c: any, workerId: string, availability: string) => {
+        saveAvailabilityCalls.push({ client: c, workerId, availability });
+        setProfileDbField(workerId, 'availability', availability);
+      }),
+      saveCustomTrade: jest.fn(async (c: any, workerId: string, rawProfession: string) => {
+        saveCustomTradeCalls.push({ client: c, workerId, rawProfession });
+        // Mirrors the real adapter, which writes BOTH columns. Without the
+        // main_trade_other write the resolver would keep seeing that field as
+        // missing and loop the worker back to profile.custom_trade forever.
+        setProfileDbField(workerId, 'main_trade', 'other');
+        setProfileDbField(workerId, 'main_trade_other', rawProfession);
+      }),
+      syncProfileForTrustHandoff: jest.fn(async (c: any, workerId: string) => {
+        syncProfileCalls.push({ client: c, workerId });
+        const missing = missingFieldsOverride ?? [];
+        return { ready: missing.length === 0, missing };
       }),
       saveTrustAnswer: jest.fn(async (c: any, input: any) => {
         saveTrustAnswerCalls.push({ client: c, input });
@@ -163,7 +236,15 @@ function createFakeAdapters(clockRef: { now: Date }) {
     _saveNameCalls: saveNameCalls,
     _saveLocationCalls: saveLocationCalls,
     _saveTradeCalls: saveTradeCalls,
+    _saveCustomTradeCalls: saveCustomTradeCalls,
+    _saveExperienceCalls: saveExperienceCalls,
+    _saveTransportationCalls: saveTransportationCalls,
+    _saveAvailabilityCalls: saveAvailabilityCalls,
     _saveTrustAnswerCalls: saveTrustAnswerCalls,
+    _syncProfileCalls: syncProfileCalls,
+    setMissingFields: (missing: string[] | null) => {
+      missingFieldsOverride = missing;
+    },
   };
 }
 
@@ -232,6 +313,51 @@ function makeMsg(body: string, overrides: Partial<OnboardingV2InboundMessage> = 
   };
 }
 
+// Field order mirrors PROFILE_FIELDS (flows.ts); the resolver now walks it
+// on every advance, so a gate seeded mid-flow (e.g. at profile.trade) needs
+// the earlier fields to already look filled in the fake DB — otherwise the
+// resolver correctly, but inconveniently for a test fixture, routes the
+// worker BACK to the first missing one. `main_trade` is seeded as a
+// standard (non-'other') trade so the conditional `main_trade_other` field
+// stays correctly skipped; real handler calls overwrite these dummy values
+// as the flow actually progresses.
+const PROFILE_FIELD_ORDER: ProfileField[] = [
+  'full_name', 'city', 'main_trade', 'main_trade_other',
+  'years_experience', 'has_transportation', 'availability',
+];
+const STEP_FIELD_INDEX: Partial<Record<string, number>> = {
+  'profile.name': 0,
+  'profile.location': 1,
+  'profile.trade': 2,
+  'profile.custom_trade': 3,
+  'profile.experience': 4,
+  'profile.transportation': 5,
+  'profile.availability': 6,
+  'trust.question.1': 7,
+  'trust.question.2': 7,
+  'trust.question.3': 7,
+};
+const SEED_FIELD_VALUES: Record<ProfileField, string | boolean> = {
+  full_name: 'Seed Worker',
+  city: 'Seed City',
+  main_trade: 'electrician',
+  main_trade_other: 'seed-trade',
+  years_experience: '2-4',
+  has_transportation: true,
+  availability: 'full_time',
+};
+
+function seedPriorProfileFields(workerId: string, stepKey: string | null): void {
+  if (!stepKey) return;
+  const idx = STEP_FIELD_INDEX[stepKey];
+  if (idx === undefined) return;
+  for (let i = 0; i < idx; i++) {
+    const field = PROFILE_FIELD_ORDER[i];
+    if (field === 'main_trade_other') continue; // conditional; main_trade is never seeded 'other' here
+    setProfileDbField(workerId, field, SEED_FIELD_VALUES[field]);
+  }
+}
+
 function seedActiveGate(
   gateRepo: ReturnType<typeof createFakeGateRepo>,
   overrides: Partial<WorkerGate> & { userId: string },
@@ -247,6 +373,7 @@ function seedActiveGate(
     ...overrides,
   };
   gateRepo._gates.set(gate.userId, gate);
+  seedPriorProfileFields(gate.userId, gate.currentStepKey);
   return gate;
 }
 
@@ -302,6 +429,72 @@ describe('profile.name', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// Gate: exact-only blocked-command classification at free-text steps
+//
+// Regression coverage for the data-integrity bug where typing a reserved
+// command word (JOBS/CHATS/PROFILE) at a free-text step got saved as answer
+// data, and for the "Chata"/"Perla" false-positive that fuzzy matching would
+// have caused if applyGate simply called classifyBlockedCommand everywhere.
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('applyGate: exact-only classification at free-text steps', () => {
+  it.each(['profile.name', 'profile.custom_trade'] as const)(
+    'at %s, an exact blocked command (JOBS) is not persisted as an answer and does not advance',
+    async (stepKey) => {
+      const { deps, gateRepo, adapters } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: `user-blocked-${stepKey}`, currentStepKey: stepKey });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('JOBS'), deps);
+
+      expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey });
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe(stepKey);
+      expect(adapters._saveNameCalls).toHaveLength(0);
+      expect(adapters._saveTradeCalls).toHaveLength(0);
+      expect(adapters._saveTrustAnswerCalls).toHaveLength(0);
+    },
+  );
+
+  it('at profile.name, the legitimate name "Chata" is accepted and saved normally — the regression this design prevents', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-chata', currentStepKey: 'profile.name' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('Chata'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveNameCalls).toHaveLength(1);
+    expect(adapters._saveNameCalls[0].name).toBe('Chata');
+  });
+
+  it('at profile.location (a structured step), fuzzy blocked-command matching still applies unchanged: "trabjos" (typo of trabajos/jobs) is blocked, not resolved as a location', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-structured-fuzzy', currentStepKey: 'profile.location' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('trabjos'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveLocationCalls).toHaveLength(0);
+  });
+
+  it('at profile.name (a free-text step), the same fuzzy typo "trabjos" is NOT caught by the exact-only guard (no fuzzy fallback at free-text steps)', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-freetext-fuzzy', currentStepKey: 'profile.name' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('trabjos'), deps);
+
+    // Not blocked by the gate: it falls through to the name answer handler
+    // and is treated as ordinary (if odd-looking) free text, exactly as any
+    // other non-command name-shaped string would be.
+    expect(result.stepKey).not.toBe('profile.name');
+    expect(adapters._saveNameCalls).toHaveLength(1);
+    expect(adapters._saveNameCalls[0].name).toBe('trabjos');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // profile.location
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -352,14 +545,17 @@ describe('profile.location', () => {
 describe('profile.trade', () => {
   const standardTrades = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting'];
 
-  it.each(standardTrades)('"%s" attaches the standard question set and advances straight to trust.question.1, never calling generate', async (trade) => {
+  it.each(standardTrades)('"%s" attaches the standard question set (cached for later) and advances to profile.experience, never calling generate', async (trade) => {
     const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: `user-trade-${trade}`, currentStepKey: 'profile.trade' });
     const session = makeSession({ user_id: gate.userId });
 
     const result = await routeOnboardingV2(client, session, makeMsg(trade), deps);
 
-    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+    // V1/V2 parity: a standard trade no longer jumps straight to trust — it
+    // falls through the resolver to the still-missing experience/
+    // transportation/availability fields first.
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.experience' });
     expect(adapters._saveTradeCalls[0].trade).toBe(trade);
     expect(session.state_context.v2TrustSource).toBe('standard');
     expect(adapters.trustQuestions.generate).not.toHaveBeenCalled();
@@ -372,7 +568,7 @@ describe('profile.trade', () => {
 
     const result = await routeOnboardingV2(client, session, makeMsg('1'), deps);
 
-    expect(result.stepKey).toBe('trust.question.1');
+    expect(result.stepKey).toBe('profile.experience');
     expect(adapters._saveTradeCalls[0].trade).toBe('electrician');
   });
 
@@ -413,7 +609,7 @@ describe('profile.trade', () => {
       deps,
     );
 
-    expect(result.stepKey).toBe('trust.question.1');
+    expect(result.stepKey).toBe('profile.experience');
     expect(adapters._saveTradeCalls[0].trade).toBe('plumber');
   });
 
@@ -444,7 +640,7 @@ describe('profile.trade', () => {
       deps,
     );
 
-    expect(result.stepKey).toBe('trust.question.1');
+    expect(result.stepKey).toBe('profile.experience');
     expect(adapters._saveTradeCalls[0].trade).toBe('carpenter');
   });
 
@@ -492,7 +688,11 @@ describe('profile.custom_trade', () => {
 
     const result = await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
 
-    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+    // V1/V2 parity: main_trade_other is now considered "answered" (via the
+    // resolver override, since saveCustomTrade doesn't persist it yet), so
+    // the resolver falls through to the still-missing experience field
+    // rather than jumping straight to trust.
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.experience' });
     expect(session.state_context.v2TrustSource).toBe('generated');
     expect(session.state_context.v2TrustQuestions).toEqual([
       { en: 'Q1 en', es: 'Q1 es' },
@@ -513,7 +713,7 @@ describe('profile.custom_trade', () => {
 
     const result = await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
 
-    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.experience' });
     expect(session.state_context.v2TrustSource).toBe('fallback');
     const questions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
     expect(questions).toHaveLength(3);
@@ -530,7 +730,140 @@ describe('profile.custom_trade', () => {
 
     await expect(
       routeOnboardingV2(client, session, makeMsg('dog groomer'), deps),
-    ).resolves.toMatchObject({ stepKey: 'trust.question.1' });
+    ).resolves.toMatchObject({ stepKey: 'profile.experience' });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// profile.experience / profile.transportation / profile.availability
+// (V1/V2 parity: the fields V1 always asked that V2 previously skipped)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('profile.experience', () => {
+  it('a typed numeric reply and the equivalent interactive payload persist the same canonical value', async () => {
+    const { deps: depsNumeric, gateRepo: gateRepoNumeric, adapters: adaptersNumeric } = makeDeps();
+    const gateNumeric = seedActiveGate(gateRepoNumeric, { userId: 'user-exp-numeric', currentStepKey: 'profile.experience' });
+    const sessionNumeric = makeSession({ user_id: gateNumeric.userId });
+    const resultNumeric = await routeOnboardingV2(client, sessionNumeric, makeMsg('2'), depsNumeric);
+
+    expect(resultNumeric).toEqual({ handled: true, workerId: gateNumeric.userId, stepKey: 'profile.transportation' });
+    expect(adaptersNumeric._saveExperienceCalls[0].yearsExperience).toBe('2-4');
+
+    const { deps: depsPayload, gateRepo: gateRepoPayload, adapters: adaptersPayload } = makeDeps();
+    const gatePayload = seedActiveGate(gateRepoPayload, { userId: 'user-exp-payload', currentStepKey: 'profile.experience' });
+    const sessionPayload = makeSession({ user_id: gatePayload.userId });
+    const resultPayload = await routeOnboardingV2(
+      client, sessionPayload, makeMsg('', { interactivePayload: 'profile:years_experience:2-4' }), depsPayload,
+    );
+
+    expect(resultPayload).toEqual({ handled: true, workerId: gatePayload.userId, stepKey: 'profile.transportation' });
+    expect(adaptersPayload._saveExperienceCalls[0].yearsExperience).toBe('2-4');
+  });
+
+  it('an invalid reply repeats the prompt and does not advance', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-exp-invalid', currentStepKey: 'profile.experience' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('99'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.experience' });
+    expect(adapters._saveExperienceCalls).toHaveLength(0);
+    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.experience');
+  });
+});
+
+describe('profile.transportation', () => {
+  it('a typed numeric reply and the equivalent interactive payload persist the SAME boolean (not a string)', async () => {
+    const { deps: depsNumeric, gateRepo: gateRepoNumeric, adapters: adaptersNumeric } = makeDeps();
+    const gateNumeric = seedActiveGate(gateRepoNumeric, { userId: 'user-transport-numeric', currentStepKey: 'profile.transportation' });
+    const sessionNumeric = makeSession({ user_id: gateNumeric.userId });
+    const resultNumeric = await routeOnboardingV2(client, sessionNumeric, makeMsg('1'), depsNumeric);
+
+    expect(resultNumeric).toEqual({ handled: true, workerId: gateNumeric.userId, stepKey: 'profile.availability' });
+    expect(adaptersNumeric._saveTransportationCalls[0].hasTransportation).toBe(true);
+    expect(typeof adaptersNumeric._saveTransportationCalls[0].hasTransportation).toBe('boolean');
+
+    const { deps: depsPayload, gateRepo: gateRepoPayload, adapters: adaptersPayload } = makeDeps();
+    const gatePayload = seedActiveGate(gateRepoPayload, { userId: 'user-transport-payload', currentStepKey: 'profile.transportation' });
+    const sessionPayload = makeSession({ user_id: gatePayload.userId });
+    const resultPayload = await routeOnboardingV2(
+      client, sessionPayload, makeMsg('', { interactivePayload: 'profile:has_transportation:true' }), depsPayload,
+    );
+
+    expect(resultPayload).toEqual({ handled: true, workerId: gatePayload.userId, stepKey: 'profile.availability' });
+    expect(adaptersPayload._saveTransportationCalls[0].hasTransportation).toBe(true);
+    expect(typeof adaptersPayload._saveTransportationCalls[0].hasTransportation).toBe('boolean');
+  });
+
+  it('a false reply persists boolean false, not the string "false"', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-transport-false', currentStepKey: 'profile.transportation' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('', { interactivePayload: 'profile:has_transportation:false' }), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.availability' });
+    expect(adapters._saveTransportationCalls[0].hasTransportation).toBe(false);
+  });
+
+  it('an invalid reply repeats the prompt and does not advance', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-transport-invalid', currentStepKey: 'profile.transportation' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('nope'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.transportation' });
+    expect(adapters._saveTransportationCalls).toHaveLength(0);
+  });
+});
+
+describe('profile.availability', () => {
+  it('a typed numeric reply and the equivalent interactive payload persist the same canonical value', async () => {
+    const { deps: depsNumeric, gateRepo: gateRepoNumeric, adapters: adaptersNumeric } = makeDeps();
+    const gateNumeric = seedActiveGate(gateRepoNumeric, { userId: 'user-avail-numeric', currentStepKey: 'profile.availability' });
+    const sessionNumeric = makeSession({ user_id: gateNumeric.userId });
+    const resultNumeric = await routeOnboardingV2(client, sessionNumeric, makeMsg('3'), depsNumeric);
+
+    expect(resultNumeric).toEqual({ handled: true, workerId: gateNumeric.userId, stepKey: 'trust.question.1' });
+    expect(adaptersNumeric._saveAvailabilityCalls[0].availability).toBe('weekends');
+
+    const { deps: depsPayload, gateRepo: gateRepoPayload, adapters: adaptersPayload } = makeDeps();
+    const gatePayload = seedActiveGate(gateRepoPayload, { userId: 'user-avail-payload', currentStepKey: 'profile.availability' });
+    const sessionPayload = makeSession({ user_id: gatePayload.userId });
+    const resultPayload = await routeOnboardingV2(
+      client, sessionPayload, makeMsg('', { interactivePayload: 'profile:availability:weekends' }), depsPayload,
+    );
+
+    expect(resultPayload).toEqual({ handled: true, workerId: gatePayload.userId, stepKey: 'trust.question.1' });
+    expect(adaptersPayload._saveAvailabilityCalls[0].availability).toBe('weekends');
+  });
+
+  it('an invalid reply repeats the prompt and does not advance', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-avail-invalid', currentStepKey: 'profile.availability' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('nonsense'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.availability' });
+    expect(adapters._saveAvailabilityCalls).toHaveLength(0);
+  });
+
+  it('completing availability with no trade preselected still lands on trust.question.1 once all fields are filled', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-avail-complete', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps); // -> profile.experience
+    await routeOnboardingV2(client, session, makeMsg('1'), deps); // -> profile.transportation
+    await routeOnboardingV2(client, session, makeMsg('1'), deps); // -> profile.availability
+    const result = await routeOnboardingV2(client, session, makeMsg('1'), deps); // -> trust.question.1
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+    expect(adapters._saveAvailabilityCalls[0].availability).toBe('full_time');
+    expect(session.state_context.v2TrustSource).toBe('standard');
   });
 });
 
@@ -542,12 +875,27 @@ function seedStandardTrustGate(gateRepo: ReturnType<typeof createFakeGateRepo>, 
   return seedActiveGate(gateRepo, { userId, currentStepKey: stepKey });
 }
 
+/** After a trade is selected, the resolver now routes through
+ * profile.experience / profile.transportation / profile.availability
+ * (V1/V2 parity) before trust.question.1. Drives all three with the "1st
+ * option" numeric reply so existing trust-flow tests can reach
+ * trust.question.1 exactly as they did before the parity fix. */
+async function driveThroughRemainingProfileFields(
+  session: OnboardingV2Session,
+  deps: OnboardingV2Deps,
+): Promise<{ handled: boolean; workerId: string | null; stepKey: string }> {
+  await routeOnboardingV2(client, session, makeMsg('1'), deps); // years_experience -> profile.transportation
+  await routeOnboardingV2(client, session, makeMsg('1'), deps); // has_transportation -> profile.availability
+  return routeOnboardingV2(client, session, makeMsg('1'), deps); // availability -> trust.question.1
+}
+
 describe('trust.question.{1,2,3}', () => {
   it('a standard-trade question accepts a 1-based option index and advances (answer 1 -> 2)', async () => {
     const { deps, gateRepo } = makeDeps();
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-1', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
-    await routeOnboardingV2(client, session, makeMsg('electrician'), deps); // -> trust.question.1, standard
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps); // -> profile.experience, standard
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
 
     const result = await routeOnboardingV2(client, session, makeMsg('1'), deps);
 
@@ -560,6 +908,7 @@ describe('trust.question.{1,2,3}', () => {
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-invalid', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
     await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+    await driveThroughRemainingProfileFields(session, deps);
 
     const result = await routeOnboardingV2(client, session, makeMsg('99'), deps);
 
@@ -570,7 +919,8 @@ describe('trust.question.{1,2,3}', () => {
     const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-full', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
-    await routeOnboardingV2(client, session, makeMsg('plumber'), deps); // -> trust.question.1
+    await routeOnboardingV2(client, session, makeMsg('plumber'), deps); // -> profile.experience
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
 
     const r1 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
     expect(r1.stepKey).toBe('trust.question.2');
@@ -603,6 +953,7 @@ describe('trust.question.{1,2,3}', () => {
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-txn', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
     await routeOnboardingV2(client, session, makeMsg('carpenter'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
     await routeOnboardingV2(client, session, makeMsg('1'), deps);
     await routeOnboardingV2(client, session, makeMsg('1'), deps);
 
@@ -624,6 +975,7 @@ describe('trust.question.{1,2,3}', () => {
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-ready', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
     await routeOnboardingV2(client, session, makeMsg('concrete'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
     const gatewayCallsBefore = gateway.calls.length;
 
     await routeOnboardingV2(client, session, makeMsg('1'), deps);
@@ -640,6 +992,7 @@ describe('trust.question.{1,2,3}', () => {
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-repeat', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
     await routeOnboardingV2(client, session, makeMsg('painting'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
     await routeOnboardingV2(client, session, makeMsg('1'), deps);
     await routeOnboardingV2(client, session, makeMsg('1'), deps);
     await routeOnboardingV2(client, session, makeMsg('1'), deps);
@@ -661,7 +1014,8 @@ describe('trust.question.{1,2,3}', () => {
     adapters.trustQuestions.generate.mockResolvedValueOnce(null); // fallback
     const gate = seedActiveGate(gateRepo, { userId: 'user-trust-freetext', currentStepKey: 'profile.custom_trade' });
     const session = makeSession({ user_id: gate.userId });
-    await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps); // -> trust.question.1 fallback
+    await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps); // -> profile.experience, fallback
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
 
     const result = await routeOnboardingV2(client, session, makeMsg('5 years, mostly labradors'), deps);
 
@@ -675,15 +1029,263 @@ describe('trust.question.{1,2,3}', () => {
     const gate = seedActiveGate(gateRepo, { userId: 'user-trust-empty-freetext', currentStepKey: 'profile.custom_trade' });
     const session = makeSession({ user_id: gate.userId });
     await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
 
     const result = await routeOnboardingV2(client, session, makeMsg('   '), deps);
 
     expect(result.stepKey).toBe('trust.question.1');
   });
+
+  it.each(['trust.question.1', 'trust.question.2', 'trust.question.3'] as const)(
+    'at %s, an exact blocked command (CHATS) is not persisted as a trust answer and does not advance',
+    async (stepKey) => {
+      const { deps, gateRepo, adapters } = makeDeps();
+      const gate = seedStandardTrustGate(gateRepo, `user-trust-blocked-${stepKey}`, stepKey);
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('CHATS'), deps);
+
+      expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey });
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe(stepKey);
+      expect(adapters._saveTrustAnswerCalls).toHaveLength(0);
+    },
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Defect 1 — the raw custom trade is persisted, not thrown away
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('profile.custom_trade: raw profession persistence (Defect 1)', () => {
+  it('persists the raw typed profession via saveCustomTrade (never the old saveTrade(...,"other") call), while the NORMALIZED key still reaches the trust-question lookup', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-custom-raw', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    await routeOnboardingV2(client, session, makeMsg('  Welder  '), deps);
+    const result = await driveThroughRemainingProfileFields(session, deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+
+    // saveCustomTrade received the RAW (trimmed, not normalized) text.
+    expect(adapters._saveCustomTradeCalls).toHaveLength(1);
+    expect(adapters._saveCustomTradeCalls[0].workerId).toBe(gate.userId);
+    expect(adapters._saveCustomTradeCalls[0].rawProfession).toBe('Welder');
+
+    // The old saveTrade(client, workerId, 'other') call is gone for this path.
+    expect(adapters._saveTradeCalls).toHaveLength(0);
+
+    // The trust-question lookup still gets the NORMALIZED key.
+    expect(session.state_context.v2ProfileTrade).toBe('welder');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Defect 2 — profile sync + fail-closed gate at the pre-trust handoff
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('pre-trust profile sync (Defect 2)', () => {
+  it('syncs the profile (via syncProfileForTrustHandoff) before advancing a STANDARD trade to trust.question.1', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-sync-standard', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+    const result = await driveThroughRemainingProfileFields(session, deps);
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(adapters._syncProfileCalls).toHaveLength(1);
+    expect(adapters._syncProfileCalls[0].workerId).toBe(gate.userId);
+
+    // Sync must run BEFORE the advanceWorkflow transition into trust.question.1.
+    const syncOrder = (adapters.profile.syncProfileForTrustHandoff as jest.Mock).mock.invocationCallOrder[0];
+    const advanceTransition = gateRepo._transitions.find((t: any) => t.toStepKey === 'trust.question.1');
+    expect(advanceTransition).toBeDefined();
+  });
+
+  it('syncs the profile before advancing a CUSTOM trade to trust.question.1', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-sync-custom', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
+    const result = await driveThroughRemainingProfileFields(session, deps);
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(adapters._syncProfileCalls).toHaveLength(1);
+    expect(adapters._syncProfileCalls[0].workerId).toBe(gate.userId);
+  });
+
+  it('repeated invocation of the sync point is idempotent: two separate workers each get exactly one sync call for their own transition', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gateA = seedActiveGate(gateRepo, { userId: 'user-sync-idem-a', currentStepKey: 'profile.trade' });
+    const sessionA = makeSession({ user_id: gateA.userId });
+    const gateB = seedActiveGate(gateRepo, { userId: 'user-sync-idem-b', currentStepKey: 'profile.trade' });
+    const sessionB = makeSession({ user_id: gateB.userId });
+
+    await routeOnboardingV2(client, sessionA, makeMsg('plumber'), deps);
+    await driveThroughRemainingProfileFields(sessionA, deps);
+    await routeOnboardingV2(client, sessionB, makeMsg('carpenter'), deps);
+    await driveThroughRemainingProfileFields(sessionB, deps);
+
+    expect(adapters._syncProfileCalls.filter((c) => c.workerId === gateA.userId)).toHaveLength(1);
+    expect(adapters._syncProfileCalls.filter((c) => c.workerId === gateB.userId)).toHaveLength(1);
+  });
+
+  it('fail-closed: when the sync reports a missing required field, the worker does NOT advance to trust.question.1 and a structured OnboardingGateBlocked warning is logged', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.setMissingFields(['availability']);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const gate = seedActiveGate(gateRepo, { userId: 'user-gate-blocked', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    // The sync gate runs at the profile->trust handoff, which the resolver
+    // only reaches after the LAST profile field (availability) is answered --
+    // not at profile.trade. Blocking any earlier would strand every worker on
+    // a field they have not been asked for yet.
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+    const result = await driveThroughRemainingProfileFields(session, deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.availability' });
+    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.availability');
+    expect(gateRepo._transitions.some((t: any) => t.toStepKey === 'trust.question.1')).toBe(false);
+
+    const logged = warnSpy.mock.calls.map((c) => c[0]).find((s) => String(s).includes('OnboardingGateBlocked'));
+    expect(logged).toBeDefined();
+    const parsed = JSON.parse(logged as string);
+    expect(parsed).toMatchObject({ metric: 'OnboardingGateBlocked', stepKey: 'profile.availability', missing: ['availability'] });
+
+    warnSpy.mockRestore();
+  });
+
+  it('fail-closed also blocks a CUSTOM trade advance to trust.question.1 when the profile is still incomplete after sync', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.setMissingFields(['skill']);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const gate = seedActiveGate(gateRepo, { userId: 'user-gate-blocked-custom', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
+    const result = await driveThroughRemainingProfileFields(session, deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.availability' });
+    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.availability');
+    expect(gateRepo._transitions.some((t: any) => t.toStepKey === 'trust.question.1')).toBe(false);
+
+    warnSpy.mockRestore();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Defect 3 — trust answers carry scorer-compatible q_en / q_es / answer_source
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('trust answers are scorer-compatible (Defect 3)', () => {
+  it('a STANDARD trade answer is saved with q_en, q_es, answer_source:"text", and answer_text matching the option chosen', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-qtext-standard', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
+
+    const expectedQuestions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(1);
+    const saved = adapters._saveTrustAnswerCalls[0].input;
+    expect(saved.qEn).toBe(expectedQuestions[0].en);
+    expect(saved.qEs).toBe(expectedQuestions[0].es);
+    expect(saved.answerSource).toBe('text');
+    expect(typeof saved.answerText).toBe('string');
+    expect(saved.answerText.length).toBeGreaterThan(0);
+  });
+
+  it('a CUSTOM trade (fallback) answer is saved with q_en, q_es, answer_source:"text", and the free-text answerText', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.trustQuestions.generate.mockResolvedValueOnce(null); // -> fallback questions
+    const gate = seedActiveGate(gateRepo, { userId: 'user-qtext-custom', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
+
+    const expectedQuestions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+    await routeOnboardingV2(client, session, makeMsg('5 years, mostly labradors'), deps);
+
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(1);
+    const saved = adapters._saveTrustAnswerCalls[0].input;
+    expect(saved.qEn).toBe(expectedQuestions[0].en);
+    expect(saved.qEs).toBe(expectedQuestions[0].es);
+    expect(saved.answerSource).toBe('text');
+    expect(saved.answerText).toBe('5 years, mostly labradors');
+  });
+
+  it('question text advances per-question across all three answers (Q2/Q3 carry their own q_en/q_es, not Q1\'s)', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-qtext-sequence', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('plumber'), deps);
+    await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
+    const questions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(3);
+    expect(adapters._saveTrustAnswerCalls.map((c) => c.input.qEn)).toEqual([
+      questions[0].en, questions[1].en, questions[2].en,
+    ]);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════
 // No blocking / processing_ai / media path anywhere in this flow
+// ═══════════════════════════════════════════════════════════════════════
+// legal.review acceptance now resolves the first missing profile step
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('legal.review acceptance with a resolver-driven next step', () => {
+  it('a brand-new worker (empty profile) lands on profile.name, same as before', async () => {
+    const { deps, gateRepo } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-legal-empty', currentStepKey: 'legal.review' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('', { interactivePayload: 'legal:accept' }), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.name' });
+  });
+
+  it('a partially-filled profile (e.g. AI-voice-extracted before legal was accepted) lands on the FIRST missing step, not profile.name', async () => {
+    const { deps, gateRepo } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-legal-partial', currentStepKey: 'legal.review' });
+    // Simulate a profile already partially filled in the DB (name + city),
+    // e.g. by the AI voice-extraction path, before the worker got to legal.
+    setProfileDbField(gate.userId, 'full_name', 'Maria Lopez');
+    setProfileDbField(gate.userId, 'city', 'Austin');
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('', { interactivePayload: 'legal:accept' }), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.trade' });
+  });
+
+  it('a fully-filled profile skips straight to trust.question.1', async () => {
+    const { deps, gateRepo } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-legal-complete', currentStepKey: 'legal.review' });
+    setProfileDbField(gate.userId, 'full_name', 'Maria Lopez');
+    setProfileDbField(gate.userId, 'city', 'Austin');
+    setProfileDbField(gate.userId, 'main_trade', 'electrician');
+    setProfileDbField(gate.userId, 'years_experience', '2-4');
+    setProfileDbField(gate.userId, 'has_transportation', true);
+    setProfileDbField(gate.userId, 'availability', 'full_time');
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('', { interactivePayload: 'legal:accept' }), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('non-blocking assessment', () => {
@@ -699,12 +1301,18 @@ describe('non-blocking assessment', () => {
     seen.push(r2.stepKey);
     const r3 = await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
     seen.push(r3.stepKey);
-    const r4 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    const r4 = await routeOnboardingV2(client, session, makeMsg('1'), deps); // years_experience
     seen.push(r4.stepKey);
-    const r5 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    const r5 = await routeOnboardingV2(client, session, makeMsg('1'), deps); // has_transportation
     seen.push(r5.stepKey);
-    const r6 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    const r6 = await routeOnboardingV2(client, session, makeMsg('1'), deps); // availability -> trust.question.1
     seen.push(r6.stepKey);
+    const r7 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    seen.push(r7.stepKey);
+    const r8 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    seen.push(r8.stepKey);
+    const r9 = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    seen.push(r9.stepKey);
 
     expect(seen).not.toContain('processing_ai');
     expect(seen).not.toContain('awaiting_media_photo');

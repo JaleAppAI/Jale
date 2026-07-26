@@ -6,13 +6,20 @@ export type WorkflowStepKey =
   | 'start.choose_language'
   | 'identity.verify_otp'
   | 'legal.review'
+  | 'profile.voice_choice'
+  | 'profile.voice_processing'
   | 'profile.name'
   | 'profile.location'
   | 'profile.trade'
   | 'profile.custom_trade'
+  | 'profile.experience'
+  | 'profile.transportation'
+  | 'profile.availability'
   | 'trust.question.1'
   | 'trust.question.2'
-  | 'trust.question.3';
+  | 'trust.question.3'
+  | 'profile.photo'
+  | 'profile.photo_type';
 
 export type WorkflowRunStatus =
   | 'active'
