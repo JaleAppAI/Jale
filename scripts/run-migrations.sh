@@ -213,29 +213,90 @@ run_on_bastion() {
     || die "send-command failed for $comment"
   [[ -n "$cmd_id" && "$cmd_id" != "None" ]] || die "no CommandId returned for $comment"
 
+  # Poll and read output with get-command-invocation, NOT
+  # list-command-invocations: the latter truncates its Output field at about
+  # 2,500 characters, which silently cut the ledger read off at 28 of 51 rows
+  # and produced a bogus "migration edited on disk" alarm. get-command-invocation
+  # returns up to 24,000 characters of StandardOutputContent.
   local status
   while true; do
-    status=$(aws ssm list-command-invocations --region "$REGION" --command-id "$cmd_id" \
-              --details --query "CommandInvocations[0].Status" --output text 2>/dev/null || echo "Pending")
+    status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" \
+              --instance-id "$BASTION_ID" --query "Status" --output text 2>/dev/null || echo "Pending")
     case "$status" in
       Success) break ;;
       Failed|Cancelled|TimedOut)
         echo "!! bastion command '$comment' ended: $status" >&2
-        aws ssm list-command-invocations --region "$REGION" --command-id "$cmd_id" --details \
-          --query "CommandInvocations[0].CommandPlugins[0].{Status:Status,Out:Output}" \
-          --output text >&2
+        aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" \
+          --instance-id "$BASTION_ID" --query "StandardErrorContent" --output text >&2 || true
         exit 1 ;;
       *) sleep 5 ;;
     esac
   done
 
-  aws ssm list-command-invocations --region "$REGION" --command-id "$cmd_id" --details \
-    --query "CommandInvocations[0].CommandPlugins[0].Output" --output text > "$out"
+  aws ssm get-command-invocation --region "$REGION" --command-id "$cmd_id" \
+    --instance-id "$BASTION_ID" --query "StandardOutputContent" --output text > "$out"
 
   cat "$out"
 
-  grep -q "$SENTINEL" "$out" \
-    || die "'$comment' reported Success but never printed the completion sentinel — treating as failed"
+  # SSM truncates inline output at roughly 24 KB. A truncated tail can drop the
+  # sentinel even though the remote script ran to completion, so absence of the
+  # sentinel is only conclusive when the output was NOT truncated. When it was,
+  # say so and leave the verdict to verify_ledger(), which reads database state
+  # and cannot be fooled by a lost stdout tail.
+  if grep -q "$SENTINEL" "$out"; then
+    :
+  elif grep -q -- '---Output truncated---' "$out"; then
+    echo "!! '$comment' output was truncated by SSM; falling back to state verification" >&2
+  else
+    die "'$comment' reported Success but never printed the completion sentinel — treating as failed"
+  fi
+}
+
+# Authoritative check: does the database now record exactly what we intended?
+# stdout can be truncated or lost; the ledger cannot.
+verify_ledger() {
+  local -n _expect="$1"
+  (( ${#_expect[@]} > 0 )) || return 0
+
+  local list="" f
+  for f in "${_expect[@]}"; do list+="${list:+,}'$f'"; done
+
+  {
+    emit_pg_preamble
+    cat <<VERIFY
+echo "---VERIFY-BEGIN---"
+"\${PG[@]}" -At -F '|' -c "SELECT filename, coalesce(checksum,'') FROM $LEDGER_TABLE
+  WHERE filename IN ($list) ORDER BY filename;"
+echo "---VERIFY-END---"
+unset PGPASSWORD
+echo "$SENTINEL"
+VERIFY
+  } > "$WORKDIR/verify.sh"
+
+  run_on_bastion "$WORKDIR/verify.sh" "verify ledger" > "$WORKDIR/verify-out.txt"
+
+  sed -n '/---VERIFY-BEGIN---/,/---VERIFY-END---/p' "$WORKDIR/verify-out.txt" \
+    | grep -v -- '---VERIFY-' > "$WORKDIR/verified.txt" || true
+
+  declare -A GOT
+  local fname csum
+  while IFS='|' read -r fname csum; do
+    [[ -n "$fname" ]] && GOT["$fname"]="$csum"
+  done < "$WORKDIR/verified.txt"
+
+  local bad=()
+  for f in "${_expect[@]}"; do
+    local want; want="$(sha256_of "$MIGRATION_DIR/$f")"
+    [[ "${GOT[$f]:-}" == "$want" ]] || bad+=("$f")
+  done
+
+  if (( ${#bad[@]} > 0 )); then
+    echo "!! the ledger does not record these as applied with the expected checksum:" >&2
+    printf '     %s\n' "${bad[@]}" >&2
+    die "migration run could not be verified against database state"
+  fi
+
+  note "Verified against the ledger: ${#_expect[@]} migration(s) recorded with matching checksums."
 }
 
 # Shared bastion preamble: fetch admin creds, build the psql command array.
@@ -468,19 +529,28 @@ apply_batch() {
   local label="$2" script="$WORKDIR/apply-$2.sh"
   { emit_pg_preamble; emit_ledger_ddl; } > "$script"
 
-  local f sum b64
+  # Baseline entries are folded into one multi-row INSERT rather than a line
+  # of output each. SSM truncates inline command output at roughly 24 KB, and
+  # a chatty run can push the completion sentinel past that cutoff — which
+  # looks exactly like a failure that did not happen.
+  local f sum b64 values=""
   for f in "${_batch[@]}"; do
-    sum="$(sha256_of "$MIGRATION_DIR/$f")"
-
     if [[ -n "${BASELINE_ONLY[$f]:-}" ]]; then
-      cat >> "$script" <<BASELINE_ONE
-echo "   = $f (baseline: recorded, not executed)"
-"\${PG[@]}" -q -c "INSERT INTO $LEDGER_TABLE (filename, checksum)
-  VALUES ('$f', '$sum')
-  ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum;"
-BASELINE_ONE
-      continue
+      sum="$(sha256_of "$MIGRATION_DIR/$f")"
+      values+="${values:+,}('$f','$sum')"
     fi
+  done
+  if [[ -n "$values" ]]; then
+    cat >> "$script" <<BASELINE_ALL
+"\${PG[@]}" -q -c "INSERT INTO $LEDGER_TABLE (filename, checksum)
+  VALUES $values
+  ON CONFLICT (filename) DO UPDATE SET checksum = EXCLUDED.checksum;"
+BASELINE_ALL
+  fi
+
+  for f in "${_batch[@]}"; do
+    [[ -z "${BASELINE_ONLY[$f]:-}" ]] || continue
+    sum="$(sha256_of "$MIGRATION_DIR/$f")"
 
     b64="$(encode_migration "$MIGRATION_DIR/$f")"
     [[ -n "$b64" ]] || die "encoded $f to an empty payload"
@@ -532,6 +602,7 @@ done
 flush_batch
 
 if (( ${#PENDING[@]} > 0 )); then
+  verify_ledger PENDING
   note "Migrations complete. Ledger updated."
 fi
 

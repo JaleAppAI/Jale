@@ -58,6 +58,39 @@ describe('run-migrations.sh', () => {
     expect(script).toMatch(/never printed the completion sentinel/);
   });
 
+  it('does not mistake SSM output truncation for failure', () => {
+    const script = readScript();
+
+    // SSM truncates inline output around 24 KB, which can swallow the
+    // sentinel from a run that completed. Absence of the sentinel is only
+    // conclusive when the output was not truncated.
+    expect(script).toContain("grep -q -- '---Output truncated---'");
+    expect(script).toMatch(/falling back to state verification/);
+  });
+
+  it('reads command output through the API that does not truncate at 2.5 KB', () => {
+    const script = readScript();
+
+    // list-command-invocations truncates its Output field at roughly 2,500
+    // characters. That cut a 51-row ledger read off at 28 rows and produced a
+    // bogus "migration edited on disk" alarm. get-command-invocation returns
+    // up to 24,000 characters.
+    expect(script).toContain('aws ssm get-command-invocation');
+    expect(script).toContain('--query "StandardOutputContent"');
+    expect(script).not.toContain('aws ssm list-command-invocations');
+  });
+
+  it('proves success from database state, not from stdout', () => {
+    const script = readScript();
+
+    expect(script).toMatch(/^verify_ledger\(\) \{/m);
+    // The verifier re-reads the ledger and compares checksums per file.
+    expect(script).toMatch(/SELECT filename, coalesce\(checksum,''\) FROM \$LEDGER_TABLE/);
+    expect(script).toMatch(/could not be verified against database state/);
+    // And it runs after the batches, on the set that was meant to change.
+    expect(script).toMatch(/verify_ledger PENDING/);
+  });
+
   it('keeps a migration ledger so applied migrations are never replayed', () => {
     const script = readScript();
 
