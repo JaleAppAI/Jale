@@ -320,6 +320,9 @@ export interface ProfilePersistenceAdapter {
    * anything meaningful for a custom trade).
    */
   saveCustomTrade(client: PoolClient, workerId: string, rawProfession: string): Promise<void>;
+  saveExperience(client: PoolClient, workerId: string, yearsExperience: string): Promise<void>;
+  saveTransportation(client: PoolClient, workerId: string, hasTransportation: boolean): Promise<void>;
+  saveAvailability(client: PoolClient, workerId: string, availability: string): Promise<void>;
   saveTrustAnswer(client: PoolClient, input: TrustAnswerInput): Promise<void>;
   /**
    * Defect 2 fix: the canonical "profile complete -> about to hand off to
@@ -464,6 +467,27 @@ export function createProfilePersistenceAdapter(
       if (!profile || !profile.location) missing.push('location');
 
       return { ready: missing.length === 0, missing };
+    },
+
+    async saveExperience(client, workerId, yearsExperience) {
+      await client.query(
+        `UPDATE users SET years_experience = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, yearsExperience],
+      );
+    },
+
+    async saveTransportation(client, workerId, hasTransportation) {
+      await client.query(
+        `UPDATE users SET has_transportation = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, hasTransportation],
+      );
+    },
+
+    async saveAvailability(client, workerId, availability) {
+      await client.query(
+        `UPDATE users SET availability = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, availability],
+      );
     },
 
     async saveTrustAnswer(client, input) {

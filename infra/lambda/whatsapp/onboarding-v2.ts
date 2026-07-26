@@ -65,10 +65,18 @@ import {
   buildV2OtpPrompt,
   buildV2LegalPrompt,
   buildV2TradePrompt,
+  buildProfileInteractivePrompt,
   V2_FALLBACK_TRUST_QUESTIONS,
   type InteractivePrompt,
 } from './lib/interactive-templates';
-import { normalizeCommandText } from './lib/flows';
+import {
+  normalizeCommandText,
+  parseProfileAnswer,
+  parseProfilePayloadAnswer,
+  type ProfileField,
+} from './lib/flows';
+import { loadProfileFromDb } from './lib/profile-flow';
+import { resolveNextProfileStep } from './lib/onboarding-profile-resolver';
 import {
   normalizeTrade,
   standardTrustQuestions,
@@ -230,6 +238,9 @@ const STEP_ROUTING: Record<string, { ownerService: OwnerService; category: Messa
   'profile.location': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
   'profile.trade': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
   'profile.custom_trade': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
+  'profile.experience': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
+  'profile.transportation': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
+  'profile.availability': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
   'trust.question.1': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
   'trust.question.2': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
   'trust.question.3': { ownerService: 'onboarding-v2', category: 'onboarding', priority: 5 },
@@ -315,6 +326,21 @@ function buildPromptForStep(
     }
     case 'profile.custom_trade':
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_custom_trade', lang) };
+    case 'profile.experience':
+      return (
+        buildProfileInteractivePrompt('years_experience', lang)
+        ?? { templateName: '', variables: {}, fallbackBody: t('ask_experience', lang) }
+      );
+    case 'profile.transportation':
+      return (
+        buildProfileInteractivePrompt('has_transportation', lang)
+        ?? { templateName: '', variables: {}, fallbackBody: t('ask_transportation', lang) }
+      );
+    case 'profile.availability':
+      return (
+        buildProfileInteractivePrompt('availability', lang)
+        ?? { templateName: '', variables: {}, fallbackBody: t('ask_availability', lang) }
+      );
     case 'trust.question.1':
     case 'trust.question.2':
     case 'trust.question.3':
@@ -743,6 +769,145 @@ function effectiveLang(session: OnboardingV2Session, gate: WorkerGate): Lang {
     ?? gate.preferredLanguage;
 }
 
+// ── Shared: profile-complete → trust handoff ─────────────────────────────
+
+/**
+ * Sole call site for advancing a run from "the last profile field was just
+ * captured" into the trust flow.
+ *
+ * The `worker_profiles`/`worker_skills` sync runs HERE, at the top, before
+ * `advanceWorkflow`. It has to be at this point rather than at any individual
+ * field's handler: `syncProfileForTrustHandoff` fails closed on a missing
+ * availability, and availability is the LAST field the resolver asks for. Run
+ * it any earlier — e.g. at profile.trade — and every worker deadlocks on a
+ * field they have not been asked for yet.
+ *
+ * Failing closed matters because lifecycle `ready` is a promise to the rest of
+ * the product: the web apply flow and the matching engine both reject a worker
+ * with no name, no skill, no availability, or no location. Better to hold the
+ * worker on the current prompt than to advance them into a state the product
+ * cannot honor.
+ */
+async function advanceProfileCompleteToTrust(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  fromStepKey: WorkflowStepKey,
+  contextPatch: Record<string, unknown>,
+  reason: string,
+  now: Date,
+): Promise<RouteResult> {
+  const sync = await deps.adapters.profile.syncProfileForTrustHandoff(client, gate.userId);
+  if (!sync.ready) {
+    console.warn(JSON.stringify({
+      metric: 'OnboardingGateBlocked',
+      command: 'profile_incomplete',
+      stepKey: fromStepKey,
+      missing: sync.missing,
+    }));
+    await repeatCurrentPrompt(
+      client, session, deps, gate.userId, fromStepKey,
+      effectiveLang(session, gate), now, gate.runId!, msg.messageSid,
+    );
+    return { handled: true, workerId: gate.userId, stepKey: fromStepKey };
+  }
+
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey,
+    toStepKey: 'trust.question.1',
+    contextPatch,
+    inboundMessageSid: msg.messageSid,
+    reason,
+  });
+  await sendTrustPrompt(
+    client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated),
+    now, gate.runId!, msg.messageSid, `${reason}:${now.getTime()}`, session.state_context,
+  );
+  return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
+}
+
+/**
+ * Shared post-field-capture transition used by every profile-collecting
+ * handler (legal acceptance included): reload the worker's DB-persisted
+ * profile, ask the pure resolver (`resolveNextProfileStep`, V1/V2 parity
+ * fix) which of the seven canonical fields is still missing, and advance
+ * there — or, when the resolver reports the profile is complete, hand off
+ * to `advanceProfileCompleteToTrust`.
+ *
+ * This is what replaces the old hardcoded
+ * legal.review → profile.name → profile.location → profile.trade →
+ * trust.question.1 chain: every field the worker already has on file (e.g.
+ * a resuming or partially AI-extracted profile) is skipped rather than
+ * re-asked.
+ *
+ * `collectedOverride` lets a caller tell the resolver about an answer that
+ * isn't (yet) reflected in `dbFilled` — used by `handleCustomTrade`, whose
+ * adapter does not yet persist `main_trade_other` (a concurrent change adds
+ * that), so it passes the just-answered profession through here instead of
+ * relying on a DB read that won't see it. That override is also merged with
+ * `session.state_context.v2CustomTradeText` (set by `handleCustomTrade`,
+ * durable across turns per this router's state_context contract) so EVERY
+ * subsequent call — not just the one immediately after profile.custom_trade
+ * — keeps treating main_trade_other as answered, until the sibling
+ * saveCustomTrade change lands and dbFilled reflects it directly.
+ */
+async function advanceProfileToNextStep(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  fromStepKey: WorkflowStepKey,
+  contextPatch: Record<string, unknown>,
+  reason: string,
+  now: Date,
+  collectedOverride: Partial<Record<ProfileField, string | boolean>> = {},
+): Promise<RouteResult> {
+  const dbFilled = await loadProfileFromDb(client, gate.userId);
+  const customTradeText = session.state_context?.v2CustomTradeText as string | undefined;
+  const mergedOverride: Partial<Record<ProfileField, string | boolean>> = customTradeText
+    ? { main_trade_other: customTradeText, ...collectedOverride }
+    : collectedOverride;
+  const nextStep = resolveNextProfileStep(dbFilled, mergedOverride);
+
+  if (nextStep === null) {
+    return advanceProfileCompleteToTrust(client, session, msg, deps, gate, fromStepKey, contextPatch, reason, now);
+  }
+
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey,
+    toStepKey: nextStep,
+    contextPatch,
+    inboundMessageSid: msg.messageSid,
+    reason,
+  });
+  await sendStepPrompt(
+    client, deps, updated.userId, nextStep, effectiveLang(session, updated),
+    now, gate.runId!, msg.messageSid, `${reason}:${now.getTime()}`, session.state_context,
+  );
+  return { handled: true, workerId: updated.userId, stepKey: nextStep };
+}
+
+/** Dual-input parse for a buttons-type profile field: an interactive tap
+ * (`profile:<field>:<value>`, parsed by `parseProfilePayloadAnswer`) or the
+ * typed numeric fallback (`parseProfileAnswer`) — mirrors how
+ * `parseTradeChoice` accepts both dialects for `profile.trade`. */
+function parseProfileFieldChoice(
+  field: ProfileField,
+  msg: OnboardingV2InboundMessage,
+): string | boolean | null {
+  if (msg.interactivePayload) {
+    return parseProfilePayloadAnswer(field, msg.interactivePayload);
+  }
+  return parseProfileAnswer(field, msg.body ?? '');
+}
+
 async function handleLegalStep(
   client: PoolClient,
   session: OnboardingV2Session,
@@ -783,17 +948,13 @@ async function handleLegalStep(
       workerId: gate.userId,
       documentVersion: deps.requiredLegalVersion,
     });
-    const updated = await deps.repo.advanceWorkflow(client, {
-      runId: gate.runId!,
-      expectedLockVersion: gate.lockVersion!,
-      fromStepKey: 'legal.review',
-      toStepKey: 'profile.name',
-      contextPatch: { legalAcceptedAt: now.toISOString() },
-      inboundMessageSid: msg.messageSid,
-      reason: 'legal_accept',
-    });
-    await sendStepPrompt(client, deps, updated.userId, 'profile.name', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `accept:${now.getTime()}`);
-    return { handled: true, workerId: updated.userId, stepKey: 'profile.name' };
+    return advanceProfileToNextStep(
+      client, session, msg, deps, gate,
+      'legal.review',
+      { legalAcceptedAt: now.toISOString() },
+      'legal_accept',
+      now,
+    );
   }
 
   if (decline) {
@@ -841,17 +1002,13 @@ async function handleProfileName(
   }
 
   await deps.adapters.profile.saveName(client, gate.userId, trimmed);
-  const updated = await deps.repo.advanceWorkflow(client, {
-    runId: gate.runId!,
-    expectedLockVersion: gate.lockVersion!,
-    fromStepKey: 'profile.name',
-    toStepKey: 'profile.location',
-    contextPatch: { nameSetAt: now.toISOString() },
-    inboundMessageSid: msg.messageSid,
-    reason: 'profile_name_set',
-  });
-  await sendStepPrompt(client, deps, updated.userId, 'profile.location', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `name:${now.getTime()}`);
-  return { handled: true, workerId: updated.userId, stepKey: 'profile.location' };
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.name',
+    { nameSetAt: now.toISOString() },
+    'profile_name_set',
+    now,
+  );
 }
 
 // ── Bound: profile.location ──────────────────────────────────────────────
@@ -872,17 +1029,13 @@ async function handleProfileLocation(
   }
 
   await deps.adapters.profile.saveLocation(client, gate.userId, resolved);
-  const updated = await deps.repo.advanceWorkflow(client, {
-    runId: gate.runId!,
-    expectedLockVersion: gate.lockVersion!,
-    fromStepKey: 'profile.location',
-    toStepKey: 'profile.trade',
-    contextPatch: { locationSource: resolved.source },
-    inboundMessageSid: msg.messageSid,
-    reason: 'profile_location_set',
-  });
-  await sendStepPrompt(client, deps, updated.userId, 'profile.trade', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `location:${now.getTime()}`);
-  return { handled: true, workerId: updated.userId, stepKey: 'profile.trade' };
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.location',
+    { locationSource: resolved.source },
+    'profile_location_set',
+    now,
+  );
 }
 
 // ── Bound: profile.trade (list picker) ───────────────────────────────────
@@ -916,54 +1069,6 @@ function parseTradeChoice(msg: OnboardingV2InboundMessage): (typeof TRADE_ORDER)
   return null;
 }
 
-/**
- * Defect 2 fix — the "profile complete -> about to advance to
- * trust.question.1" sync + fail-closed gate.
- *
- * CRITICAL COORDINATION NOTE FOR THE INTEGRATOR: another engineer is
- * concurrently rewriting this file's step sequencing to be conditional and
- * is factoring "profile complete -> advance to trust" into ONE shared
- * helper function. No such helper existed in this worktree at the time this
- * was written (branch point predates that rewrite), so this call is
- * duplicated at BOTH call sites that transition into `trust.question.1` —
- * `handleProfileTrade` (standard trade) and `handleCustomTrade` (custom
- * trade) — immediately before each one's `advanceWorkflow` call. If/when
- * the sequencing rewrite lands its shared helper, MOVE this function's call
- * (and delete the duplication) into that helper instead.
- *
- * Calls the canonical `upsertWorkerProfileFromUsers` projection (via
- * `adapters.profile.syncProfileForTrustHandoff`, never re-implemented here)
- * and then checks whether the resulting `worker_profiles`/`worker_skills`
- * state has everything the product needs. A worker must never reach
- * `ready` without a name, a skill, availability, and a location — those are
- * exactly the fields the web app's profile-completeness gate and the
- * matching engine require. On failure this logs a structured
- * `OnboardingGateBlocked` warning (matching the gate's existing metric
- * style) and repeats the current step's prompt instead of advancing.
- */
-async function syncProfileAndGateTrustHandoff(
-  client: PoolClient,
-  deps: OnboardingV2Deps,
-  session: OnboardingV2Session,
-  msg: OnboardingV2InboundMessage,
-  gate: WorkerGate,
-  lang: Lang,
-  now: Date,
-  stepKey: 'profile.trade' | 'profile.custom_trade',
-): Promise<RouteResult | null> {
-  const sync = await deps.adapters.profile.syncProfileForTrustHandoff(client, gate.userId);
-  if (sync.ready) return null;
-
-  console.warn(JSON.stringify({
-    metric: 'OnboardingGateBlocked',
-    command: 'profile_incomplete',
-    stepKey,
-    missing: sync.missing,
-  }));
-  await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
-  return { handled: true, workerId: gate.userId, stepKey };
-}
-
 async function handleProfileTrade(
   client: PoolClient,
   session: OnboardingV2Session,
@@ -981,22 +1086,26 @@ async function handleProfileTrade(
 
   if (choice === 'other') {
     await deps.adapters.profile.saveTrade(client, gate.userId, 'other');
-    const updated = await deps.repo.advanceWorkflow(client, {
-      runId: gate.runId!,
-      expectedLockVersion: gate.lockVersion!,
-      fromStepKey: 'profile.trade',
-      toStepKey: 'profile.custom_trade',
-      contextPatch: { selectedTrade: 'other' },
-      inboundMessageSid: msg.messageSid,
-      reason: 'profile_trade_other',
-    });
-    await sendStepPrompt(client, deps, updated.userId, 'profile.custom_trade', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `trade:${now.getTime()}`);
-    return { handled: true, workerId: updated.userId, stepKey: 'profile.custom_trade' };
+    // computeNextField's main_trade_other conditional activates now that
+    // main_trade === 'other' is on the DB row, so the resolver naturally
+    // lands on profile.custom_trade next — no hardcoding needed here.
+    return advanceProfileToNextStep(
+      client, session, msg, deps, gate,
+      'profile.trade',
+      { selectedTrade: 'other' },
+      'profile_trade_other',
+      now,
+    );
   }
 
   const trade: StandardTrade = choice;
   await deps.adapters.profile.saveTrade(client, gate.userId, trade);
 
+  // Precompute and cache the standard trust-question set now (unconditionally,
+  // even though the resolver may route through profile.experience/
+  // transportation/availability before actually reaching trust.question.1) —
+  // harmless to set early, and it's exactly what's needed whenever the run
+  // does arrive at trust.question.1.
   const questions: BilingualQuestion[] = standardTrustQuestions(trade).map((q) => ({ en: q.q_en, es: q.q_es }));
   session.state_context.v2ProfileTrade = trade;
   session.state_context.v2TrustQuestions = questions;
@@ -1004,20 +1113,13 @@ async function handleProfileTrade(
   session.state_context.v2QuestionSetVersion = V2_TRUST_QUESTION_SET_VERSION;
   session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
 
-  const blocked = await syncProfileAndGateTrustHandoff(client, deps, session, msg, gate, lang, now, 'profile.trade');
-  if (blocked) return blocked;
-
-  const updated = await deps.repo.advanceWorkflow(client, {
-    runId: gate.runId!,
-    expectedLockVersion: gate.lockVersion!,
-    fromStepKey: 'profile.trade',
-    toStepKey: 'trust.question.1',
-    contextPatch: { trade, trustQuestionSource: 'standard' },
-    inboundMessageSid: msg.messageSid,
-    reason: 'profile_trade_standard',
-  });
-  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `trade:${now.getTime()}`, session.state_context);
-  return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.trade',
+    { trade, trustQuestionSource: 'standard' },
+    'profile_trade_standard',
+    now,
+  );
 }
 
 // ── Bound: profile.custom_trade ──────────────────────────────────────────
@@ -1072,20 +1174,99 @@ async function handleCustomTrade(
   session.state_context.v2QuestionSetVersion = source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION;
   session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
 
-  const blocked = await syncProfileAndGateTrustHandoff(client, deps, session, msg, gate, lang, now, 'profile.custom_trade');
-  if (blocked) return blocked;
+  // `saveCustomTrade` above persists main_trade_other, so loadProfileFromDb
+  // resolves this field on its own. The state_context copy is kept as a
+  // belt-and-braces override for the same turn: the resolver runs inside this
+  // transaction, and a partially-applied write must never bounce the worker
+  // back to profile.custom_trade in a loop.
+  session.state_context.v2CustomTradeText = professionRaw;
 
-  const updated = await deps.repo.advanceWorkflow(client, {
-    runId: gate.runId!,
-    expectedLockVersion: gate.lockVersion!,
-    fromStepKey: 'profile.custom_trade',
-    toStepKey: 'trust.question.1',
-    contextPatch: { customTrade: professionKey, trustQuestionSource: source },
-    inboundMessageSid: msg.messageSid,
-    reason: 'profile_custom_trade_set',
-  });
-  await sendTrustPrompt(client, deps, updated.userId, 'trust.question.1', effectiveLang(session, updated), now, gate.runId!, msg.messageSid, `custom:${now.getTime()}`, session.state_context);
-  return { handled: true, workerId: updated.userId, stepKey: 'trust.question.1' };
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.custom_trade',
+    { customTrade: professionKey, trustQuestionSource: source },
+    'profile_custom_trade_set',
+    now,
+  );
+}
+
+// ── Bound: profile.experience / profile.transportation / profile.availability
+//    (V1/V2 parity: the four fields V1 always asked that V2 previously
+//    never collected) ────────────────────────────────────────────────────
+
+async function handleProfileExperience(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const value = parseProfileFieldChoice('years_experience', msg);
+  if (typeof value !== 'string') {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.experience', lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.experience' };
+  }
+
+  await deps.adapters.profile.saveExperience(client, gate.userId, value);
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.experience',
+    { yearsExperience: value },
+    'profile_experience_set',
+    now,
+  );
+}
+
+async function handleProfileTransportation(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const value = parseProfileFieldChoice('has_transportation', msg);
+  if (typeof value !== 'boolean') {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.transportation', lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.transportation' };
+  }
+
+  await deps.adapters.profile.saveTransportation(client, gate.userId, value);
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.transportation',
+    { hasTransportation: value },
+    'profile_transportation_set',
+    now,
+  );
+}
+
+async function handleProfileAvailability(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+): Promise<RouteResult> {
+  const value = parseProfileFieldChoice('availability', msg);
+  if (typeof value !== 'string') {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.availability', lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey: 'profile.availability' };
+  }
+
+  await deps.adapters.profile.saveAvailability(client, gate.userId, value);
+  return advanceProfileToNextStep(
+    client, session, msg, deps, gate,
+    'profile.availability',
+    { availability: value },
+    'profile_availability_set',
+    now,
+  );
 }
 
 // ── Bound: trust.question.{1,2,3} + atomic readiness ─────────────────────
@@ -1226,6 +1407,12 @@ async function handleProfileAndTrust(
       return handleProfileTrade(client, session, msg, deps, gate, lang, now);
     case 'profile.custom_trade':
       return handleCustomTrade(client, session, msg, deps, gate, lang, now);
+    case 'profile.experience':
+      return handleProfileExperience(client, session, msg, deps, gate, lang, now);
+    case 'profile.transportation':
+      return handleProfileTransportation(client, session, msg, deps, gate, lang, now);
+    case 'profile.availability':
+      return handleProfileAvailability(client, session, msg, deps, gate, lang, now);
     case 'trust.question.1':
     case 'trust.question.2':
     case 'trust.question.3':

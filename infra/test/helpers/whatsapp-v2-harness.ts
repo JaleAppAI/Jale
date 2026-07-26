@@ -574,6 +574,9 @@ interface SavedProfile {
   location?: { city: string | null; state: string | null; postalCode: string | null; source: string };
   trade?: string;
   tradeOther?: string;
+  yearsExperience?: string;
+  hasTransportation?: boolean;
+  availability?: string;
   trustAnswers: Array<{
     questionIndex: number;
     qEn?: string;
@@ -615,6 +618,15 @@ function createFakeProfileAdapter() {
         const p = ensure(workerId);
         p.trade = 'other';
         p.tradeOther = rawProfession;
+      },
+      async saveExperience(_client: PoolClient, workerId: string, yearsExperience: string): Promise<void> {
+        ensure(workerId).yearsExperience = yearsExperience;
+      },
+      async saveTransportation(_client: PoolClient, workerId: string, hasTransportation: boolean): Promise<void> {
+        ensure(workerId).hasTransportation = hasTransportation;
+      },
+      async saveAvailability(_client: PoolClient, workerId: string, availability: string): Promise<void> {
+        ensure(workerId).availability = availability;
       },
       async syncProfileForTrustHandoff(
         _client: PoolClient,
@@ -723,6 +735,34 @@ export class WhatsAppV2Harness {
     this.gateway = createFakeWorkerGateway(this.gateRepo);
     this.identityFake = createFakeIdentity(this.clockRef);
     this.conversations.ensure(this.conversationId, this.phone);
+
+    // The router now reads the persisted profile directly, via the REAL
+    // loadProfileFromDb (lib/profile-flow.ts) — a `client.query(...)` call,
+    // not another injected adapter fake — to resolve which profile field is
+    // next (resolveNextProfileStep). HARNESS_CLIENT is a single shared
+    // module-level object (see its header comment / the identity assertion
+    // in onboarding-v2-conversation.test.ts), so its `.query` is rebound
+    // here, per harness construction, to this instance's own fake profile
+    // store. Tests only ever drive one harness at a time, so this rebind is
+    // safe: it stays pointed at whichever harness constructed it last.
+    (HARNESS_CLIENT as unknown as { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }> }).query =
+      async (_sql: string, params: unknown[]) => {
+        const workerId = params[0] as string;
+        const p = this.profileFake._profiles.get(workerId);
+        return {
+          rows: [
+            {
+              full_name: p?.name ?? null,
+              city: p?.location ? (p.location.city ?? p.location.postalCode) : null,
+              main_trade: p?.trade ?? null,
+              main_trade_other: null,
+              years_experience: p?.yearsExperience ?? null,
+              has_transportation: p?.hasTransportation ?? null,
+              availability: p?.availability ?? null,
+            },
+          ],
+        };
+      };
 
     this.deps = {
       adapters: {
@@ -953,6 +993,9 @@ export class WhatsAppV2Harness {
       'profile.location',
       'profile.trade',
       ...(trade === 'other' ? (['profile.custom_trade'] as WorkflowStepKey[]) : []),
+      'profile.experience',
+      'profile.transportation',
+      'profile.availability',
       'trust.question.1',
       'trust.question.2',
       'trust.question.3',
@@ -990,6 +1033,11 @@ export class WhatsAppV2Harness {
           break;
         case 'profile.custom_trade':
           await this.sendText(opts.customProfession ?? 'dog groomer');
+          break;
+        case 'profile.experience':
+        case 'profile.transportation':
+        case 'profile.availability':
+          await this.sendText('1');
           break;
         case 'trust.question.1':
         case 'trust.question.2':
