@@ -233,6 +233,8 @@ function createFakeAdapters(clockRef: { now: Date }) {
       saveName: jest.fn(),
       saveLocation: jest.fn(),
       saveTrade: jest.fn(),
+      saveCustomTrade: jest.fn(),
+      syncProfileForTrustHandoff: jest.fn().mockResolvedValue({ ready: true, missing: [] }),
       saveTrustAnswer: jest.fn(),
     },
   };

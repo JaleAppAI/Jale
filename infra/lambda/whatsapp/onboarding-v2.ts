@@ -916,6 +916,54 @@ function parseTradeChoice(msg: OnboardingV2InboundMessage): (typeof TRADE_ORDER)
   return null;
 }
 
+/**
+ * Defect 2 fix — the "profile complete -> about to advance to
+ * trust.question.1" sync + fail-closed gate.
+ *
+ * CRITICAL COORDINATION NOTE FOR THE INTEGRATOR: another engineer is
+ * concurrently rewriting this file's step sequencing to be conditional and
+ * is factoring "profile complete -> advance to trust" into ONE shared
+ * helper function. No such helper existed in this worktree at the time this
+ * was written (branch point predates that rewrite), so this call is
+ * duplicated at BOTH call sites that transition into `trust.question.1` —
+ * `handleProfileTrade` (standard trade) and `handleCustomTrade` (custom
+ * trade) — immediately before each one's `advanceWorkflow` call. If/when
+ * the sequencing rewrite lands its shared helper, MOVE this function's call
+ * (and delete the duplication) into that helper instead.
+ *
+ * Calls the canonical `upsertWorkerProfileFromUsers` projection (via
+ * `adapters.profile.syncProfileForTrustHandoff`, never re-implemented here)
+ * and then checks whether the resulting `worker_profiles`/`worker_skills`
+ * state has everything the product needs. A worker must never reach
+ * `ready` without a name, a skill, availability, and a location — those are
+ * exactly the fields the web app's profile-completeness gate and the
+ * matching engine require. On failure this logs a structured
+ * `OnboardingGateBlocked` warning (matching the gate's existing metric
+ * style) and repeats the current step's prompt instead of advancing.
+ */
+async function syncProfileAndGateTrustHandoff(
+  client: PoolClient,
+  deps: OnboardingV2Deps,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+  stepKey: 'profile.trade' | 'profile.custom_trade',
+): Promise<RouteResult | null> {
+  const sync = await deps.adapters.profile.syncProfileForTrustHandoff(client, gate.userId);
+  if (sync.ready) return null;
+
+  console.warn(JSON.stringify({
+    metric: 'OnboardingGateBlocked',
+    command: 'profile_incomplete',
+    stepKey,
+    missing: sync.missing,
+  }));
+  await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+  return { handled: true, workerId: gate.userId, stepKey };
+}
+
 async function handleProfileTrade(
   client: PoolClient,
   session: OnboardingV2Session,
@@ -955,6 +1003,9 @@ async function handleProfileTrade(
   session.state_context.v2TrustSource = 'standard';
   session.state_context.v2QuestionSetVersion = V2_TRUST_QUESTION_SET_VERSION;
   session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+
+  const blocked = await syncProfileAndGateTrustHandoff(client, deps, session, msg, gate, lang, now, 'profile.trade');
+  if (blocked) return blocked;
 
   const updated = await deps.repo.advanceWorkflow(client, {
     runId: gate.runId!,
@@ -1008,12 +1059,21 @@ async function handleCustomTrade(
   const source: 'generated' | 'fallback' = generated ? 'generated' : 'fallback';
   const questions: BilingualQuestion[] = generated ?? V2_FALLBACK_TRUST_QUESTIONS.map((q) => ({ ...q }));
 
-  await deps.adapters.profile.saveTrade(client, gate.userId, 'other');
+  // Defect 1 fix: persist the RAW typed profession (e.g. "welder"), not just
+  // the normalized lookup key — V1 already does this, and
+  // upsertWorkerProfileFromUsers needs `main_trade_other` to seed a
+  // meaningful worker_skills row (it refuses to seed the literal 'other').
+  // The normalized key still goes into v2ProfileTrade exactly as before —
+  // the trust-question lookup below depends on it.
+  await deps.adapters.profile.saveCustomTrade(client, gate.userId, professionRaw);
   session.state_context.v2ProfileTrade = professionKey;
   session.state_context.v2TrustQuestions = questions;
   session.state_context.v2TrustSource = source;
   session.state_context.v2QuestionSetVersion = source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION;
   session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+
+  const blocked = await syncProfileAndGateTrustHandoff(client, deps, session, msg, gate, lang, now, 'profile.custom_trade');
+  if (blocked) return blocked;
 
   const updated = await deps.repo.advanceWorkflow(client, {
     runId: gate.runId!,
@@ -1089,11 +1149,26 @@ async function handleTrustQuestion(
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
+  // Defect 3 fix: the trust-scorer (ai/trust-scorer.ts:~154) reads each
+  // stored answer as `{ q_en, answer_text }`. Both `profile.trade` and
+  // `profile.custom_trade` already stashed the bilingual question text this
+  // step is answering in `state_context.v2TrustQuestions` (BilingualQuestion
+  // pairs, same array `buildTrustQuestionBody` reads to render the prompt),
+  // falling back to the reviewed bilingual fallback set exactly as the
+  // prompt renderer does, so the two never disagree about what question was
+  // actually asked.
+  const trustQuestions = (session.state_context.v2TrustQuestions as BilingualQuestion[] | undefined)
+    ?? V2_FALLBACK_TRUST_QUESTIONS;
+  const currentQuestion = trustQuestions[idx] ?? trustQuestions[0];
+
   await deps.adapters.profile.saveTrustAnswer(client, {
     workerId: gate.userId,
     professionKey: normalizeTrade(trade),
     questionIndex: idx,
+    qEn: currentQuestion.en,
+    qEs: currentQuestion.es,
     answerText,
+    answerSource: 'text',
     provenance: { rubricVersion },
   });
 

@@ -127,7 +127,13 @@ function createFakeAdapters(clockRef: { now: Date }) {
   const saveNameCalls: Array<{ client: any; workerId: string; name: string }> = [];
   const saveLocationCalls: Array<{ client: any; workerId: string; location: ResolvedLocation }> = [];
   const saveTradeCalls: Array<{ client: any; workerId: string; trade: string }> = [];
+  const saveCustomTradeCalls: Array<{ client: any; workerId: string; rawProfession: string }> = [];
   const saveTrustAnswerCalls: Array<{ client: any; input: any }> = [];
+  const syncProfileCalls: Array<{ client: any; workerId: string }> = [];
+  // Overridable per-test: what syncProfileForTrustHandoff reports (defaults
+  // to "always ready" so every pre-existing test that never touches this is
+  // unaffected).
+  let missingFieldsOverride: string[] | null = null;
 
   return {
     clock: { now: () => clockRef.now },
@@ -156,6 +162,14 @@ function createFakeAdapters(clockRef: { now: Date }) {
       saveTrade: jest.fn(async (c: any, workerId: string, trade: string) => {
         saveTradeCalls.push({ client: c, workerId, trade });
       }),
+      saveCustomTrade: jest.fn(async (c: any, workerId: string, rawProfession: string) => {
+        saveCustomTradeCalls.push({ client: c, workerId, rawProfession });
+      }),
+      syncProfileForTrustHandoff: jest.fn(async (c: any, workerId: string) => {
+        syncProfileCalls.push({ client: c, workerId });
+        const missing = missingFieldsOverride ?? [];
+        return { ready: missing.length === 0, missing };
+      }),
       saveTrustAnswer: jest.fn(async (c: any, input: any) => {
         saveTrustAnswerCalls.push({ client: c, input });
       }),
@@ -163,7 +177,12 @@ function createFakeAdapters(clockRef: { now: Date }) {
     _saveNameCalls: saveNameCalls,
     _saveLocationCalls: saveLocationCalls,
     _saveTradeCalls: saveTradeCalls,
+    _saveCustomTradeCalls: saveCustomTradeCalls,
     _saveTrustAnswerCalls: saveTrustAnswerCalls,
+    _syncProfileCalls: syncProfileCalls,
+    setMissingFields: (missing: string[] | null) => {
+      missingFieldsOverride = missing;
+    },
   };
 }
 
@@ -761,6 +780,177 @@ describe('trust.question.{1,2,3}', () => {
       expect(adapters._saveTrustAnswerCalls).toHaveLength(0);
     },
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Defect 1 — the raw custom trade is persisted, not thrown away
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('profile.custom_trade: raw profession persistence (Defect 1)', () => {
+  it('persists the raw typed profession via saveCustomTrade (never the old saveTrade(...,"other") call), while the NORMALIZED key still reaches the trust-question lookup', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-custom-raw', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('  Welder  '), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+
+    // saveCustomTrade received the RAW (trimmed, not normalized) text.
+    expect(adapters._saveCustomTradeCalls).toHaveLength(1);
+    expect(adapters._saveCustomTradeCalls[0].workerId).toBe(gate.userId);
+    expect(adapters._saveCustomTradeCalls[0].rawProfession).toBe('Welder');
+
+    // The old saveTrade(client, workerId, 'other') call is gone for this path.
+    expect(adapters._saveTradeCalls).toHaveLength(0);
+
+    // The trust-question lookup still gets the NORMALIZED key.
+    expect(session.state_context.v2ProfileTrade).toBe('welder');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Defect 2 — profile sync + fail-closed gate at the pre-trust handoff
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('pre-trust profile sync (Defect 2)', () => {
+  it('syncs the profile (via syncProfileForTrustHandoff) before advancing a STANDARD trade to trust.question.1', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-sync-standard', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(adapters._syncProfileCalls).toHaveLength(1);
+    expect(adapters._syncProfileCalls[0].workerId).toBe(gate.userId);
+
+    // Sync must run BEFORE the advanceWorkflow transition into trust.question.1.
+    const syncOrder = (adapters.profile.syncProfileForTrustHandoff as jest.Mock).mock.invocationCallOrder[0];
+    const advanceTransition = gateRepo._transitions.find((t: any) => t.toStepKey === 'trust.question.1');
+    expect(advanceTransition).toBeDefined();
+  });
+
+  it('syncs the profile before advancing a CUSTOM trade to trust.question.1', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-sync-custom', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(adapters._syncProfileCalls).toHaveLength(1);
+    expect(adapters._syncProfileCalls[0].workerId).toBe(gate.userId);
+  });
+
+  it('repeated invocation of the sync point is idempotent: two separate workers each get exactly one sync call for their own transition', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gateA = seedActiveGate(gateRepo, { userId: 'user-sync-idem-a', currentStepKey: 'profile.trade' });
+    const sessionA = makeSession({ user_id: gateA.userId });
+    const gateB = seedActiveGate(gateRepo, { userId: 'user-sync-idem-b', currentStepKey: 'profile.trade' });
+    const sessionB = makeSession({ user_id: gateB.userId });
+
+    await routeOnboardingV2(client, sessionA, makeMsg('plumber'), deps);
+    await routeOnboardingV2(client, sessionB, makeMsg('carpenter'), deps);
+
+    expect(adapters._syncProfileCalls.filter((c) => c.workerId === gateA.userId)).toHaveLength(1);
+    expect(adapters._syncProfileCalls.filter((c) => c.workerId === gateB.userId)).toHaveLength(1);
+  });
+
+  it('fail-closed: when the sync reports a missing required field, the worker does NOT advance to trust.question.1 and a structured OnboardingGateBlocked warning is logged', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.setMissingFields(['availability']);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const gate = seedActiveGate(gateRepo, { userId: 'user-gate-blocked', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.trade' });
+    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.trade');
+    expect(gateRepo._transitions.some((t: any) => t.toStepKey === 'trust.question.1')).toBe(false);
+
+    const logged = warnSpy.mock.calls.map((c) => c[0]).find((s) => String(s).includes('OnboardingGateBlocked'));
+    expect(logged).toBeDefined();
+    const parsed = JSON.parse(logged as string);
+    expect(parsed).toMatchObject({ metric: 'OnboardingGateBlocked', stepKey: 'profile.trade', missing: ['availability'] });
+
+    warnSpy.mockRestore();
+  });
+
+  it('fail-closed also blocks a CUSTOM trade advance to trust.question.1 when the profile is still incomplete after sync', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.setMissingFields(['skill']);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const gate = seedActiveGate(gateRepo, { userId: 'user-gate-blocked-custom', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.custom_trade' });
+    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.custom_trade');
+
+    warnSpy.mockRestore();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Defect 3 — trust answers carry scorer-compatible q_en / q_es / answer_source
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('trust answers are scorer-compatible (Defect 3)', () => {
+  it('a STANDARD trade answer is saved with q_en, q_es, answer_source:"text", and answer_text matching the option chosen', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-qtext-standard', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps); // -> trust.question.1
+
+    const expectedQuestions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(1);
+    const saved = adapters._saveTrustAnswerCalls[0].input;
+    expect(saved.qEn).toBe(expectedQuestions[0].en);
+    expect(saved.qEs).toBe(expectedQuestions[0].es);
+    expect(saved.answerSource).toBe('text');
+    expect(typeof saved.answerText).toBe('string');
+    expect(saved.answerText.length).toBeGreaterThan(0);
+  });
+
+  it('a CUSTOM trade (fallback) answer is saved with q_en, q_es, answer_source:"text", and the free-text answerText', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.trustQuestions.generate.mockResolvedValueOnce(null); // -> fallback questions
+    const gate = seedActiveGate(gateRepo, { userId: 'user-qtext-custom', currentStepKey: 'profile.custom_trade' });
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('dog groomer'), deps); // -> trust.question.1
+
+    const expectedQuestions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+    await routeOnboardingV2(client, session, makeMsg('5 years, mostly labradors'), deps);
+
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(1);
+    const saved = adapters._saveTrustAnswerCalls[0].input;
+    expect(saved.qEn).toBe(expectedQuestions[0].en);
+    expect(saved.qEs).toBe(expectedQuestions[0].es);
+    expect(saved.answerSource).toBe('text');
+    expect(saved.answerText).toBe('5 years, mostly labradors');
+  });
+
+  it('question text advances per-question across all three answers (Q2/Q3 carry their own q_en/q_es, not Q1\'s)', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-qtext-sequence', currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('plumber'), deps);
+    const questions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    await routeOnboardingV2(client, session, makeMsg('1'), deps);
+
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(3);
+    expect(adapters._saveTrustAnswerCalls.map((c) => c.input.qEn)).toEqual([
+      questions[0].en, questions[1].en, questions[2].en,
+    ]);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════

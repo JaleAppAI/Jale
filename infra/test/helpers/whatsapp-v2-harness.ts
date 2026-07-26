@@ -573,11 +573,23 @@ interface SavedProfile {
   name?: string;
   location?: { city: string | null; state: string | null; postalCode: string | null; source: string };
   trade?: string;
-  trustAnswers: Array<{ questionIndex: number; answerText: string; provenance?: Record<string, unknown> }>;
+  tradeOther?: string;
+  trustAnswers: Array<{
+    questionIndex: number;
+    qEn?: string;
+    qEs?: string;
+    answerText: string;
+    answerSource?: string;
+    provenance?: Record<string, unknown>;
+  }>;
 }
 
 function createFakeProfileAdapter() {
   const profiles = new Map<string, SavedProfile>();
+  const syncCalls: string[] = [];
+  // Overridable per-test: which fields `syncProfileForTrustHandoff` reports
+  // missing (defaults to "always ready" so existing flows aren't affected).
+  let missingFieldsOverride: string[] | null = null;
 
   function ensure(workerId: string): SavedProfile {
     let p = profiles.get(workerId);
@@ -599,18 +611,46 @@ function createFakeProfileAdapter() {
       async saveTrade(_client: PoolClient, workerId: string, trade: string): Promise<void> {
         ensure(workerId).trade = trade;
       },
+      async saveCustomTrade(_client: PoolClient, workerId: string, rawProfession: string): Promise<void> {
+        const p = ensure(workerId);
+        p.trade = 'other';
+        p.tradeOther = rawProfession;
+      },
+      async syncProfileForTrustHandoff(
+        _client: PoolClient,
+        workerId: string,
+      ): Promise<{ ready: boolean; missing: string[] }> {
+        syncCalls.push(workerId);
+        const missing = missingFieldsOverride ?? [];
+        return { ready: missing.length === 0, missing };
+      },
       async saveTrustAnswer(
         _client: PoolClient,
-        input: { workerId: string; questionIndex: number; answerText: string; provenance?: Record<string, unknown> },
+        input: {
+          workerId: string;
+          questionIndex: number;
+          qEn?: string;
+          qEs?: string;
+          answerText: string;
+          answerSource?: string;
+          provenance?: Record<string, unknown>;
+        },
       ): Promise<void> {
         ensure(input.workerId).trustAnswers.push({
           questionIndex: input.questionIndex,
+          qEn: input.qEn,
+          qEs: input.qEs,
           answerText: input.answerText,
+          answerSource: input.answerSource,
           provenance: input.provenance,
         });
       },
     },
     _profiles: profiles,
+    _syncCalls: syncCalls,
+    setMissingFields(missing: string[] | null): void {
+      missingFieldsOverride = missing;
+    },
   };
 }
 
@@ -1042,5 +1082,18 @@ export class WhatsAppV2Harness {
     const id = workerId ?? this.currentWorkerId();
     if (!id) return null;
     return this.profileFake._profiles.get(id) ?? null;
+  }
+
+  /** How many times `profile.syncProfileForTrustHandoff` has been invoked
+   * (the pre-trust-handoff profile sync/gate). */
+  getProfileSyncCallCount(): number {
+    return this.profileFake._syncCalls.length;
+  }
+
+  /** Makes the next `syncProfileForTrustHandoff` call(s) report these fields
+   * as missing (fail-closed gate testing). Pass `null` to reset to "always
+   * ready". */
+  setProfileSyncMissingFields(missing: string[] | null): void {
+    this.profileFake.setMissingFields(missing);
   }
 }

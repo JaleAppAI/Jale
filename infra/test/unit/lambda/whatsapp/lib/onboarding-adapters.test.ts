@@ -495,6 +495,22 @@ describe('ProfilePersistenceAdapter', () => {
     expect(allParams).toContain('geocoded_zip');
   });
 
+  it('saveLocation calls the canonical upsertWorkerProfileFromUsers projection BEFORE its own UPDATE worker_profiles, so the row exists even for a worker with no worker_profiles row yet', async () => {
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: 'Austin',
+      state: 'TX',
+      postalCode: null,
+      source: 'city_state',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls.map((c) => String(c[0]));
+    const upsertIdx = calls.findIndex((sql) => sql.includes('INSERT INTO worker_profiles'));
+    const updateIdx = calls.findIndex((sql) => sql.toUpperCase().includes('UPDATE WORKER_PROFILES'));
+    expect(upsertIdx).toBeGreaterThanOrEqual(0);
+    expect(updateIdx).toBeGreaterThan(upsertIdx);
+  });
+
   it('saveTrade writes through the supplied client', async () => {
     const client = mockPoolClient();
     await profile.saveTrade(client, 'worker-1', 'welding');
@@ -507,7 +523,10 @@ describe('ProfilePersistenceAdapter', () => {
       workerId: 'worker-1',
       professionKey: 'electrician',
       questionIndex: 0,
+      qEn: 'What tools have you used?',
+      qEs: 'Que herramientas has usado?',
       answerText: 'Residential',
+      answerSource: 'text',
     });
 
     expect(client.query).toHaveBeenCalled();
@@ -518,6 +537,39 @@ describe('ProfilePersistenceAdapter', () => {
     expect(upper.some((sql) => sql.includes('ROLLBACK'))).toBe(false);
     expect(calls.some((sql) => sql.includes('worker_trust_assessments'))).toBe(true);
     expect(calls.some((sql) => sql.includes('worker_trust_answers'))).toBe(false);
+  });
+
+  it('saveTrustAnswer persists q_en, q_es, answer_source, and answer_text on the stored answer object (scorer-compatible shape)', async () => {
+    const client = mockPoolClient();
+    await profile.saveTrustAnswer(client, {
+      workerId: 'worker-1',
+      professionKey: 'electrician',
+      questionIndex: 0,
+      qEn: 'What tools have you used?',
+      qEs: 'Que herramientas has usado?',
+      answerText: 'Residential',
+      answerSource: 'text',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    // First call is the SELECT for an in-progress assessment; no rows were
+    // returned by the mock default, so the second call is the INSERT.
+    const [insertSql, insertParams] = calls[1];
+    expect(String(insertSql).toUpperCase()).toContain('INSERT INTO WORKER_TRUST_ASSESSMENTS');
+    const answersJson = insertParams.find(
+      (p: unknown) => typeof p === 'string' && p.includes('Residential'),
+    );
+    expect(answersJson).toBeDefined();
+    const parsed = JSON.parse(answersJson);
+    expect(parsed).toEqual([
+      expect.objectContaining({
+        question_index: 0,
+        q_en: 'What tools have you used?',
+        q_es: 'Que herramientas has usado?',
+        answer_text: 'Residential',
+        answer_source: 'text',
+      }),
+    ]);
   });
 
   it('saveTrustAnswer merges into an existing in-progress assessment\'s answers JSONB and routes provenance through rubric_version/scoring_model_id', async () => {
@@ -531,7 +583,10 @@ describe('ProfilePersistenceAdapter', () => {
       workerId: 'worker-1',
       professionKey: 'electrician',
       questionIndex: 1,
+      qEn: 'Can you work unsupervised?',
+      qEs: 'Puedes trabajar sin supervision?',
       answerText: 'Can work alone',
+      answerSource: 'text',
       provenance: { rubricVersion: 'v3', scoringModelId: 'model-x' },
     });
 
@@ -547,7 +602,89 @@ describe('ProfilePersistenceAdapter', () => {
       (p: unknown) => typeof p === 'string' && p.includes('Can work alone'),
     );
     expect(mergedAnswersJson).toBeDefined();
-    expect(JSON.parse(mergedAnswersJson)).toHaveLength(2);
+    const merged = JSON.parse(mergedAnswersJson);
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toEqual(expect.objectContaining({
+      question_index: 1,
+      q_en: 'Can you work unsupervised?',
+      q_es: 'Puedes trabajar sin supervision?',
+      answer_text: 'Can work alone',
+      answer_source: 'text',
+    }));
+  });
+
+  it('saveCustomTrade sets main_trade to \'other\' AND persists the raw typed profession into main_trade_other', async () => {
+    const client = mockPoolClient();
+    await profile.saveCustomTrade(client, 'worker-1', 'Welder');
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, params] = (client.query as jest.Mock).mock.calls[0];
+    expect(String(sql)).toContain("main_trade = 'other'");
+    expect(String(sql)).toContain('main_trade_other');
+    expect(String(sql)).toContain("user_type = 'worker'");
+    expect(params).toEqual(['worker-1', 'Welder']);
+  });
+
+  describe('syncProfileForTrustHandoff', () => {
+    it('calls the canonical upsertWorkerProfileFromUsers projection and reports ready when all required fields are present', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock)
+        // upsertWorkerProfileFromUsers: worker_profiles upsert, then worker_skills seed
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        // completeness check: worker_profiles row, then worker_skills count
+        .mockResolvedValueOnce({
+          rows: [{ full_name: 'Jane Doe', availability: 'full_time', location: 'Austin, TX' }],
+        })
+        .mockResolvedValueOnce({ rows: [{ count: 1 }] });
+
+      const result = await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      expect(result).toEqual({ ready: true, missing: [] });
+      const calls = (client.query as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_profiles'))).toBe(true);
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_skills'))).toBe(true);
+    });
+
+    it('reports every missing required field (name, skill, availability, location) when the profile row is absent', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ count: 0 }] });
+
+      const result = await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      expect(result.ready).toBe(false);
+      expect(result.missing.sort()).toEqual(['availability', 'full_name', 'location', 'skill']);
+    });
+
+    it('reports only the specific fields that are missing (partial completeness)', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [{ full_name: 'Jane Doe', availability: null, location: 'Austin, TX' }] })
+        .mockResolvedValueOnce({ rows: [{ count: 2 }] });
+
+      const result = await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      expect(result).toEqual({ ready: false, missing: ['availability'] });
+    });
+
+    it('is idempotent: two consecutive calls both run the canonical upsert and neither throws', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock).mockResolvedValue({ rows: [{ full_name: 'Jane', availability: 'full_time', location: 'Austin, TX' }] });
+
+      await profile.syncProfileForTrustHandoff(client, 'worker-1');
+      await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      const insertCalls = (client.query as jest.Mock).mock.calls.filter(
+        (c) => String(c[0]).includes('INSERT INTO worker_profiles'),
+      );
+      expect(insertCalls).toHaveLength(2);
+    });
   });
 });
 
