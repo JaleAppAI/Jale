@@ -183,7 +183,7 @@ export interface OnboardingV2Deps {
     client: PoolClient,
     input: WorkerMessageIntentInput,
     now?: Date,
-  ) => Promise<{ intentId: string; decision: unknown }>;
+  ) => Promise<{ intentId: string; decision: unknown; outboxMaterialized: boolean }>;
   /**
    * Pre-auth delivery gateway (Design A). Pre-OTP steps
    * (start.choose_language, identity.verify_otp) have no bound `user_id`

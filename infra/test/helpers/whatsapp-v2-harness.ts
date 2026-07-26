@@ -407,7 +407,7 @@ function createFakeWorkerGateway(gateRepo: ReturnType<typeof createFakeGateRepo>
     _client: PoolClient,
     input: WorkerMessageIntentInput,
     now: Date = new Date(),
-  ): Promise<{ intentId: string; decision: DeliveryDecision }> {
+  ): Promise<{ intentId: string; decision: DeliveryDecision; outboxMaterialized: boolean }> {
     const gate = gateRepo._gates.get(input.workerId) ?? null;
     const decision = evaluateDelivery(
       {
@@ -421,7 +421,7 @@ function createFakeWorkerGateway(gateRepo: ReturnType<typeof createFakeGateRepo>
     );
     intents.push({ input, decision });
     if (decision.action === 'allow') allowed.push(input);
-    return { intentId: `intent-${intents.length}`, decision };
+    return { intentId: `intent-${intents.length}`, decision, outboxMaterialized: true };
   }
 
   return { enqueueWorkerMessage, intents, allowed };

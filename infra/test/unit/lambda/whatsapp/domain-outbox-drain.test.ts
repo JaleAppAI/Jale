@@ -13,6 +13,11 @@ jest.mock('../../../../lambda/whatsapp/worker-ready-release', () => ({
   releaseWorkerReady: mockReleaseWorkerReady,
 }));
 
+const mockPublishWorkerIntentWake = jest.fn();
+jest.mock('../../../../lambda/whatsapp/lib/outbox-wake', () => ({
+  publishWorkerIntentWake: () => mockPublishWorkerIntentWake(),
+}));
+
 import {
   runDrain,
   MAX_DOMAIN_EVENT_ATTEMPTS,
@@ -114,6 +119,7 @@ describe('domain-outbox-drain', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockPublishWorkerIntentWake.mockResolvedValue({ sent: 1, failed: 0 });
     logLines = [];
     logSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
       logLines.push(String(line));
@@ -174,6 +180,7 @@ describe('domain-outbox-drain', () => {
     const result = await runDrain(fakePool, { renderer: { render: jest.fn() }, now: () => NOW });
 
     expect(result.completed).toBe(1);
+    expect(result.readyCompleted).toBe(1);
     expect(result.failed).toBe(0);
     expect(mockReleaseWorkerReady).toHaveBeenCalledTimes(1);
     expect(mockReleaseWorkerReady).toHaveBeenCalledWith(
@@ -484,7 +491,8 @@ describe('domain-outbox-drain', () => {
     const fakeScheduledEvent = { 'detail-type': 'Scheduled Event', detail: {} };
     const result = await (mod.handler as unknown as (e: unknown) => Promise<unknown>)(fakeScheduledEvent);
 
-    expect(result).toEqual({ claimed: 0, completed: 0, failed: 0 });
+    expect(result).toEqual({ claimed: 0, completed: 0, failed: 0, readyCompleted: 0 });
+    expect(mockPublishWorkerIntentWake).not.toHaveBeenCalled();
   });
 
   it('setDomainOutboxDrainDeps swaps the renderer used by the real handler() entrypoint (the C10 wiring seam)', async () => {
@@ -504,5 +512,6 @@ describe('domain-outbox-drain', () => {
       event.event_key,
       expect.objectContaining({ renderer: injectedRenderer }),
     );
+    expect(mockPublishWorkerIntentWake).toHaveBeenCalledTimes(1);
   });
 });

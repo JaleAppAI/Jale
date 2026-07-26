@@ -191,7 +191,7 @@ function createFakeGateway() {
   const enqueueWorkerMessage = jest.fn(
     async (_client: any, input: WorkerMessageIntentInput, _now?: Date) => {
       calls.push(input);
-      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const } };
+      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const }, outboxMaterialized: true };
     },
   );
   return { enqueueWorkerMessage, calls };

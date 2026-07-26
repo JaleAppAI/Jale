@@ -145,6 +145,29 @@ export class WhatsAppStack extends cdk.Stack {
       },
     });
 
+    const workerIntentWakeDlq = new sqs.Queue(this, 'WorkerIntentWakeDlq', {
+      queueName: 'whatsapp-worker-intent-wake-dlq',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+    const workerIntentWakeQueue = new sqs.Queue(this, 'WorkerIntentWakeQueue', {
+      queueName: 'whatsapp-worker-intent-wake',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      visibilityTimeout: cdk.Duration.seconds(360),
+      deadLetterQueue: { queue: workerIntentWakeDlq, maxReceiveCount: 5 },
+    });
+
+    const domainOutboxWakeDlq = new sqs.Queue(this, 'DomainOutboxWakeDlq', {
+      queueName: 'whatsapp-domain-outbox-wake-dlq',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+    const domainOutboxWakeQueue = new sqs.Queue(this, 'DomainOutboxWakeQueue', {
+      queueName: 'whatsapp-domain-outbox-wake',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      visibilityTimeout: cdk.Duration.seconds(360),
+      deadLetterQueue: { queue: domainOutboxWakeDlq, maxReceiveCount: 5 },
+    });
     // ── Webhook Lambda ──────────────────────────────────────────
     // Public-facing: validates Twilio X-Twilio-Signature and pushes the raw
     // body to SQS. No DB, no Twilio API calls.
@@ -201,11 +224,15 @@ export class WhatsAppStack extends cdk.Stack {
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
+        WORKER_INTENT_WAKE_QUEUE_URL: workerIntentWakeQueue.queueUrl,
+        DOMAIN_OUTBOX_WAKE_QUEUE_URL: domainOutboxWakeQueue.queueUrl,
       },
     });
     whatsappDbSecret.grantRead(this.processorLambda.function);
     twilioSecret.grantRead(this.processorLambda.function);
 
+    workerIntentWakeQueue.grantSendMessages(this.processorLambda.function);
+    domainOutboxWakeQueue.grantSendMessages(this.processorLambda.function);
     // SQS event source — batch size 1 so one failed message doesn't block
     // others. Visibility timeout above ensures no false double-processing.
     this.processorLambda.function.addEventSource(
@@ -300,7 +327,7 @@ export class WhatsAppStack extends cdk.Stack {
       'WorkerIntentOutboxDrainLambda',
       {
         entry: path.join(__dirname, '../../lambda/whatsapp/worker-intent-outbox-drain.ts'),
-        description: 'Worker intent outbox drain — ordered scheduled Twilio sends',
+        description: 'Worker intent outbox drain — event-driven ordered Twilio sends with scheduled recovery',
         vpc: props.vpc,
         securityGroups: [props.lambdaSg],
         timeout: 60,
@@ -315,14 +342,20 @@ export class WhatsAppStack extends cdk.Stack {
     whatsappDbSecret.grantRead(workerIntentDrainLambda.function);
     twilioSecret.grantRead(workerIntentDrainLambda.function);
 
+    workerIntentDrainLambda.function.addEventSource(
+      new lambdaEventSources.SqsEventSource(workerIntentWakeQueue, {
+        batchSize: 1,
+      }),
+    );
     new events.Rule(this, 'WorkerIntentOutboxDrainSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
       targets: [new eventTargets.LambdaFunction(workerIntentDrainLambda.function)],
     });
 
     // ── C7: Domain Outbox Drain ──────────────────────────────────
-    // Scheduled every 1 minute: leases worker_domain_outbox events
-    // (migration 042's lease_worker_domain_events) written by the workflow
+    // Event-driven from the domain wake queue, with a 1-minute recovery
+    // schedule: leases worker_domain_outbox events (migration 042's
+    // lease_worker_domain_events) written by the workflow
     // lane's completeOnboarding(), and dispatches worker.ready to C6's
     // releaseWorkerReady() and assessment.requested to the existing
     // AiStack TrustScorer SQS queue (no Bedrock call — jale_ai owns
@@ -331,20 +364,27 @@ export class WhatsAppStack extends cdk.Stack {
     // least-privilege sqs:SendMessage on the trust-assessment queue.
     const domainOutboxDrainLambda = new JaleLambdaFunction(this, 'DomainOutboxDrainLambda', {
       entry: path.join(__dirname, '../../lambda/whatsapp/domain-outbox-drain.ts'),
-      description: 'Domain outbox drain — scheduled worker.ready / assessment.requested event processing',
+      description: 'Domain outbox drain — event-driven worker.ready / assessment.requested processing with scheduled recovery',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
+        WORKER_INTENT_WAKE_QUEUE_URL: workerIntentWakeQueue.queueUrl,
       },
     });
     whatsappDbSecret.grantRead(domainOutboxDrainLambda.function);
     // Least-privilege: this drain only sends assessment.requested payloads
-    // onward to TrustScorer — it never consumes from the queue itself, so
+    // onward to TrustScorer — it never consumes from the trust queue itself, so
     // it gets sqs:SendMessage only (no ReceiveMessage/DeleteMessage), and no
     // Twilio secret access.
     props.trustAssessmentQueue.grantSendMessages(domainOutboxDrainLambda.function);
+    workerIntentWakeQueue.grantSendMessages(domainOutboxDrainLambda.function);
+    domainOutboxDrainLambda.function.addEventSource(
+      new lambdaEventSources.SqsEventSource(domainOutboxWakeQueue, {
+        batchSize: 1,
+      }),
+    );
 
     new events.Rule(this, 'DomainOutboxDrainSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
@@ -639,6 +679,56 @@ export class WhatsAppStack extends cdk.Stack {
       }),
     ).addAlarmAction(alarmAction);
 
+    for (const [id, alarmName, queue] of [
+      ['WorkerIntentWakeDlqDepthAlarm', 'WhatsAppWorkerIntentWakeDlqDepth', workerIntentWakeDlq],
+      ['DomainOutboxWakeDlqDepthAlarm', 'WhatsAppDomainOutboxWakeDlqDepth', domainOutboxWakeDlq],
+    ] as const) {
+      alarm(
+        id,
+        alarmName,
+        queue.metricApproximateNumberOfMessagesVisible({
+          period: cdk.Duration.minutes(1),
+          statistic: 'Maximum',
+        }),
+      ).addAlarmAction(alarmAction);
+    }
+
+    for (const [id, alarmName, queue] of [
+      ['WorkerIntentWakeAgeAlarm', 'WhatsAppWorkerIntentWakeAge', workerIntentWakeQueue],
+      ['DomainOutboxWakeAgeAlarm', 'WhatsAppDomainOutboxWakeAge', domainOutboxWakeQueue],
+    ] as const) {
+      new cloudwatch.Alarm(this, id, {
+        alarmName,
+        metric: queue.metricApproximateAgeOfOldestMessage({
+          period: cdk.Duration.minutes(1),
+          statistic: 'Maximum',
+        }),
+        threshold: 15,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      }).addAlarmAction(alarmAction);
+    }
+
+    const processorWakeFailureMetric = new logs.MetricFilter(this, 'ProcessorOutboxWakeFailureMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOutboxWakeFailure'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'OutboxWakeFailures',
+      metricValue: '1',
+    });
+    new logs.MetricFilter(this, 'DomainOutboxWakeFailureMetric', {
+      logGroup: domainOutboxDrainLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOutboxWakeFailure'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'OutboxWakeFailures',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppOutboxWakeFailuresAlarm',
+      'WhatsAppOutboxWakeFailures',
+      processorWakeFailureMetric.metric({ period: cdk.Duration.minutes(1), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
     // ── C7: domain-event drain + release operational alarms ─────
     // Resolution #9 (observability ownership): C7 installs the drain's own
     // metrics on the drain Lambda's log group, and installs WhatsAppOtpLock
