@@ -1,0 +1,160 @@
+/**
+ * WhatsApp v2 onboarding router — shared session/message/deps types.
+ * Moved verbatim out of `../onboarding-v2.ts` (pure move, no behavior
+ * change).
+ */
+
+import type { PoolClient } from 'pg';
+import type {
+  MessageCategory,
+  OwnerService,
+  PreferredLanguage,
+  WorkerMessageIntentInput,
+  WorkflowStepKey,
+} from '../lib/onboarding-types';
+import type { PreAuthState, WorkerGate } from '../lib/onboarding-repository';
+import type { OnboardingV2Adapters } from '../lib/onboarding-adapters';
+import type { InteractivePrompt } from '../lib/interactive-templates';
+
+// ── Session / message shapes the router is handed ──────────────────────
+
+export interface OnboardingV2Session {
+  id: string;
+  user_id: string | null;
+  whatsapp_number: string;
+  language: PreferredLanguage;
+  conversation_state: string;
+  /** Mutable scratch bag this router reads/writes reprompt-cooldown
+   * bookkeeping into. Callers persist whatever mutations land here. */
+  state_context: Record<string, unknown>;
+}
+
+export interface OnboardingV2InboundMessage {
+  from: string;
+  body: string;
+  messageSid: string;
+  interactivePayload?: string;
+}
+
+export type RouteResult =
+  | { handled: true; workerId: string | null; stepKey: string }
+  | {
+      handled: false;
+      handoff: 'ready';
+      workerId: string;
+      stepKey: 'ready';
+    };
+
+// ── Locally-composed deps (no canonical types redeclared here) ─────────
+
+export interface OnboardingV2RepoDeps {
+  setInternalUserRlsContext: (client: PoolClient, workerId: string) => Promise<void>;
+  loadPreAuthStateForUpdate: (
+    client: PoolClient,
+    phoneHash: string,
+  ) => Promise<PreAuthState | null>;
+  savePreAuthState: (
+    client: PoolClient,
+    phoneHash: string,
+    patch: Partial<PreAuthState>,
+  ) => Promise<PreAuthState>;
+  bindVerifiedIdentityAndStartWorkflow: (
+    client: PoolClient,
+    input: {
+      conversationId: string;
+      phoneHash: string;
+      challengeId: string;
+      verifiedWorkerId: string;
+      preferredLanguage: PreferredLanguage;
+      workflowVersion: number;
+      inboundMessageSid: string;
+    },
+  ) => Promise<WorkerGate>;
+  loadWorkerGate: (client: PoolClient, workerId: string) => Promise<WorkerGate | null>;
+  advanceWorkflow: (
+    client: PoolClient,
+    input: {
+      runId: string;
+      expectedLockVersion: number;
+      fromStepKey: WorkflowStepKey;
+      toStepKey: WorkflowStepKey;
+      status?: string;
+      contextPatch: Record<string, unknown>;
+      inboundMessageSid: string;
+      reason: string;
+    },
+  ) => Promise<WorkerGate>;
+  setRunPreferredLanguage: (client: PoolClient, input: { runId: string; expectedLockVersion: number; preferredLanguage: PreferredLanguage }) => Promise<WorkerGate>;
+  reactivateDeclinedLegalRun: (
+    client: PoolClient,
+    input: { runId: string; expectedLockVersion: number },
+  ) => Promise<WorkerGate>;
+  appendTransition: (
+    client: PoolClient,
+    input: {
+      runId: string;
+      fromStepKey: WorkflowStepKey | null;
+      toStepKey: WorkflowStepKey;
+      inboundMessageSid: string | null;
+      reason: string;
+      metadata?: Record<string, unknown>;
+    },
+  ) => Promise<{ transitionId: string }>;
+  /**
+   * Task 5's sole call site: fired exactly once, on the SAME client/
+   * transaction as the answer-three persistence that precedes it, with the
+   * locked gate's `expectedLockVersion`. Never awaited for external work —
+   * the two domain events it enqueues are drained by other lanes.
+   */
+  completeOnboarding: (
+    client: PoolClient,
+    input: {
+      workerId: string;
+      runId: string;
+      expectedLockVersion: number;
+      assessmentProvenance: Record<string, unknown>;
+    },
+  ) => Promise<{ assessmentEventId: string; workerReadyEventId: string }>;
+}
+
+export interface OnboardingV2Deps {
+  adapters: OnboardingV2Adapters;
+  repo: OnboardingV2RepoDeps;
+  enqueueWorkerMessage: (
+    client: PoolClient,
+    input: WorkerMessageIntentInput,
+    now?: Date,
+  ) => Promise<{ intentId: string; decision: unknown; outboxMaterialized: boolean }>;
+  /**
+   * Pre-auth delivery gateway (Design A). Pre-OTP steps
+   * (start.choose_language, identity.verify_otp) have no bound `user_id`
+   * — a net-new worker has no `users` row at all, and `worker_message_intents.user_id`
+   * is a NOT NULL FK — so their prompts CANNOT go through `enqueueWorkerMessage`.
+   * They travel the phone/inbound-message-keyed `whatsapp_outbox` reply origin
+   * instead (`inbound_message_sid IS NOT NULL AND source_type IS NULL`), which
+   * needs no identity, is durable, and is drained post-commit by the existing
+   * sweeper — never a direct Twilio send. In production these are the legacy
+   * `queueInteractivePrompt` / `queueOutboxText` writers; tests inject fakes.
+   */
+  enqueuePreAuthPrompt: (
+    client: PoolClient,
+    inboundMessageSid: string,
+    to: string,
+    prompt: InteractivePrompt,
+  ) => Promise<void>;
+  enqueuePreAuthText: (
+    client: PoolClient,
+    inboundMessageSid: string,
+    to: string,
+    body: string,
+  ) => Promise<void>;
+  hashNormalizedPhone: (phone: string) => string;
+  tosUrl: string;
+  privacyUrl: string;
+  workflowVersion: number;
+  requiredLegalVersion: string;
+  recordLegalAcceptance: (
+    client: PoolClient,
+    input: { workerId: string; documentVersion: string },
+  ) => Promise<void>;
+}
