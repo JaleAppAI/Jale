@@ -129,7 +129,7 @@ while [[ $# -gt 0 ]]; do
     --skip-secrets)   SKIP_SECRETS=true ;;
     --force-replay)   FORCE_REPLAY=true ;;
     --yes|-y)         ASSUME_YES=true ;;
-    -h|--help)        sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help)        sed -n '2,41p' "$0"; exit 0 ;;
     *) echo "!! Unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
@@ -663,8 +663,12 @@ for f in "${PENDING[@]}"; do
     fsize=$(( fsize + APPLY_ONE_FIXED_BYTES \
                      + APPLY_ONE_FILENAME_OCCURRENCES * ${#f} \
                      + APPLY_ONE_CHECKSUM_OCCURRENCES * CHECKSUM_HEX_LEN ))
-    (( fsize <= MAX_PAYLOAD_BYTES )) \
-      || die "$f encodes to ${fsize}B (payload + wrapper), over the ${MAX_PAYLOAD_BYTES}B per-command ceiling. Stage it via S3 instead."
+    # A file that cannot share a batch with the preamble cannot be sent at
+    # all, since every batch carries that preamble. Check against the same
+    # budget the packer uses, so the failure names the offending file rather
+    # than surfacing later as an oversized batch.
+    (( fsize + PREAMBLE_BYTES <= MAX_PAYLOAD_BYTES )) \
+      || die "$f encodes to ${fsize}B (payload + wrapper), which with the ${PREAMBLE_BYTES}B preamble exceeds the ${MAX_PAYLOAD_BYTES}B per-command ceiling. Stage it via S3 instead."
   fi
   if (( batch_bytes + fsize > MAX_PAYLOAD_BYTES )); then flush_batch; fi
   batch+=("$f")
