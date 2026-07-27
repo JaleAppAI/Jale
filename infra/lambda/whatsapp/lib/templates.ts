@@ -80,7 +80,13 @@ export type TemplateKey =
   | 'v2_gate_blocked'
   | 'v2_language_changed'
   | 'v2_ready'
-  | 'v2_options_footer';
+  | 'v2_options_footer'
+  // ── V2 voice (trust-question voice notes; Task 6 graceful-fallback copy) ──
+  | 'v2_voice_ack'
+  | 'v2_voice_failed'
+  | 'v2_voice_not_supported'
+  | 'v2_voice_invalid_type'
+  | 'voice_note_not_supported';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -345,6 +351,26 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_options_footer: {
     es: 'Responde con el numero.',
     en: 'Reply with the number.',
+  },
+  v2_voice_ack: {
+    es: 'Recibimos tu nota de voz. Estamos transcribiendo tu respuesta.',
+    en: 'Got your voice note. We are transcribing your answer now.',
+  },
+  v2_voice_failed: {
+    es: 'No pudimos procesar esa nota de voz. Escribe tu respuesta o intenta grabar otra.',
+    en: 'We could not process that voice note. Type your answer or try recording another.',
+  },
+  v2_voice_not_supported: {
+    es: 'Notas de voz no estan disponibles en este paso todavia. Escribe tu respuesta.',
+    en: 'Voice notes are not available at this step yet. Please type your answer.',
+  },
+  v2_voice_invalid_type: {
+    es: 'Ese archivo no es una nota de voz. Manda un mensaje de voz o escribe tu respuesta.',
+    en: 'That file is not a voice note. Send a voice message or type your answer.',
+  },
+  voice_note_not_supported: {
+    es: 'Notas de voz no estan disponibles aqui. Escribe TRABAJOS o AYUDA.',
+    en: 'Voice notes are not supported here. Type JOBS or HELP.',
   },
 };
 

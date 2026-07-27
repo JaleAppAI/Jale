@@ -41,7 +41,7 @@
 import type { PoolClient } from 'pg';
 import type { WorkflowStepKey } from './lib/onboarding-types';
 import type { WorkerGate } from './lib/onboarding-repository';
-import type { Lang } from './lib/templates';
+import { t, type Lang } from './lib/templates';
 import { resolveResponseLanguage } from './lib/onboarding-language';
 import type {
   OnboardingV2Session,
@@ -63,6 +63,8 @@ import {
   handleProfileAvailability,
 } from './onboarding/steps/profile';
 import { handleTrustQuestion } from './onboarding/steps/trust';
+import { isVoiceAcceptingStep } from './onboarding/constants';
+import { sendTemplateMessage, repeatCurrentPrompt } from './onboarding/delivery';
 
 export type {
   OnboardingV2Session,
@@ -128,6 +130,34 @@ async function routeBoundStep(
   const isInteractive = Boolean(msg.interactivePayload);
   const responseLang = resolveResponseLanguage(lang, msg.body, isInteractive);
 
+  // Voice-pipeline completion events re-enter mid-lane and must bypass the
+  // command gate entirely: their Body is always empty (the transcript lives
+  // in the event envelope, never in msg.body — see lib/voice-events.ts), so
+  // a transcribed answer like "AYUDA" or "JOBS" can never be misread as a
+  // gate command in the first place, but dispatching before the gate keeps
+  // that guarantee explicit rather than incidental. Only trust.question.*
+  // has a voice-event handler today; anything else falls through to the
+  // graceful-media check below (the event carries no media of its own, so
+  // it reaches applyGate/handleProfileAndTrust as an empty-body message).
+  if (msg.voiceEvent?.kind === 'trust_answer' && /^trust\.question\./.test(stepKey)) {
+    return handleTrustQuestion(client, session, msg, deps, gate, lang, now, stepKey as 'trust.question.1' | 'trust.question.2' | 'trust.question.3');
+  }
+
+  // A real voice note (numMedia > 0, no event yet) at a step that doesn't
+  // accept one — either the control is off or this isn't a trust question —
+  // gets the honest "not supported here" reply instead of silently landing
+  // on whatever text-oriented handler the step has, or worse, tripping the
+  // command gate's fuzzy classifier on a caption.
+  if (
+    (msg.numMedia ?? 0) > 0
+    && !msg.voiceEvent
+    && !isVoiceAcceptingStep(stepKey, deps.voiceIntake.enabled)
+  ) {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, responseLang, 'v2_voice_not_supported', {}, now, gate.runId!, msg.messageSid, 'voice_unsupported_step');
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
   const gateResult = await applyGate(client, session, msg, deps, {
     stepKey,
     workerId: gate.userId,
@@ -178,6 +208,17 @@ export async function routeOnboardingV2(
   }
 
   const preAuth = await deps.repo.loadPreAuthStateForUpdate(client, phoneHash);
+
+  // Pre-auth steps (language choice, OTP) have no voice handler at all — a
+  // net-new worker sending a voice note here gets the honest reply over the
+  // phone/inbound-keyed pre-auth gateway (no user_id exists yet to route
+  // through enqueueWorkerMessage).
+  if ((msg.numMedia ?? 0) > 0) {
+    const lang: Lang = preAuth?.preferredLanguage ?? session.language ?? 'es';
+    await deps.enqueuePreAuthText(client, msg.messageSid, msg.from, t('v2_voice_not_supported', lang));
+    return { handled: true, workerId: null, stepKey: preAuth?.currentStepKey ?? 'start.choose_language' };
+  }
+
   if (preAuth && preAuth.currentStepKey === 'identity.verify_otp') {
     return handleOtpStep(client, session, msg, deps, preAuth, phoneHash, now);
   }
