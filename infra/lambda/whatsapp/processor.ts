@@ -124,6 +124,8 @@ import {
   reactivateDeclinedLegalRun,
   appendTransition,
   completeOnboarding,
+  clearProfileAnswers,
+  findPreviousStepKey,
 } from './lib/onboarding-repository';
 import { recordCanonicalWhatsAppConsent } from './lib/legal-consent';
 import { enqueueWorkerMessage } from './lib/worker-delivery-gateway';
@@ -1419,6 +1421,8 @@ async function routeMessage(
           wakeSignals.domain = true;
           return result;
         },
+        clearProfileAnswers,
+        findPreviousStepKey,
       },
       enqueueWorkerMessage: async (gatewayClient, input, now) => {
         const result = await enqueueWorkerMessage(gatewayClient, input, now);

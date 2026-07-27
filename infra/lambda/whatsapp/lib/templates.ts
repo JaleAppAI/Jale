@@ -78,6 +78,7 @@ export type TemplateKey =
   | 'v2_ask_custom_trade'
   | 'v2_custom_trade_invalid'
   | 'v2_gate_blocked'
+  | 'v2_restarted'
   | 'v2_language_changed'
   | 'v2_ready'
   | 'v2_options_footer'
@@ -350,6 +351,10 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_gate_blocked: {
     es: 'Primero terminemos tu registro. Responde a la pregunta de arriba para continuar.',
     en: 'Let us finish signing you up first. Answer the question above to continue.',
+  },
+  v2_restarted: {
+    es: 'Listo, empezamos de nuevo. Vamos a repetir las preguntas de tu perfil.',
+    en: 'Okay, starting over. Let\'s go through your profile questions again.',
   },
   v2_language_changed: {
     es: 'Listo, seguimos en espanol.',

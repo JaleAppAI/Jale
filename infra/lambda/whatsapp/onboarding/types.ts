@@ -111,6 +111,22 @@ export interface OnboardingV2RepoDeps {
     },
   ) => Promise<{ transitionId: string }>;
   /**
+   * RESTART/REINICIAR (`onboarding/gate.ts`): clears exactly the seven
+   * profile-answer fields (+ their `worker_profiles` mirrors) — never legal/
+   * consent/OTP/lifecycle/trust_signals state, never a row delete.
+   */
+  clearProfileAnswers: (client: PoolClient, workerId: string) => Promise<void>;
+  /**
+   * BACK/ATRAS (`onboarding/gate.ts`): the step a run was on immediately
+   * before its current step, per the transition history. Null when there is
+   * nothing to go back to.
+   */
+  findPreviousStepKey: (
+    client: PoolClient,
+    runId: string,
+    currentStepKey: WorkflowStepKey,
+  ) => Promise<WorkflowStepKey | null>;
+  /**
    * Task 5's sole call site: fired exactly once, on the SAME client/
    * transaction as the answer-three persistence that precedes it, with the
    * locked gate's `expectedLockVersion`. Never awaited for external work —
