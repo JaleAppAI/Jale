@@ -99,10 +99,21 @@ import {
   buildS3Key,
   downloadTwilioMedia,
   uploadMediaToS3,
+  MAX_VOICE_BYTES,
 } from './lib/media';
+import {
+  parseVoiceTranscriptEvent,
+  type VoiceEventV2,
+  type VoicePipelineExecutionInputV2,
+} from './lib/voice-events';
 import { decodeIdTokenSub } from './lib/jwt';
 import { handleBuildingCustomTrust } from './handlers/custom-trust';
-import { loadRuntimeControls, isV2Enabled, hashNormalizedPhone } from './lib/runtime-controls';
+import {
+  loadRuntimeControls,
+  isV2Enabled,
+  isVoiceIntakeEnabled,
+  hashNormalizedPhone,
+} from './lib/runtime-controls';
 import {
   loadPreAuthStateForUpdate,
   savePreAuthState,
@@ -624,6 +635,9 @@ async function processRecord(record: SQSRecord): Promise<void> {
   const mediaUrl = params.MediaUrl0;
   const mediaSid = params.MediaSid0;
   const mediaContentType = params.MediaContentType0;
+  // A synthetic voice-pipeline completion re-entry (see lib/voice-events.ts)
+  // — null for every real Twilio webhook delivery.
+  const voiceEvent = parseVoiceTranscriptEvent(params);
   const wakeSignals: PostCommitWakeSignals = { workerIntent: false, domain: false };
 
   if (!from || !messageSid) {
@@ -726,7 +740,7 @@ async function processRecord(record: SQSRecord): Promise<void> {
         mediaUrl,
         mediaSid,
         mediaContentType,
-      }, wakeSignals);
+      }, wakeSignals, voiceEvent);
       jobOutboxActorUserId = routedWorkerId ?? jobOutboxActorUserId;
 
       // Flip the claim to 'db_committed' in the SAME tx. After COMMIT, SQS
@@ -1082,6 +1096,97 @@ async function handleAwaitingMediaVoice(
   await queueReply(client, messageSid, from, 'ai_processing_ack', conv.language);
 }
 
+// ── v2 trust-question voice-note transcription kickoff ──────────
+//
+// Mirrors handleAwaitingMediaVoice's Twilio-download -> S3 -> StartExecution
+// pattern above, but for the v2 lane's trust.question.* steps: it never
+// advances the step or takes the run lock — recordTrustAnswer only runs when
+// the transcript comes back (onboarding/steps/trust.ts), so a typed answer
+// that arrives first still wins the race. Runs on the SAME client/
+// transaction as the rest of the turn (closed over by the v2Deps.voiceIntake
+// wiring above), so a StartExecution failure rolls back the S3 upload's
+// worker_profile_media row along with everything else in this turn.
+async function startTrustTranscription(
+  client: PoolClient,
+  input: {
+    workerId: string;
+    phone: string;
+    runId: string;
+    stepKey: string;
+    questionIndex: number;
+    language: Lang;
+    mediaUrl: string;
+    mediaContentType: string;
+    inboundMessageSid: string;
+  },
+): Promise<{ started: boolean }> {
+  const category = detectMediaCategory(input.mediaContentType);
+  if (category !== 'voice') return { started: false };
+
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  const stateMachineArn = process.env.TRUST_PIPELINE_STATE_MACHINE_ARN;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+  if (!stateMachineArn) throw new Error('TRUST_PIPELINE_STATE_MACHINE_ARN not set');
+
+  const twilioSecret = await getTwilioSecret();
+  const mediaBuffer = await downloadTwilioMedia(input.mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+  // Twilio does not reject oversized uploads at the source; enforce the cap
+  // post-download rather than stranding the worker on a silent failure.
+  if (mediaBuffer.byteLength > MAX_VOICE_BYTES) return { started: false };
+
+  const mediaId = randomUUID();
+  const s3Key = buildS3Key(input.workerId, mediaId, 'voice');
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, input.mediaContentType);
+
+  await setWorkerRlsContextByUserId(client, input.workerId);
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, content_type)
+     VALUES ($1, $2, 'voice_message', $3, $4)`,
+    [mediaId, input.workerId, s3Key, input.mediaContentType],
+  );
+
+  const languageCode = input.language === 'es' ? 'es-US' : 'en-US';
+  const transcriptionJobName = `jale-vt-${input.workerId.replace(/-/g, '')}-${Date.now()}`;
+  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
+  const transcriptOutputKey = `${input.workerId}/transcripts/${transcriptionJobName}.json`;
+
+  const sfnInput: VoicePipelineExecutionInputV2 = {
+    transcriptionJobName,
+    languageCode,
+    mediaS3Uri,
+    mediaBucketName: bucketName,
+    transcriptOutputKey,
+    v2: {
+      version: 'v2',
+      kind: 'trust_answer',
+      phone: input.phone,
+      runId: input.runId,
+      stepKey: input.stepKey,
+      language: input.language,
+      origMessageSid: input.inboundMessageSid,
+      startedAt: new Date().toISOString(),
+      questionIndex: input.questionIndex,
+    },
+  };
+
+  try {
+    // Deterministic execution name (same shape as sendErrorFallback's `<sid>#err`
+    // idempotency key): an SQS redelivery of the same inbound voice note
+    // resolves to the SAME execution rather than starting a second
+    // transcription job.
+    await sfn.send(new StartExecutionCommand({
+      stateMachineArn,
+      name: `vt-${input.inboundMessageSid}`,
+      input: JSON.stringify(sfnInput),
+    }));
+  } catch (err: any) {
+    if (err?.name !== 'ExecutionAlreadyExists') throw err;
+  }
+
+  return { started: true };
+}
+
 // ── processing_ai — waiting for AI pipeline to complete ─────────
 async function handleProcessingAi(
   client: PoolClient,
@@ -1138,6 +1243,7 @@ async function routeMessage(
   conv: ConversationRow,
   msg: IncomingMessage,
   wakeSignals: PostCommitWakeSignals,
+  voiceEvent: VoiceEventV2 | null,
 ): Promise<string | null> {
   // ── Task 6: fail-closed v2 branch ───────────────────────────────────────
   //
@@ -1151,7 +1257,21 @@ async function routeMessage(
   // it opens no BEGIN/COMMIT of its own.
   const runtimeControls = await loadRuntimeControls(client);
   const phoneHash = hashNormalizedPhone(conv.whatsapp_number);
-  if (isV2Enabled(runtimeControls, phoneHash)) {
+  const v2Enabled = isV2Enabled(runtimeControls, phoneHash);
+
+  // A synthetic voice-pipeline completion event has no meaning in the
+  // legacy state machine (its Body is always empty — the payload lives in
+  // the event envelope) and must never reach it, even transiently. The
+  // pipeline's own CloudWatch alarms (WhatsAppTrustVoicePipelineFailed,
+  // etc.) cover a completion that lands with v2 no longer enabled for this
+  // phone; here we just drop it rather than let it fall through to an
+  // empty-message reprompt in the wrong lane.
+  if (voiceEvent && !v2Enabled) {
+    console.warn(JSON.stringify({ metric: 'OnboardingVoiceTranscriptDropped', messageSid: msg.messageSid }));
+    return null;
+  }
+
+  if (v2Enabled) {
     registerOnboardingRenderers();
 
     const v2Deps: OnboardingV2Deps = {
@@ -1195,6 +1315,10 @@ async function routeMessage(
       workflowVersion: WHATSAPP_V2_WORKFLOW_VERSION,
       requiredLegalVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
       recordLegalAcceptance: recordCanonicalWhatsAppConsent,
+      voiceIntake: {
+        enabled: isVoiceIntakeEnabled(runtimeControls, phoneHash),
+        startTrustTranscription: (input) => startTrustTranscription(client, input),
+      },
     };
 
     const v2Session: OnboardingV2Session = {
@@ -1211,6 +1335,11 @@ async function routeMessage(
       body: msg.body,
       messageSid: msg.messageSid,
       interactivePayload: msg.interactivePayload,
+      numMedia: msg.numMedia,
+      mediaUrl: msg.mediaUrl,
+      mediaSid: msg.mediaSid,
+      mediaContentType: msg.mediaContentType,
+      voiceEvent: voiceEvent ?? undefined,
     };
 
     const result = await routeOnboardingV2(client, v2Session, v2Message, v2Deps);
@@ -2495,6 +2624,14 @@ async function handleIdle(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<string | null> {
+  // Idle (post-onboarding, ready) workers have no voice handler at all —
+  // give the honest "not supported here" reply rather than an unrelated
+  // idle_help fallback that never mentions why the voice note went nowhere.
+  if (msg.numMedia > 0) {
+    await reply(client, msg, 'voice_note_not_supported', conv.language);
+    return null;
+  }
+
   const typedAction = parseTypedJobAction(msg.body);
   if (typedAction) {
     const recentJobs = conv.state_context?.recent_jobs ?? [];

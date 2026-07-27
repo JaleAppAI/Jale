@@ -15,6 +15,7 @@ import type {
 import type { PreAuthState, WorkerGate } from '../lib/onboarding-repository';
 import type { OnboardingV2Adapters } from '../lib/onboarding-adapters';
 import type { InteractivePrompt } from '../lib/interactive-templates';
+import type { VoiceEventV2 } from '../lib/voice-events';
 
 // ── Session / message shapes the router is handed ──────────────────────
 
@@ -34,6 +35,15 @@ export interface OnboardingV2InboundMessage {
   body: string;
   messageSid: string;
   interactivePayload?: string;
+  /** Twilio media fields (mirrors legacy IncomingMessage) — undefined/0 for
+   * a plain text or interactive-payload message. */
+  numMedia?: number;
+  mediaUrl?: string;
+  mediaSid?: string;
+  mediaContentType?: string;
+  /** Present only on a synthetic voice-pipeline completion re-entry (see
+   * lib/voice-events.ts) — never set on a real inbound Twilio message. */
+  voiceEvent?: VoiceEventV2;
 }
 
 export type RouteResult =
@@ -157,4 +167,29 @@ export interface OnboardingV2Deps {
     client: PoolClient,
     input: { workerId: string; documentVersion: string },
   ) => Promise<void>;
+  /**
+   * Gated by the `voice_intake_enabled` runtime control (fail-closed, same
+   * allowlist-then-global-rollout pattern as `onboarding_v2_enabled`).
+   * `startTrustTranscription` kicks off the Twilio-download -> S3 ->
+   * Transcribe pipeline for a voice note recorded at a `trust.question.*`
+   * step; it never advances the step or touches the run lock — that only
+   * happens when the transcript comes back (or a typed answer wins the
+   * race first). A second method for full voice profile intake
+   * (`ingestProfileVoiceNote`) lands in a later task — this surface is
+   * shaped to add it without another cross-cutting deps change.
+   */
+  voiceIntake: {
+    enabled: boolean;
+    startTrustTranscription(input: {
+      workerId: string;
+      phone: string;
+      runId: string;
+      stepKey: string;
+      questionIndex: number;
+      language: PreferredLanguage;
+      mediaUrl: string;
+      mediaContentType: string;
+      inboundMessageSid: string;
+    }): Promise<{ started: boolean }>;
+  };
 }
