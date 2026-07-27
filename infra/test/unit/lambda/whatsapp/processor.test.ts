@@ -539,6 +539,10 @@ describe('Processor Lambda', () => {
       expect(
         countQueryByPattern(/UPDATE whatsapp_processed_messages\s+SET status = 'completed'/i),
       ).toBe(0);
+      // Phase-2 (post-commit Twilio) failures must NOT trigger the error
+      // fallback — they already have the db_committed resume path, and an
+      // apology here would be a lie (the state advanced fine).
+      expect(countQueryByPattern(/#err/)).toBe(0);
     });
   });
 
@@ -3356,7 +3360,15 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-worker-rollback' }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', user_id: 'worker-1' })] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] });
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // ROLLBACK
+      // Error fallback (2026-07-26): runs on its own tx after the rollback.
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (fallback)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cooldown SELECT
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-worker-rollback#err' }] }) // #err claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ language: 'es' }] }) // conv language
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // outbox INSERT (apology)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT (fallback)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // sendPendingOutbox(#err): none pending
 
     await expect(handler(
       makeSqsEvent({ MessageSid: 'SM-v2-worker-rollback', From: FROM, Body: 'Accept' }),
@@ -3551,7 +3563,15 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-err' }] }) // claim
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // SELECT conv
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // ROLLBACK
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // ROLLBACK
+      // Error fallback (2026-07-26): its own tx, after the rollback. The
+      // apology is suppressed here (cooldown row present) to keep this
+      // test's focus on error propagation, not fallback delivery.
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (fallback)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] }) // cooldown: recent #err exists
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-err#err' }] }) // #err claim
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT (fallback)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // sendPendingOutbox(#err): none
 
     await expect(
       handler(
@@ -3562,7 +3582,11 @@ describe('v2 routing branch', () => {
     ).rejects.toThrow('v2 dependency missing');
 
     expect(countQueryByPattern(/^\s*ROLLBACK\s*$/i)).toBe(1);
-    expect(countQueryByPattern(/^\s*COMMIT\s*$/i)).toBe(0);
+    // The MAIN transaction never commits — the fallback's own COMMIT is the
+    // only one, and the db_committed flip (the main tx's last write) never
+    // happens.
+    expect(countQueryByPattern(/^\s*COMMIT\s*$/i)).toBe(1);
+    expect(countQueryByPattern(/SET status = 'db_committed'/i)).toBe(0);
     expect(mockCognitoSend).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
   });
@@ -3665,5 +3689,194 @@ describe('v2 routing branch', () => {
     const serialized = (writebackParams as unknown[])[1] as string;
     expect(serialized).toContain('v2TrustQuestions');
     expect(serialized).toContain('custom question 1');
+  });
+});
+
+// ── Error fallback (2026-07-26 incident: silence on step-handler throw) ────
+//
+// Top-level for the same reason as 'v2 routing branch': these tests own
+// their entire mockQuery script including the ROLLBACK and the fallback's
+// second transaction.
+describe('error fallback', () => {
+  const originalEnv = process.env;
+  const PHONE = '+15125551234';
+  const FROM = `whatsapp:${PHONE}`;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockQuery.mockReset();
+    mockConnect.mockReset();
+    mockRelease.mockReset();
+    process.env = {
+      ...originalEnv,
+      WORKER_POOL_ID: 'pool-abc',
+      WORKER_CLIENT_ID: 'client-abc',
+      TWILIO_SECRET_ARN: 'arn:twilio',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+      DB_SECRET_ARN: 'arn:db',
+      REQUIRED_TOS_VERSION: '1.0',
+    };
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ sid: 'SM22222222222222222222222222222222' }),
+    });
+    mockLoadRuntimeControls.mockResolvedValue({ disabled: false });
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockReset();
+    mockCreateOnboardingV2Adapters.mockReset();
+    mockCreateOnboardingV2Adapters.mockReturnValue({});
+    mockPublishOutboxWakes.mockReset();
+    mockPublishOutboxWakes.mockResolvedValue({ sent: 0, failed: 0 });
+    _clearCategoryRenderersForTests();
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  /** Scripts the main tx up to the router throw: BEGIN, claim, conv. */
+  function scriptMainTxUntilThrow(sid: string) {
+    mockRouteOnboardingV2.mockRejectedValue(new Error('step boom'));
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: sid }] }) // claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', language: 'es' })] }) // conv FOR UPDATE
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // ROLLBACK
+  }
+
+  it('sends ONE apology via a synthetic #err claim and still rethrows for SQS retry/DLQ', async () => {
+    const sid = 'SMfallback000000000000000000000001';
+    scriptMainTxUntilThrow(sid);
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (fallback tx)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cooldown SELECT: none recent
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: `${sid}#err` }] }) // #err claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ language: 'es' }] }) // conv language
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // outbox INSERT (apology)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: 'ob-1', sequence: 1, whatsapp_number: PHONE, body: 'apology', content_template: null, content_variables: null }],
+      }) // sendPendingOutbox: one pending
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // outbox UPDATE sent
+
+    // The rethrow is the retry/DLQ pin: fallback must never swallow it.
+    await expect(
+      handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: '79928' }), {} as any, {} as any),
+    ).rejects.toThrow('step boom');
+
+    // Synthetic claim row: failed status + truncated error, keyed by #err.
+    const claimParams = findQueryByPattern(/INSERT INTO whatsapp_processed_messages[\s\S]*last_error/i);
+    expect(claimParams).toBeDefined();
+    expect((claimParams as unknown[])[0]).toBe(`${sid}#err`);
+    expect((claimParams as unknown[])[2]).toContain('step boom');
+
+    // Exactly one apology queued, against the synthetic sid, in Spanish.
+    const outboxParams = findQueryByPattern(/INSERT INTO whatsapp_outbox/i);
+    expect(outboxParams).toBeDefined();
+    expect((outboxParams as unknown[])[0]).toBe(`${sid}#err`);
+    expect(String((outboxParams as unknown[])[2])).toContain('algo salio mal');
+
+    // Exactly one Twilio send.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('is idempotent across SQS retries: the second run claims nothing and sends nothing', async () => {
+    const sid = 'SMfallback000000000000000000000002';
+
+    // Run 1 — full fallback.
+    scriptMainTxUntilThrow(sid);
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (fallback)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cooldown: none
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: `${sid}#err` }] }) // #err claim wins
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ language: 'es' }] }) // conv language
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // outbox INSERT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ id: 'ob-1', sequence: 1, whatsapp_number: PHONE, body: 'apology', content_template: null, content_variables: null }],
+      })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // outbox UPDATE sent
+    await expect(
+      handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: '79928' }), {} as any, {} as any),
+    ).rejects.toThrow('step boom');
+
+    // Run 2 — same record redelivered. The REAL sid re-claims cleanly
+    // (rollback discarded run 1's claim), the step throws again, and the
+    // fallback's #err insert now CONFLICTS: no new outbox row, and the
+    // drain finds nothing pending (already sent).
+    scriptMainTxUntilThrow(sid);
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (fallback)
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cooldown: the #err row is excluded by sid <> $2
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // #err claim: ON CONFLICT DO NOTHING
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // sendPendingOutbox: nothing pending
+    await expect(
+      handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: '79928' }), {} as any, {} as any),
+    ).rejects.toThrow('step boom');
+
+    // One outbox INSERT and one Twilio call TOTAL across both runs.
+    expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(1);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses the apology (but still claims #err) inside the 30-minute per-phone cooldown', async () => {
+    const sid = 'SMfallback000000000000000000000003';
+    scriptMainTxUntilThrow(sid);
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (fallback)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ '?column?': 1 }] }) // cooldown: a recent #err exists
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: `${sid}#err` }] }) // #err claim still recorded
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // sendPendingOutbox: nothing pending
+    await expect(
+      handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: '79928' }), {} as any, {} as any),
+    ).rejects.toThrow('step boom');
+
+    expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
+    expect(mockFetch).not.toHaveBeenCalled();
+    // Forensics row still written.
+    expect(findQueryByPattern(/INSERT INTO whatsapp_processed_messages[\s\S]*last_error/i)).toBeDefined();
+  });
+
+  it('never masks the original error when the fallback itself fails', async () => {
+    const sid = 'SMfallback000000000000000000000004';
+    scriptMainTxUntilThrow(sid);
+    mockQuery
+      .mockRejectedValueOnce(new Error('db is down')) // BEGIN (fallback) explodes
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // fallback's own ROLLBACK
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(
+      handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: '79928' }), {} as any, {} as any),
+    ).rejects.toThrow('step boom'); // the ORIGINAL error, not 'db is down'
+
+    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('error fallback failed'))).toBe(true);
+    warnSpy.mockRestore();
+  });
+
+  it('does not fire for a lost claim race (no throw, nothing user-visible attempted)', async () => {
+    const sid = 'SMfallback000000000000000000000005';
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // claim: lost the race
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ status: 'completed' }] }) // existing status
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // COMMIT
+
+    await handler(makeSqsEvent({ MessageSid: sid, From: FROM, Body: 'hola' }), {} as any, {} as any);
+
+    expect(countQueryByPattern(/#err/)).toBe(0);
+    expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
   });
 });

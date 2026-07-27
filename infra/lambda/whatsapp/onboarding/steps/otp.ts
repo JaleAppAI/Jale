@@ -89,7 +89,20 @@ export async function handleOtpStep(
   if (result.status === 'invalid') {
     // The three-strike lockout only works if the returned attempts count is
     // persisted back through savePreAuthState — this is that persistence.
-    await deps.repo.savePreAuthState(client, phoneHash, { attempts: result.attempts });
+    //
+    // Cognito rotates the CUSTOM_CHALLENGE session on every wrong answer;
+    // the NEXT submission is only valid against the rotated session, so it
+    // must be persisted alongside the count. Built conditionally rather
+    // than passing `providerChallengeId: undefined`: savePreAuthState uses
+    // a `key in patch` check, so a present-but-undefined key would be
+    // serialized into the JSONB patch. null = the provider gave us nothing
+    // new (thrown non-session error) — keep the stored session so the next
+    // attempt resolves to 'expired' → RESEND.
+    const patch: Partial<PreAuthState> = { attempts: result.attempts };
+    if (result.rotatedChallengeId) {
+      patch.providerChallengeId = result.rotatedChallengeId;
+    }
+    await deps.repo.savePreAuthState(client, phoneHash, patch);
     await sendPreAuthText(
       client, deps, msg, responseLang,
       'v2_otp_invalid', { attempts: String(result.attemptsRemaining) },

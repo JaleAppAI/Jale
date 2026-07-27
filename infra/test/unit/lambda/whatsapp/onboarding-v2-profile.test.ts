@@ -573,13 +573,18 @@ describe('profile.trade', () => {
   });
 
   it('"other" advances to profile.custom_trade without a question set yet', async () => {
-    const { deps, gateRepo } = makeDeps();
+    const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: 'user-trade-other', currentStepKey: 'profile.trade' });
     const session = makeSession({ user_id: gate.userId });
 
     const result = await routeOnboardingV2(client, session, makeMsg('other'), deps);
 
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.custom_trade' });
+    // chk_trade_other (004_whatsapp.sql) forbids main_trade='other' while
+    // main_trade_other is NULL, so the 'other' choice must NOT hit the DB —
+    // it rides the resolver's collected bag until saveCustomTrade writes
+    // both columns atomically at profile.custom_trade.
+    expect(adapters._saveTradeCalls).toHaveLength(0);
   });
 
   it('an unrecognized trade reprompts', async () => {
@@ -614,7 +619,7 @@ describe('profile.trade', () => {
   });
 
   it('accepts V1\'s profile:main_trade payload for "other"', async () => {
-    const { deps, gateRepo } = makeDeps();
+    const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: 'user-trade-v1-other', currentStepKey: 'profile.trade' });
     const session = makeSession({ user_id: gate.userId });
 
@@ -626,6 +631,8 @@ describe('profile.trade', () => {
     );
 
     expect(result.stepKey).toBe('profile.custom_trade');
+    // Same chk_trade_other guard as the plain-text 'other' path.
+    expect(adapters._saveTradeCalls).toHaveLength(0);
   });
 
   it('still accepts the original trade: payload for in-flight sessions', async () => {

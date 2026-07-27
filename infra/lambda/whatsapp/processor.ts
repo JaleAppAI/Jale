@@ -317,6 +317,83 @@ async function markCompleted(
   );
 }
 
+// ── Error fallback (2026-07-26 incident) ─────────────────────────────
+//
+// When a handler throws inside the claim transaction, ROLLBACK discards
+// everything — including whatever reply was queued — so the user heard
+// nothing while the message retried into the DLQ. This safety net sends ONE
+// generic apology per failed inbound message, at most one per phone per 30
+// minutes, on a FRESH transaction after the rollback.
+//
+// The synthetic claim row `<sid>#err` is three things at once: the FK
+// parent for the apology's outbox row (whatsapp_outbox.inbound_message_sid
+// references whatsapp_processed_messages), the idempotency key across SQS
+// retries (same INSERT ... ON CONFLICT DO NOTHING pattern as the real
+// claim), and operator forensics (status='failed' + last_error). `#` never
+// appears in a Twilio sid, so it cannot collide with a real inbound
+// message, and 38 chars fits the VARCHAR(50) column.
+//
+// Sent on the FIRST failure rather than the last retry: attempt 5 lands
+// ~24 minutes later (360s visibility timeout), ApproximateReceiveCount is
+// documented as approximate, and failures inside the claim tx are dominated
+// by deterministic bugs where retries change nothing. A recovered transient
+// therefore produces apology-then-real-reply — the copy ("try again in a
+// few minutes") reads correctly in that order.
+async function sendErrorFallback(
+  client: PoolClient,
+  inboundMessageSid: string,
+  from: string,
+  defaultLang: Lang,
+  originalErr: unknown,
+): Promise<void> {
+  const whatsappNumber = from.replace(/^whatsapp:/, '');
+  const errorSid = `${inboundMessageSid}#err`;
+  const errText = ((originalErr as Error)?.message ?? String(originalErr)).slice(0, 500);
+  await client.query('BEGIN');
+  try {
+    // Per-phone cooldown: one apology per 30 minutes no matter how many
+    // distinct messages keep failing (a FIFO lane wedged on a deterministic
+    // bug fails every subsequent message too). Uses the existing
+    // idx_wa_processed_number (whatsapp_number, first_seen_at DESC) index.
+    const recent = await client.query(
+      `SELECT 1 FROM whatsapp_processed_messages
+        WHERE whatsapp_number = $1
+          AND message_sid LIKE '%#err'
+          AND message_sid <> $2
+          AND first_seen_at > now() - interval '30 minutes'
+        LIMIT 1`,
+      [whatsappNumber, errorSid],
+    );
+    const claim = await client.query(
+      `INSERT INTO whatsapp_processed_messages (message_sid, whatsapp_number, status, last_error)
+       VALUES ($1, $2, 'failed', $3)
+       ON CONFLICT (message_sid) DO NOTHING
+       RETURNING message_sid`,
+      [errorSid, whatsappNumber, errText],
+    );
+    if (claim.rowCount === 1 && recent.rowCount === 0) {
+      // The conversation row may not exist (a brand-new user's row was
+      // created inside the rolled-back tx), so prefer its language but fall
+      // back to the inbound body's detected language.
+      const conv = await client.query<{ language: Lang }>(
+        `SELECT language FROM whatsapp_conversations WHERE whatsapp_number = $1`,
+        [whatsappNumber],
+      );
+      const lang = conv.rows[0]?.language ?? defaultLang;
+      await queueText(client, errorSid, from, t('processing_error', lang));
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch { /* swallow */ }
+    throw err;
+  }
+  // Outside the tx, like the main path's phase 2. Also re-drains a pending
+  // apology left by a prior attempt that crashed between COMMIT and the
+  // Twilio send — the ON CONFLICT branch above queues nothing new, but this
+  // drain still delivers the earlier pending row exactly once.
+  await sendPendingOutbox(client, errorSid);
+}
+
 // ── DB: conversation lookup / upsert ────────────────────────────
 //
 // After Fix Plan v3, the processor always calls
@@ -667,7 +744,28 @@ async function processRecord(record: SQSRecord): Promise<void> {
       // re-claims cleanly. We swallow rollback errors because the
       // connection may already be in an aborted state.
       try { await client.query('ROLLBACK'); } catch { /* swallow */ }
-      if (!claimed) {
+      if (claimed) {
+        // Safety net, best-effort: the user must not be left in total
+        // silence while this message retries into the DLQ. A fallback
+        // failure must never mask the original error or block the rethrow
+        // (retry/DLQ semantics stay exactly as before). Gated on `claimed`:
+        // if the claim itself threw, the DB is unhealthy (the fallback
+        // would fail too) and nothing user-visible was attempted; the
+        // lost-race path returns without throwing and never reaches here.
+        try {
+          await sendErrorFallback(client, messageSid, from, defaultLang, err);
+          console.warn(JSON.stringify({
+            metric: 'WhatsAppProcessorFallbackReply',
+            messageSid,
+            receiveCount: record.attributes?.ApproximateReceiveCount ?? null,
+          }));
+        } catch (fallbackErr) {
+          console.warn('[processor] error fallback failed', {
+            messageSid,
+            err: (fallbackErr as Error).message,
+          });
+        }
+      } else {
         console.warn('[processor] claim failed before first mutation', {
           messageSid,
           err: (err as Error).message,

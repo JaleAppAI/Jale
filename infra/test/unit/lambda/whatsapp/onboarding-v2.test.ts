@@ -428,7 +428,7 @@ describe('pre-auth delivery for a genuinely unbound (net-new) worker', () => {
     const session = makeSession({ user_id: null });
     await routeOnboardingV2(client, session, makeMsg('START'), deps);
     adapters.identity.verifyChallenge.mockResolvedValueOnce({
-      status: 'invalid', attemptsRemaining: 2, attempts: 1,
+      status: 'invalid', attemptsRemaining: 2, attempts: 1, rotatedChallengeId: 'rotated-1',
     });
 
     await routeOnboardingV2(client, session, makeMsg('000000'), deps);
@@ -529,7 +529,7 @@ describe('identity.verify_otp', () => {
     expect(gateway.calls[0].dedupeKey).toContain(otpMessage.messageSid);
   });
 
-  it('an invalid code returns invalid and persists the RETURNED attempts count', async () => {
+  it('an invalid code returns invalid and persists the RETURNED attempts count AND the rotated session', async () => {
     const { deps, preAuthRepo, adapters } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });
     await bootstrapOtp(deps, session);
@@ -537,6 +537,7 @@ describe('identity.verify_otp', () => {
       status: 'invalid',
       attemptsRemaining: 2,
       attempts: 1,
+      rotatedChallengeId: 'rotated-session-1',
     });
     const saveSpy = jest.spyOn(preAuthRepo, 'savePreAuthState');
 
@@ -546,6 +547,57 @@ describe('identity.verify_otp', () => {
     const attemptsPatch = saveSpy.mock.calls.map((c) => c[2] as Partial<PreAuthState>)
       .find((p) => 'attempts' in p);
     expect(attemptsPatch?.attempts).toBe(1);
+    // Cognito rotates the CUSTOM_CHALLENGE session on every wrong answer;
+    // without persisting it the SECOND submission (even the correct code)
+    // dies on the stale session as "expired".
+    expect(attemptsPatch?.providerChallengeId).toBe('rotated-session-1');
+  });
+
+  it('the NEXT verify call presents the rotated session persisted by the previous wrong attempt', async () => {
+    // End-to-end regression pin for the full save → load → reuse loop
+    // through the pre-auth repo: wrong code rotates, second turn must call
+    // verifyChallenge with the ROTATED id, not the original one.
+    const { deps, adapters } = makeDeps();
+    const session = makeSession({ user_id: 'user-1' });
+    await bootstrapOtp(deps, session);
+
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({
+      status: 'invalid',
+      attemptsRemaining: 2,
+      attempts: 1,
+      rotatedChallengeId: 'rotated-session-1',
+    });
+    await routeOnboardingV2(client, session, makeMsg('000000'), deps);
+
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'verified', workerId: 'user-1' });
+    await routeOnboardingV2(client, session, makeMsg('123456'), deps);
+
+    const secondCallInput = adapters.identity.verifyChallenge.mock.calls[1][1];
+    expect(secondCallInput.challengeId).toBe('rotated-session-1');
+    expect(secondCallInput.attempts).toBe(1);
+  });
+
+  it('a null rotation keeps the stored session: the patch carries no providerChallengeId key', async () => {
+    // rotatedChallengeId null = the SDK call threw a non-session error and
+    // there is nothing new to persist. The patch must OMIT the key entirely
+    // (savePreAuthState serializes any present key, undefined included).
+    const { deps, preAuthRepo, adapters } = makeDeps();
+    const session = makeSession({ user_id: 'user-1' });
+    await bootstrapOtp(deps, session);
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({
+      status: 'invalid',
+      attemptsRemaining: 2,
+      attempts: 1,
+      rotatedChallengeId: null,
+    });
+    const saveSpy = jest.spyOn(preAuthRepo, 'savePreAuthState');
+
+    await routeOnboardingV2(client, session, makeMsg('000000'), deps);
+
+    const attemptsPatch = saveSpy.mock.calls.map((c) => c[2] as Partial<PreAuthState>)
+      .find((p) => 'attempts' in p);
+    expect(attemptsPatch).toBeDefined();
+    expect('providerChallengeId' in (attemptsPatch as object)).toBe(false);
   });
 
   it('three wrong attempts fire the lock log exactly once, with no OTP/phone/body, and a further attempt during the lock logs nothing new', async () => {
@@ -554,10 +606,10 @@ describe('identity.verify_otp', () => {
     await bootstrapOtp(deps, session);
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 1, attempts: 1 });
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 1, attempts: 1, rotatedChallengeId: 'rot-1' });
     await routeOnboardingV2(client, session, makeMsg('111111'), deps);
 
-    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 0, attempts: 2 });
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 0, attempts: 2, rotatedChallengeId: 'rot-2' });
     await routeOnboardingV2(client, session, makeMsg('222222'), deps);
 
     adapters.identity.verifyChallenge.mockResolvedValueOnce({
@@ -598,6 +650,7 @@ describe('identity.verify_otp', () => {
       status: 'invalid',
       attemptsRemaining: 2,
       attempts: 1,
+      rotatedChallengeId: 'rotated-existing-1',
     });
 
     const result = await routeOnboardingV2(client, session, makeMsg('000000'), deps);
@@ -614,7 +667,7 @@ describe('identity.verify_otp', () => {
     await bootstrapOtp(deps, session);
     const bindSpy = jest.spyOn(gateRepo, 'bindVerifiedIdentityAndStartWorkflow');
 
-    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 2, attempts: 1 });
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 2, attempts: 1, rotatedChallengeId: 'rot-bind-1' });
     await routeOnboardingV2(client, session, makeMsg('111111'), deps);
 
     adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'expired' });
