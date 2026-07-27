@@ -289,6 +289,7 @@ function makeDeps() {
     voiceIntake: {
       enabled: false,
       startTrustTranscription: jest.fn().mockResolvedValue({ started: false }),
+      ingestProfileVoiceNote: jest.fn().mockResolvedValue({ started: false }),
     },
   };
 

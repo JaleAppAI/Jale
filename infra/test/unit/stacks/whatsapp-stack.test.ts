@@ -828,6 +828,17 @@ describe('event-driven outbox wake queues', () => {
       expect(receiver.Properties.Environment?.Variables ?? {})
         .not.toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
     });
+
+    // Stream B (Task 8d): ai-profile-writer's v2 completion branch re-enters
+    // the same way voice-trust-receiver does — same transport-flag gate.
+    test('ai-profile-writer Lambda omits WHATSAPP_INBOUND_V2_QUEUE_URL by default', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const writer = Object.values(functions).find((resource: any) =>
+        resource.Properties?.Description?.includes('ai-profile-writer')) as any;
+      expect(writer).toBeDefined();
+      expect(writer.Properties.Environment?.Variables ?? {})
+        .not.toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
+    });
   });
 });
 
@@ -919,6 +930,38 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
     const policies = Object.values(template.findResources('AWS::IAM::Policy'))
       .filter((policy: any) => policy.Properties?.Roles?.some(
         (role: any) => role.Ref === receiverRoleId,
+      ));
+    const serialized = JSON.stringify(policies);
+    expect(serialized).toContain(v2QueueId);
+    expect(serialized).toContain('sqs:SendMessage');
+  });
+
+  // Stream B (Task 8d): the ai-profile-writer lambda gets the SAME queue
+  // URL/grant, gated on the SAME transport flag, for its v2 profile-intake
+  // completion branch.
+  test('ai-profile-writer Lambda gets WHATSAPP_INBOUND_V2_QUEUE_URL when the transport flag is on', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const writer = Object.values(functions).find((resource: any) =>
+      resource.Properties?.Description?.includes('ai-profile-writer')) as any;
+    expect(writer).toBeDefined();
+    expect(writer.Properties.Environment.Variables)
+      .toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
+  });
+
+  test('ai-profile-writer role has an sqs:SendMessage grant on the v2 FIFO queue', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const writer = Object.values(functions).find((resource: any) =>
+      resource.Properties?.Description?.includes('ai-profile-writer')) as any;
+    const writerRoleId = writer.Properties.Role['Fn::GetAtt'][0];
+
+    const queues = template.findResources('AWS::SQS::Queue');
+    const v2QueueId = Object.entries(queues)
+      .find(([, resource]: [string, any]) => resource.Properties?.QueueName === 'whatsapp-inbound-v2.fifo')?.[0];
+    expect(v2QueueId).toBeDefined();
+
+    const policies = Object.values(template.findResources('AWS::IAM::Policy'))
+      .filter((policy: any) => policy.Properties?.Roles?.some(
+        (role: any) => role.Ref === writerRoleId,
       ));
     const serialized = JSON.stringify(policies);
     expect(serialized).toContain(v2QueueId);

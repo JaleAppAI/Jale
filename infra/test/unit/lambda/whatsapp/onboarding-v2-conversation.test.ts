@@ -760,3 +760,169 @@ describe('harness plumbing sanity', () => {
     }
   });
 });
+
+// ── Stream B (Task 8e): full voice profile intake, end to end ───────────
+
+describe('Stream B: full voice profile intake end to end', () => {
+  it('control ON: legal accept -> voice_choice -> audio -> ack -> completion applies partial fields -> resolver asks ONLY location, then transportation, availability -> trust handoff', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110500' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    const ackResult = await h.sendVoiceNote();
+    expect(ackResult.stepKey).toBe('profile.voice_processing');
+    expect(h.getPendingProfileIngests()).toHaveLength(1);
+
+    const completion = await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: { full_name: 'Jose Martinez', main_trade: 'plumber', years_experience: '5-9' },
+      confidences: { full_name: 0.9, main_trade: 0.9, years_experience: 0.9 },
+      summaryEn: 'Jose, a plumber with 5-9 years of experience.',
+      summaryEs: 'Jose, un plomero con 5-9 anos de experiencia.',
+    });
+
+    // city/location was never extracted — the resolver asks for it next
+    // (PROFILE_FIELDS order: name, city, trade, [custom_trade], experience,
+    // transportation, availability — name/trade/experience already landed).
+    expect(completion.stepKey).toBe('profile.location');
+    expect(h.getWorkerProfile()).toMatchObject({ name: 'Jose Martinez', trade: 'plumber', yearsExperience: '5-9' });
+
+    await h.sendText('Austin, TX');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.transportation');
+
+    await h.sendText('1'); // has_transportation
+    expect(h.getState().gate?.currentStepKey).toBe('profile.availability');
+
+    await h.sendText('1'); // availability -> trust handoff
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+  });
+
+  it('control OFF: legal accept -> profile.name -> ... is byte-identical to the pre-Stream-B flow', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110501' });
+    // voiceIntake left disabled (harness default).
+    await h.driveToStep('legal.review', { lang: 'en' });
+
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('Jose Martinez');
+    await h.sendText('78701');
+    await h.sendText('plumber');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+  });
+
+  it('opt-out to text: tapping "type instead" at voice_choice walks the ordinary field-by-field flow', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110502' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.pressButton('media:voice:text');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('Jose Martinez');
+    await h.sendText('78701');
+    await h.sendText('plumber');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    expect(h.getPendingProfileIngests()).toHaveLength(0);
+  });
+
+  it('timeout escape: the pipeline never completes -> voice_processing times out -> the text flow takes over and still reaches ready', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110503' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    await h.sendVoiceNote();
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
+
+    h.advanceTime(6 * 60 * 1000); // > VOICE_PROCESSING_TIMEOUT_MS
+    await h.sendText('hello?');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // fell back, nothing landed
+
+    await h.sendText('Jose Martinez');
+    await h.sendText('78701');
+    await h.sendText('plumber');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+
+    // The pipeline's completion event, if it EVER arrives after this, must
+    // be a silent no-op. The worker is already 'ready' by this point, so it
+    // never even reaches the staleness check — routeOnboardingV2's ready
+    // short-circuit fires first, which is equally harmless (no send, no
+    // state change).
+    const sentBefore = h.getSentMessages().length;
+    const late = await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: { full_name: 'Someone Else' },
+      confidences: { full_name: 0.9 },
+    });
+    expect(h.getSentMessages()).toHaveLength(sentBefore);
+    expect(late.handled).toBe(false);
+    expect(h.getWorkerProfile()).not.toMatchObject({ name: 'Someone Else' });
+  });
+});
+
+describe('Stream B: command gate at voice steps', () => {
+  it('a Spanish worker typing TRABAJOS at profile.voice_choice gets the blocked reply and does not start ingestion', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110510' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'es' });
+    await h.sendText('ACEPTAR');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.sendText('TRABAJOS');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice'); // gate blocked it, no advance
+    expect(h.getPendingProfileIngests()).toHaveLength(0);
+    const blockedReply = h.getSentMessages().at(-1);
+    expect(blockedReply?.lang).toBe('es');
+  });
+
+  it('IDIOMA/LANGUAGE persists across profile.voice_choice and profile.voice_processing prompts', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110511' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.sendText('IDIOMA');
+    expect(h.getState().stateContext.v2PreferredLanguageOverride).toBe('es');
+    expect(h.getSentMessages().at(-1)?.lang).toBe('es');
+
+    // The override survives into profile.voice_processing's prompts too.
+    await h.sendVoiceNote();
+    const processingAck = h.getSentMessages().at(-1);
+    expect(processingAck?.lang).toBe('es');
+
+    await h.sendText('todavia?');
+    expect(h.getSentMessages().at(-1)?.lang).toBe('es');
+  });
+});

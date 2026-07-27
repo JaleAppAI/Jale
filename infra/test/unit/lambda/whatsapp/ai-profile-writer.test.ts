@@ -18,6 +18,12 @@ jest.mock('@aws-sdk/client-lambda', () => ({
   InvokeCommand: jest.fn((args) => ({ input: args, __type: 'Invoke' })),
 }));
 
+const mockSqsSend = jest.fn();
+jest.mock('@aws-sdk/client-sqs', () => ({
+  SQSClient: jest.fn(() => ({ send: mockSqsSend })),
+  SendMessageCommand: jest.fn((args) => ({ input: args, __type: 'SendMessage' })),
+}));
+
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const mockConnect = jest.fn(() => ({
@@ -40,8 +46,10 @@ process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
 process.env.AI_EXTRACTION_CONFIDENCE_THRESHOLD = '0.75';
 process.env.AI_INDUSTRY_KEYWORDS = '["electrician","plumber","carpenter"]';
 process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';
+process.env.WHATSAPP_INBOUND_V2_QUEUE_URL = 'https://sqs.us-east-2.amazonaws.com/123456789012/whatsapp-inbound-v2.fifo';
 
 import { handler } from '../../../../lambda/whatsapp/ai-profile-writer';
+import { parseVoiceTranscriptEvent } from '../../../../lambda/whatsapp/lib/voice-events';
 
 function makeTranscriptS3Response(text: string) {
   const json = JSON.stringify({ results: { transcripts: [{ transcript: text }] } });
@@ -491,4 +499,143 @@ test('handler accepts Bedrock JSON wrapped in a markdown fence', async () => {
     /INSERT INTO worker_profile_ai_extractions/.test(sql)
   );
   expect(insertCall).toBeDefined();
+});
+
+// ── Stream B (Task 8d): v2 profile-intake completion branch ─────────────
+//
+// A `v2` marker on the executionContext selects this branch: the SQL up
+// through the worker_profile_ai_extractions INSERT is IDENTICAL to the v1
+// path above (same queries, same params) — what changes is everything
+// AFTER it: no `UPDATE users`, no `whatsapp_outbox` INSERT, no
+// autoAdvanceProfileAfterAi call. Instead exactly one SQS SendMessage goes
+// out, carrying a `#vp`-suffixed synthetic event the v2 router re-enters
+// through.
+
+function v2ExecutionContext(overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 'user-1',
+    conversationId: 'run-abc',
+    inboundMessageSid: 'MMvoice-v2-1',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-v2.json',
+    voiceMessageMediaId: 'media-1',
+    v2: {
+      workflowRunId: 'run-abc',
+      expectedStepKey: 'profile.voice_processing',
+      startedAt: '2026-07-27T00:00:00.000Z',
+    },
+    ...overrides,
+  };
+}
+
+test('v2 COMPLETED: writes the extraction row, enqueues exactly one #vp event, and touches NEITHER users NOR the outbox', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-v2-1' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('My name is Jose, I am a plumber'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { full_name: 'Jose', main_trade: 'plumber' },
+    { full_name: 0.9, main_trade: 0.9 },
+    'Jose, a plumber.',
+    'Jose, un plomero.',
+  ));
+
+  await handler({
+    status: 'COMPLETED',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-v2-1',
+    executionContext: v2ExecutionContext(),
+  } as any, {} as any, () => {});
+
+  expect(mockS3Send).toHaveBeenCalledTimes(1);
+  expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+
+  const extractionInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql)
+  );
+  expect(extractionInsert).toBeDefined();
+  expect(extractionInsert![0]).toMatch(/RETURNING id/);
+
+  // NEVER touches users or the outbox on the v2 branch.
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => /UPDATE users/.test(sql))).toBe(false);
+  expect(outboxInserts()).toHaveLength(0);
+  expect(mockSendPendingOutbox).not.toHaveBeenCalled();
+
+  expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  const sent = mockSqsSend.mock.calls[0][0].input;
+  expect(sent.QueueUrl).toBe(process.env.WHATSAPP_INBOUND_V2_QUEUE_URL);
+  expect(sent.MessageGroupId).toBeTruthy();
+  expect(sent.MessageDeduplicationId).toBe('MMvoice-v2-1#vp');
+
+  const params = Object.fromEntries(new URLSearchParams(sent.MessageBody));
+  const evt = parseVoiceTranscriptEvent(params);
+  expect(evt).not.toBeNull();
+  expect(evt).toMatchObject({
+    kind: 'profile_intake',
+    status: 'COMPLETED',
+    runId: 'run-abc',
+    stepKey: 'profile.voice_processing',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-v2-1',
+    extractionId: 'extraction-v2-1',
+    fields: { full_name: 'Jose', main_trade: 'plumber' },
+    summaryEn: 'Jose, a plumber.',
+    summaryEs: 'Jose, un plomero.',
+  });
+});
+
+test('v2 FAILED: writes a failed extraction row and enqueues a FAILED #vp event, still no users/outbox writes', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-v2-2' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+
+  await handler({
+    status: 'FAILED',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-v2-2',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-v2-2' }),
+  } as any, {} as any, () => {});
+
+  expect(mockS3Send).not.toHaveBeenCalled();
+  expect(mockBedrockSend).not.toHaveBeenCalled();
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => /UPDATE users/.test(sql))).toBe(false);
+  expect(outboxInserts()).toHaveLength(0);
+  expect(mockSendPendingOutbox).not.toHaveBeenCalled();
+
+  expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  const sent = mockSqsSend.mock.calls[0][0].input;
+  expect(sent.MessageDeduplicationId).toBe('MMvoice-v2-2#vp');
+  const params = Object.fromEntries(new URLSearchParams(sent.MessageBody));
+  const evt = parseVoiceTranscriptEvent(params);
+  expect(evt).toMatchObject({ kind: 'profile_intake', status: 'FAILED', fields: null, extractionId: 'extraction-v2-2' });
+});
+
+test('v1 legacy path is byte-identical (no v2 marker => no SQS send, users/outbox writes unchanged)', async () => {
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('I am an electrician in Austin'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { city: 'Austin', main_trade: 'electrician' },
+    { city: 0.9, main_trade: 0.95 },
+    'Electrician in Austin.',
+    'Electricista en Austin.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-v1-parity',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-v1-parity.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  expect(mockSqsSend).not.toHaveBeenCalled();
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => /UPDATE users/.test(sql))).toBe(true);
+  expect(outboxInserts().length).toBeGreaterThan(0);
 });
