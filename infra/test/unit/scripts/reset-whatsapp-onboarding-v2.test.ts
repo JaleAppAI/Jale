@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import {
   parseResetArgs,
   runReset,
+  bindStatement,
+  DELETE_STEPS,
   WHATSAPP_V2_WORKFLOW_VERSION,
   type Queryable,
 } from '../../../scripts/reset-whatsapp-onboarding-v2';
@@ -273,7 +275,20 @@ describe('runReset', () => {
     deletes.forEach((call, i) => {
       expect(call.text).toContain(`DELETE FROM ${DELETE_ORDER[i]}`);
       expect(call.text).toMatch(/WHERE/);
-      expect(call.values).toEqual([USER_ID, PHONE, hashPhone(PHONE)]);
+      // Text and bind list must be EXACTLY what bindStatement produces for
+      // this step: PostgreSQL's extended protocol rejects both surplus
+      // parameters ("bind message supplies 3 parameters, but prepared
+      // statement requires 1") and a supplied-but-unreferenced placeholder
+      // ("could not determine data type of parameter $2"). The original
+      // version of this test pinned the full three-value list on every
+      // DELETE — encoding the very bug that broke the first real
+      // production run.
+      const expected = bindStatement(
+        `DELETE FROM ${DELETE_STEPS[i].table} WHERE ${DELETE_STEPS[i].predicate}`,
+        [USER_ID, PHONE, hashPhone(PHONE)],
+      );
+      expect(call.text).toBe(expected.text);
+      expect(call.values).toEqual(expected.values);
     });
   });
 
