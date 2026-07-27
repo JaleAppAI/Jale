@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 
 import { runReset, bindStatement } from '../../../scripts/reset-whatsapp-onboarding-v2';
+import { hashNormalizedPhone } from '../../../lambda/whatsapp/lib/runtime-controls';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -148,7 +149,7 @@ maybeDescribe('reset CLI runReset against real PostgreSQL', () => {
     ).rejects.toThrow(/No matching worker/);
   });
 
-  it('execute wipes state, reseeds a fresh start run, and records the audit row', async () => {
+  it('execute wipes state, seeds NO run, and the verified bind then creates one at legal.review', async () => {
     const outcome = await runReset(admin, {
       userId: workerId,
       phone,
@@ -160,17 +161,67 @@ maybeDescribe('reset CLI runReset against real PostgreSQL', () => {
     expect(outcome.dryRun).toBe(false);
     expect(outcome.auditId).toBeDefined();
 
+    // Incident pin (2026-07-27): the reset must NOT seed a run. An earlier
+    // version seeded one at 'start.choose_language'; the verified-OTP
+    // rebind (046 semantics) reused it untouched and the bound router then
+    // crashed on every message ("unhandled bound step"), softlocking the
+    // worker. Runs are only legitimately born in
+    // bind_verified_identity_and_start_workflow, at 'legal.review'.
     const runs = await admin.query(
-      `SELECT current_step_key, status FROM worker_workflow_runs WHERE user_id = $1`,
+      `SELECT 1 FROM worker_workflow_runs WHERE user_id = $1`,
       [workerId],
     );
-    expect(runs.rows).toEqual([{ current_step_key: 'start.choose_language', status: 'active' }]);
+    expect(runs.rowCount).toBe(0);
 
     const state = await admin.query(
       `SELECT lifecycle FROM worker_onboarding_state WHERE user_id = $1`,
       [workerId],
     );
     expect(state.rows).toEqual([{ lifecycle: 'onboarding' }]);
+
+    // Prove the post-reset flow end-to-end at the SQL layer: a fresh
+    // conversation + pending challenge (what the pre-auth lane creates),
+    // then the verified bind — which must create the run at legal.review.
+    const conversationId = randomUUID();
+    const phoneHash = hashNormalizedPhone(phone);
+    await admin.query(
+      `INSERT INTO whatsapp_conversations (id, user_id, whatsapp_number, conversation_state)
+       VALUES ($1, NULL, $2, 'awaiting_otp')`,
+      [conversationId, phone],
+    );
+    const bindClient = new Client({ connectionString: databaseUrl });
+    await bindClient.connect();
+    try {
+      await bindClient.query('BEGIN');
+      await bindClient.query('SET LOCAL ROLE jale_whatsapp');
+      await bindClient.query('SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)', [
+        phoneHash,
+        JSON.stringify({
+          provider_challenge_id: 'reset-gate-provider',
+          current_step_key: 'identity.verify_otp',
+          expires_at: new Date(Date.now() + 300_000).toISOString(),
+        }),
+      ]);
+      const bound = await bindClient.query(
+        'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,1,$4,$5,$6::jsonb)',
+        [phoneHash, workerId, conversationId, 'es', 'SMreset-gate-bind', '{}'],
+      );
+      expect(bound.rows).toHaveLength(1);
+      await bindClient.query('COMMIT');
+    } finally {
+      await bindClient.end();
+    }
+
+    const bornRun = await admin.query(
+      `SELECT current_step_key, status FROM worker_workflow_runs WHERE user_id = $1`,
+      [workerId],
+    );
+    expect(bornRun.rows).toEqual([{ current_step_key: 'legal.review', status: 'active' }]);
+
+    await admin.query('DELETE FROM worker_workflow_transitions WHERE run_id IN (SELECT id FROM worker_workflow_runs WHERE user_id = $1)', [workerId]);
+    await admin.query('DELETE FROM worker_workflow_runs WHERE user_id = $1', [workerId]);
+    await admin.query('DELETE FROM worker_identity_challenges WHERE phone_hash = $1', [phoneHash]);
+    await admin.query('DELETE FROM whatsapp_conversations WHERE id = $1', [conversationId]);
 
     const skills = await admin.query(
       `SELECT 1 FROM worker_skills WHERE worker_id = $1`,
