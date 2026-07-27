@@ -177,7 +177,18 @@ When: a test/demo worker needs to run onboarding from scratch, or a worker's
 state is corrupted beyond a targeted repair. **Destructive** — deletes the
 worker's onboarding/profile/trust/job history across ~19 tables (see
 `DELETE_STEPS` in the script) and clears profile-answer columns on `users`
-and `worker_profiles`, then seeds a fresh `start.choose_language` run.
+and `worker_profiles`. It deliberately seeds NO workflow run: the account is
+returned to the pre-auth entry point, so the worker's next message gets the
+language choice, then the OTP, and the verified bind creates the run at
+`legal.review` exactly like a brand-new worker
+(`bind_verified_identity_and_start_workflow`, migration 047). An earlier
+version seeded a run at `start.choose_language` — a pre-auth-only key the
+bound router cannot handle — and the post-OTP rebind reused it as-is,
+softlocking the worker on `unhandled bound step` (2026-07-27 incident). If a
+bound run is ever found parked on a pre-auth key again, the router now
+self-heals it to `legal.review` and emits the
+`OnboardingBoundStepSelfHealed` metric — a nonzero count of that metric
+means some tool is still writing pre-auth step keys onto runs.
 Requires both `--user-id` and `--phone`, and aborts if the phone doesn't
 match that user's verified `whatsapp_number`.
 

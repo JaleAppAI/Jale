@@ -64,6 +64,7 @@ import {
 } from './onboarding/steps/profile';
 import { handleTrustQuestion } from './onboarding/steps/trust';
 import { handleVoiceChoiceStep, handleVoiceProcessingStep, handleVoiceIntakeResult } from './onboarding/steps/voice';
+import { sendStepPrompt } from './onboarding/delivery';
 import { isVoiceAcceptingStep } from './onboarding/constants';
 import { sendTemplateMessage, repeatCurrentPrompt } from './onboarding/delivery';
 
@@ -134,6 +135,36 @@ async function routeBoundStep(
     ?? gate.preferredLanguage;
   const isInteractive = Boolean(msg.interactivePayload);
   const responseLang = resolveResponseLanguage(lang, msg.body, isInteractive);
+
+  // Self-heal: a bound run parked on a PRE-AUTH step key. 'start.choose_
+  // language' and 'identity.verify_otp' belong to the worker_identity_
+  // challenges lane; runs are only legitimately born at 'legal.review' by
+  // bind_verified_identity_and_start_workflow, so a bound run can only sit
+  // here via operator tooling (the reset CLI once seeded exactly this) or a
+  // legacy bad row. Every handler below would fall through to
+  // handleProfileAndTrust's terminal throw — which aborts the claim,
+  // reprompts an error, and softlocks the worker on every subsequent
+  // message. The worker is already OTP-verified (the run is bound), so the
+  // correct place to resume is where the bind function would have started
+  // them: legal.review.
+  if (stepKey === 'start.choose_language' || stepKey === 'identity.verify_otp') {
+    console.warn(JSON.stringify({
+      metric: 'OnboardingBoundStepSelfHealed',
+      fromStepKey: stepKey,
+      runId: gate.runId,
+    }));
+    const healed = await deps.repo.advanceWorkflow(client, {
+      runId: gate.runId!,
+      expectedLockVersion: gate.lockVersion!,
+      fromStepKey: stepKey,
+      toStepKey: 'legal.review',
+      contextPatch: {},
+      inboundMessageSid: msg.messageSid,
+      reason: 'self_heal_preauth_step',
+    });
+    await sendStepPrompt(client, deps, healed.userId, 'legal.review', lang, now, gate.runId!, msg.messageSid, `selfheal:${now.getTime()}`, session.state_context);
+    return { handled: true, workerId: healed.userId, stepKey: 'legal.review' };
+  }
 
   // NOTE: synthetic voice-pipeline completion events (`msg.voiceEvent`) are
   // dispatched in `routeOnboardingV2`, BEFORE this function is ever called
