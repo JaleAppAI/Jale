@@ -14,8 +14,13 @@
 --    stages the submitted name, and the VerifyAuthChallenge trigger promotes
 --    it on the first CORRECT OTP, and only when full_name is still NULL.
 --    A squatter who pre-creates an account can therefore only ever set a
---    pending value that (a) the real owner's own signup overwrites and
---    (b) is discarded unless the OTP is passed.
+--    pending value that (a) the real owner's own signup overwrites, (b) is
+--    discarded unless the OTP is passed, (c) loses to the authenticated
+--    post-OTP PATCH because promotion requires full_name IS NULL, and
+--    (d) expires. The TTL matters because promotion fires on the FIRST
+--    correct OTP, which for a worker who never finishes the web flow may
+--    arrive through WhatsApp onboarding much later; without it a long-stale
+--    staged name could be adopted onto the real owner's account.
 --
 --    users has FORCE ROW LEVEL SECURITY (002:11, 020:11), so even jale_admin
 --    is subject to policy. Both functions reuse the existing
@@ -41,11 +46,18 @@ BEGIN;
 -- ── 1. Pending signup name ──────────────────────────────────
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_full_name TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_full_name_set_at TIMESTAMPTZ;
 
 COMMENT ON COLUMN users.pending_full_name IS
   'Name submitted at unauthenticated web signup. Never displayed and never '
   'trusted as identity; promoted to full_name by promote_worker_pending_name '
-  'on the first correct OTP, and only while full_name IS NULL.';
+  'on the first correct OTP, only while full_name IS NULL, and only inside '
+  'the staging TTL.';
+
+COMMENT ON COLUMN users.pending_full_name_set_at IS
+  'When pending_full_name was staged. Promotion requires this to be recent, '
+  'so a value staged by someone who never proves phone possession cannot be '
+  'adopted by an unrelated later login.';
 
 -- Stage the caller-supplied name. Deliberately a no-op once full_name is
 -- set, so this can never clobber an established name.
@@ -68,7 +80,8 @@ BEGIN
   PERFORM set_config('app.worker_reconcile_sub', p_cognito_sub, true);
 
   UPDATE users
-     SET pending_full_name = NULLIF(btrim(p_full_name), '')
+     SET pending_full_name = NULLIF(btrim(p_full_name), ''),
+         pending_full_name_set_at = now()
    WHERE cognito_sub = p_cognito_sub
      AND user_type = 'worker'
      AND full_name IS NULL;
@@ -90,6 +103,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
+  c_pending_name_ttl CONSTANT INTERVAL := INTERVAL '24 hours';
   v_promoted INT;
 BEGIN
   IF p_cognito_sub IS NULL OR btrim(p_cognito_sub) = '' THEN
@@ -98,22 +112,30 @@ BEGIN
 
   PERFORM set_config('app.worker_reconcile_sub', p_cognito_sub, true);
 
+  -- The TTL matters because promotion fires on a worker's FIRST correct OTP,
+  -- which may arrive through a different channel long after a web signup.
+  -- Without it, a name staged by someone who never proved phone possession
+  -- could be adopted onto the real owner's account much later.
   UPDATE users
      SET full_name = pending_full_name,
-         pending_full_name = NULL
+         pending_full_name = NULL,
+         pending_full_name_set_at = NULL
    WHERE cognito_sub = p_cognito_sub
      AND user_type = 'worker'
      AND full_name IS NULL
-     AND pending_full_name IS NOT NULL;
+     AND pending_full_name IS NOT NULL
+     AND pending_full_name_set_at IS NOT NULL
+     AND pending_full_name_set_at > now() - c_pending_name_ttl;
 
   GET DIAGNOSTICS v_promoted = ROW_COUNT;
 
   -- Nothing staged survives a verified login, promoted or not.
   UPDATE users
-     SET pending_full_name = NULL
+     SET pending_full_name = NULL,
+         pending_full_name_set_at = NULL
    WHERE cognito_sub = p_cognito_sub
      AND user_type = 'worker'
-     AND pending_full_name IS NOT NULL;
+     AND (pending_full_name IS NOT NULL OR pending_full_name_set_at IS NOT NULL);
 
   RETURN v_promoted > 0;
 END;
@@ -156,9 +178,10 @@ BEGIN
     SELECT 1 FROM information_schema.columns
      WHERE table_schema = 'public'
        AND table_name = 'users'
-       AND column_name = 'pending_full_name'
+       AND column_name IN ('pending_full_name', 'pending_full_name_set_at')
+    HAVING count(*) = 2
   ) THEN
-    RAISE EXCEPTION 'migration 052 self-audit failed: users.pending_full_name missing';
+    RAISE EXCEPTION 'migration 052 self-audit failed: users pending-name columns missing';
   END IF;
 
   IF to_regprocedure('public.stage_worker_pending_name(text,text)') IS NULL THEN
