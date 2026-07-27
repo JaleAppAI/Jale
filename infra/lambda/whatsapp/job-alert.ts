@@ -156,6 +156,12 @@ export const handler = async (
                 title: job.title,
                 companyName: job.company,
                 score: 1,
+                // location/pay feed the v1 job_alert_* content template the
+                // v2 renderer now emits for single-job alerts (2026-07-27
+                // parity-audit fix) — without a template, alerts to workers
+                // outside the 24h window were silently undeliverable.
+                location: job.location,
+                pay: job.pay,
               }],
             },
           });

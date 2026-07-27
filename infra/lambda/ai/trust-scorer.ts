@@ -113,15 +113,26 @@ function parseScore(rawText: string): ScoringResult {
     scored = JSON.parse(trimmed) as ScoringResult;
   } catch (err) {
     const repaired = quoteKnownScoreKeys(trimmed);
-    if (repaired === trimmed) throw err;
+    if (repaired === trimmed) throw tagFailureKind(err, 'parse');
     try {
       scored = JSON.parse(repaired) as ScoringResult;
     } catch {
-      throw err;
+      throw tagFailureKind(err, 'parse');
     }
   }
-  validateScore(scored);
+  try {
+    validateScore(scored);
+  } catch (err) {
+    throw tagFailureKind(err, 'validation');
+  }
   return scored;
+}
+
+/** Distinguishes "the model emitted non-JSON" from "the JSON failed the
+ * rubric contract" so the caller can emit the right failure metric. */
+function tagFailureKind(err: unknown, kind: 'parse' | 'validation'): unknown {
+  (err as { trustScorerFailureKind?: string }).trustScorerFailureKind = kind;
+  return err;
 }
 
 export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void> {
@@ -177,7 +188,23 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
     );
 
     const rawText = response.output?.message?.content?.[0]?.text ?? '';
-    const scored = parseScore(rawText);
+    let scored: ScoringResult;
+    try {
+      scored = parseScore(rawText);
+    } catch (err) {
+      // 2026-07-27 observability pass: these failures previously retried
+      // into the DLQ with zero signal about WHY. The truncated raw model
+      // output is the model's own scores/rationale JSON (never the worker's
+      // input answers verbatim); it is exactly what an operator needs to
+      // see the malformed shape.
+      const kind = (err as { trustScorerFailureKind?: string }).trustScorerFailureKind ?? 'parse';
+      console.error(JSON.stringify({
+        metric: kind === 'validation' ? 'TrustScorerValidationFailure' : 'TrustScorerParseFailure',
+        assessmentId: event.assessmentId,
+        rawResponsePrefix: rawText.slice(0, 500),
+      }));
+      throw err;
+    }
 
     await client.query('BEGIN');
     transactionStarted = true;
@@ -220,11 +247,12 @@ export async function scoreAssessment(event: ScoreAssessmentEvent): Promise<void
     await client.query('COMMIT');
     transactionStarted = false;
 
-    console.log('[trust-scorer] scored', {
+    console.log(JSON.stringify({
+      metric: 'TrustScorerScored',
       assessmentId: event.assessmentId,
       competency_score: scored.competency_score,
       rubric_version: version,
-    });
+    }));
   } catch (err) {
     if (transactionStarted) {
       await client.query('ROLLBACK').catch(() => {});

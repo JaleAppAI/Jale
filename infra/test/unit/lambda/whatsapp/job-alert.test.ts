@@ -428,6 +428,11 @@ describe('Job Alert Sender Lambda — v2 redirect', () => {
         title: 'Electricista',
         companyName: 'ACME',
         score: 1,
+        // location/pay feed the v1 job_alert_* content template in the v2
+        // renderer (single-job alerts must be template sends to reach
+        // workers outside the 24h window).
+        location: 'Austin',
+        pay: '$40/hr',
       }],
     });
     const expiresAt = params[9] as Date;

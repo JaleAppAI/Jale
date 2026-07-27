@@ -42,6 +42,7 @@ describe('WhatsAppStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
     });
     // LegalStack must be instantiated to satisfy CDK validation: the
     // DualAuthorizer is created in ApiStack but only "attached to a RestApi"
@@ -627,11 +628,27 @@ describe('event-driven outbox wake queues', () => {
       ['WhatsAppAssessmentDispatchFailures'],
       ['WhatsAppDeferredBacklogAge'],
       ['WhatsAppOtpLockRate'],
+      // 2026-07-27 observability pass
+      ['WhatsAppTrustQuestionGenerationFailed'],
+      ['WhatsAppProfileVoicePipelineFailed'],
+      ['WhatsAppProfileVoicePipelineTimedOut'],
+      ['WhatsAppTrustVoicePipelineFailed'],
+      ['WhatsAppTrustVoicePipelineTimedOut'],
     ])('%s alarm exists, wired to the alarm topic', (alarmName) => {
       template.hasResourceProperties('AWS::CloudWatch::Alarm', {
         AlarmName: alarmName,
         AlarmActions: Match.anyValue(),
       });
+    });
+
+    test('v2 onboarding funnel metric filters exist on the processor log group', () => {
+      for (const metricName of ['OnboardingStepAdvanced', 'OnboardingCompleted', 'TrustQuestionGenerationFailed']) {
+        template.hasResourceProperties('AWS::Logs::MetricFilter', {
+          MetricTransformations: Match.arrayWith([
+            Match.objectLike({ MetricName: metricName, MetricNamespace: 'Jale/WhatsApp' }),
+          ]),
+        });
+      }
     });
 
     test('WhatsAppOtpLock metric filter is installed on the PROCESSOR log group, not the drain log group', () => {

@@ -1,12 +1,16 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
@@ -17,6 +21,10 @@ export interface AiStackProps extends cdk.StackProps {
   readonly privateSubnets: ec2.ISubnet[];
   readonly lambdaSg: ec2.ISecurityGroup;
   readonly aiDbSecret: secretsmanager.ISecret;
+  /** Existing monitored SNS topic for alarm actions (same contract as
+   * WhatsAppStack: pass this or `-c whatsappAlarmEmail=` to subscribe a
+   * CDK-created topic; the stack fails closed with neither). */
+  readonly alarmTopicArn?: string;
 }
 
 export interface AiStackOutputs {
@@ -164,13 +172,37 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       ],
     });
 
+    // ── Alarm actions (2026-07-27 observability pass) ────────────────
+    // These alarms existed since C-lane but had NO action attached — they
+    // turned red in the console and paged nobody, so a Bedrock parse
+    // failure or DLQ redrive was invisible. Same fail-closed contract as
+    // WhatsAppStack: an alarm with no reachable subscriber is not
+    // actionable.
+    const aiAlarmEmail = this.node.tryGetContext('whatsappAlarmEmail');
+    if (!props.alarmTopicArn && !aiAlarmEmail) {
+      throw new Error(
+        'AiStack requires an actionable alarm target: pass alarmTopicArn '
+        + '(-c whatsappAlarmTopicArn=<existing SNS topic ARN>) or -c whatsappAlarmEmail=<address> '
+        + 'to subscribe a new topic.',
+      );
+    }
+    const aiAlarmTopic = props.alarmTopicArn
+      ? sns.Topic.fromTopicArn(this, 'AiAlarmTopic', props.alarmTopicArn)
+      : new sns.Topic(this, 'AiAlarmTopic', { topicName: 'jale-ai-alarms' });
+    if (!props.alarmTopicArn && aiAlarmEmail) {
+      (aiAlarmTopic as sns.Topic).addSubscription(
+        new snsSubscriptions.EmailSubscription(aiAlarmEmail),
+      );
+    }
+    const aiAlarmAction = new cloudwatchActions.SnsAction(aiAlarmTopic);
+
     new cloudwatch.Alarm(this, 'TrustAssessmentDlqAlarm', {
       metric: trustAssessmentDlq.metricApproximateNumberOfMessagesVisible(),
       threshold: 1,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       alarmName: 'TrustAssessmentDlqDepth',
-    });
+    }).addAlarmAction(aiAlarmAction);
 
     new cloudwatch.Alarm(this, 'TrustScorerThrottleAlarm', {
       metric: trustScorerLambda.function.metricThrottles({
@@ -180,6 +212,35 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       alarmName: 'TrustScorerThrottles',
-    });
+    }).addAlarmAction(aiAlarmAction);
+
+    // Bedrock parse/validation failures previously retried into the DLQ with
+    // zero log signal about WHY. The scorer now emits structured
+    // TrustScorerParseFailure / TrustScorerValidationFailure lines; both
+    // feed one metric so a single alarm covers "the scorer is producing
+    // unusable model output".
+    const scorerFailureFilter = (id: string, metricValueEquals: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: trustScorerLambda.logGroup,
+        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        metricNamespace: 'Jale/Ai',
+        metricName: 'TrustScorerFailures',
+        metricValue: '1',
+      });
+    scorerFailureFilter('TrustScorerParseFailureMetric', 'TrustScorerParseFailure');
+    scorerFailureFilter('TrustScorerValidationFailureMetric', 'TrustScorerValidationFailure');
+    new cloudwatch.Alarm(this, 'TrustScorerFailuresAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'Jale/Ai',
+        metricName: 'TrustScorerFailures',
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'TrustScorerFailures',
+    }).addAlarmAction(aiAlarmAction);
   }
 }

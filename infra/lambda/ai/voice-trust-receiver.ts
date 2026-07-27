@@ -77,6 +77,16 @@ export async function handleVoiceTrustCompletion(
   event: VoiceTrustReceiverEvent,
 ): Promise<void> {
   const ctx = event.executionContext;
+  // 2026-07-27 observability pass: this Lambda previously had ZERO log
+  // lines — a bad transcript or DB error surfaced only as the platform's
+  // generic invocation error. Safe scalars only: never the transcript text,
+  // the answer text, or a phone number.
+  console.log(JSON.stringify({
+    metric: 'VoiceTrustReceiverStarted',
+    status: event.status,
+    trustStep: ctx.trustStep,
+    conversationId: ctx.conversationId,
+  }));
   const pool = await getDbPool();
   const client = await pool.connect();
 
@@ -177,6 +187,14 @@ export async function handleVoiceTrustCompletion(
     );
     await queueOutboxText(client, ctx.inboundMessageSid, ctx.whatsappNumber, confirmation);
     await sendPendingOutbox(client, ctx.inboundMessageSid);
+  } catch (err) {
+    console.error(JSON.stringify({
+      metric: 'VoiceTrustReceiverFailed',
+      trustStep: ctx.trustStep,
+      conversationId: ctx.conversationId,
+      err: (err as Error)?.message?.slice(0, 300) ?? 'unknown',
+    }));
+    throw err;
   } finally {
     client.release();
   }
