@@ -8,6 +8,8 @@ import {
   reactivateDeclinedLegalRun,
   appendTransition,
   completeOnboarding,
+  clearProfileAnswers,
+  findPreviousStepKey,
 } from '../../../../../lambda/whatsapp/lib/onboarding-repository';
 
 const WORKER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
@@ -348,6 +350,104 @@ describe('appendTransition', () => {
     expect(result).toEqual({ transitionId: 'transition-9' });
     expect(query.mock.calls[0][0]).toMatch(/INSERT INTO worker_workflow_transitions/);
     expect(query.mock.calls[0][0]).toMatch(/RETURNING id/);
+  });
+});
+
+describe('clearProfileAnswers', () => {
+  it('issues exactly two UPDATEs (users, worker_profiles), no DELETE, no BEGIN/COMMIT', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValue({ rowCount: 1, rows: [] });
+
+    await clearProfileAnswers(client, WORKER_ID);
+
+    expect(query).toHaveBeenCalledTimes(2);
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements.some((sql) => /^\s*UPDATE users/.test(sql))).toBe(true);
+    expect(statements.some((sql) => /^\s*UPDATE worker_profiles/.test(sql))).toBe(true);
+    expect(statements.some((sql) => /DELETE/i.test(sql))).toBe(false);
+    expect(statements.some((sql) => sql === 'BEGIN')).toBe(false);
+    expect(statements.some((sql) => sql === 'COMMIT')).toBe(false);
+  });
+
+  it('clears exactly the seven profile-answer fields on users, scoped to this worker as a worker account', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValue({ rowCount: 1, rows: [] });
+
+    await clearProfileAnswers(client, WORKER_ID);
+
+    const usersCall = query.mock.calls.find(([sql]) => /UPDATE users/.test(String(sql)))!;
+    const sql = usersCall[0] as string;
+    for (const column of [
+      'full_name', 'city', 'main_trade', 'main_trade_other',
+      'years_experience', 'has_transportation', 'availability',
+    ]) {
+      expect(sql).toMatch(new RegExp(`${column}\\s*=\\s*NULL`));
+    }
+    expect(sql).toMatch(/WHERE id = \$1 AND user_type = 'worker'/);
+    expect(usersCall[1]).toEqual([WORKER_ID]);
+
+    // Never touches legal/consent/OTP/lifecycle/trust state.
+    expect(sql).not.toMatch(/trust_signals/);
+    expect(sql).not.toMatch(/tos_accepted_at|privacy_accepted_at/);
+    expect(sql).not.toMatch(/whatsapp_number|whatsapp_linked_at/);
+  });
+
+  it('clears the worker_profiles mirrors, with the five location columns cleared TOGETHER (constraint-group discipline)', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValue({ rowCount: 1, rows: [] });
+
+    await clearProfileAnswers(client, WORKER_ID);
+
+    const profilesCall = query.mock.calls.find(([sql]) => /UPDATE worker_profiles/.test(String(sql)))!;
+    const sql = profilesCall[0] as string;
+    for (const column of ['full_name', 'availability', 'years_experience', 'location']) {
+      expect(sql).toMatch(new RegExp(`${column}\\s*=\\s*NULL`));
+    }
+    // worker_profiles_location_complete (migration 009) requires latitude,
+    // longitude, location_source, location_confidence, location_updated_at
+    // to be either all-NULL or all-set — clearing a subset would violate the
+    // CHECK, so every one of the five must appear in the SAME statement.
+    for (const column of [
+      'latitude', 'longitude', 'location_source', 'location_confidence', 'location_updated_at',
+    ]) {
+      expect(sql).toMatch(new RegExp(`${column}\\s*=\\s*NULL`));
+    }
+    expect(sql).toMatch(/WHERE user_id = \$1/);
+    expect(profilesCall[1]).toEqual([WORKER_ID]);
+
+    // bio/experience_months/certifications are reset-CLI-only columns not in
+    // Task 9's seven-field scope — never touched by RESTART.
+    expect(sql).not.toMatch(/\bbio\b/);
+    expect(sql).not.toMatch(/experience_months/);
+    expect(sql).not.toMatch(/certifications/);
+  });
+});
+
+describe('findPreviousStepKey', () => {
+  it('returns the from_step_key of the most recent qualifying transition', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rows: [{ from_step_key: 'profile.trade' }] });
+
+    const prev = await findPreviousStepKey(client, RUN_ID, 'profile.custom_trade');
+
+    expect(prev).toBe('profile.trade');
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/FROM worker_workflow_transitions/);
+    expect(sql).toMatch(/to_step_key = \$2/);
+    expect(sql).toMatch(/from_step_key IS NOT NULL/);
+    expect(sql).toMatch(/from_step_key <> to_step_key/);
+    expect(sql).toMatch(/ORDER BY created_at DESC/);
+    expect(sql).toMatch(/LIMIT 1/);
+    expect(query.mock.calls[0][1]).toEqual([RUN_ID, 'profile.custom_trade']);
+  });
+
+  it('returns null when no qualifying transition exists', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rows: [] });
+
+    const prev = await findPreviousStepKey(client, RUN_ID, 'profile.name');
+
+    expect(prev).toBeNull();
   });
 });
 

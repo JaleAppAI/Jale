@@ -189,8 +189,10 @@ const V2_KEYS: TemplateKey[] = [
   'v2_ask_name', 'v2_name_invalid',
   'v2_ask_location', 'v2_location_invalid',
   'v2_ask_custom_trade', 'v2_custom_trade_invalid',
-  'v2_gate_blocked', 'v2_language_changed', 'v2_ready',
+  'v2_gate_blocked', 'v2_restarted', 'v2_language_changed', 'v2_ready',
   'v2_options_footer',
+  'v2_voice_ack', 'v2_voice_failed', 'v2_voice_not_supported', 'v2_voice_invalid_type',
+  'voice_note_not_supported',
 ];
 
 // `v2_start_invitation` is deliberately bilingual in BOTH slots: a worker

@@ -10,6 +10,9 @@ const enabledControls: RuntimeControls = {
   onboardingV2GlobalEnabled: false,
   onboardingV2PhoneHashes: new Set(),
   deferredDeliveryEnabled: true,
+  voiceIntakeEnabled: false,
+  voiceIntakeGlobalEnabled: false,
+  voiceIntakePhoneHashes: new Set(),
 };
 
 const baseInput: DeliveryEvaluationInput = {

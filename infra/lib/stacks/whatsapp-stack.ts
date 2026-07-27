@@ -468,6 +468,20 @@ export class WhatsAppStack extends cdk.Stack {
     twilioSecret.grantRead(aiProfileWriterLambda.function);
     mediaBucket.grantRead(aiProfileWriterLambda.function);
     props.questionGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
+    // Stream B (Task 8d): a voice note ingested from the v2 lane's
+    // profile.voice_choice step completes through this SAME lambda; its v2
+    // branch re-enters the v2 onboarding lane by sending a synthetic `#vp`
+    // event back onto the v2 inbound FIFO queue — gated on the identical
+    // transport flag as voice-trust-receiver's wiring below, so this lambda
+    // never gets a queue URL/grant in an environment where the v2 lane
+    // itself isn't wired up.
+    if (inboundV2TransportEnabled) {
+      aiProfileWriterLambda.function.addEnvironment(
+        'WHATSAPP_INBOUND_V2_QUEUE_URL',
+        this.inboundV2Queue.queueUrl,
+      );
+      this.inboundV2Queue.grantSendMessages(aiProfileWriterLambda.function);
+    }
 
     aiProfileWriterLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
@@ -500,6 +514,18 @@ export class WhatsAppStack extends cdk.Stack {
     twilioSecret.grantRead(voiceTrustReceiverLambda.function);
     mediaBucket.grantRead(voiceTrustReceiverLambda.function);
     props.trustAssessmentQueue.grantSendMessages(voiceTrustReceiverLambda.function);
+    // v2 re-entry (Task 5): a trust voice note started from the v2 lane
+    // completes by sending a synthetic event back onto the same v2 inbound
+    // FIFO queue the webhook uses — gated on the identical transport flag so
+    // this receiver never gets a queue URL/grant in an environment where the
+    // v2 lane itself isn't wired up.
+    if (inboundV2TransportEnabled) {
+      voiceTrustReceiverLambda.function.addEnvironment(
+        'WHATSAPP_INBOUND_V2_QUEUE_URL',
+        this.inboundV2Queue.queueUrl,
+      );
+      this.inboundV2Queue.grantSendMessages(voiceTrustReceiverLambda.function);
+    }
 
     const profileVoicePipeline = new VoiceTranscriptionPipeline(this, 'ProfileVoicePipeline', {
       vpc: props.vpc,

@@ -148,3 +148,54 @@ export async function advanceProfileToNextStep(
   );
   return { handled: true, workerId: updated.userId, stepKey: nextStep };
 }
+
+// ── Stream B: legal.review → profile-entry, voice-first when eligible ───
+
+/**
+ * Sole call site for `legal.review`'s Accept branch (`onboarding/steps/
+ * legal.ts`). When the `voice_intake_enabled` control is on for this worker
+ * AND at least one of the seven profile fields is still missing, offers full
+ * voice profile intake first (`profile.voice_choice`) instead of jumping
+ * straight into the field-by-field text flow. A worker whose profile is
+ * ALREADY complete (a resuming/partially-AI-extracted account) skips the
+ * voice offer entirely — `advanceProfileToNextStep`'s own resolver call
+ * would immediately report nothing left to ask, and there is nothing useful
+ * a voice note could add.
+ *
+ * Control OFF, or nothing missing: behaves EXACTLY like today —
+ * `advanceProfileToNextStep` picks the first missing field (or hands off to
+ * trust if the profile somehow already has everything).
+ */
+export async function advanceLegalAcceptToProfileEntry(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  contextPatch: Record<string, unknown>,
+  reason: string,
+  now: Date,
+): Promise<RouteResult> {
+  if (deps.voiceIntake.enabled) {
+    const dbFilled = await loadProfileFromDb(client, gate.userId);
+    const nextStep = resolveNextProfileStep(dbFilled);
+    if (nextStep !== null) {
+      const updated = await deps.repo.advanceWorkflow(client, {
+        runId: gate.runId!,
+        expectedLockVersion: gate.lockVersion!,
+        fromStepKey: 'legal.review',
+        toStepKey: 'profile.voice_choice',
+        contextPatch,
+        inboundMessageSid: msg.messageSid,
+        reason,
+      });
+      await sendStepPrompt(
+        client, deps, updated.userId, 'profile.voice_choice', effectiveLang(session, updated),
+        now, gate.runId!, msg.messageSid, `${reason}:${now.getTime()}`, session.state_context,
+      );
+      return { handled: true, workerId: updated.userId, stepKey: 'profile.voice_choice' };
+    }
+  }
+
+  return advanceProfileToNextStep(client, session, msg, deps, gate, 'legal.review', contextPatch, reason, now);
+}

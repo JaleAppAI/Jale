@@ -208,6 +208,30 @@ function createFakeGateRepo() {
       gates.set(updated.userId, updated);
       return { assessmentEventId: `assessment-${completions.length}`, workerReadyEventId: `ready-${completions.length}` };
     },
+    async clearProfileAnswers(_client: any, workerId: string): Promise<void> {
+      // Mirrors the real function's column set: the seven profile-answer
+      // fields only (profileDb is this file's stand-in for `users` +
+      // `worker_profiles`, read/written by the shared `client.query` fake).
+      profileDb.set(workerId, {});
+    },
+    async findPreviousStepKey(
+      _client: any,
+      runId: string,
+      currentStepKey: string,
+    ): Promise<any> {
+      for (let i = transitions.length - 1; i >= 0; i--) {
+        const t = transitions[i] as { runId?: string; fromStepKey?: string | null; toStepKey?: string };
+        if (
+          t.runId === runId
+          && t.toStepKey === currentStepKey
+          && t.fromStepKey != null
+          && t.fromStepKey !== t.toStepKey
+        ) {
+          return t.fromStepKey;
+        }
+      }
+      return null;
+    },
     _gates: gates,
     _transitions: transitions,
     _completions: completions,
@@ -310,6 +334,8 @@ function makeDeps() {
       reactivateDeclinedLegalRun: (c, input) => gateRepo.reactivateDeclinedLegalRun(c, input),
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
       completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
+      clearProfileAnswers: (c, workerId) => gateRepo.clearProfileAnswers(c, workerId),
+      findPreviousStepKey: (c, runId, currentStepKey) => gateRepo.findPreviousStepKey(c, runId, currentStepKey),
     },
     enqueueWorkerMessage: gateway.enqueueWorkerMessage,
     enqueuePreAuthPrompt: preAuthDelivery.enqueuePreAuthPrompt,
@@ -320,6 +346,11 @@ function makeDeps() {
     requiredLegalVersion: '1.0',
     recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
     workflowVersion: 1,
+    voiceIntake: {
+      enabled: false,
+      startTrustTranscription: jest.fn().mockResolvedValue({ started: false }),
+      ingestProfileVoiceNote: jest.fn().mockResolvedValue({ started: false }),
+    },
   };
 
   return { deps, preAuthRepo, gateRepo, gateway, preAuthDelivery, adapters, clockRef };
@@ -823,6 +854,125 @@ describe('command gate', () => {
     expect(blockedLog?.command).not.toBe('chats');
 
     warnSpy.mockRestore();
+  });
+
+  describe('RESTART/REINICIAR', () => {
+    it('clears the profile answers, logs OnboardingWorkerRestarted, and moves the run to profile.name', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-restart', currentStepKey: 'profile.trade' });
+      setProfileDbField(gate.userId, 'full_name', 'Old Name');
+      setProfileDbField(gate.userId, 'city', 'Old City');
+      const session = makeSession({ user_id: gate.userId });
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      const result = await routeOnboardingV2(client, session, makeMsg('RESTART'), deps);
+
+      expect(result.stepKey).toBe('profile.name');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.name');
+      expect(profileDb.get(gate.userId)).toEqual({});
+      const restartLog = logSpy.mock.calls
+        .map(([line]) => { try { return JSON.parse(line as string); } catch { return null; } })
+        .find((m) => m?.metric === 'OnboardingWorkerRestarted');
+      expect(restartLog).toMatchObject({ metric: 'OnboardingWorkerRestarted', fromStepKey: 'profile.trade' });
+
+      logSpy.mockRestore();
+    });
+
+    it('is case-insensitive and also recognizes REINICIAR', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-reiniciar', currentStepKey: 'trust.question.2' });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('reiniciar'), deps);
+
+      expect(result.stepKey).toBe('profile.name');
+    });
+
+    it('is NOT recognized at legal.review (out of scope — not a profile/trust step)', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-restart-legal', currentStepKey: 'legal.review' });
+      const session = makeSession({ user_id: gate.userId });
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      await routeOnboardingV2(client, session, makeMsg('RESTART'), deps);
+
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('legal.review');
+      const restartLog = logSpy.mock.calls
+        .map(([line]) => { try { return JSON.parse(line as string); } catch { return null; } })
+        .find((m) => m?.metric === 'OnboardingWorkerRestarted');
+      expect(restartLog).toBeFalsy();
+
+      logSpy.mockRestore();
+    });
+  });
+
+  describe('BACK/ATRAS', () => {
+    it('moves the run to the from_step_key of the most recent qualifying transition', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-back', currentStepKey: 'profile.trade' });
+      gateRepo._transitions.push({
+        runId: gate.runId,
+        fromStepKey: 'profile.location',
+        toStepKey: 'profile.trade',
+        inboundMessageSid: 'SM_prior',
+        reason: 'profile_field_captured',
+      });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('BACK'), deps);
+
+      expect(result.stepKey).toBe('profile.location');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.location');
+    });
+
+    it('is exact-match only: ATRAS also works, case-insensitively', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-atras', currentStepKey: 'profile.trade' });
+      gateRepo._transitions.push({
+        runId: gate.runId,
+        fromStepKey: 'profile.location',
+        toStepKey: 'profile.trade',
+        inboundMessageSid: 'SM_prior',
+        reason: 'profile_field_captured',
+      });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('atras'), deps);
+
+      expect(result.stepKey).toBe('profile.location');
+    });
+
+    it('is blocked at profile.name (nothing to go back to)', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-back-name', currentStepKey: 'profile.name' });
+      const session = makeSession({ user_id: gate.userId });
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = await routeOnboardingV2(client, session, makeMsg('BACK'), deps);
+
+      expect(result.stepKey).toBe('profile.name');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.name');
+      const blockedLog = warnedMetrics(warnSpy).find((m) => m.metric === 'OnboardingGateBlocked');
+      expect(blockedLog).toMatchObject({ command: 'back', stepKey: 'profile.name' });
+
+      warnSpy.mockRestore();
+    });
+
+    it('is blocked when no qualifying transition exists', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-back-none', currentStepKey: 'profile.trade' });
+      const session = makeSession({ user_id: gate.userId });
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = await routeOnboardingV2(client, session, makeMsg('BACK'), deps);
+
+      expect(result.stepKey).toBe('profile.trade');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.trade');
+      const blockedLog = warnedMetrics(warnSpy).find((m) => m.metric === 'OnboardingGateBlocked');
+      expect(blockedLog).toMatchObject({ command: 'back', stepKey: 'profile.trade' });
+
+      warnSpy.mockRestore();
+    });
   });
 });
 

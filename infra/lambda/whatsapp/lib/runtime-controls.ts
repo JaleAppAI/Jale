@@ -7,6 +7,9 @@ export interface RuntimeControls {
   onboardingV2GlobalEnabled: boolean;
   onboardingV2PhoneHashes: ReadonlySet<string>;
   deferredDeliveryEnabled: boolean;
+  voiceIntakeEnabled: boolean;
+  voiceIntakeGlobalEnabled: boolean;
+  voiceIntakePhoneHashes: ReadonlySet<string>;
 }
 
 interface RuntimeControlRow {
@@ -21,19 +24,24 @@ const DISABLED_CONTROLS: RuntimeControls = {
   onboardingV2GlobalEnabled: false,
   onboardingV2PhoneHashes: new Set<string>(),
   deferredDeliveryEnabled: false,
+  voiceIntakeEnabled: false,
+  voiceIntakeGlobalEnabled: false,
+  voiceIntakePhoneHashes: new Set<string>(),
 };
 
 const PHONE_HASH_PATTERN = /^[0-9a-f]{64}$/;
 
-type ValidOnboardingControlRow = RuntimeControlRow & {
+type ValidPhoneScopedControlRow = RuntimeControlRow & {
   enabled: boolean;
   phone_hashes: string[];
   global_enabled: boolean;
 };
 
-function isValidOnboardingControlRow(
+// Shared shape check for both onboarding_v2_enabled and voice_intake_enabled
+// rows: an allowlist-and-global-flag control keyed by phone hash.
+function isValidPhoneScopedControlRow(
   row: RuntimeControlRow | undefined,
-): row is ValidOnboardingControlRow {
+): row is ValidPhoneScopedControlRow {
   return (
     row !== undefined &&
     typeof row.enabled === 'boolean' &&
@@ -59,7 +67,11 @@ export async function loadRuntimeControls(
     `SELECT control_key, enabled, phone_hashes, global_enabled
        FROM whatsapp_runtime_controls
       WHERE control_key = ANY($1::text[])`,
-    [['onboarding_v2_enabled', 'deferred_delivery_enabled']],
+    [[
+      'onboarding_v2_enabled',
+      'deferred_delivery_enabled',
+      'voice_intake_enabled',
+    ]],
   );
 
   const onboardingRow = result.rows.find(
@@ -68,12 +80,16 @@ export async function loadRuntimeControls(
   const deferredRow = result.rows.find(
     (row) => row.control_key === 'deferred_delivery_enabled',
   );
+  const voiceIntakeRow = result.rows.find(
+    (row) => row.control_key === 'voice_intake_enabled',
+  );
 
-  if (!onboardingRow && !deferredRow) {
+  if (!onboardingRow && !deferredRow && !voiceIntakeRow) {
     return DISABLED_CONTROLS;
   }
 
-  const validOnboardingRow = isValidOnboardingControlRow(onboardingRow);
+  const validOnboardingRow = isValidPhoneScopedControlRow(onboardingRow);
+  const validVoiceIntakeRow = isValidPhoneScopedControlRow(voiceIntakeRow);
 
   return {
     onboardingV2Enabled: validOnboardingRow
@@ -89,6 +105,15 @@ export async function loadRuntimeControls(
       deferredRow !== undefined && typeof deferredRow.enabled === 'boolean'
         ? deferredRow.enabled
         : false,
+    voiceIntakeEnabled: validVoiceIntakeRow
+      ? voiceIntakeRow.enabled
+      : false,
+    voiceIntakeGlobalEnabled: validVoiceIntakeRow
+      ? voiceIntakeRow.global_enabled
+      : false,
+    voiceIntakePhoneHashes: validVoiceIntakeRow
+      ? new Set(voiceIntakeRow.phone_hashes)
+      : new Set<string>(),
   };
 }
 
@@ -107,4 +132,15 @@ export function isDeferredDeliveryEnabled(
   controls: RuntimeControls,
 ): boolean {
   return controls.deferredDeliveryEnabled;
+}
+
+export function isVoiceIntakeEnabled(
+  controls: RuntimeControls,
+  phoneHash: string,
+): boolean {
+  return (
+    controls.voiceIntakeEnabled &&
+    (controls.voiceIntakeGlobalEnabled ||
+      controls.voiceIntakePhoneHashes.has(phoneHash))
+  );
 }

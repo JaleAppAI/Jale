@@ -372,6 +372,30 @@ export function isGreetingKeyword(text: string): boolean {
   return GREETING_WORDS.includes(words[0]);
 }
 
+/**
+ * Exact-match sibling of `isGreetingKeyword`, for the WhatsApp v2 onboarding
+ * gate's free-text answer steps (the worker's name, custom trade, trust
+ * answers — see `onboarding/gate.ts`'s FREE_TEXT_STEPS). `isGreetingKeyword`
+ * treats ANY message that STARTS WITH a greeting word as a greeting — by
+ * design, for the v1 idle-router's classification use case ("hola quiero
+ * trabajo" should route as a greeting) — which would eat a legitimate answer
+ * like "Hola Maria" as a name. This variant requires the ENTIRE trimmed,
+ * lowercased message to BE the greeting word/phrase and nothing else, so
+ * "Hola" is blocked but "Hola Maria" is accepted as a genuine answer.
+ */
+export function isExactGreetingKeyword(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  const words = n.match(/[a-záéíóúñ]+/gi);
+  if (!words || words.length === 0 || words.length > 2) return false;
+  if (words.length === 1) {
+    return GREETING_WORDS.includes(words[0]);
+  }
+  const phrase = `${words[0]} ${words[1]}`
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+  return GREETING_PHRASES.includes(phrase);
+}
+
 export function isJobsKeyword(text: string): boolean {
   const n = normalizeCommandText(text);
   if (/^(trabajos?|jobs?|empleos?)\b/.test(n)) return true;

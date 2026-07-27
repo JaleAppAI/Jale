@@ -11,6 +11,7 @@ import {
   buildV2LegalPrompt,
   buildV2TradePrompt,
   buildProfileInteractivePrompt,
+  buildMediaInteractivePrompt,
   V2_FALLBACK_TRUST_QUESTIONS,
   type InteractivePrompt,
 } from '../lib/interactive-templates';
@@ -30,6 +31,17 @@ export function buildPromptForStep(
       return buildV2OtpPrompt(lang, '5');
     case 'legal.review':
       return buildV2LegalPrompt(lang, deps.tosUrl, deps.privacyUrl);
+    case 'profile.voice_choice':
+      // Reuses V1's approved 'onboarding_voice_choice_*' content template
+      // and 'media:voice:text' payload dialect verbatim — no new template,
+      // no new payload shape.
+      return buildMediaInteractivePrompt('voice_choice', lang);
+    case 'profile.voice_processing':
+      // No interactive template — this is a holding step, never the target
+      // of a fresh prompt send (only cooldown-guarded "please wait" replies
+      // from handleVoiceProcessingStep), but buildPromptForStep must still be
+      // total for the default reprompt/gate-blocked machinery to work.
+      return { templateName: '', variables: {}, fallbackBody: t('v2_voice_processing_wait', lang) };
     case 'profile.name':
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_name', lang) };
     case 'profile.location':
