@@ -81,7 +81,20 @@ describe('WhatsApp v2 voice — trust-question voice notes', () => {
     expect(result.stepKey).toBe('trust.question.1');
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getWorkerProfile()?.trustAnswers ?? []).toHaveLength(0);
-    expect(findSend(h, 'v2_voice_failed')).toBeDefined();
+
+    // ONE combined message: the error notice FIRST, the re-asked question
+    // underneath. Two separate intents carry no handset-order guarantee —
+    // live testing (2026-07-27) showed the question landing before the
+    // error, reading as a non-sequitur.
+    const combined = findSend(h, 'v2_voice_failed_with_prompt');
+    expect(combined).toBeDefined();
+    const body = (combined?.body ?? combined?.fallbackBody ?? '') as string;
+    const errorIdx = body.indexOf('could not process');
+    const questionIdx = body.indexOf('?');
+    expect(errorIdx).toBeGreaterThanOrEqual(0);
+    expect(questionIdx).toBeGreaterThan(errorIdx);
+    // And no separate bare error or bare reprompt rode along with it.
+    expect(findSend(h, 'v2_voice_failed')).toBeUndefined();
   });
 
   it('an empty (whitespace-only) transcript is treated the same as a failure', async () => {
@@ -94,7 +107,8 @@ describe('WhatsApp v2 voice — trust-question voice notes', () => {
 
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getWorkerProfile()?.trustAnswers ?? []).toHaveLength(0);
-    expect(findSend(h, 'v2_voice_failed')).toBeDefined();
+    expect(findSend(h, 'v2_voice_failed_with_prompt')).toBeDefined();
+    expect(findSend(h, 'v2_voice_failed')).toBeUndefined();
   });
 
   it('a stale transcript (typed answer won the race first) is silently discarded', async () => {
@@ -184,7 +198,7 @@ describe('WhatsApp v2 voice — trust-question voice notes', () => {
     await h.sendVoiceNote({ mediaContentType: 'image/jpeg' });
 
     expect(h.getPendingTranscriptions()).toHaveLength(0);
-    expect(findSend(h, 'v2_voice_invalid_type')).toBeDefined();
+    expect(findSend(h, 'v2_voice_invalid_type_with_prompt')).toBeDefined();
   });
 
   it.each(['AYUDA', 'JOBS'])(
@@ -219,7 +233,7 @@ describe('WhatsApp v2 voice — trust-question voice notes', () => {
     expect(result.stepKey).toBe('trust.question.1');
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getPendingTranscriptions()).toHaveLength(0);
-    expect(findSend(h, 'v2_voice_failed')).toBeDefined();
+    expect(findSend(h, 'v2_voice_failed_with_prompt')).toBeDefined();
     expect(h.getWorkerProfile()?.trustAnswers ?? []).toHaveLength(0);
 
     // Recovers cleanly on the next attempt.
@@ -366,6 +380,9 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     await h.sendVoiceNote({ mediaContentType: 'image/jpeg' });
 
     expect(h.getPendingProfileIngests()).toHaveLength(0);
+    // The voice_choice lane keeps the bare template — its prompt is an
+    // interactive template, not plain text, so the combined-message helper
+    // (trust lane only) does not apply here.
     expect(findSend(h, 'v2_voice_invalid_type')).toBeDefined();
     expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
   });
