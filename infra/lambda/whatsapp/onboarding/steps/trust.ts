@@ -10,6 +10,8 @@ import type { WorkerGate } from '../../lib/onboarding-repository';
 import type { Lang } from '../../lib/templates';
 import { normalizeTrade, getTrustOptions } from '../../lib/onboarding-adapters';
 import { V2_FALLBACK_TRUST_QUESTIONS } from '../../lib/interactive-templates';
+import { detectMediaCategory } from '../../lib/media';
+import type { TrustVoiceEventV2 } from '../../lib/voice-events';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
 import {
   type BilingualQuestion,
@@ -17,7 +19,7 @@ import {
   V2_TRUST_QUESTION_SET_VERSION,
   V2_TRUST_RUBRIC_VERSION,
 } from '../constants';
-import { repeatCurrentPrompt, sendTrustPrompt } from '../delivery';
+import { repeatCurrentPrompt, sendTrustPrompt, sendTemplateMessage } from '../delivery';
 import { effectiveLang } from '../transitions';
 
 // ── Bound: trust.question.{1,2,3} + atomic readiness ─────────────────────
@@ -41,7 +43,14 @@ function parseTrustOptionIndex(msg: OnboardingV2InboundMessage): number | null {
   return Number(trimmed);
 }
 
-export async function handleTrustQuestion(
+/**
+ * Sole call site that ever writes a trust answer (typed or transcribed
+ * voice) and, on the third question, completes onboarding. `answerSource`
+ * is recorded on the assessment row (ai/trust-scorer.ts reads it) but
+ * otherwise never changes the control flow below — a voice-transcribed
+ * answer advances/completes exactly like a typed one.
+ */
+async function recordTrustAnswer(
   client: PoolClient,
   session: OnboardingV2Session,
   msg: OnboardingV2InboundMessage,
@@ -50,36 +59,15 @@ export async function handleTrustQuestion(
   lang: Lang,
   now: Date,
   stepKey: 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
+  answerText: string,
+  answerSource: 'text' | 'voice',
 ): Promise<RouteResult> {
-  // Idempotency: a message arriving after this run already completed (e.g. a
-  // duplicate webhook delivery of the final answer) must not re-complete it.
-  if (gate.status === 'completed') {
-    return { handled: true, workerId: gate.userId, stepKey };
-  }
-
   const idx = Number(stepKey.split('.').pop()) - 1; // 0-based
   const trade = (session.state_context.v2ProfileTrade as string | undefined) ?? 'other';
   const source = (session.state_context.v2TrustSource as string | undefined) ?? 'fallback';
   const questionSetVersion = (session.state_context.v2QuestionSetVersion as string | undefined)
     ?? (source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION);
   const rubricVersion = (session.state_context.v2RubricVersion as string | undefined) ?? V2_TRUST_RUBRIC_VERSION;
-
-  let answerText: string | null = null;
-  if (source === 'standard') {
-    const options = getTrustOptions(idx, trade);
-    const optionIdx = parseTrustOptionIndex(msg);
-    if (optionIdx !== null && optionIdx >= 1 && optionIdx <= options.length) {
-      answerText = options[optionIdx - 1];
-    }
-  } else {
-    const trimmed = (msg.body ?? '').trim();
-    answerText = trimmed.length > 0 ? trimmed : null;
-  }
-
-  if (answerText === null) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
-    return { handled: true, workerId: gate.userId, stepKey };
-  }
 
   // Defect 3 fix: the trust-scorer (ai/trust-scorer.ts:~154) reads each
   // stored answer as `{ q_en, answer_text }`. Both `profile.trade` and
@@ -100,7 +88,7 @@ export async function handleTrustQuestion(
     qEn: currentQuestion.en,
     qEs: currentQuestion.es,
     answerText,
-    answerSource: 'text',
+    answerSource,
     provenance: { rubricVersion },
   });
 
@@ -135,4 +123,144 @@ export async function handleTrustQuestion(
     },
   });
   return { handled: true, workerId: gate.userId, stepKey };
+}
+
+/**
+ * Worker sent a voice note (numMedia > 0, no voice-event envelope yet) at a
+ * trust question. Only kicks off transcription — never advances the step or
+ * takes the run lock, so a typed answer that arrives before the transcript
+ * comes back still wins (see applyTrustVoiceTranscript's staleness guard).
+ */
+async function handleTrustVoiceNote(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+  stepKey: 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
+  questionIndex: number,
+): Promise<RouteResult> {
+  if (!deps.voiceIntake.enabled) {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_not_supported', {}, now, gate.runId!, msg.messageSid, 'voice_control_off');
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  const category = msg.mediaContentType ? detectMediaCategory(msg.mediaContentType) : null;
+  if (!msg.mediaUrl || !msg.mediaContentType || category !== 'voice') {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_invalid_type', {}, now, gate.runId!, msg.messageSid, 'voice_invalid_type');
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  const { started } = await deps.voiceIntake.startTrustTranscription({
+    workerId: gate.userId,
+    phone: session.whatsapp_number,
+    runId: gate.runId!,
+    stepKey,
+    questionIndex,
+    language: lang,
+    mediaUrl: msg.mediaUrl,
+    mediaContentType: msg.mediaContentType,
+    inboundMessageSid: msg.messageSid,
+  });
+
+  if (!started) {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_failed', {}, now, gate.runId!, msg.messageSid, 'voice_pipeline_unavailable');
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_ack', {}, now, gate.runId!, msg.messageSid, 'voice_ack');
+  return { handled: true, workerId: gate.userId, stepKey };
+}
+
+/**
+ * The transcription pipeline's completion re-enters here as a synthetic
+ * inbound event (see lib/voice-events.ts). `runId`/`stepKey` are the
+ * staleness anchor: if the run moved on (a typed answer won the race, or a
+ * restart issued a new run) before the transcript came back, this is a
+ * silent no-op — never a reply, never a write. Never DB work beyond the one
+ * `recordTrustAnswer` call on success; the receiver Lambda that sent this
+ * event already did zero DB work of its own (Task 5).
+ */
+async function applyTrustVoiceTranscript(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+  stepKey: 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
+  evt: TrustVoiceEventV2,
+): Promise<RouteResult> {
+  if (evt.runId !== gate.runId || evt.stepKey !== stepKey) {
+    console.warn(JSON.stringify({
+      metric: 'OnboardingVoiceTranscriptStale',
+      stepKey,
+      eventStepKey: evt.stepKey,
+    }));
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  const transcript = evt.transcript?.trim() ?? '';
+  if (evt.status === 'FAILED' || transcript.length === 0) {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_failed', {}, now, gate.runId!, msg.messageSid, 'voice_transcript_failed');
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  return recordTrustAnswer(client, session, msg, deps, gate, lang, now, stepKey, transcript, 'voice');
+}
+
+export async function handleTrustQuestion(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  lang: Lang,
+  now: Date,
+  stepKey: 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
+): Promise<RouteResult> {
+  // Idempotency: a message arriving after this run already completed (e.g. a
+  // duplicate webhook delivery of the final answer) must not re-complete it.
+  if (gate.status === 'completed') {
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  const idx = Number(stepKey.split('.').pop()) - 1; // 0-based
+
+  if (msg.voiceEvent?.kind === 'trust_answer') {
+    return applyTrustVoiceTranscript(client, session, msg, deps, gate, lang, now, stepKey, msg.voiceEvent);
+  }
+
+  if ((msg.numMedia ?? 0) > 0) {
+    return handleTrustVoiceNote(client, session, msg, deps, gate, lang, now, stepKey, idx);
+  }
+
+  const trade = (session.state_context.v2ProfileTrade as string | undefined) ?? 'other';
+  const source = (session.state_context.v2TrustSource as string | undefined) ?? 'fallback';
+
+  let answerText: string | null = null;
+  if (source === 'standard') {
+    const options = getTrustOptions(idx, trade);
+    const optionIdx = parseTrustOptionIndex(msg);
+    if (optionIdx !== null && optionIdx >= 1 && optionIdx <= options.length) {
+      answerText = options[optionIdx - 1];
+    }
+  } else {
+    const trimmed = (msg.body ?? '').trim();
+    answerText = trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (answerText === null) {
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
+  return recordTrustAnswer(client, session, msg, deps, gate, lang, now, stepKey, answerText, 'text');
 }
