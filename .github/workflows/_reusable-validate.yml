@@ -87,7 +87,10 @@ jobs:
 
       - name: Run infra unit tests
         working-directory: infra
-        run: npm test -- --runInBand
+        # test:ci is plain `jest` — the default `test` script carries
+        # --maxWorkers=2 (a dev-host OOM cap), and jest rejects combining
+        # --maxWorkers with --runInBand in one invocation.
+        run: npm run test:ci -- --runInBand
 
       - name: CDK synth backend stacks
         working-directory: infra
