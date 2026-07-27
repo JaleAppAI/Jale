@@ -1718,6 +1718,51 @@ describe('Processor Lambda', () => {
       expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
     });
 
+    // Task 1/A1: a photo CAPTIONED with a jobs command must run that
+    // command, not be discarded in favor of the unrelated voice-note reply
+    // — before the voice-note copy landed, a captioned command already
+    // worked here.
+    it('a ready worker\'s photo captioned with a jobs command runs that command, never the voice-note reply', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-jobs-caption' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-jobs-caption',
+          From: 'whatsapp:+15125551234',
+          Body: 'Trabajos',
+          NumMedia: '1',
+          MediaUrl0: 'https://api.twilio.com/media/ME998',
+          MediaSid0: 'ME998',
+          MediaContentType0: 'image/jpeg',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+      expect(outboxBodies()).not.toContain(t('voice_note_not_supported', 'en'));
+    });
+
     it('stores recent job ids when an idle worker asks for jobs', async () => {
       mockListMatchedJobsForWorker.mockResolvedValue([
         { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
@@ -3814,6 +3859,7 @@ describe('v2 routing branch', () => {
       startedAt: '2026-07-27T00:00:00.000Z',
       questionIndex: 0,
       transcript: 'five years of experience',
+      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
     };
     const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
 
@@ -3858,6 +3904,7 @@ describe('v2 routing branch', () => {
       startedAt: '2026-07-27T00:00:00.000Z',
       questionIndex: 0,
       transcript: 'answer',
+      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
     };
     const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
 
@@ -3890,6 +3937,7 @@ describe('v2 routing branch', () => {
       startedAt: '2026-07-27T00:00:00.000Z',
       questionIndex: 0,
       transcript: 'answer',
+      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
     };
     const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
 

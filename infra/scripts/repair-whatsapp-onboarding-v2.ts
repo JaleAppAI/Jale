@@ -63,6 +63,29 @@ export const WORKFLOW_STEP_KEYS = [
   'profile.photo_type',
 ] as const;
 
+/**
+ * Task 6/B4: excluded from `--set-step`. The two voice holding steps
+ * (`profile.voice_choice`/`profile.voice_processing`) have no prompt of
+ * their own — they exist only as a mid-flight marker while the voice
+ * pipeline runs — and the three pre-auth/bind keys
+ * (`start.choose_language`/`identity.verify_otp`/`legal.review`) have no
+ * bound workflow run's state context for this repair's `advanceWorkflow`-
+ * shaped UPDATE to act on the way a genuinely bound step does. Landing a
+ * repair on any of these five would strand the worker exactly as badly as
+ * the bug this repair tool exists to fix.
+ */
+export const REPAIR_EXCLUDED_STEP_KEYS = [
+  'profile.voice_choice',
+  'profile.voice_processing',
+  'start.choose_language',
+  'identity.verify_otp',
+  'legal.review',
+] as const;
+
+export const REPAIR_SETTABLE_STEP_KEYS: readonly string[] = WORKFLOW_STEP_KEYS.filter(
+  (key) => !(REPAIR_EXCLUDED_STEP_KEYS as readonly string[]).includes(key),
+);
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -178,10 +201,17 @@ export function parseRepairArgs(argv: string[]): ParseRepairArgsResult {
     return { ok: true, value: { userId, phone, setStep: null, reason: null, dryRun: false } };
   }
 
-  if (!(WORKFLOW_STEP_KEYS as readonly string[]).includes(setStep)) {
+  if (!REPAIR_SETTABLE_STEP_KEYS.includes(setStep)) {
+    if ((WORKFLOW_STEP_KEYS as readonly string[]).includes(setStep)) {
+      return {
+        ok: false,
+        error: `--set-step ${setStep} is not repairable (a holding or pre-auth step with no `
+          + `standalone prompt/state); must be one of: ${REPAIR_SETTABLE_STEP_KEYS.join(', ')}`,
+      };
+    }
     return {
       ok: false,
-      error: `--set-step must be one of: ${WORKFLOW_STEP_KEYS.join(', ')}`,
+      error: `--set-step must be one of: ${REPAIR_SETTABLE_STEP_KEYS.join(', ')}`,
     };
   }
   if (reason === null || reason.length === 0) {

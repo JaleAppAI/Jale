@@ -47,6 +47,15 @@ export interface TrustVoiceEventV2 extends VoiceEventCommon {
   questionIndex: number; // 0|1|2
   transcript?: string; // present iff COMPLETED
   transcriptOutputKey?: string;
+  /**
+   * Deterministic Step Functions execution ARN (Task 5/B3), mirroring
+   * `ProfileIntakeVoiceEventV2.executionArn` — the staleness anchor
+   * `applyTrustVoiceTranscript` compares against
+   * `state_context.v2TrustVoiceExecutionArn` so a late transcript from a
+   * PRIOR visit to the same run/step (BACK, then RESTART, then back again)
+   * can never silently overwrite a corrected answer.
+   */
+  executionArn: string;
 }
 
 export interface VoiceExtractionFields {

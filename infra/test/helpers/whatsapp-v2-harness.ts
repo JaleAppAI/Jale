@@ -396,14 +396,25 @@ function createFakeGateRepo(
       delete profile.hasTransportation;
       delete profile.availability;
     },
+    async resetPendingTrustAssessmentAndSkills(_client: PoolClient, workerId: string): Promise<void> {
+      // Mirrors the real function's `answers = '[]'::jsonb` reset — this
+      // fake has no separate `worker_skills` table to model (that reset is
+      // covered by the real-Postgres DB suite instead).
+      const profile = profileFake._profiles.get(workerId);
+      if (!profile) return;
+      profile.trustAnswers = [];
+    },
     async findPreviousStepKey(
       _client: PoolClient,
       runId: string,
       currentStepKey: WorkflowStepKey,
     ): Promise<WorkflowStepKey | null> {
       // Mirrors the real query: most recent transition landing ON
-      // `currentStepKey` that actually moved from somewhere else. Scanned
-      // from the end since `transitions` is append-only chronological order.
+      // `currentStepKey` that actually moved from somewhere else, excluding
+      // BACK's/RESTART's own `worker_*`-prefixed navigation transitions and
+      // any voice holding step as the candidate "previous" step (Task 3/B1
+      // fix). Scanned from the end since `transitions` is append-only
+      // chronological order.
       for (let i = transitions.length - 1; i >= 0; i--) {
         const t = transitions[i];
         if (
@@ -411,6 +422,9 @@ function createFakeGateRepo(
           && t.toStepKey === currentStepKey
           && t.fromStepKey != null
           && t.fromStepKey !== t.toStepKey
+          && !t.reason.startsWith('worker_')
+          && t.fromStepKey !== 'profile.voice_choice'
+          && t.fromStepKey !== 'profile.voice_processing'
         ) {
           return t.fromStepKey;
         }
@@ -769,6 +783,7 @@ interface PendingTranscription {
   mediaUrl: string;
   mediaContentType: string;
   inboundMessageSid: string;
+  executionArn: string;
 }
 
 // ── Fake profile-intake ingest surface (Stream B: full voice profile
@@ -799,14 +814,23 @@ function createFakeVoiceIntake() {
   const pendingProfileIngests: PendingProfileIngest[] = [];
   let ingestSeq = 0;
   let ingestFailureReason: string | null = null;
+  let transcriptionSeq = 0;
+  let transcriptionFailureReason: string | null = null;
 
   const voiceIntake = {
     get enabled(): boolean {
       return enabledFlag;
     },
-    async startTrustTranscription(input: PendingTranscription): Promise<{ started: boolean }> {
-      pendingTranscriptions.push(input);
-      return { started: true };
+    async startTrustTranscription(
+      input: Omit<PendingTranscription, 'executionArn'>,
+    ): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
+      if (transcriptionFailureReason) {
+        return { started: false, reason: transcriptionFailureReason };
+      }
+      transcriptionSeq += 1;
+      const executionArn = `arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-${transcriptionSeq}`;
+      pendingTranscriptions.push({ ...input, executionArn });
+      return { started: true, executionArn };
     },
     async ingestProfileVoiceNote(input: {
       workerId: string;
@@ -840,6 +864,15 @@ function createFakeVoiceIntake() {
     },
     recoverIngest(): void {
       ingestFailureReason = null;
+    },
+    /** Makes every SUBSEQUENT `startTrustTranscription` call fail with the
+     * given reason (e.g. 'download_failed') until `recoverTranscription` is
+     * called — models an expired/unreachable Twilio media URL (Task 7/B5). */
+    failTranscription(reason: string): void {
+      transcriptionFailureReason = reason;
+    },
+    recoverTranscription(): void {
+      transcriptionFailureReason = null;
     },
   };
 }
@@ -969,6 +1002,8 @@ export class WhatsAppV2Harness {
         appendTransition: (c, input) => this.gateRepo.appendTransition(c, input as any),
         completeOnboarding: (c, input) => this.gateRepo.completeOnboarding(c, input),
         clearProfileAnswers: (c, workerId) => this.gateRepo.clearProfileAnswers(c, workerId),
+        resetPendingTrustAssessmentAndSkills: (c, workerId) =>
+          this.gateRepo.resetPendingTrustAssessmentAndSkills(c, workerId),
         findPreviousStepKey: (c, runId, currentStepKey) =>
           this.gateRepo.findPreviousStepKey(c, runId, currentStepKey),
       },
@@ -1121,6 +1156,17 @@ export class WhatsAppV2Harness {
     this.voiceIntakeFake.setEnabled(enabled);
   }
 
+  /** Makes every SUBSEQUENT `startTrustTranscription` call fail (e.g. an
+   * expired Twilio media URL) until `recoverTrustTranscription` is called —
+   * Task 7/B5's "must fail loudly, not silently" coverage. */
+  failTrustTranscription(reason: string): void {
+    this.voiceIntakeFake.failTranscription(reason);
+  }
+
+  recoverTrustTranscription(): void {
+    this.voiceIntakeFake.recoverTranscription();
+  }
+
   /** A real Twilio media field's worth of a voice note inbound — no
    * transcript yet, the `numMedia`/`mediaUrl`/`mediaContentType` triple a
    * real webhook delivers. `sendText`'s canned-answer driving stops working
@@ -1136,6 +1182,25 @@ export class WhatsAppV2Harness {
       mediaUrl: 'https://api.twilio.example/fake-media/voice-note',
       mediaSid: nextSid('ME'),
       mediaContentType: opts.mediaContentType ?? 'audio/ogg',
+    });
+  }
+
+  /** Task 1/A1: a non-voice media message (a photo) carrying a caption —
+   * the caption is real, usable text (an OTP code, a name, a command) that
+   * must NOT be discarded in favor of voice-note copy. Defaults to an image
+   * content type, distinct from `sendVoiceNote`'s audio default. */
+  async sendMediaWithCaption(
+    body: string,
+    opts: { messageSid?: string; mediaContentType?: string } = {},
+  ): Promise<RouteResult> {
+    return this.routeTurn({
+      from: this.phone,
+      body,
+      messageSid: opts.messageSid ?? nextSid('sid'),
+      numMedia: 1,
+      mediaUrl: 'https://api.twilio.example/fake-media/photo',
+      mediaSid: nextSid('ME'),
+      mediaContentType: opts.mediaContentType ?? 'image/jpeg',
     });
   }
 
@@ -1156,7 +1221,7 @@ export class WhatsAppV2Harness {
    */
   async completeTranscription(
     index: number,
-    result: { status: 'COMPLETED' | 'FAILED'; transcript?: string },
+    result: { status: 'COMPLETED' | 'FAILED'; transcript?: string; executionArnOverride?: string },
   ): Promise<RouteResult> {
     const pending = this.voiceIntakeFake.pendingTranscriptions[index];
     if (!pending) {
@@ -1174,6 +1239,7 @@ export class WhatsAppV2Harness {
       origMessageSid: pending.inboundMessageSid,
       startedAt: this.clockRef.now.toISOString(),
       questionIndex: pending.questionIndex,
+      executionArn: result.executionArnOverride ?? pending.executionArn,
       ...(result.status === 'COMPLETED' ? { transcript: result.transcript ?? '' } : {}),
     };
 

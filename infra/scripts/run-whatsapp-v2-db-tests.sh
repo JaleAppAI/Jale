@@ -30,4 +30,5 @@ exec npx jest --runInBand \
   test/unit/db/whatsapp-onboarding-042.integration.test.ts \
   test/unit/db/whatsapp-onboarding-concurrency.integration.test.ts \
   test/unit/db/whatsapp-flow-049.integration.test.ts \
-  test/unit/db/worker-profiles-constraints.integration.test.ts
+  test/unit/db/worker-profiles-constraints.integration.test.ts \
+  test/unit/db/whatsapp-onboarding-052.integration.test.ts

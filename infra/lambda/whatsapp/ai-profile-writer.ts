@@ -392,6 +392,15 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         if (!normalized.executionArn) {
           throw new Error('executionArn missing on v2 profile-intake completion (FAILED)');
         }
+        // Task 8 fix: COMMIT before publishing the synthetic `#vp` event —
+        // this transaction is held open across S3/Bedrock calls, and
+        // publishing first meant a COMMIT failure left an event referencing
+        // a rolled-back `extractionId` already delivered, with FIFO
+        // deduplication then blocking any correction from ever landing. A
+        // publish failure AFTER a successful commit is safe: the row
+        // exists, so the pipeline's own retry/alarms cover it.
+        await client.query('COMMIT');
+        committed = true;
         await sendV2ProfileIntakeEvent({
           status: 'FAILED',
           v2,
@@ -405,8 +414,6 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
           summaryEn: null,
           summaryEs: null,
         });
-        await client.query('COMMIT');
-        committed = true;
         return;
       }
 
@@ -470,6 +477,11 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       // profile field write and the summary/fallback reply happen in the
       // router's turn, under the run lock, via the real
       // ProfilePersistenceAdapter methods (Task 8d).
+      //
+      // Task 8 fix: COMMIT before publishing — see the FAILED branch above
+      // for why publish-then-commit is unsafe.
+      await client.query('COMMIT');
+      committed = true;
       await sendV2ProfileIntakeEvent({
         status: 'COMPLETED',
         v2,
@@ -483,8 +495,6 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         summaryEn: result.summary_en,
         summaryEs: result.summary_es,
       });
-      await client.query('COMMIT');
-      committed = true;
       return;
     }
 

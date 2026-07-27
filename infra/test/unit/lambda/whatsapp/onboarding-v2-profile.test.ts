@@ -279,6 +279,7 @@ function makeDeps() {
       clearProfileAnswers: async (_c, workerId) => {
         profileDb.set(workerId, {});
       },
+      resetPendingTrustAssessmentAndSkills: async () => undefined,
       findPreviousStepKey: async (_c, runId, currentStepKey) => {
         const transitions = gateRepo._transitions as Array<{
           runId?: string;

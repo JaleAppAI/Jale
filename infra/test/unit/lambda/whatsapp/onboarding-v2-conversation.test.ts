@@ -718,11 +718,18 @@ describe('createReleaseRenderer(): all five release kinds', () => {
 
   it('renders job_alert_digest', async () => {
     const renderer = createReleaseRenderer();
+    // Two jobs: the multi-job digest is the plain-text case this smoke test
+    // exercises. A SINGLE job renders the approved v1 content template
+    // instead (Task 2/A2) — that contract has its own dedicated coverage in
+    // lib/onboarding-renderers.test.ts.
     const msg = await renderer.render({
       kind: 'job_alert_digest',
       workerId: 'w1',
       language: 'en',
-      jobs: [{ jobId: 'j1', title: 'Electrician', companyName: 'Acme', score: 90 }],
+      jobs: [
+        { jobId: 'j1', title: 'Electrician', companyName: 'Acme', score: 90 },
+        { jobId: 'j2', title: 'Plumber', companyName: 'Acme', score: 80 },
+      ],
     });
     expect(msg.body).toContain('Electrician');
     expect(msg.body).toContain('Acme');
@@ -874,10 +881,12 @@ describe('Stream B: full voice profile intake end to end', () => {
     expect(h.getState().gate?.status).toBe('completed');
 
     // The pipeline's completion event, if it EVER arrives after this, must
-    // be a silent no-op. The worker is already 'ready' by this point, so it
-    // never even reaches the staleness check — routeOnboardingV2's ready
-    // short-circuit fires first, which is equally harmless (no send, no
-    // state change).
+    // be a silent no-op. Task 7/B5: the synthetic event is dispatched BEFORE
+    // the ready handoff regardless of current step, so it reaches
+    // `handleVoiceIntakeResult`'s own staleness guard (the worker's
+    // currentStepKey is no longer 'profile.voice_processing') and is
+    // discarded there — handled, no send, no state change, never routed
+    // into the legacy idle lane.
     const sentBefore = h.getSentMessages().length;
     const late = await h.injectVoiceIntakeResult(0, {
       status: 'COMPLETED',
@@ -885,7 +894,7 @@ describe('Stream B: full voice profile intake end to end', () => {
       confidences: { full_name: 0.9 },
     });
     expect(h.getSentMessages()).toHaveLength(sentBefore);
-    expect(late.handled).toBe(false);
+    expect(late.handled).toBe(true);
     expect(h.getWorkerProfile()).not.toMatchObject({ name: 'Someone Else' });
   });
 });
@@ -1111,5 +1120,80 @@ describe('BACK/ATRAS: redo the previous answer', () => {
     await h.sendText('2');
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.2');
     expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore + 1);
+  });
+});
+
+describe('Task 1/A1: a captioned photo must not discard usable text', () => {
+  it('a photo captioned with the OTP code verifies it exactly like typed text', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110700' });
+    await h.sendText('START');
+    const code = h.lastIssuedOtpCode();
+
+    const result = await h.sendMediaWithCaption(code);
+
+    expect(result.workerId).toBeTruthy();
+    expect(result.stepKey).toBe('legal.review');
+  });
+
+  it('a photo captioned with the worker\'s name saves it at profile.name', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110701' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    const result = await h.sendMediaWithCaption('Jose Martinez');
+
+    expect(h.getWorkerProfile()?.name).toBe('Jose Martinez');
+    expect(result.stepKey).toBe('profile.location');
+  });
+
+  // The genuine "ready worker sends a jobs command" flow lives entirely in
+  // processor.ts's legacy idle lane (the v2 router hands a ready worker off
+  // via `{handled: false, handoff: 'ready'}` before ever inspecting the
+  // command) — see processor.test.ts's dedicated coverage for that case.
+  // This test instead confirms the fix generically at a BOUND onboarding
+  // step whose command gate fires on captioned media: TRABAJOS is blocked-
+  // command classified everywhere except the free-text steps, so a caption
+  // at profile.name (free-text) is the sharpest proof it reaches the real
+  // gate/handler rather than being swallowed into voice-note copy.
+  it('a captioned command at a bound step is NOT discarded (gate/handler sees the caption, never trips voice copy)', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110702' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendMediaWithCaption('TRABAJOS');
+
+    // Blocked as a command (gate-blocked reprompt), never silently
+    // swallowed into voice-note copy.
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    const lastSent = h.getSentMessages().at(-1);
+    expect(lastSent?.sourceType).not.toContain('voice');
+  });
+
+  it('a bare voice note (no caption) at identity.verify_otp still gets the honest voice-not-supported reply', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110703' });
+    await h.sendText('START');
+
+    const result = await h.sendVoiceNote();
+
+    expect(result.workerId).toBeNull();
+    expect(result.stepKey).toBe('identity.verify_otp');
+    const lastSent = h.getSentMessages().at(-1);
+    expect(lastSent?.phase).toBe('pre_auth_text');
+  });
+
+  it('a bare voice note (no caption) at profile.name still gets the honest voice-not-supported reply', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110704' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendVoiceNote();
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // no advance
+    expect(h.getWorkerProfile()?.name).toBeUndefined();
+    const sentTags = h.getSentMessages().map((m) => m.sourceType ?? '');
+    expect(sentTags.some((tag) => tag.includes('v2_voice_not_supported'))).toBe(true);
   });
 });

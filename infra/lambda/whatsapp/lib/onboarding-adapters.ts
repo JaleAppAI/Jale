@@ -546,8 +546,23 @@ export function createProfilePersistenceAdapter(
 
       if (existing.rows.length > 0) {
         const row = existing.rows[0];
-        const priorAnswers = Array.isArray(row.answers) ? row.answers : [];
-        const mergedAnswers = [...priorAnswers, newAnswer];
+        const priorAnswers = (Array.isArray(row.answers) ? row.answers : []) as Array<{
+          question_index: number;
+          [key: string]: unknown;
+        }>;
+        // Defect 4a fix: a worker who goes BACK and re-answers a question
+        // must have the corrected answer REPLACE the old one, not accumulate
+        // alongside it — the trust scorer (ai/trust-scorer.ts) sends every
+        // element of this array to the model, so a stale duplicate would be
+        // scored as if the worker gave two different answers to the same
+        // question. Replace the element sharing `question_index`, else
+        // append, and keep the array ordered by `question_index` so it never
+        // depends on insertion order.
+        const replaced = priorAnswers.some((a) => a.question_index === questionIndex);
+        const mergedAnswers = (replaced
+          ? priorAnswers.map((a) => (a.question_index === questionIndex ? newAnswer : a))
+          : [...priorAnswers, newAnswer]
+        ).sort((a, b) => a.question_index - b.question_index);
         await client.query(
           `UPDATE worker_trust_assessments
               SET answers = $2::jsonb,
