@@ -60,7 +60,10 @@ COMMENT ON COLUMN users.pending_full_name_set_at IS
   'adopted by an unrelated later login.';
 
 -- Stage the caller-supplied name. Deliberately a no-op once full_name is
--- set, so this can never clobber an established name.
+-- set, so this can never clobber an established name. The 160-char cap
+-- exists because this value arrives over an UNAUTHENTICATED endpoint and
+-- users.full_name is an unbounded TEXT column -- without it, anyone could
+-- stage megabytes per request and have them promoted into full_name later.
 CREATE OR REPLACE FUNCTION stage_worker_pending_name(
   p_cognito_sub TEXT,
   p_full_name TEXT
@@ -71,6 +74,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
+  c_pending_name_max_len CONSTANT INT := 160;
   v_updated INT;
 BEGIN
   IF p_cognito_sub IS NULL OR btrim(p_cognito_sub) = '' THEN
@@ -80,7 +84,7 @@ BEGIN
   PERFORM set_config('app.worker_reconcile_sub', p_cognito_sub, true);
 
   UPDATE users
-     SET pending_full_name = NULLIF(btrim(p_full_name), ''),
+     SET pending_full_name = NULLIF(left(btrim(p_full_name), c_pending_name_max_len), ''),
          pending_full_name_set_at = now()
    WHERE cognito_sub = p_cognito_sub
      AND user_type = 'worker'

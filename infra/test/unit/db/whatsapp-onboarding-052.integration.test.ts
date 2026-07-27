@@ -248,3 +248,117 @@ maybeDescribe('migration 052: worker_skills reset + trust-answer upsert (real Po
     }
   });
 });
+
+maybeDescribe('migration 052: pending signup name staging/promotion (real Postgres)', () => {
+  let admin: Client;
+
+  beforeAll(async () => {
+    admin = new Client({ connectionString: databaseUrl });
+    await admin.connect();
+  });
+
+  afterAll(async () => {
+    await admin.query(`DELETE FROM users WHERE cognito_sub LIKE 'wa-052-name-%'`);
+    await admin.end();
+  });
+
+  async function createWorker(suffix: string): Promise<string> {
+    const sub = `wa-052-name-${suffix}`;
+    await admin.query(
+      `INSERT INTO users (id, cognito_sub, user_type) VALUES ($1, $2, 'worker')`,
+      [randomUUID(), sub],
+    );
+    return sub;
+  }
+
+  test('stages trimmed, promotes once, and refuses to overwrite an established name', async () => {
+    const sub = await createWorker('happy');
+
+    const staged = await admin.query(`SELECT stage_worker_pending_name($1, $2) AS ok`, [sub, '  Luis Gomez  ']);
+    expect(staged.rows[0].ok).toBe(true);
+
+    const promoted = await admin.query(`SELECT promote_worker_pending_name($1) AS ok`, [sub]);
+    expect(promoted.rows[0].ok).toBe(true);
+
+    const row = await admin.query(
+      `SELECT full_name, pending_full_name, pending_full_name_set_at FROM users WHERE cognito_sub = $1`,
+      [sub],
+    );
+    expect(row.rows[0]).toEqual({ full_name: 'Luis Gomez', pending_full_name: null, pending_full_name_set_at: null });
+
+    // A second promotion is a no-op, and staging after establishment is refused.
+    const again = await admin.query(`SELECT promote_worker_pending_name($1) AS ok`, [sub]);
+    expect(again.rows[0].ok).toBe(false);
+    const restage = await admin.query(`SELECT stage_worker_pending_name($1, $2) AS ok`, [sub, 'Squatter Name']);
+    expect(restage.rows[0].ok).toBe(false);
+    const after = await admin.query(`SELECT full_name FROM users WHERE cognito_sub = $1`, [sub]);
+    expect(after.rows[0].full_name).toBe('Luis Gomez');
+  });
+
+  test('a staged name past the 24h TTL is discarded, never promoted', async () => {
+    const sub = await createWorker('stale');
+
+    await admin.query(`SELECT stage_worker_pending_name($1, $2)`, [sub, 'Stale Squatter']);
+    await admin.query(
+      `UPDATE users SET pending_full_name_set_at = now() - INTERVAL '25 hours' WHERE cognito_sub = $1`,
+      [sub],
+    );
+
+    const promoted = await admin.query(`SELECT promote_worker_pending_name($1) AS ok`, [sub]);
+    expect(promoted.rows[0].ok).toBe(false);
+
+    const row = await admin.query(
+      `SELECT full_name, pending_full_name, pending_full_name_set_at FROM users WHERE cognito_sub = $1`,
+      [sub],
+    );
+    // Not promoted, AND nothing staged survives the attempt.
+    expect(row.rows[0]).toEqual({ full_name: null, pending_full_name: null, pending_full_name_set_at: null });
+  });
+
+  test('an unauthenticated caller cannot stage unbounded text: the staged value is capped at 160 chars', async () => {
+    const sub = await createWorker('cap');
+
+    const oversized = 'A'.repeat(5000);
+    await admin.query(`SELECT stage_worker_pending_name($1, $2)`, [sub, oversized]);
+
+    const staged = await admin.query(
+      `SELECT length(pending_full_name) AS len FROM users WHERE cognito_sub = $1`,
+      [sub],
+    );
+    expect(staged.rows[0].len).toBe(160);
+
+    await admin.query(`SELECT promote_worker_pending_name($1)`, [sub]);
+    const promoted = await admin.query(
+      `SELECT length(full_name) AS len FROM users WHERE cognito_sub = $1`,
+      [sub],
+    );
+    expect(promoted.rows[0].len).toBe(160);
+  });
+
+  test('a later signup submission displaces an earlier pending value (anti-squatting)', async () => {
+    const sub = await createWorker('displace');
+
+    await admin.query(`SELECT stage_worker_pending_name($1, $2)`, [sub, 'Squatter First']);
+    await admin.query(`SELECT stage_worker_pending_name($1, $2)`, [sub, 'Real Owner']);
+
+    await admin.query(`SELECT promote_worker_pending_name($1)`, [sub]);
+    const row = await admin.query(`SELECT full_name FROM users WHERE cognito_sub = $1`, [sub]);
+    expect(row.rows[0].full_name).toBe('Real Owner');
+  });
+
+  test('neither staging function is executable by PUBLIC or by jale_whatsapp', async () => {
+    const privs = await admin.query(
+      `SELECT
+         has_function_privilege('public', 'public.stage_worker_pending_name(text,text)', 'EXECUTE') AS public_stage,
+         has_function_privilege('public', 'public.promote_worker_pending_name(text)', 'EXECUTE') AS public_promote,
+         has_function_privilege('jale_whatsapp', 'public.stage_worker_pending_name(text,text)', 'EXECUTE') AS wa_stage,
+         has_function_privilege('jale_whatsapp', 'public.promote_worker_pending_name(text)', 'EXECUTE') AS wa_promote`,
+    );
+    expect(privs.rows[0]).toEqual({
+      public_stage: false,
+      public_promote: false,
+      wa_stage: false,
+      wa_promote: false,
+    });
+  });
+});

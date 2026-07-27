@@ -555,14 +555,16 @@ export function createProfilePersistenceAdapter(
         // alongside it — the trust scorer (ai/trust-scorer.ts) sends every
         // element of this array to the model, so a stale duplicate would be
         // scored as if the worker gave two different answers to the same
-        // question. Replace the element sharing `question_index`, else
-        // append, and keep the array ordered by `question_index` so it never
-        // depends on insertion order.
-        const replaced = priorAnswers.some((a) => a.question_index === questionIndex);
-        const mergedAnswers = (replaced
-          ? priorAnswers.map((a) => (a.question_index === questionIndex ? newAnswer : a))
-          : [...priorAnswers, newAnswer]
-        ).sort((a, b) => a.question_index - b.question_index);
+        // question. Filter-then-append (never map-in-place) so a row that
+        // ALREADY holds duplicates for this index — data written while the
+        // old append behavior was live — collapses to a single entry here
+        // instead of becoming N identical copies of the new answer. Kept
+        // ordered by `question_index` so it never depends on insertion
+        // order.
+        const mergedAnswers = [
+          ...priorAnswers.filter((a) => a.question_index !== questionIndex),
+          newAnswer,
+        ].sort((a, b) => a.question_index - b.question_index);
         await client.query(
           `UPDATE worker_trust_assessments
               SET answers = $2::jsonb,
