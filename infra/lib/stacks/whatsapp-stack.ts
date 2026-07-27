@@ -794,6 +794,63 @@ export class WhatsAppStack extends cdk.Stack {
       otpLockMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
+    // ── 2026-07-27 observability pass ─────────────────────────────
+    // OnboardingTrustQuestionGenerationFailed has been emitted by the
+    // profile step handler since Task 5 but never had a filter/alarm — a
+    // custom-trade worker stuck waiting for their generated questions was
+    // invisible to operators.
+    const trustQuestionGenFailedMetric = new logs.MetricFilter(this, 'WhatsAppTrustQuestionGenFailedMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingTrustQuestionGenerationFailed'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'TrustQuestionGenerationFailed',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppTrustQuestionGenFailedAlarm', 'WhatsAppTrustQuestionGenerationFailed',
+      trustQuestionGenFailedMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // v2 onboarding funnel: one datapoint per successful step advance
+    // (emitted by advanceWorkflow / completeOnboarding in
+    // onboarding-repository.ts). Dashboard/diagnosis metric — deliberately
+    // no alarm; drop-off is a product signal, not a page.
+    new logs.MetricFilter(this, 'WhatsAppOnboardingStepAdvancedMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingStepAdvanced'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'OnboardingStepAdvanced',
+      metricValue: '1',
+    });
+    new logs.MetricFilter(this, 'WhatsAppOnboardingCompletedMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingCompleted'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'OnboardingCompleted',
+      metricValue: '1',
+    });
+
+    // The two voice Step Functions previously had no failure signal at all
+    // — a Transcribe failure or the 15-minute pipeline timeout stranded the
+    // worker with no reply and paged nobody. (Prerequisite telemetry for
+    // wiring voice into the v2 lane.)
+    alarm(
+      'WhatsAppProfileVoicePipelineFailedAlarm', 'WhatsAppProfileVoicePipelineFailed',
+      profileVoicePipeline.stateMachine.metricFailed({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+    alarm(
+      'WhatsAppProfileVoicePipelineTimedOutAlarm', 'WhatsAppProfileVoicePipelineTimedOut',
+      profileVoicePipeline.stateMachine.metricTimedOut({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+    alarm(
+      'WhatsAppTrustVoicePipelineFailedAlarm', 'WhatsAppTrustVoicePipelineFailed',
+      trustVoicePipeline.stateMachine.metricFailed({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+    alarm(
+      'WhatsAppTrustVoicePipelineTimedOutAlarm', 'WhatsAppTrustVoicePipelineTimedOut',
+      trustVoicePipeline.stateMachine.metricTimedOut({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
     // ── API Gateway route: POST /whatsapp/webhook ───────────────
     // INTENTIONALLY UNAUTHENTICATED. Twilio signs webhook requests with
     // X-Twilio-Signature (HMAC-SHA1 over the full URL + sorted body params).

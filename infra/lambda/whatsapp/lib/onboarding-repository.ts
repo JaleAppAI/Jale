@@ -307,6 +307,17 @@ export async function advanceWorkflow(
     reason: input.reason,
   });
 
+  // v2 onboarding funnel datapoint (2026-07-27 observability pass): every
+  // successful advance flows through here, so this single line gives the
+  // per-step funnel a MetricFilter reads off the processor log group. Safe
+  // scalars only — runId is a UUID; never a phone, name, or message body.
+  console.log(JSON.stringify({
+    metric: 'OnboardingStepAdvanced',
+    fromStepKey: input.fromStepKey,
+    toStepKey: input.toStepKey,
+    runId: input.runId,
+  }));
+
   const gate = await loadWorkerGate(client, workerId);
   if (!gate) {
     throw new Error('worker_gate_missing_after_advance');
@@ -501,6 +512,9 @@ export async function completeOnboarding(
     eventKey: `worker.ready:${input.workerId}:${input.runId}`,
     payload: {},
   });
+
+  // Funnel terminus (2026-07-27 observability pass). Safe scalars only.
+  console.log(JSON.stringify({ metric: 'OnboardingCompleted', runId: input.runId }));
 
   return { assessmentEventId, workerReadyEventId };
 }

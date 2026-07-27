@@ -377,6 +377,19 @@ export async function runDrain(
       else failed += 1;
     }
 
+    // One summary line per run that DID work; silent when idle (a scheduled
+    // no-op run every minute would drown the log group). Counts only —
+    // respects this module's strict PII policy documented at the top.
+    if (leased.length > 0) {
+      console.log(JSON.stringify({
+        metric: 'DomainOutboxDrained',
+        leased: leased.length,
+        completed,
+        failed,
+        readyCompleted,
+      }));
+    }
+
     return { claimed: leased.length, completed, failed, readyCompleted };
   } finally {
     client.release();

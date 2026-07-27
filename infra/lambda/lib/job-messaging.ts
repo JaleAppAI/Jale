@@ -4,6 +4,7 @@ import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError } from '../whatsapp
 import { categoryRenderers } from '../whatsapp/lib/onboarding-renderers';
 import { enqueueWorkerMessage, registerCategoryRenderer } from '../whatsapp/lib/worker-delivery-gateway';
 import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from '../whatsapp/lib/runtime-controls';
+import { loadWorkerGate } from '../whatsapp/lib/onboarding-repository';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
 const WORKER_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -458,25 +459,51 @@ export async function queueConversationMessageFromEmployer(
   if (!conversation || conversation.status !== 'open') throw new Error('conversation_not_found');
 
   const canSendFreeform = (options?.forceCanSendFreeform ?? false) || isWorkerReplyWindowOpen(conversation.last_worker_message_at);
+
+  // v2 redirect — ONBOARDING lifecycle only (2026-07-27 parity-audit fix).
+  // The deferred `employer_chat` intent carries company/job metadata but NOT
+  // the message text; it exists so a mid-onboarding worker gets one grouped
+  // "wants to chat" ping at worker.ready. Routing READY v2 workers through
+  // it silently destroyed the employer's actual words: the message row was
+  // stamped 'queued' (canSendFreeform true), no job_message_outbox row was
+  // ever created, and the catch-up flush only rescues 'waiting_worker_reply'
+  // rows — so the text was never delivered anywhere. A ready v2 worker now
+  // takes the exact v1 delivery paths (freeform inside the reply window,
+  // approved invite template outside it), text intact. The phone hash is
+  // never logged.
+  const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
+  const controls = await loadRuntimeControls(client);
+  const v2Enabled = whatsappNumber !== null && isV2Enabled(controls, hashNormalizedPhone(whatsappNumber));
+
+  let v2Onboarding = false;
+  if (v2Enabled) {
+    // Same convention as the delivery gateway (worker-delivery-gateway.ts):
+    // no onboarding-state row means not-ready-to-receive. The gate read is
+    // worker-owned under forced RLS, so switch context around it exactly
+    // like the intent enqueue below.
+    await setInternalUserRlsContext(client, conversation.worker_id);
+    try {
+      const gate = await loadWorkerGate(client, conversation.worker_id);
+      v2Onboarding = (gate?.lifecycle ?? 'onboarding') !== 'ready';
+    } finally {
+      await setInternalUserRlsContext(client, employerId);
+    }
+  }
+
+  // On the intent path the stored row is the ONLY carrier of the text, so
+  // it must be 'waiting_worker_reply' regardless of the reply window — the
+  // open-conversation flush delivers it verbatim on the worker's next
+  // reply. On the v1 paths the original stamping stands.
   const message = await client.query<{ id: string }>(
     `INSERT INTO job_conversation_messages
        (conversation_id, sender_type, direction, body, status)
      VALUES ($1, 'employer', 'outbound', $2, $3)
      RETURNING id`,
-    [conversation.id, body, canSendFreeform ? 'queued' : 'waiting_worker_reply'],
+    [conversation.id, body, v2Onboarding || !canSendFreeform ? 'waiting_worker_reply' : 'queued'],
   );
   const messageId = message.rows[0].id;
 
-  // v2 redirect: for a v2-enabled worker, replace only the immediate
-  // whatsapp-side outbox creation below with a deferred `employer_chat`
-  // intent for the grouped worker.ready release (worker-ready-release.ts).
-  // The message row above, and the conversation/application updates below,
-  // are unchanged for both paths. The phone hash is never logged.
-  const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
-  const controls = await loadRuntimeControls(client);
-  const v2Enabled = whatsappNumber !== null && isV2Enabled(controls, hashNormalizedPhone(whatsappNumber));
-
-  if (v2Enabled) {
+  if (v2Onboarding) {
     registerCategoryRenderer('employer_chat', categoryRenderers.employer_chat);
     // The API transaction is employer-scoped, while the forced-RLS intent is
     // worker-owned. Switch only around the enqueue and restore the employer
