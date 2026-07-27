@@ -209,7 +209,10 @@ interface CompletionRecord {
   assessmentProvenance: Record<string, unknown>;
 }
 
-function createFakeGateRepo(conversations: ReturnType<typeof createFakeConversationsStore>) {
+function createFakeGateRepo(
+  conversations: ReturnType<typeof createFakeConversationsStore>,
+  profileFake: ReturnType<typeof createFakeProfileAdapter>,
+) {
   const gates = new Map<string, WorkerGate>();
   const transitions: TransitionRecord[] = [];
   const completions: CompletionRecord[] = [];
@@ -377,6 +380,42 @@ function createFakeGateRepo(conversations: ReturnType<typeof createFakeConversat
         assessmentEventId: `assessment-${completions.length}`,
         workerReadyEventId: `ready-${completions.length}`,
       };
+    },
+    async clearProfileAnswers(_client: PoolClient, workerId: string): Promise<void> {
+      // Mirrors the real `clearProfileAnswers`'s column set: the seven
+      // profile-answer fields only — `trustAnswers` (the fake's stand-in for
+      // `worker_trust_assessments`) is deliberately left untouched, exactly
+      // like the real function never touches `worker_trust_assessments`.
+      const profile = profileFake._profiles.get(workerId);
+      if (!profile) return;
+      delete profile.name;
+      delete profile.location;
+      delete profile.trade;
+      delete profile.tradeOther;
+      delete profile.yearsExperience;
+      delete profile.hasTransportation;
+      delete profile.availability;
+    },
+    async findPreviousStepKey(
+      _client: PoolClient,
+      runId: string,
+      currentStepKey: WorkflowStepKey,
+    ): Promise<WorkflowStepKey | null> {
+      // Mirrors the real query: most recent transition landing ON
+      // `currentStepKey` that actually moved from somewhere else. Scanned
+      // from the end since `transitions` is append-only chronological order.
+      for (let i = transitions.length - 1; i >= 0; i--) {
+        const t = transitions[i];
+        if (
+          t.runId === runId
+          && t.toStepKey === currentStepKey
+          && t.fromStepKey != null
+          && t.fromStepKey !== t.toStepKey
+        ) {
+          return t.fromStepKey;
+        }
+      }
+      return null;
     },
     _gates: gates,
     _transitions: transitions,
@@ -871,7 +910,7 @@ export class WhatsAppV2Harness {
     this.phone = options.phone ?? '+15550001111';
     this.conversationId = `conv:${this.phone}`;
     this.clockRef = { now: options.now ?? new Date('2026-01-01T00:00:00.000Z') };
-    this.gateRepo = createFakeGateRepo(this.conversations);
+    this.gateRepo = createFakeGateRepo(this.conversations, this.profileFake);
     this.gateway = createFakeWorkerGateway(this.gateRepo);
     this.identityFake = createFakeIdentity(this.clockRef);
     this.conversations.ensure(this.conversationId, this.phone);
@@ -929,6 +968,9 @@ export class WhatsAppV2Harness {
         reactivateDeclinedLegalRun: (c, input) => this.gateRepo.reactivateDeclinedLegalRun(c, input),
         appendTransition: (c, input) => this.gateRepo.appendTransition(c, input as any),
         completeOnboarding: (c, input) => this.gateRepo.completeOnboarding(c, input),
+        clearProfileAnswers: (c, workerId) => this.gateRepo.clearProfileAnswers(c, workerId),
+        findPreviousStepKey: (c, runId, currentStepKey) =>
+          this.gateRepo.findPreviousStepKey(c, runId, currentStepKey),
       },
       enqueueWorkerMessage: this.gateway.enqueueWorkerMessage,
       enqueuePreAuthPrompt: (c, sid, to, prompt) => {

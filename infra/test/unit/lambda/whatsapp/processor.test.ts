@@ -114,6 +114,8 @@ jest.mock('../../../../lambda/whatsapp/lib/onboarding-repository', () => ({
   advanceWorkflow: jest.fn(),
   appendTransition: jest.fn(),
   completeOnboarding: jest.fn(),
+  clearProfileAnswers: jest.fn(),
+  findPreviousStepKey: jest.fn(),
 }));
 
 const mockEnqueueWorkerMessage = jest.fn();

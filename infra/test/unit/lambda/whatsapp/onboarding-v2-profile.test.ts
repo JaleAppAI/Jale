@@ -276,6 +276,28 @@ function makeDeps() {
       },
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
       completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
+      clearProfileAnswers: async (_c, workerId) => {
+        profileDb.set(workerId, {});
+      },
+      findPreviousStepKey: async (_c, runId, currentStepKey) => {
+        const transitions = gateRepo._transitions as Array<{
+          runId?: string;
+          fromStepKey?: string | null;
+          toStepKey?: string;
+        }>;
+        for (let i = transitions.length - 1; i >= 0; i--) {
+          const t = transitions[i];
+          if (
+            t.runId === runId
+            && t.toStepKey === currentStepKey
+            && t.fromStepKey != null
+            && t.fromStepKey !== t.toStepKey
+          ) {
+            return t.fromStepKey as any;
+          }
+        }
+        return null;
+      },
     },
     enqueueWorkerMessage: gateway.enqueueWorkerMessage,
     enqueuePreAuthPrompt: preAuthDelivery.enqueuePreAuthPrompt,

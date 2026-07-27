@@ -1,5 +1,6 @@
 import {
   isGreetingKeyword,
+  isExactGreetingKeyword,
   detectCommandLanguage,
   isJobsKeyword,
   isHelpCommand,
@@ -53,6 +54,44 @@ describe('flows.ts — keyword detection', () => {
     ])('isGreetingKeyword("%s") → %s', (input, expected) => {
       expect(isGreetingKeyword(input)).toBe(expected);
     });
+  });
+
+  describe('isExactGreetingKeyword — answer-integrity guard for free-text steps', () => {
+    test.each([
+      ['Hola', true],
+      ['hola', true],
+      ['HOLA', true],
+      ['Hola!', true],
+      ['  hola  ', true],
+      ['Hello', true],
+      ['hi', true],
+      ['hey', true],
+      ['Buenas', true],
+      ['Buenos dias', true],
+      ['buenos días', true],
+    ])('isExactGreetingKeyword("%s") → %s (blocked)', (input, expected) => {
+      expect(isExactGreetingKeyword(input)).toBe(expected);
+    });
+
+    // The exact production defect this fixes: `isGreetingKeyword` itself
+    // treats these as greetings (prefix match), which is correct for the v1
+    // idle-router but would eat a genuine name/answer at a free-text step.
+    test.each([
+      'Hola Maria',
+      'hola quiero trabajo',
+      'hola trabajos',
+      'Hey there',
+    ])('isExactGreetingKeyword("%s") → false (a genuine answer, not just a greeting)', (input) => {
+      expect(isGreetingKeyword(input)).toBe(true);
+      expect(isExactGreetingKeyword(input)).toBe(false);
+    });
+
+    test.each(['Trabajos', '', 'Maria', 'Chata'])(
+      'isExactGreetingKeyword("%s") → false (ordinary text)',
+      (input) => {
+        expect(isExactGreetingKeyword(input)).toBe(false);
+      },
+    );
   });
 
   describe('isJobsKeyword', () => {

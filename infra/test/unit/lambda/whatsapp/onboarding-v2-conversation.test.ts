@@ -926,3 +926,190 @@ describe('Stream B: command gate at voice steps', () => {
     expect(h.getSentMessages().at(-1)?.lang).toBe('es');
   });
 });
+
+// ── Task 9: answer-integrity + RESTART/BACK ──────────────────────────────
+
+describe('answer-integrity: greetings and SUPPORT/SOPORTE at free-text steps are never saved', () => {
+  it('a greeting typed at profile.name is blocked and reprompted, not saved as the name', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110600' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('Hola');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // blocked, no advance
+    expect(h.getWorkerProfile()?.name).toBeUndefined();
+    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
+    expect(blockedReply).toBeDefined();
+
+    // A genuine answer typed right after still works normally.
+    await h.sendText('Jose Martinez');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+    expect(h.getWorkerProfile()?.name).toBe('Jose Martinez');
+  });
+
+  it('"Hola Maria" IS accepted and saved as the name — the false-positive guard', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110601' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+
+    await h.sendText('Hola Maria');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location'); // advanced normally
+    expect(h.getWorkerProfile()?.name).toBe('Hola Maria');
+  });
+
+  it('SUPPORT/SOPORTE at a trust question is blocked and not saved as an answer', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110602' });
+    await h.driveToStep('trust.question.2');
+    const answersBefore = h.getWorkerProfile()?.trustAnswers.length ?? 0;
+
+    await h.sendText('Soporte');
+
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.2'); // blocked, no advance
+    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore);
+    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
+    expect(blockedReply).toBeDefined();
+
+    // A genuine answer typed right after still works normally (this is a
+    // standard-trade, option-based question set — '1' is a valid choice).
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.3');
+    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore + 1);
+  });
+});
+
+describe('RESTART/REINICIAR: redo the profile + trust answers', () => {
+  it('mid-trust: clears the seven profile answers and the trust-question scratch state, re-asks the name, and a full re-run (with re-seeded trust questions) completes onboarding', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110610' });
+    await h.driveToStep('trust.question.2', { trade: 'plumber' });
+    expect(h.getWorkerProfile()?.name).toBeTruthy();
+    expect(h.getWorkerProfile()?.trade).toBe('plumber');
+    expect(h.getState().stateContext.v2TrustQuestions).toBeDefined();
+
+    await h.sendText('RESTART');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    // The seven answer fields are gone from the fake profile store.
+    expect(h.getWorkerProfile()?.name).toBeUndefined();
+    expect(h.getWorkerProfile()?.location).toBeUndefined();
+    expect(h.getWorkerProfile()?.trade).toBeUndefined();
+    expect(h.getWorkerProfile()?.yearsExperience).toBeUndefined();
+    expect(h.getWorkerProfile()?.hasTransportation).toBeUndefined();
+    expect(h.getWorkerProfile()?.availability).toBeUndefined();
+    // The trust-question/trade scratch state is wiped so a re-run re-seeds.
+    expect(h.getState().stateContext.v2TrustQuestions).toBeUndefined();
+    expect(h.getState().stateContext.v2ProfileTrade).toBeUndefined();
+    expect(h.getState().stateContext.v2TrustSource).toBeUndefined();
+    const restartedPrompt = h.getSentMessages().at(-1);
+    expect(restartedPrompt?.sourceType).toContain('onboarding_v2:profile.name');
+
+    // Full re-run, this time a different trade, proves re-seeding actually
+    // happens rather than replaying stale questions.
+    await h.sendText('Ana Diaz');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+    await h.sendText('78701');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.trade');
+    await h.sendText('electrician');
+    await h.sendText('1'); // years_experience
+    await h.sendText('1'); // has_transportation
+    await h.sendText('1'); // availability -> trust handoff
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    expect(h.getState().stateContext.v2ProfileTrade).toBe('electrician');
+    expect(h.getState().stateContext.v2TrustQuestions).toHaveLength(3);
+    expect(h.getWorkerProfile()?.name).toBe('Ana Diaz');
+    expect(h.getWorkerProfile()?.trade).toBe('electrician');
+
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+  });
+
+  it('at profile.voice_processing: safe — clears the voice execution-arn anchor, and a LATER stale completion for the pre-restart ingest is silently discarded', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110611' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    await h.sendVoiceNote();
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
+    expect(h.getPendingProfileIngests()).toHaveLength(1);
+
+    await h.sendText('RESTART');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    expect(h.getState().stateContext.v2VoiceExecutionArn).toBeUndefined();
+    expect(h.getState().stateContext.v2VoiceStartedAt).toBeUndefined();
+
+    // The OLD (pre-restart) ingest's pipeline completes late — must be a
+    // silent, harmless no-op: nothing sent, nothing applied to the profile,
+    // no state change.
+    const sentBefore = h.getSentMessages().length;
+    const late = await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: { full_name: 'Stale Person' },
+      confidences: { full_name: 0.9 },
+    });
+    expect(h.getSentMessages()).toHaveLength(sentBefore);
+    expect(h.getWorkerProfile()?.name).not.toBe('Stale Person');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    expect(late.stepKey).toBe('profile.name');
+  });
+});
+
+describe('BACK/ATRAS: redo the previous answer', () => {
+  it('at profile.trade: re-asks location; the new answer overwrites and the resolver continues to the first missing field (profile.trade)', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110620' });
+    await h.driveToStep('profile.trade', { lang: 'en' });
+    expect(h.getWorkerProfile()?.location).toEqual({ city: null, state: null, postalCode: '78701', source: 'zip' });
+
+    await h.sendText('BACK');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+    const backPrompt = h.getSentMessages().at(-1);
+    expect(backPrompt?.sourceType).toContain('onboarding_v2:profile.location');
+
+    await h.sendText('Austin, TX');
+
+    expect(h.getWorkerProfile()?.location).toEqual({ city: 'Austin', state: 'TX', postalCode: null, source: 'city_state' });
+    // name/location are filled, trade is still missing — resolver sends the
+    // worker back to profile.trade rather than re-asking the name.
+    expect(h.getState().gate?.currentStepKey).toBe('profile.trade');
+
+    // The rest of the flow proceeds normally afterward.
+    await h.sendText('electrician');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.experience');
+  });
+
+  it('at profile.name: blocked (nothing to go back to)', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110621' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('BACK');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // blocked, no-op
+    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
+    expect(blockedReply).toBeDefined();
+
+    // Still works normally afterward.
+    await h.sendText('Jose Martinez');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+  });
+
+  it('ATRAS (Spanish) at trust.question.2 re-asks trust.question.1; the new answer overwrites and advances to trust.question.2 again', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110622' });
+    await h.driveToStep('trust.question.2', { lang: 'es' });
+    const answersBefore = h.getWorkerProfile()?.trustAnswers.length ?? 0;
+
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+
+    await h.sendText('2');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.2');
+    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore + 1);
+  });
+});
