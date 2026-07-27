@@ -118,13 +118,14 @@ interface DigestJob {
   title: string;
   companyName: string;
   score: number;
+  /** Optional because pre-existing deferred intents (enqueued before the
+   * producer started sending them) lack these; the renderer degrades to
+   * the plain-text digest for those. */
+  location?: string;
+  pay?: string;
 }
 
-function buildJobAlertDigestMessage(
-  lang: Lang,
-  jobsIn: ReadonlyArray<DigestJob>,
-): ReleaseRenderedMessage {
-  const jobs = jobsIn.slice(0, JOB_ALERT_DIGEST_CAP);
+function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): string {
   const lines = jobs.map((j, i) => `${i + 1}. ${j.title} - ${j.companyName}`);
   const header =
     lang === 'es'
@@ -134,8 +135,60 @@ function buildJobAlertDigestMessage(
     lang === 'es'
       ? 'Responde TRABAJOS (JOBS) para ver la lista completa.'
       : 'Reply JOBS to see the full list.';
-  const body = [header, ...lines, footer].join('\n');
-  return { body, contentTemplate: null, contentVariables: null };
+  return [header, ...lines, footer].join('\n');
+}
+
+function buildJobAlertDigestMessage(
+  lang: Lang,
+  jobsIn: ReadonlyArray<DigestJob>,
+): ReleaseRenderedMessage {
+  const jobs = jobsIn.slice(0, JOB_ALERT_DIGEST_CAP);
+
+  // 2026-07-27 parity-audit fix: a SINGLE job alert renders v1's approved
+  // `job_alert_*` content template (same variables and `job-<id>` button
+  // payload contract as job-alert.ts's legacy branch, matching
+  // parseButtonPayload in flows.ts). This is the alert that reaches a
+  // DORMANT ready worker — outside WhatsApp's 24h customer-service window
+  // Meta rejects freeform sends, so the plain-text version silently never
+  // arrived, and it also had no Accept/Decline/Info buttons. The
+  // multi-job digest keeps plain text: it is only produced by the
+  // worker.ready release, moments after the worker's own message, so it is
+  // always inside the window.
+  //
+  // `jobs.pay` is nullable (migration 003) and a pre-existing deferred
+  // intent may carry no `location` either — the template must still render
+  // (a missing pay/location must never fall back to the plain-text digest,
+  // which Twilio rejects outside the 24h window, defeating the whole point
+  // of this branch). A bilingual placeholder substitutes for whichever of
+  // the two is missing; only `jobId`/`title`/`companyName` are required.
+  const single = jobs.length === 1 ? jobs[0] : null;
+  if (
+    single
+    && typeof single.jobId === 'string' && single.jobId.length > 0
+    && typeof single.title === 'string' && single.title.length > 0
+    && typeof single.companyName === 'string' && single.companyName.length > 0
+  ) {
+    const location = typeof single.location === 'string' && single.location.length > 0
+      ? single.location
+      : (lang === 'en' ? 'Location not specified' : 'Ubicacion no especificada');
+    const pay = typeof single.pay === 'string' && single.pay.length > 0
+      ? single.pay
+      : (lang === 'en' ? 'Pay not specified' : 'Pago no especificado');
+    return {
+      body: null,
+      contentTemplate: lang === 'en' ? 'job_alert_en' : 'job_alert_es',
+      contentVariables: {
+        '1': single.title,
+        '2': single.companyName,
+        '3': location,
+        '4': pay,
+        '5': `job-${single.jobId}`,
+        [FALLBACK_BODY_KEY]: buildJobAlertDigestText(lang, jobs),
+      },
+    };
+  }
+
+  return { body: buildJobAlertDigestText(lang, jobs), contentTemplate: null, contentVariables: null };
 }
 
 function buildEmployerChatSingleMessage(

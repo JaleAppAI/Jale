@@ -6,6 +6,7 @@ import {
   runInspect,
   runRepair,
   WORKFLOW_STEP_KEYS,
+  REPAIR_SETTABLE_STEP_KEYS,
   type Queryable,
 } from '../../../scripts/repair-whatsapp-onboarding-v2';
 
@@ -118,6 +119,51 @@ describe('parseRepairArgs', () => {
       ok: false,
       error: expect.stringContaining('profile.location'),
     });
+  });
+
+  // Task 6/B4: neither the two voice holding steps (no prompt of their own)
+  // nor the three pre-auth/bind keys (no bound run's state context for this
+  // repair's advanceWorkflow-shaped UPDATE to act on) may ever be a
+  // `--set-step` target — landing a repair there would strand the worker
+  // exactly as badly as the defect this tool exists to fix.
+  it.each([
+    'profile.voice_choice',
+    'profile.voice_processing',
+    'start.choose_language',
+    'identity.verify_otp',
+    'legal.review',
+  ])('rejects --set-step %s (excluded holding/pre-auth class), naming the rejected key and listing the permitted ones', (excluded) => {
+    const parsed = parseRepairArgs([
+      '--user-id', USER_ID, '--phone', PHONE,
+      '--set-step', excluded, '--reason', REASON, '--execute',
+    ]);
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(parsed.error).toContain(excluded);
+      expect(parsed.error).toContain('profile.trade'); // a genuinely settable key
+      // Every listed permitted key must itself be settable.
+      for (const key of REPAIR_SETTABLE_STEP_KEYS) {
+        expect(parsed.error).toContain(key);
+      }
+    }
+  });
+
+  it('REPAIR_SETTABLE_STEP_KEYS excludes exactly the two voice holding steps and the three pre-auth keys', () => {
+    const excluded = ['profile.voice_choice', 'profile.voice_processing', 'start.choose_language', 'identity.verify_otp', 'legal.review'];
+    for (const key of excluded) {
+      expect(REPAIR_SETTABLE_STEP_KEYS).not.toContain(key);
+    }
+    expect(REPAIR_SETTABLE_STEP_KEYS).toHaveLength(WORKFLOW_STEP_KEYS.length - excluded.length);
+  });
+
+  it('accepts every REPAIR_SETTABLE_STEP_KEYS member', () => {
+    for (const key of REPAIR_SETTABLE_STEP_KEYS) {
+      const parsed = parseRepairArgs([
+        '--user-id', USER_ID, '--phone', PHONE,
+        '--set-step', key, '--reason', REASON, '--execute',
+      ]);
+      expect(parsed.ok).toBe(true);
+    }
   });
 
   it('rejects --set-step without --reason', () => {

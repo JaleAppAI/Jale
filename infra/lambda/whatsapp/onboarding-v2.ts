@@ -41,7 +41,7 @@
 import type { PoolClient } from 'pg';
 import type { WorkflowStepKey } from './lib/onboarding-types';
 import type { WorkerGate } from './lib/onboarding-repository';
-import type { Lang } from './lib/templates';
+import { t, type Lang } from './lib/templates';
 import { resolveResponseLanguage } from './lib/onboarding-language';
 import type {
   OnboardingV2Session,
@@ -63,6 +63,9 @@ import {
   handleProfileAvailability,
 } from './onboarding/steps/profile';
 import { handleTrustQuestion } from './onboarding/steps/trust';
+import { handleVoiceChoiceStep, handleVoiceProcessingStep, handleVoiceIntakeResult } from './onboarding/steps/voice';
+import { isVoiceAcceptingStep } from './onboarding/constants';
+import { sendTemplateMessage, repeatCurrentPrompt } from './onboarding/delivery';
 
 export type {
   OnboardingV2Session,
@@ -85,6 +88,10 @@ async function handleProfileAndTrust(
   now: Date,
 ): Promise<RouteResult> {
   switch (stepKey) {
+    case 'profile.voice_choice':
+      return handleVoiceChoiceStep(client, session, msg, deps, gate, lang, now);
+    case 'profile.voice_processing':
+      return handleVoiceProcessingStep(client, session, msg, deps, gate, lang, now);
     case 'profile.name':
       return handleProfileName(client, session, msg, deps, gate, lang, now);
     case 'profile.location':
@@ -128,6 +135,37 @@ async function routeBoundStep(
   const isInteractive = Boolean(msg.interactivePayload);
   const responseLang = resolveResponseLanguage(lang, msg.body, isInteractive);
 
+  // NOTE: synthetic voice-pipeline completion events (`msg.voiceEvent`) are
+  // dispatched in `routeOnboardingV2`, BEFORE this function is ever called
+  // (Task 7/B5) — a late `#vt`/`#vp` for a ready or completed run must never
+  // reach here at all, let alone fall through to the command gate/idle
+  // handoff below. See the entry point's own comment for why that dispatch
+  // had to move earlier than the ready-lifecycle check.
+
+  // A real voice note (numMedia > 0, no event yet) at a step that doesn't
+  // accept one — either the control is off or this isn't a trust question —
+  // gets the honest "not supported here" reply instead of silently landing
+  // on whatever text-oriented handler the step has, or worse, tripping the
+  // command gate's fuzzy classifier on a caption. But a CAPTIONED photo (or
+  // any media with usable text/interactive payload attached) must fall
+  // through to the ordinary handler exactly as if the caption had arrived
+  // with no attachment at all — only a genuinely empty-bodied, non-
+  // interactive media message (a real voice note, or a photo sent with no
+  // caption) is voice-note copy. Without this, a worker who answers the OTP
+  // or a jobs command with a photo captioned "123456"/"TRABAJOS" would have
+  // that answer silently discarded in favor of unrelated voice-note copy.
+  if (
+    (msg.numMedia ?? 0) > 0
+    && !msg.voiceEvent
+    && !isVoiceAcceptingStep(stepKey, deps.voiceIntake.enabled)
+    && (msg.body ?? '').trim().length === 0
+    && !isInteractive
+  ) {
+    await sendTemplateMessage(client, deps, gate.userId, stepKey, responseLang, 'v2_voice_not_supported', {}, now, gate.runId!, msg.messageSid, 'voice_unsupported_step');
+    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    return { handled: true, workerId: gate.userId, stepKey };
+  }
+
   const gateResult = await applyGate(client, session, msg, deps, {
     stepKey,
     workerId: gate.userId,
@@ -161,6 +199,59 @@ export async function routeOnboardingV2(
     await deps.repo.setInternalUserRlsContext(client, session.user_id);
   }
   const gate = session.user_id ? await deps.repo.loadWorkerGate(client, session.user_id) : null;
+
+  // Task 7/B5 fix: a synthetic voice-pipeline completion event (`#vt`/`#vp`
+  // — see lib/voice-events.ts) must be dispatched HERE, unconditionally and
+  // BEFORE the ready-lifecycle handoff just below, regardless of the run's
+  // current step. The previous dispatch site (inside routeBoundStep, reached
+  // only through the 'onboarding' lifecycle branch) had two failure modes
+  // for a LATE event: a ready/completed worker's gate never even reaches
+  // routeBoundStep, so its own staleness guard (and metric) never ran at
+  // all; and any event that reached routeBoundStep at a step other than
+  // trust.question.* fell through to the command gate/idle handoff and told
+  // a worker who just finished onboarding "I didn't understand that". Each
+  // handler owns a real staleness guard (runId/stepKey/executionArn) that is
+  // the sole authority on whether a late event still applies — dispatching
+  // unconditionally here just lets that guard actually run. A synthetic
+  // event with no gate/run at all (an absent run) is itself stale by
+  // definition and is discarded the same way, with the same metric, and
+  // never a reply.
+  if (msg.voiceEvent) {
+    const voiceLang: Lang = gate
+      ? ((session.state_context?.v2PreferredLanguageOverride as Lang | undefined) ?? gate.preferredLanguage)
+      : (session.language ?? 'es');
+
+    if (msg.voiceEvent.kind === 'trust_answer') {
+      if (gate?.runId && gate.currentStepKey && /^trust\.question\.[123]$/.test(gate.currentStepKey)) {
+        return handleTrustQuestion(
+          client, session, msg, deps, gate, voiceLang, now,
+          gate.currentStepKey as 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
+        );
+      }
+      console.warn(JSON.stringify({
+        metric: 'OnboardingVoiceTranscriptStale',
+        stepKey: gate?.currentStepKey ?? 'absent',
+        eventStepKey: msg.voiceEvent.stepKey,
+      }));
+      return { handled: true, workerId: gate?.userId ?? null, stepKey: gate?.currentStepKey ?? 'unknown' };
+    }
+
+    // profile_intake: handleVoiceIntakeResult's own staleness guard already
+    // checks `gate.currentStepKey !== 'profile.voice_processing'` generically
+    // (no step-key literal-type narrowing needed here), so any gate/run is
+    // enough to dispatch into it — including a ready worker's, whose
+    // currentStepKey will never be 'profile.voice_processing' again.
+    if (gate?.runId) {
+      return handleVoiceIntakeResult(client, session, msg, deps, gate, voiceLang, now, msg.voiceEvent);
+    }
+    console.warn(JSON.stringify({
+      metric: 'OnboardingVoiceResultStale',
+      currentStepKey: gate?.currentStepKey ?? 'absent',
+      eventStepKey: msg.voiceEvent.stepKey,
+    }));
+    return { handled: true, workerId: gate?.userId ?? null, stepKey: gate?.currentStepKey ?? 'unknown' };
+  }
+
   if (gate) {
     if (gate.lifecycle === 'ready' && gate.status === 'completed' && gate.runId) {
       session.language = gate.preferredLanguage;
@@ -178,6 +269,19 @@ export async function routeOnboardingV2(
   }
 
   const preAuth = await deps.repo.loadPreAuthStateForUpdate(client, phoneHash);
+
+  // Pre-auth steps (language choice, OTP) have no voice handler at all — a
+  // net-new worker sending a voice note here gets the honest reply over the
+  // phone/inbound-keyed pre-auth gateway (no user_id exists yet to route
+  // through enqueueWorkerMessage). A CAPTIONED photo must still fall through
+  // to the ordinary OTP/start handler below — only a genuinely empty-bodied,
+  // non-interactive media message gets the voice-note copy.
+  if ((msg.numMedia ?? 0) > 0 && (msg.body ?? '').trim().length === 0 && !msg.interactivePayload) {
+    const lang: Lang = preAuth?.preferredLanguage ?? session.language ?? 'es';
+    await deps.enqueuePreAuthText(client, msg.messageSid, msg.from, t('v2_voice_not_supported', lang));
+    return { handled: true, workerId: null, stepKey: preAuth?.currentStepKey ?? 'start.choose_language' };
+  }
+
   if (preAuth && preAuth.currentStepKey === 'identity.verify_otp') {
     return handleOtpStep(client, session, msg, deps, preAuth, phoneHash, now);
   }

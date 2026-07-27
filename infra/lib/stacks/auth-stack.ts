@@ -207,8 +207,14 @@ export class AuthStack extends cdk.Stack {
     // answer it also flips phone_number_verified='true' — the only place
     // that attribute may become true, because a correct OTP is the only
     // real proof of phone possession (signup paths create with 'false').
+    // It also promotes any name staged at signup (migration 052) into
+    // users.full_name on that same first-correct-OTP event, hence the
+    // DB_SECRET_ARN/grantRead below — same pattern as postConfirmationLambda.
     const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/verify-auth-challenge.ts'),
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+      },
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
@@ -227,6 +233,7 @@ export class AuthStack extends cdk.Stack {
         `arn:aws:cognito-idp:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:userpool/*`,
       ],
     }));
+    props.dbSecret.grantRead(verifyAuthChallengeLambda.function);
 
     // ── Worker Cognito Pool ──
     const isProd = this.node.tryGetContext('environment') === 'production';

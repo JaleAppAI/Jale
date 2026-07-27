@@ -148,6 +148,31 @@ export function isOnboardingHelpCommand(body: string): boolean {
   return matches(body, HELP_WORDS);
 }
 
+// RESTART/REINICIAR and BACK/ATRAS (onboarding/gate.ts) are exact-match
+// only, deliberately NOT wired through `matches`/`matchFuzzyAgainst`: both
+// live at profile-collection and trust-question steps, several of which
+// (profile.name, profile.custom_trade, trust.question.*) are free-text
+// answer steps — the same reason `classifyBlockedCommandExact` exists.
+// Fuzzy 1-edit tolerance on "BACK" would risk misreading a short custom
+// trade or name as the command.
+const RESTART_WORDS = new Set(['restart', 'reiniciar']);
+// `normalizeCommandText` lowercases but does not strip accents (see
+// `isReviewTermsCommand` above) — both the accented and unaccented spelling
+// of "atras" are listed for the same reason.
+const BACK_WORDS = new Set(['back', 'atras', 'atrás']);
+
+/** Exact match only (case-insensitive via `normalizeCommandText`) — see the
+ * comment above `RESTART_WORDS`. */
+export function isRestartCommand(body: string): boolean {
+  return RESTART_WORDS.has(normalizeCommandText(body));
+}
+
+/** Exact match only (case-insensitive via `normalizeCommandText`) — see the
+ * comment above `RESTART_WORDS`. */
+export function isBackCommand(body: string): boolean {
+  return BACK_WORDS.has(normalizeCommandText(body));
+}
+
 const BLOCKED_COMMANDS: ReadonlyArray<[ReadonlySet<string>, 'jobs' | 'chats' | 'profile']> = [
   [new Set(['jobs', 'trabajos', 'empleos']), 'jobs'],
   [new Set(['chats', 'mensajes']), 'chats'],

@@ -634,3 +634,98 @@ describe('onboarding-renderers', () => {
     });
   });
 });
+
+// ── Single-job alert content template (2026-07-27 parity-audit fix) ──────
+//
+// A single-job alert reaches DORMANT ready workers; outside WhatsApp's 24h
+// customer-service window a freeform (contentTemplate: null) send is
+// rejected by Meta, so it must ride v1's approved job_alert_* template —
+// which also restores the Accept/Decline/Info buttons (payload contract
+// `job-<id>`, parseButtonPayload in flows.ts).
+describe('job_alert category renderer: single-job template send', () => {
+  const singleJob = {
+    jobId: 'job-9',
+    title: 'Electricista',
+    companyName: 'ACME',
+    score: 1,
+    location: 'El Paso, TX',
+    pay: '$30/hr',
+  };
+
+  it('renders the approved v1 template with the exact variable contract and a plain-text fallback', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [singleJob] } }));
+
+    expect(result).not.toBeNull();
+    expect(result!.body).toBeNull();
+    expect(result!.contentTemplate).toBe('job_alert_es');
+    expect(result!.contentVariables).toMatchObject({
+      '1': 'Electricista',
+      '2': 'ACME',
+      '3': 'El Paso, TX',
+      '4': '$30/hr',
+      '5': 'job-job-9',
+    });
+    // Unregistered ContentSid must degrade to text, never hard-fail.
+    expect(result!.contentVariables!.__fallback_body).toContain('Electricista');
+  });
+
+  it('uses the English template for an en recipient', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [singleJob] } }));
+    expect(result!.contentTemplate).toBe('job_alert_en');
+  });
+
+  // Task 2/A2 fix (2026-07-27): a job posted with no pay (jobs.pay is
+  // nullable, migration 003) or a pre-existing deferred intent that never
+  // carried location/pay must STILL render the content template — degrading
+  // to the plain-text digest is exactly the undeliverable-alert bug this
+  // renderer exists to fix, because Twilio rejects freeform sends outside
+  // the 24h customer-service window.
+  it('renders the template with a bilingual placeholder when pay is missing', async () => {
+    const { pay, ...jobWithoutPay } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutPay] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_en');
+    expect(result!.contentVariables!['4']).toBe('Pay not specified');
+  });
+
+  it('renders the template with a bilingual placeholder when pay is missing (Spanish)', async () => {
+    const { pay, ...jobWithoutPay } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutPay] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_es');
+    expect(result!.contentVariables!['4']).toBe('Pago no especificado');
+  });
+
+  it('renders the template with a bilingual placeholder when location is missing', async () => {
+    const { location, ...jobWithoutLocation } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutLocation] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_en');
+    expect(result!.contentVariables!['3']).toBe('Location not specified');
+  });
+
+  it('still degrades to the plain-text digest when jobId is missing (never a template with a broken button payload)', async () => {
+    const { jobId, ...jobWithoutId } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutId] } }));
+
+    expect(result!.contentTemplate).toBeNull();
+    expect(result!.body).toContain('Electricista');
+  });
+
+  it('keeps the multi-job digest as plain text (release-time send, always inside the reply window)', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({
+      payload: { jobs: [singleJob, { ...singleJob, jobId: 'job-10', title: 'Plomero' }] },
+    }));
+
+    expect(result!.contentTemplate).toBeNull();
+    expect(result!.body).toContain('Electricista');
+    expect(result!.body).toContain('Plomero');
+  });
+});

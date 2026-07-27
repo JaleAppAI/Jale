@@ -1,11 +1,19 @@
 /**
- * Operator CLI: WhatsApp v2 runtime controls (whatsapp_runtime_controls, 042).
+ * Operator CLI: WhatsApp v2 runtime controls (whatsapp_runtime_controls, 042,
+ * 051).
  *
- * Reads/writes the `onboarding_v2_enabled` and `deferred_delivery_enabled`
- * control rows. `--show` prints hashes only (never raw phones) and prints no
- * other table. `--allow-phone`/`--deny-phone` write/remove only the SHA-256
- * hash of the supplied phone via `hashNormalizedPhone` — the raw phone is
- * never persisted or printed.
+ * Reads/writes the `onboarding_v2_enabled`, `deferred_delivery_enabled`, and
+ * `voice_intake_enabled` control rows. `--show` prints hashes only (never raw
+ * phones) and prints no other table. `--allow-phone`/`--deny-phone` write/
+ * remove only the SHA-256 hash of the supplied phone via
+ * `hashNormalizedPhone` — the raw phone is never persisted or printed.
+ *
+ * `--allow-phone`, `--deny-phone`, and `--go-global` default to targeting
+ * `onboarding_v2_enabled`, unchanged from before `voice_intake_enabled`
+ * existed. Append `--control voice_intake` to target the voice-intake
+ * allowlist/global-flag instead. `--control` only accepts phone-scoped
+ * controls (`onboarding_v2`, `voice_intake`) — `deferred_delivery` has no
+ * per-phone allowlist or global flag of its own.
  *
  * Usage:
  *   cd infra
@@ -14,6 +22,11 @@
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --enable onboarding_v2
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --go-global
+ *
+ *   # Voice intake (051): same actions, targeted via --control
+ *   npx ts-node scripts/whatsapp-runtime-controls.ts --enable voice_intake
+ *   npx ts-node scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188 --control voice_intake
+ *   npx ts-node scripts/whatsapp-runtime-controls.ts --go-global --control voice_intake
  */
 
 import { Client } from 'pg';
@@ -30,19 +43,33 @@ export interface Queryable {
   ): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
 }
 
-/** Maps the CLI's short control names to the seeded 042 control_key values. */
+/** Maps the CLI's short control names to the seeded 042/051 control_key values. */
 const CONTROL_KEY_MAP: Record<string, string> = {
   onboarding_v2: 'onboarding_v2_enabled',
   deferred_delivery: 'deferred_delivery_enabled',
+  voice_intake: 'voice_intake_enabled',
 };
+
+/**
+ * Controls that carry their own phone-hash allowlist and global flag — the
+ * only ones `--allow-phone`, `--deny-phone`, and `--go-global` can target.
+ * `deferred_delivery_enabled` is a plain on/off switch with no per-phone
+ * scoping, so it is deliberately excluded here.
+ */
+const PHONE_SCOPED_CONTROL_MAP: Record<string, string> = {
+  onboarding_v2: 'onboarding_v2_enabled',
+  voice_intake: 'voice_intake_enabled',
+};
+
+const DEFAULT_PHONE_SCOPED_CONTROL_KEY = 'onboarding_v2_enabled';
 
 export type ControlsAction =
   | { kind: 'show' }
   | { kind: 'enable'; controlKey: string }
   | { kind: 'disable'; controlKey: string }
-  | { kind: 'allow-phone'; phone: string }
-  | { kind: 'deny-phone'; phone: string }
-  | { kind: 'go-global' };
+  | { kind: 'allow-phone'; phone: string; controlKey: string }
+  | { kind: 'deny-phone'; phone: string; controlKey: string }
+  | { kind: 'go-global'; controlKey: string };
 
 export type ParseControlsArgsResult =
   | { ok: true; value: ControlsAction }
@@ -62,8 +89,51 @@ const KNOWN_FLAGS = new Set([
  * opens a DB connection. Exactly one action flag is required per invocation;
  * an unknown flag or unknown control name is reported here so the caller can
  * exit non-zero before any connection is attempted.
+ *
+ * `--go-global`, `--allow-phone`, and `--deny-phone` accept an optional
+ * trailing `--control <name>` selector (name is one of
+ * PHONE_SCOPED_CONTROL_MAP's keys). Omitting it targets `onboarding_v2` —
+ * exactly the behavior before `voice_intake_enabled` (051) existed, so every
+ * existing invocation without a selector parses identically to before.
  */
 export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
+  const supportsControlSelector =
+    argv[0] === '--go-global' || argv[0] === '--allow-phone' || argv[0] === '--deny-phone';
+
+  let controlKey = DEFAULT_PHONE_SCOPED_CONTROL_KEY;
+  let rest = argv;
+
+  if (
+    supportsControlSelector &&
+    argv.length >= 2 &&
+    argv[argv.length - 2] === '--control'
+  ) {
+    const controlName = argv[argv.length - 1];
+    const mapped = PHONE_SCOPED_CONTROL_MAP[controlName];
+    if (!mapped) {
+      // Never echo the supplied value — it could be a misplaced raw phone.
+      return {
+        ok: false,
+        error: 'Unknown --control value (must be onboarding_v2 or voice_intake)',
+      };
+    }
+    controlKey = mapped;
+    rest = argv.slice(0, argv.length - 2);
+  }
+
+  return parseBaseControlsArgs(rest, controlKey);
+}
+
+/**
+ * Original argv parsing, unchanged from before the `--control` selector
+ * existed, except that `allow-phone` / `deny-phone` / `go-global` now carry
+ * whichever `controlKey` the caller resolved (defaulting to
+ * `onboarding_v2_enabled`).
+ */
+function parseBaseControlsArgs(
+  argv: string[],
+  phoneScopedControlKey: string,
+): ParseControlsArgsResult {
   if (argv.length === 0) {
     return { ok: false, error: 'Missing required action flag' };
   }
@@ -87,7 +157,7 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
     return { ok: true, value: { kind: 'show' } };
   }
   if (flag === '--go-global') {
-    return { ok: true, value: { kind: 'go-global' } };
+    return { ok: true, value: { kind: 'go-global', controlKey: phoneScopedControlKey } };
   }
 
   const value = argv[1];
@@ -101,7 +171,8 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
       // Never echo the supplied value — it could be a misplaced raw phone.
       return {
         ok: false,
-        error: 'Unknown control name (must be onboarding_v2 or deferred_delivery)',
+        error:
+          'Unknown control name (must be onboarding_v2, deferred_delivery, or voice_intake)',
       };
     }
     return {
@@ -119,6 +190,7 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
       value: {
         kind: flag === '--allow-phone' ? 'allow-phone' : 'deny-phone',
         phone: value.trim(),
+        controlKey: phoneScopedControlKey,
       },
     };
   }
@@ -216,8 +288,9 @@ export async function runControlsAction(
 
   if (action.kind === 'allow-phone' || action.kind === 'deny-phone') {
     const phoneHash = hashNormalizedPhone(action.phone);
+    let result;
     if (action.kind === 'allow-phone') {
-      await client.query(
+      result = await client.query(
         `UPDATE whatsapp_runtime_controls
             SET phone_hashes = CASE
                   WHEN $1 = ANY(phone_hashes) THEN phone_hashes
@@ -225,29 +298,42 @@ export async function runControlsAction(
                 END,
                 updated_by = $2,
                 updated_at = now()
-          WHERE control_key = 'onboarding_v2_enabled'`,
-        [phoneHash, operator],
+          WHERE control_key = $3`,
+        [phoneHash, operator, action.controlKey],
       );
     } else {
-      await client.query(
+      result = await client.query(
         `UPDATE whatsapp_runtime_controls
             SET phone_hashes = array_remove(phone_hashes, $1),
                 updated_by = $2,
                 updated_at = now()
-          WHERE control_key = 'onboarding_v2_enabled'`,
-        [phoneHash, operator],
+          WHERE control_key = $3`,
+        [phoneHash, operator, action.controlKey],
+      );
+    }
+    // If the control row is missing (e.g. the seeding migration has not
+    // been applied yet), the UPDATE matches zero rows and would otherwise
+    // report success having changed nothing.
+    if (!result.rowCount) {
+      throw new Error(
+        `whatsapp_runtime_controls has no row for control_key '${action.controlKey}' — has the seeding migration been applied?`,
       );
     }
     return;
   }
 
   if (action.kind === 'go-global') {
-    await client.query(
+    const result = await client.query(
       `UPDATE whatsapp_runtime_controls
           SET global_enabled = true, updated_by = $1, updated_at = now()
-        WHERE control_key = 'onboarding_v2_enabled'`,
-      [operator],
+        WHERE control_key = $2`,
+      [operator, action.controlKey],
     );
+    if (!result.rowCount) {
+      throw new Error(
+        `whatsapp_runtime_controls has no row for control_key '${action.controlKey}' — has the seeding migration been applied?`,
+      );
+    }
     return;
   }
 }

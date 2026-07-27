@@ -6,6 +6,9 @@ export const ALLOWED_VOICE_TYPES = ['audio/ogg', 'audio/mpeg', 'audio/mp4'] as c
 export type MediaCategory = 'photo' | 'voice';
 export type MediaS3Type = 'photo' | 'work_sample' | 'voice';
 
+// Twilio WhatsApp media cap; enforced post-download since Twilio doesn't reject oversized uploads at the source.
+export const MAX_VOICE_BYTES = 16 * 1024 * 1024;
+
 /** Returns 'photo', 'voice', or null if the content type is not allowed. */
 export function detectMediaCategory(contentType: string): MediaCategory | null {
   if ((ALLOWED_PHOTO_TYPES as readonly string[]).includes(contentType)) return 'photo';

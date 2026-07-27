@@ -19,6 +19,8 @@ function buildTemplate(): Template {
     privateSubnets: vpc.privateSubnets,
     lambdaSg,
     aiDbSecret,
+    // Same fail-closed alarm-target contract as WhatsAppStack.
+    alarmTopicArn: 'arn:aws:sns:us-east-1:123456789012:jale-ai-alarms-test',
   });
 
   return Template.fromStack(stack);
@@ -81,6 +83,37 @@ describe('AiStack', () => {
   it('creates DLQ depth alarm', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'TrustAssessmentDlqDepth',
+    });
+  });
+
+  // 2026-07-27 observability pass: these alarms existed without any action
+  // — red in the console, paging nobody. Every AiStack alarm must carry an
+  // SNS action from now on.
+  it('every alarm has an alarm action wired (no silent alarms)', () => {
+    const alarms = template.findResources('AWS::CloudWatch::Alarm');
+    const names = Object.keys(alarms);
+    expect(names.length).toBeGreaterThanOrEqual(3);
+    for (const name of names) {
+      const actions = alarms[name].Properties.AlarmActions;
+      expect(Array.isArray(actions) && actions.length > 0).toBe(true);
+    }
+  });
+
+  it('feeds Bedrock parse/validation failures into one alarmed TrustScorerFailures metric', () => {
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '{ $.metric = "TrustScorerParseFailure" }',
+      MetricTransformations: [
+        { MetricNamespace: 'Jale/Ai', MetricName: 'TrustScorerFailures', MetricValue: '1' },
+      ],
+    });
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '{ $.metric = "TrustScorerValidationFailure" }',
+      MetricTransformations: [
+        { MetricNamespace: 'Jale/Ai', MetricName: 'TrustScorerFailures', MetricValue: '1' },
+      ],
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'TrustScorerFailures',
     });
   });
 });

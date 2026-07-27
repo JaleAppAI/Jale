@@ -759,6 +759,102 @@ describe('ProfilePersistenceAdapter', () => {
     }));
   });
 
+  // Task 4a/B2 fix: a worker who goes BACK and re-answers a question must
+  // have the corrected answer REPLACE the old one at the same
+  // `question_index`, never accumulate both — the trust scorer sends every
+  // element to the model, so a stale duplicate would look like the worker
+  // gave two contradictory answers to the same question.
+  it('saveTrustAnswer REPLACES the element sharing question_index (BACK + re-answer), never appends a duplicate', async () => {
+    const client = mockPoolClient();
+    (client.query as jest.Mock).mockResolvedValueOnce({
+      rows: [{
+        id: 'assessment-1',
+        answers: [
+          { question_index: 0, q_en: 'Q0 old', q_es: 'Q0 old es', answer_text: 'old answer', answer_source: 'text', answered_at: '2026-07-26T00:00:00.000Z' },
+          { question_index: 1, q_en: 'Q1', q_es: 'Q1 es', answer_text: 'answer 1', answer_source: 'text', answered_at: '2026-07-26T00:01:00.000Z' },
+        ],
+      }],
+      rowCount: 1,
+    });
+
+    await profile.saveTrustAnswer(client, {
+      workerId: 'worker-1',
+      professionKey: 'electrician',
+      questionIndex: 0,
+      qEn: 'Q0 corrected',
+      qEs: 'Q0 corrected es',
+      answerText: 'corrected answer',
+      answerSource: 'text',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    const [updateSql, updateParams] = calls[1];
+    expect(String(updateSql).toUpperCase()).toContain('UPDATE');
+    expect(String(updateSql)).toContain('worker_trust_assessments');
+    const mergedAnswersJson = updateParams.find(
+      (p: unknown) => typeof p === 'string' && p.includes('corrected answer'),
+    );
+    expect(mergedAnswersJson).toBeDefined();
+    const merged = JSON.parse(mergedAnswersJson);
+    // Exactly ONE entry for index 0, carrying the new text — the old
+    // duplicate is gone, and index 1 is untouched.
+    expect(merged).toHaveLength(2);
+    expect(merged.filter((a: { question_index: number }) => a.question_index === 0)).toHaveLength(1);
+    expect(merged[0]).toEqual(expect.objectContaining({
+      question_index: 0,
+      q_en: 'Q0 corrected',
+      q_es: 'Q0 corrected es',
+      answer_text: 'corrected answer',
+    }));
+    expect(merged[1]).toEqual(expect.objectContaining({ question_index: 1, answer_text: 'answer 1' }));
+  });
+
+  // A row written while the old append behavior was live can ALREADY hold
+  // several entries for the same question_index. The merge must collapse
+  // all of them to the single corrected answer — a map-in-place replacement
+  // would instead turn N stale duplicates into N identical copies of the
+  // new answer, and the scorer would still see the question answered twice.
+  it('saveTrustAnswer collapses pre-existing duplicates for the same question_index into ONE corrected entry', async () => {
+    const client = mockPoolClient();
+    (client.query as jest.Mock).mockResolvedValueOnce({
+      rows: [{
+        id: 'assessment-1',
+        answers: [
+          { question_index: 0, q_en: 'Q0', q_es: 'Q0 es', answer_text: 'stale first', answer_source: 'text', answered_at: '2026-07-26T00:00:00.000Z' },
+          { question_index: 0, q_en: 'Q0', q_es: 'Q0 es', answer_text: 'stale second', answer_source: 'text', answered_at: '2026-07-26T00:01:00.000Z' },
+          { question_index: 1, q_en: 'Q1', q_es: 'Q1 es', answer_text: 'answer 1', answer_source: 'text', answered_at: '2026-07-26T00:02:00.000Z' },
+        ],
+      }],
+      rowCount: 1,
+    });
+
+    await profile.saveTrustAnswer(client, {
+      workerId: 'worker-1',
+      professionKey: 'electrician',
+      questionIndex: 0,
+      qEn: 'Q0',
+      qEs: 'Q0 es',
+      answerText: 'final answer',
+      answerSource: 'voice',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    const [, updateParams] = calls[1];
+    const mergedAnswersJson = updateParams.find(
+      (p: unknown) => typeof p === 'string' && p.includes('final answer'),
+    );
+    expect(mergedAnswersJson).toBeDefined();
+    const merged = JSON.parse(mergedAnswersJson);
+    expect(merged).toHaveLength(2);
+    expect(merged.filter((a: { question_index: number }) => a.question_index === 0)).toHaveLength(1);
+    expect(merged[0]).toEqual(expect.objectContaining({
+      question_index: 0,
+      answer_text: 'final answer',
+      answer_source: 'voice',
+    }));
+    expect(merged[1]).toEqual(expect.objectContaining({ question_index: 1, answer_text: 'answer 1' }));
+  });
+
   it('saveCustomTrade sets main_trade to \'other\' AND persists the raw typed profession into main_trade_other', async () => {
     const client = mockPoolClient();
     await profile.saveCustomTrade(client, 'worker-1', 'Welder');

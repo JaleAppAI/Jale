@@ -10,7 +10,7 @@ import { normalizeCommandText } from '../../lib/flows';
 import { isReviewTermsCommand } from '../../lib/onboarding-language';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
 import { sendStepPrompt, sendTemplateMessage, repeatCurrentPrompt } from '../delivery';
-import { advanceProfileToNextStep, effectiveLang } from '../transitions';
+import { advanceLegalAcceptToProfileEntry, effectiveLang } from '../transitions';
 
 // ── Bound: legal.review ─────────────────────────────────────────────────
 
@@ -58,9 +58,8 @@ export async function handleLegalStep(
       workerId: gate.userId,
       documentVersion: deps.requiredLegalVersion,
     });
-    return advanceProfileToNextStep(
+    return advanceLegalAcceptToProfileEntry(
       client, session, msg, deps, gate,
-      'legal.review',
       { legalAcceptedAt: now.toISOString() },
       'legal_accept',
       now,

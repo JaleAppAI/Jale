@@ -222,8 +222,8 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
   it('does not queue a second invite template while one is un-actioned', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // loadConversationForEmployer
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message (waiting_worker_reply)
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // loadRuntimeControls (no rows -> v2 disabled, legacy path)
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message (waiting_worker_reply)
       .mockResolvedValueOnce({ rows: [{ exists: true }], rowCount: 1 })           // pending-template EXISTS check -> true
       .mockResolvedValue({ rows: [], rowCount: 1 });                              // remaining updates
     await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'second overnight msg');
@@ -235,8 +235,8 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
   it('queues a template when none is pending yet', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // load
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // loadRuntimeControls -> v2 disabled
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
       .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })          // pending-template EXISTS -> false
       .mockResolvedValue({ rows: [], rowCount: 1 });
     await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'first overnight msg');
@@ -248,8 +248,8 @@ describe('queueConversationMessageFromEmployer template dedupe (R7)', () => {
   it('ignores permanently-failed templates in the dedupe check (dead invites must not suppress new ones)', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [conversationAccessRow()], rowCount: 1 })   // load
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
       .mockResolvedValueOnce({ rows: [], rowCount: 0 })                          // loadRuntimeControls -> v2 disabled
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })            // INSERT message
       .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })          // dedupe EXISTS
       .mockResolvedValue({ rows: [], rowCount: 1 });
     await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'msg after dead template');
@@ -290,8 +290,8 @@ describe('createApplicantConversation thread-number assignment', () => {
         company_name: 'ACME', job_title: 'Plomero', last_worker_message_at: null,
         worker_thread_number: 3,
       }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })  // (8) INSERT job_conversation_messages
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                 // (9) loadRuntimeControls -> v2 disabled
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })                 // (8) loadRuntimeControls -> v2 disabled
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })  // (9) INSERT job_conversation_messages
       .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 }) // (10) pending-template EXISTS check -> false
       .mockResolvedValue({ rows: [], rowCount: 1 });                    // (11+) INSERT outbox, UPDATE conversations, UPDATE applications
 
@@ -395,6 +395,70 @@ describe('queueConversationMessageFromEmployer v2 redirect', () => {
     return { query, calls };
   }
 
+  // 2026-07-27 parity-audit fix: the intent path is for ONBOARDING workers
+  // only. Routing READY v2 workers through it destroyed the employer's text
+  // (row stamped 'queued', no outbox row ever, flush only rescues
+  // 'waiting_worker_reply'). scriptedClient's default gate response (no
+  // worker_onboarding_state rows) models the onboarding/no-row case; the
+  // ready case overrides it below.
+  function scriptedClientWithReadyGate(opts: { v2GlobalEnabled: boolean }) {
+    const base = scriptedClient(opts);
+    const inner = base.query.getMockImplementation()!;
+    base.query.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (/FROM worker_onboarding_state/.test(sql)) {
+        base.calls.push({ sql, params });
+        return {
+          rows: [{
+            user_id: WORKER, lifecycle: 'ready', run_id: 'run-1',
+            workflow_version: 1, current_step_key: 'trust.question.3',
+            status: 'completed', preferred_language: 'es', lock_version: 9,
+          }],
+          rowCount: 1,
+        };
+      }
+      return inner(sql, params);
+    });
+    return base;
+  }
+
+  it('a READY v2 worker takes the v1 freeform path with the text intact — never the intent', async () => {
+    const { query, calls } = scriptedClientWithReadyGate({ v2GlobalEnabled: true });
+    // Open reply window -> freeform.
+    const openWindowRow = conversationAccessRow({ last_worker_message_at: new Date(), worker_thread_number: 1 });
+    query.mockImplementationOnce(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      return { rows: [openWindowRow], rowCount: 1 };
+    });
+
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'te espero manana a las 8');
+
+    // No intent — the employer's words travel the real delivery path.
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(false);
+    const freeform = calls.find((c) =>
+      /INSERT INTO job_message_outbox/.test(c.sql) && c.params.some((p) => typeof p === 'string' && (p as string).includes('te espero manana a las 8')));
+    expect(freeform).toBeDefined();
+    // Freeform-eligible message keeps the v1 'queued' stamp.
+    const msgInsert = calls.find((c) => /INSERT INTO job_conversation_messages/.test(c.sql));
+    expect(msgInsert!.params[2]).toBe('queued');
+  });
+
+  it('an ONBOARDING v2 worker gets the intent AND the text is stamped waiting_worker_reply even inside the reply window', async () => {
+    const { query, calls } = scriptedClient({ v2GlobalEnabled: true }); // gate: no rows -> onboarding
+    const openWindowRow = conversationAccessRow({ last_worker_message_at: new Date() });
+    query.mockImplementationOnce(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      return { rows: [openWindowRow], rowCount: 1 };
+    });
+
+    await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola');
+
+    expect(calls.some((c) => /INSERT INTO worker_message_intents/.test(c.sql))).toBe(true);
+    // The stored row is the ONLY carrier of the text on this path: it must
+    // be flush-recoverable, never 'queued'.
+    const msgInsert = calls.find((c) => /INSERT INTO job_conversation_messages/.test(c.sql));
+    expect(msgInsert!.params[2]).toBe('waiting_worker_reply');
+  });
+
   it('a v2-disabled worker keeps the legacy job_message_outbox path and creates no intent row', async () => {
     const { query, calls } = scriptedClient({ v2GlobalEnabled: false });
     await queueConversationMessageFromEmployer({ query } as any, CONV_A, EMPLOYER, 'hola');
@@ -478,8 +542,8 @@ describe('context header on employer freeform messages', () => {
     const row = conversationAccessRow({ worker_thread_number: 2, last_worker_message_at: new Date() });
     mockQuery
       .mockResolvedValueOnce({ rows: [row], rowCount: 1 }) // loadConversationForEmployer
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 }) // INSERT message
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // loadRuntimeControls -> v2 disabled
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 }) // INSERT message
       .mockResolvedValue({ rows: [], rowCount: 1 });
     await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'Hola, ¿puedes?');
     const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
@@ -497,8 +561,8 @@ describe('context header on employer freeform messages', () => {
     const row = conversationAccessRow({ worker_thread_number: 1, last_worker_message_at: null });
     mockQuery
       .mockResolvedValueOnce({ rows: [row], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 }) // loadRuntimeControls -> v2 disabled
+      .mockResolvedValueOnce({ rows: [{ id: 'msg-1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ exists: false }], rowCount: 1 })
       .mockResolvedValue({ rows: [], rowCount: 1 });
     await queueConversationMessageFromEmployer(client, CONV_A, EMPLOYER, 'Hola');

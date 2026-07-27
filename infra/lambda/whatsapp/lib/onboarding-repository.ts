@@ -307,6 +307,17 @@ export async function advanceWorkflow(
     reason: input.reason,
   });
 
+  // v2 onboarding funnel datapoint (2026-07-27 observability pass): every
+  // successful advance flows through here, so this single line gives the
+  // per-step funnel a MetricFilter reads off the processor log group. Safe
+  // scalars only — runId is a UUID; never a phone, name, or message body.
+  console.log(JSON.stringify({
+    metric: 'OnboardingStepAdvanced',
+    fromStepKey: input.fromStepKey,
+    toStepKey: input.toStepKey,
+    runId: input.runId,
+  }));
+
   const gate = await loadWorkerGate(client, workerId);
   if (!gate) {
     throw new Error('worker_gate_missing_after_advance');
@@ -408,6 +419,140 @@ export async function appendTransition(
   return { transitionId: result.rows[0].id };
 }
 
+/**
+ * Clears exactly the seven profile-answer fields a worker has typed during
+ * onboarding (plus their `worker_profiles` mirrors), for the RESTART/
+ * REINICIAR gate command (see `onboarding/gate.ts`). Mirrors the
+ * constraint-safe UPDATE column lists in
+ * `scripts/reset-whatsapp-onboarding-v2.ts` (WORKER_PROFILES_UPDATE /
+ * USERS_UPDATE) but is deliberately narrower: legal acceptance, consent,
+ * OTP/identity state, lifecycle, and `users.trust_signals` /
+ * `trust_signals_completed_at` / `trade_competency_score` are left
+ * completely untouched — RESTART re-asks the profile questions, it does not
+ * revoke legal consent, sign the worker out, or discard a scored trust
+ * assessment. Never deletes a row; both statements run UPDATE-only.
+ *
+ * The five `worker_profiles` location columns (latitude, longitude,
+ * location_source, location_confidence, location_updated_at) are cleared
+ * TOGETHER — same constraint-group discipline as the reset CLI — because
+ * `worker_profiles_location_complete` (migration 009) requires them to be
+ * either all-NULL or all-set; clearing a subset would violate the CHECK.
+ *
+ * No BEGIN/COMMIT here — both UPDATEs run on the caller's already-open
+ * transaction, same contract as every other function in this module. Every
+ * column cleared here is one `jale_whatsapp` already writes directly via
+ * `ProfilePersistenceAdapter` (saveName/saveTrade/saveCustomTrade/
+ * saveExperience/saveTransportation/saveAvailability/saveLocation in
+ * `lib/onboarding-adapters.ts`), so no new grant is required.
+ */
+export async function clearProfileAnswers(
+  client: PoolClient,
+  workerId: string,
+): Promise<void> {
+  await client.query(
+    `UPDATE users
+        SET full_name = NULL,
+            city = NULL,
+            main_trade = NULL,
+            main_trade_other = NULL,
+            years_experience = NULL,
+            has_transportation = NULL,
+            availability = NULL
+      WHERE id = $1 AND user_type = 'worker'`,
+    [workerId],
+  );
+
+  await client.query(
+    `UPDATE worker_profiles
+        SET full_name = NULL,
+            availability = NULL,
+            years_experience = NULL,
+            location = NULL,
+            latitude = NULL,
+            longitude = NULL,
+            location_source = NULL,
+            location_confidence = NULL,
+            location_updated_at = NULL
+      WHERE user_id = $1`,
+    [workerId],
+  );
+}
+
+/**
+ * RESTART repair (migration 052): resets the worker's PENDING trust
+ * assessment answers and clears any residual `worker_skills` row(s) so a
+ * restart with a different trade doesn't leave the abandoned trade's skill
+ * matched (`upsertWorkerProfileFromUsers`'s seeding INSERT is
+ * `ON CONFLICT DO NOTHING`, so without this the old row survives forever).
+ *
+ * Never a DELETE on `worker_trust_assessments` — `jale_whatsapp` has no
+ * DELETE grant on that table (migration 049 only granted UPDATE(answers,
+ * rubric_version, scoring_model_id)), and this must never touch a scored or
+ * completed assessment: `WHERE status = 'pending'` both satisfies the
+ * `wta_whatsapp_pending_rows` policy and keeps this scoped to the
+ * in-progress attempt being abandoned. `worker_skills` DELETE is granted by
+ * migration 052 with a worker-scoped policy mirroring
+ * `worker_skills_whatsapp_insert`.
+ */
+export async function resetPendingTrustAssessmentAndSkills(
+  client: PoolClient,
+  workerId: string,
+): Promise<void> {
+  await client.query(
+    `UPDATE worker_trust_assessments
+        SET answers = '[]'::jsonb
+      WHERE user_id = $1 AND status = 'pending'`,
+    [workerId],
+  );
+
+  await client.query(
+    `DELETE FROM worker_skills WHERE worker_id = $1`,
+    [workerId],
+  );
+}
+
+/**
+ * Looks up the step a run was on immediately before its CURRENT step, for
+ * the BACK/ATRAS gate command (`onboarding/gate.ts`). Reads the most recent
+ * `worker_workflow_transitions` row that landed ON `currentStepKey` and
+ * actually moved from somewhere else: `from_step_key IS NOT NULL` excludes
+ * a run's very first transition (bind-time entry has no prior step), and
+ * `from_step_key <> to_step_key` excludes no-op markers like
+ * `completeOnboarding`'s terminal transition (from = to). Returns null when
+ * no such transition exists — nothing to go back to. Read-only: never locks
+ * or mutates a row.
+ *
+ * `reason NOT LIKE 'worker\_%'` excludes BACK's own `worker_back` and
+ * RESTART's `worker_restart` transitions (the only two `worker_`-prefixed
+ * reasons; every forward-progress reason is `profile_*`/`legal_*`/
+ * `trust_*`/`onboarding_complete`) — without it, `handleBackCommand`'s own
+ * write (landing back ON the step the worker just left) becomes the
+ * "previous" step on the very next BACK, so a second press walks the worker
+ * forward again instead of continuing backward. `from_step_key NOT IN
+ * (...)` excludes the two voice holding steps: neither has a prompt of its
+ * own, so BACK must never land a worker there.
+ */
+export async function findPreviousStepKey(
+  client: PoolClient,
+  runId: string,
+  currentStepKey: WorkflowStepKey,
+): Promise<WorkflowStepKey | null> {
+  const result = await client.query<{ from_step_key: WorkflowStepKey }>(
+    `SELECT from_step_key
+       FROM worker_workflow_transitions
+      WHERE run_id = $1
+        AND to_step_key = $2
+        AND from_step_key IS NOT NULL
+        AND from_step_key <> to_step_key
+        AND reason NOT LIKE 'worker\\_%'
+        AND from_step_key NOT IN ('profile.voice_choice', 'profile.voice_processing')
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [runId, currentStepKey],
+  );
+  return result.rows[0]?.from_step_key ?? null;
+}
+
 async function insertDomainEventIdempotent(
   client: PoolClient,
   input: {
@@ -501,6 +646,9 @@ export async function completeOnboarding(
     eventKey: `worker.ready:${input.workerId}:${input.runId}`,
     payload: {},
   });
+
+  // Funnel terminus (2026-07-27 observability pass). Safe scalars only.
+  console.log(JSON.stringify({ metric: 'OnboardingCompleted', runId: input.runId }));
 
   return { assessmentEventId, workerReadyEventId };
 }

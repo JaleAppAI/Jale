@@ -97,6 +97,9 @@ const ai = new AiStack(app, 'JaleAiStack', {
   privateSubnets: network.privateSubnets,
   lambdaSg: network.lambdaSg,
   aiDbSecret: database.aiDbSecret,
+  // Same monitored topic as the WhatsApp lane so the scorer alarms
+  // actually page someone (they previously had no action attached).
+  alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
 });
 
 const matching = new MatchingStack(app, 'JaleMatchingStack', {

@@ -241,6 +241,46 @@ describe('AuthStack', () => {
     );
   });
 
+  test('VerifyAuthChallenge Lambda has DB_SECRET_ARN environment variable', () => {
+    // Needed to promote a name staged at signup (migration 052) into
+    // users.full_name on the first correct OTP.
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          DB_SECRET_ARN: Match.anyValue(),
+        }),
+      }),
+    });
+  });
+
+  test('VerifyAuthChallenge Lambda has a Secrets Manager read grant for the DB secret', () => {
+    // grantRead() emits a statement with BOTH GetSecretValue and
+    // DescribeSecret on the exact secret resource. PostConfirmationLambda
+    // already grantRead()s props.dbSecret (the RDS master secret), so if
+    // VerifyAuthChallengeLambda grants the same way, the identical Resource
+    // token must appear in at least two distinct statements — this also
+    // rules out matching on the unrelated Twilio secret grants, whose
+    // Resource token differs.
+    const policies = template.findResources('AWS::IAM::Policy');
+    const dbSecretReadResources = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => {
+        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
+        return actions.includes('secretsmanager:GetSecretValue')
+          && actions.includes('secretsmanager:DescribeSecret');
+      })
+      .map((statement: any) => JSON.stringify(statement.Resource));
+
+    const counts = new Map<string, number>();
+    for (const resource of dbSecretReadResources) {
+      counts.set(resource, (counts.get(resource) ?? 0) + 1);
+    }
+    const maxSharedResourceCount = Math.max(0, ...Array.from(counts.values()));
+
+    expect(maxSharedResourceCount).toBeGreaterThanOrEqual(2);
+  });
+
   test('CreateAuthChallenge errors raise a CloudWatch alarm', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'WorkerOtpSendErrors',

@@ -86,10 +86,12 @@ jest.mock('../../../../lambda/lib/job-matching', () => ({
 // registry; onboarding-renderers itself stays real for the same reason.
 const mockLoadRuntimeControls = jest.fn();
 const mockIsV2Enabled = jest.fn();
+const mockIsVoiceIntakeEnabled = jest.fn();
 const mockHashNormalizedPhone = jest.fn((phone: any) => `hash:${phone}`);
 jest.mock('../../../../lambda/whatsapp/lib/runtime-controls', () => ({
   loadRuntimeControls: (client: unknown) => mockLoadRuntimeControls(client),
   isV2Enabled: (controls: unknown, phoneHash: unknown) => mockIsV2Enabled(controls, phoneHash),
+  isVoiceIntakeEnabled: (controls: unknown, phoneHash: unknown) => mockIsVoiceIntakeEnabled(controls, phoneHash),
   hashNormalizedPhone: (phone: unknown) => mockHashNormalizedPhone(phone),
 }));
 
@@ -112,6 +114,8 @@ jest.mock('../../../../lambda/whatsapp/lib/onboarding-repository', () => ({
   advanceWorkflow: jest.fn(),
   appendTransition: jest.fn(),
   completeOnboarding: jest.fn(),
+  clearProfileAnswers: jest.fn(),
+  findPreviousStepKey: jest.fn(),
 }));
 
 const mockEnqueueWorkerMessage = jest.fn();
@@ -140,6 +144,11 @@ const mockFetch = jest.fn();
 import { handler } from '../../../../lambda/whatsapp/processor';
 import { t } from '../../../../lambda/whatsapp/lib/templates';
 import { _clearCategoryRenderersForTests } from '../../../../lambda/whatsapp/lib/worker-delivery-gateway';
+import {
+  buildSyntheticVoiceInboundBody,
+  syntheticVoiceSid,
+  type TrustVoiceEventV2,
+} from '../../../../lambda/whatsapp/lib/voice-events';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -159,6 +168,25 @@ function makeSqsRecord(params: Record<string, string>): any {
 
 function makeSqsEvent(params: Record<string, string>): any {
   return { Records: [makeSqsRecord(params)] };
+}
+
+/** A raw SQS record whose body is the REAL synthetic voice-event encoding
+ * (`buildSyntheticVoiceInboundBody`) — not a hand-rolled params object — so
+ * these tests exercise the exact wire format the receiver Lambda produces. */
+function makeSyntheticVoiceSqsEvent(evt: TrustVoiceEventV2): any {
+  return {
+    Records: [{
+      messageId: 'sqs-voice-1',
+      receiptHandle: '',
+      body: buildSyntheticVoiceInboundBody(evt),
+      attributes: {} as any,
+      messageAttributes: {} as any,
+      md5OfBody: '',
+      eventSource: 'aws:sqs',
+      eventSourceARN: '',
+      awsRegion: 'us-east-2',
+    }],
+  };
 }
 
 function convRow(overrides: Partial<Record<string, any>> = {}): any {
@@ -1656,6 +1684,83 @@ describe('Processor Lambda', () => {
 
       expect(outboxBodies()[0]).toContain('Your profile is not ready yet');
       expect(countQueryByPattern(/FROM users/i)).toBe(0);
+    });
+
+    it('idle (legacy) worker sending a voice note gets the "not supported here" reply, never idle_help', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-idle-voice' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox voice_note_not_supported
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-idle-voice',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          NumMedia: '1',
+          MediaUrl0: 'https://api.twilio.com/media/ME999',
+          MediaSid0: 'ME999',
+          MediaContentType0: 'audio/ogg',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxBodies()[0]).toBe(t('voice_note_not_supported', 'en'));
+      expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
+    });
+
+    // Task 1/A1: a photo CAPTIONED with a jobs command must run that
+    // command, not be discarded in favor of the unrelated voice-note reply
+    // — before the voice-note copy landed, a captioned command already
+    // worked here.
+    it('a ready worker\'s photo captioned with a jobs command runs that command, never the voice-note reply', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-jobs-caption' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox job 1
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-jobs-caption',
+          From: 'whatsapp:+15125551234',
+          Body: 'Trabajos',
+          NumMedia: '1',
+          MediaUrl0: 'https://api.twilio.com/media/ME998',
+          MediaSid0: 'ME998',
+          MediaContentType0: 'image/jpeg',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+      });
+      expect(outboxBodies()).not.toContain(t('voice_note_not_supported', 'en'));
     });
 
     it('stores recent job ids when an idle worker asks for jobs', async () => {
@@ -3689,6 +3794,168 @@ describe('v2 routing branch', () => {
     const serialized = (writebackParams as unknown[])[1] as string;
     expect(serialized).toContain('v2TrustQuestions');
     expect(serialized).toContain('custom question 1');
+  });
+
+  // ── Task 2/6: voice-note media fields + synthetic voice-event plumbing ──
+
+  it('media fields (numMedia/mediaUrl/mediaSid/mediaContentType) survive into the v2 message', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'trust.question.1',
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-media' }] }) // claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'onboarding_v2', user_id: 'worker-1' })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({
+        MessageSid: 'SM-v2-media',
+        From: FROM,
+        Body: '',
+        NumMedia: '1',
+        MediaUrl0: 'https://api.twilio.com/media/ME123',
+        MediaSid0: 'ME1234567890',
+        MediaContentType0: 'audio/ogg',
+      }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    const msg = mockRouteOnboardingV2.mock.calls[0][2] as Record<string, unknown>;
+    expect(msg.numMedia).toBe(1);
+    expect(msg.mediaUrl).toBe('https://api.twilio.com/media/ME123');
+    expect(msg.mediaSid).toBe('ME1234567890');
+    expect(msg.mediaContentType).toBe('audio/ogg');
+    expect(msg.voiceEvent).toBeUndefined();
+  });
+
+  it('a synthetic #vt voice-completion record claims via whatsapp_processed_messages and routes with voiceEvent populated', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+    mockRouteOnboardingV2.mockResolvedValue({
+      handled: true,
+      workerId: null,
+      stepKey: 'trust.question.2',
+    });
+
+    const evt: TrustVoiceEventV2 = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: 'COMPLETED',
+      phone: PHONE,
+      runId: 'run-1',
+      stepKey: 'trust.question.1',
+      language: 'en',
+      origMessageSid: 'SM00000000000000000000000000000v',
+      startedAt: '2026-07-27T00:00:00.000Z',
+      questionIndex: 0,
+      transcript: 'five years of experience',
+      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
+    };
+    const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: syntheticSid }] }) // claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'onboarding_v2', user_id: 'worker-1', whatsapp_number: PHONE })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSyntheticVoiceSqsEvent(evt), {} as any, {} as any);
+
+    const claimParams = findQueryByPattern(/INSERT INTO whatsapp_processed_messages/i);
+    expect(claimParams).toBeDefined();
+    expect((claimParams as unknown[])[0]).toBe(syntheticSid);
+
+    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
+    const msg = mockRouteOnboardingV2.mock.calls[0][2] as Record<string, unknown>;
+    expect(msg.voiceEvent).toMatchObject({
+      kind: 'trust_answer',
+      status: 'COMPLETED',
+      transcript: 'five years of experience',
+    });
+    expect(msg.messageSid).toBe(syntheticSid);
+  });
+
+  it('a duplicate synthetic #vt sid no-ops (already claimed, status=completed)', async () => {
+    mockIsV2Enabled.mockReturnValue(true);
+
+    const evt: TrustVoiceEventV2 = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: 'COMPLETED',
+      phone: PHONE,
+      runId: 'run-1',
+      stepKey: 'trust.question.1',
+      language: 'en',
+      origMessageSid: 'SM00000000000000000000000000000w',
+      startedAt: '2026-07-27T00:00:00.000Z',
+      questionIndex: 0,
+      transcript: 'answer',
+      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
+    };
+    const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // claim INSERT: conflicts (already claimed)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ status: 'completed' }] }) // SELECT status FOR UPDATE
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // COMMIT
+
+    await handler(makeSyntheticVoiceSqsEvent(evt), {} as any, {} as any);
+
+    expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
+    expect(countQueryByPattern(/FROM whatsapp_conversations/i)).toBe(0);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('drops a synthetic voice-completion event and never calls routeOnboardingV2 when the phone is no longer v2-enabled', async () => {
+    mockIsV2Enabled.mockReturnValue(false);
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const evt: TrustVoiceEventV2 = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: 'COMPLETED',
+      phone: PHONE,
+      runId: 'run-1',
+      stepKey: 'trust.question.1',
+      language: 'en',
+      origMessageSid: 'SM00000000000000000000000000000x',
+      startedAt: '2026-07-27T00:00:00.000Z',
+      questionIndex: 0,
+      transcript: 'answer',
+      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
+    };
+    const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: syntheticSid }] }) // claim
+      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'idle', whatsapp_number: PHONE })] })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: none pending
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(makeSyntheticVoiceSqsEvent(evt), {} as any, {} as any);
+
+    expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
+    expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
+    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('OnboardingVoiceTranscriptDropped'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 

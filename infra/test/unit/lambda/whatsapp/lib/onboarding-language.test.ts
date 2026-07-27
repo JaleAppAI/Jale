@@ -5,6 +5,7 @@
 import {
   parseLanguageChoice, detectCommandLang, resolveResponseLanguage,
   isLanguageCommand, isResendCommand, isReviewTermsCommand, isOnboardingHelpCommand,
+  isRestartCommand, isBackCommand,
   classifyBlockedCommand, classifyBlockedCommandExact,
   evaluateStartCooldown, shouldRepeatPrompt, appendSendTimestamp,
   START_COOLDOWN_MS, START_DAILY_CAP, REPROMPT_COOLDOWN_MS,
@@ -77,6 +78,37 @@ describe('command recognizers', () => {
   it('keeps the whitespace and length guards for the fuzzy fallback', () => {
     expect(isResendCommand('resent me')).toBe(false);
     expect(isResendCommand('res')).toBe(false);
+  });
+});
+
+describe('isRestartCommand / isBackCommand — exact match only', () => {
+  it.each(['RESTART', 'restart', ' Restart ', 'REINICIAR', 'reiniciar'])(
+    'recognizes %s as restart', (b) => {
+      expect(isRestartCommand(b)).toBe(true);
+    });
+
+  it.each(['BACK', 'back', ' Back ', 'ATRAS', 'atras', 'ATRÁS', 'atrás'])(
+    'recognizes %s as back', (b) => {
+      expect(isBackCommand(b)).toBe(true);
+    });
+
+  it('does not fuzzy-match a near-miss (unlike the resend/language families)', () => {
+    expect(isRestartCommand('restar')).toBe(false);
+    expect(isRestartCommand('restartt')).toBe(false);
+    expect(isBackCommand('bac')).toBe(false);
+    expect(isBackCommand('backk')).toBe(false);
+  });
+
+  it('does not recognize a step answer as restart/back', () => {
+    expect(isRestartCommand('Juan Perez')).toBe(false);
+    expect(isBackCommand('78701')).toBe(false);
+    expect(isRestartCommand('')).toBe(false);
+    expect(isBackCommand('')).toBe(false);
+  });
+
+  it('is exact-only: extra words disqualify the match', () => {
+    expect(isRestartCommand('please restart')).toBe(false);
+    expect(isBackCommand('go back')).toBe(false);
   });
 });
 

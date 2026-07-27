@@ -2,6 +2,7 @@ import type { Handler } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
   BedrockRuntimeClient,
   ConverseCommand,
@@ -10,11 +11,19 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { t, type Lang } from './lib/templates';
 import { sendPendingOutbox } from './lib/outbox';
 import { autoAdvanceProfileAfterAi } from './lib/profile-flow';
+import {
+  buildSyntheticVoiceInboundBody,
+  syntheticVoiceSid,
+  type ProfileIntakeVoiceEventV2,
+  type VoiceExtractionFields,
+} from './lib/voice-events';
+import { hashNormalizedPhone } from './lib/runtime-controls';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const s3 = new S3Client({});
 const bedrock = new BedrockRuntimeClient({});
 const lambdaClient = new LambdaClient({});
+const sqsClient = new SQSClient({});
 
 const BEDROCK_MODEL_ID =
   process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
@@ -28,6 +37,22 @@ const INDUSTRY_KEYWORDS: string[] = JSON.parse(
 );
 
 // ── Types ───────────────────────────────────────────────────────
+
+/**
+ * Stream B (Task 8d): presence of this marker on an otherwise "v1-shaped"
+ * `AiProfileWriterContext` is what selects the v2 completion branch — a
+ * voice note ingested from the v2 lane's `profile.voice_choice` step
+ * (processor.ts's `ingestProfileVoiceNote`) tags its Step Functions input
+ * with this instead of inventing a parallel context shape. `startedAt` is
+ * carried through only for `VoiceEventV2`'s common-envelope field —
+ * nothing in this lambda or the router reads it back.
+ */
+export interface V2ProfileIntakeMarker {
+  workflowRunId: string;
+  expectedStepKey: string;
+  startedAt: string;
+}
+
 export interface AiProfileWriterContext {
   userId: string;
   conversationId: string;
@@ -37,11 +62,23 @@ export interface AiProfileWriterContext {
   mediaBucketName?: string;
   transcriptOutputKey?: string;
   voiceMessageMediaId?: string;
+  v2?: V2ProfileIntakeMarker;
 }
 
 export interface VoicePipelineAiProfileWriterEvent {
   status: 'COMPLETED' | 'FAILED';
   executionContext: AiProfileWriterContext;
+  /**
+   * `$$.Execution.Id`, threaded in by the VoiceTranscriptionPipeline
+   * construct's `invokeOnCompleted`/`invokeOnFailed` payloads (Task 8d's
+   * one-line ASL change) — the deterministic execution ARN this lambda
+   * embeds in the outbound `ProfileIntakeVoiceEventV2` so the router's
+   * staleness check (`handleVoiceIntakeResult`) can compare it against
+   * `state_context.v2VoiceExecutionArn`. Always present in practice for a
+   * REAL Step Functions invocation; only ever absent in a hand-built legacy
+   * event, which never carries a `v2` marker anyway.
+   */
+  executionArn?: string;
 }
 
 interface LegacyAiProfileWriterEvent extends AiProfileWriterContext {
@@ -239,9 +276,10 @@ async function loadOrGenerateCustomTrustQuestions(
 function normalizeEvent(event: AiProfileWriterEvent): {
   ctx: AiProfileWriterContext;
   status: 'COMPLETED' | 'FAILED';
+  executionArn?: string;
 } {
   if ('executionContext' in event) {
-    return { ctx: event.executionContext, status: event.status };
+    return { ctx: event.executionContext, status: event.status, executionArn: event.executionArn };
   }
 
   const { status: legacyStatus, errorMessage: _errorMessage, ...ctx } = event;
@@ -249,6 +287,72 @@ function normalizeEvent(event: AiProfileWriterEvent): {
     ctx,
     status: legacyStatus === 'failed' ? 'FAILED' : 'COMPLETED',
   };
+}
+
+function inboundV2QueueUrl(): string {
+  const url = process.env.WHATSAPP_INBOUND_V2_QUEUE_URL;
+  if (!url) throw new Error('WHATSAPP_INBOUND_V2_QUEUE_URL not set');
+  return url;
+}
+
+/**
+ * v2 branch (Task 8d): mirrors `voice-trust-receiver.ts`'s
+ * `handleV2VoiceTrustCompletion` exactly — a synthetic `#vp`-suffixed event
+ * on the SAME v2 inbound FIFO queue every other v2 message travels through,
+ * so the processor's claim idempotency and per-phone ordering apply
+ * unchanged. This lambda does NOT write `users`, does NOT touch the
+ * outbox/state — every profile field write and the summary/fallback reply
+ * happen in the router's turn, under the run lock, via the real
+ * `ProfilePersistenceAdapter` methods (`handleVoiceIntakeResult`,
+ * onboarding/steps/voice.ts).
+ */
+async function sendV2ProfileIntakeEvent(input: {
+  status: 'COMPLETED' | 'FAILED';
+  v2: V2ProfileIntakeMarker;
+  whatsappNumber: string;
+  language: Lang;
+  origMessageSid: string;
+  executionArn: string;
+  extractionId: string | null;
+  fields: VoiceExtractionFields | null;
+  confidences: Record<string, number> | null;
+  summaryEn: string | null;
+  summaryEs: string | null;
+}): Promise<void> {
+  const phone = input.whatsappNumber.replace(/^whatsapp:/, '');
+  const evt: ProfileIntakeVoiceEventV2 = {
+    version: 'v2',
+    kind: 'profile_intake',
+    status: input.status,
+    phone,
+    runId: input.v2.workflowRunId,
+    stepKey: input.v2.expectedStepKey,
+    language: input.language,
+    origMessageSid: input.origMessageSid,
+    startedAt: input.v2.startedAt,
+    executionArn: input.executionArn,
+    extractionId: input.extractionId,
+    fields: input.fields,
+    confidences: input.confidences,
+    summaryEn: input.summaryEn,
+    summaryEs: input.summaryEs,
+  };
+
+  await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: inboundV2QueueUrl(),
+      MessageBody: buildSyntheticVoiceInboundBody(evt),
+      MessageGroupId: hashNormalizedPhone(phone),
+      MessageDeduplicationId: syntheticVoiceSid(evt.origMessageSid, evt.kind),
+    }),
+  );
+
+  console.log(JSON.stringify({
+    metric: 'AiProfileWriterV2Requeued',
+    kind: evt.kind,
+    stepKey: evt.stepKey,
+    status: evt.status,
+  }));
 }
 
 export const handler: Handler<AiProfileWriterEvent> = async (event) => {
@@ -262,6 +366,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     mediaBucketName,
     transcriptOutputKey,
     voiceMessageMediaId,
+    v2,
   } = normalized.ctx;
   const status = normalized.status;
   const outboxMessageSid = inboundMessageSid ?? conversationId;
@@ -275,14 +380,44 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
 
     if (status === 'FAILED') {
       // Write failed extraction record
-      await client.query(
+      const failedExtraction = await client.query<{ id: string }>(
         `INSERT INTO worker_profile_ai_extractions
            (user_id, bedrock_model_id, status)
-         VALUES ($1, $2, 'failed')`,
+         VALUES ($1, $2, 'failed')
+         RETURNING id`,
         [userId, BEDROCK_MODEL_ID],
       );
 
-      // Queue fallback reply
+      if (v2) {
+        if (!normalized.executionArn) {
+          throw new Error('executionArn missing on v2 profile-intake completion (FAILED)');
+        }
+        // Task 8 fix: COMMIT before publishing the synthetic `#vp` event —
+        // this transaction is held open across S3/Bedrock calls, and
+        // publishing first meant a COMMIT failure left an event referencing
+        // a rolled-back `extractionId` already delivered, with FIFO
+        // deduplication then blocking any correction from ever landing. A
+        // publish failure AFTER a successful commit is safe: the row
+        // exists, so the pipeline's own retry/alarms cover it.
+        await client.query('COMMIT');
+        committed = true;
+        await sendV2ProfileIntakeEvent({
+          status: 'FAILED',
+          v2,
+          whatsappNumber,
+          language,
+          origMessageSid: outboxMessageSid,
+          executionArn: normalized.executionArn,
+          extractionId: failedExtraction.rows[0]?.id ?? null,
+          fields: null,
+          confidences: null,
+          summaryEn: null,
+          summaryEs: null,
+        });
+        return;
+      }
+
+      // ── v1 legacy path — UNCHANGED ──────────────────────────────
       await queueOutboxText(
         client,
         outboxMessageSid,
@@ -316,11 +451,14 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     const transcript = await readTranscript(mediaBucketName, transcriptOutputKey);
     const result = await extractProfileFromTranscript(transcript);
 
-    // Write extraction record (link voice media row if available)
-    await client.query(
+    // Write extraction record (link voice media row if available) — SQL is
+    // unchanged for v1/v2 alike; only `RETURNING id` was added so the v2
+    // branch can thread `extractionId` into the outbound event.
+    const extraction = await client.query<{ id: string }>(
       `INSERT INTO worker_profile_ai_extractions
          (user_id, voice_message_media_id, bedrock_model_id, transcript_text, extracted_fields, confidence_scores, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'completed')`,
+       VALUES ($1, $2, $3, $4, $5, $6, 'completed')
+       RETURNING id`,
       [
         userId,
         voiceMessageMediaId ?? null,
@@ -331,6 +469,36 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       ],
     );
 
+    if (v2) {
+      if (!normalized.executionArn) {
+        throw new Error('executionArn missing on v2 profile-intake completion (COMPLETED)');
+      }
+      // NO users UPDATE, NO outbox write, NO autoAdvanceProfileAfterAi — every
+      // profile field write and the summary/fallback reply happen in the
+      // router's turn, under the run lock, via the real
+      // ProfilePersistenceAdapter methods (Task 8d).
+      //
+      // Task 8 fix: COMMIT before publishing — see the FAILED branch above
+      // for why publish-then-commit is unsafe.
+      await client.query('COMMIT');
+      committed = true;
+      await sendV2ProfileIntakeEvent({
+        status: 'COMPLETED',
+        v2,
+        whatsappNumber,
+        language,
+        origMessageSid: outboxMessageSid,
+        executionArn: normalized.executionArn,
+        extractionId: extraction.rows[0]?.id ?? null,
+        fields: result.extracted_fields,
+        confidences: result.confidence_scores,
+        summaryEn: result.summary_en,
+        summaryEs: result.summary_es,
+      });
+      return;
+    }
+
+    // ── v1 legacy path — UNCHANGED ────────────────────────────────
     // Write high-confidence fields to users
     const update = buildUserUpdateSql(userId, result.extracted_fields, result.confidence_scores);
     if (update) {
