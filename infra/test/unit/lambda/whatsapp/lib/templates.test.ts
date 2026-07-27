@@ -126,6 +126,16 @@ describe('templates.ts — t()', () => {
     expect(help).toContain('[numero] aceptar');
   });
 
+  it('inserts a substituted value containing $& and $1 literally, without treating it as a replacement pattern', () => {
+    // String.prototype.replace treats $&, $1, $` etc. as special patterns
+    // when the replacement is a STRING. A model-produced summary containing
+    // a literal "$" must not be corrupted by that.
+    const value = 'Rate is $1/hr, total $&, prior job $`';
+    const s = t('ai_extraction_summary', 'en', { summary: value });
+    expect(s).toContain(value);
+    expect(s).not.toContain('{{summary}}');
+  });
+
   it('job_documents_required interpolates the missing document list', () => {
     const body = t('job_documents_required', 'en', { missing_docs: "Resume, Driver's license" });
     expect(body).toContain("Resume, Driver's license");

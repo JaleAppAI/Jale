@@ -421,7 +421,12 @@ export function t(
   let s = templates[key][lang];
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {
-      s = s.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v);
+      // Use a replacer function, not a string, so the value is inserted
+      // literally. A string replacement treats $&, $1, $` etc. inside the
+      // VALUE as special patterns, which would silently corrupt any
+      // model-produced text containing a literal `$` (e.g. the {{summary}}
+      // slot below).
+      s = s.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), () => v);
     }
   }
   return s;

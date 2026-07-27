@@ -9,7 +9,8 @@
 #
 # Usage:
 #   bash scripts/run-migrations.sh [--dry-run] [--baseline-through FILE]
-#                                  [--rotate-secrets] [--force-replay] [--yes]
+#                                  [--rotate-secrets] [--skip-secrets]
+#                                  [--force-replay] [--yes]
 #
 #   --dry-run         Resolve state and print the plan; change nothing.
 #   --baseline-through FILE
@@ -27,6 +28,13 @@
 #                     jale/whatsapp/db. NOT part of a routine migration run:
 #                     rotating jale_whatsapp breaks in-flight Lambda
 #                     containers until they refetch the secret.
+#   --skip-secrets    Acknowledge that a fresh-database bootstrap (the ledger
+#                     was absent or empty before this run) leaves
+#                     jale_matching / jale_admin_console / jale_billing /
+#                     jale_whatsapp with no usable password and
+#                     jale/whatsapp/db unseeded, and print success anyway.
+#                     Prefer --rotate-secrets unless something else already
+#                     provisions those credentials.
 #   --force-replay    Re-apply migrations the ledger already records. Unsafe:
 #                     migration 042 self-audits its own ten-value step-key
 #                     CHECK and raises once 050 widens it to seventeen.
@@ -87,9 +95,27 @@ SENTINEL="__JALE_MIGRATION_RUN_OK__"
 # capped so that a fresh database cannot build one oversized request.
 MAX_PAYLOAD_BYTES=60000
 
+# Overhead added by apply_batch()'s APPLY_ONE heredoc (~lines 559-570) around
+# each migration file's base64 payload. The payload itself ($b64) is already
+# counted separately via `encode_migration | wc -c`; everything else in that
+# heredoc is measured here so the batch packer accounts for what SSM actually
+# receives, not just the payload. Measured by rendering APPLY_ONE with
+# f="" sum="" b64="" and piping the result through `wc -c`: 502 bytes. Within
+# that fixed text, the filename ($f) is substituted 4 times -- the "-> $f"
+# progress line, the "decoded to nothing" and "failed checksum verification"
+# error messages, and the ledger INSERT's VALUES list -- and the checksum
+# ($sum) is substituted 2 times -- the transfer-verification test and that
+# same INSERT. Recompute APPLY_ONE_FIXED_BYTES if APPLY_ONE's body changes.
+APPLY_ONE_FIXED_BYTES=502
+APPLY_ONE_FILENAME_OCCURRENCES=4
+APPLY_ONE_CHECKSUM_OCCURRENCES=2
+# sha256_of (below) always returns a 64-character lowercase hex digest.
+CHECKSUM_HEX_LEN=64
+
 DRY_RUN=false
 BASELINE_THROUGH=""
 ROTATE_SECRETS=false
+SKIP_SECRETS=false
 FORCE_REPLAY=false
 ASSUME_YES=false
 
@@ -100,6 +126,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "!! --baseline-through needs a migration filename" >&2; exit 2; }
       BASELINE_THROUGH="$2"; shift ;;
     --rotate-secrets) ROTATE_SECRETS=true ;;
+    --skip-secrets)   SKIP_SECRETS=true ;;
     --force-replay)   FORCE_REPLAY=true ;;
     --yes|-y)         ASSUME_YES=true ;;
     -h|--help)        sed -n '2,34p' "$0"; exit 0 ;;
@@ -190,11 +217,25 @@ encode_migration() { gzip -9 -c "$1" | base64 | tr -d '\n'; }
 # Send a script to the bastion and stream back its output. The body is read
 # from a file so it never passes through argv, and the assembled request is
 # validated before it leaves this machine.
+#
+# $3 (strict_truncation, default false) controls what happens when SSM
+# reports the command's output was truncated: false (the default) tolerates
+# it, because verify_ledger() re-reads authoritative database state after an
+# apply/verify/rotate call and cannot be fooled by a lost stdout tail. true
+# is for calls this script plans FROM, like the ledger read: a truncated read
+# there gets parsed as if it were complete, mis-classifying already-applied
+# migrations as pending, so it must hard-fail instead of proceeding on
+# partial state.
 run_on_bastion() {
-  local script_file="$1" comment="$2"
+  local script_file="$1" comment="$2" strict_truncation="${3:-false}"
   local request="$WORKDIR/request.json" out="$WORKDIR/out.txt"
 
   [[ -s "$script_file" ]] || die "refusing to send an empty script ($comment)"
+
+  local script_bytes
+  script_bytes=$(wc -c < "$script_file")
+  (( script_bytes <= MAX_PAYLOAD_BYTES )) \
+    || die "'$comment' renders to ${script_bytes}B, over the ${MAX_PAYLOAD_BYTES}B SSM payload ceiling"
 
   jq -Rn --rawfile s "$script_file" --arg id "$BASTION_ID" --arg c "$comment" \
      '{InstanceIds:[$id],DocumentName:"AWS-RunShellScript",Comment:$c,
@@ -247,6 +288,9 @@ run_on_bastion() {
   if grep -q "$SENTINEL" "$out"; then
     :
   elif grep -q -- '---Output truncated---' "$out"; then
+    if $strict_truncation; then
+      die "'$comment' output was truncated by SSM; the ledger read was truncated and the run cannot plan from partial state"
+    fi
     echo "!! '$comment' output was truncated by SSM; falling back to state verification" >&2
   else
     die "'$comment' reported Success but never printed the completion sentinel — treating as failed"
@@ -422,7 +466,11 @@ echo "$SENTINEL"
 LEDGER_READ
 } > "$WORKDIR/read-ledger.sh"
 
-run_on_bastion "$WORKDIR/read-ledger.sh" "read migration ledger" > "$WORKDIR/ledger-out.txt"
+# strict_truncation=true: this call is what the rest of the run plans FROM.
+# A truncated read here cannot be waived the way apply/verify/rotate output
+# can, because there is no later state-verification pass to catch a
+# mis-classified PENDING/applied migration before it acts on that plan.
+run_on_bastion "$WORKDIR/read-ledger.sh" "read migration ledger" true > "$WORKDIR/ledger-out.txt"
 
 sed -n '/---LEDGER-BEGIN---/,/---LEDGER-END---/p' "$WORKDIR/ledger-out.txt" \
   | grep -v -- '---LEDGER-' > "$WORKDIR/applied.txt" || true
@@ -433,6 +481,15 @@ while IFS='|' read -r fname csum; do
 done < "$WORKDIR/applied.txt"
 
 note "   ledger records ${#APPLIED_SUM[@]} applied migration(s)"
+
+# A fresh RDS (or one whose ledger was never adopted) has no rows here before
+# this run. Role password resets and jale/whatsapp/db seeding sit entirely
+# behind --rotate-secrets, so a bootstrap onto a fresh database would
+# otherwise finish green while every runtime role is left with no usable
+# password. Captured now, before anything is applied, so the check below
+# reflects state as it was BEFORE this run, not after.
+FRESH_DATABASE=false
+if (( ${#APPLIED_SUM[@]} == 0 )); then FRESH_DATABASE=true; fi
 
 # ---------------------------------------------------------------------------
 # Build the plan: what is pending, and has anything already applied drifted?
@@ -574,8 +631,15 @@ APPLY_ONE
   run_on_bastion "$script" "$label"
 }
 
+# Every batch pays this fixed preamble cost once: emit_pg_preamble and
+# emit_ledger_ddl are written to the script ahead of any per-file work (see
+# apply_batch above). Measured directly rather than hardcoded because its
+# size depends on the runtime REGION and DB_SECRET_ARN resolved above, not
+# just literal script text.
+PREAMBLE_BYTES=$( { emit_pg_preamble; emit_ledger_ddl; } | wc -c )
+
 batch=()
-batch_bytes=0
+batch_bytes=$PREAMBLE_BYTES
 batch_n=0
 
 flush_batch() {
@@ -584,7 +648,7 @@ flush_batch() {
   note "Applying batch $batch_n (${#batch[@]} file(s))..."
   apply_batch batch "batch-$batch_n"
   batch=()
-  batch_bytes=0
+  batch_bytes=$PREAMBLE_BYTES
 }
 
 for f in "${PENDING[@]}"; do
@@ -593,8 +657,13 @@ for f in "${PENDING[@]}"; do
     fsize=200
   else
     fsize=$(encode_migration "$MIGRATION_DIR/$f" | wc -c)
+    # Charge the APPLY_ONE wrapper too — what SSM actually receives is the
+    # payload wrapped in that heredoc, not the payload alone.
+    fsize=$(( fsize + APPLY_ONE_FIXED_BYTES \
+                     + APPLY_ONE_FILENAME_OCCURRENCES * ${#f} \
+                     + APPLY_ONE_CHECKSUM_OCCURRENCES * CHECKSUM_HEX_LEN ))
     (( fsize <= MAX_PAYLOAD_BYTES )) \
-      || die "$f encodes to ${fsize}B, over the ${MAX_PAYLOAD_BYTES}B per-command ceiling. Stage it via S3 instead."
+      || die "$f encodes to ${fsize}B (payload + wrapper), over the ${MAX_PAYLOAD_BYTES}B per-command ceiling. Stage it via S3 instead."
   fi
   if (( batch_bytes + fsize > MAX_PAYLOAD_BYTES )); then flush_batch; fi
   batch+=("$f")
@@ -605,6 +674,23 @@ flush_batch
 if (( ${#PENDING[@]} > 0 )); then
   verify_ledger PENDING
   note "Migrations complete. Ledger updated."
+fi
+
+# A fresh-database bootstrap that just applied migrations must not report
+# success while every runtime role is left with no usable password. Role
+# rotation and jale/whatsapp/db seeding are opt-in (--rotate-secrets, never
+# silent), so require the operator to either request them or explicitly
+# acknowledge skipping them.
+if $FRESH_DATABASE && (( ${n_exec:-0} > 0 )) && ! $ROTATE_SECRETS && ! $SKIP_SECRETS; then
+  echo "!! This looks like a fresh-database bootstrap: $LEDGER_TABLE was absent or empty before this run, and migrations were just applied." >&2
+  echo "!! Without --rotate-secrets, these roles have no usable password: jale_matching, jale_admin_console, jale_billing, jale_whatsapp." >&2
+  echo "!! The secret $WA_DB_SECRET_NAME does not exist." >&2
+  echo "!! Re-run with --rotate-secrets to provision them, or pass --skip-secrets to acknowledge this and continue anyway." >&2
+  die "refusing to report success from a fresh-database bootstrap with credential-less roles"
+fi
+
+if $FRESH_DATABASE && (( ${n_exec:-0} > 0 )) && $SKIP_SECRETS && ! $ROTATE_SECRETS; then
+  note "--skip-secrets acknowledged: jale_matching, jale_admin_console, jale_billing, jale_whatsapp have no usable password and $WA_DB_SECRET_NAME was not created."
 fi
 
 # ---------------------------------------------------------------------------
