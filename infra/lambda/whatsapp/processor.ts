@@ -1187,6 +1187,129 @@ async function startTrustTranscription(
   return { started: true };
 }
 
+// ── v2 full voice profile intake (Stream B) — ingestion kickoff ──
+//
+// Mirrors startTrustTranscription's Twilio-download -> S3 -> StartExecution
+// pattern, but targets the SAME v1 profile pipeline (AI_PIPELINE_STATE_
+// MACHINE_ARN / ai-profile-writer.ts) that a v1 worker's media-onboarding
+// voice note already runs through — tagged with a `v2` marker so
+// ai-profile-writer's completion branch re-enters this lane via a synthetic
+// `#vp` event instead of writing `users`/outbox directly (Task 8d). Runs on
+// the SAME client/transaction as the rest of the turn, closed over by the
+// v2Deps.voiceIntake wiring below.
+
+/**
+ * Step Functions execution ARNs are deterministic:
+ * `arn:...:stateMachine:<name>` -> `arn:...:execution:<name>:<executionName>`.
+ * Deriving it here (rather than trusting `StartExecutionCommand`'s response)
+ * means the SAME value is available synchronously on `ExecutionAlreadyExists`
+ * (a redelivered inbound voice note) as on a fresh start — both resolve to
+ * the one execution the deterministic name identifies.
+ */
+function deriveExecutionArn(stateMachineArn: string, executionName: string): string {
+  const parts = stateMachineArn.split(':');
+  const [, , , region, account, , stateMachineName] = parts;
+  return `arn:aws:states:${region}:${account}:execution:${stateMachineName}:${executionName}`;
+}
+
+async function ingestProfileVoiceNote(
+  client: PoolClient,
+  input: {
+    workerId: string;
+    phone: string;
+    runId: string;
+    stepKey: string;
+    language: Lang;
+    mediaUrl: string;
+    mediaContentType: string;
+    inboundMessageSid: string;
+  },
+): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
+  const category = detectMediaCategory(input.mediaContentType);
+  if (category !== 'voice') return { started: false, reason: 'invalid_media_type' };
+
+  const bucketName = process.env.MEDIA_BUCKET_NAME;
+  const stateMachineArn = process.env.AI_PIPELINE_STATE_MACHINE_ARN;
+  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
+  if (!stateMachineArn) throw new Error('AI_PIPELINE_STATE_MACHINE_ARN not set');
+
+  let mediaBuffer: Buffer;
+  try {
+    const twilioSecret = await getTwilioSecret();
+    mediaBuffer = await downloadTwilioMedia(input.mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+  } catch (err) {
+    console.error(JSON.stringify({
+      metric: 'OnboardingVoiceIngestDownloadFailed',
+      reason: (err as { name?: string })?.name ?? 'unknown_error',
+    }));
+    return { started: false, reason: 'download_failed' };
+  }
+
+  // Twilio does not reject oversized uploads at the source; enforce the cap
+  // post-download rather than stranding the worker on a silent failure.
+  if (mediaBuffer.byteLength > MAX_VOICE_BYTES) return { started: false, reason: 'file_too_large' };
+
+  const mediaId = randomUUID();
+  const s3Key = buildS3Key(input.workerId, mediaId, 'voice');
+  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, input.mediaContentType);
+
+  await setWorkerRlsContextByUserId(client, input.workerId);
+  await client.query(
+    `INSERT INTO worker_profile_media
+       (id, user_id, media_type, s3_key, content_type)
+     VALUES ($1, $2, 'voice_message', $3, $4)`,
+    [mediaId, input.workerId, s3Key, input.mediaContentType],
+  );
+
+  const languageCode = input.language === 'es' ? 'es-US' : 'en-US';
+  const transcriptionJobName = `jale-vp-${input.workerId.replace(/-/g, '')}-${Date.now()}`;
+  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
+  const transcriptOutputKey = `${input.workerId}/transcripts/${transcriptionJobName}.json`;
+
+  // "v1-shaped" top-level context fields (userId/whatsappNumber/language/
+  // inboundMessageSid — exactly what AiProfileWriterContext already
+  // destructures) plus a `v2` marker carrying the two identifiers v1 never
+  // needed (workflowRunId/expectedStepKey). ai-profile-writer's normalizeEvent
+  // reads this SAME shape for both v1 and v2 — presence of `v2` alone
+  // decides the branch.
+  const sfnInput = {
+    userId: input.workerId,
+    // conversationId is part of AiProfileWriterContext's v1 shape but is
+    // NEVER read on the v2 branch (no queueOutboxText/autoAdvanceProfileAfterAi
+    // call there) — runId is a harmless, always-present stand-in.
+    conversationId: input.runId,
+    inboundMessageSid: input.inboundMessageSid,
+    whatsappNumber: input.phone,
+    language: input.language,
+    mediaBucketName: bucketName,
+    transcriptionJobName,
+    languageCode,
+    mediaS3Uri,
+    transcriptOutputKey,
+    voiceMessageMediaId: mediaId,
+    v2: {
+      workflowRunId: input.runId,
+      expectedStepKey: input.stepKey,
+      startedAt: new Date().toISOString(),
+    },
+  };
+
+  const executionName = `vp-${input.inboundMessageSid}`;
+  const executionArn = deriveExecutionArn(stateMachineArn, executionName);
+
+  try {
+    await sfn.send(new StartExecutionCommand({
+      stateMachineArn,
+      name: executionName,
+      input: JSON.stringify(sfnInput),
+    }));
+  } catch (err: any) {
+    if (err?.name !== 'ExecutionAlreadyExists') throw err;
+  }
+
+  return { started: true, executionArn };
+}
+
 // ── processing_ai — waiting for AI pipeline to complete ─────────
 async function handleProcessingAi(
   client: PoolClient,
@@ -1318,6 +1441,7 @@ async function routeMessage(
       voiceIntake: {
         enabled: isVoiceIntakeEnabled(runtimeControls, phoneHash),
         startTrustTranscription: (input) => startTrustTranscription(client, input),
+        ingestProfileVoiceNote: (input) => ingestProfileVoiceNote(client, input),
       },
     };
 
