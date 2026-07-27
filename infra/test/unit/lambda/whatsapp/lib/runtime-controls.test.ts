@@ -4,6 +4,7 @@ import {
   hashNormalizedPhone,
   isDeferredDeliveryEnabled,
   isV2Enabled,
+  isVoiceIntakeEnabled,
   loadRuntimeControls,
 } from '../../../../../lambda/whatsapp/lib/runtime-controls';
 
@@ -22,9 +23,13 @@ describe('WhatsApp v2 runtime controls', () => {
       onboardingV2GlobalEnabled: false,
       onboardingV2PhoneHashes: new Set(),
       deferredDeliveryEnabled: false,
+      voiceIntakeEnabled: false,
+      voiceIntakeGlobalEnabled: false,
+      voiceIntakePhoneHashes: new Set(),
     });
     expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(false);
     expect(isDeferredDeliveryEnabled(controls)).toBe(false);
+    expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
   });
 
   it.each([null, 'true', 1])(
@@ -43,12 +48,126 @@ describe('WhatsApp v2 runtime controls', () => {
           phone_hashes: [],
           global_enabled: false,
         },
+        {
+          control_key: 'voice_intake_enabled',
+          enabled,
+          phone_hashes: ['a'.repeat(64)],
+          global_enabled: true,
+        },
       ]));
 
       expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(false);
       expect(isDeferredDeliveryEnabled(controls)).toBe(false);
+      expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
     },
   );
+
+  it.each([undefined, 'true', 1, { hashes: [] }])(
+    'fails closed for voice_intake_enabled when phone_hashes is malformed: %p',
+    async (phoneHashes) => {
+      const controls = await loadRuntimeControls(clientReturning([
+        {
+          control_key: 'voice_intake_enabled',
+          enabled: true,
+          phone_hashes: phoneHashes,
+          global_enabled: false,
+        },
+      ]));
+
+      expect(controls.voiceIntakeEnabled).toBe(false);
+      expect(controls.voiceIntakeGlobalEnabled).toBe(false);
+      expect(controls.voiceIntakePhoneHashes.size).toBe(0);
+      expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
+    },
+  );
+
+  it('fails closed for voice_intake_enabled when the row is absent entirely', async () => {
+    const controls = await loadRuntimeControls(clientReturning([
+      {
+        control_key: 'onboarding_v2_enabled',
+        enabled: true,
+        phone_hashes: [],
+        global_enabled: true,
+      },
+    ]));
+
+    expect(controls.voiceIntakeEnabled).toBe(false);
+    expect(controls.voiceIntakeGlobalEnabled).toBe(false);
+    expect(controls.voiceIntakePhoneHashes.size).toBe(0);
+    expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
+    // Sibling controls stay unaffected by the missing voice_intake row.
+    expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(true);
+  });
+
+  it('enables voice intake only for an exact hash in the allowlist', async () => {
+    const allowedHash = 'a'.repeat(64);
+    const controls = await loadRuntimeControls(clientReturning([
+      {
+        control_key: 'voice_intake_enabled',
+        enabled: true,
+        phone_hashes: [allowedHash],
+        global_enabled: false,
+      },
+    ]));
+
+    expect(isVoiceIntakeEnabled(controls, allowedHash)).toBe(true);
+    expect(isVoiceIntakeEnabled(controls, 'b'.repeat(64))).toBe(false);
+  });
+
+  it('enables voice intake for any hash when the global flag is enabled', async () => {
+    const controls = await loadRuntimeControls(clientReturning([
+      {
+        control_key: 'voice_intake_enabled',
+        enabled: true,
+        phone_hashes: [],
+        global_enabled: true,
+      },
+    ]));
+
+    expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(true);
+    expect(isVoiceIntakeEnabled(controls, 'b'.repeat(64))).toBe(true);
+  });
+
+  it('does not enable voice intake when enabled=true but neither global nor allowlisted', async () => {
+    const controls = await loadRuntimeControls(clientReturning([
+      {
+        control_key: 'voice_intake_enabled',
+        enabled: true,
+        phone_hashes: ['b'.repeat(64)],
+        global_enabled: false,
+      },
+    ]));
+
+    expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
+  });
+
+  it('keeps voice intake independent from onboarding v2 and deferred delivery controls', async () => {
+    const phoneHash = 'a'.repeat(64);
+    const controls = await loadRuntimeControls(clientReturning([
+      {
+        control_key: 'onboarding_v2_enabled',
+        enabled: false,
+        phone_hashes: [],
+        global_enabled: false,
+      },
+      {
+        control_key: 'deferred_delivery_enabled',
+        enabled: false,
+        phone_hashes: [],
+        global_enabled: false,
+      },
+      {
+        control_key: 'voice_intake_enabled',
+        enabled: true,
+        phone_hashes: [phoneHash],
+        global_enabled: false,
+      },
+    ]));
+
+    expect(isV2Enabled(controls, phoneHash)).toBe(false);
+    expect(isDeferredDeliveryEnabled(controls)).toBe(false);
+    expect(isVoiceIntakeEnabled(controls, phoneHash)).toBe(true);
+  });
 
   it('enables v2 only for an exact hash in the allowlist', async () => {
     const allowedHash = 'a'.repeat(64);

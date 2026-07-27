@@ -397,6 +397,9 @@ const DEFAULT_CONTROLS: RuntimeControls = {
   onboardingV2GlobalEnabled: true,
   onboardingV2PhoneHashes: new Set<string>(),
   deferredDeliveryEnabled: true,
+  voiceIntakeEnabled: false,
+  voiceIntakeGlobalEnabled: false,
+  voiceIntakePhoneHashes: new Set<string>(),
 };
 
 function createFakeWorkerGateway(gateRepo: ReturnType<typeof createFakeGateRepo>) {
