@@ -44,6 +44,7 @@ export type TemplateKey =
   | 'job_not_found'
   // Errors
   | 'unknown_message'
+  | 'processing_error'
   // Media onboarding
   | 'ask_media_photo'
   | 'media_photo_invalid'
@@ -201,6 +202,15 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   unknown_message: {
     es: 'No entendi ese mensaje.\n\nEnvia "Ayuda" para ver comandos.',
     en: 'I did not understand that message.\n\nSend "Help" to see commands.',
+  },
+
+  // Lane-neutral safety net: sent by the processor's error fallback when a
+  // message handler throws and the whole turn rolls back (the queued reply
+  // included). Keywords must match isSupportCommand (flows.ts): SOPORTE /
+  // SUPPORT.
+  processing_error: {
+    es: 'Lo sentimos, algo salio mal al procesar tu mensaje. Intenta de nuevo en unos minutos.\n\nSi el problema continua, escribe "Soporte" para hablar con nuestro equipo.',
+    en: 'Sorry, something went wrong while processing your message. Please try again in a few minutes.\n\nIf the problem continues, reply "Support" to talk to our team.',
   },
 
   ask_media_photo: {

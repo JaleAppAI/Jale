@@ -258,12 +258,31 @@ describe('IdentityAdapter.verifyChallenge', () => {
       'the third — using a FRESH adapter instance per call, proving the lock survives across ' +
       "separate Lambda invocations because the caller (not the adapter) holds the count",
     async () => {
+      // Stateful, stale-session-rejecting mock. The previous revision of
+      // this test returned the same Session for every call and never
+      // enforced that only the latest one is valid — which is exactly how
+      // the rotated-session regression (correct code on attempt 2 reported
+      // "expired") passed the suite. Real Cognito consumes the presented
+      // Session on every wrong answer and only the rotated one may be
+      // resubmitted; this mock does the same, so reverting the
+      // rotatedChallengeId plumbing makes call 2 below return 'expired'
+      // instead of 'invalid' and the test fails.
+      let currentSession = 'session-abc';
+      let rotation = 0;
       mockCognitoDispatch({
-        RespondToAuthChallenge: () => ({ Session: 'session-retry' }),
+        RespondToAuthChallenge: (command: any) => {
+          if (command.input.Session !== currentSession) {
+            const err: any = new Error('Invalid session for the user, session is expired.');
+            err.name = 'NotAuthorizedException';
+            throw err;
+          }
+          rotation += 1;
+          currentSession = `session-retry-${rotation}`;
+          return { Session: currentSession };
+        },
       });
 
       const baseInput = {
-        challengeId: 'session-abc',
         whatsappNumber: 'whatsapp:+15125550199',
         code: '000000',
       };
@@ -277,14 +296,21 @@ describe('IdentityAdapter.verifyChallenge', () => {
       });
       const first = await identity1.verifyChallenge(mockPoolClient(), {
         ...baseInput,
+        challengeId: 'session-abc',
         attempts: 0,
         lockedUntil: null,
       });
-      expect(first).toEqual({ status: 'invalid', attemptsRemaining: 2, attempts: 1 });
+      expect(first).toEqual({
+        status: 'invalid',
+        attemptsRemaining: 2,
+        attempts: 1,
+        rotatedChallengeId: 'session-retry-1',
+      });
 
       // Call 2: a SECOND, independently-constructed adapter — simulating the
-      // next Lambda invocation. The only thing carried forward is the
-      // attempt count the caller persisted from call 1's result.
+      // next Lambda invocation. The things carried forward are exactly what
+      // the caller persisted from call 1's result: the attempt count AND the
+      // rotated session id.
       const identity2 = createIdentityAdapter({
         userPoolId: 'pool-1',
         clientId: 'client-1',
@@ -293,10 +319,16 @@ describe('IdentityAdapter.verifyChallenge', () => {
       });
       const second = await identity2.verifyChallenge(mockPoolClient(), {
         ...baseInput,
+        challengeId: first.status === 'invalid' ? first.rotatedChallengeId! : 'session-abc',
         attempts: first.status === 'invalid' ? first.attempts : 0,
         lockedUntil: null,
       });
-      expect(second).toEqual({ status: 'invalid', attemptsRemaining: 1, attempts: 2 });
+      expect(second).toEqual({
+        status: 'invalid',
+        attemptsRemaining: 1,
+        attempts: 2,
+        rotatedChallengeId: 'session-retry-2',
+      });
 
       // Call 3: a THIRD, independently-constructed adapter.
       const identity3 = createIdentityAdapter({
@@ -307,6 +339,7 @@ describe('IdentityAdapter.verifyChallenge', () => {
       });
       const third = await identity3.verifyChallenge(mockPoolClient(), {
         ...baseInput,
+        challengeId: second.status === 'invalid' ? second.rotatedChallengeId! : 'session-abc',
         attempts: second.status === 'invalid' ? second.attempts : 0,
         lockedUntil: null,
       });
@@ -316,6 +349,89 @@ describe('IdentityAdapter.verifyChallenge', () => {
       }
     },
   );
+
+  it('a wrong code followed by the CORRECT code against the rotated session verifies', async () => {
+    // The user-visible regression this whole change exists for: mistype
+    // once, then type the right code — that second submission must succeed,
+    // not report "code expired".
+    let currentSession = 'session-abc';
+    mockCognitoDispatch({
+      RespondToAuthChallenge: (command: any) => {
+        if (command.input.Session !== currentSession) {
+          const err: any = new Error('Invalid session for the user, session is expired.');
+          err.name = 'NotAuthorizedException';
+          throw err;
+        }
+        if (command.input.ChallengeResponses.ANSWER === '123456') {
+          return { AuthenticationResult: { IdToken: fakeIdToken('real-cognito-sub-2') } };
+        }
+        currentSession = 'session-rotated';
+        return { Session: currentSession };
+      },
+    });
+
+    const identity = createIdentityAdapter({
+      userPoolId: 'pool-1',
+      clientId: 'client-1',
+      clock,
+      reconcileUserRow: jest.fn().mockResolvedValue({ userId: 'worker-uuid-2', tosVersion: null }),
+    });
+
+    const wrong = await identity.verifyChallenge(mockPoolClient(), {
+      challengeId: 'session-abc',
+      whatsappNumber: 'whatsapp:+15125550177',
+      code: '000000',
+      attempts: 0,
+      lockedUntil: null,
+    });
+    expect(wrong.status).toBe('invalid');
+
+    const right = await identity.verifyChallenge(mockPoolClient(), {
+      challengeId: wrong.status === 'invalid' ? wrong.rotatedChallengeId! : 'session-abc',
+      whatsappNumber: 'whatsapp:+15125550177',
+      code: '123456',
+      attempts: 1,
+      lockedUntil: null,
+    });
+    expect(right).toEqual({ status: 'verified', workerId: 'worker-uuid-2' });
+  });
+
+  it('a thrown NON-session error yields invalid with rotatedChallengeId null', async () => {
+    // resp === undefined edge: Cognito failed the auth outright (e.g. its
+    // own max-retries NotAuthorizedException without "session" in the
+    // message). There is no rotated session to persist; the caller keeps
+    // the stored one and the next attempt correctly resolves to expired →
+    // RESEND.
+    mockCognitoDispatch({
+      RespondToAuthChallenge: () => {
+        const err: any = new Error('Incorrect username or password.');
+        err.name = 'NotAuthorizedException';
+        throw err;
+      },
+    });
+
+    const identity = createIdentityAdapter({
+      userPoolId: 'pool-1',
+      clientId: 'client-1',
+      clock,
+      reconcileUserRow: jest.fn(),
+    });
+
+    const result = await identity.verifyChallenge(mockPoolClient(), {
+      challengeId: 'session-abc',
+      whatsappNumber: 'whatsapp:+15125550166',
+      code: '000000',
+      attempts: 0,
+      lockedUntil: null,
+    });
+
+    expect(result).toEqual({
+      status: 'invalid',
+      attemptsRemaining: 2,
+      attempts: 1,
+      rotatedChallengeId: null,
+    });
+  });
 
   it('returns expired (not invalid) when the Cognito session has expired', async () => {
     const reconcileUserRow: ReconcileUserRowFn = jest.fn();
@@ -481,7 +597,7 @@ describe('ProfilePersistenceAdapter', () => {
     expect(calls.some((sql) => sql.includes('ROLLBACK'))).toBe(false);
   });
 
-  it('saveLocation maps zip -> geocoded_zip through the supplied client', async () => {
+  it('saveLocation writes the zip into worker_profiles.location text', async () => {
     const client = mockPoolClient();
     await profile.saveLocation(client, 'worker-1', {
       city: null,
@@ -492,7 +608,37 @@ describe('ProfilePersistenceAdapter', () => {
 
     expect(client.query).toHaveBeenCalled();
     const allParams = (client.query as jest.Mock).mock.calls.flatMap((c) => c[1] ?? []);
-    expect(allParams).toContain('geocoded_zip');
+    expect(allParams).toContain('78701');
+  });
+
+  it('saveLocation never touches the five coordinate columns bound by worker_profiles_location_complete', async () => {
+    // 2026-07-26 production incident: writing location_source +
+    // location_updated_at WITHOUT latitude/longitude/location_confidence
+    // violates the all-or-nothing CHECK in 009_location_foundation.sql and
+    // wedged every worker at profile.location. This adapter has no
+    // coordinates (ResolvedLocation is regex-parsed text), so it must write
+    // ONLY the plain TEXT `location` column. The coordinate group belongs
+    // exclusively to lambda/lib/location.ts's setWorkerCoordinates, which
+    // sets all five together.
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: 'Austin',
+      state: 'TX',
+      postalCode: null,
+      source: 'city_state',
+    });
+
+    const workerProfilesUpdates = (client.query as jest.Mock).mock.calls
+      .map((c) => String(c[0]))
+      .filter((sql) => sql.toUpperCase().includes('UPDATE WORKER_PROFILES'));
+    expect(workerProfilesUpdates.length).toBeGreaterThan(0);
+    for (const sql of workerProfilesUpdates) {
+      expect(sql).not.toMatch(/location_source/i);
+      expect(sql).not.toMatch(/location_updated_at/i);
+      expect(sql).not.toMatch(/location_confidence/i);
+      expect(sql).not.toMatch(/latitude/i);
+      expect(sql).not.toMatch(/longitude/i);
+    }
   });
 
   it('saveLocation calls the canonical upsertWorkerProfileFromUsers projection BEFORE its own UPDATE worker_profiles, so the row exists even for a worker with no worker_profiles row yet', async () => {

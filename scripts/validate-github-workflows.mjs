@@ -77,7 +77,10 @@ requireIncludes('.github/workflows/deploy-production.yml', deployProduction, "va
 
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'workflow_call:');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run build');
-requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm test -- --runInBand');
+// test:ci (plain jest) rather than `npm test`: the default test script
+// carries --maxWorkers=2 (dev-host OOM cap) and jest rejects combining
+// --maxWorkers with --runInBand in a single invocation.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:ci -- --runInBand');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');

@@ -42,7 +42,7 @@ describe('templates.ts — t()', () => {
       'profile_complete', 'profile_reprompt', 'profile_jobs_blocked',
       'idle_help', 'help_menu', 'profile_not_ready',
       'jobs_none', 'job_accepted', 'job_already_applied', 'job_documents_required', 'job_declined', 'job_not_found',
-      'unknown_message',
+      'unknown_message', 'processing_error',
       'ask_media_photo', 'media_photo_invalid', 'ask_media_photo_type',
       'ask_media_voice', 'media_voice_invalid',
       'ai_processing_ack', 'ai_processing_wait', 'ai_extraction_summary', 'ai_extraction_failed',
@@ -216,6 +216,18 @@ describe('v2 templates', () => {
       expectDistinctLanguages(t(key, 'en'), t(key, 'es'));
     },
   );
+
+  it('processing_error mentions retrying and the SUPPORT/SOPORTE keyword, in distinct languages', () => {
+    // Sent by the processor's error fallback; the support keyword must
+    // match isSupportCommand (flows.ts) exactly or the escape hatch is dead.
+    const en = t('processing_error', 'en');
+    const es = t('processing_error', 'es');
+    expectDistinctLanguages(en, es);
+    expect(en.toLowerCase()).toContain('try again');
+    expect(en.toLowerCase()).toContain('support');
+    expect(es.toLowerCase()).toContain('intenta de nuevo');
+    expect(es.toLowerCase()).toContain('soporte');
+  });
 
   it('v2_otp_sent interpolates the 5-minute limit', () => {
     for (const lang of ['en', 'es'] as Lang[]) {

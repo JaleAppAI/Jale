@@ -203,13 +203,30 @@ export class AuthStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    // VerifyAuthChallenge: compares user answer to stored OTP. Stateless.
+    // VerifyAuthChallenge: compares user answer to stored OTP. On a correct
+    // answer it also flips phone_number_verified='true' — the only place
+    // that attribute may become true, because a correct OTP is the only
+    // real proof of phone possession (signup paths create with 'false').
     const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/verify-auth-challenge.ts'),
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
     });
+
+    // Same circular-dependency avoidance as postConfirmationLambda's
+    // AdminAddUserToGroup grant below: the pool references this Lambda in
+    // its LambdaConfig, so the Lambda's policy cannot reference the pool
+    // ARN. Scope to all pools in this account/region; the real boundary is
+    // that Cognito only invokes this trigger for the pool it's registered
+    // on, and the handler only ever writes the pool id it received in the
+    // event.
+    verifyAuthChallengeLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['cognito-idp:AdminUpdateUserAttributes'],
+      resources: [
+        `arn:aws:cognito-idp:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:userpool/*`,
+      ],
+    }));
 
     // ── Worker Cognito Pool ──
     const isProd = this.node.tryGetContext('environment') === 'production';

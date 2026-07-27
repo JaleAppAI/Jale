@@ -52,7 +52,9 @@ describe('ensureWorkerCognitoAccount', () => {
       MessageAction: 'SUPPRESS',
       UserAttributes: expect.arrayContaining([
         { Name: 'phone_number', Value: phone },
-        { Name: 'phone_number_verified', Value: 'true' },
+        // 2026-07-26 hardening: creation is not possession proof; only
+        // verify-auth-challenge may flip this to 'true'.
+        { Name: 'phone_number_verified', Value: 'false' },
         { Name: 'custom:user_type', Value: 'worker' },
       ]),
     }));
@@ -87,6 +89,33 @@ describe('reconcileWorkerCognitoAccount', () => {
 
     expect(result).toEqual({ cognitoSub: 'worker-sub', storedName: 'Stored Worker' });
     expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([command]) => command.type)).toEqual(['get', 'add-group']);
+  });
+
+  it('never force-syncs phone_number_verified to true for an unverified account', async () => {
+    // 2026-07-26 hardening: reconciliation runs from unauthenticated paths
+    // (repeat web signup, WhatsApp issueChallenge). Possession is unproven
+    // there — only verify-auth-challenge's correct-OTP flip may verify.
+    const send = jest.fn()
+      .mockResolvedValueOnce({
+        Enabled: true,
+        UserStatus: 'CONFIRMED',
+        UserAttributes: [
+          { Name: 'sub', Value: 'worker-sub' },
+          { Name: 'phone_number', Value: '+19152272188' },
+          { Name: 'phone_number_verified', Value: 'false' },
+          { Name: 'custom:user_type', Value: 'worker' },
+        ],
+      })
+      .mockResolvedValueOnce({});
+
+    await reconcileWorkerCognitoAccount({
+      client: { send } as any,
+      userPoolId: 'pool',
+      phone: '+19152272188',
+    });
+
+    // No update-attributes call at all — the unverified flag stands.
     expect(send.mock.calls.map(([command]) => command.type)).toEqual(['get', 'add-group']);
   });
 

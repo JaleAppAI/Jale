@@ -47,6 +47,15 @@ export const handler = async (
   }
 
   try {
+    // Hardening (2026-07-26 security review): this endpoint is
+    // unauthenticated, so NOTHING the caller supplies is identity proof.
+    // The account is created with phone_number_verified='false' (flipped by
+    // verify-auth-challenge.ts on the first correct OTP) and WITHOUT the
+    // caller's fullName — pre-marking a stranger's number "verified" with an
+    // attacker-chosen name was a pre-registration poisoning vector. The name
+    // reaches the DB moments later through the authenticated post-OTP
+    // profile update the frontend already performs on every signup
+    // (WorkerAuthForm's pendingWorkerProfile → PATCH /worker/profile).
     try {
       await cognito.send(new AdminCreateUserCommand({
         UserPoolId: userPoolId,
@@ -55,8 +64,7 @@ export const handler = async (
         TemporaryPassword: randomPassword(),
         UserAttributes: [
           { Name: 'phone_number', Value: phone },
-          { Name: 'phone_number_verified', Value: 'true' },
-          { Name: 'name', Value: fullName },
+          { Name: 'phone_number_verified', Value: 'false' },
           { Name: 'custom:user_type', Value: 'worker' },
         ],
       }));
@@ -67,7 +75,10 @@ export const handler = async (
         userPoolId,
         phone,
       });
-      await seedWorkerUser(repaired.cognitoSub, phone, repaired.storedName ?? '');
+      // '' is a safe no-op through reconcile_worker_signup's NULLIF/COALESCE:
+      // it never clobbers an existing users.full_name and leaves a new row's
+      // name NULL for the authenticated post-OTP update to fill.
+      await seedWorkerUser(repaired.cognitoSub, phone, '');
       return json(200, { ok: true });
     }
 
@@ -81,7 +92,11 @@ export const handler = async (
       throw new Error('Unable to resolve Cognito sub for worker signup.');
     }
 
-    await seedWorkerUser(cognitoSub, phone, fullName);
+    // Same rationale as the reconcile branch: the users row is seeded
+    // WITHOUT the caller-supplied name; the authenticated post-OTP profile
+    // update owns it. `fullName` is still validated above purely as an API
+    // contract check (the frontend always sends it).
+    await seedWorkerUser(cognitoSub, phone, '');
     await ensureWorkerGroup(userPoolId, phone);
 
     await cognito.send(new AdminSetUserPasswordCommand({
