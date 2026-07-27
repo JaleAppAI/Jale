@@ -13,6 +13,9 @@ const SUITE_049 = 'test/unit/db/whatsapp-flow-049.integration.test.ts';
 // chk_trade_other incident): real adapters against the real schema, plus the
 // full remaining profile-flow SQL as jale_whatsapp.
 const SUITE_PROFILE_CONSTRAINTS = 'test/unit/db/worker-profiles-constraints.integration.test.ts';
+// migration 052 (2026-07-27 review): worker_skills DELETE reset + the
+// trust-answer upsert-by-question_index fix, both against real Postgres.
+const SUITE_052 = 'test/unit/db/whatsapp-onboarding-052.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -30,7 +33,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
   it('invokes exactly the migration-042, concurrency, migration-049, and profile-constraint suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
-    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS]);
+    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(
