@@ -117,6 +117,13 @@ export interface OnboardingV2RepoDeps {
    */
   clearProfileAnswers: (client: PoolClient, workerId: string) => Promise<void>;
   /**
+   * RESTART/REINICIAR (`onboarding/gate.ts`): resets the worker's pending
+   * trust-assessment answers to `[]` (never a scored/completed assessment)
+   * and clears their `worker_skills` rows, so a restart with a different
+   * trade never leaves the abandoned trade's skill or trust answers behind.
+   */
+  resetPendingTrustAssessmentAndSkills: (client: PoolClient, workerId: string) => Promise<void>;
+  /**
    * BACK/ATRAS (`onboarding/gate.ts`): the step a run was on immediately
    * before its current step, per the transition history. Null when there is
    * nothing to go back to.
@@ -206,7 +213,7 @@ export interface OnboardingV2Deps {
       mediaUrl: string;
       mediaContentType: string;
       inboundMessageSid: string;
-    }): Promise<{ started: boolean }>;
+    }): Promise<{ started: boolean; reason?: string; executionArn?: string }>;
     /**
      * Stream B: full voice profile intake at `profile.voice_choice`. Kicks
      * off the SAME Twilio-download -> S3 -> Transcribe -> Bedrock pipeline

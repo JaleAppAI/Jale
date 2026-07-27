@@ -676,10 +676,43 @@ describe('job_alert category renderer: single-job template send', () => {
     expect(result!.contentTemplate).toBe('job_alert_en');
   });
 
-  it('degrades to the plain-text digest when a pre-existing intent lacks location/pay', async () => {
-    const { location, pay, ...legacyJob } = singleJob;
+  // Task 2/A2 fix (2026-07-27): a job posted with no pay (jobs.pay is
+  // nullable, migration 003) or a pre-existing deferred intent that never
+  // carried location/pay must STILL render the content template — degrading
+  // to the plain-text digest is exactly the undeliverable-alert bug this
+  // renderer exists to fix, because Twilio rejects freeform sends outside
+  // the 24h customer-service window.
+  it('renders the template with a bilingual placeholder when pay is missing', async () => {
+    const { pay, ...jobWithoutPay } = singleJob;
     const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
-    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [legacyJob] } }));
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutPay] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_en');
+    expect(result!.contentVariables!['4']).toBe('Pay not specified');
+  });
+
+  it('renders the template with a bilingual placeholder when pay is missing (Spanish)', async () => {
+    const { pay, ...jobWithoutPay } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutPay] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_es');
+    expect(result!.contentVariables!['4']).toBe('Pago no especificado');
+  });
+
+  it('renders the template with a bilingual placeholder when location is missing', async () => {
+    const { location, ...jobWithoutLocation } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutLocation] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_en');
+    expect(result!.contentVariables!['3']).toBe('Location not specified');
+  });
+
+  it('still degrades to the plain-text digest when jobId is missing (never a template with a broken button payload)', async () => {
+    const { jobId, ...jobWithoutId } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutId] } }));
 
     expect(result!.contentTemplate).toBeNull();
     expect(result!.body).toContain('Electricista');

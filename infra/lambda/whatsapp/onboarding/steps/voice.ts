@@ -169,7 +169,12 @@ export async function handleVoiceProcessingStep(
   const stepKey = 'profile.voice_processing' as const;
   const startedAtIso = session.state_context?.v2VoiceStartedAt as string | undefined;
   const startedAtMs = startedAtIso ? Date.parse(startedAtIso) : NaN;
-  const elapsedMs = Number.isFinite(startedAtMs) ? now.getTime() - startedAtMs : 0;
+  // Task 6/B4 fix: a missing or unparseable anchor must escape to the text
+  // flow IMMEDIATELY, not coerce to "just started" — the old `: 0` fallback
+  // meant the five-minute timeout below could never fire for a run that
+  // reached this step with no `v2VoiceStartedAt` (e.g. after a repair-CLI
+  // `--set-step`), stranding the worker on this holding step forever.
+  const elapsedMs = Number.isFinite(startedAtMs) ? now.getTime() - startedAtMs : Number.POSITIVE_INFINITY;
 
   if (elapsedMs < VOICE_PROCESSING_TIMEOUT_MS) {
     await sendCooldownGuardedTemplate(

@@ -9,6 +9,7 @@ import {
   appendTransition,
   completeOnboarding,
   clearProfileAnswers,
+  resetPendingTrustAssessmentAndSkills,
   findPreviousStepKey,
 } from '../../../../../lambda/whatsapp/lib/onboarding-repository';
 
@@ -448,6 +449,58 @@ describe('findPreviousStepKey', () => {
     const prev = await findPreviousStepKey(client, RUN_ID, 'profile.name');
 
     expect(prev).toBeNull();
+  });
+
+  // Task 3/B1 fix: without excluding BACK's/RESTART's own `worker_*`-
+  // prefixed navigation transitions, the SECOND consecutive BACK finds the
+  // row the FIRST BACK just wrote (landing back on the step the worker just
+  // left) and walks forward instead of continuing backward.
+  it('excludes worker_back/worker_restart transitions from the candidate previous step', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rows: [{ from_step_key: 'profile.trade' }] });
+
+    await findPreviousStepKey(client, RUN_ID, 'profile.location');
+
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/reason NOT LIKE 'worker\\_%'/);
+  });
+
+  // Neither voice holding step has a prompt of its own — BACK must never
+  // land a worker there.
+  it('excludes the two voice holding steps as a candidate previous step', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValueOnce({ rows: [{ from_step_key: 'profile.name' }] });
+
+    await findPreviousStepKey(client, RUN_ID, 'profile.location');
+
+    const sql = query.mock.calls[0][0] as string;
+    expect(sql).toMatch(/from_step_key NOT IN \('profile\.voice_choice', 'profile\.voice_processing'\)/);
+  });
+});
+
+describe('resetPendingTrustAssessmentAndSkills', () => {
+  it('resets ONLY pending assessments\' answers to [] and deletes the worker\'s worker_skills rows — never a DELETE on worker_trust_assessments', async () => {
+    const { query, client } = makeClient();
+    query.mockResolvedValue({ rowCount: 1, rows: [] });
+
+    await resetPendingTrustAssessmentAndSkills(client, WORKER_ID);
+
+    expect(query).toHaveBeenCalledTimes(2);
+    const [updateSql, updateParams] = query.mock.calls[0];
+    expect(String(updateSql).toUpperCase()).toContain('UPDATE');
+    expect(String(updateSql)).toContain('worker_trust_assessments');
+    expect(String(updateSql)).toMatch(/answers\s*=\s*'\[\]'::jsonb/);
+    expect(String(updateSql)).toMatch(/status\s*=\s*'pending'/);
+    expect(updateParams).toEqual([WORKER_ID]);
+
+    const [deleteSql, deleteParams] = query.mock.calls[1];
+    expect(String(deleteSql).toUpperCase()).toContain('DELETE FROM WORKER_SKILLS');
+    expect(deleteParams).toEqual([WORKER_ID]);
+
+    // Never a DELETE on worker_trust_assessments — jale_whatsapp has no
+    // DELETE grant on that table (migration 049 only granted UPDATE).
+    const allSql = query.mock.calls.map(([sql]) => String(sql).toUpperCase()).join('\n');
+    expect(allSql).not.toMatch(/DELETE FROM WORKER_TRUST_ASSESSMENTS/);
   });
 });
 

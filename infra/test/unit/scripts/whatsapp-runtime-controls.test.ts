@@ -408,6 +408,70 @@ describe('runControlsAction', () => {
       expect(texts).not.toContain('COMMIT');
     });
 
+  });
+
+  // ── control row missing (rowCount guard) ──
+  // If the seeding migration (042 or 051) has not been applied, the row
+  // these UPDATEs target does not exist. Without checking rowCount, that
+  // reports success having changed nothing.
+  describe('missing control row', () => {
+    function makeMissingRowClient(): Queryable {
+      return {
+        query: async () => ({ rows: [], rowCount: 0 }),
+      };
+    }
+
+    it('--allow-phone throws naming the missing control_key', async () => {
+      const client = makeMissingRowClient();
+      await expect(
+        runControlsAction(
+          client,
+          { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        ),
+      ).rejects.toThrow(/voice_intake_enabled/);
+    });
+
+    it('--deny-phone throws naming the missing control_key', async () => {
+      const client = makeMissingRowClient();
+      await expect(
+        runControlsAction(
+          client,
+          { kind: 'deny-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        ),
+      ).rejects.toThrow(/voice_intake_enabled/);
+    });
+
+    it('--go-global throws naming the missing control_key', async () => {
+      const client = makeMissingRowClient();
+      await expect(
+        runControlsAction(
+          client,
+          { kind: 'go-global', controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        ),
+      ).rejects.toThrow(/voice_intake_enabled/);
+    });
+
+    it('never echoes the raw phone number in the missing-row error', async () => {
+      const client = makeMissingRowClient();
+      let caught: unknown;
+      try {
+        await runControlsAction(
+          client,
+          { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).not.toContain(PHONE);
+    });
+  });
+
+  describe('--enable deferred_delivery retrigger sweep (O1) — logging', () => {
     it('never logs a raw phone number regardless of which action ran', async () => {
       const { client } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
       const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});

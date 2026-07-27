@@ -168,6 +168,88 @@ describe('run-migrations.sh', () => {
     expect(script).toMatch(/if \[\[ -n "\$\{BASELINE_ONLY\[\$f\]:-\}" \]\]/);
   });
 
+  it('accounts for the APPLY_ONE wrapper bytes, not just the base64 payload, when packing batches', () => {
+    const script = readScript();
+
+    // The batch packer must charge the per-file heredoc wrapper — filename
+    // and checksum substitutions — on top of the encoded payload, both in
+    // the running batch total and in the per-file ceiling check. Otherwise
+    // the cap only counts what encode_migration produces, not what SSM
+    // actually receives.
+    expect(script).toMatch(/APPLY_ONE_FIXED_BYTES=\d+/);
+    expect(script).toContain('APPLY_ONE_FILENAME_OCCURRENCES');
+    expect(script).toContain('APPLY_ONE_CHECKSUM_OCCURRENCES');
+    expect(script).toMatch(
+      /fsize=\$\(\(\s*fsize \+ APPLY_ONE_FIXED_BYTES/,
+    );
+  });
+
+  it('seeds batch_bytes with the preamble cost on every flush, not just the first batch', () => {
+    const script = readScript();
+
+    expect(script).toMatch(/PREAMBLE_BYTES=\$\(\s*\{\s*emit_pg_preamble;\s*emit_ledger_ddl;\s*\}\s*\|\s*wc -c\s*\)/);
+    expect(script).toContain('batch_bytes=$PREAMBLE_BYTES');
+
+    // Both the initial declaration and the reset inside flush_batch() must
+    // use the preamble cost, not a bare 0.
+    const occurrences = script.match(/batch_bytes=\$PREAMBLE_BYTES/g) ?? [];
+    expect(occurrences.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('hard-fails in run_on_bastion when the rendered script exceeds the SSM payload ceiling', () => {
+    const script = readScript();
+
+    expect(script).toMatch(/script_bytes=\$\(wc -c < "\$script_file"\)/);
+    expect(script).toMatch(/over the \$\{MAX_PAYLOAD_BYTES\}B SSM payload ceiling/);
+  });
+
+  it('is strict about truncated output only for the ledger read, not for apply/verify/rotate', () => {
+    const script = readScript();
+
+    // The ledger read passes strict_truncation=true and dies rather than
+    // proceeding on a partial read.
+    expect(script).toMatch(/run_on_bastion "\$WORKDIR\/read-ledger\.sh" "read migration ledger" true/);
+    expect(script).toMatch(/cannot plan from partial state/);
+
+    // apply_batch, verify_ledger, and rotate must NOT pass strict=true —
+    // truncation there is waived because verify_ledger() re-reads database
+    // state afterward.
+    expect(script).not.toMatch(/run_on_bastion "\$script" "\$label" true/);
+    expect(script).not.toMatch(/run_on_bastion "\$WORKDIR\/verify\.sh" "verify ledger" true/);
+    expect(script).not.toMatch(/run_on_bastion "\$WORKDIR\/rotate\.sh" "rotate role secrets" true/);
+  });
+
+  it('refuses to report success from a fresh-database bootstrap without provisioning role credentials', () => {
+    const script = readScript();
+
+    expect(script).toContain('FRESH_DATABASE=false');
+    expect(script).toMatch(/FRESH_DATABASE=true/);
+    expect(script).toMatch(/refusing to report success from a fresh-database bootstrap/);
+
+    // Names every role left without a usable password, and the secret that
+    // will not exist.
+    expect(script).toMatch(/jale_matching, jale_admin_console, jale_billing, jale_whatsapp/);
+    expect(script).toContain('$WA_DB_SECRET_NAME does not exist');
+
+    // The guard only fires without --rotate-secrets AND without the new
+    // --skip-secrets acknowledgment.
+    expect(script).toMatch(/\$FRESH_DATABASE && \(\( \$\{n_exec:-0\} > 0 \)\) && ! \$ROTATE_SECRETS && ! \$SKIP_SECRETS/);
+  });
+
+  it('adds --skip-secrets as an explicit, documented opt-out of the fresh-bootstrap guard', () => {
+    const script = readScript();
+
+    expect(script).toContain('--skip-secrets');
+    expect(script).toContain('SKIP_SECRETS=false');
+    expect(script).toMatch(/--skip-secrets\)\s*SKIP_SECRETS=true/);
+    // Documented in the usage comment block.
+    expect(script).toMatch(/#\s+--skip-secrets\s+Acknowledge that a fresh-database bootstrap/);
+
+    // --rotate-secrets remains opt-in on its own; --skip-secrets never
+    // implies or triggers rotation.
+    expect(script).toContain('ROTATE_SECRETS=false');
+  });
+
   it('lists every migration on disk, in sorted order', () => {
     const script = readScript();
     const onDisk = fs.readdirSync(migrationsDir).filter((n) => n.endsWith('.sql')).sort();

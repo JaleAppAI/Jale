@@ -587,6 +587,71 @@ test('v2 COMPLETED: writes the extraction row, enqueues exactly one #vp event, a
   });
 });
 
+// Task 8: the transaction is held open across S3/Bedrock calls, so
+// publishing the #vp event BEFORE the COMMIT means a COMMIT failure leaves
+// an event already delivered that references a rolled-back extractionId —
+// FIFO dedup then blocks any correction from ever landing. The fix commits
+// first, then publishes.
+test('v2 COMPLETED: publishes the #vp event strictly AFTER COMMIT, never before', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-v2-order' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('My name is Jose, I am a plumber'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { full_name: 'Jose', main_trade: 'plumber' },
+    { full_name: 0.9, main_trade: 0.9 },
+    'Jose, a plumber.',
+    'Jose, un plomero.',
+  ));
+
+  await handler({
+    status: 'COMPLETED',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-v2-order',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-v2-order' }),
+  } as any, {} as any, () => {});
+
+  const commitCallIndex = mockQuery.mock.calls.findIndex(([sql]: [string]) => sql === 'COMMIT');
+  expect(commitCallIndex).toBeGreaterThanOrEqual(0);
+  const commitOrder = mockQuery.mock.invocationCallOrder[commitCallIndex];
+  expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  const sqsOrder = mockSqsSend.mock.invocationCallOrder[0];
+  expect(sqsOrder).toBeGreaterThan(commitOrder);
+});
+
+test('v2 COMPLETED: a COMMIT failure publishes no event and never rolls back (the row already exists)', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-v2-commitfail' }] });
+    }
+    if (sql === 'COMMIT') {
+      return Promise.reject(new Error('commit failed'));
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('My name is Jose, I am a plumber'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { full_name: 'Jose', main_trade: 'plumber' },
+    { full_name: 0.9, main_trade: 0.9 },
+    'Jose, a plumber.',
+    'Jose, un plomero.',
+  ));
+
+  await expect(handler({
+    status: 'COMPLETED',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-v2-commitfail',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-v2-commitfail' }),
+  } as any, {} as any, () => {})).rejects.toThrow('commit failed');
+
+  // The publish call sits strictly AFTER `await client.query('COMMIT')` —
+  // when that await itself rejects, execution never reaches the publish
+  // line (nor the `committed = true` marker), so no event is ever sent for
+  // a transaction that never actually committed.
+  expect(mockSqsSend).not.toHaveBeenCalled();
+});
+
 test('v2 FAILED: writes a failed extraction row and enqueues a FAILED #vp event, still no users/outbox writes', async () => {
   mockQuery.mockImplementation((sql: string) => {
     if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {

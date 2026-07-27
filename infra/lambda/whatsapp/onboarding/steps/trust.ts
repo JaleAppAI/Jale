@@ -155,7 +155,7 @@ async function handleTrustVoiceNote(
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
-  const { started } = await deps.voiceIntake.startTrustTranscription({
+  const { started, executionArn } = await deps.voiceIntake.startTrustTranscription({
     workerId: gate.userId,
     phone: session.whatsapp_number,
     runId: gate.runId!,
@@ -172,6 +172,14 @@ async function handleTrustVoiceNote(
     await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
     return { handled: true, workerId: gate.userId, stepKey };
   }
+
+  // Task 5/B3: stashed as the staleness anchor `applyTrustVoiceTranscript`
+  // compares its incoming event's `executionArn` against — mirrors
+  // `handleVoiceChoiceStep`'s `v2VoiceExecutionArn` (onboarding/steps/
+  // voice.ts) exactly. Never advances the step or takes the run lock, so
+  // this is a plain state_context mutation persisted by the caller's
+  // ordinary per-turn write-back.
+  session.state_context.v2TrustVoiceExecutionArn = executionArn;
 
   await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_ack', {}, now, gate.runId!, msg.messageSid, 'voice_ack');
   return { handled: true, workerId: gate.userId, stepKey };
@@ -197,7 +205,14 @@ async function applyTrustVoiceTranscript(
   stepKey: 'trust.question.1' | 'trust.question.2' | 'trust.question.3',
   evt: TrustVoiceEventV2,
 ): Promise<RouteResult> {
-  if (evt.runId !== gate.runId || evt.stepKey !== stepKey) {
+  // Task 5/B3: the execution-ARN check is what catches a late transcript
+  // from an EARLIER visit to this exact run/step — BACK and RESTART both
+  // revisit the same run, so runId/stepKey alone can't tell "this visit's
+  // transcript" from "a stale one from before the worker went back and
+  // re-answered". Mirrors the profile lane's `handleVoiceIntakeResult`
+  // (onboarding/steps/voice.ts) exactly.
+  const expectedArn = session.state_context?.v2TrustVoiceExecutionArn as string | undefined;
+  if (evt.runId !== gate.runId || evt.stepKey !== stepKey || expectedArn !== evt.executionArn) {
     console.warn(JSON.stringify({
       metric: 'OnboardingVoiceTranscriptStale',
       stepKey,
