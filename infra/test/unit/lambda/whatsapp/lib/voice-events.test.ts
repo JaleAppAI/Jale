@@ -36,6 +36,7 @@ const trustEvent: TrustVoiceEventV2 = {
   questionIndex: 1,
   transcript: 'I fix leaky pipes and install water heaters.',
   transcriptOutputKey: 'transcripts/run-abc-123/q2.json',
+  executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-1',
 };
 
 const profileEvent: ProfileIntakeVoiceEventV2 = {

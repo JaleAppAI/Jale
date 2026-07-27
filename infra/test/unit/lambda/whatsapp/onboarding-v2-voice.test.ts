@@ -204,6 +204,86 @@ describe('WhatsApp v2 voice — trust-question voice notes', () => {
       });
     },
   );
+
+  // Task 7/B5: an expired/unreachable Twilio media URL must produce the
+  // graceful v2_voice_failed reprompt, never throw and never poison the
+  // claim transaction.
+  it('an expired media URL produces the v2_voice_failed reprompt, no throw', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15552220012' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('trust.question.1');
+    h.failTrustTranscription('download_failed');
+
+    const result = await h.sendVoiceNote();
+
+    expect(result.stepKey).toBe('trust.question.1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    expect(h.getPendingTranscriptions()).toHaveLength(0);
+    expect(findSend(h, 'v2_voice_failed')).toBeDefined();
+    expect(h.getWorkerProfile()?.trustAnswers ?? []).toHaveLength(0);
+
+    // Recovers cleanly on the next attempt.
+    h.recoverTrustTranscription();
+    await h.sendVoiceNote();
+    expect(h.getPendingTranscriptions()).toHaveLength(1);
+  });
+
+  // Task 5/B3: BACK revisits the same run/step, so runId/stepKey alone
+  // cannot distinguish "this visit's transcript" from a late one belonging
+  // to a visit the worker has already left. The execution-ARN anchor must.
+  it('a late transcript from a visit the worker has already BACKed away from is discarded (stale ARN); the current visit still applies', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15552220013' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('trust.question.2');
+
+    // First visit to trust.question.1 (via BACK): start a voice note but
+    // never let its transcript arrive yet.
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    await h.sendVoiceNote();
+    expect(h.getPendingTranscriptions()).toHaveLength(1);
+
+    // The worker changes their mind and types an answer instead, advancing
+    // past question 1 again.
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.2');
+
+    // BACK again, to the SAME step/run, and record a NEW voice note there —
+    // a distinct execution ARN from the first (stale) one.
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    await h.sendVoiceNote();
+    expect(h.getPendingTranscriptions()).toHaveLength(2);
+
+    // The FIRST (stale) visit's transcript now arrives late.
+    const sentBefore = h.getSentMessages().length;
+    const staleResult = await h.completeTranscription(0, {
+      status: 'COMPLETED',
+      transcript: 'stale answer from the first visit',
+    });
+    expect(h.getSentMessages()).toHaveLength(sentBefore); // silent discard
+    expect(staleResult.stepKey).toBe('trust.question.1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1'); // unmoved
+
+    // The CURRENT (second) visit's transcript still applies normally.
+    const currentResult = await h.completeTranscription(1, {
+      status: 'COMPLETED',
+      transcript: 'the current, correct answer',
+    });
+    expect(currentResult.stepKey).toBe('trust.question.2');
+    // This harness's fake profile store append-only-logs every save (unlike
+    // the real adapter's merge-by-question_index, covered separately in
+    // onboarding-adapters.test.ts) — the MOST RECENT index-0 entry is what
+    // matters here: it must be this voice answer, not the earlier BACKed-
+    // away-from ones, and it must never be the stale transcript's text.
+    const answers = h.getWorkerProfile()?.trustAnswers ?? [];
+    const mostRecentQ0 = [...answers].reverse().find((a) => a.questionIndex === 0);
+    expect(mostRecentQ0).toMatchObject({
+      answerText: 'the current, correct answer',
+      answerSource: 'voice',
+    });
+    expect(answers.some((a) => a.answerText === 'stale answer from the first visit')).toBe(false);
+  });
 });
 
 /**
@@ -541,6 +621,26 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
       await h.sendVoiceNote();
 
       h.advanceTime(6 * 60 * 1000); // > VOICE_PROCESSING_TIMEOUT_MS (5 min)
+      const result = await h.sendText('hello?');
+
+      expect(findSend(h, 'v2_voice_fallback')).toBeDefined();
+      expect(result.stepKey).toBe('profile.name');
+      expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    });
+
+    // Task 6/B4 fix: a MISSING/unparseable `v2VoiceStartedAt` used to coerce
+    // `elapsedMs` to 0 (never >= the timeout), stranding the worker on this
+    // holding step forever — reachable in practice via a repair-CLI
+    // `--set-step` landing here (now excluded, but a belt-and-suspenders
+    // fix regardless: the run itself could reach this state via any anchor
+    // loss). The fallback must now be immediate, no clock advance needed.
+    it('a missing v2VoiceStartedAt anchor escapes to the text flow on the very next inbound message, no timeout wait needed', async () => {
+      const h = await toVoiceChoice('+15552230022');
+      await h.sendVoiceNote();
+      expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
+
+      delete (h.getState().stateContext as Record<string, unknown>).v2VoiceStartedAt;
+
       const result = await h.sendText('hello?');
 
       expect(findSend(h, 'v2_voice_fallback')).toBeDefined();

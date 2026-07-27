@@ -71,6 +71,10 @@ const RESTART_CLEARED_STATE_CONTEXT_KEYS = [
   'v2RubricVersion',
   'v2ProfileTrade',
   'v2CustomTradeText',
+  // Task 5/B3: the trust-question voice execution-ARN anchor. Left behind,
+  // a transcript from a PRE-restart trust voice note would look "current"
+  // again if it arrived after the restart re-used the same run/step.
+  'v2TrustVoiceExecutionArn',
 ] as const;
 
 interface GateStepParams {
@@ -103,6 +107,11 @@ async function handleRestartCommand(
   console.log(JSON.stringify({ metric: 'OnboardingWorkerRestarted', fromStepKey: stepKey, runId: workflowRunId }));
 
   await deps.repo.clearProfileAnswers(client, workerId);
+  // Defect 4b fix: without this, the abandoned trade's pending trust
+  // answers and its `worker_skills` row both survive a restart, so a worker
+  // who picks a different trade the second time around keeps getting
+  // matched on the trade they no longer claim.
+  await deps.repo.resetPendingTrustAssessmentAndSkills(client, workerId);
 
   for (const key of RESTART_CLEARED_STATE_CONTEXT_KEYS) {
     delete session.state_context[key];
@@ -161,6 +170,12 @@ async function handleBackCommand(
   if (!prevStepKey || !PROFILE_OR_TRUST_STEP.test(prevStepKey)) {
     return blocked();
   }
+
+  // Task 5/B3: BACK revisits the same run — a late transcript from the
+  // question the worker is now leaving must never be mistaken for current
+  // once they land back on it later, so its execution-ARN anchor goes with
+  // it (mirrors RESTART's wider clear above, scoped to just this one key).
+  delete session.state_context.v2TrustVoiceExecutionArn;
 
   const updated = await deps.repo.advanceWorkflow(client, {
     runId: workflowRunId,

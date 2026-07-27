@@ -479,6 +479,39 @@ export async function clearProfileAnswers(
 }
 
 /**
+ * RESTART repair (migration 052): resets the worker's PENDING trust
+ * assessment answers and clears any residual `worker_skills` row(s) so a
+ * restart with a different trade doesn't leave the abandoned trade's skill
+ * matched (`upsertWorkerProfileFromUsers`'s seeding INSERT is
+ * `ON CONFLICT DO NOTHING`, so without this the old row survives forever).
+ *
+ * Never a DELETE on `worker_trust_assessments` — `jale_whatsapp` has no
+ * DELETE grant on that table (migration 049 only granted UPDATE(answers,
+ * rubric_version, scoring_model_id)), and this must never touch a scored or
+ * completed assessment: `WHERE status = 'pending'` both satisfies the
+ * `wta_whatsapp_pending_rows` policy and keeps this scoped to the
+ * in-progress attempt being abandoned. `worker_skills` DELETE is granted by
+ * migration 052 with a worker-scoped policy mirroring
+ * `worker_skills_whatsapp_insert`.
+ */
+export async function resetPendingTrustAssessmentAndSkills(
+  client: PoolClient,
+  workerId: string,
+): Promise<void> {
+  await client.query(
+    `UPDATE worker_trust_assessments
+        SET answers = '[]'::jsonb
+      WHERE user_id = $1 AND status = 'pending'`,
+    [workerId],
+  );
+
+  await client.query(
+    `DELETE FROM worker_skills WHERE worker_id = $1`,
+    [workerId],
+  );
+}
+
+/**
  * Looks up the step a run was on immediately before its CURRENT step, for
  * the BACK/ATRAS gate command (`onboarding/gate.ts`). Reads the most recent
  * `worker_workflow_transitions` row that landed ON `currentStepKey` and
@@ -488,6 +521,16 @@ export async function clearProfileAnswers(
  * `completeOnboarding`'s terminal transition (from = to). Returns null when
  * no such transition exists — nothing to go back to. Read-only: never locks
  * or mutates a row.
+ *
+ * `reason NOT LIKE 'worker\_%'` excludes BACK's own `worker_back` and
+ * RESTART's `worker_restart` transitions (the only two `worker_`-prefixed
+ * reasons; every forward-progress reason is `profile_*`/`legal_*`/
+ * `trust_*`/`onboarding_complete`) — without it, `handleBackCommand`'s own
+ * write (landing back ON the step the worker just left) becomes the
+ * "previous" step on the very next BACK, so a second press walks the worker
+ * forward again instead of continuing backward. `from_step_key NOT IN
+ * (...)` excludes the two voice holding steps: neither has a prompt of its
+ * own, so BACK must never land a worker there.
  */
 export async function findPreviousStepKey(
   client: PoolClient,
@@ -501,6 +544,8 @@ export async function findPreviousStepKey(
         AND to_step_key = $2
         AND from_step_key IS NOT NULL
         AND from_step_key <> to_step_key
+        AND reason NOT LIKE 'worker\\_%'
+        AND from_step_key NOT IN ('profile.voice_choice', 'profile.voice_processing')
       ORDER BY created_at DESC, id DESC
       LIMIT 1`,
     [runId, currentStepKey],

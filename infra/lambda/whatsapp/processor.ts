@@ -125,6 +125,7 @@ import {
   appendTransition,
   completeOnboarding,
   clearProfileAnswers,
+  resetPendingTrustAssessmentAndSkills,
   findPreviousStepKey,
 } from './lib/onboarding-repository';
 import { recordCanonicalWhatsAppConsent } from './lib/legal-consent';
@@ -1121,20 +1122,36 @@ async function startTrustTranscription(
     mediaContentType: string;
     inboundMessageSid: string;
   },
-): Promise<{ started: boolean }> {
+): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
   const category = detectMediaCategory(input.mediaContentType);
-  if (category !== 'voice') return { started: false };
+  if (category !== 'voice') return { started: false, reason: 'invalid_media_type' };
 
   const bucketName = process.env.MEDIA_BUCKET_NAME;
   const stateMachineArn = process.env.TRUST_PIPELINE_STATE_MACHINE_ARN;
   if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
   if (!stateMachineArn) throw new Error('TRUST_PIPELINE_STATE_MACHINE_ARN not set');
 
-  const twilioSecret = await getTwilioSecret();
-  const mediaBuffer = await downloadTwilioMedia(input.mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+  let mediaBuffer: Buffer;
+  try {
+    const twilioSecret = await getTwilioSecret();
+    mediaBuffer = await downloadTwilioMedia(input.mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
+  } catch (err) {
+    // Task 7/B5 fix: an expired/unreachable Twilio media URL must never
+    // throw bare here — this runs inside the claim transaction, so an
+    // uncaught throw aborts it, poisons the phone's FIFO message group, and
+    // burns all five retries. Degrade to the same graceful
+    // `{started: false}` path a rejected file already takes; the existing
+    // `v2_voice_failed` reprompt (handleTrustVoiceNote, onboarding/steps/
+    // trust.ts) handles it from here.
+    console.error(JSON.stringify({
+      metric: 'OnboardingTrustVoiceDownloadFailed',
+      reason: (err as { name?: string })?.name ?? 'unknown_error',
+    }));
+    return { started: false, reason: 'download_failed' };
+  }
   // Twilio does not reject oversized uploads at the source; enforce the cap
   // post-download rather than stranding the worker on a silent failure.
-  if (mediaBuffer.byteLength > MAX_VOICE_BYTES) return { started: false };
+  if (mediaBuffer.byteLength > MAX_VOICE_BYTES) return { started: false, reason: 'file_too_large' };
 
   const mediaId = randomUUID();
   const s3Key = buildS3Key(input.workerId, mediaId, 'voice');
@@ -1172,21 +1189,28 @@ async function startTrustTranscription(
     },
   };
 
+  // Deterministic execution name (same shape as sendErrorFallback's `<sid>#err`
+  // idempotency key): an SQS redelivery of the same inbound voice note
+  // resolves to the SAME execution rather than starting a second
+  // transcription job. Deriving the ARN here (Task 5/B3), same pattern as
+  // `ingestProfileVoiceNote` below, gives the router a staleness anchor
+  // (`state_context.v2TrustVoiceExecutionArn`) synchronously, before the
+  // pipeline itself has run — it never has to wait for the async completion
+  // to learn what its own execution's ARN will be.
+  const executionName = `vt-${input.inboundMessageSid}`;
+  const executionArn = deriveExecutionArn(stateMachineArn, executionName);
+
   try {
-    // Deterministic execution name (same shape as sendErrorFallback's `<sid>#err`
-    // idempotency key): an SQS redelivery of the same inbound voice note
-    // resolves to the SAME execution rather than starting a second
-    // transcription job.
     await sfn.send(new StartExecutionCommand({
       stateMachineArn,
-      name: `vt-${input.inboundMessageSid}`,
+      name: executionName,
       input: JSON.stringify(sfnInput),
     }));
   } catch (err: any) {
     if (err?.name !== 'ExecutionAlreadyExists') throw err;
   }
 
-  return { started: true };
+  return { started: true, executionArn };
 }
 
 // ── v2 full voice profile intake (Stream B) — ingestion kickoff ──
@@ -1422,6 +1446,7 @@ async function routeMessage(
           return result;
         },
         clearProfileAnswers,
+        resetPendingTrustAssessmentAndSkills,
         findPreviousStepKey,
       },
       enqueueWorkerMessage: async (gatewayClient, input, now) => {
@@ -2755,7 +2780,13 @@ async function handleIdle(
   // Idle (post-onboarding, ready) workers have no voice handler at all —
   // give the honest "not supported here" reply rather than an unrelated
   // idle_help fallback that never mentions why the voice note went nowhere.
-  if (msg.numMedia > 0) {
+  // A CAPTIONED photo (or a photo tapped alongside an interactive/button
+  // payload) must fall through to the ordinary command handling below —
+  // only a genuinely empty-bodied, non-interactive media message (a real
+  // voice note) is voice-note copy. Without this, a ready worker's photo
+  // captioned with a jobs command would get the voice-note reply instead of
+  // the command it typed.
+  if (msg.numMedia > 0 && (msg.body ?? '').trim().length === 0 && !msg.interactivePayload && !msg.buttonPayload) {
     await reply(client, msg, 'voice_note_not_supported', conv.language);
     return null;
   }

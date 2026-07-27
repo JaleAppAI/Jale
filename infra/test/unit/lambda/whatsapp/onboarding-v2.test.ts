@@ -214,6 +214,10 @@ function createFakeGateRepo() {
       // `worker_profiles`, read/written by the shared `client.query` fake).
       profileDb.set(workerId, {});
     },
+    async resetPendingTrustAssessmentAndSkills(_client: any, _workerId: string): Promise<void> {
+      // No-op stand-in — this suite doesn't model worker_trust_assessments
+      // or worker_skills.
+    },
     async findPreviousStepKey(
       _client: any,
       runId: string,
@@ -335,6 +339,7 @@ function makeDeps() {
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
       completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
       clearProfileAnswers: (c, workerId) => gateRepo.clearProfileAnswers(c, workerId),
+      resetPendingTrustAssessmentAndSkills: (c, workerId) => gateRepo.resetPendingTrustAssessmentAndSkills(c, workerId),
       findPreviousStepKey: (c, runId, currentStepKey) => gateRepo.findPreviousStepKey(c, runId, currentStepKey),
     },
     enqueueWorkerMessage: gateway.enqueueWorkerMessage,

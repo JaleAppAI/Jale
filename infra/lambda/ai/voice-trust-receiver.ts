@@ -67,6 +67,19 @@ export interface V2TrustExecutionContext {
 export interface VoiceTrustReceiverEvent {
   status: 'COMPLETED' | 'FAILED';
   executionContext: VoiceTrustContext | V2TrustExecutionContext;
+  /**
+   * `$$.Execution.Id`, threaded in by the VoiceTranscriptionPipeline
+   * construct's `invokeOnCompleted`/`invokeOnFailed` payloads as a top-level
+   * sibling of `executionContext` (same mechanism `ai-profile-writer.ts`'s
+   * `VoicePipelineAiProfileWriterEvent.executionArn` already uses) — the
+   * deterministic execution ARN this lambda embeds in the outbound
+   * `TrustVoiceEventV2` so the router's staleness check
+   * (`applyTrustVoiceTranscript`) can compare it against
+   * `state_context.v2TrustVoiceExecutionArn`. Always present in practice for
+   * a REAL Step Functions invocation on the v2 branch; the legacy branch
+   * never reads it.
+   */
+  executionArn?: string;
 }
 
 function isV2TrustExecutionContext(
@@ -128,6 +141,7 @@ async function queueOutboxText(
 async function handleV2VoiceTrustCompletion(
   status: 'COMPLETED' | 'FAILED',
   ctx: V2TrustExecutionContext,
+  executionArn: string,
 ): Promise<void> {
   const { v2 } = ctx;
   console.log(JSON.stringify({
@@ -140,8 +154,24 @@ async function handleV2VoiceTrustCompletion(
   let transcript: string | undefined;
   let finalStatus: 'COMPLETED' | 'FAILED' = status;
   if (status === 'COMPLETED') {
-    transcript = await readTranscript(ctx.mediaBucketName, ctx.transcriptOutputKey);
-    if (transcript.trim().length === 0) {
+    // Task 7/B5 fix: an S3 hiccup reading the transcript must never throw
+    // bare here — this lambda has no DLQ/retry story a worker would ever
+    // see resolved, so an uncaught throw means the worker waits forever
+    // with no #vt event ever sent. Degrade to FAILED and let the router's
+    // existing graceful `v2_voice_failed` reprompt (applyTrustVoiceTranscript,
+    // onboarding/steps/trust.ts) handle it exactly like a genuinely empty
+    // transcript already does below.
+    try {
+      transcript = await readTranscript(ctx.mediaBucketName, ctx.transcriptOutputKey);
+      if (transcript.trim().length === 0) {
+        finalStatus = 'FAILED';
+      }
+    } catch (err) {
+      console.error(JSON.stringify({
+        metric: 'VoiceTrustReceiverTranscriptReadFailed',
+        stepKey: v2.stepKey,
+        reason: (err as { name?: string })?.name ?? 'unknown_error',
+      }));
       finalStatus = 'FAILED';
     }
   }
@@ -157,6 +187,7 @@ async function handleV2VoiceTrustCompletion(
     origMessageSid: v2.origMessageSid,
     startedAt: v2.startedAt,
     questionIndex: v2.questionIndex,
+    executionArn,
     ...(finalStatus === 'COMPLETED'
       ? { transcript, transcriptOutputKey: ctx.transcriptOutputKey }
       : {}),
@@ -183,7 +214,10 @@ export async function handleVoiceTrustCompletion(
   event: VoiceTrustReceiverEvent,
 ): Promise<void> {
   if (isV2TrustExecutionContext(event.executionContext)) {
-    await handleV2VoiceTrustCompletion(event.status, event.executionContext);
+    if (!event.executionArn) {
+      throw new Error('executionArn missing on v2 trust-voice completion');
+    }
+    await handleV2VoiceTrustCompletion(event.status, event.executionContext, event.executionArn);
     return;
   }
 
