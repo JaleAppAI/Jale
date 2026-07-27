@@ -38,7 +38,10 @@ export async function ensureWorkerCognitoAccount(input: {
       TemporaryPassword: password,
       UserAttributes: [
         { Name: 'phone_number', Value: input.phone },
-        { Name: 'phone_number_verified', Value: 'true' },
+        // 'false' until a correct OTP proves possession — flipped by
+        // verify-auth-challenge.ts. Account creation alone (WhatsApp
+        // issueChallenge, web signup) is not proof of anything.
+        { Name: 'phone_number_verified', Value: 'false' },
         { Name: 'custom:user_type', Value: 'worker' },
       ],
     }));
@@ -90,9 +93,10 @@ export async function reconcileWorkerCognitoAccount(input: {
   if (storedPhone !== input.phone) {
     requiredAttributes.push({ Name: 'phone_number', Value: input.phone });
   }
-  if (attributes.get('phone_number_verified') !== 'true') {
-    requiredAttributes.push({ Name: 'phone_number_verified', Value: 'true' });
-  }
+  // Deliberately NOT force-syncing phone_number_verified here: only a
+  // correct OTP (verify-auth-challenge.ts) may set it to 'true'.
+  // Reconciliation runs from unauthenticated paths (repeat web signup,
+  // WhatsApp issueChallenge) where possession is unproven.
   if (accountType !== 'worker') {
     requiredAttributes.push({ Name: 'custom:user_type', Value: 'worker' });
   }

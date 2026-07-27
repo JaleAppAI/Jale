@@ -34,7 +34,6 @@ import {
   normalizeProfession,
   type TrustQuestion,
 } from '../handlers/custom-trust';
-import type { WorkerLocationSource } from '../../lib/location';
 import {
   TRUST_QUESTIONS,
   TRUST_STEPS,
@@ -71,7 +70,16 @@ export type IssueChallengeResult =
 
 export type VerifyChallengeResult =
   | { status: 'verified'; workerId: string }
-  | { status: 'invalid'; attemptsRemaining: number; attempts: number }
+  /**
+   * `rotatedChallengeId` is REQUIRED (not optional) on purpose: Cognito
+   * rotates the CUSTOM_CHALLENGE Session on every wrong answer, and the
+   * NEXT submission is only valid against the rotated session. An optional
+   * field would let every test fake omit it and silently re-mask the very
+   * regression this fixes (v1 solved it in processor.ts's recordWrongOtp;
+   * the v2 rewrite dropped it). `null` means the provider gave us no new
+   * session (the SDK call threw a non-session error) — keep the old one.
+   */
+  | { status: 'invalid'; attemptsRemaining: number; attempts: number; rotatedChallengeId: string | null }
   | { status: 'expired' }
   | { status: 'locked'; lockedUntil: Date };
 
@@ -111,6 +119,11 @@ export interface IdentityAdapter {
    * the adapter instance itself would silently reset every call — the
    * three-strike lockout only works if the caller persists what this
    * method returns through `savePreAuthState` between calls.
+   *
+   * The same contract covers the rotated session: on an 'invalid' result
+   * the caller MUST persist `rotatedChallengeId` (when non-null) into
+   * `providerChallengeId`, or the worker's second submission fails against
+   * the stale Cognito session even when the code is correct.
    */
   verifyChallenge(
     client: PoolClient,
@@ -209,6 +222,11 @@ export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapte
         }
         // Any other thrown error (e.g. Cognito's own max-retries fail) is
         // treated as a wrong code, falling through to attempt accounting.
+        // resp === undefined also means there is NO rotated session below:
+        // the caller keeps its stored one, and the next attempt lands on
+        // the /session/i branch above → 'expired' → RESEND, which is the
+        // correct recovery because that session genuinely cannot continue
+        // (mirrors v1's recordWrongOtp(..., undefined) at processor.ts).
         resp = undefined;
       }
 
@@ -229,6 +247,12 @@ export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapte
         status: 'invalid',
         attemptsRemaining: OTP_MAX_ATTEMPTS - newCount,
         attempts: newCount,
+        // Cognito answered 200-with-new-Session for a wrong-but-retryable
+        // answer (define-auth-challenge allows 3 in-session attempts, and
+        // create-auth-challenge reuses the SAME code on retry). The caller
+        // must persist this into providerChallengeId or the next
+        // submission — even the correct code — dies on the stale session.
+        rotatedChallengeId: resp?.Session ?? null,
       };
     },
   };
@@ -249,11 +273,6 @@ export interface LocationResolver {
 
 const ZIP_RE = /^\d{5}$/;
 const CITY_STATE_RE = /^([A-Za-z][A-Za-z .'-]*),\s*([A-Za-z]{2})$/;
-
-/** Maps this adapter's `source` vocabulary onto the shared worker-location vocabulary. */
-export function toWorkerLocationSource(source: ResolvedLocation['source']): WorkerLocationSource {
-  return source === 'zip' ? 'geocoded_zip' : 'geocoded_address';
-}
 
 export function createLocationResolver(): LocationResolver {
   return {
@@ -400,26 +419,34 @@ export function createProfilePersistenceAdapter(
       // already have a row.
       await upsertWorkerProfileFromUsers(client, workerId);
 
-      const source = toWorkerLocationSource(location.source);
       const locationText =
         location.source === 'city_state' && location.city && location.state
           ? `${location.city}, ${location.state}`
           : location.postalCode;
 
-      // `users.city` feeds profile-builder display; `worker_profiles`
-      // carries the matching-relevant location_source/location_updated_at
-      // columns already used by lambda/lib/location.ts's setWorkerCoordinates.
+      // `users.city` feeds profile-builder display; `worker_profiles.location`
+      // (plain TEXT, 003_jobs_and_applications.sql) feeds the trust-handoff
+      // readiness check.
+      //
+      // 2026-07-26 incident fix: this UPDATE must NEVER touch the five
+      // coordinate columns (latitude, longitude, location_source,
+      // location_confidence, location_updated_at). They are bound together by
+      // the all-or-nothing CHECK `worker_profiles_location_complete`
+      // (009_location_foundation.sql), and this adapter has no coordinates —
+      // `ResolvedLocation` is regex-parsed text, not geocoded. Writing
+      // location_source/location_updated_at alone violated the CHECK and
+      // wedged every worker at profile.location. The only writer allowed to
+      // touch that column group is lambda/lib/location.ts's
+      // setWorkerCoordinates, which sets all five atomically.
       await client.query(
         `UPDATE users SET city = $2 WHERE id = $1 AND user_type = 'worker'`,
         [workerId, location.city ?? locationText],
       );
       await client.query(
         `UPDATE worker_profiles
-            SET location = $2,
-                location_source = $3,
-                location_updated_at = NOW()
+            SET location = $2
           WHERE user_id = $1`,
-        [workerId, locationText, source],
+        [workerId, locationText],
       );
     },
 

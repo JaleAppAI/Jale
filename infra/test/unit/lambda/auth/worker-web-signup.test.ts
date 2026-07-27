@@ -103,11 +103,18 @@ describe('worker-web-signup', () => {
       MessageAction: 'SUPPRESS',
       UserAttributes: expect.arrayContaining([
         { Name: 'phone_number', Value: '+19152272188' },
-        { Name: 'phone_number_verified', Value: 'true' },
-        { Name: 'name', Value: 'Ivan Worker' },
+        // 2026-07-26 hardening: an unauthenticated POST proves nothing.
+        // Verified stays 'false' until verify-auth-challenge flips it on a
+        // correct OTP.
+        { Name: 'phone_number_verified', Value: 'false' },
         { Name: 'custom:user_type', Value: 'worker' },
       ]),
     }));
+    // The caller-supplied name must NOT reach Cognito from this
+    // unauthenticated endpoint (pre-registration poisoning vector); it
+    // arrives via the authenticated post-OTP profile update instead.
+    const createAttrs = mockSend.mock.calls[0][0].input.UserAttributes as Array<{ Name: string }>;
+    expect(createAttrs.some((a) => a.Name === 'name')).toBe(false);
     expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AdminGetUserCommand);
     expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
     expect(mockSend.mock.calls[2][0].input).toEqual({
@@ -122,10 +129,12 @@ describe('worker-web-signup', () => {
       Password: expect.any(String),
       Permanent: true,
     });
+    // Seeded WITHOUT the caller-supplied name — '' is a safe no-op through
+    // reconcile_worker_signup's NULLIF/COALESCE.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
-      'Ivan Worker',
+      '',
     ]);
     expect(mockQuery.mock.invocationCallOrder[1]).toBeLessThan(mockSend.mock.invocationCallOrder[3]);
     expect(mockRelease).toHaveBeenCalled();
@@ -151,10 +160,14 @@ describe('worker-web-signup', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockSend).toHaveBeenCalledTimes(3);
+    // Neither the attacker-supplied rename NOR the Cognito-stored name is
+    // written from this unauthenticated path — '' preserves whatever
+    // users.full_name already holds (NULLIF/COALESCE no-op) and the
+    // authenticated post-OTP profile update remains the only name writer.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
-      'Stored Worker',
+      '',
     ]);
   });
 

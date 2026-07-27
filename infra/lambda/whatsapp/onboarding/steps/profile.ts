@@ -132,16 +132,23 @@ export async function handleProfileTrade(
   }
 
   if (choice === 'other') {
-    await deps.adapters.profile.saveTrade(client, gate.userId, 'other');
-    // computeNextField's main_trade_other conditional activates now that
-    // main_trade === 'other' is on the DB row, so the resolver naturally
-    // lands on profile.custom_trade next — no hardcoding needed here.
+    // Deliberately NO saveTrade here: `chk_trade_other` (004_whatsapp.sql)
+    // requires main_trade_other to be non-NULL whenever main_trade='other',
+    // and the worker hasn't told us their profession yet — writing
+    // main_trade='other' alone violates the CHECK (2026-07-26 incident
+    // class, sibling of the saveLocation fix). Instead the choice rides the
+    // resolver's `collected` bag, whose main_trade_other conditional
+    // (computeNextField, flows.ts) routes to profile.custom_trade next —
+    // where saveCustomTrade writes main_trade='other' AND main_trade_other
+    // atomically. Cross-turn resume stays safe because dispatch is by the
+    // persisted current_step_key, not by re-running the resolver.
     return advanceProfileToNextStep(
       client, session, msg, deps, gate,
       'profile.trade',
       { selectedTrade: 'other' },
       'profile_trade_other',
       now,
+      { main_trade: 'other' },
     );
   }
 

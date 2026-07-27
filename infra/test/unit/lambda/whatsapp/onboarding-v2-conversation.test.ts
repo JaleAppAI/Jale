@@ -218,6 +218,31 @@ describe('OTP lifecycle', () => {
     expect(h.getState().gate?.currentStepKey).toBe('legal.review');
   });
 
+  it('a wrong code followed by the CORRECT code verifies (rotated session persisted across turns)', async () => {
+    // The 2026-07-26 regression, pinned at conversation level: Cognito
+    // consumes the presented session on every wrong answer and only the
+    // rotated one may be resubmitted (the fake identity adapter models
+    // this faithfully — the stale id resolves to 'expired'). A router that
+    // fails to persist rotatedChallengeId into providerChallengeId breaks
+    // exactly here: the correct code on attempt 2 would report "expired"
+    // instead of binding.
+    const h = createWhatsAppV2Harness({ phone: '+15551110060' });
+    await h.sendText('START');
+    const originalChallengeId = h.getState().preAuth?.providerChallengeId;
+
+    const wrong = await h.sendWrongOtp();
+    expect(wrong.workerId).toBeNull();
+    expect(h.getState().preAuth?.attempts).toBe(1);
+    // The rotation must be durably persisted, not just returned.
+    const rotatedChallengeId = h.getState().preAuth?.providerChallengeId;
+    expect(rotatedChallengeId).toBeTruthy();
+    expect(rotatedChallengeId).not.toBe(originalChallengeId);
+
+    const result = await h.sendText(h.lastIssuedOtpCode());
+    expect(result.workerId).toBeTruthy();
+    expect(result.stepKey).toBe('legal.review');
+  });
+
   it('expires 5 minutes after issuance', async () => {
     const h = createWhatsAppV2Harness({ phone: '+15551110051' });
     await h.sendText('START');

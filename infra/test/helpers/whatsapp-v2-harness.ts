@@ -476,6 +476,7 @@ interface FakeChallenge {
 
 function createFakeIdentity(clockRef: { now: Date }) {
   let codeSeq = 0;
+  let rotationSeq = 0;
   const challenges = new Map<string, FakeChallenge>();
   // Seeded (or learned) phone -> workerId map, mirroring reconcileUserRow's
   // idempotent phone->account resolution. A phone with no prior entry gets
@@ -519,7 +520,24 @@ function createFakeIdentity(clockRef: { now: Date }) {
           if (newCount >= 3) {
             return { status: 'locked' as const, lockedUntil: new Date(now.getTime() + 15 * 60 * 1000) };
           }
-          return { status: 'invalid' as const, attemptsRemaining: 3 - newCount, attempts: newCount };
+          // Faithful to real Cognito CUSTOM_AUTH: a wrong-but-retryable
+          // answer CONSUMES the presented session and issues a rotated one
+          // carrying the same code (create-auth-challenge reuses the OTP on
+          // retry). The old id is deleted so a stale resubmission resolves
+          // to 'expired' — exactly the failure the 2026-07-26 review found
+          // the previous, overly-permissive fake was masking: a router that
+          // fails to persist rotatedChallengeId now breaks these
+          // conversations at attempt 2 instead of silently passing.
+          rotationSeq += 1;
+          const rotatedChallengeId = `${input.challengeId}#r${rotationSeq}`;
+          challenges.delete(input.challengeId);
+          challenges.set(rotatedChallengeId, challenge);
+          return {
+            status: 'invalid' as const,
+            attemptsRemaining: 3 - newCount,
+            attempts: newCount,
+            rotatedChallengeId,
+          };
         }
         let workerId = phoneToWorkerId.get(input.whatsappNumber);
         if (!workerId) {
@@ -612,7 +630,24 @@ function createFakeProfileAdapter() {
         ensure(workerId).location = location;
       },
       async saveTrade(_client: PoolClient, workerId: string, trade: string): Promise<void> {
-        ensure(workerId).trade = trade;
+        const p = ensure(workerId);
+        // Faithful to chk_trade_other (004_whatsapp.sql): main_trade='other'
+        // with main_trade_other still NULL is rejected by the real database.
+        // The 2026-07-26 review found the previous, always-accepting fake
+        // masked exactly this — the router called saveTrade('other') before
+        // the profession was known and every "Other" worker wedged in prod
+        // while this harness stayed green. The correct path stages the
+        // choice in the resolver's collected bag and lets saveCustomTrade
+        // write both columns atomically.
+        if (trade === 'other' && !p.tradeOther) {
+          const err: any = new Error(
+            'new row for relation "users" violates check constraint "chk_trade_other"',
+          );
+          err.code = '23514';
+          err.constraint = 'chk_trade_other';
+          throw err;
+        }
+        p.trade = trade;
       },
       async saveCustomTrade(_client: PoolClient, workerId: string, rawProfession: string): Promise<void> {
         const p = ensure(workerId);
