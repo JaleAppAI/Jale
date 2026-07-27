@@ -21,14 +21,15 @@ INSERT INTO public.whatsapp_runtime_controls (control_key, enabled, global_enabl
 VALUES ('voice_intake_enabled', false, false)
 ON CONFLICT (control_key) DO NOTHING;
 
+-- Only asserts the row exists. It is inserted with ON CONFLICT DO NOTHING,
+-- so replaying this migration after an operator has already flipped
+-- enabled/global_enabled/phone_hashes must not raise -- only a genuinely
+-- missing row is a self-audit failure.
 DO $migration$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM public.whatsapp_runtime_controls
      WHERE control_key = 'voice_intake_enabled'
-       AND enabled = false
-       AND global_enabled = false
-       AND phone_hashes = '{}'::text[]
   ) THEN
     RAISE EXCEPTION 'migration 051 voice_intake_enabled control row self-audit failed';
   END IF;

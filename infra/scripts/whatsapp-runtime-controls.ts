@@ -288,8 +288,9 @@ export async function runControlsAction(
 
   if (action.kind === 'allow-phone' || action.kind === 'deny-phone') {
     const phoneHash = hashNormalizedPhone(action.phone);
+    let result;
     if (action.kind === 'allow-phone') {
-      await client.query(
+      result = await client.query(
         `UPDATE whatsapp_runtime_controls
             SET phone_hashes = CASE
                   WHEN $1 = ANY(phone_hashes) THEN phone_hashes
@@ -301,7 +302,7 @@ export async function runControlsAction(
         [phoneHash, operator, action.controlKey],
       );
     } else {
-      await client.query(
+      result = await client.query(
         `UPDATE whatsapp_runtime_controls
             SET phone_hashes = array_remove(phone_hashes, $1),
                 updated_by = $2,
@@ -310,16 +311,29 @@ export async function runControlsAction(
         [phoneHash, operator, action.controlKey],
       );
     }
+    // If the control row is missing (e.g. the seeding migration has not
+    // been applied yet), the UPDATE matches zero rows and would otherwise
+    // report success having changed nothing.
+    if (!result.rowCount) {
+      throw new Error(
+        `whatsapp_runtime_controls has no row for control_key '${action.controlKey}' — has the seeding migration been applied?`,
+      );
+    }
     return;
   }
 
   if (action.kind === 'go-global') {
-    await client.query(
+    const result = await client.query(
       `UPDATE whatsapp_runtime_controls
           SET global_enabled = true, updated_by = $1, updated_at = now()
         WHERE control_key = $2`,
       [operator, action.controlKey],
     );
+    if (!result.rowCount) {
+      throw new Error(
+        `whatsapp_runtime_controls has no row for control_key '${action.controlKey}' — has the seeding migration been applied?`,
+      );
+    }
     return;
   }
 }
