@@ -69,6 +69,11 @@ import type {
 import { evaluateDelivery } from '../../lambda/whatsapp/lib/delivery-policy';
 import type { RuntimeControls } from '../../lambda/whatsapp/lib/runtime-controls';
 import { createLocationResolver } from '../../lambda/whatsapp/lib/onboarding-adapters';
+import {
+  buildSyntheticVoiceInboundBody,
+  parseVoiceTranscriptEvent,
+  type TrustVoiceEventV2,
+} from '../../lambda/whatsapp/lib/voice-events';
 
 // The shared client marker is never actually queried against — every fake
 // below is a plain in-memory structure — but it IS the value threaded
@@ -704,6 +709,50 @@ function createFakeProfileAdapter() {
   };
 }
 
+// ── Fake voice-intake surface (Task 4/7: trust-question voice notes) ───
+//
+// `enabled` is a live getter (not a snapshot) — `setVoiceIntakeEnabled` must
+// change the ANSWER `deps.voiceIntake.enabled` gives to router code that
+// reads it mid-turn, exactly like the real per-message
+// `isVoiceIntakeEnabled(runtimeControls, phoneHash)` read in processor.ts.
+// `startTrustTranscription` never touches Twilio/S3/SFN — it just records
+// the call so a test can complete it later via `completeTranscription`.
+
+interface PendingTranscription {
+  workerId: string;
+  phone: string;
+  runId: string;
+  stepKey: string;
+  questionIndex: number;
+  language: PreferredLanguage;
+  mediaUrl: string;
+  mediaContentType: string;
+  inboundMessageSid: string;
+}
+
+function createFakeVoiceIntake() {
+  let enabledFlag = false;
+  const pendingTranscriptions: PendingTranscription[] = [];
+
+  const voiceIntake = {
+    get enabled(): boolean {
+      return enabledFlag;
+    },
+    async startTrustTranscription(input: PendingTranscription): Promise<{ started: boolean }> {
+      pendingTranscriptions.push(input);
+      return { started: true };
+    },
+  };
+
+  return {
+    voiceIntake,
+    pendingTranscriptions,
+    setEnabled(value: boolean): void {
+      enabledFlag = value;
+    },
+  };
+}
+
 // ── Deterministic, dependency-free phone hash (never a real sha256 —
 //    determinism for tests, not security). ─────────────────────────────
 
@@ -758,6 +807,7 @@ export class WhatsAppV2Harness {
   private readonly identityFake: ReturnType<typeof createFakeIdentity>;
   private readonly trustQuestionsFake = createFakeTrustQuestions();
   private readonly profileFake = createFakeProfileAdapter();
+  private readonly voiceIntakeFake = createFakeVoiceIntake();
   private readonly locationResolver = createLocationResolver();
   private readonly deps: OnboardingV2Deps;
   private readonly processedSids = new Map<string, RouteResult>();
@@ -845,6 +895,7 @@ export class WhatsAppV2Harness {
         this.canonicalLegalConsents.push(input);
       },
       workflowVersion: 1,
+      voiceIntake: this.voiceIntakeFake.voiceIntake,
     };
 
     // Wrap enqueueWorkerMessage so every allowed send is also mirrored into
@@ -965,6 +1016,85 @@ export class WhatsAppV2Harness {
       body: opts.body ?? '',
       messageSid: opts.messageSid ?? nextSid('sid'),
       interactivePayload: payload,
+    });
+  }
+
+  // ── Voice (Task 4/7: trust-question voice notes) ────────────────────
+
+  /** Fail-closed by default (matches the real `voice_intake_enabled`
+   * runtime control) — a test must opt in explicitly. */
+  setVoiceIntakeEnabled(enabled: boolean): void {
+    this.voiceIntakeFake.setEnabled(enabled);
+  }
+
+  /** A real Twilio media field's worth of a voice note inbound — no
+   * transcript yet, the `numMedia`/`mediaUrl`/`mediaContentType` triple a
+   * real webhook delivers. `sendText`'s canned-answer driving stops working
+   * once a caller wants THIS shape, hence the separate helper. */
+  async sendVoiceNote(
+    opts: { messageSid?: string; mediaContentType?: string } = {},
+  ): Promise<RouteResult> {
+    return this.routeTurn({
+      from: this.phone,
+      body: '',
+      messageSid: opts.messageSid ?? nextSid('sid'),
+      numMedia: 1,
+      mediaUrl: 'https://api.twilio.example/fake-media/voice-note',
+      mediaSid: nextSid('ME'),
+      mediaContentType: opts.mediaContentType ?? 'audio/ogg',
+    });
+  }
+
+  /** Every voice note that successfully started a transcription (via the
+   * fake `startTrustTranscription`), in call order. */
+  getPendingTranscriptions(): PendingTranscription[] {
+    return [...this.voiceIntakeFake.pendingTranscriptions];
+  }
+
+  /**
+   * Completes the `index`-th pending transcription by round-tripping a REAL
+   * `VoiceEventV2` through `buildSyntheticVoiceInboundBody` ->
+   * `parseVoiceTranscriptEvent` (the exact functions the real receiver
+   * Lambda and processor use) and routing it with the real `<origSid>#vt`
+   * synthetic sid — including through this harness's own `processedSids`
+   * cache, so calling this twice for the same index is a genuine duplicate-
+   * delivery replay, not a hand-waved no-op.
+   */
+  async completeTranscription(
+    index: number,
+    result: { status: 'COMPLETED' | 'FAILED'; transcript?: string },
+  ): Promise<RouteResult> {
+    const pending = this.voiceIntakeFake.pendingTranscriptions[index];
+    if (!pending) {
+      throw new Error(`completeTranscription: no pending transcription at index ${index}`);
+    }
+
+    const evt: TrustVoiceEventV2 = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: result.status,
+      phone: pending.phone,
+      runId: pending.runId,
+      stepKey: pending.stepKey,
+      language: pending.language,
+      origMessageSid: pending.inboundMessageSid,
+      startedAt: this.clockRef.now.toISOString(),
+      questionIndex: pending.questionIndex,
+      ...(result.status === 'COMPLETED' ? { transcript: result.transcript ?? '' } : {}),
+    };
+
+    const body = buildSyntheticVoiceInboundBody(evt);
+    const params = Object.fromEntries(new URLSearchParams(body));
+    const parsed = parseVoiceTranscriptEvent(params);
+    if (!parsed) {
+      throw new Error('completeTranscription: synthetic event failed to round-trip');
+    }
+
+    return this.routeTurn({
+      from: this.phone,
+      body: '',
+      messageSid: params.MessageSid,
+      voiceEvent: parsed,
     });
   }
 

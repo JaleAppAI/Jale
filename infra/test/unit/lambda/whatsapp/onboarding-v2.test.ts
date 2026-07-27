@@ -320,6 +320,10 @@ function makeDeps() {
     requiredLegalVersion: '1.0',
     recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
     workflowVersion: 1,
+    voiceIntake: {
+      enabled: false,
+      startTrustTranscription: jest.fn().mockResolvedValue({ started: false }),
+    },
   };
 
   return { deps, preAuthRepo, gateRepo, gateway, preAuthDelivery, adapters, clockRef };
