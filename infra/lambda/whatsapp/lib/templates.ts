@@ -86,7 +86,18 @@ export type TemplateKey =
   | 'v2_voice_failed'
   | 'v2_voice_not_supported'
   | 'v2_voice_invalid_type'
-  | 'voice_note_not_supported';
+  | 'voice_note_not_supported'
+  // ── V2 voice (Stream B: full voice profile intake, profile.voice_choice/
+  //    profile.voice_processing). NOTE: a non-voice media file at
+  //    profile.voice_choice deliberately reuses 'v2_voice_invalid_type'
+  //    above rather than adding a near-duplicate key — both mean exactly
+  //    "that file isn't a usable voice note", and the trust-question and
+  //    profile-intake copy would otherwise diverge for no reason. ──
+  | 'v2_voice_send_note'
+  | 'v2_voice_processing_ack'
+  | 'v2_voice_processing_wait'
+  | 'v2_voice_summary'
+  | 'v2_voice_fallback';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -371,6 +382,26 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   voice_note_not_supported: {
     es: 'Notas de voz no estan disponibles aqui. Escribe TRABAJOS o AYUDA.',
     en: 'Voice notes are not supported here. Type JOBS or HELP.',
+  },
+  v2_voice_send_note: {
+    es: 'Cuando estes listo, manda tu nota de voz. Cuentanos tu nombre, ciudad, oficio, anos de experiencia, si tienes transporte propio, y tu disponibilidad.',
+    en: 'Whenever you are ready, send your voice note. Tell us your name, city, trade, years of experience, whether you have your own transportation, and your availability.',
+  },
+  v2_voice_processing_ack: {
+    es: 'Recibimos tu nota de voz. Estamos armando tu perfil...\n\nTe avisamos en un momento.',
+    en: 'Got your voice note. We are building your profile...\n\nWe will let you know shortly.',
+  },
+  v2_voice_processing_wait: {
+    es: 'Todavia estamos procesando tu nota de voz. Te avisamos en cuanto termine.',
+    en: 'We are still processing your voice note. We will let you know as soon as it is done.',
+  },
+  v2_voice_summary: {
+    es: 'Esto es lo que entendimos:\n\n{{summary}}',
+    en: 'Here is what we understood:\n\n{{summary}}',
+  },
+  v2_voice_fallback: {
+    es: 'No pudimos terminar de armar tu perfil con la nota de voz. Sigamos con unas preguntas rapidas.',
+    en: 'We could not finish building your profile from the voice note. Let\'s continue with a few quick questions.',
   },
 };
 

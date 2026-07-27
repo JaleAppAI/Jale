@@ -31,17 +31,13 @@ const FREE_TEXT_STEPS = new Set<string>([
   'trust.question.3',
 ]);
 
-/** Steps with no real handler yet. Task 5 implemented profile/trust, so this
- * was empty — kept (rather than deleted) as the gate's documented extension
- * point for a future step that isn't ready yet. Migration 050 widened the
- * step-key CHECK/union ahead of their handlers landing; without this gate,
+/** Steps with no real handler yet. Migration 050 widened the step-key
+ * CHECK/union ahead of their handlers landing; without this gate,
  * `handleProfileAndTrust`'s switch would throw `unhandled bound step` for
  * any of these instead of replying with a graceful gate-blocked prompt.
- * profile.experience / profile.transportation / profile.availability are
- * intentionally NOT listed here — their handlers are landing concurrently. */
+ * profile.voice_choice / profile.voice_processing are intentionally NOT
+ * listed here — Stream B (full voice profile intake) implements them. */
 const UNIMPLEMENTED_STEPS = new Set<string>([
-  'profile.voice_choice',
-  'profile.voice_processing',
   'profile.photo',
   'profile.photo_type',
 ]);

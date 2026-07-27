@@ -63,6 +63,7 @@ import {
   handleProfileAvailability,
 } from './onboarding/steps/profile';
 import { handleTrustQuestion } from './onboarding/steps/trust';
+import { handleVoiceChoiceStep, handleVoiceProcessingStep, handleVoiceIntakeResult } from './onboarding/steps/voice';
 import { isVoiceAcceptingStep } from './onboarding/constants';
 import { sendTemplateMessage, repeatCurrentPrompt } from './onboarding/delivery';
 
@@ -87,6 +88,10 @@ async function handleProfileAndTrust(
   now: Date,
 ): Promise<RouteResult> {
   switch (stepKey) {
+    case 'profile.voice_choice':
+      return handleVoiceChoiceStep(client, session, msg, deps, gate, lang, now);
+    case 'profile.voice_processing':
+      return handleVoiceProcessingStep(client, session, msg, deps, gate, lang, now);
     case 'profile.name':
       return handleProfileName(client, session, msg, deps, gate, lang, now);
     case 'profile.location':
@@ -141,6 +146,16 @@ async function routeBoundStep(
   // it reaches applyGate/handleProfileAndTrust as an empty-body message).
   if (msg.voiceEvent?.kind === 'trust_answer' && /^trust\.question\./.test(stepKey)) {
     return handleTrustQuestion(client, session, msg, deps, gate, lang, now, stepKey as 'trust.question.1' | 'trust.question.2' | 'trust.question.3');
+  }
+
+  // Same bypass for the profile-intake pipeline's completion re-entry —
+  // dispatched unconditionally on `kind`, regardless of the run's CURRENT
+  // step: `handleVoiceIntakeResult`'s own staleness guard (runId/step/arn
+  // mismatch) is what decides whether the event still applies, not this
+  // dispatch site. Its Body is always empty exactly like the trust-answer
+  // event above, so it can never trip the command gate either.
+  if (msg.voiceEvent?.kind === 'profile_intake') {
+    return handleVoiceIntakeResult(client, session, msg, deps, gate, lang, now, msg.voiceEvent);
   }
 
   // A real voice note (numMedia > 0, no event yet) at a step that doesn't

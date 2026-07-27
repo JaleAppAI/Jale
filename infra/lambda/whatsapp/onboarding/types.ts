@@ -191,5 +191,27 @@ export interface OnboardingV2Deps {
       mediaContentType: string;
       inboundMessageSid: string;
     }): Promise<{ started: boolean }>;
+    /**
+     * Stream B: full voice profile intake at `profile.voice_choice`. Kicks
+     * off the SAME Twilio-download -> S3 -> Transcribe -> Bedrock pipeline
+     * `AI_PIPELINE_STATE_MACHINE_ARN` already runs for v1's media flow, but
+     * tagged with a `v2` marker so `ai-profile-writer`'s completion branch
+     * re-enters this lane (via a `#vp`-suffixed synthetic event) instead of
+     * writing `users`/outbox directly. Returns the deterministic execution
+     * ARN synchronously so the caller can stash it in `state_context` as the
+     * staleness anchor `handleVoiceIntakeResult` checks against — never
+     * throws for an expected failure (oversized file, download error,
+     * pipeline unavailable); those return `{ started: false, reason }`.
+     */
+    ingestProfileVoiceNote(input: {
+      workerId: string;
+      phone: string;
+      runId: string;
+      stepKey: string;
+      language: PreferredLanguage;
+      mediaUrl: string;
+      mediaContentType: string;
+      inboundMessageSid: string;
+    }): Promise<{ started: boolean; reason?: string; executionArn?: string }>;
   };
 }
