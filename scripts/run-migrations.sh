@@ -166,6 +166,7 @@ MIGRATIONS=(
   "049_whatsapp_v2_flow_privilege_repair.sql"
   "050_whatsapp_v2_profile_steps.sql"
   "051_whatsapp_voice_intake_control.sql"
+  "052_worker_pending_name_and_skills_reset.sql"
 )
 
 WORKDIR="$(mktemp -d)"
