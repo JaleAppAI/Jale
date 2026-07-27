@@ -425,6 +425,12 @@ function createFakeGateRepo(
           && !t.reason.startsWith('worker_')
           && t.fromStepKey !== 'profile.voice_choice'
           && t.fromStepKey !== 'profile.voice_processing'
+          // Pre-auth keys: a self_heal_preauth_step transition legitimately
+          // records from_step_key = 'start.choose_language', and BACK must
+          // never land a bound run on a pre-auth step (mirrors the real
+          // query's NOT IN).
+          && t.fromStepKey !== 'start.choose_language'
+          && t.fromStepKey !== 'identity.verify_otp'
         ) {
           return t.fromStepKey;
         }

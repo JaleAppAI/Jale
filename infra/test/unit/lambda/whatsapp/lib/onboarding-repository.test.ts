@@ -474,7 +474,11 @@ describe('findPreviousStepKey', () => {
     await findPreviousStepKey(client, RUN_ID, 'profile.location');
 
     const sql = query.mock.calls[0][0] as string;
-    expect(sql).toMatch(/from_step_key NOT IN \('profile\.voice_choice', 'profile\.voice_processing'\)/);
+    // Voice holding steps have no prompt of their own; the pre-auth keys
+    // are excluded because a self_heal_preauth_step transition records
+    // from_step_key = 'start.choose_language' and BACK must never land a
+    // bound run on a pre-auth step (2026-07-27 softlock incident).
+    expect(sql).toMatch(/from_step_key NOT IN \('profile\.voice_choice', 'profile\.voice_processing',\s*'start\.choose_language', 'identity\.verify_otp'\)/);
   });
 });
 

@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import {
   parseResetArgs,
   runReset,
-  WHATSAPP_V2_WORKFLOW_VERSION,
+  bindStatement,
+  DELETE_STEPS,
   type Queryable,
 } from '../../../scripts/reset-whatsapp-onboarding-v2';
 
@@ -273,7 +274,20 @@ describe('runReset', () => {
     deletes.forEach((call, i) => {
       expect(call.text).toContain(`DELETE FROM ${DELETE_ORDER[i]}`);
       expect(call.text).toMatch(/WHERE/);
-      expect(call.values).toEqual([USER_ID, PHONE, hashPhone(PHONE)]);
+      // Text and bind list must be EXACTLY what bindStatement produces for
+      // this step: PostgreSQL's extended protocol rejects both surplus
+      // parameters ("bind message supplies 3 parameters, but prepared
+      // statement requires 1") and a supplied-but-unreferenced placeholder
+      // ("could not determine data type of parameter $2"). The original
+      // version of this test pinned the full three-value list on every
+      // DELETE — encoding the very bug that broke the first real
+      // production run.
+      const expected = bindStatement(
+        `DELETE FROM ${DELETE_STEPS[i].table} WHERE ${DELETE_STEPS[i].predicate}`,
+        [USER_ID, PHONE, hashPhone(PHONE)],
+      );
+      expect(call.text).toBe(expected.text);
+      expect(call.values).toEqual(expected.values);
     });
   });
 
@@ -340,7 +354,7 @@ describe('runReset', () => {
     }
   });
 
-  it('creates exactly one worker_onboarding_state row (onboarding) and one worker_workflow_runs row (active, start.choose_language, version 1)', async () => {
+  it('seeds exactly one worker_onboarding_state row (onboarding) and NEVER a worker_workflow_runs row', async () => {
     const { client, calls } = makeFakeClient();
 
     await runReset(client, {
@@ -352,14 +366,20 @@ describe('runReset', () => {
     });
 
     const stateInserts = calls.filter((c) => /^\s*INSERT INTO worker_onboarding_state/.test(c.text));
-    const runInserts = calls.filter((c) => /^\s*INSERT INTO worker_workflow_runs/.test(c.text));
     expect(stateInserts).toHaveLength(1);
-    expect(runInserts).toHaveLength(1);
     expect(stateInserts[0].text).toContain("'onboarding'");
-    expect(runInserts[0].text).toContain("'start.choose_language'");
-    expect(runInserts[0].text).toContain("'active'");
-    expect(runInserts[0].values).toContain(WHATSAPP_V2_WORKFLOW_VERSION);
-    expect(WHATSAPP_V2_WORKFLOW_VERSION).toBe(1);
+
+    // Incident pin (2026-07-27): an earlier version seeded an active run at
+    // 'start.choose_language'. That key belongs to the pre-auth
+    // worker_identity_challenges lane; the verified-OTP rebind reused the
+    // seeded run untouched and the bound router then crashed on every
+    // message with "unhandled bound step: start.choose_language",
+    // softlocking the worker. Runs are only legitimately created by
+    // bind_verified_identity_and_start_workflow (migration 047) at
+    // 'legal.review' — the reset must leave run creation to it.
+    const runInserts = calls.filter((c) => /INSERT INTO worker_workflow_runs/.test(c.text));
+    expect(runInserts).toHaveLength(0);
+    expect(calls.some((c) => c.text.includes("'start.choose_language'"))).toBe(false);
   });
 
   it('each execute writes exactly one audit row with operator, reason, dry_run=false, table_counts, and a 64-hex phone_hash', async () => {
@@ -413,10 +433,12 @@ describe('runReset', () => {
     expect(outcome2.auditId).toBe('audit-row-1');
 
     const stateInserts = calls2.filter((c) => /^\s*INSERT INTO worker_onboarding_state/.test(c.text));
-    const runInserts = calls2.filter((c) => /^\s*INSERT INTO worker_workflow_runs/.test(c.text));
+    const runInserts = calls2.filter((c) => /INSERT INTO worker_workflow_runs/.test(c.text));
     const auditInserts = calls2.filter((c) => /^\s*INSERT INTO worker_reset_audit/.test(c.text));
     expect(stateInserts).toHaveLength(1);
-    expect(runInserts).toHaveLength(1);
+    // No run is ever seeded (2026-07-27 softlock incident) — run creation
+    // belongs to bind_verified_identity_and_start_workflow at legal.review.
+    expect(runInserts).toHaveLength(0);
     expect(auditInserts).toHaveLength(1);
   });
 

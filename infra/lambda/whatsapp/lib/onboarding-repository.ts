@@ -528,7 +528,10 @@ export async function resetPendingTrustAssessmentAndSkills(
  * `trust_*`/`onboarding_complete`) — without it, `handleBackCommand`'s own
  * write (landing back ON the step the worker just left) becomes the
  * "previous" step on the very next BACK, so a second press walks the worker
- * forward again instead of continuing backward. `from_step_key NOT IN
+ * forward again instead of continuing backward. The pre-auth keys are
+ * excluded because a `self_heal_preauth_step` transition (routeBoundStep)
+ * legitimately records `from_step_key = 'start.choose_language'`, and BACK
+ * must never land a bound run on a pre-auth step. `from_step_key NOT IN
  * (...)` excludes the two voice holding steps: neither has a prompt of its
  * own, so BACK must never land a worker there.
  */
@@ -545,7 +548,8 @@ export async function findPreviousStepKey(
         AND from_step_key IS NOT NULL
         AND from_step_key <> to_step_key
         AND reason NOT LIKE 'worker\\_%'
-        AND from_step_key NOT IN ('profile.voice_choice', 'profile.voice_processing')
+        AND from_step_key NOT IN ('profile.voice_choice', 'profile.voice_processing',
+                                  'start.choose_language', 'identity.verify_otp')
       ORDER BY created_at DESC, id DESC
       LIMIT 1`,
     [runId, currentStepKey],

@@ -1197,3 +1197,61 @@ describe('Task 1/A1: a captioned photo must not discard usable text', () => {
     expect(sentTags.some((tag) => tag.includes('v2_voice_not_supported'))).toBe(true);
   });
 });
+
+// Incident pin (2026-07-27): the reset CLI once seeded a bound run at the
+// pre-auth step 'start.choose_language'. The verified-OTP rebind reused the
+// run untouched, and the bound router then crashed the claim on EVERY
+// message ("unhandled bound step") — a softlock the worker could not
+// escape. Pre-auth keys are only ever legitimate for the
+// worker_identity_challenges lane, so a bound run parked there must
+// self-heal to legal.review (where bind_verified_identity_and_start_workflow
+// would have started it) rather than throw.
+describe('self-heal: bound run parked on a pre-auth step key', () => {
+  for (const badStep of ['start.choose_language', 'identity.verify_otp'] as const) {
+    it(`heals a bound run at ${badStep} to legal.review instead of crashing`, async () => {
+      const h = createWhatsAppV2Harness({ phone: '+15551110090' });
+      await h.driveToStep('legal.review', { lang: 'es' });
+
+      // Corrupt the bound run the way the old reset CLI did — directly on
+      // the stored gate, mirroring an operator-tooling write.
+      const gate = h.getState().gate!;
+      gate.currentStepKey = badStep as typeof gate.currentStepKey;
+
+      const result = await h.sendText('hola');
+
+      expect(result.stepKey).toBe('legal.review');
+      expect(h.getState().gate?.currentStepKey).toBe('legal.review');
+
+      const heal = h.getTransitions().find((t) => t.reason === 'self_heal_preauth_step');
+      expect(heal).toBeDefined();
+      expect(heal?.fromStepKey).toBe(badStep);
+      expect(heal?.toStepKey).toBe('legal.review');
+
+      // The worker gets the legal prompt, not silence or an error reply.
+      expect(h.getLegalPromptPresentations().length).toBeGreaterThanOrEqual(2);
+
+      // And the flow continues normally from there.
+      await h.sendText('ACEPTAR');
+      expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    });
+  }
+
+  it('BACK never lands on a pre-auth step even after a self-heal recorded one as from_step_key', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110091' });
+    await h.driveToStep('legal.review', { lang: 'es' });
+
+    const gate = h.getState().gate!;
+    gate.currentStepKey = 'start.choose_language' as typeof gate.currentStepKey;
+    await h.sendText('hola'); // self-heal -> legal.review (records the transition)
+    await h.sendText('ACEPTAR'); // legal -> profile.name
+    await h.sendText('Maria Lopez'); // name -> profile.location
+
+    // BACK from location walks to profile.name; a second BACK is blocked at
+    // profile.name — it must never resolve the self-heal transition's
+    // from_step_key ('start.choose_language') as a target.
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+  });
+});
