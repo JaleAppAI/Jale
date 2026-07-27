@@ -79,6 +79,10 @@ export const handler = async (
       // it never clobbers an existing users.full_name and leaves a new row's
       // name NULL for the authenticated post-OTP update to fill.
       await seedWorkerUser(repaired.cognitoSub, phone, '');
+      // Stage the caller-supplied name for promotion on the first correct
+      // OTP (see stageWorkerPendingName below) so a worker who closes the
+      // tab before the authenticated post-OTP PATCH still gets a name.
+      await stageWorkerPendingName(repaired.cognitoSub, fullName);
       return json(200, { ok: true });
     }
 
@@ -97,6 +101,10 @@ export const handler = async (
     // update owns it. `fullName` is still validated above purely as an API
     // contract check (the frontend always sends it).
     await seedWorkerUser(cognitoSub, phone, '');
+    // Stage the caller-supplied name for promotion on the first correct OTP
+    // (see stageWorkerPendingName below) so a worker who closes the tab
+    // before the authenticated post-OTP PATCH still gets a name.
+    await stageWorkerPendingName(cognitoSub, fullName);
     await ensureWorkerGroup(userPoolId, phone);
 
     await cognito.send(new AdminSetUserPasswordCommand({
@@ -150,6 +158,30 @@ async function seedWorkerUser(cognitoSub: string, phone: string, fullName: strin
     throw err;
   } finally {
     client.release();
+  }
+}
+
+// Stages the caller-supplied name for promote_worker_pending_name to adopt
+// on the first correct OTP (verify-auth-challenge.ts) -- never displayed and
+// never trusted as identity until that promotion happens. A later signup
+// submission for the same worker intentionally overwrites an earlier
+// pending value (stage_worker_pending_name's UPDATE, migration 052), so a
+// squatter who pre-creates an account cannot hold a name against the real
+// owner by staging first. Nothing is promoted without a correct OTP, and
+// staging is best-effort: it must never fail the signup response.
+async function stageWorkerPendingName(cognitoSub: string, fullName: string): Promise<void> {
+  try {
+    const pool = await getDbPool();
+    const client = await pool.connect();
+    try {
+      await client.query('SELECT stage_worker_pending_name($1, $2)', [cognitoSub, fullName]);
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.warn('worker-web-signup: failed to stage pending name (signup unaffected)', {
+      err: errorMessage(err),
+    });
   }
 }
 

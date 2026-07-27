@@ -5,16 +5,23 @@ jest.mock('@aws-sdk/client-cognito-identity-provider', () => ({
   AdminUpdateUserAttributesCommand: jest.fn((args) => ({ input: args, __type: 'AdminUpdateUserAttributes' })),
 }));
 
+jest.mock('../../../../lambda/lib/db');
+
 import { handler } from '../../../../lambda/auth/verify-auth-challenge';
+import { getDbPool } from '../../../../lambda/lib/db';
 import type { VerifyAuthChallengeResponseTriggerEvent } from 'aws-lambda';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+
+const mockGetDbPool = getDbPool as jest.Mock;
+const mockQuery = jest.fn();
+const mockRelease = jest.fn();
 
 describe('VerifyAuthChallenge Lambda', () => {
   const baseEvent = (
     storedOtp: string | undefined,
     userAnswer: string,
-    userAttributes: Record<string, string> = { phone_number: '+15125551234' },
+    userAttributes: Record<string, string> = { phone_number: '+15125551234', sub: 'worker-sub' },
   ): VerifyAuthChallengeResponseTriggerEvent => ({
     version: '1',
     region: 'us-east-1',
@@ -33,6 +40,14 @@ describe('VerifyAuthChallenge Lambda', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockCognitoSend.mockResolvedValue({});
+    mockQuery.mockReset().mockResolvedValue({});
+    mockRelease.mockReset();
+    mockGetDbPool.mockReset().mockResolvedValue({
+      connect: jest.fn().mockResolvedValue({
+        query: mockQuery,
+        release: mockRelease,
+      }),
+    });
   });
 
   it('sets answerCorrect=true when user answer matches stored OTP', async () => {
@@ -93,16 +108,19 @@ describe('VerifyAuthChallenge Lambda', () => {
 
     expect(result.response.answerCorrect).toBe(false);
     expect(mockCognitoSend).not.toHaveBeenCalled();
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
   it('skips the flip when the account is already verified', async () => {
     const result = await handler(baseEvent('123456', '123456', {
       phone_number: '+15125551234',
       phone_number_verified: 'true',
+      sub: 'worker-sub',
     }));
 
     expect(result.response.answerCorrect).toBe(true);
     expect(mockCognitoSend).not.toHaveBeenCalled();
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
   it('a flip failure never fails a correct login (best-effort)', async () => {
@@ -110,6 +128,62 @@ describe('VerifyAuthChallenge Lambda', () => {
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     const result = await handler(baseEvent('123456', '123456'));
+
+    expect(result.response.answerCorrect).toBe(true);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  // ── pending name promotion (migration 052) ────────────────────────────
+  //
+  // A name staged at signup (stage_worker_pending_name) is only ever
+  // promoted into users.full_name on the first correct OTP — the same
+  // event, and the same phone_number_verified gate, as the flip above.
+
+  it('promotes the pending name on a correct answer when not yet verified', async () => {
+    const result = await handler(baseEvent('123456', '123456', {
+      phone_number: '+15125551234',
+      sub: 'worker-sub',
+    }));
+
+    expect(result.response.answerCorrect).toBe(true);
+    expect(mockGetDbPool).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledWith('SELECT promote_worker_pending_name($1)', ['worker-sub']);
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('does not promote the pending name on a wrong answer', async () => {
+    await handler(baseEvent('123456', '654321', {
+      phone_number: '+15125551234',
+      sub: 'worker-sub',
+    }));
+
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('does not promote the pending name when already verified', async () => {
+    await handler(baseEvent('123456', '123456', {
+      phone_number: '+15125551234',
+      phone_number_verified: 'true',
+      sub: 'worker-sub',
+    }));
+
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('a database error during promotion never fails a correct login (best-effort)', async () => {
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql === 'SELECT promote_worker_pending_name($1)') {
+        throw new Error('db hiccup');
+      }
+      return {};
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await handler(baseEvent('123456', '123456', {
+      phone_number: '+15125551234',
+      sub: 'worker-sub',
+    }));
 
     expect(result.response.answerCorrect).toBe(true);
     expect(warnSpy).toHaveBeenCalled();
