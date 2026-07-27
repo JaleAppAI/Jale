@@ -154,16 +154,34 @@ function buildJobAlertDigestMessage(
   // multi-job digest keeps plain text: it is only produced by the
   // worker.ready release, moments after the worker's own message, so it is
   // always inside the window.
+  //
+  // `jobs.pay` is nullable (migration 003) and a pre-existing deferred
+  // intent may carry no `location` either — the template must still render
+  // (a missing pay/location must never fall back to the plain-text digest,
+  // which Twilio rejects outside the 24h window, defeating the whole point
+  // of this branch). A bilingual placeholder substitutes for whichever of
+  // the two is missing; only `jobId`/`title`/`companyName` are required.
   const single = jobs.length === 1 ? jobs[0] : null;
-  if (single && typeof single.location === 'string' && typeof single.pay === 'string') {
+  if (
+    single
+    && typeof single.jobId === 'string' && single.jobId.length > 0
+    && typeof single.title === 'string' && single.title.length > 0
+    && typeof single.companyName === 'string' && single.companyName.length > 0
+  ) {
+    const location = typeof single.location === 'string' && single.location.length > 0
+      ? single.location
+      : (lang === 'en' ? 'Location not specified' : 'Ubicacion no especificada');
+    const pay = typeof single.pay === 'string' && single.pay.length > 0
+      ? single.pay
+      : (lang === 'en' ? 'Pay not specified' : 'Pago no especificado');
     return {
       body: null,
       contentTemplate: lang === 'en' ? 'job_alert_en' : 'job_alert_es',
       contentVariables: {
         '1': single.title,
         '2': single.companyName,
-        '3': single.location,
-        '4': single.pay,
+        '3': location,
+        '4': pay,
         '5': `job-${single.jobId}`,
         [FALLBACK_BODY_KEY]: buildJobAlertDigestText(lang, jobs),
       },
