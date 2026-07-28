@@ -18,20 +18,40 @@
 
 ## Rollout states & controls
 
-State lives in `whatsapp_runtime_controls` (migration `042_whatsapp_onboarding_gate.sql`),
-one row per control key, read by `loadRuntimeControls()` in
-`infra/lambda/whatsapp/lib/runtime-controls.ts`. Missing or malformed rows
-**fail closed to disabled** — that's a deliberate safety property, not a bug.
+**WhatsApp onboarding v2 is the only onboarding lane. There is no runtime
+gate for it anymore.** The `onboarding_v2_enabled` control (migration `042`)
+has been retired: the code no longer reads it — `isV2Enabled` and the
+`onboardingV2*` fields are gone from `runtime-controls.ts` — and migration
+`054` deletes its row from `whatsapp_runtime_controls` outright. If v2 ever
+needs to come off, **the only rollback path is redeploying the previous
+version of the code.** There is no flag left to flip, no allowlist to empty,
+and no "go back to canary" state to fall into — plan any v2 rollback as a
+deploy, not a DB write.
 
-Two seeded control keys today:
+The cutover to this state has a fixed order: apply migration `053` (web-worker
+bypass function, see the toolbox below) → deploy the hardwired code → apply
+migration `054` (drops the `onboarding_v2_enabled` row) → bulk reset (dry-run
+first, see `bulk-reset-whatsapp-onboarding-v2.ts` below). Don't reorder this —
+applying `054` before the hardwired code deploys would drop the only gate the
+old code still reads.
+
+State for the controls that remain lives in `whatsapp_runtime_controls`
+(migration `042_whatsapp_onboarding_gate.sql`, joined by
+`051_whatsapp_voice_intake_control.sql`), one row per control key, read by
+`loadRuntimeControls()` in `infra/lambda/whatsapp/lib/runtime-controls.ts`.
+Missing or malformed rows **fail closed to disabled** — that's a deliberate
+safety property, not a bug.
+
+Two control keys remain:
 
 | control_key | columns used | default |
 |---|---|---|
-| `onboarding_v2_enabled` | `enabled`, `global_enabled`, `phone_hashes` | all false / empty |
+| `voice_intake_enabled` | `enabled`, `global_enabled`, `phone_hashes` | all false / empty |
 | `deferred_delivery_enabled` | `enabled` | false |
 
-`isV2Enabled(controls, phoneHash)` gates v2 onboarding per-worker:
-`onboarding_v2_enabled.enabled && (global_enabled || phone in phone_hashes)`.
+`isVoiceIntakeEnabled(controls, phoneHash)` gates voice-note intake (trust-question
+voice answers and full profile voice intake) per-worker:
+`voice_intake_enabled.enabled && (global_enabled || phone in phone_hashes)`.
 Phones are never stored raw — only `hashNormalizedPhone()` (SHA-256 of the
 trimmed E.164 string) goes in `phone_hashes`.
 
@@ -43,11 +63,17 @@ DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
   npx ts-node scripts/whatsapp-runtime-controls.ts <flag> [value]
 ```
 
+`voice_intake` is now the CLI's **default** phone-scoped control —
+`--allow-phone`, `--deny-phone`, and `--go-global` target it with no
+`--control` flag needed at all, now that `onboarding_v2` no longer exists as
+a target. See the script's own header comment for the authoritative flag
+set.
+
 ### Per-phone allowlist (canary)
 
 ```bash
-# Turn the feature on but keep it OFF for everyone until phones are allowed
-npx ts-node scripts/whatsapp-runtime-controls.ts --enable onboarding_v2
+# Turn voice intake on but keep it OFF for everyone until phones are allowed
+npx ts-node scripts/whatsapp-runtime-controls.ts --enable voice_intake
 
 # Allow one phone at a time (hashes, never raw numbers, are persisted/printed)
 npx ts-node scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188
@@ -65,17 +91,18 @@ npx ts-node scripts/whatsapp-runtime-controls.ts --show
 npx ts-node scripts/whatsapp-runtime-controls.ts --go-global
 ```
 
-Sets `global_enabled = true` on `onboarding_v2_enabled`. From this point every
-worker phone gets v2 onboarding regardless of the allowlist (the allowlist
-rows are simply no longer consulted — `isV2Enabled` short-circuits on
-`global_enabled`). To roll back to allowlist-only, there's no `--go-global`
-inverse; disable the whole feature (`--disable onboarding_v2`) or edit the
-row directly if you need "global off, allowlist still on."
+Sets `global_enabled = true` on `voice_intake_enabled` (the default target).
+From this point every worker phone gets voice intake regardless of the
+allowlist (the allowlist rows are simply no longer consulted —
+`isVoiceIntakeEnabled` short-circuits on `global_enabled`). To roll back to
+allowlist-only, there's no `--go-global` inverse; disable the control
+(`--disable voice_intake`) or edit the row directly if you need "global off,
+allowlist still on."
 
-### Turning the whole feature off
+### Turning voice intake off
 
 ```bash
-npx ts-node scripts/whatsapp-runtime-controls.ts --disable onboarding_v2
+npx ts-node scripts/whatsapp-runtime-controls.ts --disable voice_intake
 ```
 
 `RESET_OPERATOR` (falls back to `$USER`) is recorded as `updated_by` on every
@@ -167,9 +194,9 @@ operator on every mutation.
 
 ### `whatsapp-runtime-controls.ts` — feature flags
 
-Covered above. Reach for it to: canary/allowlist workers into v2, go global,
-disable the feature, or flip `deferred_delivery_enabled` (with its built-in
-sweep). `--show` is read-only and safe to run any time.
+Covered above. Reach for it to: canary/allowlist workers into voice intake,
+go global, disable voice intake, or flip `deferred_delivery_enabled` (with
+its built-in sweep). `--show` is read-only and safe to run any time.
 
 ### `reset-whatsapp-onboarding-v2.ts` — full wipe & restart
 
@@ -203,6 +230,58 @@ DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
 Always dry-run first — it prints the exact row counts that would be deleted
 per table before anything is touched. Every execution is recorded in
 `worker_reset_audit` (returns an audit row id on success).
+
+### `bulk-reset-whatsapp-onboarding-v2.ts` — reset ALL workers' onboarding
+
+When: a mass-remediation event — the canonical case is the v2 hardwire
+cutover itself — needs every worker's onboarding state returned to scratch
+in one pass, instead of running `reset-whatsapp-onboarding-v2.ts` one worker
+at a time. Reuses the single-worker tool's semantics exactly: the same
+~19-table wipe, the same "no run seeded, next inbound message starts fresh
+at the pre-auth entry point" behavior, the same
+`bind_verified_identity_and_start_workflow` re-bind path (migration 047) —
+but drives it per-worker, each worker resetting inside its **own**
+transaction, across the whole worker population.
+
+Flags: `--reason` (required, stamped on every per-worker audit row), exactly
+one of `--dry-run` / `--execute`, and an optional `--limit <n>` to cap the
+run to the first `n` workers — use it to run a small canary batch before
+committing to the full population. Like every other tool here, it never
+prints a raw phone number, only the SHA-256 hash.
+
+```bash
+cd infra
+DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
+  npx ts-node scripts/bulk-reset-whatsapp-onboarding-v2.ts \
+    --reason "v2 hardwire cutover" --dry-run --limit 25
+# review the per-worker plan, then re-run with --execute — drop --limit for
+# the full population once the canary batch looks right
+```
+
+Failure policy: because each worker resets in its own transaction, one
+worker's failure never rolls back another worker's progress. If a given
+worker's reset throws, the script logs it, **keeps going** to the remaining
+workers, and **exits non-zero** at the end with a summary (succeeded /
+failed / skipped counts) — a partial run can never masquerade as a clean
+success. Every worker that resets successfully still gets its own
+`worker_reset_audit` row, exactly like the single-worker tool.
+
+### `bypass_onboarding_for_web_worker()` — web-registered worker bypass (migration 053)
+
+Not a CLI — a `SECURITY DEFINER` Postgres function
+(`public.bypass_onboarding_for_web_worker(...)`, migration
+`053_whatsapp_web_worker_bypass.sql`) that lets a worker who registered
+through the web app, never through WhatsApp, skip WhatsApp onboarding
+entirely on their first inbound message.
+
+The discriminator is `users.email IS NOT NULL AND tos_accepted_at IS NOT
+NULL`. Web-registered workers always have both set from signup; a
+WhatsApp-onboarded worker never gets `email` written to their row at all.
+That asymmetry is what makes the bypass safe to leave in place across a
+reset: neither `reset-whatsapp-onboarding-v2.ts` nor
+`bulk-reset-whatsapp-onboarding-v2.ts` touch `email`/`tos_accepted_at`, so a
+freshly-reset WhatsApp worker can never accidentally match the bypass and
+skip onboarding they're actually supposed to go through.
 
 ### `repair-whatsapp-onboarding-v2.ts` — targeted, non-destructive nudge
 
@@ -433,17 +512,17 @@ first via `run-migrations.sh`.
 
 ## Known limitations
 
-- **Voice onboarding is not wired into dispatch.** `profile.voice_choice` and
-  `profile.voice_processing` are listed in
-  `infra/lambda/whatsapp/onboarding/gate.ts`'s `UNIMPLEMENTED_STEPS` set — the
-  gate replies with a graceful "not ready yet" prompt instead of dispatching
-  to a real handler. The two voice Step Functions
-  (`WhatsAppProfileVoicePipelineFailed`/`TimedOut`,
-  `WhatsAppTrustVoicePipelineFailed`/`TimedOut` alarms) already exist with
-  failure/timeout telemetry as prerequisite observability, but nothing
-  invokes them from the v2 flow yet. A `voice_intake_enabled` runtime control
-  is being added in a parallel task — it does not exist in
-  `whatsapp_runtime_controls` / `runtime-controls.ts` as of this writing.
+- **Voice onboarding is wired into dispatch.** Both the trust-question voice
+  path and full profile voice intake (`profile.voice_choice` /
+  `profile.voice_processing`) are implemented and dispatch to real handlers —
+  `profile.voice_choice`/`profile.voice_processing` are deliberately absent
+  from `infra/lambda/whatsapp/onboarding/gate.ts`'s `UNIMPLEMENTED_STEPS` set
+  for exactly this reason. The `voice_intake_enabled` runtime control
+  (migration `051_whatsapp_voice_intake_control.sql`) gates it and is
+  globally enabled — see "Rollout states & controls" above. The two voice
+  Step Functions (`WhatsAppProfileVoicePipelineFailed`/`TimedOut`,
+  `WhatsAppTrustVoicePipelineFailed`/`TimedOut` alarms) provide
+  failure/timeout telemetry for the pipelines this dispatch invokes.
 - **Photo steps are not implemented.** `profile.photo` and
   `profile.photo_type` are also in `UNIMPLEMENTED_STEPS`
   (`infra/lambda/whatsapp/onboarding/gate.ts`) despite being valid
