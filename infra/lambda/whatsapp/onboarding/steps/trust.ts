@@ -19,7 +19,7 @@ import {
   V2_TRUST_QUESTION_SET_VERSION,
   V2_TRUST_RUBRIC_VERSION,
 } from '../constants';
-import { repeatCurrentPrompt, sendTrustPrompt, sendTemplateMessage } from '../delivery';
+import { repeatCurrentPrompt, sendTrustPrompt, sendTemplateMessage, sendErrorWithCurrentPrompt } from '../delivery';
 import { effectiveLang } from '../transitions';
 
 // ── Bound: trust.question.{1,2,3} + atomic readiness ─────────────────────
@@ -143,15 +143,13 @@ async function handleTrustVoiceNote(
   questionIndex: number,
 ): Promise<RouteResult> {
   if (!deps.voiceIntake.enabled) {
-    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_not_supported', {}, now, gate.runId!, msg.messageSid, 'voice_control_off');
-    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    await sendErrorWithCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, 'v2_voice_not_supported', now, gate.runId!, msg.messageSid, 'voice_control_off');
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
   const category = msg.mediaContentType ? detectMediaCategory(msg.mediaContentType) : null;
   if (!msg.mediaUrl || !msg.mediaContentType || category !== 'voice') {
-    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_invalid_type', {}, now, gate.runId!, msg.messageSid, 'voice_invalid_type');
-    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    await sendErrorWithCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, 'v2_voice_invalid_type', now, gate.runId!, msg.messageSid, 'voice_invalid_type');
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
@@ -168,8 +166,10 @@ async function handleTrustVoiceNote(
   });
 
   if (!started) {
-    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_failed', {}, now, gate.runId!, msg.messageSid, 'voice_pipeline_unavailable');
-    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    // One combined message (error first, question underneath): two separate
+    // intents carry no handset-order guarantee, and live testing showed the
+    // re-asked question arriving BEFORE the error notice.
+    await sendErrorWithCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, 'v2_voice_failed', now, gate.runId!, msg.messageSid, 'voice_pipeline_unavailable');
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
@@ -223,8 +223,9 @@ async function applyTrustVoiceTranscript(
 
   const transcript = evt.transcript?.trim() ?? '';
   if (evt.status === 'FAILED' || transcript.length === 0) {
-    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_failed', {}, now, gate.runId!, msg.messageSid, 'voice_transcript_failed');
-    await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+    // One combined message (error first, question underneath) — see the
+    // sibling site above for why two intents cannot hold their order.
+    await sendErrorWithCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, 'v2_voice_failed', now, gate.runId!, msg.messageSid, 'voice_transcript_failed');
     return { handled: true, workerId: gate.userId, stepKey };
   }
 
