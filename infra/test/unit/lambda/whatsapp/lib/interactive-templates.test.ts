@@ -3,7 +3,6 @@ import {
   buildLegalInteractivePrompt,
   buildMediaInteractivePrompt,
   buildProfileInteractivePrompt,
-  buildTrustInteractivePrompt,
 } from '../../../../../lambda/whatsapp/lib/interactive-templates';
 import { t, type Lang } from '../../../../../lambda/whatsapp/lib/templates';
 import {
@@ -60,22 +59,6 @@ describe('interactive onboarding templates', () => {
     expect(buildProfileInteractivePrompt('full_name', 'en')).toBeNull();
     expect(buildProfileInteractivePrompt('city', 'es')).toBeNull();
     expect(buildProfileInteractivePrompt('main_trade_other', 'en')).toBeNull();
-  });
-
-  it('builds parameterized trust quick-reply prompts', () => {
-    const prompt = buildTrustInteractivePrompt(0, 'electrician', 'en');
-    expect(prompt).toMatchObject({
-      templateName: 'trust_choice_en',
-      variables: {
-        '1': 'One more question so we can recommend better jobs.\n\nWhat is your specialty?',
-        '2': 'Residential',
-        '3': 'Commercial',
-        '4': 'Industrial',
-        '5': 'trust:0:0',
-        '6': 'trust:0:1',
-        '7': 'trust:0:2',
-      },
-    });
   });
 
   it('builds media quick-reply prompts', () => {

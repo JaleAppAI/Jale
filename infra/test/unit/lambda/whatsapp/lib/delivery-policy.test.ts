@@ -6,9 +6,6 @@ import type { RuntimeControls } from '../../../../../lambda/whatsapp/lib/runtime
 const NOW = new Date('2026-07-21T12:00:00.000Z');
 
 const enabledControls: RuntimeControls = {
-  onboardingV2Enabled: true,
-  onboardingV2GlobalEnabled: false,
-  onboardingV2PhoneHashes: new Set(),
   deferredDeliveryEnabled: true,
   voiceIntakeEnabled: false,
   voiceIntakeGlobalEnabled: false,

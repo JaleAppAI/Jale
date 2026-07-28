@@ -272,22 +272,6 @@ const TRUST_OPTION_LABELS_ES: Record<string, string> = {
   'Site cleanup/safety': 'Limpieza y seguridad',
 };
 
-export function parseTrustAnswer(
-  step: number,
-  trade: string,
-  rawInput: string,
-): TrustAnswer | null {
-  const index = parseInt(rawInput.trim(), 10) - 1;
-  const options = getTrustOptions(step, trade);
-  if (Number.isNaN(index) || index < 0 || index >= options.length) return null;
-  return {
-    questionKey: TRUST_STEPS[step] ?? TRUST_STEPS[0],
-    optionKey: `opt_${index}`,
-    label: options[index],
-    answeredAt: new Date().toISOString(),
-  };
-}
-
 export interface TypedJobAction {
   index: number;
   action: 'accept' | 'decline' | 'info';
@@ -557,32 +541,6 @@ export function parseProfilePayloadAnswer(
       : rawValue;
 
   return def.options.includes(value) ? value : null;
-}
-
-export function parseTrustPayloadAnswer(
-  step: number,
-  trade: string,
-  payload: string | undefined,
-): TrustAnswer | null {
-  if (!payload) return null;
-  const m = payload.match(/^trust:(\d+):(\d+)$/);
-  if (!m) return null;
-
-  const payloadStep = parseInt(m[1], 10);
-  const optionIndex = parseInt(m[2], 10);
-  if (payloadStep !== step) return null;
-
-  const options = getTrustOptions(step, trade);
-  if (Number.isNaN(optionIndex) || optionIndex < 0 || optionIndex >= options.length) {
-    return null;
-  }
-
-  return {
-    questionKey: TRUST_STEPS[step] ?? TRUST_STEPS[0],
-    optionKey: `opt_${optionIndex}`,
-    label: options[optionIndex],
-    answeredAt: new Date().toISOString(),
-  };
 }
 
 // ── Profile answer parsing ──────────────────────────────────────

@@ -527,7 +527,7 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
       'SELECT user_id FROM worker_message_intents ORDER BY user_id', [], workerA)).rows)
       .toEqual([{ user_id: workerA }]);
     await expect(asWhatsapp(`UPDATE whatsapp_runtime_controls SET enabled = true
-      WHERE control_key = 'onboarding_v2_enabled'`, [], workerA))
+      WHERE control_key = 'voice_intake_enabled'`, [], workerA))
       .rejects.toMatchObject({ code: '42501' });
   });
 

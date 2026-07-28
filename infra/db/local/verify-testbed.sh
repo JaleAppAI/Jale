@@ -150,11 +150,15 @@ probe "no bare table-level grant to jale_whatsapp on any 042 table" \
       'worker_identity_challenges','worker_message_intents','worker_domain_outbox',
       'whatsapp_runtime_controls','worker_reset_audit')"
 
-# 8. Both controls seeded disabled; jale_whatsapp may read but never write.
-probe "both runtime controls seeded and disabled" \
-  "SELECT count(*) = 2 FROM whatsapp_runtime_controls
-    WHERE control_key IN ('onboarding_v2_enabled','deferred_delivery_enabled')
-      AND NOT enabled AND NOT global_enabled"
+# 8. Onboarding v2 is now hardwired (no runtime kill switch): migration 054
+#    removes onboarding_v2_enabled, leaving voice_intake_enabled (051) and
+#    deferred_delivery_enabled (042) as the only two rows, both seeded
+#    disabled.
+probe "voice_intake_enabled + deferred_delivery_enabled seeded and disabled; onboarding_v2_enabled absent" \
+  "SELECT (SELECT count(*) FROM whatsapp_runtime_controls
+            WHERE control_key IN ('voice_intake_enabled','deferred_delivery_enabled')
+              AND NOT enabled AND NOT global_enabled) = 2
+      AND NOT EXISTS (SELECT 1 FROM whatsapp_runtime_controls WHERE control_key = 'onboarding_v2_enabled')"
 
 probe "jale_whatsapp has no write grant on whatsapp_runtime_controls" \
   "SELECT NOT has_table_privilege('jale_whatsapp','whatsapp_runtime_controls','INSERT')
