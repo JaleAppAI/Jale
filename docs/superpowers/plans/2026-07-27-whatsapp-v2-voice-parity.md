@@ -1,5 +1,7 @@
 # WhatsApp v2 Voice Full Parity + Audit Ride-Alongs — Implementation Plan
 
+> **Superseded by the v2 hardwire:** `onboarding_v2_enabled` is now removed entirely — v2 is the only onboarding lane and rollback is a code redeploy, not a flag flip. See `docs/runbooks/whatsapp-onboarding-v2-rollout.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. On approval, this plan is also saved to `docs/superpowers/plans/2026-07-27-whatsapp-v2-voice-parity.md` (with `git add -f` — docs/ is gitignored, see Task 10).
 
 **Goal:** Wire voice notes into the v2 onboarding lane end to end (trust answers + full voice profile intake), fix answer-integrity gaps (greetings saved as names), add RESTART/BACK, and write the lost rollout runbook.

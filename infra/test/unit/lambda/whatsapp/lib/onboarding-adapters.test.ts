@@ -1,9 +1,8 @@
 /**
  * Task 2: Workflow Adapters — onboarding-adapters.ts
  *
- * Mocks the AWS SDK at the module boundary (pattern copied from
- * test/unit/lambda/whatsapp/onboarding-conversation.test.ts:32-63) so the
- * adapters under test never touch real AWS.
+ * Mocks the AWS SDK at the module boundary so the adapters under test never
+ * touch real AWS.
  */
 
 // ── Mocks (must come before the adapter import) ─────────────────────────

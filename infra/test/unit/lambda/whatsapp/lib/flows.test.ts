@@ -16,8 +16,6 @@ import {
   parseProfilePayloadAnswer,
   getTrustOptions,
   buildTrustQuestion,
-  parseTrustAnswer,
-  parseTrustPayloadAnswer,
   parseTypedJobAction,
   computeNextField,
   PROFILE_FIELDS,
@@ -318,16 +316,6 @@ describe('flows.ts — rich onboarding payloads', () => {
     expect(parseProfilePayloadAnswer('has_transportation', 'profile:has_transportation:maybe')).toBeNull();
   });
 
-  it('maps trust payloads only for the current step', () => {
-    expect(parseTrustPayloadAnswer(0, 'electrician', 'trust:0:1')).toMatchObject({
-      questionKey: 'specialization',
-      optionKey: 'opt_1',
-      label: 'Commercial',
-    });
-    expect(parseTrustPayloadAnswer(1, 'electrician', 'trust:0:1')).toBeNull();
-    expect(parseTrustPayloadAnswer(0, 'electrician', 'trust:0:9')).toBeNull();
-  });
-
   it('parses media quick reply payloads', () => {
     expect(parseMediaPayload('media:photo:skip')).toEqual({ kind: 'photo', value: 'skip' });
     expect(parseMediaPayload('media:photo_type:profile_photo')).toEqual({
@@ -547,20 +535,6 @@ describe('flows.ts — trust signals', () => {
     expect(question).not.toContain('Perfil de confianza');
   });
 
-  it('parses a valid trust answer', () => {
-    const answer = parseTrustAnswer(0, 'electrician', '2');
-    expect(answer).toMatchObject({
-      questionKey: 'specialization',
-      optionKey: 'opt_1',
-      label: 'Commercial',
-    });
-  });
-
-  it('rejects invalid trust answers', () => {
-    expect(parseTrustAnswer(0, 'electrician', '0')).toBeNull();
-    expect(parseTrustAnswer(0, 'electrician', '9')).toBeNull();
-    expect(parseTrustAnswer(0, 'electrician', 'yes')).toBeNull();
-  });
 });
 
 describe('flows.ts — parseTypedJobAction', () => {

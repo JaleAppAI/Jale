@@ -191,8 +191,9 @@ export interface OnboardingV2Deps {
     input: { workerId: string; documentVersion: string },
   ) => Promise<void>;
   /**
-   * Gated by the `voice_intake_enabled` runtime control (fail-closed, same
-   * allowlist-then-global-rollout pattern as `onboarding_v2_enabled`).
+   * Gated by the `voice_intake_enabled` runtime control (fail-closed,
+   * allowlist-then-global-rollout pattern) — the only phone-scoped runtime
+   * control remaining now that onboarding v2 is hardwired on for everyone.
    * `startTrustTranscription` kicks off the Twilio-download -> S3 ->
    * Transcribe pipeline for a voice note recorded at a `trust.question.*`
    * step; it never advances the step or touches the run lock — that only

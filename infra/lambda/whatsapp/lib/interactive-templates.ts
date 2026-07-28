@@ -1,8 +1,4 @@
-import {
-  buildTrustQuestion,
-  getTrustOptions,
-  type ProfileField,
-} from './flows';
+import type { ProfileField } from './flows';
 import { t, type Lang } from './templates';
 
 export interface InteractivePrompt {
@@ -94,46 +90,12 @@ export function buildMediaInteractivePrompt(
   };
 }
 
-export function buildTrustInteractivePrompt(
-  step: number,
-  trade: string,
-  lang: Lang,
-): InteractivePrompt {
-  const options = getTrustOptions(step, trade);
-  const body = trustQuestionBody(step, lang);
-  return {
-    templateName: `trust_choice_${lang}`,
-    variables: {
-      '1': body,
-      '2': options[0] ?? '',
-      '3': options[1] ?? '',
-      '4': options[2] ?? '',
-      '5': `trust:${step}:0`,
-      '6': `trust:${step}:1`,
-      '7': `trust:${step}:2`,
-    },
-    fallbackBody: buildTrustQuestion(step, trade, lang),
-  };
-}
-
 export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
   return {
     templateName: lang === 'es' ? 'help_menu_list_es' : 'help_menu_list_en',
     variables: {},
     fallbackBody: t('help_menu', lang),
   };
-}
-
-function trustQuestionBody(step: number, lang: Lang): string {
-  if (step === 0) {
-    return lang === 'es'
-      ? 'Una pregunta mas para recomendarte mejores trabajos.\n\nEn que te especializas?'
-      : 'One more question so we can recommend better jobs.\n\nWhat is your specialty?';
-  }
-  if (step === 1) {
-    return lang === 'es' ? 'Cual es tu nivel?' : 'What is your level?';
-  }
-  return lang === 'es' ? 'Que trabajo haces mas?' : 'What work do you do most?';
 }
 
 // ── V2 workflow builders (additive; legacy builders above are unchanged) ──

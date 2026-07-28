@@ -2,24 +2,23 @@
  * Operator CLI: WhatsApp v2 runtime controls (whatsapp_runtime_controls, 042,
  * 051).
  *
- * Reads/writes the `onboarding_v2_enabled`, `deferred_delivery_enabled`, and
- * `voice_intake_enabled` control rows. `--show` prints hashes only (never raw
- * phones) and prints no other table. `--allow-phone`/`--deny-phone` write/
- * remove only the SHA-256 hash of the supplied phone via
- * `hashNormalizedPhone` — the raw phone is never persisted or printed.
+ * Reads/writes the `deferred_delivery_enabled` and `voice_intake_enabled`
+ * control rows. `--show` prints hashes only (never raw phones) and prints no
+ * other table. `--allow-phone`/`--deny-phone` write/remove only the SHA-256
+ * hash of the supplied phone via `hashNormalizedPhone` — the raw phone is
+ * never persisted or printed.
  *
  * `--allow-phone`, `--deny-phone`, and `--go-global` default to targeting
- * `onboarding_v2_enabled`, unchanged from before `voice_intake_enabled`
- * existed. Append `--control voice_intake` to target the voice-intake
- * allowlist/global-flag instead. `--control` only accepts phone-scoped
- * controls (`onboarding_v2`, `voice_intake`) — `deferred_delivery` has no
+ * `voice_intake_enabled` — the only phone-scoped control. `--control
+ * voice_intake` may still be passed explicitly for clarity; `--control` only
+ * accepts phone-scoped controls (`voice_intake`) — `deferred_delivery` has no
  * per-phone allowlist or global flag of its own.
  *
  * Usage:
  *   cd infra
  *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --show
- *   npx ts-node scripts/whatsapp-runtime-controls.ts --enable onboarding_v2
+ *   npx ts-node scripts/whatsapp-runtime-controls.ts --enable deferred_delivery
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --go-global
  *
@@ -43,9 +42,12 @@ export interface Queryable {
   ): Promise<{ rows: Array<Record<string, unknown>>; rowCount: number | null }>;
 }
 
-/** Maps the CLI's short control names to the seeded 042/051 control_key values. */
+/**
+ * Maps the CLI's short control names to the seeded control_key values: the
+ * `whatsapp_runtime_controls` table and the `deferred_delivery_enabled` row
+ * were created/seeded in 042; 051 added the `voice_intake_enabled` row.
+ */
 const CONTROL_KEY_MAP: Record<string, string> = {
-  onboarding_v2: 'onboarding_v2_enabled',
   deferred_delivery: 'deferred_delivery_enabled',
   voice_intake: 'voice_intake_enabled',
 };
@@ -57,11 +59,10 @@ const CONTROL_KEY_MAP: Record<string, string> = {
  * scoping, so it is deliberately excluded here.
  */
 const PHONE_SCOPED_CONTROL_MAP: Record<string, string> = {
-  onboarding_v2: 'onboarding_v2_enabled',
   voice_intake: 'voice_intake_enabled',
 };
 
-const DEFAULT_PHONE_SCOPED_CONTROL_KEY = 'onboarding_v2_enabled';
+const DEFAULT_PHONE_SCOPED_CONTROL_KEY = 'voice_intake_enabled';
 
 export type ControlsAction =
   | { kind: 'show' }
@@ -92,9 +93,8 @@ const KNOWN_FLAGS = new Set([
  *
  * `--go-global`, `--allow-phone`, and `--deny-phone` accept an optional
  * trailing `--control <name>` selector (name is one of
- * PHONE_SCOPED_CONTROL_MAP's keys). Omitting it targets `onboarding_v2` —
- * exactly the behavior before `voice_intake_enabled` (051) existed, so every
- * existing invocation without a selector parses identically to before.
+ * PHONE_SCOPED_CONTROL_MAP's keys). Omitting it targets `voice_intake` — the
+ * only phone-scoped control.
  */
 export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
   const supportsControlSelector =
@@ -114,7 +114,7 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
       // Never echo the supplied value — it could be a misplaced raw phone.
       return {
         ok: false,
-        error: 'Unknown --control value (must be onboarding_v2 or voice_intake)',
+        error: 'Unknown --control value (must be voice_intake)',
       };
     }
     controlKey = mapped;
@@ -128,7 +128,7 @@ export function parseControlsArgs(argv: string[]): ParseControlsArgsResult {
  * Original argv parsing, unchanged from before the `--control` selector
  * existed, except that `allow-phone` / `deny-phone` / `go-global` now carry
  * whichever `controlKey` the caller resolved (defaulting to
- * `onboarding_v2_enabled`).
+ * `voice_intake_enabled`).
  */
 function parseBaseControlsArgs(
   argv: string[],
@@ -171,8 +171,7 @@ function parseBaseControlsArgs(
       // Never echo the supplied value — it could be a misplaced raw phone.
       return {
         ok: false,
-        error:
-          'Unknown control name (must be onboarding_v2, deferred_delivery, or voice_intake)',
+        error: 'Unknown control name (must be deferred_delivery or voice_intake)',
       };
     }
     return {

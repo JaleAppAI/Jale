@@ -459,9 +459,6 @@ interface RecordedIntent {
 }
 
 const DEFAULT_CONTROLS: RuntimeControls = {
-  onboardingV2Enabled: true,
-  onboardingV2GlobalEnabled: true,
-  onboardingV2PhoneHashes: new Set<string>(),
   deferredDeliveryEnabled: true,
   voiceIntakeEnabled: false,
   voiceIntakeGlobalEnabled: false,
