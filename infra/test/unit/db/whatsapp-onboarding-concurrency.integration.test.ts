@@ -178,7 +178,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
           FROM whatsapp_runtime_controls
          WHERE control_key = ANY($1::text[])
          ORDER BY control_key
-      `, [['deferred_delivery_enabled', 'onboarding_v2_enabled']]);
+      `, [['deferred_delivery_enabled', 'voice_intake_enabled']]);
       expect(snapshot.rows).toHaveLength(2);
       runtimeControlSnapshot = snapshot.rows;
     });
@@ -212,7 +212,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
           FROM whatsapp_runtime_controls
          WHERE control_key = ANY($1::text[])
          ORDER BY control_key
-      `, [['deferred_delivery_enabled', 'onboarding_v2_enabled']]);
+      `, [['deferred_delivery_enabled', 'voice_intake_enabled']]);
       expect(verified.rows).toEqual(runtimeControlSnapshot);
     });
   });
@@ -377,7 +377,7 @@ maybeDescribe('WhatsApp v2 RLS / idempotency / lease / concurrency gate (C9)', (
       const client = await connectAsWhatsapp(workerA);
       try {
         await expect(
-          client.query(`UPDATE whatsapp_runtime_controls SET enabled = true WHERE control_key = 'onboarding_v2_enabled'`),
+          client.query(`UPDATE whatsapp_runtime_controls SET enabled = true WHERE control_key = 'voice_intake_enabled'`),
         ).rejects.toMatchObject({ code: '42501' });
       } finally {
         await client.query('ROLLBACK').catch(() => undefined);
