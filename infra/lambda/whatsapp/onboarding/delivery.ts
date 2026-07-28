@@ -109,6 +109,54 @@ export async function sendTemplateMessage(
   await deps.enqueueWorkerMessage(client, input, now);
 }
 
+/**
+ * Sends an error notice AND the current step's question as ONE message —
+ * error line first, question underneath. Exists because sending them as two
+ * intents cannot guarantee handset order: both carry the same routing
+ * priority and are written in the same transaction, and even sequential
+ * Twilio sends milliseconds apart can arrive reordered — live testing of
+ * the voice trust answers (2026-07-27) showed the re-asked question landing
+ * BEFORE the "we could not process that voice note" notice, which reads as
+ * a non-sequitur. A single message can never invert.
+ *
+ * Only for steps whose prompt is plain text (`templateName: ''` from
+ * `buildPromptForStep`) — the trust questions today. A templated step's
+ * interactive prompt cannot be concatenated into a body; those steps keep
+ * the two-message path.
+ */
+export async function sendErrorWithCurrentPrompt(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  deps: OnboardingV2Deps,
+  workerId: string,
+  stepKey: string,
+  lang: Lang,
+  errorKey: TemplateKey,
+  now: Date,
+  workflowRunId: string,
+  inboundMessageSid: string,
+  tag: string,
+): Promise<void> {
+  const routing = STEP_ROUTING[stepKey] ?? DEFAULT_ROUTING;
+  const prompt = buildPromptForStep(stepKey, lang, deps, session.state_context);
+  const body = `${t(errorKey, lang)}\n\n${prompt.fallbackBody}`;
+  const input: WorkerMessageIntentInput = {
+    workerId,
+    category: routing.category,
+    ownerService: routing.ownerService,
+    sourceType: `onboarding_v2:${errorKey}_with_prompt`,
+    sourceId: workflowRunId,
+    dedupeKey: `v2:${errorKey}+prompt:${workerId}:${inboundMessageSid}:${tag}`,
+    priority: routing.priority,
+    expiresAt: null,
+    payload: { body, lang },
+  };
+  await deps.enqueueWorkerMessage(client, input, now);
+  // The question just went out (inside this message) — record it so the
+  // repeat-prompt cooldown doesn't immediately send it again.
+  session.state_context[`v2LastPromptAt:${stepKey}`] = now.toISOString();
+}
+
 /** Thin, named alias over `sendStepPrompt` for the trust-question steps —
  * kept distinct (rather than inlined) so the trade/trust-set-dependent
  * prompt path has one obvious call site to change later (e.g. a real Twilio
