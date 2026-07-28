@@ -16,6 +16,10 @@ const SUITE_PROFILE_CONSTRAINTS = 'test/unit/db/worker-profiles-constraints.inte
 // migration 052 (2026-07-27 review): worker_skills DELETE reset + the
 // trust-answer upsert-by-question_index fix, both against real Postgres.
 const SUITE_052 = 'test/unit/db/whatsapp-onboarding-052.integration.test.ts';
+// migration 053 (2026-07-27): web-registered worker bypass definer --
+// eligibility re-validation, conversation-bind guard, idempotency, and
+// least-privilege grant probes, all against real Postgres.
+const SUITE_053 = 'test/unit/db/whatsapp-onboarding-053.integration.test.ts';
 // Reset CLI bind-list gate (2026-07-27): runReset shipped binding the full
 // [userId, phone, phoneHash] list to every per-table statement, which real
 // Postgres rejects on the first `user_id = $1` predicate. Only a real
@@ -38,7 +42,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
   it('invokes exactly the migration-042, concurrency, migration-049, and profile-constraint suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
-    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_RESET]);
+    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_053, SUITE_RESET]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(
