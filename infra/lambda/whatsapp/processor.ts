@@ -455,12 +455,21 @@ async function findWebRegisteredWorker(
        WHERE phone = $1
          AND user_type = 'worker'
          AND tos_accepted_at IS NOT NULL
+         AND email IS NOT NULL
        LIMIT 1`,
     [phone],
   );
   return result.rowCount ? result.rows[0] : null;
 }
 
+/**
+ * Runs the entire bypass atomically through migration 053's SECURITY
+ * DEFINER `bypass_onboarding_for_web_worker`: binds the conversation,
+ * backfills `users.whatsapp_number` when NULL, upserts onboarding state to
+ * `ready`, and inserts a completed workflow run (idempotent on repeat
+ * calls) — all re-validated inside the definer, never trusted from this
+ * caller's own eligibility check.
+ */
 async function bypassOnboardingForWebWorker(
   client: PoolClient,
   conv: ConversationRow,
@@ -468,21 +477,30 @@ async function bypassOnboardingForWebWorker(
   userId: string,
 ): Promise<void> {
   const lang = detectLanguage(msg.body);
+  await client.query(
+    `SELECT * FROM public.bypass_onboarding_for_web_worker($1, $2, $3, $4, $5)`,
+    [userId, conv.id, String(WHATSAPP_V2_WORKFLOW_VERSION), lang, msg.messageSid],
+  );
   await updateConversation(client, conv.id, {
     conversation_state: 'idle',
     user_id: userId,
     language: lang,
     last_processed_message_sid: msg.messageSid,
   });
-  await client.query(
-    `UPDATE users SET whatsapp_number = $1 WHERE id = $2 AND whatsapp_number IS NULL`,
-    [conv.whatsapp_number, userId],
-  );
   const welcome =
     lang === 'en'
       ? 'Welcome to Jale! Type JOBS to see available job listings.'
       : '¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.';
   await queueOutboxText(client, msg.messageSid, msg.from, welcome);
+
+  // Keep the in-memory row consistent with the writes above, mirroring
+  // routeMessage's own post-v2 writeback — any downstream code reached
+  // later in this same turn must see the now-bound conversation, not the
+  // stale unbound snapshot fetched at the top of processRecord.
+  conv.conversation_state = 'idle';
+  conv.user_id = userId;
+  conv.language = lang;
+  conv.last_processed_message_sid = msg.messageSid;
 }
 
 // ── Main SQS handler ────────────────────────────────────────────
@@ -1068,6 +1086,19 @@ async function routeMessage(
   const runtimeControls = await loadRuntimeControls(client);
   const phoneHash = hashNormalizedPhone(conv.whatsapp_number);
 
+  // Web-registered workers (email + tos_accepted_at already set from the
+  // website signup + OTP flow) skip v2 onboarding entirely on first contact.
+  // Scoped to conversations with no bound user yet — a worker already
+  // mid-onboarding (or already onboarded) must finish/stay on the lane it's
+  // on, and a synthetic voice-pipeline re-entry is never a "first message".
+  if (!conv.user_id && !voiceEvent) {
+    const webWorker = await findWebRegisteredWorker(client, conv.whatsapp_number);
+    if (webWorker) {
+      await bypassOnboardingForWebWorker(client, conv, msg, webWorker.id);
+      return webWorker.id;
+    }
+  }
+
   registerOnboardingRenderers();
 
   const v2Deps: OnboardingV2Deps = {
@@ -1155,8 +1186,9 @@ async function routeMessage(
 
   // Ready workers continue through the established idle command/callback
   // router below. Persist that compatibility state atomically with the v2
-  // context so a later rollout-control disable cannot expose a stale legacy
-  // onboarding state on the next inbound message.
+  // context so the conversation row itself — not just this in-memory
+  // `conv` — stays consistent with what the idle command router below (and
+  // the next inbound message) expects to read.
   await updateConversation(client, conv.id, {
     state_context: v2Session.state_context as unknown as ProfileStateContext,
     user_id: result.workerId,
