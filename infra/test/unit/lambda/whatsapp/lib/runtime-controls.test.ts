@@ -3,7 +3,6 @@ import type { PoolClient } from 'pg';
 import {
   hashNormalizedPhone,
   isDeferredDeliveryEnabled,
-  isV2Enabled,
   isVoiceIntakeEnabled,
   loadRuntimeControls,
 } from '../../../../../lambda/whatsapp/lib/runtime-controls';
@@ -19,15 +18,11 @@ describe('WhatsApp v2 runtime controls', () => {
     const controls = await loadRuntimeControls(clientReturning([]));
 
     expect(controls).toEqual({
-      onboardingV2Enabled: false,
-      onboardingV2GlobalEnabled: false,
-      onboardingV2PhoneHashes: new Set(),
       deferredDeliveryEnabled: false,
       voiceIntakeEnabled: false,
       voiceIntakeGlobalEnabled: false,
       voiceIntakePhoneHashes: new Set(),
     });
-    expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(false);
     expect(isDeferredDeliveryEnabled(controls)).toBe(false);
     expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
   });
@@ -36,12 +31,6 @@ describe('WhatsApp v2 runtime controls', () => {
     'fails closed when a control enabled value is malformed: %p',
     async (enabled) => {
       const controls = await loadRuntimeControls(clientReturning([
-        {
-          control_key: 'onboarding_v2_enabled',
-          enabled,
-          phone_hashes: ['a'.repeat(64)],
-          global_enabled: true,
-        },
         {
           control_key: 'deferred_delivery_enabled',
           enabled,
@@ -56,7 +45,6 @@ describe('WhatsApp v2 runtime controls', () => {
         },
       ]));
 
-      expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(false);
       expect(isDeferredDeliveryEnabled(controls)).toBe(false);
       expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
     },
@@ -84,7 +72,7 @@ describe('WhatsApp v2 runtime controls', () => {
   it('fails closed for voice_intake_enabled when the row is absent entirely', async () => {
     const controls = await loadRuntimeControls(clientReturning([
       {
-        control_key: 'onboarding_v2_enabled',
+        control_key: 'deferred_delivery_enabled',
         enabled: true,
         phone_hashes: [],
         global_enabled: true,
@@ -95,8 +83,8 @@ describe('WhatsApp v2 runtime controls', () => {
     expect(controls.voiceIntakeGlobalEnabled).toBe(false);
     expect(controls.voiceIntakePhoneHashes.size).toBe(0);
     expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
-    // Sibling controls stay unaffected by the missing voice_intake row.
-    expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(true);
+    // Sibling control stays unaffected by the missing voice_intake row.
+    expect(isDeferredDeliveryEnabled(controls)).toBe(true);
   });
 
   it('enables voice intake only for an exact hash in the allowlist', async () => {
@@ -141,15 +129,9 @@ describe('WhatsApp v2 runtime controls', () => {
     expect(isVoiceIntakeEnabled(controls, 'a'.repeat(64))).toBe(false);
   });
 
-  it('keeps voice intake independent from onboarding v2 and deferred delivery controls', async () => {
+  it('keeps voice intake independent from deferred delivery control', async () => {
     const phoneHash = 'a'.repeat(64);
     const controls = await loadRuntimeControls(clientReturning([
-      {
-        control_key: 'onboarding_v2_enabled',
-        enabled: false,
-        phone_hashes: [],
-        global_enabled: false,
-      },
       {
         control_key: 'deferred_delivery_enabled',
         enabled: false,
@@ -164,51 +146,21 @@ describe('WhatsApp v2 runtime controls', () => {
       },
     ]));
 
-    expect(isV2Enabled(controls, phoneHash)).toBe(false);
     expect(isDeferredDeliveryEnabled(controls)).toBe(false);
     expect(isVoiceIntakeEnabled(controls, phoneHash)).toBe(true);
   });
 
-  it('enables v2 only for an exact hash in the allowlist', async () => {
-    const allowedHash = 'a'.repeat(64);
-    const controls = await loadRuntimeControls(clientReturning([
-      {
-        control_key: 'onboarding_v2_enabled',
-        enabled: true,
-        phone_hashes: [allowedHash],
-        global_enabled: false,
-      },
-    ]));
-
-    expect(isV2Enabled(controls, allowedHash)).toBe(true);
-    expect(isV2Enabled(controls, 'b'.repeat(64))).toBe(false);
-  });
-
-  it('enables v2 for any hash when the global flag is enabled', async () => {
-    const controls = await loadRuntimeControls(clientReturning([
-      {
-        control_key: 'onboarding_v2_enabled',
-        enabled: true,
-        phone_hashes: [],
-        global_enabled: true,
-      },
-    ]));
-
-    expect(isV2Enabled(controls, 'a'.repeat(64))).toBe(true);
-    expect(isV2Enabled(controls, 'b'.repeat(64))).toBe(true);
-  });
-
   it.each([
-    { onboardingEnabled: true, deferredEnabled: false },
-    { onboardingEnabled: false, deferredEnabled: true },
+    { voiceEnabled: true, deferredEnabled: false },
+    { voiceEnabled: false, deferredEnabled: true },
   ])(
-    'keeps deferred delivery independent from onboarding controls: %p',
-    async ({ onboardingEnabled, deferredEnabled }) => {
+    'keeps deferred delivery independent from voice intake: %p',
+    async ({ voiceEnabled, deferredEnabled }) => {
       const phoneHash = 'a'.repeat(64);
       const controls = await loadRuntimeControls(clientReturning([
         {
-          control_key: 'onboarding_v2_enabled',
-          enabled: onboardingEnabled,
+          control_key: 'voice_intake_enabled',
+          enabled: voiceEnabled,
           phone_hashes: [phoneHash],
           global_enabled: false,
         },
@@ -220,7 +172,7 @@ describe('WhatsApp v2 runtime controls', () => {
         },
       ]));
 
-      expect(isV2Enabled(controls, phoneHash)).toBe(onboardingEnabled);
+      expect(isVoiceIntakeEnabled(controls, phoneHash)).toBe(voiceEnabled);
       expect(isDeferredDeliveryEnabled(controls)).toBe(deferredEnabled);
     },
   );
@@ -251,5 +203,57 @@ describe('WhatsApp v2 runtime controls', () => {
     expect(query).toHaveBeenCalledTimes(1);
     expect(query.mock.calls[0][0]).not.toContain('+15551234567');
     expect(query.mock.calls[0][0]).toContain('whatsapp_runtime_controls');
+  });
+
+  it('no longer queries for the retired onboarding_v2_enabled control key', async () => {
+    const client = clientReturning([]);
+
+    await loadRuntimeControls(client);
+
+    const query = client.query as jest.Mock;
+    const [, params] = query.mock.calls[0];
+    expect(params).toEqual([
+      ['deferred_delivery_enabled', 'voice_intake_enabled'],
+    ]);
+    expect(params[0]).not.toContain('onboarding_v2_enabled');
+  });
+
+  it('ignores a lingering onboarding_v2_enabled row still present in the query result window', async () => {
+    // The prod table keeps this row until migration 054 drops it. The
+    // control_key = ANY($1) filter means it would never actually be
+    // fetched once the key list is trimmed, but this pins that even if a
+    // row for it somehow appeared in the result set, loadRuntimeControls
+    // ignores it entirely rather than surfacing any onboarding-v2 field.
+    const phoneHash = 'a'.repeat(64);
+    const controls = await loadRuntimeControls(clientReturning([
+      {
+        control_key: 'onboarding_v2_enabled',
+        enabled: true,
+        phone_hashes: [phoneHash],
+        global_enabled: true,
+      },
+      {
+        control_key: 'deferred_delivery_enabled',
+        enabled: true,
+        phone_hashes: [],
+        global_enabled: false,
+      },
+      {
+        control_key: 'voice_intake_enabled',
+        enabled: true,
+        phone_hashes: [phoneHash],
+        global_enabled: false,
+      },
+    ]));
+
+    expect(controls).toEqual({
+      deferredDeliveryEnabled: true,
+      voiceIntakeEnabled: true,
+      voiceIntakeGlobalEnabled: false,
+      voiceIntakePhoneHashes: new Set([phoneHash]),
+    });
+    expect(controls).not.toHaveProperty('onboardingV2Enabled');
+    expect(controls).not.toHaveProperty('onboardingV2GlobalEnabled');
+    expect(controls).not.toHaveProperty('onboardingV2PhoneHashes');
   });
 });
