@@ -246,8 +246,8 @@ transaction, across the whole worker population.
 Flags: `--reason` (required, stamped on every per-worker audit row), exactly
 one of `--dry-run` / `--execute`, and an optional `--limit <n>` to cap the
 run to the first `n` workers — use it to run a small canary batch before
-committing to the full population. Like every other tool here, it never
-prints a raw phone number, only the SHA-256 hash.
+committing to the full population. It never prints a raw phone number;
+output is limited to user ids and per-table counts.
 
 ```bash
 cd infra
@@ -261,10 +261,11 @@ DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
 Failure policy: because each worker resets in its own transaction, one
 worker's failure never rolls back another worker's progress. If a given
 worker's reset throws, the script logs it, **keeps going** to the remaining
-workers, and **exits non-zero** at the end with a summary (succeeded /
-failed / skipped counts) — a partial run can never masquerade as a clean
-success. Every worker that resets successfully still gets its own
-`worker_reset_audit` row, exactly like the single-worker tool.
+workers, and **exits non-zero** at the end with a summary (total workers
+processed, succeeded count, and the failed list of ids + errors) — a partial
+run can never masquerade as a clean success. Every worker that resets
+successfully still gets its own `worker_reset_audit` row, exactly like the
+single-worker tool.
 
 ### `bypass_onboarding_for_web_worker()` — web-registered worker bypass (migration 053)
 
