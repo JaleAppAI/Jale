@@ -76,21 +76,20 @@ jest.mock('../../../../lambda/lib/job-matching', () => ({
 
 // ── v2 routing branch mocks ──────────────────────────────────────────────
 //
-// The v2 decision (loadRuntimeControls/isV2Enabled/hashNormalizedPhone) and
-// the router itself (routeOnboardingV2) are mocked so legacy tests never
-// issue a real `whatsapp_runtime_controls` query (which would shift every
-// strict `mockResolvedValueOnce` chain in this file) and so the "v2 routing
-// branch" describe block below can assert call counts/args precisely.
+// v2 is the only onboarding lane now. loadRuntimeControls/hashNormalizedPhone
+// (still feeding the live voice_intake control) and the router itself
+// (routeOnboardingV2) are mocked so tests never issue a real
+// `whatsapp_runtime_controls` query (which would shift every strict
+// `mockResolvedValueOnce` chain in this file) and so the "v2 routing branch"
+// describe block below can assert call counts/args precisely.
 // registerCategoryRenderer is spied-but-real (jest.requireActual) so the
 // "renderers registered before routing" assertions exercise the real
 // registry; onboarding-renderers itself stays real for the same reason.
 const mockLoadRuntimeControls = jest.fn();
-const mockIsV2Enabled = jest.fn();
 const mockIsVoiceIntakeEnabled = jest.fn();
 const mockHashNormalizedPhone = jest.fn((phone: any) => `hash:${phone}`);
 jest.mock('../../../../lambda/whatsapp/lib/runtime-controls', () => ({
   loadRuntimeControls: (client: unknown) => mockLoadRuntimeControls(client),
-  isV2Enabled: (controls: unknown, phoneHash: unknown) => mockIsV2Enabled(controls, phoneHash),
   isVoiceIntakeEnabled: (controls: unknown, phoneHash: unknown) => mockIsVoiceIntakeEnabled(controls, phoneHash),
   hashNormalizedPhone: (phone: unknown) => mockHashNormalizedPhone(phone),
 }));
@@ -266,13 +265,18 @@ describe('Processor Lambda', () => {
       json: async () => ({ sid: 'SM11111111111111111111111111111111' }),
     });
 
-    // v2 routing branch: disabled by default so every legacy test in this
-    // file runs the state machine exactly as before. Individual "v2 routing
-    // branch" tests override these to exercise the enabled path.
+    // v2 is the only onboarding lane now — routeMessage always calls
+    // routeOnboardingV2 (mocked here). Default passthrough: "not handled",
+    // echoing the session's incoming user_id/language back unchanged, so
+    // every test that doesn't care about v2 onboarding specifics still
+    // reaches the shared idle/help/support/profile/relay handling below
+    // exactly as the old v1-disabled path used to. Individual "v2 routing
+    // branch" tests override this to assert on the v2-specific plumbing.
     mockLoadRuntimeControls.mockResolvedValue({ disabled: true });
-    mockIsV2Enabled.mockReturnValue(false);
     mockHashNormalizedPhone.mockImplementation((phone: string) => `hash:${phone}`);
     mockRouteOnboardingV2.mockReset();
+    mockRouteOnboardingV2.mockImplementation((_client: unknown, session: any) =>
+      Promise.resolve({ handled: false, workerId: session?.user_id ?? null }));
     mockCreateOnboardingV2Adapters.mockReset();
     mockCreateOnboardingV2Adapters.mockReturnValue({});
     mockEnqueueWorkerMessage.mockReset();
@@ -380,138 +384,6 @@ describe('Processor Lambda', () => {
       expect(countQueryByPattern(/UPDATE whatsapp_outbox/i)).toBe(0);
       expect(mockFetch).not.toHaveBeenCalled();
     });
-
-    it('first-mover path: claim succeeds, routeMessage runs, status → db_committed → completed', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        // claim INSERT: succeeds (returns row)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new' }] })
-        // SELECT conversation FOR UPDATE — returns empty (new conversation)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // INSERT whatsapp_conversations
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'new' })],
-        })
-        // findWebRegisteredWorker → no match (not a web-registered worker)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] });
-      // tryConversationRelay short-circuits on the unbound-session guard (no
-      // user_id) before ever querying — relay returns null and the built-in
-      // 'new' greeting path runs as before.
-      // handleNewOrRestart begins here; we route via the 'new' → greeting path.
-      // Suppressed AdminCreateUser + AdminSetUserPassword succeed.
-      mockCognitoSend
-        .mockResolvedValueOnce({}) // AdminCreateUser
-        .mockResolvedValueOnce({}) // AdminSetUserPassword
-        .mockResolvedValueOnce({
-          Session: 'INIT-SESSION',
-          ChallengeName: 'CUSTOM_CHALLENGE',
-        }); // InitiateAuth
-      mockQuery
-        // Defensive INSERT users
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // UPDATE whatsapp_conversations (state transition + session persist)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // queueReply → INSERT whatsapp_outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // UPDATE whatsapp_processed_messages status='db_committed'
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // sendPendingOutbox: SELECT pending rows
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'o-1', sequence: 1, whatsapp_number: '+15125551234', body: 'welcome' }],
-        })
-        // UPDATE outbox status='sent'
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // markCompleted
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] });
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-new',
-          From: 'whatsapp:+15125551234',
-          Body: 'Hola',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      // Claim INSERT hit the processed_messages table with the right SID
-      const claim = findQueryByPattern(
-        /INSERT INTO whatsapp_processed_messages/i,
-      );
-      expect(claim).toContain('SM-new');
-
-      expect(mockCognitoSend.mock.calls[0][0]).toEqual(expect.objectContaining({
-        __type: 'AdminCreateUser',
-        input: expect.objectContaining({
-          MessageAction: 'SUPPRESS',
-          UserAttributes: expect.arrayContaining([
-            { Name: 'phone_number_verified', Value: 'true' },
-          ]),
-        }),
-      }));
-
-      // Exactly one Twilio call (the welcome message) across the whole flow.
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-
-      // Regression: the outbox insert must cast the reused SID parameter.
-      // Without this, Postgres can infer $1 as both text and varchar and
-      // crash with 42P08 before the conversation state commits.
-      const outboxInsert = mockQuery.mock.calls.find(([sql]) =>
-        /INSERT INTO whatsapp_outbox/i.test(sql as string),
-      )?.[0] as string | undefined;
-      expect(outboxInsert).toContain('$1::varchar');
-
-      // Final state: status='completed'
-      const completed = findQueryByPattern(
-        /UPDATE whatsapp_processed_messages\s+SET status = 'completed'/i,
-      );
-      expect(completed).toBeDefined();
-    });
-
-    it('does not start onboarding for a new conversation unless the worker sends hola or hello', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new-jobs' }] }) // claim
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT conversation FOR UPDATE
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'new' })],
-        }) // INSERT whatsapp_conversations
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox start_prompt
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{
-            id: 'o-1',
-            sequence: 1,
-            whatsapp_number: '+15125551234',
-            body: 'Envia "Hola" o "Hello" para empezar.',
-          }],
-        }) // sendPendingOutbox: SELECT pending rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE outbox sent
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-new-jobs',
-          From: 'whatsapp:+15125551234',
-          Body: 'Trabajos',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      expect(mockCognitoSend).not.toHaveBeenCalled();
-      expect(outboxBodies()[0]).toBe('Envia "Hola" o "Hello" para empezar.');
-      expect(countQueryByPattern(/INSERT INTO users/i)).toBe(0);
-      expect(countQueryByPattern(/FROM jobs/i)).toBe(0);
-    });
   });
 
   // ── outbox — Twilio failure leaves claim db_committed ───────────────────
@@ -522,6 +394,8 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-twilio-fail' }] }) // claim
         .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'idle' })] }) // SELECT conv FOR UPDATE
+        // v2 forced-idle writeback (routeOnboardingV2 mocked, handled:false)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
         // queueReply → INSERT whatsapp_outbox (jobs_none)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] })
         // UPDATE whatsapp_processed_messages status='db_committed'
@@ -574,486 +448,7 @@ describe('Processor Lambda', () => {
     });
   });
 
-  // ── ABORT on placeholder with dependent rows ─────────────────────────────
-
-  describe('reconcileUserRow ABORT on dependents', () => {
-    const realSub = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
-
-    it('throws when placeholder has dependent legal_consent_log rows', async () => {
-      // Build IdToken that decodes to realSub
-      const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ sub: realSub })).toString('base64url');
-      const idToken = `${header}.${payload}.sig`;
-
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (outer)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-otp-ok' }] }) // claim
-        // SELECT conv FOR UPDATE — awaiting_otp with session
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'awaiting_otp',
-            otp_attempts: 0,
-            otp_expires_at: new Date(Date.now() + 5 * 60 * 1000),
-            state_context: { cognito_session: 'SESSION-OK' },
-          })],
-        });
-      // RespondToAuthChallenge succeeds
-      mockCognitoSend.mockResolvedValueOnce({
-        AuthenticationResult: { IdToken: idToken },
-      });
-      // reconcileUserRow: realSub row already exists (Case B)
-      mockQuery
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'u-real', tos_version: null }],
-        })
-        // UPDATE users (link whatsapp to real-sub row)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // has_deps check → TRUE (placeholder has dependent rows)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'u-placeholder' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] })
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ has_deps: true }],
-        });
-
-      const logSpies = [console.log, console.warn, console.error].map((_method, index) =>
-        jest.spyOn(console, (['log', 'warn', 'error'] as const)[index]).mockImplementation(() => undefined));
-      try {
-        await expect(
-          handler(
-            makeSqsEvent({
-              MessageSid: 'SM-otp-ok',
-              From: 'whatsapp:+15125551234',
-              Body: '123456',
-            }),
-            {} as any,
-            {} as any,
-          ),
-        ).rejects.toThrow('reconcile_placeholder_has_dependents');
-        const captured = logSpies.flatMap((spy) => spy.mock.calls).map((args) => JSON.stringify(args)).join('\n');
-        expect(captured).not.toContain('+15125551234');
-        expect(captured).not.toContain('15125551234');
-      } finally {
-        logSpies.forEach((spy) => spy.mockRestore());
-      }
-
-      // DELETE FROM users was NEVER issued
-      expect(countQueryByPattern(/DELETE FROM users/i)).toBe(0);
-    });
-
-    it('proceeds with DELETE when placeholder has no dependents', async () => {
-      const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ sub: realSub })).toString('base64url');
-      const idToken = `${header}.${payload}.sig`;
-
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN (outer)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-otp-ok' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'awaiting_otp',
-            otp_attempts: 0,
-            otp_expires_at: new Date(Date.now() + 5 * 60 * 1000),
-            state_context: { cognito_session: 'SESSION-OK' },
-          })],
-        });
-      mockCognitoSend.mockResolvedValueOnce({
-        AuthenticationResult: { IdToken: idToken },
-      });
-      mockQuery
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'u-real', tos_version: '1.0' }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users (link)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'u-placeholder' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] })
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ has_deps: false }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] })
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ has_deps: false }],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // DELETE
-        // Rest of the OTP-success path: updateConversation, enterProfileBuilderOrIdle, etc.
-        // Stub them out with generous mocks to let the handler run to completion.
-        .mockResolvedValue({ rowCount: 1, rows: [] });
-
-      try {
-        await handler(
-          makeSqsEvent({
-            MessageSid: 'SM-otp-ok',
-            From: 'whatsapp:+15125551234',
-            Body: '123456',
-          }),
-          {} as any,
-          {} as any,
-        );
-      } catch {
-        // The handler may still throw at a later stub boundary — we only
-        // care here that the ABORT check passed and DELETE ran.
-      }
-
-      // DELETE FROM users WAS issued
-      expect(countQueryByPattern(/DELETE FROM users/i)).toBeGreaterThan(0);
-    });
-
-    it('creates and links a real-sub worker only after verified OTP when no user row exists', async () => {
-      const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString('base64url');
-      const payload = Buffer.from(JSON.stringify({ sub: realSub })).toString('base64url');
-      const idToken = `${header}.${payload}.sig`;
-
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-net-new-otp' }] })
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'awaiting_otp',
-            otp_attempts: 0,
-            otp_expires_at: new Date(Date.now() + 5 * 60 * 1000),
-            state_context: { cognito_session: 'SESSION-NET-NEW' },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no real-sub user
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no placeholder to promote
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ user_id: 'u-net-new' }],
-        }) // reconcile_worker_signup
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ id: 'u-net-new', tos_version: null }],
-        }) // link verified WhatsApp identity
-        .mockResolvedValue({ rowCount: 1, rows: [] });
-      mockCognitoSend.mockResolvedValueOnce({
-        AuthenticationResult: { IdToken: idToken },
-      });
-
-      try {
-        await handler(
-          makeSqsEvent({
-            MessageSid: 'SM-net-new-otp',
-            From: 'whatsapp:+15125551234',
-            Body: '123456',
-          }),
-          {} as any,
-          {} as any,
-        );
-      } catch {
-        // Later unrelated handler calls use generic mocks; this assertion is
-        // limited to the verified identity reconciliation boundary.
-      }
-
-      expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT reconcile_worker_signup($1, $2, $3) AS user_id',
-        [realSub, '+15125551234', ''],
-      );
-      const reconcileIndex = mockQuery.mock.calls.findIndex(([sql]) =>
-        /reconcile_worker_signup/.test(sql as string));
-      expect(reconcileIndex).toBeGreaterThan(0);
-      expect(mockQuery.mock.calls.slice(0, reconcileIndex).some(([sql]) =>
-        /INSERT INTO users/.test(sql as string))).toBe(false);
-    });
-  });
-
   describe('Trust signals and typed jobs', () => {
-    it('accepts legal terms from a rich quick-reply payload', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-legal-button' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'awaiting_legal',
-            user_id: 'user-1',
-            language: 'en',
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] }) // SELECT user
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users consent
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT tos log
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT privacy log
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_voice
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_media_voice
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(makeSqsEvent({
-        MessageSid: 'SM-legal-button',
-        From: 'whatsapp:+15125551234',
-        Body: '',
-        ButtonPayload: 'legal:accept',
-      }), {} as any, {} as any);
-
-      expect(findQueryByPattern(/UPDATE users\s+SET tos_version/i)).toBeDefined();
-      const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string)
-        && Array.isArray(params)
-        && (params as unknown[]).includes('awaiting_media_voice')
-      );
-      expect(convUpdate).toBeDefined();
-      const mediaPrompt = mockQuery.mock.calls.find(([sql, params]) =>
-        /INSERT INTO whatsapp_outbox/i.test(sql as string)
-        && /content_template/i.test(sql as string)
-        && Array.isArray(params)
-        && (params as unknown[]).includes('onboarding_voice_choice_en')
-      );
-      expect(mediaPrompt).toBeDefined();
-      expect(outboxTemplates()).toEqual(['onboarding_voice_choice_en']);
-      expect(outboxBodies()).toEqual([]);
-    });
-
-    it('re-prompts legal terms as a rich quick-reply prompt', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-legal-reprompt' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'awaiting_legal',
-            user_id: 'user-1',
-            language: 'en',
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT legal prompt
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(makeSqsEvent({
-        MessageSid: 'SM-legal-reprompt',
-        From: 'whatsapp:+15125551234',
-        Body: 'maybe',
-      }), {} as any, {} as any);
-
-      const legalPrompt = mockQuery.mock.calls.find(([sql, params]) =>
-        /INSERT INTO whatsapp_outbox/i.test(sql as string)
-        && /content_template/i.test(sql as string)
-        && Array.isArray(params)
-        && (params as unknown[]).includes('onboarding_legal_en')
-      );
-      expect(legalPrompt).toBeDefined();
-    });
-
-    it('accepts profile answers from matching rich payloads', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile-button' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'building_profile',
-            user_id: 'user-1',
-            language: 'en',
-            state_context: {
-              pending_field: 'has_transportation',
-              collected: {
-                full_name: 'Luis Worker',
-                city: 'Denver',
-                main_trade: 'electrician',
-                years_experience: '2-4',
-              },
-              field_sids: {},
-            },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation next field
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT ask_availability
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(makeSqsEvent({
-        MessageSid: 'SM-profile-button',
-        From: 'whatsapp:+15125551234',
-        Body: '',
-        ButtonPayload: 'profile:has_transportation:true',
-      }), {} as any, {} as any);
-
-      const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string)
-        && Array.isArray(params)
-        && (params as unknown[]).some((value) =>
-          typeof value === 'string' && value.includes('"has_transportation":true')
-        )
-      );
-      expect(convUpdate).toBeDefined();
-      const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-        typeof value === 'string' && value.includes('pending_field')
-      );
-      expect(JSON.parse(String(stateJson))).toMatchObject({
-        pending_field: 'availability',
-        collected: { has_transportation: true },
-      });
-      const templateInsert = mockQuery.mock.calls.find(([sql, params]) =>
-        /INSERT INTO whatsapp_outbox/i.test(sql as string)
-        && /content_template/i.test(sql as string)
-        && Array.isArray(params)
-        && (params as unknown[]).includes('onboarding_availability_en')
-      );
-      expect(templateInsert).toBeDefined();
-    });
-
-    it('re-prompts trust questions as rich quick-reply prompts', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-invalid' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'building_trust_signal',
-            user_id: 'user-1',
-            language: 'en',
-            state_context: { trust_step: 0, trust_answers: [] },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals exists
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals_completed_at exists
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT trust prompt
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(makeSqsEvent({
-        MessageSid: 'SM-trust-invalid',
-        From: 'whatsapp:+15125551234',
-        Body: 'bad',
-      }), {} as any, {} as any);
-
-      const trustPrompt = mockQuery.mock.calls.find(([sql, params]) =>
-        /INSERT INTO whatsapp_outbox/i.test(sql as string)
-        && /content_template/i.test(sql as string)
-        && Array.isArray(params)
-        && (params as unknown[]).includes('trust_choice_en')
-      );
-      expect(trustPrompt).toBeDefined();
-    });
-
-    it('writes final trust signals and moves the conversation to idle', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-3' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'building_trust_signal',
-            user_id: 'user-1',
-            state_context: {
-              trust_step: 2,
-              trust_answers: [
-                {
-                  questionKey: 'specialization',
-                  optionKey: 'opt_0',
-                  label: 'Residential',
-                  answeredAt: '2026-04-24T00:00:00.000Z',
-                },
-                {
-                  questionKey: 'seniority',
-                  optionKey: 'opt_1',
-                  label: 'Can work alone',
-                  answeredAt: '2026-04-24T00:01:00.000Z',
-                },
-              ],
-            },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals exists
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: true }] }) // users.trust_signals_completed_at exists
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade: 'electrician' }] })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users trust_signals
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT seeded trade questions
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_photo
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox photo prompt
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-trust-3',
-          From: 'whatsapp:+15125551234',
-          Body: '2',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      const trustUpdate = findQueryByPattern(/UPDATE users\s+SET trust_signals/i);
-      expect(trustUpdate).toBeDefined();
-      const signals = JSON.parse(trustUpdate![0] as string);
-      expect(signals).toHaveProperty('specialization');
-      expect(signals).toHaveProperty('seniority');
-      expect(signals).toHaveProperty('tasks');
-      const trustSql = mockQuery.mock.calls.find(([sql]) =>
-        /UPDATE users\s+SET trust_signals/i.test(sql as string),
-      )?.[0] as string;
-      expect(trustSql).not.toMatch(/updated_at/i);
-
-      const photoUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string)
-        && Array.isArray(params)
-        && params.includes('awaiting_media_photo'),
-      );
-      expect(photoUpdate).toBeDefined();
-    });
-
-    it('skips trust questions if migration 006 columns are missing', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-missing' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({
-            conversation_state: 'building_trust_signal',
-            user_id: 'user-1',
-            state_context: { trust_step: 0, trust_answers: [] },
-          })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ exists: false }] }) // users.trust_signals missing
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation awaiting_media_photo
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_complete
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox photo prompt
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-trust-missing',
-          From: 'whatsapp:+15125551234',
-          Body: '1',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      expect(findQueryByPattern(/UPDATE users\s+SET trust_signals/i)).toBeUndefined();
-      const photoUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string)
-        && Array.isArray(params)
-        && params.includes('awaiting_media_photo'),
-      );
-      expect(photoUpdate).toBeDefined();
-    });
-
     it('returns the command menu when a worker sends help', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -1172,6 +567,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
@@ -1331,6 +727,7 @@ describe('Processor Lambda', () => {
             focused_job_conversation_id: 'job-conv-1',
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-1', created: true }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack outbox
@@ -1367,6 +764,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'es', user_id: 'user-1' })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-1', created: false }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_ack_existing outbox
@@ -1397,6 +795,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // verified-phone worker resolution
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_needs_signup outbox
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
@@ -1426,6 +825,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'phone-worker-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'phone-worker-sub-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ case_id: 'case-phone-1', created: true }] })
@@ -1452,37 +852,15 @@ describe('Processor Lambda', () => {
         'support',
       ]);
       expect(outboxBodies()).toContain(t('support_ack', 'en'));
-      expect(countQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBe(0);
-    });
-
-    it('does not reserve a support near-match and allows normal new-state routing', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-support-near' }] })
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'new', language: 'en', user_id: null })],
-        })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // relay phone resolution
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT start_prompt
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-support-near',
-          From: 'whatsapp:+15125551234',
-          Body: 'support me',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      expect(findQueryByPattern(/create_admin_support_case/i)).toBeUndefined();
-      expect(outboxBodies()).toContain(t('start_prompt', 'es'));
+      // The support case uses the phone-resolved worker id, but the
+      // conversation row itself is never bound to it — only the v2 forced
+      // idle writeback (unconditional on every turn) touches this row, and
+      // its user_id stays whatever the (unhandled) v2 session carried, never
+      // the phone-worker-1 support lookup result.
+      const conversationWrites = mockQuery.mock.calls.filter(([sql]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+      expect(conversationWrites.every(([, params]) =>
+        !(params as unknown[])?.includes('phone-worker-1'))).toBe(true);
     });
 
     it('returns profile details for a linked worker profile command', async () => {
@@ -1493,6 +871,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
@@ -1545,6 +924,7 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'es', user_id: 'user-1' })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
@@ -1621,6 +1001,7 @@ describe('Processor Lambda', () => {
             state_context: { next_field: 'city' },
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
@@ -1655,7 +1036,12 @@ describe('Processor Lambda', () => {
 
       expect(outboxBodies()[0]).toContain('Tu perfil');
       expect(findQueryByPattern(/UPDATE users\s+SET city/i)).toBeUndefined();
-      expect(countQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBe(0);
+      // handleProfileCommand itself never writes whatsapp_conversations — the
+      // ONLY conversation write in this turn is the unconditional v2
+      // forced-idle writeback (asserted separately by the 'v2 routing
+      // branch' suite), proving the in-progress pending field was never
+      // touched by the profile command.
+      expect(countQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBe(1);
     });
 
     it('asks the worker to finish onboarding when profile command has no linked user', async () => {
@@ -1895,6 +1281,7 @@ describe('Processor Lambda', () => {
             state_context: { recent_jobs: ['job-1', 'job-2'] },
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
@@ -1940,6 +1327,7 @@ describe('Processor Lambda', () => {
             otp_expires_at: new Date(Date.now() + 60_000),
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (relay is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-conv-1', application_id: 'app-1' }] }) // single open job conversation
@@ -1975,11 +1363,15 @@ describe('Processor Lambda', () => {
         'whatsapp:+15125551234',
       ]);
 
-      // §4.2a: NO identity/state binding. The only whatsapp_conversations write
-      // is the focus-column update — it must not set user_id, must not flip the
-      // state to 'idle', and must not clear state_context to '{}'.
+      // §4.2a: the RELAY code's own write is ONLY the focus-column update — it
+      // must not set user_id, must not flip the state, and must not clear
+      // state_context to '{}'. (A separate, unconditional v2 forced-idle
+      // writeback also runs earlier in this turn — that's expected,
+      // documented v2 behavior covered by the 'v2 routing branch' suite, not
+      // what this test protects.)
       const convUpdate = mockQuery.mock.calls.find(([sql]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && /focused_job_conversation_id/i.test(sql as string));
       expect(convUpdate).toBeTruthy();
       const [convUpdateSql, convUpdateParams] = convUpdate as [string, unknown[]];
       expect(convUpdateSql).toMatch(/focused_job_conversation_id/);
@@ -2006,6 +1398,7 @@ describe('Processor Lambda', () => {
             otp_expires_at: new Date(Date.now() + 60_000),
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // open job conversation
@@ -2056,9 +1449,12 @@ describe('Processor Lambda', () => {
       // R10: opening a conversation must NOT reset onboarding. The focus update
       // sets focused_job_conversation_id + state_context (pending_picker cleared,
       // all other collected answers preserved) + last_processed_message_sid.
-      // It must not set user_id or flip conversation_state.
+      // It must not set user_id or flip conversation_state. (A separate,
+      // unconditional v2 forced-idle writeback also runs earlier in this
+      // turn — expected v2 behavior, not what this test protects.)
       const convOpenUpdate = mockQuery.mock.calls.find(([sql]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && /focused_job_conversation_id/i.test(sql as string));
       expect(convOpenUpdate).toBeTruthy();
       const [convOpenSql, convOpenParams] = convOpenUpdate as [string, unknown[]];
       expect(convOpenSql).toMatch(/focused_job_conversation_id/);
@@ -2091,6 +1487,7 @@ describe('Processor Lambda', () => {
             otp_expires_at: new Date(Date.now() + 60_000),
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate (open is compliance-gated)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: conversationId, application_id: 'app-1', worker_thread_number: 1, job_title: 'Plomero', company: 'ACME' }] }) // latest open job conversation
@@ -2139,9 +1536,12 @@ describe('Processor Lambda', () => {
       ]);
       // R10: same as the button path — opening via text action writes the focus
       // column and state_context (pending_picker cleared, existing fields preserved)
-      // but never resets identity or conversation_state.
+      // but never resets identity or conversation_state. (A separate,
+      // unconditional v2 forced-idle writeback also runs earlier in this
+      // turn — expected v2 behavior, not what this test protects.)
       const convOpenTextUpdate = mockQuery.mock.calls.find(([sql]) =>
-        /UPDATE whatsapp_conversations SET/i.test(sql as string));
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && /focused_job_conversation_id/i.test(sql as string));
       expect(convOpenTextUpdate).toBeTruthy();
       const [convOpenTextSql, convOpenTextParams] = convOpenTextUpdate as [string, unknown[]];
       expect(convOpenTextSql).toMatch(/focused_job_conversation_id/);
@@ -2166,6 +1566,7 @@ describe('Processor Lambda', () => {
             focused_job_conversation_id: activeConversationId,
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({
@@ -2222,6 +1623,7 @@ describe('Processor Lambda', () => {
             state_context: { recent_jobs: ['job-1'] },
           })],
         })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
@@ -2248,898 +1650,6 @@ describe('Processor Lambda', () => {
       expect(findQueryByPattern(/INSERT INTO job_applications/i)).toBeUndefined();
       expect(outboxBodies()[0]).toContain('Resume');
       expect(outboxBodies()[0]).toContain('requires these documents');
-    });
-  });
-});
-
-describe('awaiting_media_photo state', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
-    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
-    mockSecretsSend.mockResolvedValue({
-      SecretString: JSON.stringify({
-        accountSid: 'AC_test',
-        authToken: 'tok_test',
-        messagingServiceSid: 'MGtest_svc',
-        templates: {},
-      }),
-    });
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sid: 'SM11111111111111111111111111111111' }) });
-  });
-
-  test('text message (skip) transitions to awaiting_media_voice', async () => {
-    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
-    detectMediaCategory.mockReturnValue(null);
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM001' }] }) // claim
-      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'awaiting_media_photo',
-          user_id: 'user-1',
-          language: 'en',
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_media_voice
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM001',
-      From: 'whatsapp:+15125551234',
-      Body: 'skip',
-      NumMedia: '0',
-    }), {} as any, {} as any);
-
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('awaiting_media_voice')
-    );
-    expect(convUpdate).toBeDefined();
-    const voicePrompt = mockQuery.mock.calls.find(([sql, params]) =>
-      /INSERT INTO whatsapp_outbox/i.test(sql as string)
-      && /content_template/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('onboarding_voice_choice_en')
-    );
-    expect(voicePrompt).toBeDefined();
-  });
-
-  test('valid photo triggers S3 upload and asks classification', async () => {
-    const { detectMediaCategory, downloadTwilioMedia, uploadMediaToS3 } =
-      require('../../../../lambda/whatsapp/lib/media');
-    detectMediaCategory.mockReturnValue('photo');
-    downloadTwilioMedia.mockResolvedValue(Buffer.from('fake-image'));
-    uploadMediaToS3.mockResolvedValue(undefined);
-    process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM002' }] }) // claim
-      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
-        rowCount: 1,
-        rows: [convRow({ conversation_state: 'awaiting_media_photo', user_id: 'user-1' })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] }) // SELECT worker for RLS
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_profile_media
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_media_photo_type
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM002',
-      From: 'whatsapp:+15125551234',
-      Body: '',
-      NumMedia: '1',
-      MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
-      MediaSid0: 'MMtest-photo',
-      MediaContentType0: 'image/jpeg',
-    }), {} as any, {} as any);
-
-    expect(uploadMediaToS3).toHaveBeenCalled();
-    const mediaInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /INSERT INTO worker_profile_media/.test(sql)
-    );
-    expect(mediaInsert).toBeDefined();
-    expect(mediaInsert![1]).toEqual(expect.arrayContaining(['MMtest-photo', 'image/jpeg']));
-    expect((mediaInsert![1] as unknown[]).filter((value) => value === 'image/jpeg')).toHaveLength(1);
-    const outboxInsert = mockQuery.mock.calls.find(([sql, params]) =>
-      /INSERT INTO whatsapp_outbox/.test(sql as string)
-      && /content_template/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('onboarding_photo_type_es')
-    );
-    expect(outboxInsert).toBeDefined();
-  });
-
-  test('invalid media content type replies gracefully and stays in state', async () => {
-    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
-    detectMediaCategory.mockReturnValue(null);
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM003' }] }) // claim
-      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
-        rowCount: 1,
-        rows: [convRow({ conversation_state: 'awaiting_media_photo', user_id: 'user-1' })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox media_photo_invalid
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM003',
-      From: 'whatsapp:+15125551234',
-      Body: '',
-      NumMedia: '1',
-      MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
-      MediaContentType0: 'application/pdf',
-    }), {} as any, {} as any);
-
-    // State should NOT advance — no UPDATE whatsapp_conversations to new state
-    const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /UPDATE whatsapp_conversations/.test(sql)
-    );
-    expect(convUpdate).toBeUndefined();
-  });
-});
-
-describe('awaiting_media_voice state', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
-    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
-    mockSecretsSend.mockResolvedValue({
-      SecretString: JSON.stringify({
-        accountSid: 'AC_test',
-        authToken: 'tok_test',
-        messagingServiceSid: 'MGtest_svc',
-        templates: {},
-      }),
-    });
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sid: 'SM11111111111111111111111111111111' }) });
-  });
-
-  test('text message (skip) transitions to building_profile and asks first profile question', async () => {
-    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
-    detectMediaCategory.mockReturnValue(null);
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM004' }] }) // claim
-      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'awaiting_media_voice',
-          user_id: 'user-1',
-          language: 'en',
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_name
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM004',
-      From: 'whatsapp:+15125551234',
-      Body: 'skip',
-      NumMedia: '0',
-    }), {} as any, {} as any);
-
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('building_profile')
-    );
-    expect(convUpdate).toBeDefined();
-    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('pending_field')
-    );
-    expect(JSON.parse(String(stateJson))).toMatchObject({
-      pending_field: 'full_name',
-      collected: {},
-      field_sids: {},
-    });
-
-    const outboxBodiesForSkip = outboxBodies();
-    expect(outboxBodiesForSkip).toHaveLength(1);
-    expect(outboxBodiesForSkip.join('\n').toLowerCase()).toContain('full name');
-    expect(outboxBodiesForSkip.join('\n').toLowerCase()).not.toContain("let's build your profile");
-  });
-
-  test('spanish text choice transitions to text profile and asks first question in spanish', async () => {
-    const { detectMediaCategory } = require('../../../../lambda/whatsapp/lib/media');
-    detectMediaCategory.mockReturnValue(null);
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM004-es' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'awaiting_media_voice',
-          user_id: 'user-1',
-          language: 'es',
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ask_name
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM004-es',
-      From: 'whatsapp:+15125551234',
-      Body: 'texto',
-      NumMedia: '0',
-    }), {} as any, {} as any);
-
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('building_profile')
-    );
-    expect(convUpdate).toBeDefined();
-    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('pending_field')
-    );
-    expect(JSON.parse(String(stateJson))).toMatchObject({
-      pending_field: 'full_name',
-    });
-
-    const outboxBodiesForTextChoice = outboxBodies();
-    expect(outboxBodiesForTextChoice).toHaveLength(1);
-    expect(outboxBodiesForTextChoice.join('\n').toLowerCase()).toContain('nombre completo');
-    expect(outboxBodiesForTextChoice.join('\n').toLowerCase()).not.toContain('vamos a crear tu perfil');
-  });
-
-  test('valid voice message starts Step Functions execution and transitions to processing_ai', async () => {
-    const { detectMediaCategory, downloadTwilioMedia, uploadMediaToS3 } =
-      require('../../../../lambda/whatsapp/lib/media');
-    detectMediaCategory.mockReturnValue('voice');
-    downloadTwilioMedia.mockResolvedValue(Buffer.from('fake-audio'));
-    uploadMediaToS3.mockResolvedValue(undefined);
-    mockSfnSend.mockResolvedValue({ executionArn: 'arn:aws:states:us-east-2:123:execution:test:run-1' });
-    process.env.AI_PIPELINE_STATE_MACHINE_ARN = 'arn:aws:states:us-east-2:123:stateMachine:test';
-    process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM005' }] }) // claim
-      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
-        rowCount: 1,
-        rows: [convRow({ conversation_state: 'awaiting_media_voice', user_id: 'user-1' })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] }) // SELECT worker for RLS
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_profile_media
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE whatsapp_conversations
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ai_processing_ack
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM005',
-      From: 'whatsapp:+15125551234',
-      Body: '',
-      NumMedia: '1',
-      MediaUrl0: 'https://api.twilio.com/2010-04-01/Accounts/ACtest/Messages/MMtest/Media/0',
-      MediaSid0: 'MMtest-voice',
-      MediaContentType0: 'audio/ogg',
-    }), {} as any, {} as any);
-
-    expect(mockSfnSend).toHaveBeenCalledTimes(1);
-    const mediaInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /INSERT INTO worker_profile_media/.test(sql)
-    );
-    expect(mediaInsert).toBeDefined();
-    expect(mediaInsert![1]).toEqual(expect.arrayContaining(['MMtest-voice', 'audio/ogg']));
-    expect((mediaInsert![1] as unknown[]).filter((value) => value === 'audio/ogg')).toHaveLength(1);
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('processing_ai')
-    );
-    expect(convUpdate).toBeDefined();
-    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /INSERT INTO whatsapp_outbox/.test(sql)
-    );
-    expect(outboxInsert).toBeDefined();
-  });
-});
-
-describe('building_profile custom trade handoff', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
-    process.env.QUESTION_GENERATOR_ARN = 'arn:aws:lambda:us-east-2:123:function:question-generator';
-    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
-    mockSecretsSend.mockResolvedValue({
-      SecretString: JSON.stringify({
-        accountSid: 'AC_test',
-        authToken: 'tok_test',
-        messagingServiceSid: 'MGtest_svc',
-        templates: {},
-      }),
-    });
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sid: 'SM11111111111111111111111111111111' }) });
-  });
-
-  test('last text profile answer for other trade generates custom questions and asks Q1 in spanish', async () => {
-    const customQuestions = [
-      { q_en: 'What welding work do you do?', q_es: 'Que tipo de soldadura haces?' },
-      { q_en: 'What is your level?', q_es: 'Cual es tu nivel?' },
-      { q_en: 'What tasks do you do most?', q_es: 'Que tareas haces mas?' },
-    ];
-    mockLambdaSend.mockResolvedValue({
-      Payload: Buffer.from(JSON.stringify(customQuestions)),
-    });
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-custom-final' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'building_profile',
-          user_id: 'user-1',
-          language: 'es',
-          state_context: {
-            pending_field: 'availability',
-            collected: {
-              full_name: 'Luis Worker',
-              city: 'Denver',
-              main_trade: 'other',
-              main_trade_other: 'Soldador',
-              years_experience: '10+',
-              has_transportation: true,
-            },
-            field_sids: {},
-          },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields before compute next
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE users
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPSERT worker_profiles
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_skills seed
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ main_trade_other: 'Soldador' }] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // existing WTA
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // cached trade_questions
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation building_custom_trust
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox Q1
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM-custom-final',
-      From: 'whatsapp:+15125551234',
-      Body: '1',
-      NumMedia: '0',
-    }), {} as any, {} as any);
-
-    expect(mockLambdaSend).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(Buffer.from(mockLambdaSend.mock.calls[0][0].input.Payload).toString());
-    expect(payload).toEqual({ professionKey: 'soldador', professionRaw: 'Soldador' });
-
-    const customStateUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).includes('building_custom_trust')
-    );
-    expect(customStateUpdate).toBeDefined();
-    const stateJson = (customStateUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('custom_trust_questions')
-    );
-    expect(JSON.parse(String(stateJson))).toMatchObject({
-      custom_trust_step: 0,
-      custom_trust_profession: 'Soldador',
-      custom_trust_questions: customQuestions,
-    });
-    expect(outboxBodies()).toContain('Que tipo de soldadura haces?');
-  });
-});
-
-describe('processing_ai state', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
-    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
-    mockSecretsSend.mockResolvedValue({
-      SecretString: JSON.stringify({
-        accountSid: 'AC_test',
-        authToken: 'tok_test',
-        messagingServiceSid: 'MGtest_svc',
-        templates: {},
-      }),
-    });
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sid: 'SM11111111111111111111111111111111' }) });
-  });
-
-  test('any inbound message replies with ai_processing_wait and does not change state', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM006' }] }) // claim
-      .mockResolvedValueOnce({                                                   // SELECT conv FOR UPDATE
-        rowCount: 1,
-        rows: [convRow({ conversation_state: 'processing_ai', user_id: 'user-1' })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox ai_processing_wait
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed_messages db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM006',
-      From: 'whatsapp:+15125551234',
-      Body: 'are you done yet?',
-      NumMedia: '0',
-    }), {} as any, {} as any);
-
-    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /INSERT INTO whatsapp_outbox/.test(sql)
-    );
-    expect(outboxInsert).toBeDefined();
-    // State should NOT change — still processing_ai
-    const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
-      /UPDATE whatsapp_conversations/.test(sql) && /building_profile/.test(sql)
-    );
-    expect(convUpdate).toBeUndefined();
-  });
-});
-
-// ── interactivePayload extraction from Body (WhatsApp List Picker fix) ──────
-//
-// Twilio's WhatsApp List Picker integration delivers the tapped row's response
-// value in the message Body, not in ButtonPayload / InteractiveData /
-// ChannelMetadata. processRecord now falls back to findKnownPayload(body) when
-// the other three sources are empty, with a 256-char cap on the body length.
-describe('interactivePayload extraction from Body', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    process.env.TWILIO_SECRET_ARN = 'arn:twilio';
-    process.env.TWILIO_STATUS_CALLBACK_URL = 'https://callbacks.example.test/prod/whatsapp/status-callback';
-    process.env.WORKER_POOL_ID = 'pool-abc';
-    process.env.WORKER_CLIENT_ID = 'client-abc';
-    process.env.DB_SECRET_ARN = 'arn:db';
-    process.env.REQUIRED_TOS_VERSION = '1.0';
-    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
-    mockSecretsSend.mockResolvedValue({
-      SecretString: JSON.stringify({
-        accountSid: 'AC_test',
-        authToken: 'tok_test',
-        messagingServiceSid: 'MGtest_svc',
-        templates: {},
-      }),
-    });
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ sid: 'SM11111111111111111111111111111111' }) });
-  });
-
-  // Test A — Body-as-payload is accepted on the trade prompt.
-  test('A: Body containing profile:main_trade:other is accepted and advances pending field', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-bodypayload-A' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'building_profile',
-          user_id: 'user-1',
-          language: 'es',
-          state_context: {
-            pending_field: 'main_trade',
-            collected: { full_name: 'Luis Worker', city: 'El Paso' },
-            field_sids: {},
-          },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields (loadProfileFromDb)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation -> pending=main_trade_other
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox (ask_trade_freetext plain text)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox (empty)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM-bodypayload-A',
-      From: 'whatsapp:+15125551234',
-      Body: 'profile:main_trade:other',
-    }), {} as any, {} as any);
-
-    // Pending advances to main_trade_other (the conditional freetext branch).
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).some((value) =>
-        typeof value === 'string' && value.includes('"pending_field":"main_trade_other"')
-      )
-    );
-    expect(convUpdate).toBeDefined();
-
-    // Collected.main_trade is captured as 'other'.
-    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('pending_field')
-    );
-    expect(JSON.parse(String(stateJson))).toMatchObject({
-      pending_field: 'main_trade_other',
-      collected: { main_trade: 'other' },
-    });
-
-    // No profile_reprompt was enqueued.
-    const reprompt = outboxBodies().find((b) => /Terminemos tu perfil primero/.test(b ?? ''));
-    expect(reprompt).toBeUndefined();
-  });
-
-  // Test B1 — Plain-text answer on a freetext field still works (no false positives).
-  test('B1: plain-text answer on freetext field (city) is accepted and advances to main_trade', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-bodypayload-B1' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'building_profile',
-          user_id: 'user-1',
-          language: 'es',
-          state_context: {
-            pending_field: 'city',
-            collected: { full_name: 'Luis Worker' },
-            field_sids: {},
-          },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation -> pending=main_trade
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox (onboarding_trade_es rich)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM-bodypayload-B1',
-      From: 'whatsapp:+15125551234',
-      Body: '79928',
-    }), {} as any, {} as any);
-
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).some((value) =>
-        typeof value === 'string' && value.includes('"pending_field":"main_trade"')
-      )
-    );
-    expect(convUpdate).toBeDefined();
-    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('pending_field')
-    );
-    expect(JSON.parse(String(stateJson))).toMatchObject({
-      pending_field: 'main_trade',
-      collected: { city: '79928' },
-    });
-  });
-
-  // Test B2 — Numeric answer on a button field still works.
-  test('B2: numeric Body "2" on main_trade resolves to "plumber" and advances to years_experience', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-bodypayload-B2' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'building_profile',
-          user_id: 'user-1',
-          language: 'es',
-          state_context: {
-            pending_field: 'main_trade',
-            collected: { full_name: 'Luis Worker', city: 'El Paso' },
-            field_sids: {},
-          },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation -> pending=years_experience
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox (onboarding_experience_es rich)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM-bodypayload-B2',
-      From: 'whatsapp:+15125551234',
-      Body: '2',
-    }), {} as any, {} as any);
-
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).some((value) =>
-        typeof value === 'string' && value.includes('"pending_field":"years_experience"')
-      )
-    );
-    expect(convUpdate).toBeDefined();
-    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('pending_field')
-    );
-    expect(JSON.parse(String(stateJson))).toMatchObject({
-      pending_field: 'years_experience',
-      collected: { main_trade: 'plumber' },
-    });
-  });
-
-  // Test C — Real precedence: ButtonPayload beats Body even when both are valid payloads.
-  test('C: ButtonPayload wins over a competing Body payload', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-bodypayload-C' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'building_profile',
-          user_id: 'user-1',
-          language: 'es',
-          state_context: {
-            pending_field: 'main_trade',
-            collected: { full_name: 'Luis Worker', city: 'El Paso' },
-            field_sids: {},
-          },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{}] }) // SELECT profile fields
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM-bodypayload-C',
-      From: 'whatsapp:+15125551234',
-      ButtonPayload: 'profile:main_trade:electrician',
-      Body: 'profile:main_trade:other',
-    }), {} as any, {} as any);
-
-    const convUpdate = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).some((value) =>
-        typeof value === 'string' && value.includes('pending_field')
-      )
-    );
-    expect(convUpdate).toBeDefined();
-    const stateJson = (convUpdate![1] as unknown[]).find((value) =>
-      typeof value === 'string' && value.includes('pending_field')
-    );
-    const state = JSON.parse(String(stateJson));
-    expect(state.collected.main_trade).toBe('electrician');
-    expect(state.collected.main_trade).not.toBe('other');
-    // 'electrician' is not the conditional 'other' branch, so pending advances
-    // straight to years_experience.
-    expect(state.pending_field).toBe('years_experience');
-  });
-
-  // Test D — Oversized Body is ignored by the fallback (safety cap pinned).
-  test('D: Body over 256 chars is not used as payload fallback; profile_reprompt fires', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-bodypayload-D' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'building_profile',
-          user_id: 'user-1',
-          language: 'es',
-          state_context: {
-            pending_field: 'main_trade',
-            collected: { full_name: 'Luis Worker', city: 'El Paso' },
-            field_sids: {},
-          },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox (profile_reprompt plain text)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE processed db_committed (post-route stamp)
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SELECT pending outbox
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    const oversizedBody = 'profile:main_trade:' + 'x'.repeat(300);
-    expect(oversizedBody.length).toBeGreaterThan(256);
-
-    await handler(makeSqsEvent({
-      MessageSid: 'SM-bodypayload-D',
-      From: 'whatsapp:+15125551234',
-      Body: oversizedBody,
-    }), {} as any, {} as any);
-
-    // No conversation state advance — invalid answer just re-prompts.
-    const convAdvance = mockQuery.mock.calls.find(([sql, params]) =>
-      /UPDATE whatsapp_conversations SET/i.test(sql as string)
-      && Array.isArray(params)
-      && (params as unknown[]).some((value) =>
-        typeof value === 'string' && /"pending_field":"(?!main_trade")/.test(value)
-      )
-    );
-    expect(convAdvance).toBeUndefined();
-
-    // The plain-text profile_reprompt body was enqueued.
-    const reprompt = outboxBodies().find((b) => /Terminemos tu perfil primero/.test(b ?? ''));
-    expect(reprompt).toBeDefined();
-  });
-
-  describe('web-worker bypass (Phase 2.2)', () => {
-    const WEB_WORKER_ID = 'web-worker-uuid-1234';
-    const PHONE = '+15125551234';
-
-    it('sets conversation to idle, links user_id, sets whatsapp_number, sends welcome (ES)', async () => {
-      mockQuery
-        // BEGIN
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // claim INSERT → succeeds
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web' }] })
-        // SELECT whatsapp_conversations FOR UPDATE → empty (new conversation)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // INSERT whatsapp_conversations
-        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', language: 'es' })] })
-        // findWebRegisteredWorker → found
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: WEB_WORKER_ID }] })
-        // updateConversation (set idle + user_id)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // UPDATE users SET whatsapp_number WHERE whatsapp_number IS NULL
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // INSERT whatsapp_outbox (welcome message)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // UPDATE processed_messages status='db_committed'
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-        // sendPendingOutbox: SELECT pending rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'o-1', sequence: 1, whatsapp_number: PHONE, body: 'welcome' }] })
-        // UPDATE outbox status='sent'
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-        // markCompleted
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] });
-
-      await handler(
-        makeSqsEvent({ MessageSid: 'SM-web', From: `whatsapp:${PHONE}`, Body: 'Hola' }),
-        {} as any,
-        {} as any,
-      );
-
-      // No Cognito calls — bypass skips OTP entirely
-      expect(mockCognitoSend).not.toHaveBeenCalled();
-
-      // updateConversation wrote user_id
-      const updateCall = findQueryByPattern(/UPDATE whatsapp_conversations SET/i);
-      expect(updateCall).toBeDefined();
-      expect(updateCall).toContain(WEB_WORKER_ID);
-
-      // users.whatsapp_number updated
-      const phoneUpdate = findQueryByPattern(/UPDATE users SET whatsapp_number/i);
-      expect(phoneUpdate).toBeDefined();
-      expect(phoneUpdate).toContain(PHONE);
-      expect(phoneUpdate).toContain(WEB_WORKER_ID);
-
-      // Welcome message sent in Spanish
-      const bodies = outboxBodies();
-      expect(bodies).toHaveLength(1);
-      expect(bodies[0]).toMatch(/TRABAJOS|trabajos/);
-    });
-
-    it('sends EN welcome when body is in English', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-en' }] }) // claim
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
-        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', language: 'en' })] }) // INSERT conv
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: WEB_WORKER_ID }] }) // findWebRegisteredWorker
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // updateConversation
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // UPDATE users whatsapp_number
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // INSERT outbox
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // COMMIT
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'o-en', sequence: 1, whatsapp_number: PHONE, body: 'Welcome to Jale! Type JOBS to see available job listings.' }] }) // sendPendingOutbox: SELECT
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // UPDATE outbox status='sent'
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] });       // markCompleted
-
-      await handler(
-        makeSqsEvent({ MessageSid: 'SM-web-en', From: `whatsapp:${PHONE}`, Body: 'Hello' }),
-        {} as any,
-        {} as any,
-      );
-
-      const bodies = outboxBodies();
-      expect(bodies).toHaveLength(1);
-      expect(bodies[0]).toMatch(/JOBS|jobs/i);
-      expect(bodies[0]).not.toMatch(/TRABAJOS/);
-    });
-
-    it('falls through to normal onboarding when no web-registered worker found', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-new2' }] }) // claim
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
-        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // INSERT conv
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] });       // findWebRegisteredWorker → NOT FOUND
-      // tryConversationRelay short-circuits on the unbound-session guard (no
-      // user_id) before ever querying — no resolver mock needed here.
-      mockCognitoSend
-        .mockResolvedValueOnce({})  // AdminCreateUser
-        .mockResolvedValueOnce({})  // AdminSetUserPassword
-        .mockResolvedValueOnce({ Session: 'SESS', ChallengeName: 'CUSTOM_CHALLENGE' }); // InitiateAuth
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // INSERT users
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // updateConversation → awaiting_otp
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // INSERT outbox (OTP prompt)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })  // db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })  // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })  // sendPendingOutbox: no pending
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({ MessageSid: 'SM-new2', From: `whatsapp:${PHONE}`, Body: 'Hola' }),
-        {} as any,
-        {} as any,
-      );
-
-      // Normal onboarding started — Cognito was called
-      expect(mockCognitoSend).toHaveBeenCalled();
-      // No users.whatsapp_number update (bypass-only step)
-      expect(findQueryByPattern(/UPDATE users SET whatsapp_number/i)).toBeUndefined();
-    });
-
-    it('bypasses even on non-greeting first message (e.g. TRABAJOS)', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-jobs' }] }) // claim
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // SELECT conv
-        .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // INSERT conv
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: WEB_WORKER_ID }] }) // findWebRegisteredWorker → found
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // updateConversation
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // UPDATE users whatsapp_number
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // INSERT outbox (welcome)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] })        // db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })        // sendPendingOutbox: no pending
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] });       // markCompleted
-
-      await handler(
-        makeSqsEvent({ MessageSid: 'SM-web-jobs', From: `whatsapp:${PHONE}`, Body: 'TRABAJOS' }),
-        {} as any,
-        {} as any,
-      );
-
-      // Bypass fired, Cognito not called
-      expect(mockCognitoSend).not.toHaveBeenCalled();
-      expect(findQueryByPattern(/UPDATE whatsapp_conversations SET/i)).toBeDefined();
     });
   });
 });
@@ -3212,7 +1722,6 @@ describe('v2 routing branch', () => {
     });
 
     mockLoadRuntimeControls.mockResolvedValue({ disabled: true });
-    mockIsV2Enabled.mockReturnValue(false);
     mockHashNormalizedPhone.mockImplementation((phone: string) => `hash:${phone}`);
     mockRouteOnboardingV2.mockReset();
     mockCreateOnboardingV2Adapters.mockReset();
@@ -3228,34 +1737,7 @@ describe('v2 routing branch', () => {
     process.env = originalEnv;
   });
 
-  it('does not call routeOnboardingV2 and runs legacy when controls report the phone disabled', async () => {
-    mockIsV2Enabled.mockReturnValue(false);
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-off' }] }) // claim
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({ conversation_state: 'idle', language: 'es' })],
-      }) // SELECT conv FOR UPDATE (existing)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox (help prompt)
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: none pending
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(
-      makeSqsEvent({ MessageSid: 'SM-v2-off', From: FROM, Body: 'ayuda' }),
-      {} as any,
-      {} as any,
-    );
-
-    expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
-    expect(findQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBeDefined();
-  });
-
   it('calls routeOnboardingV2 exactly once when controls report the phone enabled', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3289,7 +1771,6 @@ describe('v2 routing branch', () => {
   });
 
   it('registers onboarding/security renderers before routing, resolving real functions (not renderer_unavailable)', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3325,9 +1806,8 @@ describe('v2 routing branch', () => {
     expect(lastRegisterOrder).toBeLessThan(routeOrder);
   });
 
-  it('passes hashNormalizedPhone output to isV2Enabled and never the raw phone', async () => {
-    mockIsV2Enabled.mockReturnValue(false);
-
+  it('passes hashNormalizedPhone output to isVoiceIntakeEnabled and never the raw phone', async () => {
+    mockRouteOnboardingV2.mockResolvedValue({ handled: false, workerId: null });
     mockQuery
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-hash' }] })
@@ -3335,6 +1815,7 @@ describe('v2 routing branch', () => {
         rowCount: 1,
         rows: [convRow({ conversation_state: 'idle', language: 'es' })],
       })
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // help-prompt outbox insert
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -3349,15 +1830,14 @@ describe('v2 routing branch', () => {
 
     expect(mockHashNormalizedPhone).toHaveBeenCalledWith(PHONE);
     const hashResult = mockHashNormalizedPhone.mock.results[0].value;
-    expect(mockIsV2Enabled).toHaveBeenCalledWith(expect.anything(), hashResult);
-    for (const call of mockIsV2Enabled.mock.calls) {
+    expect(mockIsVoiceIntakeEnabled).toHaveBeenCalledWith(expect.anything(), hashResult);
+    for (const call of mockIsVoiceIntakeEnabled.mock.calls) {
       expect(call).not.toContain(PHONE);
       expect(call).not.toContain(FROM);
     }
   });
 
   it('opens exactly one BEGIN and one COMMIT for a v2-routed message', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3385,7 +1865,6 @@ describe('v2 routing branch', () => {
   });
 
   it('publishes a worker-intent wake only after a newly materialized v2 outbox row commits', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockEnqueueWorkerMessage.mockResolvedValue({
       intentId: 'intent-1',
       decision: { action: 'allow', reason: 'worker_onboarding' },
@@ -3420,7 +1899,6 @@ describe('v2 routing branch', () => {
   });
 
   it('publishes a domain wake only after v2 onboarding completion commits', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockImplementation(async (client: unknown, _session: unknown, _msg: unknown, deps: any) => {
       await deps.repo.completeOnboarding(client, 'worker-1');
       return { handled: true, workerId: null, stepKey: 'complete' };
@@ -3450,7 +1928,6 @@ describe('v2 routing branch', () => {
   });
 
   it('does not publish a wake when the transaction rolls back after materializing work', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockEnqueueWorkerMessage.mockResolvedValue({
       intentId: 'intent-2',
       decision: { action: 'allow', reason: 'worker_onboarding' },
@@ -3485,7 +1962,6 @@ describe('v2 routing branch', () => {
     expect(mockPublishOutboxWakes).not.toHaveBeenCalled();
   });
   it('runs no legacy state-transition SQL for a v2-routed phone', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3514,8 +1990,7 @@ describe('v2 routing branch', () => {
     expect(mockCognitoSend).not.toHaveBeenCalled();
   });
 
-  it('durably hands a ready worker to legacy idle routing before the v2 control is disabled', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
+  it('durably hands a ready (not-handled) v2 result to shared idle routing', async () => {
     mockRouteOnboardingV2.mockImplementation(async (_client, session: any) => {
       session.language = 'en';
       session.state_context = { ...session.state_context, v2Ready: true };
@@ -3582,46 +2057,6 @@ describe('v2 routing branch', () => {
       v2Ready: true,
       recent_jobs: ['job-1', 'job-2'],
     });
-
-    mockIsV2Enabled.mockReturnValue(false);
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ready-jobs-after-disable' }] })
-      .mockResolvedValueOnce({
-        rowCount: 1,
-        rows: [convRow({
-          conversation_state: 'idle',
-          user_id: 'worker-ready-1',
-          language: 'en',
-          state_context: { v2Ready: true, recent_jobs: ['job-1', 'job-2'] },
-        })],
-      })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] });
-
-    await handler(
-      makeSqsEvent({
-        MessageSid: 'SM-v2-ready-jobs-after-disable',
-        From: FROM,
-        Body: 'Jobs',
-      }),
-      {} as any,
-      {} as any,
-    );
-
-    expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
-    expect(mockListMatchedJobsForWorker).toHaveBeenCalledTimes(2);
-    expect(mockListMatchedJobsForWorker).toHaveBeenLastCalledWith(
-      expect.any(Object),
-      'worker-ready-1',
-      { limit: 5, channel: 'whatsapp' },
-    );
   });
 
   it('skips the legacy idle-language-detection write for a v2-routed idle phone', async () => {
@@ -3630,7 +2065,6 @@ describe('v2 routing branch', () => {
     // the state-machine switch. conv.language is 'es' and the body is an
     // English greeting, which WOULD trigger a legacy `language` UPDATE if
     // this message ever reached that block.
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3661,7 +2095,6 @@ describe('v2 routing branch', () => {
   });
 
   it('propagates a v2-path error out of the handler, rolls back, and never falls through to legacy', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockRejectedValue(new Error('v2 dependency missing'));
 
     mockQuery
@@ -3703,7 +2136,6 @@ describe('v2 routing branch', () => {
     }
     process.env = withoutWhatsappEnv;
 
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3730,7 +2162,6 @@ describe('v2 routing branch', () => {
   });
 
   it('routes a FIFO-shaped SQS record through the v2 branch exactly once', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3761,7 +2192,6 @@ describe('v2 routing branch', () => {
   });
 
   it('persists a v2 router state_context mutation back via updateConversation', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockImplementation(async (_client: any, session: any) => {
       session.state_context = {
         ...session.state_context,
@@ -3799,7 +2229,6 @@ describe('v2 routing branch', () => {
   // ── Task 2/6: voice-note media fields + synthetic voice-event plumbing ──
 
   it('media fields (numMedia/mediaUrl/mediaSid/mediaContentType) survive into the v2 message', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3840,7 +2269,6 @@ describe('v2 routing branch', () => {
   });
 
   it('a synthetic #vt voice-completion record claims via whatsapp_processed_messages and routes with voiceEvent populated', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockResolvedValue({
       handled: true,
       workerId: null,
@@ -3890,7 +2318,6 @@ describe('v2 routing branch', () => {
   });
 
   it('a duplicate synthetic #vt sid no-ops (already claimed, status=completed)', async () => {
-    mockIsV2Enabled.mockReturnValue(true);
 
     const evt: TrustVoiceEventV2 = {
       version: 'v2',
@@ -3919,43 +2346,6 @@ describe('v2 routing branch', () => {
     expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
     expect(countQueryByPattern(/FROM whatsapp_conversations/i)).toBe(0);
     expect(mockFetch).not.toHaveBeenCalled();
-  });
-
-  it('drops a synthetic voice-completion event and never calls routeOnboardingV2 when the phone is no longer v2-enabled', async () => {
-    mockIsV2Enabled.mockReturnValue(false);
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-
-    const evt: TrustVoiceEventV2 = {
-      version: 'v2',
-      kind: 'trust_answer',
-      status: 'COMPLETED',
-      phone: PHONE,
-      runId: 'run-1',
-      stepKey: 'trust.question.1',
-      language: 'en',
-      origMessageSid: 'SM00000000000000000000000000000x',
-      startedAt: '2026-07-27T00:00:00.000Z',
-      questionIndex: 0,
-      transcript: 'answer',
-      executionArn: 'arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-test',
-    };
-    const syntheticSid = syntheticVoiceSid(evt.origMessageSid, evt.kind);
-
-    mockQuery
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: syntheticSid }] }) // claim
-      .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'idle', whatsapp_number: PHONE })] })
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: none pending
-      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-    await handler(makeSyntheticVoiceSqsEvent(evt), {} as any, {} as any);
-
-    expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
-    expect(countQueryByPattern(/INSERT INTO whatsapp_outbox/i)).toBe(0);
-    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('OnboardingVoiceTranscriptDropped'))).toBe(true);
-    warnSpy.mockRestore();
   });
 });
 
@@ -3997,7 +2387,6 @@ describe('error fallback', () => {
       json: async () => ({ sid: 'SM22222222222222222222222222222222' }),
     });
     mockLoadRuntimeControls.mockResolvedValue({ disabled: false });
-    mockIsV2Enabled.mockReturnValue(true);
     mockRouteOnboardingV2.mockReset();
     mockCreateOnboardingV2Adapters.mockReset();
     mockCreateOnboardingV2Adapters.mockReturnValue({});

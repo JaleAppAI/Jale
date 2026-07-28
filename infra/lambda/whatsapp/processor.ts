@@ -3,12 +3,6 @@ import type { PoolClient } from 'pg';
 import { randomUUID } from 'node:crypto';
 import {
   CognitoIdentityProviderClient,
-  AdminCreateUserCommand,
-  AdminSetUserPasswordCommand,
-  InitiateAuthCommand,
-  RespondToAuthChallengeCommand,
-  AuthFlowType,
-  ChallengeNameType,
 } from '@aws-sdk/client-cognito-identity-provider';
 import {
   SecretsManagerClient,
@@ -19,7 +13,6 @@ import {
   StartExecutionCommand,
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
-import { reconcileWorkerCognitoAccount } from '../auth/lib/worker-cognito-reconciliation';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { listMatchedJobsForWorker } from '../lib/job-matching';
 import {
@@ -51,19 +44,8 @@ import {
   type TemplateKey,
 } from './lib/templates';
 import {
-  FIELD_PROMPT_KEY,
-  loadProfileFromDb,
-  loadTradeFromDb,
-  profileQuestionBody,
-  trustSignalColumnsAvailable,
-  upsertWorkerProfileFromUsers,
-} from './lib/profile-flow';
-import {
   buildHelpMenuInteractivePrompt,
   buildLegalInteractivePrompt,
-  buildMediaInteractivePrompt,
-  buildProfileInteractivePrompt,
-  buildTrustInteractivePrompt,
   type InteractivePrompt,
 } from './lib/interactive-templates';
 import {
@@ -73,26 +55,12 @@ import {
   isHelpCommand,
   isSupportCommand,
   isProfileCommand,
-  isSkipKeyword,
-  isAccept,
-  isDecline,
   parseButtonPayload,
   parseCommandPayload,
   parseEmployerConversationButtonPayload,
-  parseLegalReplyPayload,
-  parseMediaPayload,
-  parseProfilePayloadAnswer,
-  parseTrustPayloadAnswer,
   parseTypedJobAction,
-  parseProfileAnswer,
-  parseTrustAnswer,
-  buildTrustQuestion,
-  computeNextField,
-  TRUST_STEPS,
   type ConversationState,
-  type ProfileField,
   type ProfileStateContext,
-  type TrustAnswer,
 } from './lib/flows';
 import {
   detectMediaCategory,
@@ -106,11 +74,8 @@ import {
   type VoiceEventV2,
   type VoicePipelineExecutionInputV2,
 } from './lib/voice-events';
-import { decodeIdTokenSub } from './lib/jwt';
-import { handleBuildingCustomTrust } from './handlers/custom-trust';
 import {
   loadRuntimeControls,
-  isV2Enabled,
   isVoiceIntakeEnabled,
   hashNormalizedPhone,
 } from './lib/runtime-controls';
@@ -283,37 +248,6 @@ async function queueLegalPrompt(
     inboundMessageSid,
     to,
     buildLegalInteractivePrompt(lang, LEGAL_TOS_URL),
-  );
-}
-
-async function queueMediaPrompt(
-  client: PoolClient,
-  inboundMessageSid: string,
-  to: string,
-  lang: Lang,
-  prompt: Parameters<typeof buildMediaInteractivePrompt>[0],
-): Promise<void> {
-  await queueInteractivePrompt(
-    client,
-    inboundMessageSid,
-    to,
-    buildMediaInteractivePrompt(prompt, lang),
-  );
-}
-
-async function queueTrustPrompt(
-  client: PoolClient,
-  inboundMessageSid: string,
-  to: string,
-  step: number,
-  trade: string,
-  lang: Lang,
-): Promise<void> {
-  await queueInteractivePrompt(
-    client,
-    inboundMessageSid,
-    to,
-    buildTrustInteractivePrompt(step, trade, lang),
   );
 }
 
@@ -848,257 +782,6 @@ async function setWorkerRlsContextByUserId(
   await setRlsContext(client, cognitoSub);
 }
 
-// ── awaiting_media_photo — optional photo upload step ───────────
-async function handleAwaitingMediaPhoto(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  const { numMedia, mediaUrl, mediaSid, mediaContentType, from, messageSid } = msg;
-  const mediaPayload = parseMediaPayload(msg.interactivePayload);
-
-  // If a photo was already received, we are waiting for the classification reply (1 or 2).
-  const pendingPhotoId = conv.state_context?.pending_media_photo_id;
-  if (pendingPhotoId) {
-    if (!conv.user_id) throw new Error('user_id missing before media write');
-    await setWorkerRlsContextByUserId(client, conv.user_id);
-
-    const bodyTrimmed = msg.body.trim();
-    if (
-      mediaPayload?.kind === 'photo_type'
-      && mediaPayload.value === 'profile_photo'
-    ) {
-      await client.query(
-        `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
-        [pendingPhotoId],
-      );
-    } else if (
-      mediaPayload?.kind === 'photo_type'
-      && mediaPayload.value === 'work_sample'
-    ) {
-      await client.query(
-        `UPDATE worker_profile_media SET media_type = 'work_sample' WHERE id = $1`,
-        [pendingPhotoId],
-      );
-    } else if (bodyTrimmed === '1' || /^profile/i.test(bodyTrimmed)) {
-      await client.query(
-        `UPDATE worker_profile_media SET media_type = 'profile_photo' WHERE id = $1`,
-        [pendingPhotoId],
-      );
-    } else if (bodyTrimmed === '2' || /^work/i.test(bodyTrimmed)) {
-      await client.query(
-        `UPDATE worker_profile_media SET media_type = 'work_sample' WHERE id = $1`,
-        [pendingPhotoId],
-      );
-    } else {
-      // Invalid classification response — re-prompt
-      await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_type');
-      return;
-    }
-    if (conv.state_context?.profile_completed === true) {
-      await updateConversation(client, conv.id, {
-        state_context: {},
-        conversation_state: 'idle',
-        last_processed_message_sid: messageSid,
-      });
-      return;
-    }
-
-    // Classification done during early media flow — advance to voice step
-    await updateConversation(client, conv.id, {
-      state_context: { ...conv.state_context, pending_media_photo_id: undefined },
-      conversation_state: 'awaiting_media_voice',
-      last_processed_message_sid: messageSid,
-    });
-    await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
-    return;
-  }
-
-  // Worker skipped or sent text (no photo yet) — proceed to voice step
-  if (mediaPayload?.kind === 'photo' || numMedia === 0 || isSkipKeyword(msg.body)) {
-    if (conv.state_context?.profile_completed === true) {
-      await updateConversation(client, conv.id, {
-        conversation_state: 'idle',
-        state_context: {},
-        last_processed_message_sid: messageSid,
-      });
-      return;
-    }
-
-    await updateConversation(client, conv.id, {
-      conversation_state: 'awaiting_media_voice',
-      last_processed_message_sid: messageSid,
-    });
-    await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
-    return;
-  }
-
-  if (!mediaUrl || !mediaContentType) {
-    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
-    return;
-  }
-
-  const category = detectMediaCategory(mediaContentType);
-  if (category !== 'photo') {
-    await queueReply(client, messageSid, from, 'media_photo_invalid', conv.language);
-    return;
-  }
-
-  // Download from Twilio and upload to S3
-  const twilioSecret = await getTwilioSecret();
-  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
-
-  const mediaId = randomUUID();
-  if (!conv.user_id) throw new Error('user_id missing before media write');
-  const s3Key = buildS3Key(conv.user_id, mediaId, 'photo');
-  const bucketName = process.env.MEDIA_BUCKET_NAME;
-  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
-
-  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
-  await setWorkerRlsContextByUserId(client, conv.user_id);
-
-  await client.query(
-    `INSERT INTO worker_profile_media
-       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
-     VALUES ($1, $2, 'profile_photo', $3, $4, $5)`,
-    [mediaId, conv.user_id, s3Key, mediaSid ?? null, mediaContentType],
-  );
-
-  await updateConversation(client, conv.id, {
-    state_context: {
-      ...conv.state_context,
-      pending_media_photo_id: mediaId,
-    },
-    last_processed_message_sid: messageSid,
-  });
-  await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_type');
-}
-
-// ── awaiting_media_voice — optional voice message step ──────────
-function wantsVoiceProfile(text: string): boolean {
-  return /^(1|voice|voz|audio|nota de voz)$/i.test(text.trim());
-}
-
-async function enterTextProfileFromVoiceChoice(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  if (!conv.user_id) throw new Error('user_id missing before text profile');
-  const collected = conv.state_context?.collected ?? {};
-  const fieldSids = conv.state_context?.field_sids ?? {};
-  const dbFilled = await loadProfileFromDb(client, conv.user_id);
-  const next = computeNextField(collected, dbFilled);
-
-  if (next === null) {
-    await flushProfileAndAdvance(client, conv, msg.from, msg.messageSid);
-    return;
-  }
-
-  await updateConversation(client, conv.id, {
-    conversation_state: 'building_profile',
-    state_context: {
-      ...conv.state_context,
-      collected,
-      field_sids: fieldSids,
-      pending_field: next,
-    },
-    last_processed_message_sid: msg.messageSid,
-  });
-  await askProfileQuestion(client, msg.messageSid, msg.from, next, conv.language);
-}
-
-async function handleAwaitingMediaVoice(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  const { numMedia, mediaUrl, mediaSid, mediaContentType, from, messageSid } = msg;
-  const mediaPayload = parseMediaPayload(msg.interactivePayload);
-
-  // Worker skipped or sent text — go straight to text questions
-  if (numMedia === 0) {
-    if (mediaPayload?.kind === 'voice' && mediaPayload.value === 'text') {
-      await enterTextProfileFromVoiceChoice(client, conv, msg);
-      return;
-    }
-    if (!msg.body.trim() || wantsVoiceProfile(msg.body)) {
-      await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
-      return;
-    }
-    await enterTextProfileFromVoiceChoice(client, conv, msg);
-    return;
-  }
-
-  if (!mediaUrl || !mediaContentType) {
-    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
-    return;
-  }
-
-  const category = detectMediaCategory(mediaContentType);
-  if (category !== 'voice') {
-    await queueReply(client, messageSid, from, 'media_voice_invalid', conv.language);
-    return;
-  }
-
-  const twilioSecret = await getTwilioSecret();
-  const mediaBuffer = await downloadTwilioMedia(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken);
-
-  const mediaId = randomUUID();
-  if (!conv.user_id) throw new Error('user_id missing before media write');
-  const s3Key = buildS3Key(conv.user_id, mediaId, 'voice');
-  const bucketName = process.env.MEDIA_BUCKET_NAME;
-  const stateMachineArn = process.env.AI_PIPELINE_STATE_MACHINE_ARN;
-  if (!bucketName) throw new Error('MEDIA_BUCKET_NAME not set');
-  if (!stateMachineArn) throw new Error('AI_PIPELINE_STATE_MACHINE_ARN not set');
-
-  await uploadMediaToS3(bucketName, s3Key, mediaBuffer, mediaContentType);
-  await setWorkerRlsContextByUserId(client, conv.user_id);
-
-  await client.query(
-    `INSERT INTO worker_profile_media
-       (id, user_id, media_type, s3_key, twilio_media_sid, content_type)
-     VALUES ($1, $2, 'voice_message', $3, $4, $5)`,
-    [mediaId, conv.user_id, s3Key, mediaSid ?? null, mediaContentType],
-  );
-
-  // Language code for Transcribe
-  const languageCode = conv.language === 'es' ? 'es-US' : 'en-US';
-  const transcriptionJobName = `jale-${conv.user_id.replace(/-/g, '')}-${Date.now()}`;
-  const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
-  const transcriptOutputKey = `${conv.user_id}/transcripts/${transcriptionJobName}.json`;
-
-  // Start Step Functions execution
-  const execution = await sfn.send(
-    new StartExecutionCommand({
-      stateMachineArn,
-      input: JSON.stringify({
-        userId: conv.user_id,
-        conversationId: conv.id,
-        inboundMessageSid: messageSid,
-        whatsappNumber: conv.whatsapp_number,
-        language: conv.language,
-        mediaBucketName: bucketName,
-        transcriptionJobName,
-        languageCode,
-        mediaS3Uri,
-        transcriptOutputKey,
-        voiceMessageMediaId: mediaId,
-      }),
-    }),
-  );
-
-  await updateConversation(client, conv.id, {
-    conversation_state: 'processing_ai',
-    state_context: {
-      ...conv.state_context,
-      ai_pipeline_execution_arn: execution.executionArn,
-    },
-    last_processed_message_sid: messageSid,
-  });
-  await queueReply(client, messageSid, from, 'ai_processing_ack', conv.language);
-}
-
 // ── v2 trust-question voice-note transcription kickoff ──────────
 //
 // Mirrors handleAwaitingMediaVoice's Twilio-download -> S3 -> StartExecution
@@ -1336,22 +1019,6 @@ async function ingestProfileVoiceNote(
   return { started: true, executionArn };
 }
 
-// ── processing_ai — waiting for AI pipeline to complete ─────────
-async function handleProcessingAi(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  const aiType = conv.state_context?.processing_ai_type;
-  if (aiType === 'trust') {
-    await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
-    return;
-  }
-
-  // Profile or legacy state transition happens when ai-profile-writer updates the conversation.
-  await queueReply(client, msg.messageSid, msg.from, 'ai_processing_wait', conv.language);
-}
-
 async function handleSupportCommand(
   client: PoolClient,
   conv: ConversationRow,
@@ -1394,134 +1061,113 @@ async function routeMessage(
   wakeSignals: PostCommitWakeSignals,
   voiceEvent: VoiceEventV2 | null,
 ): Promise<string | null> {
-  // ── Task 6: fail-closed v2 branch ───────────────────────────────────────
-  //
-  // The v2 decision is read from DB-backed runtime controls (never an env
-  // var) and keyed on a SHA-256 hash of the normalized phone (never the raw
-  // phone). This sits before ANY legacy handling — a v2-enabled phone must
-  // never touch the legacy state machine. No try/catch: once a phone
-  // selects v2, any missing dependency or error in the v2 path propagates
-  // out of routeMessage so the caller's existing tx rolls back and SQS
-  // retries. This runs inside the existing claim/db_committed transaction;
-  // it opens no BEGIN/COMMIT of its own.
+  // v2 is now the only onboarding lane — the legacy state machine has been
+  // deleted. `runtimeControls`/`phoneHash` are still needed for the
+  // voice_intake runtime control below (a live, independently-gated
+  // control, unrelated to the removed v2/v1 split).
   const runtimeControls = await loadRuntimeControls(client);
   const phoneHash = hashNormalizedPhone(conv.whatsapp_number);
-  const v2Enabled = isV2Enabled(runtimeControls, phoneHash);
 
-  // A synthetic voice-pipeline completion event has no meaning in the
-  // legacy state machine (its Body is always empty — the payload lives in
-  // the event envelope) and must never reach it, even transiently. The
-  // pipeline's own CloudWatch alarms (WhatsAppTrustVoicePipelineFailed,
-  // etc.) cover a completion that lands with v2 no longer enabled for this
-  // phone; here we just drop it rather than let it fall through to an
-  // empty-message reprompt in the wrong lane.
-  if (voiceEvent && !v2Enabled) {
-    console.warn(JSON.stringify({ metric: 'OnboardingVoiceTranscriptDropped', messageSid: msg.messageSid }));
-    return null;
-  }
+  registerOnboardingRenderers();
 
-  if (v2Enabled) {
-    registerOnboardingRenderers();
-
-    const v2Deps: OnboardingV2Deps = {
-      adapters: createOnboardingV2Adapters({ reconcileUserRow, cognitoClient: cognito }),
-      repo: {
-        setInternalUserRlsContext,
-        loadPreAuthStateForUpdate,
-        savePreAuthState,
-        bindVerifiedIdentityAndStartWorkflow,
-        loadWorkerGate,
-        // Cast: onboarding-repository.ts's `status` param is the narrower
-        // WorkflowRunStatus union; OnboardingV2RepoDeps's assumed contract
-        // types it as `string`. A cross-lane interface detail, not a
-        // logic mismatch — the real function only ever receives values
-        // from the closed union anyway.
-        advanceWorkflow: advanceWorkflow as OnboardingV2RepoDeps['advanceWorkflow'],
-        reactivateDeclinedLegalRun,
-        setRunPreferredLanguage,
-        appendTransition,
-        completeOnboarding: async (repoClient, input) => {
-          const result = await completeOnboarding(repoClient, input);
-          wakeSignals.domain = true;
-          return result;
-        },
-        clearProfileAnswers,
-        resetPendingTrustAssessmentAndSkills,
-        findPreviousStepKey,
-      },
-      enqueueWorkerMessage: async (gatewayClient, input, now) => {
-        const result = await enqueueWorkerMessage(gatewayClient, input, now);
-        if (result.outboxMaterialized) {
-          wakeSignals.workerIntent = true;
-        }
+  const v2Deps: OnboardingV2Deps = {
+    adapters: createOnboardingV2Adapters({ reconcileUserRow, cognitoClient: cognito }),
+    repo: {
+      setInternalUserRlsContext,
+      loadPreAuthStateForUpdate,
+      savePreAuthState,
+      bindVerifiedIdentityAndStartWorkflow,
+      loadWorkerGate,
+      // Cast: onboarding-repository.ts's `status` param is the narrower
+      // WorkflowRunStatus union; OnboardingV2RepoDeps's assumed contract
+      // types it as `string`. A cross-lane interface detail, not a
+      // logic mismatch — the real function only ever receives values
+      // from the closed union anyway.
+      advanceWorkflow: advanceWorkflow as OnboardingV2RepoDeps['advanceWorkflow'],
+      reactivateDeclinedLegalRun,
+      setRunPreferredLanguage,
+      appendTransition,
+      completeOnboarding: async (repoClient, input) => {
+        const result = await completeOnboarding(repoClient, input);
+        wakeSignals.domain = true;
         return result;
       },
-      // Design A: pre-auth steps have no bound user_id, so their prompts
-      // travel the same phone/inbound-message-keyed outbox writers the
-      // legacy relay/legal paths already use — never a new outbox writer.
-      enqueuePreAuthPrompt: queueInteractivePrompt,
-      enqueuePreAuthText: queueText,
-      hashNormalizedPhone,
-      tosUrl: LEGAL_TOS_URL,
-      privacyUrl: LEGAL_PRIVACY_URL,
-      workflowVersion: WHATSAPP_V2_WORKFLOW_VERSION,
-      requiredLegalVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
-      recordLegalAcceptance: recordCanonicalWhatsAppConsent,
-      voiceIntake: {
-        enabled: isVoiceIntakeEnabled(runtimeControls, phoneHash),
-        startTrustTranscription: (input) => startTrustTranscription(client, input),
-        ingestProfileVoiceNote: (input) => ingestProfileVoiceNote(client, input),
-      },
-    };
+      clearProfileAnswers,
+      resetPendingTrustAssessmentAndSkills,
+      findPreviousStepKey,
+    },
+    enqueueWorkerMessage: async (gatewayClient, input, now) => {
+      const result = await enqueueWorkerMessage(gatewayClient, input, now);
+      if (result.outboxMaterialized) {
+        wakeSignals.workerIntent = true;
+      }
+      return result;
+    },
+    // Design A: pre-auth steps have no bound user_id, so their prompts
+    // travel the same phone/inbound-message-keyed outbox writers the
+    // legacy relay/legal paths already use — never a new outbox writer.
+    enqueuePreAuthPrompt: queueInteractivePrompt,
+    enqueuePreAuthText: queueText,
+    hashNormalizedPhone,
+    tosUrl: LEGAL_TOS_URL,
+    privacyUrl: LEGAL_PRIVACY_URL,
+    workflowVersion: WHATSAPP_V2_WORKFLOW_VERSION,
+    requiredLegalVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
+    recordLegalAcceptance: recordCanonicalWhatsAppConsent,
+    voiceIntake: {
+      enabled: isVoiceIntakeEnabled(runtimeControls, phoneHash),
+      startTrustTranscription: (input) => startTrustTranscription(client, input),
+      ingestProfileVoiceNote: (input) => ingestProfileVoiceNote(client, input),
+    },
+  };
 
-    const v2Session: OnboardingV2Session = {
-      id: conv.id,
-      user_id: conv.user_id,
-      whatsapp_number: conv.whatsapp_number,
-      language: conv.language,
-      conversation_state: conv.conversation_state,
-      state_context: conv.state_context as unknown as Record<string, unknown>,
-    };
+  const v2Session: OnboardingV2Session = {
+    id: conv.id,
+    user_id: conv.user_id,
+    whatsapp_number: conv.whatsapp_number,
+    language: conv.language,
+    conversation_state: conv.conversation_state,
+    state_context: conv.state_context as unknown as Record<string, unknown>,
+  };
 
-    const v2Message: OnboardingV2InboundMessage = {
-      from: conv.whatsapp_number,
-      body: msg.body,
-      messageSid: msg.messageSid,
-      interactivePayload: msg.interactivePayload,
-      numMedia: msg.numMedia,
-      mediaUrl: msg.mediaUrl,
-      mediaSid: msg.mediaSid,
-      mediaContentType: msg.mediaContentType,
-      voiceEvent: voiceEvent ?? undefined,
-    };
+  const v2Message: OnboardingV2InboundMessage = {
+    from: conv.whatsapp_number,
+    body: msg.body,
+    messageSid: msg.messageSid,
+    interactivePayload: msg.interactivePayload,
+    numMedia: msg.numMedia,
+    mediaUrl: msg.mediaUrl,
+    mediaSid: msg.mediaSid,
+    mediaContentType: msg.mediaContentType,
+    voiceEvent: voiceEvent ?? undefined,
+  };
 
-    const result = await routeOnboardingV2(client, v2Session, v2Message, v2Deps);
+  const result = await routeOnboardingV2(client, v2Session, v2Message, v2Deps);
 
-    if (result.handled) {
-      // The router mutates state_context in place (trust questions, prompt
-      // cooldowns, ...). Persist it in the same transaction for the next turn.
-      await updateConversation(client, conv.id, {
-        state_context: v2Session.state_context as unknown as ProfileStateContext,
-      });
-      return result.workerId;
-    }
-
-    // Ready workers continue through the established idle command/callback
-    // router below. Persist that compatibility state atomically with the v2
-    // context so a later rollout-control disable cannot expose a stale legacy
-    // onboarding state on the next inbound message.
+  if (result.handled) {
+    // The router mutates state_context in place (trust questions, prompt
+    // cooldowns, ...). Persist it in the same transaction for the next turn.
     await updateConversation(client, conv.id, {
       state_context: v2Session.state_context as unknown as ProfileStateContext,
-      user_id: result.workerId,
-      language: v2Session.language,
-      conversation_state: 'idle',
     });
-
-    conv.user_id = result.workerId;
-    conv.conversation_state = 'idle';
-    conv.language = v2Session.language;
-    conv.state_context = v2Session.state_context as unknown as ProfileStateContext;
+    return result.workerId;
   }
+
+  // Ready workers continue through the established idle command/callback
+  // router below. Persist that compatibility state atomically with the v2
+  // context so a later rollout-control disable cannot expose a stale legacy
+  // onboarding state on the next inbound message.
+  await updateConversation(client, conv.id, {
+    state_context: v2Session.state_context as unknown as ProfileStateContext,
+    user_id: result.workerId,
+    language: v2Session.language,
+    conversation_state: 'idle',
+  });
+
+  conv.user_id = result.workerId;
+  conv.conversation_state = 'idle';
+  conv.language = v2Session.language;
+  conv.state_context = v2Session.state_context as unknown as ProfileStateContext;
 
   const from = msg.from;
 
@@ -1600,385 +1246,20 @@ async function routeMessage(
     return await handleEmployerConversationTextAction(client, conv, msg, textConversationAction, routerDeps);
   }
 
-  if (conv.conversation_state === 'new') {
-    const webWorker = await findWebRegisteredWorker(client, conv.whatsapp_number);
-    if (webWorker) {
-      await bypassOnboardingForWebWorker(client, conv, msg, webWorker.id);
-      return null;
-    }
-  }
-
   const relayedWorkerId = await tryConversationRelay(client, conv, msg, routerDeps);
   if (relayedWorkerId) {
     return relayedWorkerId;
   }
 
-  switch (conv.conversation_state) {
-    case 'new':
-      if (isGreetingKeyword(msg.body)) {
-        await handleNewOrRestart(client, conv, msg);
-      } else {
-        await reply(client, msg, 'start_prompt', detectLanguage(msg.body));
-      }
-      return null;
-
-    case 'otp_timeout':
-    case 'legal_declined':
-      // On re-contact with a greeting, restart onboarding from `new`.
-      if (isGreetingKeyword(msg.body)) {
-        await handleNewOrRestart(client, conv, msg);
-      } else {
-        await reply(client, msg, 'start_prompt', conv.language);
-      }
-      return null;
-
-    case 'awaiting_otp':
-      await handleAwaitingOtp(client, conv, msg);
-      return null;
-
-    case 'awaiting_legal':
-      await handleAwaitingLegal(client, conv, msg);
-      return null;
-
-    case 'awaiting_media_photo':
-      await handleAwaitingMediaPhoto(client, conv, msg);
-      return null;
-
-    case 'awaiting_media_voice':
-      await handleAwaitingMediaVoice(client, conv, msg);
-      return null;
-
-    case 'processing_ai':
-      await handleProcessingAi(client, conv, msg);
-      return null;
-
-    case 'building_profile':
-      await handleBuildingProfile(client, conv, msg);
-      return null;
-
-    case 'building_trust_signal':
-      await handleBuildingTrustSignal(client, conv, msg);
-      return null;
-
-    case 'building_custom_trust':
-      await handleBuildingCustomTrust(client, conv, msg);
-      return null;
-
-    case 'idle':
-      return await handleIdle(client, conv, msg);
-  }
-
-  return null;
+  // The v2 branch above always forces the conversation into 'idle' before
+  // falling through (either via routeOnboardingV2's handled result or the
+  // forced writeback when the run isn't handled), so 'idle' is the only
+  // reachable state here now that the legacy state machine is gone.
+  return await handleIdle(client, conv, msg);
 }
 
 // Processor-owned mutations injected into the conversation router module.
 const routerDeps: RouterDeps = { updateConversation, queueLegalPrompt };
-
-// ── new / restart — SignUp + InitiateAuth(CUSTOM_AUTH) ──────────
-async function handleNewOrRestart(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  const lang = detectLanguage(msg.body);
-  const whatsappNumber = conv.whatsapp_number;
-
-  // Create the user without Cognito sending its own verification message.
-  const clientId = process.env.WORKER_CLIENT_ID;
-  if (!clientId) throw new Error('WORKER_CLIENT_ID not set');
-  const poolId = process.env.WORKER_POOL_ID;
-  if (!poolId) throw new Error('WORKER_POOL_ID not set');
-
-  let isNewUser = true;
-  let existingIdentity: { cognitoSub: string; storedName?: string } | undefined;
-  try {
-    // Password is random — we never use it. Custom auth does passwordless OTP.
-    const randomPassword = `Jale!${randomUUID()}9aA`;
-    await cognito.send(new AdminCreateUserCommand({
-      UserPoolId: poolId,
-      Username: whatsappNumber,
-      MessageAction: 'SUPPRESS',
-      TemporaryPassword: randomPassword,
-      UserAttributes: [
-        { Name: 'phone_number', Value: whatsappNumber },
-        { Name: 'phone_number_verified', Value: 'true' },
-        { Name: 'custom:user_type', Value: 'worker' },
-      ],
-    }));
-
-    // Set a permanent password so the account is ready for CUSTOM_AUTH.
-    // AdminCreateUser does not fire PostConfirmation, so the processor
-    // defensively inserts the DB row below.
-    await cognito.send(new AdminSetUserPasswordCommand({
-      UserPoolId: poolId,
-      Username: whatsappNumber,
-      Password: randomPassword,
-      Permanent: true,
-    }));
-  } catch (err: any) {
-    if (err?.name === 'UsernameExistsException') {
-      isNewUser = false;
-      existingIdentity = await reconcileWorkerCognitoAccount({
-        client: cognito,
-        userPoolId: poolId,
-        phone: whatsappNumber,
-      });
-    } else {
-      throw err;
-    }
-  }
-
-  // Defensive INSERT: ensure the DB row exists whether this is a new or
-  // existing user. PostConfirmation is not guaranteed to have fired, so the
-  // processor must own this concern (Codex review outcome).
-  // Uses jale_whatsapp's INSERT grant on users (granted in 003_whatsapp.sql).
-  await client.query(
-    `INSERT INTO users (cognito_sub, user_type, phone)
-     VALUES ($1, 'worker', $2)
-     ON CONFLICT (cognito_sub) DO NOTHING`,
-    [
-      // cognito_sub is the phone for phone-auth pool until we resolve the real sub.
-      // We'll refresh this after the AuthResult returns tokens (in handleAwaitingOtp).
-      whatsappNumber,
-      whatsappNumber,
-    ],
-  );
-  if (existingIdentity) {
-    await client.query(
-      'SELECT reconcile_worker_signup($1, $2, $3)',
-      [existingIdentity.cognitoSub, whatsappNumber, existingIdentity.storedName ?? ''],
-    );
-  }
-
-  // InitiateAuth with CUSTOM_AUTH — triggers DefineAuthChallenge → CreateAuthChallenge.
-  // CreateAuthChallenge sends the 6-digit OTP via Twilio SMS and returns a
-  // Cognito Session containing challengeMetadata. We PERSIST that Session on
-  // the conversation row and reuse it in handleAwaitingOtp (Fix 1, 2026-04-17)
-  // so subsequent webhook deliveries don't trigger fresh Twilio sends that
-  // would invalidate the code the worker actually received.
-  const init = await cognito.send(new InitiateAuthCommand({
-    AuthFlow: AuthFlowType.CUSTOM_AUTH,
-    ClientId: clientId,
-    AuthParameters: {
-      USERNAME: whatsappNumber,
-    },
-  }));
-
-  // Atomic state transition: advance state AND record the MessageSid in one
-  // UPDATE, so an SQS retry can never reach routeMessage after state has
-  // advanced but before the SID is stamped.
-  await updateConversation(client, conv.id, {
-    language: lang,
-    conversation_state: 'awaiting_otp',
-    state_context: {
-      cognito_session: init.Session,
-      otp_issued_at: new Date().toISOString(),
-    },
-    otp_attempts: 0,
-    otp_expires_at: new Date(Date.now() + 10 * 60 * 1000), // 10-min TTL
-    last_processed_message_sid: msg.messageSid,
-  });
-
-  await reply(
-    client,
-    msg,
-    isNewUser ? 'welcome_new_user' : 'welcome_existing_user',
-    lang,
-  );
-}
-
-// ── awaiting_otp — RespondToAuthChallenge (Fix 1 + Fix 2, 2026-04-17) ──
-//
-// The previous implementation called a fresh InitiateAuth before every
-// RespondToAuthChallenge, which triggered CreateAuthChallenge → Twilio OTP
-// of a NEW 6-digit code → the worker's submitted code was validated against
-// a code they never received. Codex catch.
-//
-// Fix:
-//   - Persist the Cognito Session returned by the initial InitiateAuth into
-//     state_context.cognito_session (done in handleNewOrRestart).
-//   - Reuse that Session here (no fresh InitiateAuth).
-//   - On wrong OTP: Cognito re-issues a CUSTOM_CHALLENGE with a new Session;
-//     persist it. create-auth-challenge's reuse branch preserves the same
-  //     OTP (no new outbound message) as long as `challengeMetadata` is on the session.
-//   - On "Invalid session"/expired session: call fresh InitiateAuth once,
-//     store the new Session, reply `otp_expired_retry` — NOT a counted
-//     attempt.
-//   - On success: decode the real Cognito `sub` from the ID token and
-//     reconcile the users row (see reconcileUserRow).
-
-async function handleAwaitingOtp(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  const otp = msg.body.trim();
-  const clientId = process.env.WORKER_CLIENT_ID;
-  if (!clientId) throw new Error('WORKER_CLIENT_ID not set');
-
-  // Local 10-minute TTL (separate from Cognito's 3-min session TTL). If this
-  // fires, send worker back to `new` — they restart onboarding.
-  if (conv.otp_expires_at && conv.otp_expires_at.getTime() < Date.now()) {
-    await updateConversation(client, conv.id, {
-      conversation_state: 'new',
-      state_context: {},
-      last_processed_message_sid: msg.messageSid,
-    });
-    await reply(client, msg,'otp_expired', conv.language);
-    return;
-  }
-
-  const session = conv.state_context?.cognito_session;
-  if (!session) {
-    // No Session persisted — shouldn't happen in the normal state machine
-    // (handleNewOrRestart always writes one), but if a pre-Fix-1 conversation
-    // row is still in `awaiting_otp` we fall through to re-issue.
-    await reissueOtp(client, conv, msg, clientId, 'missing_session');
-    return;
-  }
-
-  let resp;
-  try {
-    resp = await cognito.send(new RespondToAuthChallengeCommand({
-      ClientId: clientId,
-      ChallengeName: ChallengeNameType.CUSTOM_CHALLENGE,
-      Session: session,
-      ChallengeResponses: {
-        USERNAME: conv.whatsapp_number,
-        ANSWER: otp,
-      },
-    }));
-  } catch (err: any) {
-    const name: string = err?.name ?? '';
-    const detail: string = err?.message ?? '';
-    // Expired Cognito session → re-issue with fresh InitiateAuth. NOT a
-    // counted attempt. Cognito's exact error text for an expired session
-    // tends to include the word "session"; match broadly.
-    if (name === 'NotAuthorizedException' && /session/i.test(detail)) {
-      await reissueOtp(client, conv, msg, clientId, 'expired_session');
-      return;
-    }
-    // Other NotAuthorizedException (e.g. Cognito's own max-retries fail) →
-    // treat as wrong code, no new Session to store.
-    await recordWrongOtp(client, conv, msg, undefined);
-    return;
-  }
-
-  // Cognito returned normally. Two shapes:
-  //   - AuthenticationResult present → OTP correct
-  //   - ChallengeName present + no AuthenticationResult → OTP wrong; Cognito
-  //     has re-issued a CUSTOM_CHALLENGE and the new Session carries forward
-  //     the same challengeMetadata (→ create-auth-challenge reuses the OTP,
-  //     no new outbound message).
-  if (!resp.AuthenticationResult?.IdToken) {
-    await recordWrongOtp(client, conv, msg, resp.Session);
-    return;
-  }
-
-  // OTP correct. Resolve the real Cognito sub from the ID token (Fix 2).
-  const idToken = resp.AuthenticationResult.IdToken;
-  const realSub = decodeIdTokenSub(idToken);
-
-  // Reconcile the users row: either promote the placeholder (Case A) or
-  // link WhatsApp to an existing real-sub row and delete the orphan
-  // placeholder (Case B/C).
-  const { userId, tosVersion } = await reconcileUserRow(
-    client,
-    realSub,
-    conv.whatsapp_number,
-  );
-
-  const requiredVersion = process.env.REQUIRED_TOS_VERSION ?? '1.0';
-
-  if (tosVersion !== requiredVersion) {
-    // Advance to awaiting_legal. Clear the cognito_session (OTP flow is done).
-    await updateConversation(client, conv.id, {
-      user_id: userId,
-      conversation_state: 'awaiting_legal',
-      state_context: {},
-      last_processed_message_sid: msg.messageSid,
-    });
-    // Mutate in-memory so any downstream helper that reads conv.user_id gets
-    // the right value. (Post-route stamp also needs `conv`; staying safe.)
-    conv.user_id = userId;
-    await queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
-  } else {
-    // Already compliant — jump to profile builder or idle depending on profile completeness.
-    await updateConversation(client, conv.id, {
-      user_id: userId,
-      state_context: {},
-      last_processed_message_sid: msg.messageSid,
-    });
-    conv.user_id = userId;
-    await enterProfileBuilderOrIdle(client, conv, userId, msg.from, msg.messageSid);
-  }
-}
-
-/**
- * Record a wrong-OTP attempt. If newSession is provided (from Cognito's
- * retry-challenge response), persist it so the next RespondToAuthChallenge
- * uses it (create-auth-challenge reuses the same OTP — no new outbound message). Three
- * attempts → otp_timeout.
- */
-async function recordWrongOtp(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-  newSession: string | undefined,
-): Promise<void> {
-  const newAttempts = conv.otp_attempts + 1;
-  if (newAttempts >= 3) {
-    await updateConversation(client, conv.id, {
-      conversation_state: 'otp_timeout',
-      otp_attempts: newAttempts,
-      state_context: {},
-      last_processed_message_sid: msg.messageSid,
-    });
-    await reply(client, msg,'otp_timeout', conv.language);
-    return;
-  }
-  const nextSession = newSession ?? conv.state_context?.cognito_session;
-  await updateConversation(client, conv.id, {
-    otp_attempts: newAttempts,
-    state_context: {
-      ...conv.state_context,
-      cognito_session: nextSession,
-    },
-    last_processed_message_sid: msg.messageSid,
-  });
-  await reply(client, msg,'otp_retry', conv.language);
-}
-
-/**
- * Cognito session expired or missing. Fire a fresh InitiateAuth (which
- * triggers CreateAuthChallenge → new Twilio SMS OTP), persist the new Session,
- * reply `otp_expired_retry`. Does NOT increment otp_attempts.
- */
-async function reissueOtp(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-  clientId: string,
-  reason: 'missing_session' | 'expired_session',
-): Promise<void> {
-  console.log('[processor] reissuing OTP', { reason });
-  const init = await cognito.send(new InitiateAuthCommand({
-    AuthFlow: AuthFlowType.CUSTOM_AUTH,
-    ClientId: clientId,
-    AuthParameters: { USERNAME: conv.whatsapp_number },
-  }));
-  await updateConversation(client, conv.id, {
-    state_context: {
-      ...conv.state_context,
-      cognito_session: init.Session,
-      otp_issued_at: new Date().toISOString(),
-    },
-    // Reset the local TTL — the worker just got a fresh code.
-    otp_expires_at: new Date(Date.now() + 10 * 60 * 1000),
-    last_processed_message_sid: msg.messageSid,
-  });
-  await reply(client, msg,'otp_expired_retry', conv.language);
-}
 
 /**
  * Promote the placeholder users row (Case A) OR link WhatsApp to an existing
@@ -2088,70 +1369,6 @@ async function reconcileUserRow(
     userId: promoted.rows[0].id,
     tosVersion: promoted.rows[0].tos_version,
   };
-}
-
-// ── awaiting_legal — record consent via setRlsContext (no jale_consent role) ──
-async function handleAwaitingLegal(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  const legalPayload = parseLegalReplyPayload(msg.interactivePayload);
-
-  if (legalPayload === 'decline' || isDecline(msg.body, conv.language)) {
-    await updateConversation(client, conv.id, {
-      conversation_state: 'legal_declined',
-      last_processed_message_sid: msg.messageSid,
-    });
-    await reply(client, msg,'legal_declined', conv.language);
-    return;
-  }
-
-  if (legalPayload !== 'accept' && !isAccept(msg.body, conv.language)) {
-    // Re-prompt with legal message (no state change; post-route stamp covers
-    // idempotency)
-    await queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
-    return;
-  }
-
-  // Accept inside processRecord's caller-owned transaction. The shared helper
-  // updates canonical versions and repairs any missing immutable audit rows.
-  if (!conv.user_id) throw new Error('user_id missing on awaiting_legal');
-  await recordCanonicalWhatsAppConsent(client, {
-    workerId: conv.user_id,
-    documentVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
-  });
-
-  // Proceed to profile builder
-  await enterProfileBuilderOrIdle(client, conv, conv.user_id, msg.from, msg.messageSid);
-}
-
-// ── Transition helper: enter building_profile OR skip to idle ───
-async function enterProfileBuilderOrIdle(
-  client: PoolClient,
-  conv: ConversationRow,
-  userId: string,
-  from: string,
-  messageSid: string,
-): Promise<void> {
-  const dbFilled = await loadProfileFromDb(client, userId);
-  const next = computeNextField({}, dbFilled);
-  if (next === null) {
-    await enterTrustSignalOrIdle(
-      client,
-      conv,
-      from,
-      messageSid,
-      (dbFilled.main_trade as string | undefined) ?? 'other',
-    );
-    return;
-  }
-  await updateConversation(client, conv.id, {
-    conversation_state: 'awaiting_media_voice',
-    state_context: { collected: {}, field_sids: {} },
-    last_processed_message_sid: messageSid,
-  });
-  await queueMediaPrompt(client, messageSid, from, conv.language, 'voice_choice');
 }
 
 interface WorkerProfileSummary {
@@ -2420,355 +1637,6 @@ function labelFor(
   };
 
   return value ? labels[field][value]?.[lang] ?? value : (lang === 'es' ? 'Sin completar' : 'Not set');
-}
-
-async function askProfileQuestion(
-  client: PoolClient,
-  inboundMessageSid: string,
-  to: string,
-  field: ProfileField,
-  lang: Lang,
-): Promise<void> {
-  const prompt = buildProfileInteractivePrompt(field, lang);
-  if (prompt) {
-    await queueInteractivePrompt(client, inboundMessageSid, to, prompt);
-    return;
-  }
-  await queueText(client, inboundMessageSid, to, profileQuestionBody(field, lang));
-}
-
-// ── building_profile — pending-field model (Fix 3, 2026-04-17) ──
-//
-// Replay protection runs at the top of processRecord (`isDuplicateSid` scans
-// both `last_processed_message_sid` and `state_context.field_sids`), so any
-// duplicate MessageSid has already been rejected before we get here. No
-// in-handler stale-replay guard is needed, and the old field-ordering-based
-// `isStaleReplay` has been removed from flows.ts — it could never detect
-// out-of-order retries since its call site passed `pending` twice.
-//
-// When a valid answer is accepted we bind that answer to the inbound
-// MessageSid via state_context.field_sids. Subsequent retries of the same
-// SID — even after the pending_field has advanced — will match on the
-// field_sids scan and short-circuit.
-async function handleBuildingProfile(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  // "Jobs"/"Trabajos" during profile: block and re-prompt current question
-  // (no state change; post-route stamp records the sid).
-  if (isJobsKeyword(msg.body)) {
-    const currentQ = conv.state_context?.pending_field
-      ? t(FIELD_PROMPT_KEY[conv.state_context.pending_field], conv.language)
-      : '';
-    await reply(client, msg,'profile_jobs_blocked', conv.language, { question: currentQ });
-    return;
-  }
-
-  const pending = conv.state_context?.pending_field;
-  if (!pending) {
-    // No pending field but we're still in building_profile — recompute from DB.
-    if (!conv.user_id) throw new Error('user_id missing in building_profile');
-    const dbFilled = await loadProfileFromDb(client, conv.user_id);
-    const next = computeNextField(conv.state_context?.collected ?? {}, dbFilled);
-    if (next === null) {
-      await flushProfileAndAdvance(client, conv, msg.from, msg.messageSid);
-      return;
-    }
-    await updateConversation(client, conv.id, {
-      state_context: {
-        ...conv.state_context,
-        pending_field: next,
-      },
-      last_processed_message_sid: msg.messageSid,
-    });
-    await askProfileQuestion(client, msg.messageSid, msg.from, next, conv.language);
-    return;
-  }
-
-  const collected = conv.state_context?.collected ?? {};
-  const fieldSids = conv.state_context?.field_sids ?? {};
-
-  const answer = parseProfilePayloadAnswer(pending, msg.interactivePayload)
-    ?? parseProfileAnswer(pending, msg.body);
-  if (answer === null) {
-    // Invalid answer: re-prompt current question. No state change; post-route
-    // stamp records the sid so an SQS retry of this same wrong answer won't
-    // re-prompt the worker again.
-    await reply(client, msg,'profile_reprompt', conv.language, {
-      question: t(FIELD_PROMPT_KEY[pending], conv.language),
-    });
-    return;
-  }
-
-  // Bind this field's accepted answer to the MessageSid that produced it.
-  // The isDuplicateSid() check at processRecord's top uses field_sids to
-  // reject out-of-order retries.
-  const newCollected = { ...collected, [pending]: answer };
-  const newFieldSids = { ...fieldSids, [pending]: msg.messageSid };
-
-  if (!conv.user_id) throw new Error('user_id missing');
-  const dbFilled = await loadProfileFromDb(client, conv.user_id);
-  const next = computeNextField(newCollected, dbFilled);
-
-  if (next === null) {
-    // Done — flush to DB and advance to idle. flushProfileAndAdvance owns
-    // the final state transition (including the sid stamp).
-    await flushProfileAndAdvance(
-      client,
-      conv,
-      msg.from,
-      msg.messageSid,
-      newCollected,
-    );
-    return;
-  }
-
-  await updateConversation(client, conv.id, {
-    state_context: {
-      pending_field: next,
-      collected: newCollected,
-      field_sids: newFieldSids,
-    },
-    last_processed_message_sid: msg.messageSid,
-  });
-  await askProfileQuestion(client, msg.messageSid, msg.from, next, conv.language);
-}
-
-async function flushProfileAndAdvance(
-  client: PoolClient,
-  conv: ConversationRow,
-  from: string,
-  messageSid: string,
-  collected?: Partial<Record<ProfileField, string | boolean>>,
-): Promise<void> {
-  const data = collected ?? conv.state_context?.collected ?? {};
-  if (!conv.user_id) throw new Error('user_id missing at flush');
-
-  // Build dynamic UPDATE — only set fields that were collected this session
-  const fields: ProfileField[] = [
-    'full_name', 'city', 'main_trade', 'main_trade_other',
-    'years_experience', 'has_transportation', 'availability',
-  ];
-  const setFields = fields.filter((f) => data[f] !== undefined);
-  if (setFields.length > 0) {
-    const sets = setFields.map((f, i) => `${f} = $${i + 2}`).join(', ');
-    const vals = setFields.map((f) => data[f] as string | boolean);
-    await client.query(
-      `UPDATE users SET ${sets} WHERE id = $1 AND user_type = 'worker'`,
-      [conv.user_id, ...vals],
-    );
-  }
-
-  await upsertWorkerProfileFromUsers(client, conv.user_id);
-
-  await enterTrustSignalOrIdle(
-    client,
-    conv,
-    from,
-    messageSid,
-    (data.main_trade as string | undefined) ?? undefined,
-  );
-}
-
-async function enterOptionalPhotoUpload(
-  client: PoolClient,
-  conv: ConversationRow,
-  from: string,
-  messageSid: string,
-): Promise<void> {
-  await updateConversation(client, conv.id, {
-    conversation_state: 'awaiting_media_photo',
-    state_context: { ...conv.state_context, profile_completed: true },
-    last_processed_message_sid: messageSid,
-  });
-  await queueReply(client, messageSid, from, 'profile_complete', conv.language);
-  await queueMediaPrompt(client, messageSid, from, conv.language, 'photo_skip');
-}
-
-async function enterTrustSignalOrIdle(
-  client: PoolClient,
-  conv: ConversationRow,
-  from: string,
-  messageSid: string,
-  tradeHint?: string,
-): Promise<void> {
-  if (!conv.user_id) throw new Error('user_id missing before trust signal');
-
-  const trade = tradeHint ?? await loadTradeFromDb(client, conv.user_id);
-
-  if (trade === 'other') {
-    const tradeOtherRow = await client.query<{ main_trade_other: string | null }>(
-      'SELECT main_trade_other FROM users WHERE id = $1',
-      [conv.user_id],
-    );
-    const professionRaw = tradeOtherRow.rows[0]?.main_trade_other;
-    if (professionRaw) {
-      const { loadOrGenerateQuestions, normalizeProfession } = await import('./handlers/custom-trust');
-      const professionKey = normalizeProfession(professionRaw);
-      const existingWta = await client.query(
-        `SELECT id FROM worker_trust_assessments
-         WHERE user_id = $1 AND profession_key = $2
-           AND status IN ('pending','scoring','scored','failed')`,
-        [conv.user_id, professionKey],
-      );
-
-      if (existingWta.rows.length === 0) {
-        const assessmentId = randomUUID();
-        const questions = await loadOrGenerateQuestions(client, professionKey, professionRaw);
-        await updateConversation(client, conv.id, {
-          conversation_state: 'building_custom_trust',
-          state_context: {
-            custom_trust_step: 0,
-            custom_trust_answers: [],
-            custom_trust_profession: professionRaw,
-            custom_trust_questions: questions,
-            custom_trust_assessment_id: assessmentId,
-          },
-          last_processed_message_sid: messageSid,
-        });
-        await queueText(
-          client,
-          messageSid,
-          from,
-          conv.language === 'es' ? questions[0].q_es : questions[0].q_en,
-        );
-        return;
-      }
-    }
-
-    await enterOptionalPhotoUpload(client, conv, from, messageSid);
-    return;
-  }
-
-  if (!await trustSignalColumnsAvailable(client)) {
-    console.warn('[processor] trust signal columns missing; skipping trust flow', {
-      userId: conv.user_id,
-    });
-    await enterOptionalPhotoUpload(client, conv, from, messageSid);
-    return;
-  }
-
-  const trust = await client.query<{ trust_signals_completed_at: string | null }>(
-    `SELECT trust_signals_completed_at FROM users WHERE id = $1`,
-    [conv.user_id],
-  );
-  const trustDone = !!trust.rows[0]?.trust_signals_completed_at;
-
-  if (!trustDone) {
-    await updateConversation(client, conv.id, {
-      conversation_state: 'building_trust_signal',
-      state_context: { trust_step: 0, trust_answers: [] },
-      last_processed_message_sid: messageSid,
-    });
-    await queueTrustPrompt(client, messageSid, from, 0, trade, conv.language);
-    return;
-  }
-
-  await enterOptionalPhotoUpload(client, conv, from, messageSid);
-}
-
-async function handleBuildingTrustSignal(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-): Promise<void> {
-  if (!conv.user_id) throw new Error('user_id missing in building_trust_signal');
-
-  if (!await trustSignalColumnsAvailable(client)) {
-    console.warn('[processor] trust signal columns missing during trust flow; completing profile without trust signals', {
-      userId: conv.user_id,
-    });
-    await enterOptionalPhotoUpload(client, conv, msg.from, msg.messageSid);
-    return;
-  }
-
-  const step = conv.state_context?.trust_step ?? 0;
-  const answers = conv.state_context?.trust_answers ?? [];
-  const trade = await loadTradeFromDb(client, conv.user_id);
-  const answer = parseTrustPayloadAnswer(step, trade, msg.interactivePayload)
-    ?? parseTrustAnswer(step, trade, msg.body);
-
-  if (!answer) {
-    await queueTrustPrompt(client, msg.messageSid, msg.from, step, trade, conv.language);
-    return;
-  }
-
-  const updatedAnswers: TrustAnswer[] = [...answers, answer];
-
-  if (step < TRUST_STEPS.length - 1) {
-    await updateConversation(client, conv.id, {
-      state_context: {
-        trust_step: step + 1,
-        trust_answers: updatedAnswers,
-      },
-      last_processed_message_sid: msg.messageSid,
-    });
-    await queueTrustPrompt(client, msg.messageSid, msg.from, step + 1, trade, conv.language);
-    return;
-  }
-
-  const signalMap = Object.fromEntries(
-    updatedAnswers.map((item) => [item.questionKey, item]),
-  );
-  await client.query(
-    `UPDATE users
-        SET trust_signals = $1::jsonb,
-            trust_signals_completed_at = now()
-      WHERE id = $2`,
-    [JSON.stringify(signalMap), conv.user_id],
-  );
-
-  type SeededTrustQuestion = { q_en: string; q_es: string };
-  const knownTradeQuestions = await client.query<{ questions: SeededTrustQuestion[] }>(
-    'SELECT questions FROM trade_questions WHERE profession_key = $1 AND is_seeded = true',
-    [trade],
-  );
-  if (knownTradeQuestions.rows.length > 0) {
-    const seededQuestions = knownTradeQuestions.rows[0].questions;
-    const existingWta = await client.query(
-      `SELECT id FROM worker_trust_assessments
-       WHERE user_id = $1 AND profession_key = $2
-         AND status IN ('pending','scoring','scored','failed')`,
-      [conv.user_id, trade],
-    );
-    if (existingWta.rows.length === 0) {
-      const questionIndexByField: Record<TrustAnswer['questionKey'], number> = {
-        specialization: 0,
-        seniority: 1,
-        tasks: 2,
-      };
-      const answersArray = updatedAnswers.map((item) => ({
-        q_en: seededQuestions[questionIndexByField[item.questionKey]]?.q_en ?? item.questionKey,
-        answer_text: item.label,
-        answer_source: 'text' as const,
-        answered_at: new Date().toISOString(),
-      }));
-      const assessmentId = randomUUID();
-      await client.query(
-        `INSERT INTO worker_trust_assessments (id, user_id, profession_key, answers, status)
-         VALUES ($1, $2, $3, $4::jsonb, 'pending')
-         ON CONFLICT DO NOTHING`,
-        [assessmentId, conv.user_id, trade, JSON.stringify(answersArray)],
-      );
-      const { SQSClient, SendMessageCommand } = await import('@aws-sdk/client-sqs');
-      const sqsClientLocal = new SQSClient({});
-      await sqsClientLocal.send(
-        new SendMessageCommand({
-          QueueUrl: process.env.TRUST_ASSESSMENT_QUEUE_URL!,
-          MessageBody: JSON.stringify({ assessmentId, userId: conv.user_id, professionKey: trade }),
-        }),
-      );
-    }
-  } else {
-    console.warn('[processor] known-trade seeded questions missing for trade', {
-      trade,
-      userId: conv.user_id,
-    });
-    console.log(JSON.stringify({ metric: 'AIKnownTradeQuestionsMissing', trade }));
-  }
-
-  await enterOptionalPhotoUpload(client, conv, msg.from, msg.messageSid);
 }
 
 // ── idle — handle Jobs keyword + button callbacks ───────────────
