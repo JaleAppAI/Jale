@@ -1,9 +1,6 @@
 import { getDbPool, setInternalUserRlsContext } from '../lib/db';
-import { queueJobAlert } from './lib/outbox';
-import { getTwilioSecret } from './lib/twilio-secret';
 import { categoryRenderers } from './lib/onboarding-renderers';
 import { enqueueWorkerMessage, registerCategoryRenderer } from './lib/worker-delivery-gateway';
-import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from './lib/runtime-controls';
 
 const JOB_ALERT_EXPIRY_MS = 72 * 60 * 60 * 1000;
 
@@ -38,9 +35,7 @@ interface JobRow {
 interface WorkerRow {
   id: string;
   whatsapp_number: string;
-  language: 'en' | 'es';
   main_trade: string | null;
-  legacy_ready: boolean;
 }
 
 // ── Handler ─────────────────────────────────────────────────────
@@ -77,11 +72,13 @@ export const handler = async (
     const job = jobResult.rows[0];
 
     // 2. Find matched workers.
-    // Include both legacy workers in `idle` and workers whose v2 onboarding
-    // lifecycle is ready. The readiness function is a narrowly scoped,
-    // jale_admin-owned SECURITY DEFINER because worker_onboarding_state uses
-    // FORCE RLS and this cross-worker producer intentionally has no worker
-    // context while discovering candidates.
+    // Readiness is solely `public.is_worker_ready_for_v2_delivery(u.id)` — a
+    // narrowly scoped, jale_admin-owned SECURITY DEFINER because
+    // worker_onboarding_state uses FORCE RLS and this cross-worker producer
+    // intentionally has no worker context while discovering candidates.
+    // (Safe by design: ready gate rows are created for web workers and a
+    // bulk reset clears stale legacy idle conversations — there is no longer
+    // a separate legacy-idle readiness path.)
     // Future V1.5: filter by main_trade = job.trade, city proximity, etc.
     //
     // Skip workers who already applied to this job (dedup) or who have
@@ -90,14 +87,11 @@ export const handler = async (
     // for the alert send itself, we just skip workers with an existing
     // application row.
     const workers = await client.query<WorkerRow>(
-      `SELECT u.id, u.whatsapp_number, COALESCE(wc.language, 'es') AS language, u.main_trade,
-              COALESCE(wc.conversation_state = 'idle', false) AS legacy_ready
+      `SELECT u.id, u.whatsapp_number, u.main_trade
          FROM users u
-         LEFT JOIN whatsapp_conversations wc ON wc.user_id = u.id
         WHERE u.user_type = 'worker'
           AND u.whatsapp_number IS NOT NULL
-          AND (wc.conversation_state = 'idle'
-               OR public.is_worker_ready_for_v2_delivery(u.id))
+          AND public.is_worker_ready_for_v2_delivery(u.id)
           AND NOT EXISTS (
               SELECT 1 FROM job_applications ja
                WHERE ja.job_id = $1 AND ja.worker_id = u.id
@@ -110,119 +104,63 @@ export const handler = async (
       return { queued: 0, skipped: 0 };
     }
 
-    // 3. Queue the appropriate language template for each worker. No Twilio
-    // call happens here — see the module doc comment above.
-    const secret = await getTwilioSecret();
-    const sidEs = secret.templates?.job_alert_es;
-    const sidEn = secret.templates?.job_alert_en;
-    if (!sidEs || !sidEn) {
-      throw new Error(
-        'templates.job_alert_es and job_alert_en must be set in the Twilio secret',
-      );
-    }
-
-    // v2 redirect: workers allowlisted (or globally enabled) for onboarding v2
-    // never get an immediate legacy whatsapp_outbox row here. Instead this
-    // producer defers a `job_alert` intent for the grouped worker.ready
-    // release (worker-ready-release.ts) to pick up later. The phone hash is
-    // never logged. Non-v2 workers take the pre-existing legacy path,
-    // unchanged.
-    const controls = await loadRuntimeControls(client);
+    // 3. Defer a `job_alert` intent for each matched worker for the grouped
+    // worker.ready release (worker-ready-release.ts) to pick up later. No
+    // Twilio call happens here — see the module doc comment above.
+    registerCategoryRenderer('job_alert', categoryRenderers.job_alert);
 
     let queued = 0;
     let skipped = 0;
-    const v2Failures: Array<{ workerId: string; error: Error }> = [];
+    const failures: Array<{ workerId: string; error: Error }> = [];
     for (const worker of workers.rows) {
-      const phoneHash = hashNormalizedPhone(worker.whatsapp_number);
-      if (isV2Enabled(controls, phoneHash)) {
-        registerCategoryRenderer('job_alert', categoryRenderers.job_alert);
-        try {
-          // One transaction per worker keeps SET LOCAL context isolated and
-          // lets a failed enqueue roll back without poisoning later workers.
-          await client.query('BEGIN');
-          await setInternalUserRlsContext(client, worker.id);
-          await enqueueWorkerMessage(client, {
-            workerId: worker.id,
-            category: 'job_alert',
-            ownerService: 'job-alert',
-            sourceType: 'job',
-            sourceId: job.id,
-            dedupeKey: `job-alert:${job.id}:${worker.id}`,
-            priority: 30,
-            expiresAt: new Date(Date.now() + JOB_ALERT_EXPIRY_MS),
-            payload: {
-              jobs: [{
-                jobId: job.id,
-                title: job.title,
-                companyName: job.company,
-                score: 1,
-                // location/pay feed the v1 job_alert_* content template the
-                // v2 renderer now emits for single-job alerts (2026-07-27
-                // parity-audit fix) — without a template, alerts to workers
-                // outside the 24h window were silently undeliverable.
-                location: job.location,
-                pay: job.pay,
-              }],
-            },
-          });
-          await client.query('COMMIT');
-          queued++;
-        } catch (err) {
-          try { await client.query('ROLLBACK'); } catch {}
-          const error = err instanceof Error ? err : new Error(String(err));
-          console.error('[job-alert] v2 enqueue failed for worker', {
-            workerId: worker.id,
-            jobId: job.id,
-            err: error.message,
-          });
-          v2Failures.push({ workerId: worker.id, error });
-          skipped++;
-        }
-        continue;
-      }
-      if (worker.legacy_ready !== true) {
-        skipped++;
-        continue;
-      }
-
-
-      const templateKey = worker.language === 'en' ? 'job_alert_en' : 'job_alert_es';
-      const variables = {
-        '1': job.title,
-        '2': job.company,
-        '3': job.location,
-        '4': job.pay,
-        '5': `job-${job.id}`, // matches parseButtonPayload expectation in flows.ts
-      };
       try {
-        const outboxId = await queueJobAlert(client, {
-          whatsappNumber: worker.whatsapp_number,
-          templateKey,
-          variables,
-          jobId: job.id,
+        // One transaction per worker keeps SET LOCAL context isolated and
+        // lets a failed enqueue roll back without poisoning later workers.
+        await client.query('BEGIN');
+        await setInternalUserRlsContext(client, worker.id);
+        await enqueueWorkerMessage(client, {
           workerId: worker.id,
+          category: 'job_alert',
+          ownerService: 'job-alert',
+          sourceType: 'job',
+          sourceId: job.id,
+          dedupeKey: `job-alert:${job.id}:${worker.id}`,
+          priority: 30,
+          expiresAt: new Date(Date.now() + JOB_ALERT_EXPIRY_MS),
+          payload: {
+            jobs: [{
+              jobId: job.id,
+              title: job.title,
+              companyName: job.company,
+              score: 1,
+              // location/pay feed the v1 job_alert_* content template the
+              // v2 renderer now emits for single-job alerts (2026-07-27
+              // parity-audit fix) — without a template, alerts to workers
+              // outside the 24h window were silently undeliverable.
+              location: job.location,
+              pay: job.pay,
+            }],
+          },
         });
-        if (!outboxId) {
-          // Already pending/sent, or failed at the attempt cap — idempotent
-          // no-op, not an error.
-          skipped++;
-          continue;
-        }
+        await client.query('COMMIT');
         queued++;
       } catch (err) {
-        console.error('[job-alert] queue failed for worker', {
+        try { await client.query('ROLLBACK'); } catch {}
+        const error = err instanceof Error ? err : new Error(String(err));
+        console.error('[job-alert] enqueue failed for worker', {
           workerId: worker.id,
           jobId: job.id,
-          err: (err as Error).message,
+          err: error.message,
         });
+        failures.push({ workerId: worker.id, error });
         skipped++;
       }
     }
-    if (v2Failures.length > 0) {
-      const failures = v2Failures
+    if (failures.length > 0) {
+      const errors = failures
         .sort((left, right) => left.workerId.localeCompare(right.workerId))
         .map(({ workerId, error }) => new Error(`${workerId}: ${error.message}`));
-      throw new AggregateError(failures, 'job_alert_fanout_failed');
+      throw new AggregateError(errors, 'job_alert_fanout_failed');
     }
 
 
