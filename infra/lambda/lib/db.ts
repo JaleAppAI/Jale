@@ -114,3 +114,64 @@ export async function getDbPool(): Promise<Pool> {
 
   return pool;
 }
+
+// ── Public jobs role connection (separate secret, separate pool) ──
+// The unauthenticated public read path connects as the restricted role
+// jale_public_jobs, using its own Secrets Manager secret (REFERRALS_DB_SECRET_ARN).
+// This is intentionally NOT layered onto getDbPool()/getDbSecret() above: those
+// are cached under the jale_admin secret, and mixing roles onto one cached pool
+// would risk a warm container serving one role's connection under the other's
+// assumed privileges.
+let cachedPublicJobsSecret: DbSecret | undefined;
+let cachedPublicJobsSecretAt = 0;
+
+async function getPublicJobsDbSecret(): Promise<DbSecret> {
+  if (cachedPublicJobsSecret && Date.now() - cachedPublicJobsSecretAt < CACHE_TTL_MS) {
+    return cachedPublicJobsSecret;
+  }
+
+  const result = await smClient.send(
+    new GetSecretValueCommand({
+      SecretId: process.env.REFERRALS_DB_SECRET_ARN,
+    }),
+  );
+
+  cachedPublicJobsSecret = JSON.parse(result.SecretString!) as DbSecret;
+  cachedPublicJobsSecretAt = Date.now();
+  return cachedPublicJobsSecret;
+}
+
+let publicJobsPool: Pool | undefined;
+
+/**
+ * Pool for the unauthenticated jale_public_jobs role. Callers must never call
+ * setRlsContext against this pool's connections — there is no Cognito sub on
+ * this route, and access control here is column-scoped GRANTs plus the
+ * jobs_public_read RLS policy, not a session variable.
+ */
+export async function getPublicJobsDbPool(): Promise<Pool> {
+  if (publicJobsPool) return publicJobsPool;
+
+  const secret = await getPublicJobsDbSecret();
+  publicJobsPool = new Pool({
+    host: secret.host,
+    port: secret.port,
+    user: secret.username,
+    password: secret.password,
+    database: secret.dbname,
+    max: 1,
+    idleTimeoutMillis: 10000,
+    connectionTimeoutMillis: 2000,
+    ssl: {
+      rejectUnauthorized: true,
+      ca: fs.readFileSync(path.join(__dirname, 'rds-ca-bundle.pem'), 'utf-8'),
+    },
+  });
+
+  publicJobsPool.on('error', (err) => {
+    console.error('Unexpected error on idle pg client (public jobs pool):', err instanceof Error ? err.message : String(err));
+    publicJobsPool = undefined;
+  });
+
+  return publicJobsPool;
+}
