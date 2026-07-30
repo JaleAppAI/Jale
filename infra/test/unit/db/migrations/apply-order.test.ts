@@ -54,6 +54,7 @@ const expectedBaselineMigrations = [
   '043_whatsapp_worker_intent_transport.sql',
   '044_job_message_outbox_send_unknown.sql',
   '045_applications_employer_update_repair.sql',
+  '046_job_conversations_application_index.sql',
 ];
 
 function migrationFiles(): string[] {

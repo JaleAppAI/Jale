@@ -310,6 +310,36 @@ export type EmployerConversationResponse = {
   messages: EmployerConversationMessage[];
 };
 
+export type InboxTab = 'active' | 'closed';
+
+export type InboxItem = {
+  application_id: string;
+  worker_id: string;
+  worker_name: string | null;
+  job_id: string;
+  job_title: string;
+  job_status: JobStatus;
+  application_status: ApplicationStatus;
+  applied_at: string;
+  conversation_id: string | null;
+  conversation_status: EmployerConversationStatus | null;
+  last_message_at: string | null;
+  last_worker_message_at: string | null;
+  last_message_preview: string | null;
+  tab: InboxTab;
+};
+
+export type InboxJob = {
+  job_id: string;
+  title: string;
+  status: JobStatus;
+};
+
+export type EmployerInboxResponse = {
+  items: InboxItem[];
+  jobs: InboxJob[];
+};
+
 export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
 export type EmployerJobType = 'full-time' | 'part-time' | 'contract';
 export type CompanySize = '1-10' | '11-50' | '51-200' | '200+';
@@ -472,6 +502,12 @@ export async function getConversations(
 ): Promise<{ conversations: EmployerConversationSummary[] }> {
   const res = await apiFetch('/employer/conversations', {}, token);
   if (!res.ok) throw new Error((await res.json()).error ?? 'conversations_fetch_failed');
+  return res.json();
+}
+
+export async function getInbox(token: string): Promise<EmployerInboxResponse> {
+  const res = await apiFetch('/employer/inbox', {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'inbox_fetch_failed');
   return res.json();
 }
 

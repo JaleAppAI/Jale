@@ -252,6 +252,12 @@ describe('ApiStack', () => {
       template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
     }
   });
+
+  test('Employer inbox Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer inbox endpoint',
+    });
+  });
   // Task 12 — new worker marketplace route assertions
   test('Worker jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {

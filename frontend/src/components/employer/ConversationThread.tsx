@@ -14,8 +14,10 @@ type Props = {
   messages: EmployerConversationMessage[];
   loading?: boolean;
   sending?: boolean;
+  errorMessage?: string | null;
   onSend: (body: string) => Promise<void>;
   onClose?: () => Promise<void>;
+  onDismiss?: () => void;
   compact?: boolean;
 };
 
@@ -24,8 +26,10 @@ export function ConversationThread({
   messages,
   loading = false,
   sending = false,
+  errorMessage = null,
   onSend,
   onClose,
+  onDismiss,
   compact = false,
 }: Props) {
   const t = useTranslations('employer_messages');
@@ -92,11 +96,18 @@ export function ConversationThread({
               )}
             </div>
           </div>
-          {onClose && conversation.status === 'open' && (
-            <Button type="button" variant="outline" size="sm" onClick={onClose}>
-              {t('close')}
-            </Button>
-          )}
+          <div className="flex shrink-0 items-center gap-2">
+            {onDismiss && (
+              <Button type="button" variant="outline" size="sm" onClick={onDismiss}>
+                {t('not_interested')}
+              </Button>
+            )}
+            {onClose && conversation.status === 'open' && (
+              <Button type="button" variant="outline" size="sm" onClick={onClose}>
+                {t('close')}
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -140,6 +151,11 @@ export function ConversationThread({
       </div>
 
       <form onSubmit={handleSubmit} className="border-t border-[var(--jale-divider)] bg-white p-3">
+        {errorMessage && (
+          <p id="conversation-thread-error" role="alert" className="mb-2 text-xs text-error">
+            {errorMessage}
+          </p>
+        )}
         {conversation.status === 'closed' ? (
           <p className="text-sm text-muted">{t('closed_hint')}</p>
         ) : (
@@ -150,6 +166,7 @@ export function ConversationThread({
               maxLength={2000}
               rows={compact ? 1 : 2}
               placeholder={t('composer_placeholder')}
+              aria-describedby={errorMessage ? 'conversation-thread-error' : undefined}
               className="min-h-[42px] flex-1 resize-none rounded-md border-0 bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none focus:bg-white focus:ring-1 focus:ring-[var(--jale-blue-500)]"
             />
             <Button type="submit" loading={sending} loadingLabel={tCommon('loading')} disabled={!body.trim()}>
