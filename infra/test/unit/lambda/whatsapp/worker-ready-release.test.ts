@@ -71,6 +71,8 @@ function scriptedClient(opts: {
   noGateRow?: boolean;
   /** Job id of a claimed referral for this worker; omit for "no referral". */
   referredJobId?: string;
+  /** Referrer on that claim. Omit for an untagged arrival (nobody referred them). */
+  referrerWorkerId?: string;
 }) {
   const intents = new Map(opts.intents.map((i) => [i.id, { ...i }]));
   const jobsById = new Map((opts.jobs ?? []).map((j) => [j.id, j]));
@@ -136,7 +138,9 @@ function scriptedClient(opts: {
     // The referred-job claim the release reads to decide whether to synthesize
     // a second group-1 intent. Absent option => no referral => no second message.
     if (/FROM referral_pending_claims/.test(sql)) {
-      return opts.referredJobId ? { rows: [{ job_id: opts.referredJobId }] } : { rows: [] };
+      return opts.referredJobId
+        ? { rows: [{ job_id: opts.referredJobId, referrer_worker_id: opts.referrerWorkerId ?? null }] }
+        : { rows: [] };
     }
 
     if (/FROM worker_message_intents/.test(sql) && /FOR UPDATE SKIP LOCKED/.test(sql)) {
@@ -636,6 +640,7 @@ describe('releaseWorkerReady', () => {
         eventStatus: 'processing',
         intents: [],
         referredJobId: 'job-ref',
+        referrerWorkerId: 'maria-1',
         jobs: [{ id: 'job-ref', status: 'active', title: 'Framer', company: 'Acme', location: 'Austin, TX', pay: '$22-26/hr' }],
       });
       const { render, requests } = recordingRenderer();
@@ -651,6 +656,28 @@ describe('releaseWorkerReady', () => {
       expect(referred.job).toMatchObject({
         jobId: 'job-ref', title: 'Framer', companyName: 'Acme', location: 'Austin, TX', pay: '$22-26/hr',
       });
+      expect(referred.referred).toBe(true);
+    });
+
+    it('does not claim a friend referred them when the claim carries no referrer', async () => {
+      // A visitor can open the public page with no share tag and tap Apply
+      // themselves. The claim is real, the job is right, but nobody referred
+      // them -- "a friend referred you" would be a lie to that person.
+      const { client } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        referredJobId: 'job-organic',
+        // no referrerWorkerId
+        jobs: [{ id: 'job-organic', status: 'active', title: 'Framer', company: 'Acme' }],
+      });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const referred = requests.find((r) => r.kind === 'referred_job') as Extract<ReleaseRenderRequest, { kind: 'referred_job' }>;
+      expect(referred).toBeDefined();
+      expect(referred.referred).toBe(false);
+      expect(referred.job).toMatchObject({ jobId: 'job-organic' });
     });
 
     it('sends the honest "already taken" variant when the referred job is no longer active', async () => {

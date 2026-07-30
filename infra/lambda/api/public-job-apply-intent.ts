@@ -126,7 +126,15 @@ export const handler = async (
     }
 
     const formattedToken = formatApplyToken(rawToken);
-    const message = `I want to apply for this job: ${formattedToken}`;
+    // The visitor is about to send this themselves, so it must be in their own
+    // language -- a Spanish speaker arriving from the Spanish page should not be
+    // handed English text to paste. `locale` is already parsed above for the
+    // token row; this is the same value, used rather than discarded. The token
+    // itself is what the processor matches, so the surrounding wording is free.
+    const message =
+      locale === 'es'
+        ? `Quiero postularme a este trabajo: ${formattedToken}`
+        : `I want to apply for this job: ${formattedToken}`;
     const whatsappUrl = `https://wa.me/${process.env.WHATSAPP_BUSINESS_NUMBER}?text=${encodeURIComponent(message)}`;
 
     // The raw token is returned to the caller exactly once and is never logged.

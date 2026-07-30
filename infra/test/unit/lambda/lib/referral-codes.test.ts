@@ -147,4 +147,25 @@ describe('formatApplyToken round-trips through parseApplyToken', () => {
     const formatted = formatApplyToken(token);
     expect(parseApplyToken(`I want to apply for this job: ${formatted}`)).toBe(token);
   });
+
+  it('round-trips the SPANISH prefilled message too', () => {
+    // public-job-apply-intent.ts hands a Spanish visitor Spanish text to send.
+    // If this stopped matching, every Spanish referral would silently fail to
+    // park with no error anywhere.
+    const token = '8F4K2QRS';
+    expect(parseApplyToken(`Quiero postularme a este trabajo: ${formatApplyToken(token)}`)).toBe(token);
+  });
+
+  it('finds the token even when the brand name appears earlier in the message', () => {
+    // "Jale" is the brand name, so users write it conversationally. Matching only
+    // the leftmost occurrence would capture the following word, fail validation,
+    // and drop a token that was present -- losing the referral silently.
+    const token = '8F4K2QRS';
+    expect(parseApplyToken(`Hola Jale quierotrabajar ${formatApplyToken(token)}`)).toBe(token);
+    expect(parseApplyToken(`jale gracias, jale ${formatApplyToken(token)}`)).toBe(token);
+  });
+
+  it('still returns null when no occurrence yields a valid token', () => {
+    expect(parseApplyToken('Hola Jale quierotrabajar por favor')).toBeNull();
+  });
 });

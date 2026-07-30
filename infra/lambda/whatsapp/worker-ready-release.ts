@@ -209,11 +209,15 @@ export async function releaseWorkerReady(
   // worker their welcome message.
   try {
     await client.query('SAVEPOINT referral_job_intent');
-    const claim = await client.query<{ job_id: string }>(
-      `SELECT job_id FROM referral_pending_claims WHERE claimed_worker_id = $1`,
+    const claim = await client.query<{ job_id: string; referrer_worker_id: string | null }>(
+      `SELECT job_id, referrer_worker_id FROM referral_pending_claims WHERE claimed_worker_id = $1`,
       [workerId],
     );
     if (claim.rows[0]) {
+      // A visitor can reach the public page untagged and tap Apply themselves,
+      // producing a real claim with no referrer. Carry that fact on the payload
+      // so the copy does not tell them a friend referred them when none did.
+      const referred = claim.rows[0].referrer_worker_id !== null;
       await client.query(
         `INSERT INTO worker_message_intents
             (user_id, category, owner_service, source_type, source_id, dedupe_key,
@@ -226,7 +230,7 @@ export async function releaseWorkerReady(
           claim.rows[0].job_id,
           `referral-job:${workerId}`,
           DELIVERY_POLICY_VERSION,
-          JSON.stringify({ kind: 'referred_job' }),
+          JSON.stringify({ kind: 'referred_job', referred }),
         ],
       );
     }
@@ -558,6 +562,9 @@ export async function releaseWorkerReady(
         kind: 'referred_job',
         workerId,
         language,
+        // Recorded when the intent was synthesized; false for an untagged
+        // arrival, so the copy never invents a referrer.
+        referred: referredJobKept[0].payload.referred === true,
         job: referredJob && referredJob.status === 'active'
           ? {
               jobId: referredJob.id,
