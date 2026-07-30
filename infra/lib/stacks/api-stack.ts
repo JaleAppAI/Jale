@@ -548,6 +548,33 @@ export class ApiStack extends cdk.Stack {
     // route off this exact node instead of adding a second, differently-named
     // variable-path resource at the same level — API Gateway does not allow
     // two path-parameter siblings under one parent.
+    //
+    // ─────────────────────────────────────────────────────────────────────────
+    // DEPLOY WARNING — this rename REQUIRES A TWO-PHASE DEPLOY. Read before
+    // shipping it the first time.
+    //
+    // CDK derives a resource's logical id from its path segment, so renaming
+    // {id} -> {jobId} is not an update in CloudFormation's eyes: it is a DELETE
+    // of the old resource plus a CREATE of a new one. That cascades to the
+    // child `apply` resource and every method under both.
+    //
+    // CloudFormation's default order is create-new-then-delete-old, and that
+    // order CANNOT work here: creating {jobId} while {id} still exists is
+    // exactly the sibling collision described above, so API Gateway rejects it
+    // and the stack update rolls back.
+    //
+    // Sequence it deliberately instead:
+    //   Phase 1 — deploy with the OLD {id} node and its methods removed.
+    //             GET /worker/jobs/{id} and POST /worker/jobs/{id}/apply are
+    //             UNAVAILABLE from here until phase 2 completes. Job detail and
+    //             job apply are high-traffic worker endpoints; pick the window.
+    //   Phase 2 — deploy this file as written, creating {jobId} and its methods.
+    //
+    // Client URLs are unchanged either way (callers build the path from the job
+    // id value, never the parameter name), so no frontend or app release is
+    // coupled to this. Verify both routes respond after phase 2 before
+    // considering the deploy done.
+    // ─────────────────────────────────────────────────────────────────────────
     const workerJobsResource = workerResource.addResource('jobs');
     workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
       authorizer: workerAuthorizer,
