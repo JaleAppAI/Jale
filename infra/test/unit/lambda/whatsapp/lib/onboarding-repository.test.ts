@@ -579,4 +579,61 @@ describe('completeOnboarding', () => {
     expect(result.assessmentEventId).toBe('existing-assessment-event');
     expect(result.workerReadyEventId).toBe('ready-event-2');
   });
+
+  // Job referrals (migration 055): claimPendingReferral runs on the SAME
+  // client as the rest of completeOnboarding, so a caller that supplies
+  // workerPhoneHash gets the claim attempt inside the same transaction that
+  // flips lifecycle to 'ready' — never a second connection, never optional
+  // by omission alone (see referral-claims.test.ts for the function's own
+  // unit coverage).
+  it('attempts a referral claim on the same client when workerPhoneHash is supplied', async () => {
+    const { query, client } = makeClient();
+    const PHONE_HASH = 'b'.repeat(64);
+    // Call order: worker_onboarding_state, worker_workflow_runs, transition
+    // INSERT, THEN claimPendingReferral's UPDATE referral_pending_claims
+    // (no matching row here, so it stops there), THEN the two domain events.
+    query
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE worker_onboarding_state
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ current_step_key: 'trust.question.3' }] }) // UPDATE worker_workflow_runs
+      .mockResolvedValueOnce({ rows: [{ id: 'transition-complete' }] }) // appendTransition
+      .mockResolvedValueOnce({ rows: [] }) // claimPendingReferral: no pending claim for this hash
+      .mockResolvedValueOnce({ rows: [{ id: 'assessment-event-1' }] }) // INSERT assessment.requested
+      .mockResolvedValueOnce({ rows: [{ id: 'ready-event-1' }] }); // INSERT worker.ready
+
+    await completeOnboarding(client, {
+      workerId: WORKER_ID,
+      runId: RUN_ID,
+      expectedLockVersion: 3,
+      workerPhoneHash: PHONE_HASH,
+      now: new Date('2026-07-29T00:00:00.000Z'),
+      assessmentProvenance: {},
+    });
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements.some((sql) => /UPDATE referral_pending_claims/.test(sql))).toBe(true);
+    // The claim attempt lands strictly BETWEEN the transition append and the
+    // domain-event inserts — same client, same transaction, no reordering.
+    const claimIdx = statements.findIndex((sql) => /UPDATE referral_pending_claims/.test(sql));
+    const transitionIdx = statements.findIndex((sql) => /INSERT INTO worker_workflow_transitions/.test(sql));
+    const eventIdx = statements.findIndex((sql) => /INSERT INTO worker_domain_outbox/.test(sql));
+    expect(claimIdx).toBeGreaterThan(transitionIdx);
+    expect(claimIdx).toBeLessThan(eventIdx);
+    // All statements ran on the one shared client — no second connection.
+    expect(query).toHaveBeenCalledTimes(6);
+  });
+
+  it('never attempts a referral claim when workerPhoneHash is omitted (every existing caller unaffected)', async () => {
+    const { query, client } = makeClient();
+    scriptHappyPath(query);
+
+    await completeOnboarding(client, {
+      workerId: WORKER_ID,
+      runId: RUN_ID,
+      expectedLockVersion: 3,
+      assessmentProvenance: {},
+    });
+
+    const statements = query.mock.calls.map(([sql]) => String(sql));
+    expect(statements.some((sql) => /referral_pending_claims/.test(sql))).toBe(false);
+  });
 });
