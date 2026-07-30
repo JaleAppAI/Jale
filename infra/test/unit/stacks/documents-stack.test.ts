@@ -166,12 +166,34 @@ describe('DocumentsStack', () => {
     });
   });
 
-  it('worker-doc-confirm Lambda can read S3 objects for HeadObject verification', () => {
-    const policies = Object.values(template.toJSON().Resources)
+  // Asserted per role, not against every WorkerDocConfirm* policy merged
+  // together. The previous revision filtered on Roles containing
+  // 'WorkerDocConfirm' -- which also matches 'WorkerDocConfirmAuth' -- and then
+  // searched the combined JSON, so the token-based Lambda's grant satisfied the
+  // assertion while WorkerDocConfirmAuth in fact had no S3 permissions at all.
+  // Both confirm handlers call HeadObject and both need the grant.
+  function s3ActionsForRole(roleFragment: string): string[] {
+    return Object.values(template.toJSON().Resources)
       .filter((resource: any) => resource.Type === 'AWS::IAM::Policy')
-      .filter((resource: any) => JSON.stringify(resource.Properties.Roles).includes('WorkerDocConfirm'));
+      .filter((resource: any) => {
+        // Exact-ish match: 'WorkerDocConfirmFunctionServiceRole' must not be
+        // satisfied by 'WorkerDocConfirmAuthFunctionServiceRole' or vice versa.
+        const roles = JSON.stringify(resource.Properties.Roles);
+        return roles.includes(`${roleFragment}FunctionServiceRole`);
+      })
+      .flatMap((resource: any) => resource.Properties.PolicyDocument.Statement)
+      .flatMap((statement: any) => [].concat(statement.Action ?? []))
+      .filter((action: any) => typeof action === 'string' && action.startsWith('s3:'));
+  }
 
-    expect(JSON.stringify(policies)).toContain('s3:GetObject');
+  it('worker-doc-confirm Lambda can read S3 objects for HeadObject verification', () => {
+    expect(s3ActionsForRole('WorkerDocConfirm')).toContain('s3:GetObject*');
+  });
+
+  it('worker-doc-confirm-auth Lambda can read S3 objects for HeadObject verification', () => {
+    // Regression guard: without this grant the browser PUT succeeds and the
+    // confirm call returns 400 uploaded_object_not_found forever.
+    expect(s3ActionsForRole('WorkerDocConfirmAuth')).toContain('s3:GetObject*');
   });
 
   it('worker-doc-delete Lambda exists', () => {

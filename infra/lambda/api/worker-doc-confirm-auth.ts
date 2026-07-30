@@ -66,7 +66,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         await client.query('COMMIT');
         return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_upload' }) };
       }
-    } catch {
+    } catch (headErr) {
+      // Log the real S3 failure. NoSuchKey (the object genuinely is not there)
+      // and AccessDenied (this Lambda lacks s3:GetObject on the bucket) are
+      // indistinguishable to the client, which sees only the generic error
+      // below — so without this line a misconfigured grant looks exactly like a
+      // failed browser upload. The response body stays generic on purpose; S3
+      // details are not the caller's business.
+      console.error('worker-doc-confirm-auth HeadObject failed:', errorMessage(headErr));
       await client.query('COMMIT');
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'uploaded_object_not_found' }) };
     }
