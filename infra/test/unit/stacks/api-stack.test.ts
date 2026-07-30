@@ -552,3 +552,101 @@ describe('ApiStack', () => {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'referrals' });
   });
 });
+
+describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () => {
+  // The {id} -> {jobId} rename cannot land in one deploy: CloudFormation's
+  // create-before-delete order collides on API Gateway's one-variable-sibling
+  // rule and rolls the update back. Phase 1 (this flag) omits the node
+  // entirely -- the documented outage window -- and phase 2 (no flag) restores
+  // it as {jobId}. This suite proves the flag produces that exact state, so
+  // the operator checks out nothing and edits nothing mid-deploy.
+  let phase1Template: Template;
+  let phase1Api: ApiStack;
+
+  beforeAll(() => {
+    const app = new cdk.App({
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        emailFromAddress: 'billing@jaleapp.ai',
+        sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+        publicSiteBaseUrl: 'https://jaleapp.ai',
+        whatsappBusinessNumber: '15551234567',
+        workerJobsRenamePhase1: true,
+      },
+    });
+    const network = new NetworkStack(app, 'TestNetworkStack');
+    const database = new DatabaseStack(app, 'TestDatabaseStack', { network });
+    const auth = new AuthStack(app, 'TestAuthStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
+    phase1Api = new ApiStack(app, 'TestApiStack', {
+      workerPool: auth.workerPool,
+      employerPool: auth.employerPool,
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      employerCandidateRerankQueue,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
+    });
+    // LegalStack attaches the dual authorizer to a method; without it the
+    // template cannot synthesize (same requirement as the main suite above).
+    new LegalStack(app, 'TestLegalStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      api: phase1Api.api,
+      dualAuthorizer: phase1Api.dualAuthorizer,
+    });
+    // ReferralsStack must still synthesize in phase 1 -- its share route is
+    // skipped, not broken.
+    new ReferralsStack(app, 'TestReferralsStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      referralsLambdaSg: network.referralsLambdaSg,
+      referralsDbSecret: database.referralsDbSecret,
+      appDbSecret: database.dbSecret,
+      api: phase1Api.api,
+      workerAuthorizer: phase1Api.workerAuthorizer,
+      workerResource: phase1Api.workerResource,
+      workerJobResource: phase1Api.workerJobResource,
+      employerAuthorizer: phase1Api.employerAuthorizer,
+      employerJobResource: phase1Api.employerJobResource,
+    });
+    phase1Template = Template.fromStack(phase1Api);
+  });
+
+  test('the worker {jobId} node and its old {id} name are both absent', () => {
+    const apis = phase1Template.findResources('AWS::ApiGateway::RestApi');
+    const rootId = Object.keys(apis)[0];
+    // Walk from the root: /worker -> jobs -> (no variable child).
+    const resources = phase1Template.findResources('AWS::ApiGateway::Resource');
+    const childrenOf = (parentLogicalId: string) =>
+      Object.entries(resources).filter(([, res]: [string, any]) => {
+        const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+        return parentRef === parentLogicalId;
+      });
+    const worker = childrenOf(rootId).find(([, r]: [string, any]) => r.Properties.PathPart === 'worker');
+    expect(worker).toBeDefined();
+    const workerJobs = childrenOf(worker![0]).find(([, r]: [string, any]) => r.Properties.PathPart === 'jobs');
+    expect(workerJobs).toBeDefined();
+    const variableChildren = childrenOf(workerJobs![0]).filter(([, r]: [string, any]) =>
+      /^\{.+\}$/.test(r.Properties.PathPart));
+    expect(variableChildren).toHaveLength(0);
+  });
+
+  test('the export is undefined so downstream stacks skip their routes', () => {
+    expect(phase1Api.workerJobResource).toBeUndefined();
+  });
+
+  test('worker jobs LIST survives phase 1 — only detail/apply/share are down', () => {
+    // GET /worker/jobs (the list) hangs off the jobs node itself, not {jobId},
+    // and must keep working through the window.
+    phase1Template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'jobs' });
+  });
+});

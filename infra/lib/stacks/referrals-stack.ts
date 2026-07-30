@@ -35,8 +35,11 @@ export interface ReferralsStackProps extends cdk.StackProps {
    * it. Reused rather than re-declared: see the comment on ApiStack's
    * workerJobResource export for why a second {jobId}-shaped resource cannot
    * be created here.
+   *
+   * Undefined during a phase-1 rename deploy (-c workerJobsRenamePhase1=true):
+   * the share route is skipped for that one deploy and restored in phase 2.
    */
-  readonly workerJobResource: apigateway.Resource;
+  readonly workerJobResource?: apigateway.Resource;
   /** Employer Cognito authorizer from ApiStack */
   readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   /**
@@ -251,9 +254,11 @@ export class ReferralsStack extends cdk.Stack {
     // call addPropertyOverride('MethodSettings').
 
     // POST /worker/jobs/{jobId}/share — hangs off the EXISTING {jobId} node
-    // exported by ApiStack, not a new addResource() call.
+    // exported by ApiStack, not a new addResource() call. Absent during a
+    // phase-1 rename deploy: the parent node does not exist for that one
+    // deploy, so the share route is skipped and restored in phase 2.
     props.workerJobResource
-      .addResource('share')
+      ?.addResource('share')
       .addMethod('POST', new apigateway.LambdaIntegration(workerJobShareLambda.function), {
         authorizer: props.workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,

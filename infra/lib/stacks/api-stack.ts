@@ -45,8 +45,11 @@ export class ApiStack extends cdk.Stack {
    * variable-path resource at this level (even a differently-named one, e.g.
    * {id} and {jobId} as siblings) is rejected by API Gateway, so downstream
    * stacks must reuse this node rather than re-declare the path segment.
+   *
+   * Undefined during a phase-1 rename deploy (-c workerJobsRenamePhase1=true),
+   * when the node is deliberately absent — consumers must skip their routes.
    */
-  public readonly workerJobResource: apigateway.Resource;
+  public readonly workerJobResource?: apigateway.Resource;
   /**
    * Exported so ReferralsStack can hang PATCH
    * /employer/jobs/{jobId}/public-listing off the existing employer {jobId}
@@ -581,22 +584,33 @@ export class ApiStack extends cdk.Stack {
     // coupled to this. Verify both routes respond after phase 2 before
     // considering the deploy done.
     // ─────────────────────────────────────────────────────────────────────────
+    // The two-phase sequence above is expressed as a CONTEXT FLAG so the
+    // operator checks out nothing and edits nothing mid-deploy:
+    //   Phase 1: cdk deploy -c workerJobsRenamePhase1=true   (routes DOWN)
+    //   Phase 2: cdk deploy                                   (routes restored as {jobId})
+    // Phase 1 omits the {jobId} node and its methods entirely, which IS the
+    // documented outage window for GET /worker/jobs/{id} and its apply route.
+    const workerJobsRenamePhase1 = this.node.tryGetContext('workerJobsRenamePhase1') === true
+      || this.node.tryGetContext('workerJobsRenamePhase1') === 'true';
+
     const workerJobsResource = workerResource.addResource('jobs');
     workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    this.workerJobResource = workerJobsResource.addResource('{jobId}');
-    const workerJobResource = this.workerJobResource;
-    workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
-      authorizer: workerAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
-    });
-    const workerJobApplyResource = workerJobResource.addResource('apply');
-    workerJobApplyResource.addMethod('POST', new apigateway.LambdaIntegration(workerJobsApplyLambda.function), {
-      authorizer: workerAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
-    });
+    if (!workerJobsRenamePhase1) {
+      this.workerJobResource = workerJobsResource.addResource('{jobId}');
+      const workerJobResource = this.workerJobResource;
+      workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
+        authorizer: workerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+      const workerJobApplyResource = workerJobResource.addResource('apply');
+      workerJobApplyResource.addMethod('POST', new apigateway.LambdaIntegration(workerJobsApplyLambda.function), {
+        authorizer: workerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+    }
 
     // GET /worker/applications — list worker's own applications
     const workerApplicationsResource = workerResource.addResource('applications');
