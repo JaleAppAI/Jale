@@ -7,6 +7,7 @@ import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPa
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
+import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
@@ -19,6 +20,22 @@ const JOB_TYPES: EmployerJobType[] = ['full-time', 'part-time', 'contract'];
 const COMPANY_SIZES: CompanySize[] = ['1-10', '11-50', '51-200', '200+'];
 
 type Step = 'login' | 'signup' | 'confirm' | 'forgot_request' | 'forgot_confirm';
+
+// Maps each missing-field code to the shared "fields.*" label already used to
+// render this form's own inputs, so the summary line and the field labels stay
+// in sync with the fields themselves.
+const FIELD_LABEL_KEY: Record<EmployerSignupField, string> = {
+    company_name: 'fields.company_name',
+    contact_name: 'fields.contact_name',
+    email: 'fields.email',
+    password: 'fields.password',
+    password_confirm: 'fields.password_confirm',
+    phone: 'fields.phone',
+    city: 'fields.city',
+    service_area: 'fields.service_area',
+    hiring_trades: 'fields.hiring_trades',
+    typical_job_types: 'fields.typical_job_types',
+};
 
 export default function EmployerAuthForm() {
     const router = useRouter();
@@ -44,6 +61,7 @@ export default function EmployerAuthForm() {
     const [companySize, setCompanySize] = useState<CompanySize>('1-10');
     const [companyDescription, setCompanyDescription] = useState('');
     const [error, setError] = useState<string | null>(null);
+    const [missingFields, setMissingFields] = useState<EmployerSignupField[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [resetSuccess, setResetSuccess] = useState(false);
     const [forgotEmail, setForgotEmail] = useState('');
@@ -53,7 +71,6 @@ export default function EmployerAuthForm() {
     const [showNewPassword, setShowNewPassword] = useState(false);
     const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false);
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
-    const phoneReady = phoneLocalNumber.replace(/\D/g, '').length >= 7;
 
     const pendingProfile = (): EmployerProfilePatch => ({
         company_name: companyName.trim(),
@@ -69,6 +86,10 @@ export default function EmployerAuthForm() {
 
     const handleSignIn = async () => {
         setError(null);
+        if (!email.trim() || !password) {
+            setError(t('errors.required'));
+            return;
+        }
         setIsLoading(true);
         try {
             const tokens = await employerSignIn(email, password);
@@ -84,6 +105,17 @@ export default function EmployerAuthForm() {
 
     const handleCreateAccount = async () => {
         setError(null);
+        const missing = validateEmployerSignupFields({
+            company_name: companyName, contact_name: contactName, email, password, password_confirm: passwordConfirm,
+            phone, city, service_area: serviceArea, hiring_trades: hiringTrades, typical_job_types: typicalJobTypes,
+        });
+        setMissingFields(missing);
+        if (missing.length > 0) {
+            setError(t('errors.missing_summary', {
+                fields: missing.map((field) => t(FIELD_LABEL_KEY[field])).join(', '),
+            }));
+            return;
+        }
         if (password !== passwordConfirm) {
             setError(t('errors.password_mismatch'));
             return;
@@ -158,9 +190,6 @@ export default function EmployerAuthForm() {
         setTypicalJobTypes((current) => current.includes(jobType) ? current.filter((item) => item !== jobType) : [...current, jobType]);
     };
 
-    const canCreate = companyName.trim() && contactName.trim() && email.trim() && password && passwordConfirm && phoneReady &&
-        city.trim() && serviceArea.trim() && hiringTrades.length > 0 && typicalJobTypes.length > 0;
-
     return (
         <div className="flex w-full flex-col">
                 <h1 className="font-bold leading-tight mb-2" style={{ fontSize: 'clamp(1.6rem, 3vw, 1.9rem)', letterSpacing: '-0.03em', color: 'var(--jale-ink)' }}>
@@ -203,7 +232,7 @@ export default function EmployerAuthForm() {
                                 {t('reset_success')}
                             </p>
                         )}
-                        <Button className="w-full mt-1" size="lg" onClick={handleSignIn} disabled={!email || !password} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        <Button className="w-full mt-1" size="lg" onClick={handleSignIn} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('sign_in')}
                         </Button>
                         <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setResetSuccess(false); setStep('signup'); }} />
@@ -212,10 +241,16 @@ export default function EmployerAuthForm() {
 
                 {step === 'signup' && (
                     <div className="flex flex-col gap-4">
-                        <Field label={t('fields.company_name')}><Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} /></Field>
-                        <Field label={t('fields.contact_name')}><Input value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" /></Field>
-                        <Field label={t('fields.email')}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" /></Field>
-                        <Field label={t('fields.password')}>
+                        <Field label={t('fields.company_name')} error={missingFields.includes('company_name') ? t('errors.required') : undefined}>
+                            <Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
+                        </Field>
+                        <Field label={t('fields.contact_name')} error={missingFields.includes('contact_name') ? t('errors.required') : undefined}>
+                            <Input value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" />
+                        </Field>
+                        <Field label={t('fields.email')} error={missingFields.includes('email') ? t('errors.required') : undefined}>
+                            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+                        </Field>
+                        <Field label={t('fields.password')} error={missingFields.includes('password') ? t('errors.required') : undefined}>
                             <PasswordInput
                                 value={password}
                                 onChange={(e) => setPassword(e.target.value)}
@@ -226,7 +261,7 @@ export default function EmployerAuthForm() {
                                 hideLabel={t('hide_password')}
                             />
                         </Field>
-                        <Field label={t('fields.password_confirm')}>
+                        <Field label={t('fields.password_confirm')} error={missingFields.includes('password_confirm') ? t('errors.required') : undefined}>
                             <PasswordInput
                                 value={passwordConfirm}
                                 onChange={(e) => setPasswordConfirm(e.target.value)}
@@ -238,7 +273,7 @@ export default function EmployerAuthForm() {
                             />
                         </Field>
                         <p className="text-xs leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('password_note')}</p>
-                        <Field label={t('fields.phone')}>
+                        <Field label={t('fields.phone')} error={missingFields.includes('phone') ? t('errors.required') : undefined}>
                             <PhoneNumberField
                                 countryCode={phoneCountryCode}
                                 localNumber={phoneLocalNumber}
@@ -246,12 +281,16 @@ export default function EmployerAuthForm() {
                                 onLocalNumberChange={setPhoneLocalNumber}
                             />
                         </Field>
-                        <Field label={t('fields.city')}><Input value={city} onChange={(e) => setCity(e.target.value)} /></Field>
-                        <Field label={t('fields.service_area')}><Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} /></Field>
-                        <CheckboxGroup label={t('fields.hiring_trades')}>
+                        <Field label={t('fields.city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
+                            <Input value={city} onChange={(e) => setCity(e.target.value)} />
+                        </Field>
+                        <Field label={t('fields.service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
+                            <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />
+                        </Field>
+                        <CheckboxGroup label={t('fields.hiring_trades')} error={missingFields.includes('hiring_trades') ? t('errors.required') : undefined}>
                             {TRADES.map((trade) => <CheckboxCard key={trade} checked={hiringTrades.includes(trade)} label={t(`trades.${trade}`)} onChange={() => toggleTrade(trade)} />)}
                         </CheckboxGroup>
-                        <CheckboxGroup label={t('fields.typical_job_types')}>
+                        <CheckboxGroup label={t('fields.typical_job_types')} error={missingFields.includes('typical_job_types') ? t('errors.required') : undefined}>
                             {JOB_TYPES.map((jobType) => <CheckboxCard key={jobType} checked={typicalJobTypes.includes(jobType)} label={t(`job_types.${jobType.replace('-', '_')}`)} onChange={() => toggleJobType(jobType)} />)}
                         </CheckboxGroup>
                         <Field label={t('fields.company_size')}>
@@ -263,7 +302,7 @@ export default function EmployerAuthForm() {
                             <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
                         </Field>
                         {error && <ErrorText error={error} />}
-                        <Button className="w-full mt-1" size="lg" onClick={handleCreateAccount} disabled={!canCreate} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        <Button className="w-full mt-1" size="lg" onClick={handleCreateAccount} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('create_account')}
                         </Button>
                         <SwitchPrompt text={t('signin_prompt')} action={t('signin_link')} onClick={() => { setError(null); setStep('login'); }} />
@@ -362,13 +401,18 @@ export default function EmployerAuthForm() {
 // Employer proof panel — rendered in the AuthShell navy brand slot (lg+ only).
 export function EmployerBrandPanel() {
     const t = useTranslations('auth.employer');
-    const bullets = [t('panel_bullet_1'), t('panel_bullet_2'), t('panel_bullet_3')];
+    const bullets = [
+        t('panel_bullet_1'),
+        t('panel_bullet_2'),
+        t('panel_bullet_3'),
+        t('panel_bullet_4'),
+        t('panel_bullet_5'),
+    ];
     return (
         <div className="max-w-sm text-white">
-            <div className="font-extrabold leading-none" style={{ fontSize: 'clamp(2.5rem, 4vw, 3rem)', letterSpacing: '-0.04em' }}>
-                2.4&times;
+            <div className="font-extrabold leading-tight" style={{ fontSize: 'clamp(1.75rem, 3vw, 2.25rem)', letterSpacing: '-0.03em' }}>
+                {t('panel_title')}
             </div>
-            <div className="mt-3 text-lg font-semibold">{t('panel_title')}</div>
             <p className="mt-3 text-sm leading-relaxed text-white/70">{t('panel_body')}</p>
             <ul className="mt-6 flex flex-col gap-3">
                 {bullets.map((bullet) => (
@@ -390,20 +434,22 @@ export function EmployerBrandPanel() {
     );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
     return (
         <div className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</label>
             {children}
+            {error && <p className="text-xs text-error">{error}</p>}
         </div>
     );
 }
 
-function CheckboxGroup({ label, children }: { label: string; children: ReactNode }) {
+function CheckboxGroup({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
     return (
         <div className="flex flex-col gap-2">
             <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{children}</div>
+            {error && <p className="text-xs text-error">{error}</p>}
         </div>
     );
 }

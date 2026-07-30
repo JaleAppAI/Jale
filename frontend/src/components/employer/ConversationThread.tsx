@@ -14,6 +14,7 @@ type Props = {
   messages: EmployerConversationMessage[];
   loading?: boolean;
   sending?: boolean;
+  closing?: boolean;
   errorMessage?: string | null;
   onSend: (body: string) => Promise<void>;
   onClose?: () => Promise<void>;
@@ -26,6 +27,7 @@ export function ConversationThread({
   messages,
   loading = false,
   sending = false,
+  closing = false,
   errorMessage = null,
   onSend,
   onClose,
@@ -103,7 +105,7 @@ export function ConversationThread({
               </Button>
             )}
             {onClose && conversation.status === 'open' && (
-              <Button type="button" variant="outline" size="sm" onClick={onClose}>
+              <Button type="button" variant="outline" size="sm" onClick={onClose} loading={closing} disabled={closing} loadingLabel={tCommon('loading')}>
                 {t('close')}
               </Button>
             )}

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 
 export const dynamic = 'force-dynamic';
 
-const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
+const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ACCEPTED_MIME = ['application/pdf', 'image/jpeg', 'image/png'];
 

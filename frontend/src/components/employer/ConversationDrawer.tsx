@@ -30,6 +30,7 @@ export function ConversationDrawer() {
   const [messages, setMessages] = useState<EmployerConversationMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   function handleDrawerLegalWall(err: unknown) {
     if (err instanceof LegalWallError) {
@@ -98,11 +99,16 @@ export function ConversationDrawer() {
 
   async function handleClose() {
     if (!idToken || !selectedId) return;
-    const detail = await closeConversation(idToken, selectedId);
-    setConversation(detail.conversation);
-    setMessages(detail.messages);
-    setConversations((current) => current.filter((item) => item.id !== selectedId));
-    setSelectedId(null);
+    setClosing(true);
+    try {
+      const detail = await closeConversation(idToken, selectedId);
+      setConversation(detail.conversation);
+      setMessages(detail.messages);
+      setConversations((current) => current.filter((item) => item.id !== selectedId));
+      setSelectedId(null);
+    } finally {
+      setClosing(false);
+    }
   }
 
   return (
@@ -156,10 +162,12 @@ export function ConversationDrawer() {
               </Button>
             </div>
             <ConversationThread
+              key={conversation?.id ?? 'none'}
               conversation={conversation}
               messages={messages}
               loading={loading}
               sending={sending}
+              closing={closing}
               onSend={handleSend}
               onClose={conversation?.status === 'open' ? handleClose : undefined}
               compact

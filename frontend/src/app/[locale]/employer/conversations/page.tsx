@@ -42,6 +42,7 @@ export default function EmployerConversationsPage() {
   const [loadingList, setLoadingList] = useState(true);
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [threadError, setThreadError] = useState<string | null>(null);
 
@@ -191,10 +192,15 @@ export default function EmployerConversationsPage() {
 
   async function handleClose() {
     if (!idToken || !selectedItem || !selectedConversationId) return;
-    const detail = await closeConversation(idToken, selectedConversationId);
-    setConversation(detail.conversation);
-    setMessages(detail.messages);
-    applyConversationToItems(detail.conversation, selectedItem.application_id);
+    setClosing(true);
+    try {
+      const detail = await closeConversation(idToken, selectedConversationId);
+      setConversation(detail.conversation);
+      setMessages(detail.messages);
+      applyConversationToItems(detail.conversation, selectedItem.application_id);
+    } finally {
+      setClosing(false);
+    }
   }
 
   async function handleDismiss() {
@@ -366,10 +372,12 @@ export default function EmployerConversationsPage() {
             />
           ) : (
             <ConversationThread
+              key={selectedKey ?? 'none'}
               conversation={conversation}
               messages={messages}
               loading={loadingThread}
               sending={sending}
+              closing={closing}
               errorMessage={threadError}
               onSend={handleSend}
               onClose={conversation?.status === 'open' ? handleClose : undefined}

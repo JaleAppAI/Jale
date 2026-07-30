@@ -18,7 +18,10 @@ export type IconName =
     | 'chart'
     | 'clock'
     | 'plus'
-    | 'home';
+    | 'home'
+    | 'eye'
+    | 'upload'
+    | 'trash';
 
 export function Icon({ name }: { name: IconName }) {
     const common = {
@@ -54,6 +57,12 @@ export function Icon({ name }: { name: IconName }) {
             return <svg {...common}><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
         case 'home':
             return <svg {...common}><path d="M4 10.5 12 4l8 6.5" /><path d="M6 9.5V20h12V9.5" /></svg>;
+        case 'eye':
+            return <svg {...common}><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></svg>;
+        case 'upload':
+            return <svg {...common}><path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>;
+        case 'trash':
+            return <svg {...common}><path d="M4 7h16" /><path d="M8 7V4h8v3" /><path d="M6 7l1 13h10l1-13" /></svg>;
         default:
             return <svg {...common}><path d="M4 4h7v7H4z" /><path d="M13 4h7v7h-7z" /><path d="M4 13h7v7H4z" /><path d="M13 13h7v7h-7z" /></svg>;
     }
