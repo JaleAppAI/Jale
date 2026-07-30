@@ -59,6 +59,36 @@ describe('public-job Lambda', () => {
       requestContext: { identity: { sourceIp: opts.ip ?? '1.2.3.4' } },
     }) as unknown as APIGatewayProxyEvent;
 
+  it('does not record an open for a link-preview crawler, but still returns the job', async () => {
+    // Pasting a link into WhatsApp triggers Meta's crawler immediately: without
+    // this guard, open_count reads 1 before any human clicks, and that number
+    // is shown straight to the referring worker.
+    mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }); // job lookup only
+    const res = await handler(makeEvent({
+      code: 'ABC123',
+      headers: { 'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)' },
+    }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).title).toBe('Warehouse Associate');
+    expect(mockQuery.mock.calls.some((c) => /INSERT INTO job_share_opens/i.test(c[0]))).toBe(false);
+  });
+
+  it('does not bump the counter when the dedupe guard says this visitor was already counted', async () => {
+    process.env.REFERRAL_VISITOR_SALT = 'test-salt';
+    mockQuery
+      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] })          // job lookup
+      .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] })    // share link match
+      .mockResolvedValueOnce({})                                  // BEGIN
+      .mockResolvedValueOnce({ rows: [] })                        // guarded INSERT -> already seen
+      .mockResolvedValueOnce({});                                 // COMMIT
+    const res = await handler(makeEvent({
+      code: 'ABC123', r: 'ABCD1234',
+      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; like Mac OS X)' },
+    }));
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery.mock.calls.some((c) => /open_count = open_count \+ 1/.test(c[0]))).toBe(false);
+  });
+
   it('returns 400 when code is missing', async () => {
     const res = await handler(makeEvent({}));
     expect(res.statusCode).toBe(400);
@@ -155,7 +185,7 @@ describe('public-job Lambda', () => {
       .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
       .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] }) // share link lookup -- match
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert
+      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] }) // guarded insert -> recorded
       .mockResolvedValueOnce({}) // open_count bump
       .mockResolvedValueOnce({}); // COMMIT
     const res = await handler(makeEvent({ code: 'ABC123', r: 'ABCD1234' }));
@@ -175,7 +205,7 @@ describe('public-job Lambda', () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] })
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert
+      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] }) // guarded insert -> recorded
       .mockResolvedValueOnce({}); // COMMIT
     const res = await handler(
       makeEvent({ code: 'ABC123', headers: { 'User-Agent': 'Mozilla/5.0' } }),
@@ -207,7 +237,7 @@ describe('public-job Lambda', () => {
       .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
       .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] }) // share link lookup -- match
       .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert succeeds
+      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] }) // guarded insert -> recorded
       .mockRejectedValueOnce(new Error('update failed')) // counter bump rejects
       .mockResolvedValueOnce({}); // ROLLBACK
     const res = await handler(makeEvent({ code: 'ABC123', r: 'ABCD1234' }));

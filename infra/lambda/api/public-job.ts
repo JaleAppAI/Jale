@@ -28,6 +28,15 @@ const PUBLIC_JOB_COLUMNS = `
   number_of_workers_needed, required_docs, status, created_at
 `;
 
+/**
+ * Link-preview fetchers, not people. A share into WhatsApp triggers Meta's
+ * crawler immediately, so counting these would inflate a worker's open count
+ * before any human clicks. Deliberately conservative: an unmatched bot is
+ * counted as a visit, which is the safer error.
+ */
+const PREVIEW_CRAWLERS = /facebookexternalhit|whatsapp|twitterbot|slackbot|linkedinbot|telegrambot|discordbot|bot\b|crawler|spider|preview/i;
+const isPreviewFetch = (ua: string | undefined): boolean => !!ua && PREVIEW_CRAWLERS.test(ua);
+
 function detectDeviceKind(userAgent: string | undefined): DeviceKind {
   if (!userAgent) return 'unknown';
   const ua = userAgent.toLowerCase();
@@ -99,57 +108,76 @@ export const handler = async (
 
     // Recording the open must never fail the request.
     try {
-      let matchedShareCode: string | null = null;
-      if (requestedShareCode) {
-        const shareResult = await client.query(
-          `SELECT code FROM job_share_links WHERE code = $1 AND job_id = $2`,
-          [requestedShareCode, job.id],
-        );
-        if (shareResult.rows.length > 0) {
-          matchedShareCode = requestedShareCode;
-        }
-      }
-
       const userAgent = getHeader(event, 'User-Agent');
-      const acceptLanguage = getHeader(event, 'Accept-Language');
-      const ip = event.requestContext?.identity?.sourceIp ?? undefined;
 
-      const deviceKind = detectDeviceKind(userAgent);
-      const locale = parseLocale(acceptLanguage);
-
-      let visitorHash: string | null = null;
-      const salt = process.env.REFERRAL_VISITOR_SALT;
-      if (salt && ip && userAgent) {
-        visitorHash = hashVisitor(salt, ip, userAgent);
-      }
-
-      // The insert and the counter bump must land together: open_count is
-      // surfaced directly to the referring worker (GET /worker/referrals), so
-      // a partial write here would silently under-report opens with nothing
-      // in the data to reveal the drift.
-      await client.query('BEGIN');
-      try {
-        await client.query(
-          `INSERT INTO job_share_opens (share_code, job_id, device_kind, locale, visitor_hash)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [matchedShareCode, job.id, deviceKind, locale, visitorHash],
-        );
-
-        if (matchedShareCode) {
-          // Column-scoped GRANT only permits open_count and last_opened_at.
-          await client.query(
-            `UPDATE job_share_links
-                SET open_count = open_count + 1,
-                    last_opened_at = now()
-              WHERE code = $1`,
-            [matchedShareCode],
+      // A preview crawler still gets the job (so link previews render), but
+      // does not count as an open.
+      if (!isPreviewFetch(userAgent)) {
+        let matchedShareCode: string | null = null;
+        if (requestedShareCode) {
+          const shareResult = await client.query(
+            `SELECT code FROM job_share_links WHERE code = $1 AND job_id = $2`,
+            [requestedShareCode, job.id],
           );
+          if (shareResult.rows.length > 0) {
+            matchedShareCode = requestedShareCode;
+          }
         }
 
-        await client.query('COMMIT');
-      } catch (openErr) {
-        await client.query('ROLLBACK');
-        throw openErr;
+        const acceptLanguage = getHeader(event, 'Accept-Language');
+        const ip = event.requestContext?.identity?.sourceIp ?? undefined;
+
+        const deviceKind = detectDeviceKind(userAgent);
+        const locale = parseLocale(acceptLanguage);
+
+        let visitorHash: string | null = null;
+        const salt = process.env.REFERRAL_VISITOR_SALT;
+        if (salt && ip && userAgent) {
+          visitorHash = hashVisitor(salt, ip, userAgent);
+        }
+
+        // The insert and the counter bump must land together: open_count is
+        // surfaced directly to the referring worker (GET /worker/referrals), so
+        // a partial write here would silently under-report opens with nothing
+        // in the data to reveal the drift.
+        await client.query('BEGIN');
+        try {
+          // Guarded insert: the same visitor re-opening within the window is a
+          // no-op, so a refresh or a link bouncing around one person's devices
+          // does not inflate the count. A null visitor_hash cannot be
+          // de-duplicated (no salt configured) and always records —
+          // under-counting a real visit is worse than a duplicate. Backed by
+          // job_share_opens_visitor_dedupe_idx (migration 056).
+          const inserted = await client.query(
+            `INSERT INTO job_share_opens (share_code, job_id, device_kind, locale, visitor_hash)
+             SELECT $1, $2, $3, $4, $5
+              WHERE $5::text IS NULL
+                 OR NOT EXISTS (
+                   SELECT 1 FROM job_share_opens
+                    WHERE visitor_hash = $5
+                      AND job_id = $2
+                      AND opened_at > now() - interval '30 minutes'
+                 )
+             RETURNING id`,
+            [matchedShareCode, job.id, deviceKind, locale, visitorHash],
+          );
+
+          if (inserted.rows.length > 0 && matchedShareCode) {
+            // Column-scoped GRANT only permits open_count and last_opened_at.
+            await client.query(
+              `UPDATE job_share_links
+                  SET open_count = open_count + 1,
+                      last_opened_at = now()
+                WHERE code = $1`,
+              [matchedShareCode],
+            );
+          }
+
+          await client.query('COMMIT');
+        } catch (openErr) {
+          await client.query('ROLLBACK');
+          throw openErr;
+        }
       }
     } catch (openErr) {
       console.error('public-job open-record error:', errorMessage(openErr));
