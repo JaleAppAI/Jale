@@ -101,6 +101,27 @@ export type ReleaseRenderRequest =
       sourceId: string;
     }
   | {
+      /**
+       * The job a worker was referred to, sent right after the welcome. Job
+       * referrals, migration 055.
+       */
+      kind: 'referred_job';
+      workerId: string;
+      language: PreferredLanguage;
+      /**
+       * null when the referred job is no longer accepting applications. A
+       * worker may take days to finish onboarding, so this is resolved at send
+       * time rather than when the referral was claimed.
+       */
+      job: {
+        jobId: string;
+        title: string;
+        companyName: string;
+        location: string | null;
+        pay: string | null;
+      } | null;
+    }
+  | {
       kind: 'job_alert_digest';
       workerId: string;
       language: PreferredLanguage;

@@ -18,7 +18,16 @@ interface IntentRow {
   status: string;
 }
 
-interface JobRow { id: string; status: string; title: string; company: string }
+// location/pay are optional so fixtures predating the referred-job message keep
+// passing unchanged; both are nullable on jobs (migration 003).
+interface JobRow {
+  id: string;
+  status: string;
+  title: string;
+  company: string;
+  location?: string | null;
+  pay?: string | null;
+}
 interface ChatSourceRow {
   message_id: string;
   conversation_id: string;
@@ -60,6 +69,8 @@ function scriptedClient(opts: {
   appliedJobIds?: string[];
   /** When true, the worker_onboarding_state lookup returns zero rows (loadWorkerGate resolves null). */
   noGateRow?: boolean;
+  /** Job id of a claimed referral for this worker; omit for "no referral". */
+  referredJobId?: string;
 }) {
   const intents = new Map(opts.intents.map((i) => [i.id, { ...i }]));
   const jobsById = new Map((opts.jobs ?? []).map((j) => [j.id, j]));
@@ -91,18 +102,28 @@ function scriptedClient(opts: {
     }
 
     if (/INSERT INTO worker_message_intents/.test(sql)) {
-      const [userId, dedupeKey, , payloadJson] = params as [string, string, number, string];
+      // Two group-1 synthesis inserts exist now (onboarding_complete and
+      // referred_job) and their parameter orders differ, so key off the
+      // source_type literal in the SQL rather than a positional guess.
+      const isReferredJob = /'referred_job'/.test(sql);
+      const userId = params[0] as string;
+      const sourceType = isReferredJob ? 'referred_job' : 'onboarding_complete';
+      // referred_job carries the JOB id as source_id so the existing batch
+      // `FROM jobs WHERE id = ANY(...)` lookup resolves it with no extra query.
+      const sourceId = isReferredJob ? (params[1] as string) : userId;
+      const dedupeKey = (isReferredJob ? params[2] : params[1]) as string;
+      const payloadJson = (isReferredJob ? params[4] : params[3]) as string;
       if (!dedupeKeysMaterialized.has(dedupeKey)) {
         dedupeKeysMaterialized.add(dedupeKey);
         syntheticSeq += 1;
-        const id = `synthetic-onboarding-${syntheticSeq}`;
+        const id = `synthetic-${sourceType}-${syntheticSeq}`;
         intents.set(id, {
           id,
           category: 'onboarding',
           owner_service: 'onboarding-v2',
-          source_type: 'onboarding_complete',
-          source_id: userId,
-          priority: 1,
+          source_type: sourceType,
+          source_id: sourceId,
+          priority: isReferredJob ? 2 : 1,
           payload: JSON.parse(payloadJson),
           expires_at: null,
           created_at: NOW,
@@ -110,6 +131,12 @@ function scriptedClient(opts: {
         });
       }
       return { rows: [], rowCount: 0 };
+    }
+
+    // The referred-job claim the release reads to decide whether to synthesize
+    // a second group-1 intent. Absent option => no referral => no second message.
+    if (/FROM referral_pending_claims/.test(sql)) {
+      return opts.referredJobId ? { rows: [{ job_id: opts.referredJobId }] } : { rows: [] };
     }
 
     if (/FROM worker_message_intents/.test(sql) && /FOR UPDATE SKIP LOCKED/.test(sql)) {
@@ -602,6 +629,80 @@ describe('releaseWorkerReady', () => {
   });
 
   // ── O2: release-time eligibility reload ──────────────────────────
+
+  describe('referred job (migration 055)', () => {
+    it('sends a second message naming the referred job when it is still active', async () => {
+      const { client } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        referredJobId: 'job-ref',
+        jobs: [{ id: 'job-ref', status: 'active', title: 'Framer', company: 'Acme', location: 'Austin, TX', pay: '$22-26/hr' }],
+      });
+      const { render, requests } = recordingRenderer();
+
+      const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      // Group 1 must now carry BOTH: the welcome and the referred job. If the
+      // referred-job intent were superseded (the pre-change "at most one"
+      // behaviour) the worker would never hear about the job they came for.
+      expect(result.superseded).toBe(0);
+      expect(requests.map((r) => r.kind)).toEqual(['onboarding_complete', 'referred_job']);
+      const referred = requests.find((r) => r.kind === 'referred_job') as Extract<ReleaseRenderRequest, { kind: 'referred_job' }>;
+      expect(referred.job).toMatchObject({
+        jobId: 'job-ref', title: 'Framer', companyName: 'Acme', location: 'Austin, TX', pay: '$22-26/hr',
+      });
+    });
+
+    it('sends the honest "already taken" variant when the referred job is no longer active', async () => {
+      const { client } = scriptedClient({
+        eventStatus: 'processing',
+        intents: [],
+        referredJobId: 'job-gone',
+        jobs: [{ id: 'job-gone', status: 'filled', title: 'Framer', company: 'Acme' }],
+      });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      const referred = requests.find((r) => r.kind === 'referred_job') as Extract<ReleaseRenderRequest, { kind: 'referred_job' }>;
+      expect(referred).toBeDefined();
+      // job: null is what makes the renderer choose the "filled" copy. Sending
+      // nothing would leave the worker wondering what happened to the job.
+      expect(referred.job).toBeNull();
+    });
+
+    it('sends only the welcome when the worker has no referral claim', async () => {
+      const { client } = scriptedClient({ eventStatus: 'processing', intents: [] });
+      const { render, requests } = recordingRenderer();
+
+      await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(requests.map((r) => r.kind)).toEqual(['onboarding_complete']);
+    });
+
+    it('still collapses two intents of the SAME source_type to one', async () => {
+      // The per-source_type split must not weaken the original guarantee: a
+      // duplicate onboarding_complete is still superseded, not sent twice.
+      const intents = [
+        intentRow({
+          id: 'oc-dup', category: 'onboarding', owner_service: 'onboarding-v2',
+          source_type: 'onboarding_complete', source_id: WORKER_ID, priority: 1,
+          payload: { kind: 'onboarding_complete' },
+        }),
+      ];
+      const { client, intents: finalIntents } = scriptedClient({ eventStatus: 'processing', intents });
+      const { render, requests } = recordingRenderer();
+
+      const result = await releaseWorkerReady(client, EVENT_KEY, { renderer: { render }, now: () => NOW });
+
+      expect(requests.filter((r) => r.kind === 'onboarding_complete')).toHaveLength(1);
+      expect(result.superseded).toBe(1);
+      const dup = finalIntents.get('oc-dup');
+      const synthetic = [...finalIntents.values()].find((i) => i.id.startsWith('synthetic-onboarding_complete'));
+      // Exactly one of the two survives; the other is superseded.
+      expect([dup?.status, synthetic?.status].filter((s) => s === 'superseded')).toHaveLength(1);
+    });
+  });
 
   describe('job_alert release-time eligibility', () => {
     it('discards a job_alert intent for a suspended worker with worker_not_ready, never rendering it', async () => {

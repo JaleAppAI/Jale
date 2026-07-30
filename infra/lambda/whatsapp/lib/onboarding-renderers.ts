@@ -138,6 +138,44 @@ function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): st
   return [header, ...lines, footer].join('\n');
 }
 
+/**
+ * The job a worker was referred to (migration 055), sent as a second message
+ * after the welcome.
+ *
+ * Plain text, deliberately. Buttons on WhatsApp require an approved content
+ * template, and the existing `job_alert_*` template has fixed variable slots —
+ * referral framing cannot be injected into it without a new Meta-approved
+ * template, which is external lead time rather than a code change. Freeform is
+ * deliverable here for the same reason the multi-job digest below is: the
+ * worker.ready release fires moments after the worker's own message, so we are
+ * always inside WhatsApp's 24h customer-service window. So we carry the
+ * referral framing and point at the JOBS/TRABAJOS keyword the processor already
+ * handles, rather than inventing a button payload no handler receives.
+ */
+function buildReferredJobMessage(
+  lang: Lang,
+  job: { jobId: string; title: string; companyName: string; location: string | null; pay: string | null } | null,
+): ReleaseRenderedMessage {
+  if (!job) {
+    const body =
+      lang === 'es'
+        ? 'El trabajo al que te recomendaron ya se ocupo, pero tenemos otros como ese. Escribe TRABAJOS para verlos.'
+        : 'The job you were referred to has been filled, but we have others like it. Reply JOBS to see them.';
+    return { body, contentTemplate: null, contentVariables: null };
+  }
+
+  // title/companyName/location are employer free text — rendered as stored,
+  // never translated. pay and location are both nullable (migration 003), so
+  // each is omitted rather than rendered as a dangling separator.
+  const headline = [job.title, job.companyName].filter((p) => p && p.length > 0).join(' - ');
+  const detail = [job.location, job.pay].filter((p) => p && p.length > 0).join(' - ');
+  const body =
+    lang === 'es'
+      ? `Un amigo te recomendo este trabajo:\n\n${headline}${detail ? `\n${detail}` : ''}\n\nEscribe TRABAJOS para postularte o ver otros.`
+      : `A friend referred you to this job:\n\n${headline}${detail ? `\n${detail}` : ''}\n\nReply JOBS to apply or see others.`;
+  return { body, contentTemplate: null, contentVariables: null };
+}
+
 function buildJobAlertDigestMessage(
   lang: Lang,
   jobsIn: ReadonlyArray<DigestJob>,
@@ -380,6 +418,8 @@ export function createReleaseRenderer(): ReleaseRenderer {
           return buildOnboardingCompleteMessage(request.language);
         case 'account_notice':
           return buildAccountNoticeMessage(request.language, request.sourceType);
+        case 'referred_job':
+          return buildReferredJobMessage(request.language, request.job);
         case 'job_alert_digest':
           return buildJobAlertDigestMessage(request.language, request.jobs);
         case 'employer_chat_single':
