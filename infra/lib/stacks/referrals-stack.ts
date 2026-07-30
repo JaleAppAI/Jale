@@ -2,6 +2,8 @@ import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
@@ -192,6 +194,26 @@ export class ReferralsStack extends cdk.Stack {
       ...lambdaProps,
     });
     props.appDbSecret.grantRead(employerJobPublicListingLambda.function);
+
+    // ── Lambda: retention sweeper (EventBridge, daily) ──
+    // The two public routes write a row per unauthenticated request and
+    // nothing else ever deletes them; this bounds that growth. Runs as
+    // jale_admin (appDbSecret): jale_public_jobs deliberately has no DELETE
+    // grant anywhere and must never get one.
+    const retentionSweeperLambda = new JaleLambdaFunction(this, 'ReferralRetentionSweeperLambda', {
+      entry: path.join(__dirname, '../../lambda/referrals/retention-sweeper.ts'),
+      description: 'Referral retention sweeper (tokens, claims, aged opens)',
+      environment: {
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
+      },
+      ...lambdaProps,
+    });
+    props.appDbSecret.grantRead(retentionSweeperLambda.function);
+
+    new events.Rule(this, 'ReferralRetentionSweepRule', {
+      schedule: events.Schedule.rate(cdk.Duration.hours(24)),
+      targets: [new eventTargets.LambdaFunction(retentionSweeperLambda.function)],
+    });
 
     // ── Routes ──
 

@@ -251,6 +251,23 @@ describe('ReferralsStack', () => {
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
+  test('retention sweeper runs on a daily schedule', () => {
+    template.hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(1 day)',
+    });
+  });
+
+  test('retention sweeper uses the app DB secret — jale_public_jobs must never hold DELETE', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Referral retention sweeper (tokens, claims, aged opens)' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('DB_SECRET_ARN');
+    expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
+  });
+
   test('public/jobs/{code} path resources exist', () => {
     for (const pathPart of ['public', 'jobs', '{code}', 'apply-intent']) {
       apiTemplate.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
