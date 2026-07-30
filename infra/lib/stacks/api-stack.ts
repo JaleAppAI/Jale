@@ -754,9 +754,17 @@ export class ApiStack extends cdk.Stack {
           ThrottlingRateLimit: 10,
         },
         // POST /public/jobs/{code}/apply-intent — unauthenticated referral-token
-        // mint. This throttle is load-bearing, not cosmetic: nothing in
-        // public-job-apply-intent.ts bounds how many apply tokens a single
-        // caller can mint (no per-caller rate limit in the handler itself), so
+        // mint. Nothing in public-job-apply-intent.ts bounds how many apply
+        // tokens a caller can mint, so this is the only brake on the route.
+        //
+        // Be precise about what it is: MethodSettings throttles are STAGE-WIDE
+        // across all callers, not per-caller (per-client would need a usage plan
+        // plus API keys). So this caps total minting, and one abuser saturating
+        // the limit degrades the route for real workers rather than being
+        // isolated. Sizing it is a trade-off between abuse volume and denying
+        // legitimate applicants, not a security boundary. Revisit with usage
+        // plans if abuse becomes real.
+        //
         // this API Gateway throttle is the ONLY abuse control on that route.
         // Kept tighter than the GET above because minting writes a DB row per call.
         {
