@@ -147,6 +147,15 @@ export async function sendPendingOutbox(
       );
     } catch (err) {
       const ambiguous = err instanceof AmbiguousTwilioSendError;
+      // 2026-07-27 observability pass: this module previously logged
+      // nothing — a Twilio rejection was visible only in the DB row. Safe
+      // scalars only: never the body or the phone number.
+      console.error(JSON.stringify({
+        metric: 'OutboxSendFailure',
+        outboxId: row.id,
+        status: ambiguous ? 'send_unknown' : 'failed',
+        contentTemplate: row.content_template ?? null,
+      }));
       await client.query(
         `UPDATE whatsapp_outbox
             SET status = $1,

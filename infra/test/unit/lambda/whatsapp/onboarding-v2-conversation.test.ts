@@ -42,6 +42,13 @@ describe('complete onboarding end to end', () => {
     expect(h.getState().gate?.currentStepKey).toBe('profile.trade');
 
     await h.sendText('plumber');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.experience');
+
+    // V1/V2 parity: years_experience, has_transportation, availability are
+    // now asked before trust, same as the '1'-answer canned path.
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
 
     await h.sendText('1');
@@ -68,6 +75,11 @@ describe('complete onboarding end to end', () => {
     expect(h.getWorkerProfile()?.location).toEqual({ city: null, state: null, postalCode: '78701', source: 'zip' });
 
     await h.sendText('electrician');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.experience');
+
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
 
     await h.sendText('1');
@@ -204,6 +216,31 @@ describe('OTP lifecycle', () => {
     await h.driveToStep('legal.review', { lang: 'en' });
     expect(h.getState().workerId).toBeTruthy();
     expect(h.getState().gate?.currentStepKey).toBe('legal.review');
+  });
+
+  it('a wrong code followed by the CORRECT code verifies (rotated session persisted across turns)', async () => {
+    // The 2026-07-26 regression, pinned at conversation level: Cognito
+    // consumes the presented session on every wrong answer and only the
+    // rotated one may be resubmitted (the fake identity adapter models
+    // this faithfully — the stale id resolves to 'expired'). A router that
+    // fails to persist rotatedChallengeId into providerChallengeId breaks
+    // exactly here: the correct code on attempt 2 would report "expired"
+    // instead of binding.
+    const h = createWhatsAppV2Harness({ phone: '+15551110060' });
+    await h.sendText('START');
+    const originalChallengeId = h.getState().preAuth?.providerChallengeId;
+
+    const wrong = await h.sendWrongOtp();
+    expect(wrong.workerId).toBeNull();
+    expect(h.getState().preAuth?.attempts).toBe(1);
+    // The rotation must be durably persisted, not just returned.
+    const rotatedChallengeId = h.getState().preAuth?.providerChallengeId;
+    expect(rotatedChallengeId).toBeTruthy();
+    expect(rotatedChallengeId).not.toBe(originalChallengeId);
+
+    const result = await h.sendText(h.lastIssuedOtpCode());
+    expect(result.workerId).toBeTruthy();
+    expect(result.stepKey).toBe('legal.review');
   });
 
   it('expires 5 minutes after issuance', async () => {
@@ -473,6 +510,9 @@ describe('profile.trade: all six choices, custom trade, and the AI-question fall
     await h.sendText('Jose Martinez');
     await h.sendText('78701');
     await h.sendText(trade);
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getWorkerProfile()?.trade).toBe(trade);
   });
@@ -487,6 +527,9 @@ describe('profile.trade: all six choices, custom trade, and the AI-question fall
     expect(h.getState().gate?.currentStepKey).toBe('profile.custom_trade');
 
     await h.sendText('dog groomer');
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     const questions = h.getState().stateContext.v2TrustQuestions as Array<{ en: string; es: string }>;
     expect(questions).toHaveLength(3);
@@ -503,6 +546,9 @@ describe('profile.trade: all six choices, custom trade, and the AI-question fall
 
     h.failAdapter('trustQuestions');
     await h.sendText('dog groomer');
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
 
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
     expect(h.getState().stateContext.v2TrustSource).toBe('fallback');
@@ -591,6 +637,9 @@ describe('atomic readiness', () => {
     h.failAdapter('trustQuestions');
     await h.sendText('dog groomer');
     expect(h.getState().stateContext.v2TrustSource).toBe('fallback');
+    await h.sendText('1'); // years_experience -> profile.transportation
+    await h.sendText('1'); // has_transportation -> profile.availability
+    await h.sendText('1'); // availability -> trust.question.1
 
     await h.sendText('answer one');
     await h.sendText('answer two');
@@ -669,11 +718,18 @@ describe('createReleaseRenderer(): all five release kinds', () => {
 
   it('renders job_alert_digest', async () => {
     const renderer = createReleaseRenderer();
+    // Two jobs: the multi-job digest is the plain-text case this smoke test
+    // exercises. A SINGLE job renders the approved v1 content template
+    // instead (Task 2/A2) — that contract has its own dedicated coverage in
+    // lib/onboarding-renderers.test.ts.
     const msg = await renderer.render({
       kind: 'job_alert_digest',
       workerId: 'w1',
       language: 'en',
-      jobs: [{ jobId: 'j1', title: 'Electrician', companyName: 'Acme', score: 90 }],
+      jobs: [
+        { jobId: 'j1', title: 'Electrician', companyName: 'Acme', score: 90 },
+        { jobId: 'j2', title: 'Plumber', companyName: 'Acme', score: 80 },
+      ],
     });
     expect(msg.body).toContain('Electrician');
     expect(msg.body).toContain('Acme');
@@ -709,5 +765,493 @@ describe('harness plumbing sanity', () => {
     for (const c of h.getCompletionClients()) {
       expect(c).toBe(HARNESS_CLIENT);
     }
+  });
+});
+
+// ── Stream B (Task 8e): full voice profile intake, end to end ───────────
+
+describe('Stream B: full voice profile intake end to end', () => {
+  it('control ON: legal accept -> voice_choice -> audio -> ack -> completion applies partial fields -> resolver asks ONLY location, then transportation, availability -> trust handoff', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110500' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    const ackResult = await h.sendVoiceNote();
+    expect(ackResult.stepKey).toBe('profile.voice_processing');
+    expect(h.getPendingProfileIngests()).toHaveLength(1);
+
+    const completion = await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: { full_name: 'Jose Martinez', main_trade: 'plumber', years_experience: '5-9' },
+      confidences: { full_name: 0.9, main_trade: 0.9, years_experience: 0.9 },
+      summaryEn: 'Jose, a plumber with 5-9 years of experience.',
+      summaryEs: 'Jose, un plomero con 5-9 anos de experiencia.',
+    });
+
+    // city/location was never extracted — the resolver asks for it next
+    // (PROFILE_FIELDS order: name, city, trade, [custom_trade], experience,
+    // transportation, availability — name/trade/experience already landed).
+    expect(completion.stepKey).toBe('profile.location');
+    expect(h.getWorkerProfile()).toMatchObject({ name: 'Jose Martinez', trade: 'plumber', yearsExperience: '5-9' });
+
+    await h.sendText('Austin, TX');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.transportation');
+
+    await h.sendText('1'); // has_transportation
+    expect(h.getState().gate?.currentStepKey).toBe('profile.availability');
+
+    await h.sendText('1'); // availability -> trust handoff
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+  });
+
+  it('control OFF: legal accept -> profile.name -> ... is byte-identical to the pre-Stream-B flow', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110501' });
+    // voiceIntake left disabled (harness default).
+    await h.driveToStep('legal.review', { lang: 'en' });
+
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('Jose Martinez');
+    await h.sendText('78701');
+    await h.sendText('plumber');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+  });
+
+  it('opt-out to text: tapping "type instead" at voice_choice walks the ordinary field-by-field flow', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110502' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.pressButton('media:voice:text');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('Jose Martinez');
+    await h.sendText('78701');
+    await h.sendText('plumber');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    expect(h.getPendingProfileIngests()).toHaveLength(0);
+  });
+
+  it('timeout escape: the pipeline never completes -> voice_processing times out -> the text flow takes over and still reaches ready', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110503' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    await h.sendVoiceNote();
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
+
+    h.advanceTime(6 * 60 * 1000); // > VOICE_PROCESSING_TIMEOUT_MS
+    await h.sendText('hello?');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // fell back, nothing landed
+
+    await h.sendText('Jose Martinez');
+    await h.sendText('78701');
+    await h.sendText('plumber');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+
+    // The pipeline's completion event, if it EVER arrives after this, must
+    // be a silent no-op. Task 7/B5: the synthetic event is dispatched BEFORE
+    // the ready handoff regardless of current step, so it reaches
+    // `handleVoiceIntakeResult`'s own staleness guard (the worker's
+    // currentStepKey is no longer 'profile.voice_processing') and is
+    // discarded there — handled, no send, no state change, never routed
+    // into the legacy idle lane.
+    const sentBefore = h.getSentMessages().length;
+    const late = await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: { full_name: 'Someone Else' },
+      confidences: { full_name: 0.9 },
+    });
+    expect(h.getSentMessages()).toHaveLength(sentBefore);
+    expect(late.handled).toBe(true);
+    expect(h.getWorkerProfile()).not.toMatchObject({ name: 'Someone Else' });
+  });
+});
+
+describe('Stream B: command gate at voice steps', () => {
+  it('a Spanish worker typing TRABAJOS at profile.voice_choice gets the blocked reply and does not start ingestion', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110510' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'es' });
+    await h.sendText('ACEPTAR');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.sendText('TRABAJOS');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice'); // gate blocked it, no advance
+    expect(h.getPendingProfileIngests()).toHaveLength(0);
+    const blockedReply = h.getSentMessages().at(-1);
+    expect(blockedReply?.lang).toBe('es');
+  });
+
+  it('IDIOMA/LANGUAGE persists across profile.voice_choice and profile.voice_processing prompts', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110511' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.sendText('IDIOMA');
+    expect(h.getState().stateContext.v2PreferredLanguageOverride).toBe('es');
+    expect(h.getSentMessages().at(-1)?.lang).toBe('es');
+
+    // The override survives into profile.voice_processing's prompts too.
+    await h.sendVoiceNote();
+    const processingAck = h.getSentMessages().at(-1);
+    expect(processingAck?.lang).toBe('es');
+
+    await h.sendText('todavia?');
+    expect(h.getSentMessages().at(-1)?.lang).toBe('es');
+  });
+});
+
+// ── Task 9: answer-integrity + RESTART/BACK ──────────────────────────────
+
+describe('answer-integrity: greetings and SUPPORT/SOPORTE at free-text steps are never saved', () => {
+  it('a greeting typed at profile.name is blocked and reprompted, not saved as the name', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110600' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('Hola');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // blocked, no advance
+    expect(h.getWorkerProfile()?.name).toBeUndefined();
+    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
+    expect(blockedReply).toBeDefined();
+
+    // A genuine answer typed right after still works normally.
+    await h.sendText('Jose Martinez');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+    expect(h.getWorkerProfile()?.name).toBe('Jose Martinez');
+  });
+
+  it('"Hola Maria" IS accepted and saved as the name — the false-positive guard', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110601' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+
+    await h.sendText('Hola Maria');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location'); // advanced normally
+    expect(h.getWorkerProfile()?.name).toBe('Hola Maria');
+  });
+
+  it('SUPPORT/SOPORTE at a trust question is blocked and not saved as an answer', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110602' });
+    await h.driveToStep('trust.question.2');
+    const answersBefore = h.getWorkerProfile()?.trustAnswers.length ?? 0;
+
+    await h.sendText('Soporte');
+
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.2'); // blocked, no advance
+    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore);
+    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
+    expect(blockedReply).toBeDefined();
+
+    // A genuine answer typed right after still works normally (this is a
+    // standard-trade, option-based question set — '1' is a valid choice).
+    await h.sendText('1');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.3');
+    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore + 1);
+  });
+});
+
+describe('RESTART/REINICIAR: redo the profile + trust answers', () => {
+  it('mid-trust: clears the seven profile answers and the trust-question scratch state, re-asks the name, and a full re-run (with re-seeded trust questions) completes onboarding', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110610' });
+    await h.driveToStep('trust.question.2', { trade: 'plumber' });
+    expect(h.getWorkerProfile()?.name).toBeTruthy();
+    expect(h.getWorkerProfile()?.trade).toBe('plumber');
+    expect(h.getState().stateContext.v2TrustQuestions).toBeDefined();
+
+    await h.sendText('RESTART');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    // The seven answer fields are gone from the fake profile store.
+    expect(h.getWorkerProfile()?.name).toBeUndefined();
+    expect(h.getWorkerProfile()?.location).toBeUndefined();
+    expect(h.getWorkerProfile()?.trade).toBeUndefined();
+    expect(h.getWorkerProfile()?.yearsExperience).toBeUndefined();
+    expect(h.getWorkerProfile()?.hasTransportation).toBeUndefined();
+    expect(h.getWorkerProfile()?.availability).toBeUndefined();
+    // The trust-question/trade scratch state is wiped so a re-run re-seeds.
+    expect(h.getState().stateContext.v2TrustQuestions).toBeUndefined();
+    expect(h.getState().stateContext.v2ProfileTrade).toBeUndefined();
+    expect(h.getState().stateContext.v2TrustSource).toBeUndefined();
+    const restartedPrompt = h.getSentMessages().at(-1);
+    expect(restartedPrompt?.sourceType).toContain('onboarding_v2:profile.name');
+
+    // Full re-run, this time a different trade, proves re-seeding actually
+    // happens rather than replaying stale questions.
+    await h.sendText('Ana Diaz');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+    await h.sendText('78701');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.trade');
+    await h.sendText('electrician');
+    await h.sendText('1'); // years_experience
+    await h.sendText('1'); // has_transportation
+    await h.sendText('1'); // availability -> trust handoff
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+    expect(h.getState().stateContext.v2ProfileTrade).toBe('electrician');
+    expect(h.getState().stateContext.v2TrustQuestions).toHaveLength(3);
+    expect(h.getWorkerProfile()?.name).toBe('Ana Diaz');
+    expect(h.getWorkerProfile()?.trade).toBe('electrician');
+
+    await h.sendText('1');
+    await h.sendText('1');
+    await h.sendText('1');
+    expect(h.getCompletions()).toHaveLength(1);
+    expect(h.getState().gate?.status).toBe('completed');
+  });
+
+  it('at profile.voice_processing: safe — clears the voice execution-arn anchor, and a LATER stale completion for the pre-restart ingest is silently discarded', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110611' });
+    h.setVoiceIntakeEnabled(true);
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    await h.sendVoiceNote();
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
+    expect(h.getPendingProfileIngests()).toHaveLength(1);
+
+    await h.sendText('RESTART');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    expect(h.getState().stateContext.v2VoiceExecutionArn).toBeUndefined();
+    expect(h.getState().stateContext.v2VoiceStartedAt).toBeUndefined();
+
+    // The OLD (pre-restart) ingest's pipeline completes late — must be a
+    // silent, harmless no-op: nothing sent, nothing applied to the profile,
+    // no state change.
+    const sentBefore = h.getSentMessages().length;
+    const late = await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: { full_name: 'Stale Person' },
+      confidences: { full_name: 0.9 },
+    });
+    expect(h.getSentMessages()).toHaveLength(sentBefore);
+    expect(h.getWorkerProfile()?.name).not.toBe('Stale Person');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    expect(late.stepKey).toBe('profile.name');
+  });
+});
+
+describe('BACK/ATRAS: redo the previous answer', () => {
+  it('at profile.trade: re-asks location; the new answer overwrites and the resolver continues to the first missing field (profile.trade)', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110620' });
+    await h.driveToStep('profile.trade', { lang: 'en' });
+    expect(h.getWorkerProfile()?.location).toEqual({ city: null, state: null, postalCode: '78701', source: 'zip' });
+
+    await h.sendText('BACK');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+    const backPrompt = h.getSentMessages().at(-1);
+    expect(backPrompt?.sourceType).toContain('onboarding_v2:profile.location');
+
+    await h.sendText('Austin, TX');
+
+    expect(h.getWorkerProfile()?.location).toEqual({ city: 'Austin', state: 'TX', postalCode: null, source: 'city_state' });
+    // name/location are filled, trade is still missing — resolver sends the
+    // worker back to profile.trade rather than re-asking the name.
+    expect(h.getState().gate?.currentStepKey).toBe('profile.trade');
+
+    // The rest of the flow proceeds normally afterward.
+    await h.sendText('electrician');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.experience');
+  });
+
+  it('at profile.name: blocked (nothing to go back to)', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110621' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendText('BACK');
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // blocked, no-op
+    const blockedReply = h.getSentMessages().find((m) => (m.sourceType ?? '').includes('v2_gate_blocked'));
+    expect(blockedReply).toBeDefined();
+
+    // Still works normally afterward.
+    await h.sendText('Jose Martinez');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.location');
+  });
+
+  it('ATRAS (Spanish) at trust.question.2 re-asks trust.question.1; the new answer overwrites and advances to trust.question.2 again', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110622' });
+    await h.driveToStep('trust.question.2', { lang: 'es' });
+    const answersBefore = h.getWorkerProfile()?.trustAnswers.length ?? 0;
+
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.1');
+
+    await h.sendText('2');
+    expect(h.getState().gate?.currentStepKey).toBe('trust.question.2');
+    expect(h.getWorkerProfile()?.trustAnswers.length).toBe(answersBefore + 1);
+  });
+});
+
+describe('Task 1/A1: a captioned photo must not discard usable text', () => {
+  it('a photo captioned with the OTP code verifies it exactly like typed text', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110700' });
+    await h.sendText('START');
+    const code = h.lastIssuedOtpCode();
+
+    const result = await h.sendMediaWithCaption(code);
+
+    expect(result.workerId).toBeTruthy();
+    expect(result.stepKey).toBe('legal.review');
+  });
+
+  it('a photo captioned with the worker\'s name saves it at profile.name', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110701' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    const result = await h.sendMediaWithCaption('Jose Martinez');
+
+    expect(h.getWorkerProfile()?.name).toBe('Jose Martinez');
+    expect(result.stepKey).toBe('profile.location');
+  });
+
+  // The genuine "ready worker sends a jobs command" flow lives entirely in
+  // processor.ts's legacy idle lane (the v2 router hands a ready worker off
+  // via `{handled: false, handoff: 'ready'}` before ever inspecting the
+  // command) — see processor.test.ts's dedicated coverage for that case.
+  // This test instead confirms the fix generically at a BOUND onboarding
+  // step whose command gate fires on captioned media: TRABAJOS is blocked-
+  // command classified everywhere except the free-text steps, so a caption
+  // at profile.name (free-text) is the sharpest proof it reaches the real
+  // gate/handler rather than being swallowed into voice-note copy.
+  it('a captioned command at a bound step is NOT discarded (gate/handler sees the caption, never trips voice copy)', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110702' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendMediaWithCaption('TRABAJOS');
+
+    // Blocked as a command (gate-blocked reprompt), never silently
+    // swallowed into voice-note copy.
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    const lastSent = h.getSentMessages().at(-1);
+    expect(lastSent?.sourceType).not.toContain('voice');
+  });
+
+  it('a bare voice note (no caption) at identity.verify_otp still gets the honest voice-not-supported reply', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110703' });
+    await h.sendText('START');
+
+    const result = await h.sendVoiceNote();
+
+    expect(result.workerId).toBeNull();
+    expect(result.stepKey).toBe('identity.verify_otp');
+    const lastSent = h.getSentMessages().at(-1);
+    expect(lastSent?.phase).toBe('pre_auth_text');
+  });
+
+  it('a bare voice note (no caption) at profile.name still gets the honest voice-not-supported reply', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110704' });
+    await h.driveToStep('legal.review', { lang: 'en' });
+    await h.sendText('ACCEPT');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+
+    await h.sendVoiceNote();
+
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // no advance
+    expect(h.getWorkerProfile()?.name).toBeUndefined();
+    const sentTags = h.getSentMessages().map((m) => m.sourceType ?? '');
+    expect(sentTags.some((tag) => tag.includes('v2_voice_not_supported'))).toBe(true);
+  });
+});
+
+// Incident pin (2026-07-27): the reset CLI once seeded a bound run at the
+// pre-auth step 'start.choose_language'. The verified-OTP rebind reused the
+// run untouched, and the bound router then crashed the claim on EVERY
+// message ("unhandled bound step") — a softlock the worker could not
+// escape. Pre-auth keys are only ever legitimate for the
+// worker_identity_challenges lane, so a bound run parked there must
+// self-heal to legal.review (where bind_verified_identity_and_start_workflow
+// would have started it) rather than throw.
+describe('self-heal: bound run parked on a pre-auth step key', () => {
+  for (const badStep of ['start.choose_language', 'identity.verify_otp'] as const) {
+    it(`heals a bound run at ${badStep} to legal.review instead of crashing`, async () => {
+      const h = createWhatsAppV2Harness({ phone: '+15551110090' });
+      await h.driveToStep('legal.review', { lang: 'es' });
+
+      // Corrupt the bound run the way the old reset CLI did — directly on
+      // the stored gate, mirroring an operator-tooling write.
+      const gate = h.getState().gate!;
+      gate.currentStepKey = badStep as typeof gate.currentStepKey;
+
+      const result = await h.sendText('hola');
+
+      expect(result.stepKey).toBe('legal.review');
+      expect(h.getState().gate?.currentStepKey).toBe('legal.review');
+
+      const heal = h.getTransitions().find((t) => t.reason === 'self_heal_preauth_step');
+      expect(heal).toBeDefined();
+      expect(heal?.fromStepKey).toBe(badStep);
+      expect(heal?.toStepKey).toBe('legal.review');
+
+      // The worker gets the legal prompt, not silence or an error reply.
+      expect(h.getLegalPromptPresentations().length).toBeGreaterThanOrEqual(2);
+
+      // And the flow continues normally from there.
+      await h.sendText('ACEPTAR');
+      expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    });
+  }
+
+  it('BACK never lands on a pre-auth step even after a self-heal recorded one as from_step_key', async () => {
+    const h = createWhatsAppV2Harness({ phone: '+15551110091' });
+    await h.driveToStep('legal.review', { lang: 'es' });
+
+    const gate = h.getState().gate!;
+    gate.currentStepKey = 'start.choose_language' as typeof gate.currentStepKey;
+    await h.sendText('hola'); // self-heal -> legal.review (records the transition)
+    await h.sendText('ACEPTAR'); // legal -> profile.name
+    await h.sendText('Maria Lopez'); // name -> profile.location
+
+    // BACK from location walks to profile.name; a second BACK is blocked at
+    // profile.name — it must never resolve the self-heal transition's
+    // from_step_key ('start.choose_language') as a target.
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    await h.sendText('ATRAS');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
   });
 });

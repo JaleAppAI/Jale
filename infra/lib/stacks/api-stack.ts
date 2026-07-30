@@ -682,6 +682,16 @@ export class ApiStack extends cdk.Stack {
           ThrottlingBurstLimit: 20,
           ThrottlingRateLimit: 10,
         },
+        // POST /auth/worker/signup — unauthenticated account creation; the
+        // cheapest mass pre-registration vector without its own throttle
+        // (2026-07-26 security review). Legitimate traffic is one call per
+        // human signup.
+        {
+          ResourcePath: '/auth/worker/signup',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
         // POST /employer/billing/checkout — idempotent but involves Stripe API calls
         {
           ResourcePath: '/employer/billing/checkout',

@@ -272,22 +272,6 @@ const TRUST_OPTION_LABELS_ES: Record<string, string> = {
   'Site cleanup/safety': 'Limpieza y seguridad',
 };
 
-export function parseTrustAnswer(
-  step: number,
-  trade: string,
-  rawInput: string,
-): TrustAnswer | null {
-  const index = parseInt(rawInput.trim(), 10) - 1;
-  const options = getTrustOptions(step, trade);
-  if (Number.isNaN(index) || index < 0 || index >= options.length) return null;
-  return {
-    questionKey: TRUST_STEPS[step] ?? TRUST_STEPS[0],
-    optionKey: `opt_${index}`,
-    label: options[index],
-    answeredAt: new Date().toISOString(),
-  };
-}
-
 export interface TypedJobAction {
   index: number;
   action: 'accept' | 'decline' | 'info';
@@ -370,6 +354,30 @@ export function isGreetingKeyword(text: string): boolean {
     if (GREETING_PHRASES.includes(phrase)) return true;
   }
   return GREETING_WORDS.includes(words[0]);
+}
+
+/**
+ * Exact-match sibling of `isGreetingKeyword`, for the WhatsApp v2 onboarding
+ * gate's free-text answer steps (the worker's name, custom trade, trust
+ * answers — see `onboarding/gate.ts`'s FREE_TEXT_STEPS). `isGreetingKeyword`
+ * treats ANY message that STARTS WITH a greeting word as a greeting — by
+ * design, for the v1 idle-router's classification use case ("hola quiero
+ * trabajo" should route as a greeting) — which would eat a legitimate answer
+ * like "Hola Maria" as a name. This variant requires the ENTIRE trimmed,
+ * lowercased message to BE the greeting word/phrase and nothing else, so
+ * "Hola" is blocked but "Hola Maria" is accepted as a genuine answer.
+ */
+export function isExactGreetingKeyword(text: string): boolean {
+  const n = text.trim().toLowerCase();
+  const words = n.match(/[a-záéíóúñ]+/gi);
+  if (!words || words.length === 0 || words.length > 2) return false;
+  if (words.length === 1) {
+    return GREETING_WORDS.includes(words[0]);
+  }
+  const phrase = `${words[0]} ${words[1]}`
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+  return GREETING_PHRASES.includes(phrase);
 }
 
 export function isJobsKeyword(text: string): boolean {
@@ -533,32 +541,6 @@ export function parseProfilePayloadAnswer(
       : rawValue;
 
   return def.options.includes(value) ? value : null;
-}
-
-export function parseTrustPayloadAnswer(
-  step: number,
-  trade: string,
-  payload: string | undefined,
-): TrustAnswer | null {
-  if (!payload) return null;
-  const m = payload.match(/^trust:(\d+):(\d+)$/);
-  if (!m) return null;
-
-  const payloadStep = parseInt(m[1], 10);
-  const optionIndex = parseInt(m[2], 10);
-  if (payloadStep !== step) return null;
-
-  const options = getTrustOptions(step, trade);
-  if (Number.isNaN(optionIndex) || optionIndex < 0 || optionIndex >= options.length) {
-    return null;
-  }
-
-  return {
-    questionKey: TRUST_STEPS[step] ?? TRUST_STEPS[0],
-    optionKey: `opt_${optionIndex}`,
-    label: options[optionIndex],
-    answeredAt: new Date().toISOString(),
-  };
 }
 
 // ── Profile answer parsing ──────────────────────────────────────

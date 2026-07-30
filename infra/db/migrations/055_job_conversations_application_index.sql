@@ -1,5 +1,5 @@
 -- ============================================================
--- 046_job_conversations_application_index.sql
+-- 055_job_conversations_application_index.sql
 -- Index job_conversations.application_id for the employer inbox query.
 -- Connect as: jale_admin (NOT the RDS master user)
 --

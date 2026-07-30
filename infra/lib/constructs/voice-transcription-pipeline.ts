@@ -52,11 +52,18 @@ export class VoiceTranscriptionPipeline extends Construct {
       resultPath: '$.transcribeStatus',
     });
 
+    // executionArn ($$.Execution.Id) is threaded as a top-level sibling of
+    // executionContext (not merged into it) — this construct is shared by
+    // both the trust and profile-intake pipelines, and only the latter's v2
+    // completion branch (ai-profile-writer.ts) reads it, to embed a
+    // deterministic staleness anchor in the outbound ProfileIntakeVoiceEventV2
+    // (see onboarding/steps/voice.ts's handleVoiceIntakeResult).
     const invokeOnCompleted = new tasks.LambdaInvoke(this, 'InvokeOnCompleted', {
       lambdaFunction: props.completionHandler,
       payload: sfn.TaskInput.fromObject({
         status: 'COMPLETED',
         executionContext: sfn.TaskInput.fromJsonPathAt('$').value,
+        executionArn: sfn.JsonPath.stringAt('$$.Execution.Id'),
       }),
       resultPath: sfn.JsonPath.DISCARD,
     });
@@ -66,6 +73,7 @@ export class VoiceTranscriptionPipeline extends Construct {
       payload: sfn.TaskInput.fromObject({
         status: 'FAILED',
         executionContext: sfn.TaskInput.fromJsonPathAt('$').value,
+        executionArn: sfn.JsonPath.stringAt('$$.Execution.Id'),
       }),
       resultPath: sfn.JsonPath.DISCARD,
     });

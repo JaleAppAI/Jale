@@ -54,7 +54,16 @@ const expectedBaselineMigrations = [
   '043_whatsapp_worker_intent_transport.sql',
   '044_job_message_outbox_send_unknown.sql',
   '045_applications_employer_update_repair.sql',
-  '046_job_conversations_application_index.sql',
+  '046_whatsapp_active_workflow_rebind.sql',
+  '047_whatsapp_identity_challenge_delete_hardening.sql',
+  '048_worker_domain_outbox_user_fk.sql',
+  '049_whatsapp_v2_flow_privilege_repair.sql',
+  '050_whatsapp_v2_profile_steps.sql',
+  '051_whatsapp_voice_intake_control.sql',
+  '052_worker_pending_name_and_skills_reset.sql',
+  '053_whatsapp_web_worker_bypass.sql',
+  '054_remove_onboarding_v2_control.sql',
+  '055_job_conversations_application_index.sql',
 ];
 
 function migrationFiles(): string[] {

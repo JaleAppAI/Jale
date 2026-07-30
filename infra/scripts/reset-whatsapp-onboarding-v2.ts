@@ -1,12 +1,17 @@
 /**
  * Operator CLI: exact-target WhatsApp v2 onboarding reset.
  *
- * Resets exactly ONE worker's onboarding/profile/trust state back to a fresh
- * `start.choose_language` run, so the WhatsApp onboarding v2 flow can be
- * retested for that account. There is no list mode, no wildcard, no
- * phone-only mode, and no all-users mode: `--user-id` and `--phone` must both
- * be supplied exactly once, and `--phone` must match the resolved user's
- * verified (whatsapp_number) phone before anything is touched.
+ * Resets exactly ONE worker's onboarding/profile/trust state back to the
+ * pre-auth entry point, so the WhatsApp onboarding v2 flow can be retested
+ * for that account: the next inbound message gets the language choice, then
+ * the OTP, and the verified bind creates the workflow run at 'legal.review'
+ * exactly like a brand-new worker (bind_verified_identity_and_start_workflow,
+ * migration 047). No worker_workflow_runs row is seeded — see the comment at
+ * the seed site for the softlock an earlier seeded-run version caused. There
+ * is no list mode, no wildcard, no phone-only mode, and no all-users mode:
+ * `--user-id` and `--phone` must both be supplied exactly once, and `--phone`
+ * must match the resolved user's verified (whatsapp_number) phone before
+ * anything is touched.
  *
  * Usage:
  *   cd infra
@@ -25,13 +30,6 @@ import * as path from 'path';
 
 import { hashNormalizedPhone } from '../lambda/whatsapp/lib/runtime-controls';
 
-/**
- * Mirrors the frozen onboarding-v2 workflow lane's `processor.ts` constant.
- * Duplicated as a local constant (not imported) because that file lives under
- * `lambda/` and this task must not import from `lambda/` process code paths
- * outside the already-approved `runtime-controls.ts` hashing helper.
- */
-export const WHATSAPP_V2_WORKFLOW_VERSION = 1;
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -152,7 +150,7 @@ export function parseResetArgs(argv: string[]): ParseResetArgsResult {
  * phone_hash) — never a bare `DELETE FROM <table>`. Bind order is always
  * [userId, phone, phoneHash] -> $1, $2, $3.
  */
-const DELETE_STEPS: Array<{ table: string; predicate: string }> = [
+export const DELETE_STEPS: Array<{ table: string; predicate: string }> = [
   { table: 'worker_message_intents', predicate: 'user_id = $1' },
   { table: 'worker_domain_outbox', predicate: 'aggregate_id = $1' },
   {
@@ -267,6 +265,31 @@ export interface ResetOutcome {
  * prints or logs the raw phone; only its 64-hex SHA-256 hash is used or
  * persisted.
  */
+/**
+ * Rewrites a statement to bind exactly — and only — the parameters it
+ * references from the shared [userId, phone, phoneHash] list. PostgreSQL's
+ * extended query protocol rejects both a Bind carrying more parameters than
+ * the statement's highest `$n` ("bind message supplies 3 parameters, but
+ * prepared statement requires 1") and a supplied placeholder the statement
+ * never references ("could not determine data type of parameter $2", for a
+ * predicate using $1 and $3 but not $2). So the referenced placeholders are
+ * renumbered densely ($1 $3 -> $1 $2) and the value list is built to match.
+ * The unit-test fake client enforced neither rule, which is how the
+ * original full-list binding shipped; found on the first real production
+ * run, gated by whatsapp-onboarding-reset.integration.test.ts since.
+ */
+export function bindStatement(
+  sql: string,
+  params: unknown[],
+): { text: string; values: unknown[] } {
+  const used = [
+    ...new Set([...sql.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]))),
+  ].sort((a, b) => a - b);
+  const renumbered = new Map(used.map((original, i) => [original, i + 1]));
+  const text = sql.replace(/\$(\d+)/g, (_, n) => `$${renumbered.get(Number(n))}`);
+  return { text, values: used.map((n) => params[n - 1]) };
+}
+
 export async function runReset(
   client: Queryable,
   args: ResetArgs & { operator: string },
@@ -295,24 +318,25 @@ export async function runReset(
     const tableCounts: Record<string, number> = {};
 
     for (const step of DELETE_STEPS) {
-      const result = await client.query(
+      const bound = bindStatement(
         `SELECT count(*)::int AS count FROM ${step.table} WHERE ${step.predicate}`,
         params,
       );
+      const result = await client.query(bound.text, bound.values);
       const row = result.rows[0] as { count: number } | undefined;
       tableCounts[step.table] = row?.count ?? 0;
     }
 
     const profileCount = await client.query(
       `SELECT count(*)::int AS count FROM worker_profiles WHERE user_id = $1`,
-      params,
+      [userId],
     );
     tableCounts['worker_profiles'] =
       (profileCount.rows[0] as { count: number } | undefined)?.count ?? 0;
 
     const userCount = await client.query(
       `SELECT count(*)::int AS count FROM users WHERE id = $1`,
-      params,
+      [userId],
     );
     tableCounts['users'] =
       (userCount.rows[0] as { count: number } | undefined)?.count ?? 0;
@@ -326,25 +350,33 @@ export async function runReset(
     }
 
     for (const step of DELETE_STEPS) {
-      await client.query(
+      const bound = bindStatement(
         `DELETE FROM ${step.table} WHERE ${step.predicate}`,
         params,
       );
+      await client.query(bound.text, bound.values);
     }
 
-    await client.query(WORKER_PROFILES_UPDATE, params);
-    await client.query(USERS_UPDATE, params);
+    const profilesUpdate = bindStatement(WORKER_PROFILES_UPDATE, params);
+    await client.query(profilesUpdate.text, profilesUpdate.values);
+    const usersUpdate = bindStatement(USERS_UPDATE, params);
+    await client.query(usersUpdate.text, usersUpdate.values);
 
     await client.query(
       `INSERT INTO worker_onboarding_state (user_id, lifecycle) VALUES ($1, 'onboarding')`,
-      params,
+      [userId],
     );
-    await client.query(
-      `INSERT INTO worker_workflow_runs
-         (user_id, workflow_version, current_step_key, status)
-       VALUES ($1, $2, 'start.choose_language', 'active')`,
-      [userId, WHATSAPP_V2_WORKFLOW_VERSION],
-    );
+    // Deliberately NO worker_workflow_runs seed. 'start.choose_language' and
+    // 'identity.verify_otp' belong to the pre-auth worker_identity_challenges
+    // lane; a bound run is only ever legitimately created by
+    // bind_verified_identity_and_start_workflow (migration 047), which starts
+    // it at 'legal.review' on the first correct OTP. An earlier version
+    // seeded a run at 'start.choose_language' here, and the verified-OTP
+    // rebind then reused that run as-is — softlocking the worker on
+    // "unhandled bound step: start.choose_language" with every subsequent
+    // message. The reset deletes the conversation above, so the next inbound
+    // always enters the pre-auth lane and the account restarts exactly like
+    // a brand-new worker: language -> OTP -> bind creates the run.
 
     const auditResult = await client.query(
       `INSERT INTO worker_reset_audit

@@ -5,9 +5,11 @@
     "infra": "bin/infra.js"
   },
   "scripts": {
+    "postinstall": "node scripts/patch-cdk-brace-expansion.mjs",
     "build": "tsc",
     "watch": "tsc -w",
-    "test": "jest",
+    "test": "jest --maxWorkers=2",
+    "test:ci": "jest",
     "cdk": "cdk",
     "deploy": "npm run test && npx cdk deploy",
     "test:integration": "jest --config jest.integration.config.js",
@@ -48,5 +50,8 @@
     "constructs": "^10.5.0",
     "pg": "^8.20.0",
     "stripe": "22.3.0"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }

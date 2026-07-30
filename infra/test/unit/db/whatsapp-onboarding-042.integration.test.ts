@@ -61,15 +61,24 @@ async function asWhatsapp<T extends QueryResultRow = QueryResultRow>(
 maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
   const workerA = randomUUID();
   const workerB = randomUUID();
+  const workerRebind = randomUUID();
   const sourceA = randomUUID();
   const sourceB = randomUUID();
   const conversationA = randomUUID();
   const conversationB = randomUUID();
   const conflictingConversation = randomUUID();
+  const rebindConversation = randomUUID();
+  const workerOrphan = randomUUID();
+  const workerCascade = randomUUID();
+  const conversationOrphan = randomUUID();
+  const conversationCascade = randomUUID();
   const hashA = 'a'.repeat(64);
   const hashB = 'b'.repeat(64);
   const lockedHash = 'c'.repeat(64);
   const expiredHash = 'd'.repeat(64);
+  const rebindHash = 'e'.repeat(64);
+  const orphanHash = 'f'.repeat(64);
+  const cascadeHash = '9'.repeat(64);
   let setup: Client;
 
   beforeAll(async () => {
@@ -77,22 +86,35 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     await setup.connect();
     await applyLocalRlsRecursionWorkaround(setup);
     await setup.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES
-      ($1, $2, 'worker'), ($3, $4, 'worker')`,
-    [workerA, `v2-a-${workerA}`, workerB, `v2-b-${workerB}`]);
+      ($1, $2, 'worker'), ($3, $4, 'worker'), ($5, $6, 'worker')`,
+    [
+      workerA, `v2-a-${workerA}`,
+      workerB, `v2-b-${workerB}`,
+      workerRebind, `v2-rebind-${workerRebind}`,
+    ]);
     await setup.query(`INSERT INTO whatsapp_conversations
       (id, user_id, whatsapp_number, conversation_state) VALUES
       ($1, NULL, '+15550000421', 'awaiting_otp'),
       ($2, NULL, '+15550000422', 'awaiting_otp'),
-      ($3, NULL, '+15550000423', 'awaiting_otp')`,
-    [conversationA, conversationB, conflictingConversation]);
+      ($3, NULL, '+15550000423', 'awaiting_otp'),
+      ($4, NULL, '+15550000424', 'awaiting_otp')`,
+    [conversationA, conversationB, conflictingConversation, rebindConversation]);
+    await setup.query(`INSERT INTO users (id, cognito_sub, user_type) VALUES
+      ($1, $2, 'worker'), ($3, $4, 'worker')`,
+    [workerOrphan, `v2-orphan-${workerOrphan}`, workerCascade, `v2-cascade-${workerCascade}`]);
+    await setup.query(`INSERT INTO whatsapp_conversations
+      (id, user_id, whatsapp_number, conversation_state) VALUES
+      ($1, NULL, '+15550000425', 'awaiting_otp'),
+      ($2, NULL, '+15550000426', 'awaiting_otp')`,
+    [conversationOrphan, conversationCascade]);
   });
 
   afterAll(async () => {
-    await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB]]);
-    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB]]);
-    await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash]]);
-    await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation]]);
-    await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB]]);
+    await setup.query('DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind, workerOrphan, workerCascade]]);
+    await setup.query('DELETE FROM worker_reset_audit WHERE user_id = ANY($1::uuid[])', [[workerA, workerB, workerRebind, workerOrphan, workerCascade]]);
+    await setup.query('DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])', [[hashA, hashB, lockedHash, expiredHash, rebindHash, orphanHash, cascadeHash]]);
+    await setup.query('DELETE FROM whatsapp_conversations WHERE id = ANY($1::uuid[])', [[conversationA, conversationB, conflictingConversation, rebindConversation, conversationOrphan, conversationCascade]]);
+    await setup.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [[workerA, workerB, workerRebind, workerOrphan, workerCascade]]);
     await setup.end();
   });
 
@@ -199,6 +221,106 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     const raced = await Promise.all([asWhatsapp(sql, argsB), asWhatsapp(sql, argsB)]);
     expect(raced[0].rows).toEqual(raced[1].rows);
     expect(raced[0].rows).toHaveLength(1);
+  });
+
+  test('verified binding reuses an existing active workflow run', async () => {
+    const existingRun = randomUUID();
+    await setup.query(`INSERT INTO worker_onboarding_state (user_id, lifecycle)
+      VALUES ($1, 'onboarding')`, [workerRebind]);
+    await setup.query(`INSERT INTO worker_workflow_runs
+      (id, user_id, workflow_version, current_step_key, status, preferred_language)
+      VALUES ($1, $2, 2, 'profile.trade', 'active', 'es')`,
+    [existingRun, workerRebind]);
+    await asWhatsapp('SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)', [rebindHash,
+      JSON.stringify({
+        provider_challenge_id: 'provider-rebind',
+        current_step_key: 'identity.verify_otp',
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+      })]);
+
+    const result = await asWhatsapp<{ challenge_id: string; onboarding_state_id: string; run_id: string }>(
+      'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
+      [rebindHash, workerRebind, rebindConversation, 'en', 'SMrebind', '{}'],
+    );
+
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0].run_id).toBe(existingRun);
+    const activeRuns = await setup.query<{ id: string; current_step_key: string; preferred_language: string }>(
+      `SELECT id, current_step_key, preferred_language
+         FROM worker_workflow_runs
+        WHERE user_id = $1 AND status = 'active'`,
+      [workerRebind],
+    );
+    expect(activeRuns.rows).toEqual([{
+      id: existingRun,
+      current_step_key: 'profile.trade',
+      preferred_language: 'es',
+    }]);
+    const conversation = await setup.query<{ user_id: string }>(
+      'SELECT user_id FROM whatsapp_conversations WHERE id = $1',
+      [rebindConversation],
+    );
+    expect(conversation.rows).toEqual([{ user_id: workerRebind }]);
+  });
+
+  test('deleting a worker cascades away its identity challenges (045 hardening)', async () => {
+    // Migration 045 flips the verified_user_id FK to ON DELETE CASCADE so a
+    // verified challenge cannot outlive the worker it was bound to.
+    await setup.query(`INSERT INTO worker_identity_challenges (phone_hash, status, verified_user_id)
+      VALUES ($1, 'verified', $2)`, [cascadeHash, workerCascade]);
+    expect((await setup.query(
+      'SELECT 1 FROM worker_identity_challenges WHERE phone_hash = $1', [cascadeHash])).rowCount).toBe(1);
+
+    await setup.query('DELETE FROM users WHERE id = $1', [workerCascade]);
+
+    expect((await setup.query(
+      'SELECT 1 FROM worker_identity_challenges WHERE phone_hash = $1', [cascadeHash])).rowCount).toBe(0);
+  });
+
+  test('self-heals an orphaned verified challenge so a deleted worker can re-onboard (045)', async () => {
+    // Simulate a verified challenge left orphaned by a pre-045 deletion: its
+    // bound identity is gone (verified_user_id NULL, context points at rows that
+    // no longer exist), but the row survives with status='verified'. Before 045
+    // this raised 'conflicting verified identity replay' on every re-signon.
+    await setup.query(`INSERT INTO worker_identity_challenges
+      (phone_hash, status, verified_user_id, context)
+      VALUES ($1, 'verified', NULL, $2::jsonb)`,
+    [orphanHash, JSON.stringify({
+      bound_conversation_id: randomUUID(),
+      onboarding_state_id: randomUUID(),
+      workflow_run_id: randomUUID(),
+    })]);
+    // The worker restarts sign-on: a fresh pending challenge is created.
+    await asWhatsapp('SELECT * FROM public.save_worker_pre_auth($1, $2::jsonb)', [orphanHash,
+      JSON.stringify({
+        provider_challenge_id: 'provider-orphan', current_step_key: 'identity.verify_otp',
+        expires_at: new Date(Date.now() + 300_000).toISOString(),
+      })]);
+
+    // Binding must SUCCEED: the orphan is superseded, a fresh run is created.
+    const result = await asWhatsapp<{ challenge_id: string; onboarding_state_id: string; run_id: string }>(
+      'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
+      [orphanHash, workerOrphan, conversationOrphan, 'es', 'SMorphan', '{}']);
+    expect(result.rows).toHaveLength(1);
+
+    // The stale row is now superseded, and the fresh run belongs to workerOrphan.
+    const superseded = await setup.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM worker_identity_challenges
+        WHERE phone_hash = $1 AND status = 'superseded'`, [orphanHash]);
+    expect(superseded.rows).toEqual([{ count: '1' }]);
+    const run = await setup.query<{ user_id: string }>(
+      'SELECT user_id FROM worker_workflow_runs WHERE id = $1', [result.rows[0].run_id]);
+    expect(run.rows).toEqual([{ user_id: workerOrphan }]);
+  });
+
+  test('preserves the replay guard for a still-live verified identity (045)', async () => {
+    // Regression guard: self-heal must NOT weaken same-hash hijack protection.
+    // hashA is already verified+bound to workerA (live) from the earlier test;
+    // a different worker/conversation on the same hash must still be rejected.
+    await expect(asWhatsapp(
+      'SELECT * FROM public.bind_verified_identity_and_start_workflow($1,$2,$3,2,$4,$5,$6::jsonb)',
+      [hashA, workerB, conversationA, 'en', 'SMlive-conflict', '{}'],
+    )).rejects.toMatchObject({ code: '55000' });
   });
 
   test('pre-auth functions expose only one exact validated hash', async () => {
@@ -334,18 +456,48 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
     ]));
   });
 
-  test('migration 042 executes cleanly a second time as the plain migration owner', async () => {
+  test('replaying migrations 042 then 050 leaves the widened step constraint intact', async () => {
+    // 042 alone is NO LONGER replayable once 050 has run: 042's self-audit
+    // asserts its own ten-value current_step_key CHECK verbatim, and 050
+    // deliberately widens that constraint to seventeen keys. That is by
+    // design — 042 is applied in real environments and must not be edited.
+    //
+    // What actually has to hold is (a) a failed 042 replay is transactional,
+    // so it can never leave the constraint half-migrated, and (b) replaying
+    // the chain in order converges on the widened constraint. Operators
+    // replay the chain, never a single file in isolation.
     const ownerUrl = new URL(databaseUrl!);
     ownerUrl.username = 'jale_admin';
     ownerUrl.password = 'test-admin-pw';
     const owner = new Client({ connectionString: ownerUrl.toString() });
     await owner.connect();
     try {
-      const migration = fs.readFileSync(
-        path.join(__dirname, '..', '..', '..', 'db', 'migrations', '042_whatsapp_onboarding_gate.sql'),
+      const read = (file: string) => fs.readFileSync(
+        path.join(__dirname, '..', '..', '..', 'db', 'migrations', file),
         'utf8',
       );
-      await owner.query(migration);
+
+      await expect(owner.query(read('042_whatsapp_onboarding_gate.sql')))
+        .rejects.toThrow(/migration 042 check constraint self-audit failed/);
+
+      // 042 opens its own BEGIN, so the aborted transaction is still open on
+      // this session. Discard it exactly as an operator's psql session would.
+      await owner.query('ROLLBACK');
+
+      // The failed replay rolled back: the widened constraint is untouched.
+      const afterFailure = await owner.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+          WHERE conname = 'worker_workflow_runs_current_step_key_check'`,
+      );
+      expect(afterFailure.rows[0].def).toContain('profile.availability');
+
+      // Replaying 050 is idempotent and converges on the same end state.
+      await owner.query(read('050_whatsapp_v2_profile_steps.sql'));
+      const afterReplay = await owner.query<{ def: string }>(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+          WHERE conname = 'worker_workflow_runs_current_step_key_check'`,
+      );
+      expect(afterReplay.rows[0].def).toBe(afterFailure.rows[0].def);
     } finally {
       await owner.end();
     }
@@ -375,7 +527,7 @@ maybeDescribe('migration 042 WhatsApp onboarding gate', () => {
       'SELECT user_id FROM worker_message_intents ORDER BY user_id', [], workerA)).rows)
       .toEqual([{ user_id: workerA }]);
     await expect(asWhatsapp(`UPDATE whatsapp_runtime_controls SET enabled = true
-      WHERE control_key = 'onboarding_v2_enabled'`, [], workerA))
+      WHERE control_key = 'voice_intake_enabled'`, [], workerA))
       .rejects.toMatchObject({ code: '42501' });
   });
 

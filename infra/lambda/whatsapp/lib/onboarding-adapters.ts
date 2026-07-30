@@ -34,7 +34,6 @@ import {
   normalizeProfession,
   type TrustQuestion,
 } from '../handlers/custom-trust';
-import type { WorkerLocationSource } from '../../lib/location';
 import {
   TRUST_QUESTIONS,
   TRUST_STEPS,
@@ -42,6 +41,7 @@ import {
   getTrustOptions,
   buildTrustQuestion,
 } from './flows';
+import { upsertWorkerProfileFromUsers } from './profile-flow';
 
 // ── Local constants ────────────────────────────────────────────────────
 //
@@ -70,7 +70,16 @@ export type IssueChallengeResult =
 
 export type VerifyChallengeResult =
   | { status: 'verified'; workerId: string }
-  | { status: 'invalid'; attemptsRemaining: number; attempts: number }
+  /**
+   * `rotatedChallengeId` is REQUIRED (not optional) on purpose: Cognito
+   * rotates the CUSTOM_CHALLENGE Session on every wrong answer, and the
+   * NEXT submission is only valid against the rotated session. An optional
+   * field would let every test fake omit it and silently re-mask the very
+   * regression this fixes (v1 solved it in processor.ts's recordWrongOtp;
+   * the v2 rewrite dropped it). `null` means the provider gave us no new
+   * session (the SDK call threw a non-session error) — keep the old one.
+   */
+  | { status: 'invalid'; attemptsRemaining: number; attempts: number; rotatedChallengeId: string | null }
   | { status: 'expired' }
   | { status: 'locked'; lockedUntil: Date };
 
@@ -110,6 +119,11 @@ export interface IdentityAdapter {
    * the adapter instance itself would silently reset every call — the
    * three-strike lockout only works if the caller persists what this
    * method returns through `savePreAuthState` between calls.
+   *
+   * The same contract covers the rotated session: on an 'invalid' result
+   * the caller MUST persist `rotatedChallengeId` (when non-null) into
+   * `providerChallengeId`, or the worker's second submission fails against
+   * the stale Cognito session even when the code is correct.
    */
   verifyChallenge(
     client: PoolClient,
@@ -208,6 +222,11 @@ export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapte
         }
         // Any other thrown error (e.g. Cognito's own max-retries fail) is
         // treated as a wrong code, falling through to attempt accounting.
+        // resp === undefined also means there is NO rotated session below:
+        // the caller keeps its stored one, and the next attempt lands on
+        // the /session/i branch above → 'expired' → RESEND, which is the
+        // correct recovery because that session genuinely cannot continue
+        // (mirrors v1's recordWrongOtp(..., undefined) at processor.ts).
         resp = undefined;
       }
 
@@ -228,6 +247,12 @@ export function createIdentityAdapter(deps: IdentityAdapterDeps): IdentityAdapte
         status: 'invalid',
         attemptsRemaining: OTP_MAX_ATTEMPTS - newCount,
         attempts: newCount,
+        // Cognito answered 200-with-new-Session for a wrong-but-retryable
+        // answer (define-auth-challenge allows 3 in-session attempts, and
+        // create-auth-challenge reuses the SAME code on retry). The caller
+        // must persist this into providerChallengeId or the next
+        // submission — even the correct code — dies on the stale session.
+        rotatedChallengeId: resp?.Session ?? null,
       };
     },
   };
@@ -248,11 +273,6 @@ export interface LocationResolver {
 
 const ZIP_RE = /^\d{5}$/;
 const CITY_STATE_RE = /^([A-Za-z][A-Za-z .'-]*),\s*([A-Za-z]{2})$/;
-
-/** Maps this adapter's `source` vocabulary onto the shared worker-location vocabulary. */
-export function toWorkerLocationSource(source: ResolvedLocation['source']): WorkerLocationSource {
-  return source === 'zip' ? 'geocoded_zip' : 'geocoded_address';
-}
 
 export function createLocationResolver(): LocationResolver {
   return {
@@ -309,7 +329,39 @@ export interface ProfilePersistenceAdapter {
   saveName(client: PoolClient, workerId: string, name: string): Promise<void>;
   saveLocation(client: PoolClient, workerId: string, location: ResolvedLocation): Promise<void>;
   saveTrade(client: PoolClient, workerId: string, trade: string): Promise<void>;
+  /**
+   * Defect 1 fix: persists the worker's raw, un-normalized typed profession
+   * (e.g. "welder") into `users.main_trade_other` alongside
+   * `main_trade = 'other'`. V1 already does this; V2's `handleCustomTrade`
+   * previously normalized the text and threw the raw value away, which also
+   * starved `upsertWorkerProfileFromUsers`'s starter-skill seed (it refuses
+   * to seed the literal string 'other' and needs `main_trade_other` to seed
+   * anything meaningful for a custom trade).
+   */
+  saveCustomTrade(client: PoolClient, workerId: string, rawProfession: string): Promise<void>;
+  saveExperience(client: PoolClient, workerId: string, yearsExperience: string): Promise<void>;
+  saveTransportation(client: PoolClient, workerId: string, hasTransportation: boolean): Promise<void>;
+  saveAvailability(client: PoolClient, workerId: string, availability: string): Promise<void>;
   saveTrustAnswer(client: PoolClient, input: TrustAnswerInput): Promise<void>;
+  /**
+   * Defect 2 fix: the canonical "profile complete -> about to hand off to
+   * trust" sync point. Calls the canonical `upsertWorkerProfileFromUsers`
+   * projection (never re-implements it) and then reports whether the
+   * resulting `worker_profiles`/`worker_skills` state has everything the
+   * product needs (name, a skill, availability, location) so the caller can
+   * fail closed rather than advance a worker into `trust.question.1` — and
+   * eventually `ready` — with a profile the web app / matching engine will
+   * reject.
+   */
+  syncProfileForTrustHandoff(client: PoolClient, workerId: string): Promise<ProfileSyncResult>;
+}
+
+/** Result of the pre-trust `syncProfileForTrustHandoff` gate. `missing` lists
+ * which required fields are still absent after the sync ran, for structured
+ * logging by the caller. */
+export interface ProfileSyncResult {
+  ready: boolean;
+  missing: string[];
 }
 
 /**
@@ -321,11 +373,25 @@ export interface ProfilePersistenceAdapter {
  * to record which question set / scoring model produced the assessment —
  * route provenance through those columns rather than inventing new storage.
  */
+/**
+ * Defect 3 fix: 'voice' is reserved for a later chunk (voice-answered trust
+ * questions) — not implemented here. Typing the field as a union now, rather
+ * than a bare 'text' literal, means that later addition only needs a new
+ * caller value, not a widened type.
+ */
+export type TrustAnswerSource = 'text' | 'voice';
+
 export interface TrustAnswerInput {
   workerId: string;
   professionKey: string;
   questionIndex: number;
+  /** Bilingual question text, threaded through so `trust-scorer.ts`'s
+   * `{ q_en, answer_text }` read (trust-scorer.ts:~154) resolves to real
+   * text instead of `undefined`. */
+  qEn: string;
+  qEs: string;
   answerText: string;
+  answerSource: TrustAnswerSource;
   provenance?: { rubricVersion?: string; scoringModelId?: string };
 }
 
@@ -345,26 +411,42 @@ export function createProfilePersistenceAdapter(
     },
 
     async saveLocation(client, workerId, location) {
-      const source = toWorkerLocationSource(location.source);
+      // Defect 2 fix: a worker who hasn't hit the trust-handoff sync point
+      // yet (or any earlier profile step) may have NO `worker_profiles` row
+      // at all. The UPDATE below silently touches zero rows in that case.
+      // Guaranteeing the row via the canonical projection first makes this
+      // UPDATE meaningful for every worker, not just ones lucky enough to
+      // already have a row.
+      await upsertWorkerProfileFromUsers(client, workerId);
+
       const locationText =
         location.source === 'city_state' && location.city && location.state
           ? `${location.city}, ${location.state}`
           : location.postalCode;
 
-      // `users.city` feeds profile-builder display; `worker_profiles`
-      // carries the matching-relevant location_source/location_updated_at
-      // columns already used by lambda/lib/location.ts's setWorkerCoordinates.
+      // `users.city` feeds profile-builder display; `worker_profiles.location`
+      // (plain TEXT, 003_jobs_and_applications.sql) feeds the trust-handoff
+      // readiness check.
+      //
+      // 2026-07-26 incident fix: this UPDATE must NEVER touch the five
+      // coordinate columns (latitude, longitude, location_source,
+      // location_confidence, location_updated_at). They are bound together by
+      // the all-or-nothing CHECK `worker_profiles_location_complete`
+      // (009_location_foundation.sql), and this adapter has no coordinates —
+      // `ResolvedLocation` is regex-parsed text, not geocoded. Writing
+      // location_source/location_updated_at alone violated the CHECK and
+      // wedged every worker at profile.location. The only writer allowed to
+      // touch that column group is lambda/lib/location.ts's
+      // setWorkerCoordinates, which sets all five atomically.
       await client.query(
         `UPDATE users SET city = $2 WHERE id = $1 AND user_type = 'worker'`,
         [workerId, location.city ?? locationText],
       );
       await client.query(
         `UPDATE worker_profiles
-            SET location = $2,
-                location_source = $3,
-                location_updated_at = NOW()
+            SET location = $2
           WHERE user_id = $1`,
-        [workerId, locationText, source],
+        [workerId, locationText],
       );
     },
 
@@ -375,8 +457,68 @@ export function createProfilePersistenceAdapter(
       );
     },
 
+    async saveCustomTrade(client, workerId, rawProfession) {
+      await client.query(
+        `UPDATE users SET main_trade = 'other', main_trade_other = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, rawProfession],
+      );
+    },
+
+    async syncProfileForTrustHandoff(client, workerId) {
+      // Reuse the canonical projection — never re-implement its SQL here.
+      // This also (re-)seeds `worker_skills` from `main_trade_other`/
+      // `main_trade`, which only works once `saveCustomTrade` has actually
+      // written the raw profession text (Defect 1 fix).
+      await upsertWorkerProfileFromUsers(client, workerId);
+
+      const profileResult = await client.query<{
+        full_name: string | null;
+        availability: string | null;
+        location: string | null;
+      }>(
+        `SELECT full_name, availability, location FROM worker_profiles WHERE user_id = $1`,
+        [workerId],
+      );
+      const skillResult = await client.query<{ count: string | number }>(
+        `SELECT count(*)::int AS count FROM worker_skills WHERE worker_id = $1`,
+        [workerId],
+      );
+
+      const profile = profileResult.rows[0] ?? null;
+      const skillCount = Number(skillResult.rows[0]?.count ?? 0);
+
+      const missing: string[] = [];
+      if (!profile || !profile.full_name) missing.push('full_name');
+      if (skillCount === 0) missing.push('skill');
+      if (!profile || !profile.availability) missing.push('availability');
+      if (!profile || !profile.location) missing.push('location');
+
+      return { ready: missing.length === 0, missing };
+    },
+
+    async saveExperience(client, workerId, yearsExperience) {
+      await client.query(
+        `UPDATE users SET years_experience = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, yearsExperience],
+      );
+    },
+
+    async saveTransportation(client, workerId, hasTransportation) {
+      await client.query(
+        `UPDATE users SET has_transportation = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, hasTransportation],
+      );
+    },
+
+    async saveAvailability(client, workerId, availability) {
+      await client.query(
+        `UPDATE users SET availability = $2 WHERE id = $1 AND user_type = 'worker'`,
+        [workerId, availability],
+      );
+    },
+
     async saveTrustAnswer(client, input) {
-      const { workerId, professionKey, questionIndex, answerText, provenance } = input;
+      const { workerId, professionKey, questionIndex, qEn, qEs, answerText, answerSource, provenance } = input;
 
       // Mirrors handlers/custom-trust.ts:282's shape: answers accumulate in
       // the assessment row's `answers` JSONB array, one row per
@@ -395,14 +537,34 @@ export function createProfilePersistenceAdapter(
 
       const newAnswer = {
         question_index: questionIndex,
+        q_en: qEn,
+        q_es: qEs,
         answer_text: answerText,
+        answer_source: answerSource,
         answered_at: clock.now().toISOString(),
       };
 
       if (existing.rows.length > 0) {
         const row = existing.rows[0];
-        const priorAnswers = Array.isArray(row.answers) ? row.answers : [];
-        const mergedAnswers = [...priorAnswers, newAnswer];
+        const priorAnswers = (Array.isArray(row.answers) ? row.answers : []) as Array<{
+          question_index: number;
+          [key: string]: unknown;
+        }>;
+        // Defect 4a fix: a worker who goes BACK and re-answers a question
+        // must have the corrected answer REPLACE the old one, not accumulate
+        // alongside it — the trust scorer (ai/trust-scorer.ts) sends every
+        // element of this array to the model, so a stale duplicate would be
+        // scored as if the worker gave two different answers to the same
+        // question. Filter-then-append (never map-in-place) so a row that
+        // ALREADY holds duplicates for this index — data written while the
+        // old append behavior was live — collapses to a single entry here
+        // instead of becoming N identical copies of the new answer. Kept
+        // ordered by `question_index` so it never depends on insertion
+        // order.
+        const mergedAnswers = [
+          ...priorAnswers.filter((a) => a.question_index !== questionIndex),
+          newAnswer,
+        ].sort((a, b) => a.question_index - b.question_index);
         await client.query(
           `UPDATE worker_trust_assessments
               SET answers = $2::jsonb,

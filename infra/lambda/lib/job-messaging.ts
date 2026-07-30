@@ -3,7 +3,7 @@ import { setInternalUserRlsContext } from './db';
 import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError } from '../whatsapp/lib/outbox';
 import { categoryRenderers } from '../whatsapp/lib/onboarding-renderers';
 import { enqueueWorkerMessage, registerCategoryRenderer } from '../whatsapp/lib/worker-delivery-gateway';
-import { hashNormalizedPhone, isV2Enabled, loadRuntimeControls } from '../whatsapp/lib/runtime-controls';
+import { loadWorkerGate } from '../whatsapp/lib/onboarding-repository';
 
 const FALLBACK_BODY_KEY = '__fallback_body';
 const WORKER_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -458,25 +458,46 @@ export async function queueConversationMessageFromEmployer(
   if (!conversation || conversation.status !== 'open') throw new Error('conversation_not_found');
 
   const canSendFreeform = (options?.forceCanSendFreeform ?? false) || isWorkerReplyWindowOpen(conversation.last_worker_message_at);
+
+  // ONBOARDING-lifecycle gate (2026-07-27 parity-audit fix). The deferred
+  // `employer_chat` intent carries company/job metadata but NOT the message
+  // text; it exists so a mid-onboarding worker gets one grouped "wants to
+  // chat" ping at worker.ready. Routing READY workers through it would
+  // silently destroy the employer's actual words: the message row would be
+  // stamped 'queued' (canSendFreeform true), no job_message_outbox row would
+  // ever be created, and the catch-up flush only rescues
+  // 'waiting_worker_reply' rows — so the text would never be delivered
+  // anywhere. A ready worker takes the exact v1 delivery paths (freeform
+  // inside the reply window, approved invite template outside it), text
+  // intact.
+  //
+  // Same convention as the delivery gateway (worker-delivery-gateway.ts): no
+  // onboarding-state row means not-ready-to-receive. The gate read is
+  // worker-owned under forced RLS, so switch context around it exactly like
+  // the intent enqueue below.
+  await setInternalUserRlsContext(client, conversation.worker_id);
+  let workerOnboarding: boolean;
+  try {
+    const gate = await loadWorkerGate(client, conversation.worker_id);
+    workerOnboarding = (gate?.lifecycle ?? 'onboarding') !== 'ready';
+  } finally {
+    await setInternalUserRlsContext(client, employerId);
+  }
+
+  // On the intent path the stored row is the ONLY carrier of the text, so
+  // it must be 'waiting_worker_reply' regardless of the reply window — the
+  // open-conversation flush delivers it verbatim on the worker's next
+  // reply. On the v1 paths the original stamping stands.
   const message = await client.query<{ id: string }>(
     `INSERT INTO job_conversation_messages
        (conversation_id, sender_type, direction, body, status)
      VALUES ($1, 'employer', 'outbound', $2, $3)
      RETURNING id`,
-    [conversation.id, body, canSendFreeform ? 'queued' : 'waiting_worker_reply'],
+    [conversation.id, body, workerOnboarding || !canSendFreeform ? 'waiting_worker_reply' : 'queued'],
   );
   const messageId = message.rows[0].id;
 
-  // v2 redirect: for a v2-enabled worker, replace only the immediate
-  // whatsapp-side outbox creation below with a deferred `employer_chat`
-  // intent for the grouped worker.ready release (worker-ready-release.ts).
-  // The message row above, and the conversation/application updates below,
-  // are unchanged for both paths. The phone hash is never logged.
-  const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
-  const controls = await loadRuntimeControls(client);
-  const v2Enabled = whatsappNumber !== null && isV2Enabled(controls, hashNormalizedPhone(whatsappNumber));
-
-  if (v2Enabled) {
+  if (workerOnboarding) {
     registerCategoryRenderer('employer_chat', categoryRenderers.employer_chat);
     // The API transaction is employer-scoped, while the forced-RLS intent is
     // worker-owned. Switch only around the enqueue and restore the employer

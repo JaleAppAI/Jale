@@ -31,7 +31,7 @@ function makeFakeClient(opts: { eligibleSweepWorkerIds?: string[] } = {}): {
               phone_hashes: [],
             },
             {
-              control_key: 'onboarding_v2_enabled',
+              control_key: 'voice_intake_enabled',
               enabled: true,
               global_enabled: false,
               phone_hashes: [hashPhone(PHONE)],
@@ -64,13 +64,6 @@ describe('parseControlsArgs', () => {
     expect(parseControlsArgs(['--show'])).toEqual({ ok: true, value: { kind: 'show' } });
   });
 
-  it('accepts --enable onboarding_v2', () => {
-    expect(parseControlsArgs(['--enable', 'onboarding_v2'])).toEqual({
-      ok: true,
-      value: { kind: 'enable', controlKey: 'onboarding_v2_enabled' },
-    });
-  });
-
   it('accepts --disable deferred_delivery', () => {
     expect(parseControlsArgs(['--disable', 'deferred_delivery'])).toEqual({
       ok: true,
@@ -80,16 +73,81 @@ describe('parseControlsArgs', () => {
 
   it('accepts --allow-phone <e164>', () => {
     const result = parseControlsArgs(['--allow-phone', PHONE]);
-    expect(result).toEqual({ ok: true, value: { kind: 'allow-phone', phone: PHONE } });
+    expect(result).toEqual({
+      ok: true,
+      value: { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+    });
   });
 
   it('accepts --deny-phone <e164>', () => {
     const result = parseControlsArgs(['--deny-phone', PHONE]);
-    expect(result).toEqual({ ok: true, value: { kind: 'deny-phone', phone: PHONE } });
+    expect(result).toEqual({
+      ok: true,
+      value: { kind: 'deny-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+    });
   });
 
   it('accepts --go-global', () => {
-    expect(parseControlsArgs(['--go-global'])).toEqual({ ok: true, value: { kind: 'go-global' } });
+    expect(parseControlsArgs(['--go-global'])).toEqual({
+      ok: true,
+      value: { kind: 'go-global', controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('accepts --enable voice_intake', () => {
+    expect(parseControlsArgs(['--enable', 'voice_intake'])).toEqual({
+      ok: true,
+      value: { kind: 'enable', controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('accepts --disable voice_intake', () => {
+    expect(parseControlsArgs(['--disable', 'voice_intake'])).toEqual({
+      ok: true,
+      value: { kind: 'disable', controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('defaults --allow-phone to voice_intake_enabled when no --control is given', () => {
+    expect(parseControlsArgs(['--allow-phone', PHONE])).toEqual({
+      ok: true,
+      value: { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('accepts --allow-phone <e164> --control voice_intake', () => {
+    expect(parseControlsArgs(['--allow-phone', PHONE, '--control', 'voice_intake'])).toEqual({
+      ok: true,
+      value: { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('accepts --deny-phone <e164> --control voice_intake', () => {
+    expect(parseControlsArgs(['--deny-phone', PHONE, '--control', 'voice_intake'])).toEqual({
+      ok: true,
+      value: { kind: 'deny-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('accepts --go-global --control voice_intake', () => {
+    expect(parseControlsArgs(['--go-global', '--control', 'voice_intake'])).toEqual({
+      ok: true,
+      value: { kind: 'go-global', controlKey: 'voice_intake_enabled' },
+    });
+  });
+
+  it('rejects an unknown --control value without echoing it', () => {
+    const result = parseControlsArgs(['--go-global', '--control', PHONE]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain(PHONE);
+      expect(result.error).toBe('Unknown --control value (must be voice_intake)');
+    }
+  });
+
+  it('rejects --control deferred_delivery for --go-global (not phone-scoped)', () => {
+    const result = parseControlsArgs(['--go-global', '--control', 'deferred_delivery']);
+    expect(result.ok).toBe(false);
   });
 
   it('rejects an unknown control name for --enable', () => {
@@ -121,7 +179,9 @@ describe('parseControlsArgs', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).not.toContain(PHONE);
-      expect(result.error).toBe('Unknown control name (must be onboarding_v2 or deferred_delivery)');
+      expect(result.error).toBe(
+        'Unknown control name (must be deferred_delivery or voice_intake)',
+      );
     }
   });
 
@@ -162,28 +222,67 @@ describe('runControlsAction', () => {
     expect(mutating).toHaveLength(0);
   });
 
-  it('--allow-phone writes only the SHA-256 hash via hashNormalizedPhone into phone_hashes, scoped to onboarding_v2_enabled', async () => {
+  it('--allow-phone writes only the SHA-256 hash via hashNormalizedPhone into phone_hashes, scoped to voice_intake_enabled', async () => {
     const { client, calls } = makeFakeClient();
-    await runControlsAction(client, { kind: 'allow-phone', phone: PHONE }, 'test-operator');
+    await runControlsAction(
+      client,
+      { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+      'test-operator',
+    );
 
     const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
     expect(update).toBeDefined();
     expect(update!.text).toContain('phone_hashes');
-    expect(update!.text).toContain("control_key = 'onboarding_v2_enabled'");
+    expect(update!.values).toContain('voice_intake_enabled');
     expect(update!.values).toContain(hashPhone(PHONE));
     expect(update!.values).not.toContain(PHONE);
   });
 
-  it('--deny-phone removes only the SHA-256 hash from phone_hashes, scoped to onboarding_v2_enabled', async () => {
+  it('--allow-phone --control voice_intake scopes the write to voice_intake_enabled', async () => {
     const { client, calls } = makeFakeClient();
-    await runControlsAction(client, { kind: 'deny-phone', phone: PHONE }, 'test-operator');
+    await runControlsAction(
+      client,
+      { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+      'test-operator',
+    );
+
+    const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
+    expect(update).toBeDefined();
+    expect(update!.values).toContain('voice_intake_enabled');
+    expect(update!.values).not.toContain('deferred_delivery_enabled');
+    expect(update!.values).toContain(hashPhone(PHONE));
+    expect(update!.values).not.toContain(PHONE);
+  });
+
+  it('--deny-phone removes only the SHA-256 hash from phone_hashes, scoped to voice_intake_enabled', async () => {
+    const { client, calls } = makeFakeClient();
+    await runControlsAction(
+      client,
+      { kind: 'deny-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+      'test-operator',
+    );
 
     const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
     expect(update).toBeDefined();
     expect(update!.text).toContain('array_remove');
-    expect(update!.text).toContain("control_key = 'onboarding_v2_enabled'");
+    expect(update!.values).toContain('voice_intake_enabled');
     expect(update!.values).toContain(hashPhone(PHONE));
     expect(update!.values).not.toContain(PHONE);
+  });
+
+  it('--deny-phone --control voice_intake scopes the removal to voice_intake_enabled', async () => {
+    const { client, calls } = makeFakeClient();
+    await runControlsAction(
+      client,
+      { kind: 'deny-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+      'test-operator',
+    );
+
+    const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
+    expect(update).toBeDefined();
+    expect(update!.text).toContain('array_remove');
+    expect(update!.values).toContain('voice_intake_enabled');
+    expect(update!.values).not.toContain('deferred_delivery_enabled');
   });
 
   it('--enable deferred_delivery touches only that row (deferred_delivery_enabled)', async () => {
@@ -193,22 +292,46 @@ describe('runControlsAction', () => {
     const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
     expect(update).toBeDefined();
     expect(update!.values).toContain('deferred_delivery_enabled');
-    expect(update!.values).not.toContain('onboarding_v2_enabled');
+    expect(update!.values).not.toContain('voice_intake_enabled');
   });
 
-  it('--go-global sets global_enabled = true scoped to onboarding_v2_enabled', async () => {
+  it('--enable voice_intake touches only that row (voice_intake_enabled) and does not run the deferred-delivery sweep', async () => {
+    const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
+    await runControlsAction(client, { kind: 'enable', controlKey: 'voice_intake_enabled' }, 'test-operator');
+
+    const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
+    expect(update).toBeDefined();
+    expect(update!.values).toContain('voice_intake_enabled');
+    expect(update!.values).not.toContain('deferred_delivery_enabled');
+
+    const sweepSelect = calls.find((c) => /SELECT DISTINCT s\.user_id/.test(c.text));
+    expect(sweepSelect).toBeUndefined();
+  });
+
+  it('--go-global sets global_enabled = true scoped to voice_intake_enabled', async () => {
     const { client, calls } = makeFakeClient();
-    await runControlsAction(client, { kind: 'go-global' }, 'test-operator');
+    await runControlsAction(client, { kind: 'go-global', controlKey: 'voice_intake_enabled' }, 'test-operator');
 
     const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
     expect(update).toBeDefined();
     expect(update!.text).toContain('global_enabled = true');
-    expect(update!.text).toContain("control_key = 'onboarding_v2_enabled'");
+    expect(update!.values).toContain('voice_intake_enabled');
+  });
+
+  it('--go-global --control voice_intake scopes the global flag to voice_intake_enabled', async () => {
+    const { client, calls } = makeFakeClient();
+    await runControlsAction(client, { kind: 'go-global', controlKey: 'voice_intake_enabled' }, 'test-operator');
+
+    const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
+    expect(update).toBeDefined();
+    expect(update!.text).toContain('global_enabled = true');
+    expect(update!.values).toContain('voice_intake_enabled');
+    expect(update!.values).not.toContain('deferred_delivery_enabled');
   });
 
   it('sets updated_by to the operator identity on any mutation', async () => {
     const { client, calls } = makeFakeClient();
-    await runControlsAction(client, { kind: 'go-global' }, 'operator-luis');
+    await runControlsAction(client, { kind: 'go-global', controlKey: 'voice_intake_enabled' }, 'operator-luis');
 
     const update = calls.find((c) => /^\s*UPDATE whatsapp_runtime_controls/.test(c.text));
     expect(update!.values).toContain('operator-luis');
@@ -256,15 +379,6 @@ describe('runControlsAction', () => {
       expect(texts[texts.length - 1]).toBe('COMMIT');
     });
 
-    it('--enable onboarding_v2 does NOT run the sweep', async () => {
-      const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
-
-      await runControlsAction(client, { kind: 'enable', controlKey: 'onboarding_v2_enabled' }, 'test-operator');
-
-      const sweepSelect = calls.find((c) => /SELECT DISTINCT s\.user_id/.test(c.text));
-      expect(sweepSelect).toBeUndefined();
-    });
-
     it('--disable deferred_delivery does NOT run the sweep', async () => {
       const { client, calls } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
 
@@ -277,6 +391,70 @@ describe('runControlsAction', () => {
       expect(texts).not.toContain('COMMIT');
     });
 
+  });
+
+  // ── control row missing (rowCount guard) ──
+  // If the seeding migration (042 or 051) has not been applied, the row
+  // these UPDATEs target does not exist. Without checking rowCount, that
+  // reports success having changed nothing.
+  describe('missing control row', () => {
+    function makeMissingRowClient(): Queryable {
+      return {
+        query: async () => ({ rows: [], rowCount: 0 }),
+      };
+    }
+
+    it('--allow-phone throws naming the missing control_key', async () => {
+      const client = makeMissingRowClient();
+      await expect(
+        runControlsAction(
+          client,
+          { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        ),
+      ).rejects.toThrow(/voice_intake_enabled/);
+    });
+
+    it('--deny-phone throws naming the missing control_key', async () => {
+      const client = makeMissingRowClient();
+      await expect(
+        runControlsAction(
+          client,
+          { kind: 'deny-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        ),
+      ).rejects.toThrow(/voice_intake_enabled/);
+    });
+
+    it('--go-global throws naming the missing control_key', async () => {
+      const client = makeMissingRowClient();
+      await expect(
+        runControlsAction(
+          client,
+          { kind: 'go-global', controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        ),
+      ).rejects.toThrow(/voice_intake_enabled/);
+    });
+
+    it('never echoes the raw phone number in the missing-row error', async () => {
+      const client = makeMissingRowClient();
+      let caught: unknown;
+      try {
+        await runControlsAction(
+          client,
+          { kind: 'allow-phone', phone: PHONE, controlKey: 'voice_intake_enabled' },
+          'test-operator',
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).not.toContain(PHONE);
+    });
+  });
+
+  describe('--enable deferred_delivery retrigger sweep (O1) — logging', () => {
     it('never logs a raw phone number regardless of which action ran', async () => {
       const { client } = makeFakeClient({ eligibleSweepWorkerIds: ['worker-1'] });
       const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});

@@ -20,7 +20,38 @@ import type {
 } from '../../../../lambda/whatsapp/lib/onboarding-repository';
 import type { WorkerMessageIntentInput } from '../../../../lambda/whatsapp/lib/onboarding-types';
 
-const client = {} as any;
+// The router now resolves the next profile step via the REAL
+// loadProfileFromDb (lib/profile-flow.ts) — a `client.query(...)` call — so
+// the shared fake client needs a minimal in-memory `users` row per worker.
+// `profileDb` is written to by the fake ProfilePersistenceAdapter's save*
+// methods below (createFakeAdapters) and read back by `client.query`.
+const profileDb = new Map<string, Record<string, string | boolean | null>>();
+
+function setProfileDbField(workerId: string, field: string, value: string | boolean | null): void {
+  const row = profileDb.get(workerId) ?? {};
+  row[field] = value;
+  profileDb.set(workerId, row);
+}
+
+const client = {
+  query: async (_sql: string, params: unknown[]) => {
+    const workerId = params[0] as string;
+    const row = profileDb.get(workerId) ?? {};
+    return {
+      rows: [
+        {
+          full_name: row.full_name ?? null,
+          city: row.city ?? null,
+          main_trade: row.main_trade ?? null,
+          main_trade_other: row.main_trade_other ?? null,
+          years_experience: row.years_experience ?? null,
+          has_transportation: row.has_transportation ?? null,
+          availability: row.availability ?? null,
+        },
+      ],
+    };
+  },
+} as any;
 
 // ── Fake phone hashing (deterministic, no real sha256 needed for tests) ──
 function fakeHashNormalizedPhone(phone: string): string {
@@ -177,6 +208,34 @@ function createFakeGateRepo() {
       gates.set(updated.userId, updated);
       return { assessmentEventId: `assessment-${completions.length}`, workerReadyEventId: `ready-${completions.length}` };
     },
+    async clearProfileAnswers(_client: any, workerId: string): Promise<void> {
+      // Mirrors the real function's column set: the seven profile-answer
+      // fields only (profileDb is this file's stand-in for `users` +
+      // `worker_profiles`, read/written by the shared `client.query` fake).
+      profileDb.set(workerId, {});
+    },
+    async resetPendingTrustAssessmentAndSkills(_client: any, _workerId: string): Promise<void> {
+      // No-op stand-in — this suite doesn't model worker_trust_assessments
+      // or worker_skills.
+    },
+    async findPreviousStepKey(
+      _client: any,
+      runId: string,
+      currentStepKey: string,
+    ): Promise<any> {
+      for (let i = transitions.length - 1; i >= 0; i--) {
+        const t = transitions[i] as { runId?: string; fromStepKey?: string | null; toStepKey?: string };
+        if (
+          t.runId === runId
+          && t.toStepKey === currentStepKey
+          && t.fromStepKey != null
+          && t.fromStepKey !== t.toStepKey
+        ) {
+          return t.fromStepKey;
+        }
+      }
+      return null;
+    },
     _gates: gates,
     _transitions: transitions,
     _completions: completions,
@@ -191,7 +250,7 @@ function createFakeGateway() {
   const enqueueWorkerMessage = jest.fn(
     async (_client: any, input: WorkerMessageIntentInput, _now?: Date) => {
       calls.push(input);
-      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const } };
+      return { intentId: `intent-${calls.length}`, decision: { action: 'allow' as const, reason: 'workflow_message' as const }, outboxMaterialized: true };
     },
   );
   return { enqueueWorkerMessage, calls };
@@ -230,9 +289,29 @@ function createFakeAdapters(clockRef: { now: Date }) {
     location: { resolve: jest.fn() },
     trustQuestions: { generate: jest.fn() },
     profile: {
-      saveName: jest.fn(),
-      saveLocation: jest.fn(),
-      saveTrade: jest.fn(),
+      saveName: jest.fn(async (_c: any, workerId: string, name: string) => {
+        setProfileDbField(workerId, 'full_name', name);
+      }),
+      saveLocation: jest.fn(async (_c: any, workerId: string, location: { city: string | null; postalCode: string | null }) => {
+        setProfileDbField(workerId, 'city', location.city ?? location.postalCode);
+      }),
+      saveTrade: jest.fn(async (_c: any, workerId: string, trade: string) => {
+        setProfileDbField(workerId, 'main_trade', trade);
+      }),
+      saveCustomTrade: jest.fn(async (_c: any, workerId: string, rawProfession: string) => {
+        setProfileDbField(workerId, 'main_trade', 'other');
+        setProfileDbField(workerId, 'main_trade_other', rawProfession);
+      }),
+      saveExperience: jest.fn(async (_c: any, workerId: string, yearsExperience: string) => {
+        setProfileDbField(workerId, 'years_experience', yearsExperience);
+      }),
+      saveTransportation: jest.fn(async (_c: any, workerId: string, hasTransportation: boolean) => {
+        setProfileDbField(workerId, 'has_transportation', hasTransportation);
+      }),
+      saveAvailability: jest.fn(async (_c: any, workerId: string, availability: string) => {
+        setProfileDbField(workerId, 'availability', availability);
+      }),
+      syncProfileForTrustHandoff: jest.fn().mockResolvedValue({ ready: true, missing: [] }),
       saveTrustAnswer: jest.fn(),
     },
   };
@@ -259,6 +338,9 @@ function makeDeps() {
       reactivateDeclinedLegalRun: (c, input) => gateRepo.reactivateDeclinedLegalRun(c, input),
       appendTransition: (c, input) => gateRepo.appendTransition(c, input),
       completeOnboarding: (c, input) => gateRepo.completeOnboarding(c, input),
+      clearProfileAnswers: (c, workerId) => gateRepo.clearProfileAnswers(c, workerId),
+      resetPendingTrustAssessmentAndSkills: (c, workerId) => gateRepo.resetPendingTrustAssessmentAndSkills(c, workerId),
+      findPreviousStepKey: (c, runId, currentStepKey) => gateRepo.findPreviousStepKey(c, runId, currentStepKey),
     },
     enqueueWorkerMessage: gateway.enqueueWorkerMessage,
     enqueuePreAuthPrompt: preAuthDelivery.enqueuePreAuthPrompt,
@@ -269,6 +351,11 @@ function makeDeps() {
     requiredLegalVersion: '1.0',
     recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
     workflowVersion: 1,
+    voiceIntake: {
+      enabled: false,
+      startTrustTranscription: jest.fn().mockResolvedValue({ started: false }),
+      ingestProfileVoiceNote: jest.fn().mockResolvedValue({ started: false }),
+    },
   };
 
   return { deps, preAuthRepo, gateRepo, gateway, preAuthDelivery, adapters, clockRef };
@@ -377,7 +464,7 @@ describe('pre-auth delivery for a genuinely unbound (net-new) worker', () => {
     const session = makeSession({ user_id: null });
     await routeOnboardingV2(client, session, makeMsg('START'), deps);
     adapters.identity.verifyChallenge.mockResolvedValueOnce({
-      status: 'invalid', attemptsRemaining: 2, attempts: 1,
+      status: 'invalid', attemptsRemaining: 2, attempts: 1, rotatedChallengeId: 'rotated-1',
     });
 
     await routeOnboardingV2(client, session, makeMsg('000000'), deps);
@@ -478,7 +565,7 @@ describe('identity.verify_otp', () => {
     expect(gateway.calls[0].dedupeKey).toContain(otpMessage.messageSid);
   });
 
-  it('an invalid code returns invalid and persists the RETURNED attempts count', async () => {
+  it('an invalid code returns invalid and persists the RETURNED attempts count AND the rotated session', async () => {
     const { deps, preAuthRepo, adapters } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });
     await bootstrapOtp(deps, session);
@@ -486,6 +573,7 @@ describe('identity.verify_otp', () => {
       status: 'invalid',
       attemptsRemaining: 2,
       attempts: 1,
+      rotatedChallengeId: 'rotated-session-1',
     });
     const saveSpy = jest.spyOn(preAuthRepo, 'savePreAuthState');
 
@@ -495,6 +583,57 @@ describe('identity.verify_otp', () => {
     const attemptsPatch = saveSpy.mock.calls.map((c) => c[2] as Partial<PreAuthState>)
       .find((p) => 'attempts' in p);
     expect(attemptsPatch?.attempts).toBe(1);
+    // Cognito rotates the CUSTOM_CHALLENGE session on every wrong answer;
+    // without persisting it the SECOND submission (even the correct code)
+    // dies on the stale session as "expired".
+    expect(attemptsPatch?.providerChallengeId).toBe('rotated-session-1');
+  });
+
+  it('the NEXT verify call presents the rotated session persisted by the previous wrong attempt', async () => {
+    // End-to-end regression pin for the full save → load → reuse loop
+    // through the pre-auth repo: wrong code rotates, second turn must call
+    // verifyChallenge with the ROTATED id, not the original one.
+    const { deps, adapters } = makeDeps();
+    const session = makeSession({ user_id: 'user-1' });
+    await bootstrapOtp(deps, session);
+
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({
+      status: 'invalid',
+      attemptsRemaining: 2,
+      attempts: 1,
+      rotatedChallengeId: 'rotated-session-1',
+    });
+    await routeOnboardingV2(client, session, makeMsg('000000'), deps);
+
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'verified', workerId: 'user-1' });
+    await routeOnboardingV2(client, session, makeMsg('123456'), deps);
+
+    const secondCallInput = adapters.identity.verifyChallenge.mock.calls[1][1];
+    expect(secondCallInput.challengeId).toBe('rotated-session-1');
+    expect(secondCallInput.attempts).toBe(1);
+  });
+
+  it('a null rotation keeps the stored session: the patch carries no providerChallengeId key', async () => {
+    // rotatedChallengeId null = the SDK call threw a non-session error and
+    // there is nothing new to persist. The patch must OMIT the key entirely
+    // (savePreAuthState serializes any present key, undefined included).
+    const { deps, preAuthRepo, adapters } = makeDeps();
+    const session = makeSession({ user_id: 'user-1' });
+    await bootstrapOtp(deps, session);
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({
+      status: 'invalid',
+      attemptsRemaining: 2,
+      attempts: 1,
+      rotatedChallengeId: null,
+    });
+    const saveSpy = jest.spyOn(preAuthRepo, 'savePreAuthState');
+
+    await routeOnboardingV2(client, session, makeMsg('000000'), deps);
+
+    const attemptsPatch = saveSpy.mock.calls.map((c) => c[2] as Partial<PreAuthState>)
+      .find((p) => 'attempts' in p);
+    expect(attemptsPatch).toBeDefined();
+    expect('providerChallengeId' in (attemptsPatch as object)).toBe(false);
   });
 
   it('three wrong attempts fire the lock log exactly once, with no OTP/phone/body, and a further attempt during the lock logs nothing new', async () => {
@@ -503,10 +642,10 @@ describe('identity.verify_otp', () => {
     await bootstrapOtp(deps, session);
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 1, attempts: 1 });
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 1, attempts: 1, rotatedChallengeId: 'rot-1' });
     await routeOnboardingV2(client, session, makeMsg('111111'), deps);
 
-    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 0, attempts: 2 });
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 0, attempts: 2, rotatedChallengeId: 'rot-2' });
     await routeOnboardingV2(client, session, makeMsg('222222'), deps);
 
     adapters.identity.verifyChallenge.mockResolvedValueOnce({
@@ -547,6 +686,7 @@ describe('identity.verify_otp', () => {
       status: 'invalid',
       attemptsRemaining: 2,
       attempts: 1,
+      rotatedChallengeId: 'rotated-existing-1',
     });
 
     const result = await routeOnboardingV2(client, session, makeMsg('000000'), deps);
@@ -563,7 +703,7 @@ describe('identity.verify_otp', () => {
     await bootstrapOtp(deps, session);
     const bindSpy = jest.spyOn(gateRepo, 'bindVerifiedIdentityAndStartWorkflow');
 
-    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 2, attempts: 1 });
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'invalid', attemptsRemaining: 2, attempts: 1, rotatedChallengeId: 'rot-bind-1' });
     await routeOnboardingV2(client, session, makeMsg('111111'), deps);
 
     adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'expired' });
@@ -719,6 +859,125 @@ describe('command gate', () => {
     expect(blockedLog?.command).not.toBe('chats');
 
     warnSpy.mockRestore();
+  });
+
+  describe('RESTART/REINICIAR', () => {
+    it('clears the profile answers, logs OnboardingWorkerRestarted, and moves the run to profile.name', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-restart', currentStepKey: 'profile.trade' });
+      setProfileDbField(gate.userId, 'full_name', 'Old Name');
+      setProfileDbField(gate.userId, 'city', 'Old City');
+      const session = makeSession({ user_id: gate.userId });
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      const result = await routeOnboardingV2(client, session, makeMsg('RESTART'), deps);
+
+      expect(result.stepKey).toBe('profile.name');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.name');
+      expect(profileDb.get(gate.userId)).toEqual({});
+      const restartLog = logSpy.mock.calls
+        .map(([line]) => { try { return JSON.parse(line as string); } catch { return null; } })
+        .find((m) => m?.metric === 'OnboardingWorkerRestarted');
+      expect(restartLog).toMatchObject({ metric: 'OnboardingWorkerRestarted', fromStepKey: 'profile.trade' });
+
+      logSpy.mockRestore();
+    });
+
+    it('is case-insensitive and also recognizes REINICIAR', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-reiniciar', currentStepKey: 'trust.question.2' });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('reiniciar'), deps);
+
+      expect(result.stepKey).toBe('profile.name');
+    });
+
+    it('is NOT recognized at legal.review (out of scope — not a profile/trust step)', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-restart-legal', currentStepKey: 'legal.review' });
+      const session = makeSession({ user_id: gate.userId });
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      await routeOnboardingV2(client, session, makeMsg('RESTART'), deps);
+
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('legal.review');
+      const restartLog = logSpy.mock.calls
+        .map(([line]) => { try { return JSON.parse(line as string); } catch { return null; } })
+        .find((m) => m?.metric === 'OnboardingWorkerRestarted');
+      expect(restartLog).toBeFalsy();
+
+      logSpy.mockRestore();
+    });
+  });
+
+  describe('BACK/ATRAS', () => {
+    it('moves the run to the from_step_key of the most recent qualifying transition', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-back', currentStepKey: 'profile.trade' });
+      gateRepo._transitions.push({
+        runId: gate.runId,
+        fromStepKey: 'profile.location',
+        toStepKey: 'profile.trade',
+        inboundMessageSid: 'SM_prior',
+        reason: 'profile_field_captured',
+      });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('BACK'), deps);
+
+      expect(result.stepKey).toBe('profile.location');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.location');
+    });
+
+    it('is exact-match only: ATRAS also works, case-insensitively', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-atras', currentStepKey: 'profile.trade' });
+      gateRepo._transitions.push({
+        runId: gate.runId,
+        fromStepKey: 'profile.location',
+        toStepKey: 'profile.trade',
+        inboundMessageSid: 'SM_prior',
+        reason: 'profile_field_captured',
+      });
+      const session = makeSession({ user_id: gate.userId });
+
+      const result = await routeOnboardingV2(client, session, makeMsg('atras'), deps);
+
+      expect(result.stepKey).toBe('profile.location');
+    });
+
+    it('is blocked at profile.name (nothing to go back to)', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-back-name', currentStepKey: 'profile.name' });
+      const session = makeSession({ user_id: gate.userId });
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = await routeOnboardingV2(client, session, makeMsg('BACK'), deps);
+
+      expect(result.stepKey).toBe('profile.name');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.name');
+      const blockedLog = warnedMetrics(warnSpy).find((m) => m.metric === 'OnboardingGateBlocked');
+      expect(blockedLog).toMatchObject({ command: 'back', stepKey: 'profile.name' });
+
+      warnSpy.mockRestore();
+    });
+
+    it('is blocked when no qualifying transition exists', async () => {
+      const { deps, gateRepo } = makeDeps();
+      const gate = seedActiveGate(gateRepo, { userId: 'user-back-none', currentStepKey: 'profile.trade' });
+      const session = makeSession({ user_id: gate.userId });
+      const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const result = await routeOnboardingV2(client, session, makeMsg('BACK'), deps);
+
+      expect(result.stepKey).toBe('profile.trade');
+      expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('profile.trade');
+      const blockedLog = warnedMetrics(warnSpy).find((m) => m.metric === 'OnboardingGateBlocked');
+      expect(blockedLog).toMatchObject({ command: 'back', stepKey: 'profile.trade' });
+
+      warnSpy.mockRestore();
+    });
   });
 });
 

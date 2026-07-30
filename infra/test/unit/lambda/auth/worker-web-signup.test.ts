@@ -103,11 +103,18 @@ describe('worker-web-signup', () => {
       MessageAction: 'SUPPRESS',
       UserAttributes: expect.arrayContaining([
         { Name: 'phone_number', Value: '+19152272188' },
-        { Name: 'phone_number_verified', Value: 'true' },
-        { Name: 'name', Value: 'Ivan Worker' },
+        // 2026-07-26 hardening: an unauthenticated POST proves nothing.
+        // Verified stays 'false' until verify-auth-challenge flips it on a
+        // correct OTP.
+        { Name: 'phone_number_verified', Value: 'false' },
         { Name: 'custom:user_type', Value: 'worker' },
       ]),
     }));
+    // The caller-supplied name must NOT reach Cognito from this
+    // unauthenticated endpoint (pre-registration poisoning vector); it
+    // arrives via the authenticated post-OTP profile update instead.
+    const createAttrs = mockSend.mock.calls[0][0].input.UserAttributes as Array<{ Name: string }>;
+    expect(createAttrs.some((a) => a.Name === 'name')).toBe(false);
     expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AdminGetUserCommand);
     expect(mockSend.mock.calls[2][0]).toBeInstanceOf(AdminAddUserToGroupCommand);
     expect(mockSend.mock.calls[2][0].input).toEqual({
@@ -122,9 +129,17 @@ describe('worker-web-signup', () => {
       Password: expect.any(String),
       Permanent: true,
     });
+    // Seeded WITHOUT the caller-supplied name — '' is a safe no-op through
+    // reconcile_worker_signup's NULLIF/COALESCE.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
+      '',
+    ]);
+    // The submitted name IS staged (not written to full_name directly) so
+    // verify-auth-challenge can promote it on the first correct OTP.
+    expect(mockQuery).toHaveBeenCalledWith('SELECT stage_worker_pending_name($1, $2)', [
+      'worker-sub',
       'Ivan Worker',
     ]);
     expect(mockQuery.mock.invocationCallOrder[1]).toBeLessThan(mockSend.mock.invocationCallOrder[3]);
@@ -151,11 +166,77 @@ describe('worker-web-signup', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockSend).toHaveBeenCalledTimes(3);
+    // Neither the attacker-supplied rename NOR the Cognito-stored name is
+    // written from this unauthenticated path — '' preserves whatever
+    // users.full_name already holds (NULLIF/COALESCE no-op) and the
+    // authenticated post-OTP profile update remains the only name writer.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
-      'Stored Worker',
+      '',
     ]);
+    // The attacker-supplied name is staged, not written directly — it can
+    // only ever be promoted by a correct OTP, and only while full_name is
+    // still NULL (promote_worker_pending_name enforces both).
+    expect(mockQuery).toHaveBeenCalledWith('SELECT stage_worker_pending_name($1, $2)', [
+      'worker-sub',
+      'Attacker Rename',
+    ]);
+  });
+
+  it('does not fail signup when staging the pending name throws', async () => {
+    mockSend
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({
+        UserAttributes: [{ Name: 'sub', Value: 'worker-sub' }],
+      })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({});
+
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql === 'SELECT stage_worker_pending_name($1, $2)') {
+        throw new Error('staging boom');
+      }
+      return {};
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
+
+    expect(res.statusCode).toBe(200);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('does not fail the reconcile-path signup when staging the pending name throws', async () => {
+    mockSend
+      .mockRejectedValueOnce({ name: 'UsernameExistsException' })
+      .mockResolvedValueOnce({
+        Enabled: true,
+        UserStatus: 'CONFIRMED',
+        UserAttributes: [
+          { Name: 'sub', Value: 'worker-sub' },
+          { Name: 'phone_number', Value: '+19152272188' },
+          { Name: 'phone_number_verified', Value: 'true' },
+          { Name: 'custom:user_type', Value: 'worker' },
+          { Name: 'name', Value: 'Stored Worker' },
+        ],
+      })
+      .mockResolvedValueOnce({});
+
+    mockQuery.mockImplementation(async (sql: string) => {
+      if (sql === 'SELECT stage_worker_pending_name($1, $2)') {
+        throw new Error('staging boom');
+      }
+      return {};
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Attacker Rename' }));
+
+    expect(res.statusCode).toBe(200);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('returns a generic retryable error when existing-account inspection fails', async () => {

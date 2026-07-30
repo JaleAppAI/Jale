@@ -1,9 +1,8 @@
 /**
  * Task 2: Workflow Adapters — onboarding-adapters.ts
  *
- * Mocks the AWS SDK at the module boundary (pattern copied from
- * test/unit/lambda/whatsapp/onboarding-conversation.test.ts:32-63) so the
- * adapters under test never touch real AWS.
+ * Mocks the AWS SDK at the module boundary so the adapters under test never
+ * touch real AWS.
  */
 
 // ── Mocks (must come before the adapter import) ─────────────────────────
@@ -258,12 +257,31 @@ describe('IdentityAdapter.verifyChallenge', () => {
       'the third — using a FRESH adapter instance per call, proving the lock survives across ' +
       "separate Lambda invocations because the caller (not the adapter) holds the count",
     async () => {
+      // Stateful, stale-session-rejecting mock. The previous revision of
+      // this test returned the same Session for every call and never
+      // enforced that only the latest one is valid — which is exactly how
+      // the rotated-session regression (correct code on attempt 2 reported
+      // "expired") passed the suite. Real Cognito consumes the presented
+      // Session on every wrong answer and only the rotated one may be
+      // resubmitted; this mock does the same, so reverting the
+      // rotatedChallengeId plumbing makes call 2 below return 'expired'
+      // instead of 'invalid' and the test fails.
+      let currentSession = 'session-abc';
+      let rotation = 0;
       mockCognitoDispatch({
-        RespondToAuthChallenge: () => ({ Session: 'session-retry' }),
+        RespondToAuthChallenge: (command: any) => {
+          if (command.input.Session !== currentSession) {
+            const err: any = new Error('Invalid session for the user, session is expired.');
+            err.name = 'NotAuthorizedException';
+            throw err;
+          }
+          rotation += 1;
+          currentSession = `session-retry-${rotation}`;
+          return { Session: currentSession };
+        },
       });
 
       const baseInput = {
-        challengeId: 'session-abc',
         whatsappNumber: 'whatsapp:+15125550199',
         code: '000000',
       };
@@ -277,14 +295,21 @@ describe('IdentityAdapter.verifyChallenge', () => {
       });
       const first = await identity1.verifyChallenge(mockPoolClient(), {
         ...baseInput,
+        challengeId: 'session-abc',
         attempts: 0,
         lockedUntil: null,
       });
-      expect(first).toEqual({ status: 'invalid', attemptsRemaining: 2, attempts: 1 });
+      expect(first).toEqual({
+        status: 'invalid',
+        attemptsRemaining: 2,
+        attempts: 1,
+        rotatedChallengeId: 'session-retry-1',
+      });
 
       // Call 2: a SECOND, independently-constructed adapter — simulating the
-      // next Lambda invocation. The only thing carried forward is the
-      // attempt count the caller persisted from call 1's result.
+      // next Lambda invocation. The things carried forward are exactly what
+      // the caller persisted from call 1's result: the attempt count AND the
+      // rotated session id.
       const identity2 = createIdentityAdapter({
         userPoolId: 'pool-1',
         clientId: 'client-1',
@@ -293,10 +318,16 @@ describe('IdentityAdapter.verifyChallenge', () => {
       });
       const second = await identity2.verifyChallenge(mockPoolClient(), {
         ...baseInput,
+        challengeId: first.status === 'invalid' ? first.rotatedChallengeId! : 'session-abc',
         attempts: first.status === 'invalid' ? first.attempts : 0,
         lockedUntil: null,
       });
-      expect(second).toEqual({ status: 'invalid', attemptsRemaining: 1, attempts: 2 });
+      expect(second).toEqual({
+        status: 'invalid',
+        attemptsRemaining: 1,
+        attempts: 2,
+        rotatedChallengeId: 'session-retry-2',
+      });
 
       // Call 3: a THIRD, independently-constructed adapter.
       const identity3 = createIdentityAdapter({
@@ -307,6 +338,7 @@ describe('IdentityAdapter.verifyChallenge', () => {
       });
       const third = await identity3.verifyChallenge(mockPoolClient(), {
         ...baseInput,
+        challengeId: second.status === 'invalid' ? second.rotatedChallengeId! : 'session-abc',
         attempts: second.status === 'invalid' ? second.attempts : 0,
         lockedUntil: null,
       });
@@ -316,6 +348,89 @@ describe('IdentityAdapter.verifyChallenge', () => {
       }
     },
   );
+
+  it('a wrong code followed by the CORRECT code against the rotated session verifies', async () => {
+    // The user-visible regression this whole change exists for: mistype
+    // once, then type the right code — that second submission must succeed,
+    // not report "code expired".
+    let currentSession = 'session-abc';
+    mockCognitoDispatch({
+      RespondToAuthChallenge: (command: any) => {
+        if (command.input.Session !== currentSession) {
+          const err: any = new Error('Invalid session for the user, session is expired.');
+          err.name = 'NotAuthorizedException';
+          throw err;
+        }
+        if (command.input.ChallengeResponses.ANSWER === '123456') {
+          return { AuthenticationResult: { IdToken: fakeIdToken('real-cognito-sub-2') } };
+        }
+        currentSession = 'session-rotated';
+        return { Session: currentSession };
+      },
+    });
+
+    const identity = createIdentityAdapter({
+      userPoolId: 'pool-1',
+      clientId: 'client-1',
+      clock,
+      reconcileUserRow: jest.fn().mockResolvedValue({ userId: 'worker-uuid-2', tosVersion: null }),
+    });
+
+    const wrong = await identity.verifyChallenge(mockPoolClient(), {
+      challengeId: 'session-abc',
+      whatsappNumber: 'whatsapp:+15125550177',
+      code: '000000',
+      attempts: 0,
+      lockedUntil: null,
+    });
+    expect(wrong.status).toBe('invalid');
+
+    const right = await identity.verifyChallenge(mockPoolClient(), {
+      challengeId: wrong.status === 'invalid' ? wrong.rotatedChallengeId! : 'session-abc',
+      whatsappNumber: 'whatsapp:+15125550177',
+      code: '123456',
+      attempts: 1,
+      lockedUntil: null,
+    });
+    expect(right).toEqual({ status: 'verified', workerId: 'worker-uuid-2' });
+  });
+
+  it('a thrown NON-session error yields invalid with rotatedChallengeId null', async () => {
+    // resp === undefined edge: Cognito failed the auth outright (e.g. its
+    // own max-retries NotAuthorizedException without "session" in the
+    // message). There is no rotated session to persist; the caller keeps
+    // the stored one and the next attempt correctly resolves to expired →
+    // RESEND.
+    mockCognitoDispatch({
+      RespondToAuthChallenge: () => {
+        const err: any = new Error('Incorrect username or password.');
+        err.name = 'NotAuthorizedException';
+        throw err;
+      },
+    });
+
+    const identity = createIdentityAdapter({
+      userPoolId: 'pool-1',
+      clientId: 'client-1',
+      clock,
+      reconcileUserRow: jest.fn(),
+    });
+
+    const result = await identity.verifyChallenge(mockPoolClient(), {
+      challengeId: 'session-abc',
+      whatsappNumber: 'whatsapp:+15125550166',
+      code: '000000',
+      attempts: 0,
+      lockedUntil: null,
+    });
+
+    expect(result).toEqual({
+      status: 'invalid',
+      attemptsRemaining: 2,
+      attempts: 1,
+      rotatedChallengeId: null,
+    });
+  });
 
   it('returns expired (not invalid) when the Cognito session has expired', async () => {
     const reconcileUserRow: ReconcileUserRowFn = jest.fn();
@@ -481,7 +596,7 @@ describe('ProfilePersistenceAdapter', () => {
     expect(calls.some((sql) => sql.includes('ROLLBACK'))).toBe(false);
   });
 
-  it('saveLocation maps zip -> geocoded_zip through the supplied client', async () => {
+  it('saveLocation writes the zip into worker_profiles.location text', async () => {
     const client = mockPoolClient();
     await profile.saveLocation(client, 'worker-1', {
       city: null,
@@ -492,7 +607,53 @@ describe('ProfilePersistenceAdapter', () => {
 
     expect(client.query).toHaveBeenCalled();
     const allParams = (client.query as jest.Mock).mock.calls.flatMap((c) => c[1] ?? []);
-    expect(allParams).toContain('geocoded_zip');
+    expect(allParams).toContain('78701');
+  });
+
+  it('saveLocation never touches the five coordinate columns bound by worker_profiles_location_complete', async () => {
+    // 2026-07-26 production incident: writing location_source +
+    // location_updated_at WITHOUT latitude/longitude/location_confidence
+    // violates the all-or-nothing CHECK in 009_location_foundation.sql and
+    // wedged every worker at profile.location. This adapter has no
+    // coordinates (ResolvedLocation is regex-parsed text), so it must write
+    // ONLY the plain TEXT `location` column. The coordinate group belongs
+    // exclusively to lambda/lib/location.ts's setWorkerCoordinates, which
+    // sets all five together.
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: 'Austin',
+      state: 'TX',
+      postalCode: null,
+      source: 'city_state',
+    });
+
+    const workerProfilesUpdates = (client.query as jest.Mock).mock.calls
+      .map((c) => String(c[0]))
+      .filter((sql) => sql.toUpperCase().includes('UPDATE WORKER_PROFILES'));
+    expect(workerProfilesUpdates.length).toBeGreaterThan(0);
+    for (const sql of workerProfilesUpdates) {
+      expect(sql).not.toMatch(/location_source/i);
+      expect(sql).not.toMatch(/location_updated_at/i);
+      expect(sql).not.toMatch(/location_confidence/i);
+      expect(sql).not.toMatch(/latitude/i);
+      expect(sql).not.toMatch(/longitude/i);
+    }
+  });
+
+  it('saveLocation calls the canonical upsertWorkerProfileFromUsers projection BEFORE its own UPDATE worker_profiles, so the row exists even for a worker with no worker_profiles row yet', async () => {
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: 'Austin',
+      state: 'TX',
+      postalCode: null,
+      source: 'city_state',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls.map((c) => String(c[0]));
+    const upsertIdx = calls.findIndex((sql) => sql.includes('INSERT INTO worker_profiles'));
+    const updateIdx = calls.findIndex((sql) => sql.toUpperCase().includes('UPDATE WORKER_PROFILES'));
+    expect(upsertIdx).toBeGreaterThanOrEqual(0);
+    expect(updateIdx).toBeGreaterThan(upsertIdx);
   });
 
   it('saveTrade writes through the supplied client', async () => {
@@ -507,7 +668,10 @@ describe('ProfilePersistenceAdapter', () => {
       workerId: 'worker-1',
       professionKey: 'electrician',
       questionIndex: 0,
+      qEn: 'What tools have you used?',
+      qEs: 'Que herramientas has usado?',
       answerText: 'Residential',
+      answerSource: 'text',
     });
 
     expect(client.query).toHaveBeenCalled();
@@ -518,6 +682,39 @@ describe('ProfilePersistenceAdapter', () => {
     expect(upper.some((sql) => sql.includes('ROLLBACK'))).toBe(false);
     expect(calls.some((sql) => sql.includes('worker_trust_assessments'))).toBe(true);
     expect(calls.some((sql) => sql.includes('worker_trust_answers'))).toBe(false);
+  });
+
+  it('saveTrustAnswer persists q_en, q_es, answer_source, and answer_text on the stored answer object (scorer-compatible shape)', async () => {
+    const client = mockPoolClient();
+    await profile.saveTrustAnswer(client, {
+      workerId: 'worker-1',
+      professionKey: 'electrician',
+      questionIndex: 0,
+      qEn: 'What tools have you used?',
+      qEs: 'Que herramientas has usado?',
+      answerText: 'Residential',
+      answerSource: 'text',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    // First call is the SELECT for an in-progress assessment; no rows were
+    // returned by the mock default, so the second call is the INSERT.
+    const [insertSql, insertParams] = calls[1];
+    expect(String(insertSql).toUpperCase()).toContain('INSERT INTO WORKER_TRUST_ASSESSMENTS');
+    const answersJson = insertParams.find(
+      (p: unknown) => typeof p === 'string' && p.includes('Residential'),
+    );
+    expect(answersJson).toBeDefined();
+    const parsed = JSON.parse(answersJson);
+    expect(parsed).toEqual([
+      expect.objectContaining({
+        question_index: 0,
+        q_en: 'What tools have you used?',
+        q_es: 'Que herramientas has usado?',
+        answer_text: 'Residential',
+        answer_source: 'text',
+      }),
+    ]);
   });
 
   it('saveTrustAnswer merges into an existing in-progress assessment\'s answers JSONB and routes provenance through rubric_version/scoring_model_id', async () => {
@@ -531,7 +728,10 @@ describe('ProfilePersistenceAdapter', () => {
       workerId: 'worker-1',
       professionKey: 'electrician',
       questionIndex: 1,
+      qEn: 'Can you work unsupervised?',
+      qEs: 'Puedes trabajar sin supervision?',
       answerText: 'Can work alone',
+      answerSource: 'text',
       provenance: { rubricVersion: 'v3', scoringModelId: 'model-x' },
     });
 
@@ -547,7 +747,185 @@ describe('ProfilePersistenceAdapter', () => {
       (p: unknown) => typeof p === 'string' && p.includes('Can work alone'),
     );
     expect(mergedAnswersJson).toBeDefined();
-    expect(JSON.parse(mergedAnswersJson)).toHaveLength(2);
+    const merged = JSON.parse(mergedAnswersJson);
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toEqual(expect.objectContaining({
+      question_index: 1,
+      q_en: 'Can you work unsupervised?',
+      q_es: 'Puedes trabajar sin supervision?',
+      answer_text: 'Can work alone',
+      answer_source: 'text',
+    }));
+  });
+
+  // Task 4a/B2 fix: a worker who goes BACK and re-answers a question must
+  // have the corrected answer REPLACE the old one at the same
+  // `question_index`, never accumulate both — the trust scorer sends every
+  // element to the model, so a stale duplicate would look like the worker
+  // gave two contradictory answers to the same question.
+  it('saveTrustAnswer REPLACES the element sharing question_index (BACK + re-answer), never appends a duplicate', async () => {
+    const client = mockPoolClient();
+    (client.query as jest.Mock).mockResolvedValueOnce({
+      rows: [{
+        id: 'assessment-1',
+        answers: [
+          { question_index: 0, q_en: 'Q0 old', q_es: 'Q0 old es', answer_text: 'old answer', answer_source: 'text', answered_at: '2026-07-26T00:00:00.000Z' },
+          { question_index: 1, q_en: 'Q1', q_es: 'Q1 es', answer_text: 'answer 1', answer_source: 'text', answered_at: '2026-07-26T00:01:00.000Z' },
+        ],
+      }],
+      rowCount: 1,
+    });
+
+    await profile.saveTrustAnswer(client, {
+      workerId: 'worker-1',
+      professionKey: 'electrician',
+      questionIndex: 0,
+      qEn: 'Q0 corrected',
+      qEs: 'Q0 corrected es',
+      answerText: 'corrected answer',
+      answerSource: 'text',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    const [updateSql, updateParams] = calls[1];
+    expect(String(updateSql).toUpperCase()).toContain('UPDATE');
+    expect(String(updateSql)).toContain('worker_trust_assessments');
+    const mergedAnswersJson = updateParams.find(
+      (p: unknown) => typeof p === 'string' && p.includes('corrected answer'),
+    );
+    expect(mergedAnswersJson).toBeDefined();
+    const merged = JSON.parse(mergedAnswersJson);
+    // Exactly ONE entry for index 0, carrying the new text — the old
+    // duplicate is gone, and index 1 is untouched.
+    expect(merged).toHaveLength(2);
+    expect(merged.filter((a: { question_index: number }) => a.question_index === 0)).toHaveLength(1);
+    expect(merged[0]).toEqual(expect.objectContaining({
+      question_index: 0,
+      q_en: 'Q0 corrected',
+      q_es: 'Q0 corrected es',
+      answer_text: 'corrected answer',
+    }));
+    expect(merged[1]).toEqual(expect.objectContaining({ question_index: 1, answer_text: 'answer 1' }));
+  });
+
+  // A row written while the old append behavior was live can ALREADY hold
+  // several entries for the same question_index. The merge must collapse
+  // all of them to the single corrected answer — a map-in-place replacement
+  // would instead turn N stale duplicates into N identical copies of the
+  // new answer, and the scorer would still see the question answered twice.
+  it('saveTrustAnswer collapses pre-existing duplicates for the same question_index into ONE corrected entry', async () => {
+    const client = mockPoolClient();
+    (client.query as jest.Mock).mockResolvedValueOnce({
+      rows: [{
+        id: 'assessment-1',
+        answers: [
+          { question_index: 0, q_en: 'Q0', q_es: 'Q0 es', answer_text: 'stale first', answer_source: 'text', answered_at: '2026-07-26T00:00:00.000Z' },
+          { question_index: 0, q_en: 'Q0', q_es: 'Q0 es', answer_text: 'stale second', answer_source: 'text', answered_at: '2026-07-26T00:01:00.000Z' },
+          { question_index: 1, q_en: 'Q1', q_es: 'Q1 es', answer_text: 'answer 1', answer_source: 'text', answered_at: '2026-07-26T00:02:00.000Z' },
+        ],
+      }],
+      rowCount: 1,
+    });
+
+    await profile.saveTrustAnswer(client, {
+      workerId: 'worker-1',
+      professionKey: 'electrician',
+      questionIndex: 0,
+      qEn: 'Q0',
+      qEs: 'Q0 es',
+      answerText: 'final answer',
+      answerSource: 'voice',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    const [, updateParams] = calls[1];
+    const mergedAnswersJson = updateParams.find(
+      (p: unknown) => typeof p === 'string' && p.includes('final answer'),
+    );
+    expect(mergedAnswersJson).toBeDefined();
+    const merged = JSON.parse(mergedAnswersJson);
+    expect(merged).toHaveLength(2);
+    expect(merged.filter((a: { question_index: number }) => a.question_index === 0)).toHaveLength(1);
+    expect(merged[0]).toEqual(expect.objectContaining({
+      question_index: 0,
+      answer_text: 'final answer',
+      answer_source: 'voice',
+    }));
+    expect(merged[1]).toEqual(expect.objectContaining({ question_index: 1, answer_text: 'answer 1' }));
+  });
+
+  it('saveCustomTrade sets main_trade to \'other\' AND persists the raw typed profession into main_trade_other', async () => {
+    const client = mockPoolClient();
+    await profile.saveCustomTrade(client, 'worker-1', 'Welder');
+
+    expect(client.query).toHaveBeenCalledTimes(1);
+    const [sql, params] = (client.query as jest.Mock).mock.calls[0];
+    expect(String(sql)).toContain("main_trade = 'other'");
+    expect(String(sql)).toContain('main_trade_other');
+    expect(String(sql)).toContain("user_type = 'worker'");
+    expect(params).toEqual(['worker-1', 'Welder']);
+  });
+
+  describe('syncProfileForTrustHandoff', () => {
+    it('calls the canonical upsertWorkerProfileFromUsers projection and reports ready when all required fields are present', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock)
+        // upsertWorkerProfileFromUsers: worker_profiles upsert, then worker_skills seed
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        // completeness check: worker_profiles row, then worker_skills count
+        .mockResolvedValueOnce({
+          rows: [{ full_name: 'Jane Doe', availability: 'full_time', location: 'Austin, TX' }],
+        })
+        .mockResolvedValueOnce({ rows: [{ count: 1 }] });
+
+      const result = await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      expect(result).toEqual({ ready: true, missing: [] });
+      const calls = (client.query as jest.Mock).mock.calls.map((c) => String(c[0]));
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_profiles'))).toBe(true);
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_skills'))).toBe(true);
+    });
+
+    it('reports every missing required field (name, skill, availability, location) when the profile row is absent', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ count: 0 }] });
+
+      const result = await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      expect(result.ready).toBe(false);
+      expect(result.missing.sort()).toEqual(['availability', 'full_name', 'location', 'skill']);
+    });
+
+    it('reports only the specific fields that are missing (partial completeness)', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock)
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [{ full_name: 'Jane Doe', availability: null, location: 'Austin, TX' }] })
+        .mockResolvedValueOnce({ rows: [{ count: 2 }] });
+
+      const result = await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      expect(result).toEqual({ ready: false, missing: ['availability'] });
+    });
+
+    it('is idempotent: two consecutive calls both run the canonical upsert and neither throws', async () => {
+      const client = mockPoolClient();
+      (client.query as jest.Mock).mockResolvedValue({ rows: [{ full_name: 'Jane', availability: 'full_time', location: 'Austin, TX' }] });
+
+      await profile.syncProfileForTrustHandoff(client, 'worker-1');
+      await profile.syncProfileForTrustHandoff(client, 'worker-1');
+
+      const insertCalls = (client.query as jest.Mock).mock.calls.filter(
+        (c) => String(c[0]).includes('INSERT INTO worker_profiles'),
+      );
+      expect(insertCalls).toHaveLength(2);
+    });
   });
 });
 

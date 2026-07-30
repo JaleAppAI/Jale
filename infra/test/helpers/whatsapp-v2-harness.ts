@@ -69,6 +69,13 @@ import type {
 import { evaluateDelivery } from '../../lambda/whatsapp/lib/delivery-policy';
 import type { RuntimeControls } from '../../lambda/whatsapp/lib/runtime-controls';
 import { createLocationResolver } from '../../lambda/whatsapp/lib/onboarding-adapters';
+import {
+  buildSyntheticVoiceInboundBody,
+  parseVoiceTranscriptEvent,
+  type TrustVoiceEventV2,
+  type ProfileIntakeVoiceEventV2,
+  type VoiceExtractionFields,
+} from '../../lambda/whatsapp/lib/voice-events';
 
 // The shared client marker is never actually queried against — every fake
 // below is a plain in-memory structure — but it IS the value threaded
@@ -202,7 +209,10 @@ interface CompletionRecord {
   assessmentProvenance: Record<string, unknown>;
 }
 
-function createFakeGateRepo(conversations: ReturnType<typeof createFakeConversationsStore>) {
+function createFakeGateRepo(
+  conversations: ReturnType<typeof createFakeConversationsStore>,
+  profileFake: ReturnType<typeof createFakeProfileAdapter>,
+) {
   const gates = new Map<string, WorkerGate>();
   const transitions: TransitionRecord[] = [];
   const completions: CompletionRecord[] = [];
@@ -371,6 +381,62 @@ function createFakeGateRepo(conversations: ReturnType<typeof createFakeConversat
         workerReadyEventId: `ready-${completions.length}`,
       };
     },
+    async clearProfileAnswers(_client: PoolClient, workerId: string): Promise<void> {
+      // Mirrors the real `clearProfileAnswers`'s column set: the seven
+      // profile-answer fields only — `trustAnswers` (the fake's stand-in for
+      // `worker_trust_assessments`) is deliberately left untouched, exactly
+      // like the real function never touches `worker_trust_assessments`.
+      const profile = profileFake._profiles.get(workerId);
+      if (!profile) return;
+      delete profile.name;
+      delete profile.location;
+      delete profile.trade;
+      delete profile.tradeOther;
+      delete profile.yearsExperience;
+      delete profile.hasTransportation;
+      delete profile.availability;
+    },
+    async resetPendingTrustAssessmentAndSkills(_client: PoolClient, workerId: string): Promise<void> {
+      // Mirrors the real function's `answers = '[]'::jsonb` reset — this
+      // fake has no separate `worker_skills` table to model (that reset is
+      // covered by the real-Postgres DB suite instead).
+      const profile = profileFake._profiles.get(workerId);
+      if (!profile) return;
+      profile.trustAnswers = [];
+    },
+    async findPreviousStepKey(
+      _client: PoolClient,
+      runId: string,
+      currentStepKey: WorkflowStepKey,
+    ): Promise<WorkflowStepKey | null> {
+      // Mirrors the real query: most recent transition landing ON
+      // `currentStepKey` that actually moved from somewhere else, excluding
+      // BACK's/RESTART's own `worker_*`-prefixed navigation transitions and
+      // any voice holding step as the candidate "previous" step (Task 3/B1
+      // fix). Scanned from the end since `transitions` is append-only
+      // chronological order.
+      for (let i = transitions.length - 1; i >= 0; i--) {
+        const t = transitions[i];
+        if (
+          t.runId === runId
+          && t.toStepKey === currentStepKey
+          && t.fromStepKey != null
+          && t.fromStepKey !== t.toStepKey
+          && !t.reason.startsWith('worker_')
+          && t.fromStepKey !== 'profile.voice_choice'
+          && t.fromStepKey !== 'profile.voice_processing'
+          // Pre-auth keys: a self_heal_preauth_step transition legitimately
+          // records from_step_key = 'start.choose_language', and BACK must
+          // never land a bound run on a pre-auth step (mirrors the real
+          // query's NOT IN).
+          && t.fromStepKey !== 'start.choose_language'
+          && t.fromStepKey !== 'identity.verify_otp'
+        ) {
+          return t.fromStepKey;
+        }
+      }
+      return null;
+    },
     _gates: gates,
     _transitions: transitions,
     _completions: completions,
@@ -393,10 +459,10 @@ interface RecordedIntent {
 }
 
 const DEFAULT_CONTROLS: RuntimeControls = {
-  onboardingV2Enabled: true,
-  onboardingV2GlobalEnabled: true,
-  onboardingV2PhoneHashes: new Set<string>(),
   deferredDeliveryEnabled: true,
+  voiceIntakeEnabled: false,
+  voiceIntakeGlobalEnabled: false,
+  voiceIntakePhoneHashes: new Set<string>(),
 };
 
 function createFakeWorkerGateway(gateRepo: ReturnType<typeof createFakeGateRepo>) {
@@ -407,7 +473,7 @@ function createFakeWorkerGateway(gateRepo: ReturnType<typeof createFakeGateRepo>
     _client: PoolClient,
     input: WorkerMessageIntentInput,
     now: Date = new Date(),
-  ): Promise<{ intentId: string; decision: DeliveryDecision }> {
+  ): Promise<{ intentId: string; decision: DeliveryDecision; outboxMaterialized: boolean }> {
     const gate = gateRepo._gates.get(input.workerId) ?? null;
     const decision = evaluateDelivery(
       {
@@ -421,7 +487,7 @@ function createFakeWorkerGateway(gateRepo: ReturnType<typeof createFakeGateRepo>
     );
     intents.push({ input, decision });
     if (decision.action === 'allow') allowed.push(input);
-    return { intentId: `intent-${intents.length}`, decision };
+    return { intentId: `intent-${intents.length}`, decision, outboxMaterialized: true };
   }
 
   return { enqueueWorkerMessage, intents, allowed };
@@ -476,6 +542,7 @@ interface FakeChallenge {
 
 function createFakeIdentity(clockRef: { now: Date }) {
   let codeSeq = 0;
+  let rotationSeq = 0;
   const challenges = new Map<string, FakeChallenge>();
   // Seeded (or learned) phone -> workerId map, mirroring reconcileUserRow's
   // idempotent phone->account resolution. A phone with no prior entry gets
@@ -519,7 +586,24 @@ function createFakeIdentity(clockRef: { now: Date }) {
           if (newCount >= 3) {
             return { status: 'locked' as const, lockedUntil: new Date(now.getTime() + 15 * 60 * 1000) };
           }
-          return { status: 'invalid' as const, attemptsRemaining: 3 - newCount, attempts: newCount };
+          // Faithful to real Cognito CUSTOM_AUTH: a wrong-but-retryable
+          // answer CONSUMES the presented session and issues a rotated one
+          // carrying the same code (create-auth-challenge reuses the OTP on
+          // retry). The old id is deleted so a stale resubmission resolves
+          // to 'expired' — exactly the failure the 2026-07-26 review found
+          // the previous, overly-permissive fake was masking: a router that
+          // fails to persist rotatedChallengeId now breaks these
+          // conversations at attempt 2 instead of silently passing.
+          rotationSeq += 1;
+          const rotatedChallengeId = `${input.challengeId}#r${rotationSeq}`;
+          challenges.delete(input.challengeId);
+          challenges.set(rotatedChallengeId, challenge);
+          return {
+            status: 'invalid' as const,
+            attemptsRemaining: 3 - newCount,
+            attempts: newCount,
+            rotatedChallengeId,
+          };
         }
         let workerId = phoneToWorkerId.get(input.whatsappNumber);
         if (!workerId) {
@@ -573,11 +657,26 @@ interface SavedProfile {
   name?: string;
   location?: { city: string | null; state: string | null; postalCode: string | null; source: string };
   trade?: string;
-  trustAnswers: Array<{ questionIndex: number; answerText: string; provenance?: Record<string, unknown> }>;
+  tradeOther?: string;
+  yearsExperience?: string;
+  hasTransportation?: boolean;
+  availability?: string;
+  trustAnswers: Array<{
+    questionIndex: number;
+    qEn?: string;
+    qEs?: string;
+    answerText: string;
+    answerSource?: string;
+    provenance?: Record<string, unknown>;
+  }>;
 }
 
 function createFakeProfileAdapter() {
   const profiles = new Map<string, SavedProfile>();
+  const syncCalls: string[] = [];
+  // Overridable per-test: which fields `syncProfileForTrustHandoff` reports
+  // missing (defaults to "always ready" so existing flows aren't affected).
+  let missingFieldsOverride: string[] | null = null;
 
   function ensure(workerId: string): SavedProfile {
     let p = profiles.get(workerId);
@@ -597,20 +696,187 @@ function createFakeProfileAdapter() {
         ensure(workerId).location = location;
       },
       async saveTrade(_client: PoolClient, workerId: string, trade: string): Promise<void> {
-        ensure(workerId).trade = trade;
+        const p = ensure(workerId);
+        // Faithful to chk_trade_other (004_whatsapp.sql): main_trade='other'
+        // with main_trade_other still NULL is rejected by the real database.
+        // The 2026-07-26 review found the previous, always-accepting fake
+        // masked exactly this — the router called saveTrade('other') before
+        // the profession was known and every "Other" worker wedged in prod
+        // while this harness stayed green. The correct path stages the
+        // choice in the resolver's collected bag and lets saveCustomTrade
+        // write both columns atomically.
+        if (trade === 'other' && !p.tradeOther) {
+          const err: any = new Error(
+            'new row for relation "users" violates check constraint "chk_trade_other"',
+          );
+          err.code = '23514';
+          err.constraint = 'chk_trade_other';
+          throw err;
+        }
+        p.trade = trade;
+      },
+      async saveCustomTrade(_client: PoolClient, workerId: string, rawProfession: string): Promise<void> {
+        const p = ensure(workerId);
+        p.trade = 'other';
+        p.tradeOther = rawProfession;
+      },
+      async saveExperience(_client: PoolClient, workerId: string, yearsExperience: string): Promise<void> {
+        ensure(workerId).yearsExperience = yearsExperience;
+      },
+      async saveTransportation(_client: PoolClient, workerId: string, hasTransportation: boolean): Promise<void> {
+        ensure(workerId).hasTransportation = hasTransportation;
+      },
+      async saveAvailability(_client: PoolClient, workerId: string, availability: string): Promise<void> {
+        ensure(workerId).availability = availability;
+      },
+      async syncProfileForTrustHandoff(
+        _client: PoolClient,
+        workerId: string,
+      ): Promise<{ ready: boolean; missing: string[] }> {
+        syncCalls.push(workerId);
+        const missing = missingFieldsOverride ?? [];
+        return { ready: missing.length === 0, missing };
       },
       async saveTrustAnswer(
         _client: PoolClient,
-        input: { workerId: string; questionIndex: number; answerText: string; provenance?: Record<string, unknown> },
+        input: {
+          workerId: string;
+          questionIndex: number;
+          qEn?: string;
+          qEs?: string;
+          answerText: string;
+          answerSource?: string;
+          provenance?: Record<string, unknown>;
+        },
       ): Promise<void> {
         ensure(input.workerId).trustAnswers.push({
           questionIndex: input.questionIndex,
+          qEn: input.qEn,
+          qEs: input.qEs,
           answerText: input.answerText,
+          answerSource: input.answerSource,
           provenance: input.provenance,
         });
       },
     },
     _profiles: profiles,
+    _syncCalls: syncCalls,
+    setMissingFields(missing: string[] | null): void {
+      missingFieldsOverride = missing;
+    },
+  };
+}
+
+// ── Fake voice-intake surface (Task 4/7: trust-question voice notes) ───
+//
+// `enabled` is a live getter (not a snapshot) — `setVoiceIntakeEnabled` must
+// change the ANSWER `deps.voiceIntake.enabled` gives to router code that
+// reads it mid-turn, exactly like the real per-message
+// `isVoiceIntakeEnabled(runtimeControls, phoneHash)` read in processor.ts.
+// `startTrustTranscription` never touches Twilio/S3/SFN — it just records
+// the call so a test can complete it later via `completeTranscription`.
+
+interface PendingTranscription {
+  workerId: string;
+  phone: string;
+  runId: string;
+  stepKey: string;
+  questionIndex: number;
+  language: PreferredLanguage;
+  mediaUrl: string;
+  mediaContentType: string;
+  inboundMessageSid: string;
+  executionArn: string;
+}
+
+// ── Fake profile-intake ingest surface (Stream B: full voice profile
+//    intake). `ingestProfileVoiceNote` mints a deterministic (but unique)
+//    execution ARN per call — never a real Twilio/S3/SFN round trip — so a
+//    test can assert `handleVoiceIntakeResult`'s staleness guard genuinely
+//    compares real values rather than always agreeing. `failIngest`/
+//    `recoverIngest` model the adapter's documented "never throws for an
+//    expected failure" contract: a failing ingest returns
+//    `{ started: false, reason }`, exactly like a real oversized-file or
+//    pipeline-unavailable outcome would. ──────────────────────────────
+
+interface PendingProfileIngest {
+  workerId: string;
+  phone: string;
+  runId: string;
+  stepKey: string;
+  language: PreferredLanguage;
+  mediaUrl: string;
+  mediaContentType: string;
+  inboundMessageSid: string;
+  executionArn: string;
+}
+
+function createFakeVoiceIntake() {
+  let enabledFlag = false;
+  const pendingTranscriptions: PendingTranscription[] = [];
+  const pendingProfileIngests: PendingProfileIngest[] = [];
+  let ingestSeq = 0;
+  let ingestFailureReason: string | null = null;
+  let transcriptionSeq = 0;
+  let transcriptionFailureReason: string | null = null;
+
+  const voiceIntake = {
+    get enabled(): boolean {
+      return enabledFlag;
+    },
+    async startTrustTranscription(
+      input: Omit<PendingTranscription, 'executionArn'>,
+    ): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
+      if (transcriptionFailureReason) {
+        return { started: false, reason: transcriptionFailureReason };
+      }
+      transcriptionSeq += 1;
+      const executionArn = `arn:aws:states:us-east-2:000000000000:execution:fake-trust-voice-pipeline:vt-${transcriptionSeq}`;
+      pendingTranscriptions.push({ ...input, executionArn });
+      return { started: true, executionArn };
+    },
+    async ingestProfileVoiceNote(input: {
+      workerId: string;
+      phone: string;
+      runId: string;
+      stepKey: string;
+      language: PreferredLanguage;
+      mediaUrl: string;
+      mediaContentType: string;
+      inboundMessageSid: string;
+    }): Promise<{ started: boolean; reason?: string; executionArn?: string }> {
+      if (ingestFailureReason) {
+        return { started: false, reason: ingestFailureReason };
+      }
+      ingestSeq += 1;
+      const executionArn = `arn:aws:states:us-east-2:000000000000:execution:fake-profile-voice-pipeline:vp-${ingestSeq}`;
+      pendingProfileIngests.push({ ...input, executionArn });
+      return { started: true, executionArn };
+    },
+  };
+
+  return {
+    voiceIntake,
+    pendingTranscriptions,
+    pendingProfileIngests,
+    setEnabled(value: boolean): void {
+      enabledFlag = value;
+    },
+    failIngest(reason: string): void {
+      ingestFailureReason = reason;
+    },
+    recoverIngest(): void {
+      ingestFailureReason = null;
+    },
+    /** Makes every SUBSEQUENT `startTrustTranscription` call fail with the
+     * given reason (e.g. 'download_failed') until `recoverTranscription` is
+     * called — models an expired/unreachable Twilio media URL (Task 7/B5). */
+    failTranscription(reason: string): void {
+      transcriptionFailureReason = reason;
+    },
+    recoverTranscription(): void {
+      transcriptionFailureReason = null;
+    },
   };
 }
 
@@ -668,6 +934,7 @@ export class WhatsAppV2Harness {
   private readonly identityFake: ReturnType<typeof createFakeIdentity>;
   private readonly trustQuestionsFake = createFakeTrustQuestions();
   private readonly profileFake = createFakeProfileAdapter();
+  private readonly voiceIntakeFake = createFakeVoiceIntake();
   private readonly locationResolver = createLocationResolver();
   private readonly deps: OnboardingV2Deps;
   private readonly processedSids = new Map<string, RouteResult>();
@@ -679,10 +946,38 @@ export class WhatsAppV2Harness {
     this.phone = options.phone ?? '+15550001111';
     this.conversationId = `conv:${this.phone}`;
     this.clockRef = { now: options.now ?? new Date('2026-01-01T00:00:00.000Z') };
-    this.gateRepo = createFakeGateRepo(this.conversations);
+    this.gateRepo = createFakeGateRepo(this.conversations, this.profileFake);
     this.gateway = createFakeWorkerGateway(this.gateRepo);
     this.identityFake = createFakeIdentity(this.clockRef);
     this.conversations.ensure(this.conversationId, this.phone);
+
+    // The router now reads the persisted profile directly, via the REAL
+    // loadProfileFromDb (lib/profile-flow.ts) — a `client.query(...)` call,
+    // not another injected adapter fake — to resolve which profile field is
+    // next (resolveNextProfileStep). HARNESS_CLIENT is a single shared
+    // module-level object (see its header comment / the identity assertion
+    // in onboarding-v2-conversation.test.ts), so its `.query` is rebound
+    // here, per harness construction, to this instance's own fake profile
+    // store. Tests only ever drive one harness at a time, so this rebind is
+    // safe: it stays pointed at whichever harness constructed it last.
+    (HARNESS_CLIENT as unknown as { query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }> }).query =
+      async (_sql: string, params: unknown[]) => {
+        const workerId = params[0] as string;
+        const p = this.profileFake._profiles.get(workerId);
+        return {
+          rows: [
+            {
+              full_name: p?.name ?? null,
+              city: p?.location ? (p.location.city ?? p.location.postalCode) : null,
+              main_trade: p?.trade ?? null,
+              main_trade_other: null,
+              years_experience: p?.yearsExperience ?? null,
+              has_transportation: p?.hasTransportation ?? null,
+              availability: p?.availability ?? null,
+            },
+          ],
+        };
+      };
 
     this.deps = {
       adapters: {
@@ -709,6 +1004,11 @@ export class WhatsAppV2Harness {
         reactivateDeclinedLegalRun: (c, input) => this.gateRepo.reactivateDeclinedLegalRun(c, input),
         appendTransition: (c, input) => this.gateRepo.appendTransition(c, input as any),
         completeOnboarding: (c, input) => this.gateRepo.completeOnboarding(c, input),
+        clearProfileAnswers: (c, workerId) => this.gateRepo.clearProfileAnswers(c, workerId),
+        resetPendingTrustAssessmentAndSkills: (c, workerId) =>
+          this.gateRepo.resetPendingTrustAssessmentAndSkills(c, workerId),
+        findPreviousStepKey: (c, runId, currentStepKey) =>
+          this.gateRepo.findPreviousStepKey(c, runId, currentStepKey),
       },
       enqueueWorkerMessage: this.gateway.enqueueWorkerMessage,
       enqueuePreAuthPrompt: (c, sid, to, prompt) => {
@@ -727,6 +1027,7 @@ export class WhatsAppV2Harness {
         this.canonicalLegalConsents.push(input);
       },
       workflowVersion: 1,
+      voiceIntake: this.voiceIntakeFake.voiceIntake,
     };
 
     // Wrap enqueueWorkerMessage so every allowed send is also mirrored into
@@ -850,6 +1151,201 @@ export class WhatsAppV2Harness {
     });
   }
 
+  // ── Voice (Task 4/7: trust-question voice notes) ────────────────────
+
+  /** Fail-closed by default (matches the real `voice_intake_enabled`
+   * runtime control) — a test must opt in explicitly. */
+  setVoiceIntakeEnabled(enabled: boolean): void {
+    this.voiceIntakeFake.setEnabled(enabled);
+  }
+
+  /** Makes every SUBSEQUENT `startTrustTranscription` call fail (e.g. an
+   * expired Twilio media URL) until `recoverTrustTranscription` is called —
+   * Task 7/B5's "must fail loudly, not silently" coverage. */
+  failTrustTranscription(reason: string): void {
+    this.voiceIntakeFake.failTranscription(reason);
+  }
+
+  recoverTrustTranscription(): void {
+    this.voiceIntakeFake.recoverTranscription();
+  }
+
+  /** A real Twilio media field's worth of a voice note inbound — no
+   * transcript yet, the `numMedia`/`mediaUrl`/`mediaContentType` triple a
+   * real webhook delivers. `sendText`'s canned-answer driving stops working
+   * once a caller wants THIS shape, hence the separate helper. */
+  async sendVoiceNote(
+    opts: { messageSid?: string; mediaContentType?: string } = {},
+  ): Promise<RouteResult> {
+    return this.routeTurn({
+      from: this.phone,
+      body: '',
+      messageSid: opts.messageSid ?? nextSid('sid'),
+      numMedia: 1,
+      mediaUrl: 'https://api.twilio.example/fake-media/voice-note',
+      mediaSid: nextSid('ME'),
+      mediaContentType: opts.mediaContentType ?? 'audio/ogg',
+    });
+  }
+
+  /** Task 1/A1: a non-voice media message (a photo) carrying a caption —
+   * the caption is real, usable text (an OTP code, a name, a command) that
+   * must NOT be discarded in favor of voice-note copy. Defaults to an image
+   * content type, distinct from `sendVoiceNote`'s audio default. */
+  async sendMediaWithCaption(
+    body: string,
+    opts: { messageSid?: string; mediaContentType?: string } = {},
+  ): Promise<RouteResult> {
+    return this.routeTurn({
+      from: this.phone,
+      body,
+      messageSid: opts.messageSid ?? nextSid('sid'),
+      numMedia: 1,
+      mediaUrl: 'https://api.twilio.example/fake-media/photo',
+      mediaSid: nextSid('ME'),
+      mediaContentType: opts.mediaContentType ?? 'image/jpeg',
+    });
+  }
+
+  /** Every voice note that successfully started a transcription (via the
+   * fake `startTrustTranscription`), in call order. */
+  getPendingTranscriptions(): PendingTranscription[] {
+    return [...this.voiceIntakeFake.pendingTranscriptions];
+  }
+
+  /**
+   * Completes the `index`-th pending transcription by round-tripping a REAL
+   * `VoiceEventV2` through `buildSyntheticVoiceInboundBody` ->
+   * `parseVoiceTranscriptEvent` (the exact functions the real receiver
+   * Lambda and processor use) and routing it with the real `<origSid>#vt`
+   * synthetic sid — including through this harness's own `processedSids`
+   * cache, so calling this twice for the same index is a genuine duplicate-
+   * delivery replay, not a hand-waved no-op.
+   */
+  async completeTranscription(
+    index: number,
+    result: { status: 'COMPLETED' | 'FAILED'; transcript?: string; executionArnOverride?: string },
+  ): Promise<RouteResult> {
+    const pending = this.voiceIntakeFake.pendingTranscriptions[index];
+    if (!pending) {
+      throw new Error(`completeTranscription: no pending transcription at index ${index}`);
+    }
+
+    const evt: TrustVoiceEventV2 = {
+      version: 'v2',
+      kind: 'trust_answer',
+      status: result.status,
+      phone: pending.phone,
+      runId: pending.runId,
+      stepKey: pending.stepKey,
+      language: pending.language,
+      origMessageSid: pending.inboundMessageSid,
+      startedAt: this.clockRef.now.toISOString(),
+      questionIndex: pending.questionIndex,
+      executionArn: result.executionArnOverride ?? pending.executionArn,
+      ...(result.status === 'COMPLETED' ? { transcript: result.transcript ?? '' } : {}),
+    };
+
+    const body = buildSyntheticVoiceInboundBody(evt);
+    const params = Object.fromEntries(new URLSearchParams(body));
+    const parsed = parseVoiceTranscriptEvent(params);
+    if (!parsed) {
+      throw new Error('completeTranscription: synthetic event failed to round-trip');
+    }
+
+    return this.routeTurn({
+      from: this.phone,
+      body: '',
+      messageSid: params.MessageSid,
+      voiceEvent: parsed,
+    });
+  }
+
+  // ── Voice (Stream B: full voice profile intake) ─────────────────────
+
+  /** Every voice note that successfully started profile-intake ingestion
+   * (via the fake `ingestProfileVoiceNote`), in call order. */
+  getPendingProfileIngests(): PendingProfileIngest[] {
+    return [...this.voiceIntakeFake.pendingProfileIngests];
+  }
+
+  /** Makes every SUBSEQUENT `ingestProfileVoiceNote` call fail with the
+   * given reason (e.g. 'pipeline_unavailable') until `recoverVoiceIngest`
+   * is called — models the adapter's "never throws for an expected
+   * failure" contract. */
+  failVoiceIngest(reason: string): void {
+    this.voiceIntakeFake.failIngest(reason);
+  }
+
+  recoverVoiceIngest(): void {
+    this.voiceIntakeFake.recoverIngest();
+  }
+
+  /**
+   * Completes the `index`-th pending profile-intake ingest by round-tripping
+   * a REAL `ProfileIntakeVoiceEventV2` through `buildSyntheticVoiceInboundBody`
+   * -> `parseVoiceTranscriptEvent` (the exact functions `ai-profile-writer`'s
+   * v2 branch and the processor use) and routing it with the real
+   * `<origSid>#vp` synthetic sid — including through this harness's own
+   * `processedSids` cache, so calling this twice for the same index is a
+   * genuine duplicate-delivery replay.
+   *
+   * `executionArnOverride` lets a test construct a deliberately STALE event
+   * (a mismatched arn) without needing a second real ingest — the
+   * "redelivered after the run moved on" and "wrong execution" staleness
+   * cases are otherwise indistinguishable from a fresh, valid completion.
+   */
+  async injectVoiceIntakeResult(
+    index: number,
+    result: {
+      status: 'COMPLETED' | 'FAILED';
+      fields?: VoiceExtractionFields | null;
+      confidences?: Record<string, number> | null;
+      summaryEn?: string | null;
+      summaryEs?: string | null;
+      extractionId?: string | null;
+      executionArnOverride?: string;
+    },
+  ): Promise<RouteResult> {
+    const pending = this.voiceIntakeFake.pendingProfileIngests[index];
+    if (!pending) {
+      throw new Error(`injectVoiceIntakeResult: no pending ingest at index ${index}`);
+    }
+
+    const completed = result.status === 'COMPLETED';
+    const evt: ProfileIntakeVoiceEventV2 = {
+      version: 'v2',
+      kind: 'profile_intake',
+      status: result.status,
+      phone: pending.phone,
+      runId: pending.runId,
+      stepKey: pending.stepKey,
+      language: pending.language,
+      origMessageSid: pending.inboundMessageSid,
+      startedAt: this.clockRef.now.toISOString(),
+      executionArn: result.executionArnOverride ?? pending.executionArn,
+      extractionId: completed ? (result.extractionId ?? `extraction-${index + 1}`) : null,
+      fields: completed ? (result.fields ?? null) : null,
+      confidences: completed ? (result.confidences ?? null) : null,
+      summaryEn: completed ? (result.summaryEn ?? null) : null,
+      summaryEs: completed ? (result.summaryEs ?? null) : null,
+    };
+
+    const body = buildSyntheticVoiceInboundBody(evt);
+    const params = Object.fromEntries(new URLSearchParams(body));
+    const parsed = parseVoiceTranscriptEvent(params);
+    if (!parsed) {
+      throw new Error('injectVoiceIntakeResult: synthetic event failed to round-trip');
+    }
+
+    return this.routeTurn({
+      from: this.phone,
+      body: '',
+      messageSid: params.MessageSid,
+      voiceEvent: parsed,
+    });
+  }
+
   // ── Business-message deferral — REAL evaluateDelivery ───────────────
 
   private currentWorkerId(): string | null {
@@ -913,6 +1409,9 @@ export class WhatsAppV2Harness {
       'profile.location',
       'profile.trade',
       ...(trade === 'other' ? (['profile.custom_trade'] as WorkflowStepKey[]) : []),
+      'profile.experience',
+      'profile.transportation',
+      'profile.availability',
       'trust.question.1',
       'trust.question.2',
       'trust.question.3',
@@ -938,6 +1437,15 @@ export class WhatsAppV2Harness {
         }
         case 'legal.review':
           await this.sendText('ACCEPT');
+          // Stream B: when voice intake is enabled, Accept lands on
+          // profile.voice_choice instead of the first missing field —
+          // opt into the text flow immediately (the same button the real
+          // template offers) so the per-field canned answers below still
+          // land on the steps they expect. A no-op when voice is disabled
+          // (driveToStep's pre-Stream-B contract, unchanged).
+          if (this.voiceIntakeFake.voiceIntake.enabled) {
+            await this.pressButton('media:voice:text');
+          }
           break;
         case 'profile.name':
           await this.sendText('Jose Martinez');
@@ -950,6 +1458,11 @@ export class WhatsAppV2Harness {
           break;
         case 'profile.custom_trade':
           await this.sendText(opts.customProfession ?? 'dog groomer');
+          break;
+        case 'profile.experience':
+        case 'profile.transportation':
+        case 'profile.availability':
+          await this.sendText('1');
           break;
         case 'trust.question.1':
         case 'trust.question.2':
@@ -1042,5 +1555,18 @@ export class WhatsAppV2Harness {
     const id = workerId ?? this.currentWorkerId();
     if (!id) return null;
     return this.profileFake._profiles.get(id) ?? null;
+  }
+
+  /** How many times `profile.syncProfileForTrustHandoff` has been invoked
+   * (the pre-trust-handoff profile sync/gate). */
+  getProfileSyncCallCount(): number {
+    return this.profileFake._syncCalls.length;
+  }
+
+  /** Makes the next `syncProfileForTrustHandoff` call(s) report these fields
+   * as missing (fail-closed gate testing). Pass `null` to reset to "always
+   * ready". */
+  setProfileSyncMissingFields(missing: string[] | null): void {
+    this.profileFake.setMissingFields(missing);
   }
 }

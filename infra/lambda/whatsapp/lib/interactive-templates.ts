@@ -1,8 +1,4 @@
-import {
-  buildTrustQuestion,
-  getTrustOptions,
-  type ProfileField,
-} from './flows';
+import type { ProfileField } from './flows';
 import { t, type Lang } from './templates';
 
 export interface InteractivePrompt {
@@ -94,46 +90,12 @@ export function buildMediaInteractivePrompt(
   };
 }
 
-export function buildTrustInteractivePrompt(
-  step: number,
-  trade: string,
-  lang: Lang,
-): InteractivePrompt {
-  const options = getTrustOptions(step, trade);
-  const body = trustQuestionBody(step, lang);
-  return {
-    templateName: `trust_choice_${lang}`,
-    variables: {
-      '1': body,
-      '2': options[0] ?? '',
-      '3': options[1] ?? '',
-      '4': options[2] ?? '',
-      '5': `trust:${step}:0`,
-      '6': `trust:${step}:1`,
-      '7': `trust:${step}:2`,
-    },
-    fallbackBody: buildTrustQuestion(step, trade, lang),
-  };
-}
-
 export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
   return {
     templateName: lang === 'es' ? 'help_menu_list_es' : 'help_menu_list_en',
     variables: {},
     fallbackBody: t('help_menu', lang),
   };
-}
-
-function trustQuestionBody(step: number, lang: Lang): string {
-  if (step === 0) {
-    return lang === 'es'
-      ? 'Una pregunta mas para recomendarte mejores trabajos.\n\nEn que te especializas?'
-      : 'One more question so we can recommend better jobs.\n\nWhat is your specialty?';
-  }
-  if (step === 1) {
-    return lang === 'es' ? 'Cual es tu nivel?' : 'What is your level?';
-  }
-  return lang === 'es' ? 'Que trabajo haces mas?' : 'What work do you do most?';
 }
 
 // ── V2 workflow builders (additive; legacy builders above are unchanged) ──
@@ -162,30 +124,72 @@ export function buildV2StartInvitationPrompt(lang: Lang): InteractivePrompt {
   };
 }
 
+/**
+ * One variable: `{{1}}` is the expiry in minutes. The resend button's payload
+ * (`otp:resend`, matched verbatim in handleOtpStep) and its label are static
+ * per-language properties of the approved template, not variables — there is a
+ * separate template per language, so nothing about the button varies at send
+ * time. Keeping the count at one is what makes `v2_onboarding_otp_*` safe to
+ * register: a registered template invoked with the wrong variable count is a
+ * Twilio 400, and outbox.ts's `__fallback_body` rescue only covers a MISSING
+ * ContentSid, so it cannot save a rejected payload.
+ */
 export function buildV2OtpPrompt(lang: Lang, minutes: string): InteractivePrompt {
-  const resendLabel = lang === 'en' ? 'Resend' : 'Reenviar';
   return {
     templateName: `v2_onboarding_otp_${lang}`,
-    variables: { '1': minutes, '2': 'otp:resend', '3': resendLabel },
+    variables: { '1': minutes },
     fallbackBody: t('v2_otp_sent', lang, { minutes }),
   };
 }
 
+/**
+ * Reuses V1's registered `onboarding_legal_*` template rather than the
+ * never-registered `v2_onboarding_legal_*`. v2 is a backend refactor, so the
+ * worker sees the same approved legal prompt V1 has always sent.
+ *
+ * The variable shape is V1's contract, not a choice: `buildLegalInteractivePrompt`
+ * sends exactly one variable (the ToS URL), and a registered template invoked
+ * with the wrong variable count is a Twilio 400 that `__fallback_body` does NOT
+ * rescue (outbox.ts only falls back when the ContentSid is absent). The three
+ * button payloads v2 used to pass as variables are baked into the approved
+ * template — and it emits `legal:accept`/`legal:decline`, exactly what
+ * `handleLegalStep` already parses (see parseLegalReplyPayload, flows.ts).
+ *
+ * `privacyUrl` survives only in the plain-text fallback: the approved template
+ * carries the ToS link alone, matching V1's UX.
+ */
 export function buildV2LegalPrompt(
   lang: Lang,
   tosUrl: string,
   privacyUrl: string,
 ): InteractivePrompt {
   return {
-    templateName: `v2_onboarding_legal_${lang}`,
-    variables: {
-      '1': tosUrl,
-      '2': privacyUrl,
-      '3': 'legal:accept',
-      '4': 'legal:decline',
-      '5': 'legal:review',
-    },
+    templateName: `onboarding_legal_${lang}`,
+    variables: { '1': tosUrl },
     fallbackBody: t('v2_legal_prompt', lang, { tos_url: tosUrl, privacy_url: privacyUrl }),
+  };
+}
+
+/**
+ * Trade picker for `profile.trade`, on V1's registered `onboarding_trade_*`
+ * template. v2's TRADE_ORDER is identical to V1's `main_trade` options
+ * (electrician, plumber, carpenter, concrete, painting, other), so the approved
+ * template asks for exactly the data v2 needs — no UX change, no new template.
+ *
+ * Zero variables, matching `buildProfileInteractivePrompt`'s contract for this
+ * template. Its taps arrive as `profile:main_trade:<trade>`, which
+ * `parseTradeChoice` accepts alongside the numbered replies used when the
+ * template is unavailable and the fallback body renders instead.
+ */
+export function buildV2TradePrompt(
+  lang: Lang,
+  question: string,
+  options: readonly string[],
+): InteractivePrompt {
+  return {
+    templateName: `onboarding_trade_${lang}`,
+    variables: {},
+    fallbackBody: buildNumberedOptionsBody(lang, question, options),
   };
 }
 
@@ -194,11 +198,18 @@ export function buildV2NumberedOptionsPrompt(
   question: string,
   options: readonly string[],
 ): InteractivePrompt {
-  const lines = options.map((o, i) => `${i + 1}. ${o}`);
-  const footer = t('v2_options_footer', lang);
   return {
     templateName: `v2_onboarding_options_${lang}`,
     variables: {},
-    fallbackBody: [question, ...lines, footer].join('\n'),
+    fallbackBody: buildNumberedOptionsBody(lang, question, options),
   };
+}
+
+function buildNumberedOptionsBody(
+  lang: Lang,
+  question: string,
+  options: readonly string[],
+): string {
+  const lines = options.map((o, i) => `${i + 1}. ${o}`);
+  return [question, ...lines, t('v2_options_footer', lang)].join('\n');
 }

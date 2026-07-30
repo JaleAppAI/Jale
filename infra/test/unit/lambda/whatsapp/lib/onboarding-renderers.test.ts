@@ -339,6 +339,148 @@ describe('onboarding-renderers', () => {
     });
   });
 
+  describe('payload-carried prompt copy (post-OTP dead-end regression)', () => {
+    // Regression: the onboarding/security category renderers used to ignore
+    // the intent payload and always send their default copy. Every
+    // post-bind step prompt (legal.review, profile.*, trust.*) therefore
+    // went out as the terminal "Your profile is ready." message, dead-ending
+    // onboarding immediately after OTP verification.
+
+    it('renders the step prompt carried in an onboarding intent payload, not the completion copy', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        sourceType: 'onboarding_v2:legal.review',
+        payload: {
+          templateName: 'v2_legal_review',
+          variables: { '1': 'https://tos.example', '2': 'https://privacy.example' },
+          fallbackBody: 'Please review our terms of service before continuing.',
+          lang: 'en',
+        },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result).not.toBeNull();
+      expect(result!.contentTemplate).toBe('v2_legal_review');
+      // __fallback_body must ride along in contentVariables: outbox.ts's
+      // sendTwilioWhatsAppMessage reads it to degrade to plain text when the
+      // named ContentSid isn't registered with Twilio (the case for every
+      // v2_-prefixed template today — none exist in the Twilio secret yet),
+      // stripping it before any real templated send. Without it here, an
+      // unregistered template hard-throws ('Twilio template missing')
+      // instead of degrading, exactly what broke prod after the first fix.
+      expect(result!.contentVariables).toEqual({
+        '1': 'https://tos.example',
+        '2': 'https://privacy.example',
+        __fallback_body: 'Please review our terms of service before continuing.',
+      });
+      // whatsapp_outbox_body_or_template requires body IS NULL when a
+      // content_template is set — a real interactive prompt (e.g. the OTP
+      // send) always carries templateName + fallbackBody together, so
+      // sending both here previously violated the DB check constraint
+      // (23514) and silently dropped every templated step prompt, including
+      // the OTP prompt itself.
+      expect(result!.body).toBeNull();
+    });
+
+    it('never emits both body and contentTemplate (whatsapp_outbox_body_or_template invariant)', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      // Shape of buildV2OtpPrompt's output as enqueued by sendPreAuthPrompt:
+      // templateName and fallbackBody are always both present.
+      const input = baseInput({
+        category: 'security',
+        ownerService: 'identity',
+        sourceType: 'onboarding_v2:identity.verify_otp',
+        payload: {
+          templateName: 'v2_onboarding_otp_en',
+          variables: { '1': '5', '2': 'otp:resend', '3': 'Resend' },
+          fallbackBody: 'We sent you a 6-digit code. It expires in 5 minutes.',
+          lang: 'en',
+        },
+      });
+      const result = await categoryRenderers.security(client, input);
+      expect(result).not.toBeNull();
+      const hasBody = result!.body !== null;
+      const hasTemplate = result!.contentTemplate !== null && result!.contentVariables !== null;
+      expect(hasBody).toBe(false);
+      expect(hasTemplate).toBe(true);
+      expect(hasBody && hasTemplate).toBe(false);
+    });
+
+    it('carries fallbackBody through as content_variables.__fallback_body so an unregistered Twilio template degrades to plain text instead of hard-failing', async () => {
+      // outbox.ts's sendTwilioWhatsAppMessage: if secret.templates has no
+      // ContentSid for content_template, it sends content_variables
+      // .__fallback_body as plain Body instead, and only throws
+      // 'Twilio template missing' when that key is absent too. Every
+      // v2_-prefixed template name is unregistered in Twilio today, so this
+      // key is what keeps every step prompt actually deliverable in prod.
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        payload: {
+          templateName: 'v2_onboarding_legal_en',
+          variables: { '1': 'https://jale.app/legal/tos' },
+          fallbackBody: 'Please review our terms of service before continuing.',
+        },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.contentVariables?.__fallback_body).toBe(
+        'Please review our terms of service before continuing.',
+      );
+    });
+
+    it('renders plain text carried as payload.body (sendTemplateMessage shape)', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        sourceType: 'onboarding_v2:v2_ready',
+        payload: { body: 'Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.', lang: 'es' },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.body).toBe('Tu perfil esta listo. Te avisaremos cuando haya trabajo para ti.');
+      expect(result!.contentTemplate).toBeNull();
+    });
+
+    it('keeps the completion copy as the fallback for an onboarding intent with no payload copy', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({ category: 'onboarding', ownerService: 'onboarding-v2', payload: {} });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.body).toContain('Your profile is ready');
+    });
+
+    it('security intents honor payload copy and keep the security notice as fallback', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const withPayload = await categoryRenderers.security(
+        client,
+        baseInput({
+          category: 'security',
+          ownerService: 'identity',
+          payload: { fallbackBody: 'Enter the 6-digit code we sent you.' },
+        }),
+      );
+      expect(withPayload!.body).toBe('Enter the 6-digit code we sent you.');
+
+      const withoutPayload = await categoryRenderers.security(
+        client,
+        baseInput({ category: 'security', ownerService: 'identity', payload: {} }),
+      );
+      expect(withoutPayload!.body).toContain('Security notice');
+    });
+
+    it('non-string payload fields are ignored rather than rendered', async () => {
+      const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+      const input = baseInput({
+        category: 'onboarding',
+        ownerService: 'onboarding-v2',
+        payload: { fallbackBody: 42, body: { nested: true }, templateName: '', variables: 'not-an-object' },
+      });
+      const result = await categoryRenderers.onboarding(client, input);
+      expect(result!.body).toContain('Your profile is ready');
+    });
+  });
+
   describe('createReleaseRenderer', () => {
     const languages: PreferredLanguage[] = ['en', 'es'];
 
@@ -490,5 +632,100 @@ describe('onboarding-renderers', () => {
       // Covered by the earlier source-scan test since both live in the same file.
       expect(true).toBe(true);
     });
+  });
+});
+
+// ── Single-job alert content template (2026-07-27 parity-audit fix) ──────
+//
+// A single-job alert reaches DORMANT ready workers; outside WhatsApp's 24h
+// customer-service window a freeform (contentTemplate: null) send is
+// rejected by Meta, so it must ride v1's approved job_alert_* template —
+// which also restores the Accept/Decline/Info buttons (payload contract
+// `job-<id>`, parseButtonPayload in flows.ts).
+describe('job_alert category renderer: single-job template send', () => {
+  const singleJob = {
+    jobId: 'job-9',
+    title: 'Electricista',
+    companyName: 'ACME',
+    score: 1,
+    location: 'El Paso, TX',
+    pay: '$30/hr',
+  };
+
+  it('renders the approved v1 template with the exact variable contract and a plain-text fallback', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [singleJob] } }));
+
+    expect(result).not.toBeNull();
+    expect(result!.body).toBeNull();
+    expect(result!.contentTemplate).toBe('job_alert_es');
+    expect(result!.contentVariables).toMatchObject({
+      '1': 'Electricista',
+      '2': 'ACME',
+      '3': 'El Paso, TX',
+      '4': '$30/hr',
+      '5': 'job-job-9',
+    });
+    // Unregistered ContentSid must degrade to text, never hard-fail.
+    expect(result!.contentVariables!.__fallback_body).toContain('Electricista');
+  });
+
+  it('uses the English template for an en recipient', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [singleJob] } }));
+    expect(result!.contentTemplate).toBe('job_alert_en');
+  });
+
+  // Task 2/A2 fix (2026-07-27): a job posted with no pay (jobs.pay is
+  // nullable, migration 003) or a pre-existing deferred intent that never
+  // carried location/pay must STILL render the content template — degrading
+  // to the plain-text digest is exactly the undeliverable-alert bug this
+  // renderer exists to fix, because Twilio rejects freeform sends outside
+  // the 24h customer-service window.
+  it('renders the template with a bilingual placeholder when pay is missing', async () => {
+    const { pay, ...jobWithoutPay } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutPay] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_en');
+    expect(result!.contentVariables!['4']).toBe('Pay not specified');
+  });
+
+  it('renders the template with a bilingual placeholder when pay is missing (Spanish)', async () => {
+    const { pay, ...jobWithoutPay } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'es' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutPay] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_es');
+    expect(result!.contentVariables!['4']).toBe('Pago no especificado');
+  });
+
+  it('renders the template with a bilingual placeholder when location is missing', async () => {
+    const { location, ...jobWithoutLocation } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutLocation] } }));
+
+    expect(result!.contentTemplate).toBe('job_alert_en');
+    expect(result!.contentVariables!['3']).toBe('Location not specified');
+  });
+
+  it('still degrades to the plain-text digest when jobId is missing (never a template with a broken button payload)', async () => {
+    const { jobId, ...jobWithoutId } = singleJob;
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({ payload: { jobs: [jobWithoutId] } }));
+
+    expect(result!.contentTemplate).toBeNull();
+    expect(result!.body).toContain('Electricista');
+  });
+
+  it('keeps the multi-job digest as plain text (release-time send, always inside the reply window)', async () => {
+    const client = mockClient({ whatsappNumber: RAW_PHONE, preferredLanguage: 'en' });
+    const result = await categoryRenderers.job_alert(client, baseInput({
+      payload: { jobs: [singleJob, { ...singleJob, jobId: 'job-10', title: 'Plomero' }] },
+    }));
+
+    expect(result!.contentTemplate).toBeNull();
+    expect(result!.body).toContain('Electricista');
+    expect(result!.body).toContain('Plomero');
   });
 });

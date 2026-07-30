@@ -83,7 +83,7 @@ export async function enqueueWorkerMessage(
   client: PoolClient,
   input: WorkerMessageIntentInput,
   now: Date = new Date(),
-): Promise<{ intentId: string; decision: DeliveryDecision }> {
+): Promise<{ intentId: string; decision: DeliveryDecision; outboxMaterialized: boolean }> {
   const inserted = await client.query<{ id: string; outbox_id: string | null; status: IntentStatus }>(
     `WITH attempted AS (
        INSERT INTO worker_message_intents
@@ -120,7 +120,7 @@ export async function enqueueWorkerMessage(
   const intentId = intent.id;
   const alreadyMaterialized = intent.outbox_id !== null;
   if (intent.status !== 'deferred' && intent.status !== 'eligible') {
-    return { intentId, decision: decisionForTerminalStatus(intent.status) };
+    return { intentId, decision: decisionForTerminalStatus(intent.status), outboxMaterialized: false };
   }
 
   const gate = await loadWorkerGate(client, input.workerId);
@@ -168,5 +168,5 @@ export async function enqueueWorkerMessage(
     }
   }
 
-  return { intentId, decision };
+  return { intentId, decision, outboxMaterialized: decision.action === 'allow' && !alreadyMaterialized };
 }

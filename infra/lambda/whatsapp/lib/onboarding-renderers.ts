@@ -118,13 +118,14 @@ interface DigestJob {
   title: string;
   companyName: string;
   score: number;
+  /** Optional because pre-existing deferred intents (enqueued before the
+   * producer started sending them) lack these; the renderer degrades to
+   * the plain-text digest for those. */
+  location?: string;
+  pay?: string;
 }
 
-function buildJobAlertDigestMessage(
-  lang: Lang,
-  jobsIn: ReadonlyArray<DigestJob>,
-): ReleaseRenderedMessage {
-  const jobs = jobsIn.slice(0, JOB_ALERT_DIGEST_CAP);
+function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): string {
   const lines = jobs.map((j, i) => `${i + 1}. ${j.title} - ${j.companyName}`);
   const header =
     lang === 'es'
@@ -134,8 +135,60 @@ function buildJobAlertDigestMessage(
     lang === 'es'
       ? 'Responde TRABAJOS (JOBS) para ver la lista completa.'
       : 'Reply JOBS to see the full list.';
-  const body = [header, ...lines, footer].join('\n');
-  return { body, contentTemplate: null, contentVariables: null };
+  return [header, ...lines, footer].join('\n');
+}
+
+function buildJobAlertDigestMessage(
+  lang: Lang,
+  jobsIn: ReadonlyArray<DigestJob>,
+): ReleaseRenderedMessage {
+  const jobs = jobsIn.slice(0, JOB_ALERT_DIGEST_CAP);
+
+  // 2026-07-27 parity-audit fix: a SINGLE job alert renders v1's approved
+  // `job_alert_*` content template (same variables and `job-<id>` button
+  // payload contract as job-alert.ts's legacy branch, matching
+  // parseButtonPayload in flows.ts). This is the alert that reaches a
+  // DORMANT ready worker — outside WhatsApp's 24h customer-service window
+  // Meta rejects freeform sends, so the plain-text version silently never
+  // arrived, and it also had no Accept/Decline/Info buttons. The
+  // multi-job digest keeps plain text: it is only produced by the
+  // worker.ready release, moments after the worker's own message, so it is
+  // always inside the window.
+  //
+  // `jobs.pay` is nullable (migration 003) and a pre-existing deferred
+  // intent may carry no `location` either — the template must still render
+  // (a missing pay/location must never fall back to the plain-text digest,
+  // which Twilio rejects outside the 24h window, defeating the whole point
+  // of this branch). A bilingual placeholder substitutes for whichever of
+  // the two is missing; only `jobId`/`title`/`companyName` are required.
+  const single = jobs.length === 1 ? jobs[0] : null;
+  if (
+    single
+    && typeof single.jobId === 'string' && single.jobId.length > 0
+    && typeof single.title === 'string' && single.title.length > 0
+    && typeof single.companyName === 'string' && single.companyName.length > 0
+  ) {
+    const location = typeof single.location === 'string' && single.location.length > 0
+      ? single.location
+      : (lang === 'en' ? 'Location not specified' : 'Ubicacion no especificada');
+    const pay = typeof single.pay === 'string' && single.pay.length > 0
+      ? single.pay
+      : (lang === 'en' ? 'Pay not specified' : 'Pago no especificado');
+    return {
+      body: null,
+      contentTemplate: lang === 'en' ? 'job_alert_en' : 'job_alert_es',
+      contentVariables: {
+        '1': single.title,
+        '2': single.companyName,
+        '3': location,
+        '4': pay,
+        '5': `job-${single.jobId}`,
+        [FALLBACK_BODY_KEY]: buildJobAlertDigestText(lang, jobs),
+      },
+    };
+  }
+
+  return { body: buildJobAlertDigestText(lang, jobs), contentTemplate: null, contentVariables: null };
 }
 
 function buildEmployerChatSingleMessage(
@@ -180,17 +233,76 @@ function isDigestJobArray(value: unknown): value is DigestJob[] {
   );
 }
 
+/** Reserved `content_variables` key `sendTwilioWhatsAppMessage` (outbox.ts)
+ * reads for the plain-text fallback when a `content_template` has no
+ * registered Twilio ContentSid; stripped before the real Twilio send when a
+ * ContentSid is found. `queueInteractivePrompt` (processor.ts, the pre-auth
+ * path) has always paired every templated send with this key. */
+const FALLBACK_BODY_KEY = '__fallback_body';
+
+/**
+ * Renders the message the enqueuing lane actually asked for, when the
+ * intent payload carries one. `sendStepPrompt` (onboarding-v2.ts) enqueues
+ * step prompts as `{ templateName, variables, fallbackBody, lang }`;
+ * `sendTemplateMessage` enqueues plain text as `{ body, lang }`. Returns
+ * null when the payload carries no message copy, so the category's default
+ * copy applies (the pre-payload behavior).
+ *
+ * Ignoring the payload here is what shipped originally — every post-bind
+ * step prompt (legal.review, profile.*, trust.*) was delivered as the
+ * terminal "profile is ready" copy, dead-ending onboarding right after OTP
+ * verification.
+ */
+function buildPayloadMessage(payload: Record<string, unknown>): ReleaseRenderedMessage | null {
+  // whatsapp_outbox enforces `body_or_template`: a row carries EITHER body
+  // OR (content_template + content_variables), never both. Real interactive
+  // prompts (buildV2OtpPrompt et al.) always populate templateName and
+  // fallbackBody together, so templateName must win outright — sending both
+  // trips the DB check constraint (23514) and drops the message silently
+  // from the worker's point of view.
+  const contentTemplate =
+    typeof payload.templateName === 'string' && payload.templateName !== ''
+      ? payload.templateName
+      : null;
+  if (contentTemplate) {
+    let contentVariables: Record<string, string> = {};
+    if (payload.variables && typeof payload.variables === 'object') {
+      const entries = Object.entries(payload.variables as Record<string, unknown>).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      );
+      contentVariables = Object.fromEntries(entries);
+    }
+    // Without this, an unregistered/renamed Twilio ContentSid hard-fails the
+    // send (outbox.ts throws 'Twilio template missing') instead of degrading
+    // to plain text, even though the prompt builder always supplies one.
+    if (typeof payload.fallbackBody === 'string' && payload.fallbackBody !== '') {
+      contentVariables = { ...contentVariables, [FALLBACK_BODY_KEY]: payload.fallbackBody };
+    }
+    return { body: null, contentTemplate, contentVariables };
+  }
+  const body =
+    typeof payload.fallbackBody === 'string' && payload.fallbackBody !== ''
+      ? payload.fallbackBody
+      : typeof payload.body === 'string' && payload.body !== ''
+        ? payload.body
+        : null;
+  if (body === null) return null;
+  return { body, contentTemplate: null, contentVariables: null };
+}
+
 const renderOnboarding: CategoryRenderer = async (client, input) => {
   const recipient = await loadVerifiedRecipient(client, input.workerId);
   if (!recipient) return null;
-  const message = buildOnboardingCompleteMessage(toLang(recipient.language));
+  const message =
+    buildPayloadMessage(input.payload) ?? buildOnboardingCompleteMessage(toLang(recipient.language));
   return { whatsappNumber: recipient.whatsappNumber, ...message };
 };
 
 const renderSecurity: CategoryRenderer = async (client, input) => {
   const recipient = await loadVerifiedRecipient(client, input.workerId);
   if (!recipient) return null;
-  const message = buildSecurityNoticeMessage(toLang(recipient.language));
+  const message =
+    buildPayloadMessage(input.payload) ?? buildSecurityNoticeMessage(toLang(recipient.language));
   return { whatsappNumber: recipient.whatsappNumber, ...message };
 };
 

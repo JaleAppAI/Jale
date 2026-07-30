@@ -5,7 +5,9 @@
 import {
   parseLanguageChoice, detectCommandLang, resolveResponseLanguage,
   isLanguageCommand, isResendCommand, isReviewTermsCommand, isOnboardingHelpCommand,
-  classifyBlockedCommand, evaluateStartCooldown, shouldRepeatPrompt, appendSendTimestamp,
+  isRestartCommand, isBackCommand,
+  classifyBlockedCommand, classifyBlockedCommandExact,
+  evaluateStartCooldown, shouldRepeatPrompt, appendSendTimestamp,
   START_COOLDOWN_MS, START_DAILY_CAP, REPROMPT_COOLDOWN_MS,
 } from '../../../../../lambda/whatsapp/lib/onboarding-language';
 
@@ -79,6 +81,37 @@ describe('command recognizers', () => {
   });
 });
 
+describe('isRestartCommand / isBackCommand — exact match only', () => {
+  it.each(['RESTART', 'restart', ' Restart ', 'REINICIAR', 'reiniciar'])(
+    'recognizes %s as restart', (b) => {
+      expect(isRestartCommand(b)).toBe(true);
+    });
+
+  it.each(['BACK', 'back', ' Back ', 'ATRAS', 'atras', 'ATRÁS', 'atrás'])(
+    'recognizes %s as back', (b) => {
+      expect(isBackCommand(b)).toBe(true);
+    });
+
+  it('does not fuzzy-match a near-miss (unlike the resend/language families)', () => {
+    expect(isRestartCommand('restar')).toBe(false);
+    expect(isRestartCommand('restartt')).toBe(false);
+    expect(isBackCommand('bac')).toBe(false);
+    expect(isBackCommand('backk')).toBe(false);
+  });
+
+  it('does not recognize a step answer as restart/back', () => {
+    expect(isRestartCommand('Juan Perez')).toBe(false);
+    expect(isBackCommand('78701')).toBe(false);
+    expect(isRestartCommand('')).toBe(false);
+    expect(isBackCommand('')).toBe(false);
+  });
+
+  it('is exact-only: extra words disqualify the match', () => {
+    expect(isRestartCommand('please restart')).toBe(false);
+    expect(isBackCommand('go back')).toBe(false);
+  });
+});
+
 describe('classifyBlockedCommand', () => {
   it.each([
     ['JOBS', 'jobs'], ['trabajos', 'jobs'],
@@ -90,6 +123,37 @@ describe('classifyBlockedCommand', () => {
 
   it('returns null for a step answer', () => {
     expect(classifyBlockedCommand('Austin, TX')).toBeNull();
+  });
+
+  it('fuzzy-catches a near-miss name — precisely the behavior that makes it unsafe at free-text steps', () => {
+    expect(classifyBlockedCommand('Chata')).toBe('chats');
+  });
+});
+
+describe('classifyBlockedCommandExact', () => {
+  it.each([
+    ['JOBS', 'jobs'], ['jobs', 'jobs'], ['trabajos', 'jobs'], ['TRABAJOS', 'jobs'],
+    ['CHATS', 'chats'], ['chats', 'chats'], ['mensajes', 'chats'], ['MENSAJES', 'chats'],
+    ['PROFILE', 'profile'], ['profile', 'profile'], ['perfil', 'profile'], ['PERFIL', 'profile'],
+  ])('classifies exact %s as %s', (body, expected) => {
+    expect(classifyBlockedCommandExact(body)).toBe(expected);
+  });
+
+  it.each(['Chata', 'trabjos', 'profil'])(
+    'returns null for the near-miss %s that fuzzy matching (classifyBlockedCommand) would catch',
+    (body) => {
+      expect(classifyBlockedCommand(body)).not.toBeNull();
+      expect(classifyBlockedCommandExact(body)).toBeNull();
+    },
+  );
+
+  it('returns null for "Perla" — not actually within fuzzy edit-distance 1 of "perfil"/"profile", but still exercised as a plausible false-positive name', () => {
+    expect(classifyBlockedCommandExact('Perla')).toBeNull();
+  });
+
+  it('returns null for ordinary free text', () => {
+    expect(classifyBlockedCommandExact('Austin, TX')).toBeNull();
+    expect(classifyBlockedCommandExact('Juan Perez')).toBeNull();
   });
 });
 
