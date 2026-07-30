@@ -101,7 +101,8 @@ $MigrationFiles = @(
     '051_whatsapp_voice_intake_control.sql',
     '052_worker_pending_name_and_skills_reset.sql',
     '053_whatsapp_web_worker_bypass.sql',
-    '054_remove_onboarding_v2_control.sql'
+    '054_remove_onboarding_v2_control.sql',
+    '055_job_referrals.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
