@@ -35,6 +35,13 @@ export interface ReferralsStackProps extends cdk.StackProps {
    * be created here.
    */
   readonly workerJobResource: apigateway.Resource;
+  /** Employer Cognito authorizer from ApiStack */
+  readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
+  /**
+   * /employer/jobs/{jobId} resource from ApiStack — the public-listing consent
+   * toggle hangs off it. Same reuse-don't-redeclare rule as workerJobResource.
+   */
+  readonly employerJobResource: apigateway.Resource;
 }
 
 /**
@@ -170,6 +177,22 @@ export class ReferralsStack extends cdk.Stack {
     });
     props.appDbSecret.grantRead(workerReferralsLambda.function);
 
+    // ── Lambda: employer-job-public-listing (PATCH .../public-listing) ──
+    // The single write path for jobs.public_listing_enabled — the employer's
+    // opt-IN to a public job page (migration 056). App DB (jale_admin) only;
+    // ownership is enforced inside the statement.
+    const employerJobPublicListingLambda = new JaleLambdaFunction(this, 'EmployerJobPublicListingLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-job-public-listing.ts'),
+      description: 'Employer opt-in toggle for the public job page',
+      environment: {
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      ...lambdaProps,
+    });
+    props.appDbSecret.grantRead(employerJobPublicListingLambda.function);
+
     // ── Routes ──
 
     // GET /public/jobs/{code}
@@ -206,6 +229,15 @@ export class ReferralsStack extends cdk.Stack {
       .addResource('referrals')
       .addMethod('GET', new apigateway.LambdaIntegration(workerReferralsLambda.function), {
         authorizer: props.workerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+
+    // PATCH /employer/jobs/{jobId}/public-listing — employer-authenticated,
+    // hangs off the EXISTING employer {jobId} node exported by ApiStack.
+    props.employerJobResource
+      .addResource('public-listing')
+      .addMethod('PATCH', new apigateway.LambdaIntegration(employerJobPublicListingLambda.function), {
+        authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
   }

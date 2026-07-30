@@ -160,6 +160,8 @@ new ReferralsStack(app, 'JaleReferralsStack', {
   workerAuthorizer: api.workerAuthorizer,
   workerResource: api.workerResource,
   workerJobResource: api.workerJobResource,
+  employerAuthorizer: api.employerAuthorizer,
+  employerJobResource: api.employerJobResource,
 });
 
 new LegalStack(app, 'JaleLegalStack', {

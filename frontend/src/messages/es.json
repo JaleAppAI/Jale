@@ -800,6 +800,14 @@
     "closed_body": "Pero hay mas trabajo esperandote en Jale.",
     "browse_jobs": "Ver mas trabajos en Jale"
   },
+  "employer_job_visibility": {
+    "title": "Pagina publica del trabajo",
+    "benefit": "Hacer publica esta oferta permite que llegue a mas personas: tus trabajadores pueden compartirla directamente y alguien puede leerla sin tener cuenta.",
+    "shares": "Se comparte: titulo, empresa, ubicacion, pago y descripcion. Nunca se comparte: tus datos de contacto, tus otros trabajos, ni quienes se postularon.",
+    "enabled": "Publica: cualquiera con el enlace puede leer esta oferta",
+    "disabled": "Privada: solo trabajadores con sesion en Jale pueden verla",
+    "error": "No se pudo actualizar la visibilidad. Intenta de nuevo."
+  },
   "job_share": {
     "title": "Comparte este trabajo",
     "subtitle": "Ayuda a alguien a encontrar trabajo - comparte este empleo.",
@@ -810,6 +818,7 @@
     "copied": "Copiado!",
     "more": "Mas...",
     "error_misconfigured": "Compartir no esta disponible en este momento. Intenta mas tarde.",
+    "error_not_public": "Este trabajo todavia no tiene pagina publica, asi que no se puede compartir.",
     "error_generic": "No pudimos compartir en este momento. Intenta de nuevo."
   },
   "worker_profile": {

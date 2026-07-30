@@ -60,6 +60,8 @@ describe('ReferralsStack', () => {
       workerAuthorizer: api.workerAuthorizer,
       workerResource: api.workerResource,
       workerJobResource: api.workerJobResource,
+      employerAuthorizer: api.employerAuthorizer,
+      employerJobResource: api.employerJobResource,
     });
     return { app, network, database, auth, api, referrals };
   }
@@ -225,6 +227,28 @@ describe('ReferralsStack', () => {
         Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
       }),
     });
+  });
+
+  test('PATCH /employer/jobs/{jobId}/public-listing is protected by EmployerAuthorizer', () => {
+    expect(authorizationTypeForLambda('Employer opt-in toggle for the public job page')).toBe('COGNITO_USER_POOLS');
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'PATCH',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
+  test('public-listing Lambda uses the app DB secret only — consent writes go through jale_admin', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Employer opt-in toggle for the public job page' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('DB_SECRET_ARN');
+    expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
   test('public/jobs/{code} path resources exist', () => {

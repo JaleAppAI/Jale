@@ -226,6 +226,10 @@ export type Job = {
 export type EmployerJobDetail = Job & {
   description: string | null;
   required_docs: Array<'resume' | 'driver_license'>;
+  /** Short code for the public job page URL (/j/{public_code}). */
+  public_code: string;
+  /** The employer's opt-IN to a public job page. Default false (migration 056). */
+  public_listing_enabled: boolean;
 };
 
 export type Applicant = {
@@ -405,6 +409,24 @@ export async function updateJob(
   data: JobWritePayload,
 ): Promise<EmployerJobDetail> {
   const res = await apiFetch(`/employer/jobs/${jobId}`, { method: 'PATCH', body: JSON.stringify(data) }, token);
+  if (!res.ok) throw await parseApiError(res, 'update_failed');
+  return res.json();
+}
+
+/**
+ * The employer's opt-IN to a public job page (migration 056). Strictly boolean:
+ * publishing to the open internet is a consent action, and the API rejects any
+ * coerced shape.
+ */
+export async function updateJobPublicListing(
+  token: string,
+  jobId: string,
+  enabled: boolean,
+): Promise<{ id: string; public_code: string; public_listing_enabled: boolean }> {
+  const res = await apiFetch(`/employer/jobs/${jobId}/public-listing`, {
+    method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  }, token);
   if (!res.ok) throw await parseApiError(res, 'update_failed');
   return res.json();
 }

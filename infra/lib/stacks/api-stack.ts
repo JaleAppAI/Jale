@@ -47,6 +47,12 @@ export class ApiStack extends cdk.Stack {
    * stacks must reuse this node rather than re-declare the path segment.
    */
   public readonly workerJobResource: apigateway.Resource;
+  /**
+   * Exported so ReferralsStack can hang PATCH
+   * /employer/jobs/{jobId}/public-listing off the existing employer {jobId}
+   * node — same reuse-don't-redeclare rule as workerJobResource above.
+   */
+  public readonly employerJobResource: apigateway.Resource;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -628,7 +634,8 @@ export class ApiStack extends cdk.Stack {
     // GET /employer/jobs/{jobId} — job posting detail
     // PATCH /employer/jobs/{jobId} — toggle active/closed status
     // GET /employer/jobs/{jobId}/applicants — list applicants for a job
-    const employerJobResource = employerJobsResource.addResource('{jobId}');
+    this.employerJobResource = employerJobsResource.addResource('{jobId}');
+    const employerJobResource = this.employerJobResource;
     employerJobResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobsDetailLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,

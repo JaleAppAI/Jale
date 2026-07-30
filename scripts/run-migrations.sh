@@ -197,6 +197,7 @@ MIGRATIONS=(
   "053_whatsapp_web_worker_bypass.sql"
   "054_remove_onboarding_v2_control.sql"
   "055_job_referrals.sql"
+  "056_job_public_listing_opt_in.sql"
 )
 
 WORKDIR="$(mktemp -d)"

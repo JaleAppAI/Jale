@@ -800,6 +800,14 @@
     "closed_body": "But there's more work waiting for you on Jale.",
     "browse_jobs": "See other jobs on Jale"
   },
+  "employer_job_visibility": {
+    "title": "Public job page",
+    "benefit": "Making this posting public lets it reach more people - your workers can share it directly, and someone can read it without an account.",
+    "shares": "Shared publicly: job title, company, location, pay and description. Never shared: your contact details, your other jobs, or anyone who has applied.",
+    "enabled": "Public - anyone with the link can read this posting",
+    "disabled": "Private - only workers signed in to Jale can see it",
+    "error": "Could not update visibility. Please try again."
+  },
   "job_share": {
     "title": "Share this job",
     "subtitle": "Help someone find work - share this job.",
@@ -810,6 +818,7 @@
     "copied": "Copied!",
     "more": "More...",
     "error_misconfigured": "Sharing isn't available right now. Please try again later.",
+    "error_not_public": "This job doesn't have a public page yet, so it can't be shared.",
     "error_generic": "Couldn't share right now. Please try again."
   },
   "worker_profile": {

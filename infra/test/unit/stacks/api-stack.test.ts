@@ -75,6 +75,8 @@ describe('ApiStack', () => {
       workerAuthorizer: api.workerAuthorizer,
       workerResource: api.workerResource,
       workerJobResource: api.workerJobResource,
+      employerAuthorizer: api.employerAuthorizer,
+      employerJobResource: api.employerJobResource,
     });
     template = Template.fromStack(api);
   });
@@ -330,13 +332,16 @@ describe('ApiStack', () => {
   });
 
   test('Employer PATCH routes use EmployerAuthorizer', () => {
+    // 5th PATCH is ReferralsStack's /employer/jobs/{jobId}/public-listing
+    // consent toggle (migration 056) — the Method lands in this template
+    // because the resource node it hangs off belongs to ApiStack.
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
       HttpMethod: 'PATCH',
       AuthorizationType: 'COGNITO_USER_POOLS',
       AuthorizerId: Match.objectLike({
         Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
       }),
-    }, 4);
+    }, 5);
   });
 
   // ── A6: CORS Idempotency-Key header ──────────────────────────────────────

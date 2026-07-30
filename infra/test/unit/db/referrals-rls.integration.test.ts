@@ -370,6 +370,52 @@ maybeDescribe('job-referrals RLS integration (migration 055)', () => {
   // -------------------------------------------------------------------------
   // First-touch immutability is a trigger, not a withheld grant
   // -------------------------------------------------------------------------
+  describe('public listing is opt-IN (migration 056)', () => {
+    // makeJob always sets public_listing_enabled explicitly, so these two tests
+    // insert WITHOUT the column: the DB default is precisely what is under
+    // test. Before 056 the default was true, which would have made every
+    // existing job public the moment the route deployed — with no consent step
+    // and nothing in the product able to write the column.
+    async function makeJobWithDefaultVisibility(): Promise<string> {
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO jobs (employer_id, title, location, job_type, status)
+           VALUES ($1, 'Default Visibility Job', 'Austin, TX', 'full-time', 'active')
+           RETURNING id`,
+          [employerUserId],
+        );
+        return result.rows[0].id;
+      } finally {
+        await client.end();
+      }
+    }
+
+    it('a newly inserted job is NOT publicly visible until opted in', async () => {
+      const jobId = await makeJobWithDefaultVisibility();
+      const seen = await asPublicJobs(publicUrl, (client) =>
+        client.query(`SELECT id FROM jobs WHERE id = $1`, [jobId]),
+      );
+      expect(seen.rows).toHaveLength(0);
+    });
+
+    it('becomes visible once the employer opts in', async () => {
+      const jobId = await makeJobWithDefaultVisibility();
+      const setup = new Client({ connectionString: superuserUrl });
+      await setup.connect();
+      try {
+        await setup.query(`UPDATE jobs SET public_listing_enabled = true WHERE id = $1`, [jobId]);
+      } finally {
+        await setup.end();
+      }
+      const seen = await asPublicJobs(publicUrl, (client) =>
+        client.query(`SELECT id FROM jobs WHERE id = $1`, [jobId]),
+      );
+      expect(seen.rows).toHaveLength(1);
+    });
+  });
+
   describe('worker_attribution: first-touch immutability trigger', () => {
     // Each test below creates its OWN brand-new worker (unique cognito_sub,
     // hence a worker_id that has never existed in worker_attribution before)
