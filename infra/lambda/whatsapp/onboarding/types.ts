@@ -146,6 +146,20 @@ export interface OnboardingV2RepoDeps {
       runId: string;
       expectedLockVersion: number;
       assessmentProvenance: Record<string, unknown>;
+      /**
+       * Job referrals (migration 055): required at THIS injection-contract
+       * level — every router-owned call site (today, only `trust.ts`) must
+       * supply it, so a future step handler that forgets it is a compile
+       * error, not a silent no-op referral claim. Derived via
+       * `hashNormalizedPhone` from whatever phone value is already in scope
+       * (`trust.ts` uses `session.whatsapp_number`) — see
+       * onboarding-repository.ts's `completeOnboarding` for why the
+       * lower-level function itself keeps this optional (its other caller,
+       * the DB integration suite, predates this feature and is out of
+       * scope to touch).
+       */
+      workerPhoneHash: string;
+      now: Date;
     },
   ) => Promise<{ assessmentEventId: string; workerReadyEventId: string }>;
 }

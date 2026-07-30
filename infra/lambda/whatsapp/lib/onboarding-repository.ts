@@ -5,6 +5,7 @@ import type {
   WorkflowRunStatus,
   WorkflowStepKey,
 } from './onboarding-types';
+import { claimPendingReferral } from './referral-claims';
 
 // ── Contract shared by every exported function in this module ──
 //
@@ -603,6 +604,26 @@ export async function completeOnboarding(
     runId: string;
     expectedLockVersion: number;
     assessmentProvenance: Record<string, unknown>;
+    /**
+     * Job referrals (migration 055): the worker's phone hash, derived by the
+     * caller via `hashNormalizedPhone` from whatever phone value is already
+     * in scope (`trust.ts` uses `session.whatsapp_number`) — this module
+     * never loads or hashes a phone itself, and `jale_whatsapp` has no grant
+     * on `users.whatsapp_number` to do so even if it wanted to. `Required`
+     * at the `OnboardingV2RepoDeps.completeOnboarding` injection-contract
+     * level (`onboarding/types.ts`) — every router-owned call site must
+     * supply it, so a future step handler that forgets it fails to compile
+     * rather than silently skipping the claim. Kept optional on THIS
+     * lower-level function only so its other direct caller — the DB
+     * integration suite (`test/unit/db/`, out of scope, predates this
+     * feature) — keeps compiling unchanged; when omitted, no referral claim
+     * is attempted and lifecycle completion itself is unaffected either way.
+     */
+    workerPhoneHash?: string;
+    /** Defaults to `new Date()` when omitted — only `claimPendingReferral`'s
+     * expiry comparison depends on this; every other write below already
+     * uses the database's own `now()`. */
+    now?: Date;
   },
 ): Promise<{ assessmentEventId: string; workerReadyEventId: string }> {
   await client.query(
@@ -637,6 +658,15 @@ export async function completeOnboarding(
     inboundMessageSid: null,
     reason: 'onboarding_complete',
   });
+
+  // Job referrals (migration 055): claimed in the SAME transaction that
+  // flips lifecycle to 'ready', so the attribution write can never be lost
+  // to a later step failing. No-op (never throws) when the caller has no
+  // phone hash in scope, or when no unclaimed/unexpired pending claim
+  // exists for it.
+  if (input.workerPhoneHash) {
+    await claimPendingReferral(client, input.workerPhoneHash, input.workerId, input.now ?? new Date());
+  }
 
   const assessmentEventId = await insertDomainEventIdempotent(client, {
     eventType: 'assessment.requested',
