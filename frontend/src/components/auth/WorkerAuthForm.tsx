@@ -297,7 +297,7 @@ function OtpStep(props: {
                 <h1 className="font-semibold leading-snug mb-1" style={{ fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--jale-ink)' }}>{props.title}</h1>
                 <p className="text-sm" style={{ color: 'var(--jale-ink-2)' }}>{props.subtitle}</p>
             </div>
-            <div className="grid " style={{ gridTemplateColumns: `repeat(${OTP_LENGTH}, 1fr)` }}>
+            <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${OTP_LENGTH}, 1fr)` }}>
                 {props.digits.map((d, i) => (
                     <input
                         key={i}
@@ -311,7 +311,7 @@ function OtpStep(props: {
                         onKeyDown={(e) => props.onKeyDown(i, e)}
                         onPaste={i === 0 ? props.onPaste : undefined}
                         className="text-center font-bold rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] focus:outline-none focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)] focus:bg-white transition-all duration-150"
-                        style={{ height: 56, width: '50px', gap: 2, color: 'var(--jale-ink)' }}
+                        style={{ height: 56, width: '100%', minWidth: 0, color: 'var(--jale-ink)' }}
                     />
                 ))}
             </div>

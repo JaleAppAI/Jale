@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
@@ -8,16 +8,21 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
 import { MetricCard } from '@/components/ui/metric-card';
 import { ConversationThread } from '@/components/employer/ConversationThread';
+import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import {
   closeConversation,
   getConversation,
-  getConversations,
+  getInbox,
   sendConversationMessage,
+  startConversation,
+  updateApplicantStatus,
 } from '@/lib/api/employer';
 import type {
   EmployerConversationDetail,
   EmployerConversationMessage,
-  EmployerConversationSummary,
+  InboxItem,
+  InboxJob,
+  InboxTab,
 } from '@/lib/api/employer';
 
 export default function EmployerConversationsPage() {
@@ -27,25 +32,50 @@ export default function EmployerConversationsPage() {
   const t = useTranslations('employer_messages');
   const tCommon = useTranslations('common');
 
-  const [conversations, setConversations] = useState<EmployerConversationSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('conversation_id'));
+  const [items, setItems] = useState<InboxItem[]>([]);
+  const [jobs, setJobs] = useState<InboxJob[]>([]);
+  const [tab, setTab] = useState<InboxTab>('active');
+  const [jobFilter, setJobFilter] = useState<string | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [conversation, setConversation] = useState<EmployerConversationDetail | null>(null);
   const [messages, setMessages] = useState<EmployerConversationMessage[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [loadingThread, setLoadingThread] = useState(false);
   const [sending, setSending] = useState(false);
+  const [closing, setClosing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [threadError, setThreadError] = useState<string | null>(null);
+
+  const selectedItem = items.find((item) => item.application_id === selectedKey) ?? null;
+  const selectedConversationId = selectedItem?.conversation_id ?? null;
+
+  const conversationRef = useRef(conversation);
+  useEffect(() => {
+    conversationRef.current = conversation;
+  }, [conversation]);
 
   useEffect(() => {
     if (!idToken) return;
     let active = true;
     setLoadingList(true);
+    const deepLinkConversationId = searchParams.get('conversation_id');
 
-    getConversations(idToken)
+    getInbox(idToken)
       .then((res) => {
         if (!active) return;
-        setConversations(res.conversations);
-        setSelectedId((current) => current ?? res.conversations[0]?.id ?? null);
+        setItems(res.items);
+        setJobs(res.jobs);
+        const deepLinked = deepLinkConversationId
+          ? res.items.find((item) => item.conversation_id === deepLinkConversationId)
+          : undefined;
+        if (deepLinked) {
+          setTab(deepLinked.tab);
+          setSelectedKey(deepLinked.application_id);
+        } else {
+          setSelectedKey((current) => current
+            ?? res.items.find((item) => item.tab === 'active')?.application_id
+            ?? null);
+        }
       })
       .catch((err) => {
         try {
@@ -62,7 +92,8 @@ export default function EmployerConversationsPage() {
   }, [idToken]);
 
   useEffect(() => {
-    if (!idToken || !selectedId) {
+    setThreadError(null);
+    if (!idToken || !selectedConversationId) {
       setConversation(null);
       setMessages([]);
       return;
@@ -71,9 +102,11 @@ export default function EmployerConversationsPage() {
     let firstLoad = true;
 
     async function loadThread() {
-      if (firstLoad) setLoadingThread(true);
+      if (firstLoad && conversationRef.current?.id !== selectedConversationId) {
+        setLoadingThread(true);
+      }
       try {
-        const detail = await getConversation(idToken!, selectedId!);
+        const detail = await getConversation(idToken!, selectedConversationId!);
         if (!active) return;
         setConversation(detail.conversation);
         setMessages(detail.messages);
@@ -95,38 +128,111 @@ export default function EmployerConversationsPage() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [idToken, selectedId]);
+  }, [idToken, selectedConversationId]);
+
+  function applyConversationToItems(detail: EmployerConversationDetail, applicationId: string) {
+    setItems((current) => current.map((item) => (
+      item.application_id === applicationId
+        ? {
+            ...item,
+            conversation_id: detail.id,
+            conversation_status: detail.status,
+            last_message_at: detail.last_message_at,
+            last_worker_message_at: detail.last_worker_message_at,
+            last_message_preview: detail.last_message_preview,
+            application_status: item.application_status === 'pending' ? 'contacted' : item.application_status,
+          }
+        : item
+    )));
+  }
 
   async function handleSend(body: string) {
-    if (!idToken || !selectedId) return;
+    if (!idToken || !selectedItem || !selectedConversationId) return;
     setSending(true);
     try {
-      const detail = await sendConversationMessage(idToken, selectedId, body);
+      const detail = await sendConversationMessage(idToken, selectedConversationId, body);
       setConversation(detail.conversation);
       setMessages(detail.messages);
-      setConversations((current) => current.map((item) => (
-        item.id === detail.conversation.id ? detail.conversation : item
-      )));
+      applyConversationToItems(detail.conversation, selectedItem.application_id);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleFirstSend(body: string): Promise<boolean> {
+    if (!idToken || !selectedItem) return false;
+    setSending(true);
+    setThreadError(null);
+    try {
+      const detail = await startConversation(idToken, {
+        job_id: selectedItem.job_id,
+        worker_id: selectedItem.worker_id,
+        initial_message: body,
+      });
+      setConversation(detail.conversation);
+      setMessages(detail.messages);
+      applyConversationToItems(detail.conversation, selectedItem.application_id);
+      return true;
+    } catch (err) {
+      const code = err instanceof Error ? err.message : '';
+      if (code === 'worker_whatsapp_unavailable') {
+        setThreadError(t('worker_whatsapp_unavailable'));
+      } else if (code === 'applicant_not_found') {
+        setThreadError(t('candidate_unavailable'));
+        const res = await getInbox(idToken).catch(() => null);
+        if (res) { setItems(res.items); setJobs(res.jobs); }
+      } else {
+        setThreadError(tCommon('error'));
+      }
+      return false;
     } finally {
       setSending(false);
     }
   }
 
   async function handleClose() {
-    if (!idToken || !selectedId) return;
-    const detail = await closeConversation(idToken, selectedId);
-    setConversation(detail.conversation);
-    setMessages(detail.messages);
-    setConversations((current) => current.map((item) => (
-      item.id === detail.conversation.id ? detail.conversation : item
-    )));
+    if (!idToken || !selectedItem || !selectedConversationId) return;
+    setClosing(true);
+    try {
+      const detail = await closeConversation(idToken, selectedConversationId);
+      setConversation(detail.conversation);
+      setMessages(detail.messages);
+      applyConversationToItems(detail.conversation, selectedItem.application_id);
+    } finally {
+      setClosing(false);
+    }
   }
 
-  const openCount = conversations.filter((item) => item.status === 'open').length;
-  const closedCount = conversations.filter((item) => item.status === 'closed').length;
-  const waitingCount = conversations.filter((item) => !item.last_worker_message_at && item.status === 'open').length;
-  const activeCount = conversations.filter((item) => item.last_worker_message_at && item.status === 'open').length;
-  const selectedSummary = conversations.find((item) => item.id === selectedId) ?? conversation;
+  async function handleDismiss() {
+    if (!idToken || !selectedItem) return;
+    if (!window.confirm(t('not_interested_confirm'))) return;
+    try {
+      await updateApplicantStatus(idToken, selectedItem.job_id, selectedItem.worker_id, 'not_interested');
+      setItems((current) => current.filter((item) => item.application_id !== selectedItem.application_id));
+      setSelectedKey(null);
+      setConversation(null);
+      setMessages([]);
+    } catch {
+      setThreadError(tCommon('error'));
+    }
+  }
+
+  function switchTab(next: InboxTab) {
+    setTab(next);
+    setJobFilter(null);
+    setSelectedKey((current) => {
+      const stillVisible = items.some((item) => item.application_id === current && item.tab === next);
+      return stillVisible ? current : null;
+    });
+  }
+
+  const visibleItems = items.filter((item) => (
+    item.tab === tab && (!jobFilter || item.job_id === jobFilter)
+  ));
+  const activeItems = items.filter((item) => item.tab === 'active');
+  const newApplicantCount = activeItems.filter((item) => !item.conversation_id).length;
+  const repliedCount = activeItems.filter((item) => item.conversation_id && item.last_worker_message_at).length;
+  const waitingCount = activeItems.filter((item) => item.conversation_id && !item.last_worker_message_at).length;
 
   if (error) {
     return (
@@ -142,37 +248,80 @@ export default function EmployerConversationsPage() {
     <AppShell role="employer" title={t('title')} subtitle={t('subtitle')}>
       <div className="mx-auto max-w-7xl px-4 py-6">
       <section className="mb-5 grid gap-3 md:grid-cols-4">
-        <MetricCard variant="accent" tone="blue" value={conversations.length} label={t('threads')} hint={t('subtitle')} />
-        <MetricCard variant="accent" tone="green" value={activeCount} label={t('worker_replied')} hint={t('reply_window_open')} />
+        <MetricCard variant="accent" tone="blue" value={activeItems.length} label={t('candidates')} hint={t('subtitle')} />
+        <MetricCard variant="accent" tone="green" value={repliedCount} label={t('worker_replied')} hint={t('reply_window_open')} />
         <MetricCard variant="accent" tone="amber" value={waitingCount} label={t('waiting_reply')} hint={t('template_invite_sent')} />
-        <MetricCard variant="accent" tone="navy" value={closedCount} label={t('status_closed')} hint={t('archived_conversations')} />
+        <MetricCard variant="accent" tone="navy" value={newApplicantCount} label={t('new_applicants')} hint={t('not_yet_messaged')} />
       </section>
 
       <section className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--jale-divider)] bg-white shadow-sm xl:grid-cols-[320px_minmax(0,1fr)_280px]">
         <aside className="border-b border-[var(--jale-divider)] xl:border-b-0 xl:border-r">
-          <div className="flex items-center justify-between border-b border-[var(--jale-divider)] px-4 py-3">
-            <div>
-              <p className="text-sm font-bold text-[var(--jale-ink)]">{t('threads')}</p>
-              <p className="text-[11px] text-muted-foreground">{t('whatsapp_linked')}</p>
+          <div className="border-b border-[var(--jale-divider)] px-4 py-3">
+            <div className="flex rounded-md bg-[var(--jale-paper-2)] p-0.5">
+              {(['active', 'closed'] as const).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => switchTab(value)}
+                  className={[
+                    'flex-1 rounded px-3 py-1.5 text-xs font-bold transition-colors',
+                    tab === value
+                      ? 'bg-white text-[var(--jale-ink)] shadow-sm'
+                      : 'text-muted-foreground hover:text-[var(--jale-ink)]',
+                  ].join(' ')}
+                >
+                  {value === 'active' ? t('tab_active') : t('tab_closed')}
+                </button>
+              ))}
             </div>
-            <span className="rounded-full bg-[#25D366] px-2 py-0.5 text-[10px] font-bold text-white">
-              {openCount}
-            </span>
+            {jobs.length > 1 && (
+              <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
+                <button
+                  type="button"
+                  onClick={() => setJobFilter(null)}
+                  className={[
+                    'shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                    jobFilter === null
+                      ? 'border-[var(--jale-blue-500)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
+                      : 'border-[var(--jale-divider)] text-muted-foreground hover:bg-[#fafbfd]',
+                  ].join(' ')}
+                >
+                  {t('all_jobs')}
+                </button>
+                {jobs.map((job) => (
+                  <button
+                    key={job.job_id}
+                    type="button"
+                    onClick={() => setJobFilter((current) => (current === job.job_id ? null : job.job_id))}
+                    className={[
+                      'max-w-[160px] shrink-0 truncate rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                      jobFilter === job.job_id
+                        ? 'border-[var(--jale-blue-500)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
+                        : 'border-[var(--jale-divider)] text-muted-foreground hover:bg-[#fafbfd]',
+                    ].join(' ')}
+                  >
+                    {job.title}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {loadingList ? (
             <p className="p-4 text-sm text-muted">{tCommon('loading')}</p>
-          ) : conversations.length === 0 ? (
-            <p className="p-4 text-sm text-muted">{t('empty')}</p>
+          ) : visibleItems.length === 0 ? (
+            <p className="p-4 text-sm text-muted">
+              {tab === 'active' ? t('empty_tab_active') : t('empty_tab_closed')}
+            </p>
           ) : (
-            <div className="max-h-[300px] overflow-y-auto xl:max-h-[640px]">
-              {conversations.map((item) => (
+            <div className="max-h-[300px] overflow-y-auto xl:max-h-[560px]">
+              {visibleItems.map((item) => (
                 <button
-                  key={item.id}
+                  key={item.application_id}
                   type="button"
-                  onClick={() => setSelectedId(item.id)}
+                  onClick={() => setSelectedKey(item.application_id)}
                   className={[
                     'flex w-full gap-3 border-b border-[#f0f2f5] px-4 py-3 text-left transition-colors',
-                    selectedId === item.id ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-[#fafbfd]',
+                    selectedKey === item.application_id ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-[#fafbfd]',
                   ].join(' ')}
                 >
                   <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--jale-blue-50)] text-[11px] font-extrabold text-[var(--jale-blue-700)]">
@@ -184,21 +333,27 @@ export default function EmployerConversationsPage() {
                         {item.worker_name ?? t('unknown_worker')}
                       </span>
                       <span className="shrink-0 text-[10px] text-muted">
-                        {formatRelativeTime(item.last_message_at ?? item.updated_at)}
+                        {formatRelativeTime(item.last_message_at ?? item.applied_at)}
                       </span>
                     </span>
                     <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{item.job_title}</span>
-                    <span className="mt-1 flex items-center gap-2">
-                      <span
-                        className={[
-                          'h-1.5 w-1.5 rounded-full',
-                          item.status === 'open' ? 'bg-[#25D366]' : 'bg-[var(--jale-ink-2)]',
-                        ].join(' ')}
-                      />
-                      <span className="truncate text-xs text-muted">
-                        {item.last_message_preview ?? t('no_messages')}
+                    {item.conversation_id ? (
+                      <span className="mt-1 flex items-center gap-2">
+                        <span
+                          className={[
+                            'h-1.5 w-1.5 rounded-full',
+                            item.conversation_status === 'open' ? 'bg-[#25D366]' : 'bg-[var(--jale-ink-2)]',
+                          ].join(' ')}
+                        />
+                        <span className="truncate text-xs text-muted">
+                          {item.last_message_preview ?? t('no_messages')}
+                        </span>
                       </span>
-                    </span>
+                    ) : (
+                      <span className="mt-1 inline-flex items-center rounded-full bg-[var(--jale-blue-50)] px-2 py-0.5 text-[10px] font-bold uppercase text-[var(--jale-blue-700)]">
+                        {t('new_applicant')}
+                      </span>
+                    )}
                   </span>
                 </button>
               ))}
@@ -207,14 +362,28 @@ export default function EmployerConversationsPage() {
         </aside>
 
         <div className="min-w-0">
-          <ConversationThread
-            conversation={conversation}
-            messages={messages}
-            loading={loadingThread}
-            sending={sending}
-            onSend={handleSend}
-            onClose={conversation?.status === 'open' ? handleClose : undefined}
-          />
+          {selectedItem && !selectedConversationId ? (
+            <EmptyThreadComposer
+              item={selectedItem}
+              sending={sending}
+              errorMessage={threadError}
+              onSend={handleFirstSend}
+              onDismiss={handleDismiss}
+            />
+          ) : (
+            <ConversationThread
+              key={selectedKey ?? 'none'}
+              conversation={conversation}
+              messages={messages}
+              loading={loadingThread}
+              sending={sending}
+              closing={closing}
+              errorMessage={threadError}
+              onSend={handleSend}
+              onClose={conversation?.status === 'open' ? handleClose : undefined}
+              onDismiss={selectedItem ? handleDismiss : undefined}
+            />
+          )}
         </div>
 
         <aside className="hidden border-l border-[var(--jale-divider)] bg-[#fbfcff] xl:block">
@@ -222,26 +391,32 @@ export default function EmployerConversationsPage() {
             <p className="text-sm font-bold text-[var(--jale-ink)]">{t('thread_status')}</p>
             <p className="text-[11px] text-muted-foreground">{t('current_handoff')}</p>
           </div>
-          {selectedSummary ? (
+          {selectedItem ? (
             <div className="space-y-4 p-4">
               <div className="flex items-center gap-3">
                 <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--jale-blue-50)] text-sm font-extrabold text-[var(--jale-blue-700)]">
-                  {initialsFor(selectedSummary.worker_name ?? t('unknown_worker'))}
+                  {initialsFor(selectedItem.worker_name ?? t('unknown_worker'))}
                 </div>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-bold text-[var(--jale-ink)]">
-                    {selectedSummary.worker_name ?? t('unknown_worker')}
+                    {selectedItem.worker_name ?? t('unknown_worker')}
                   </p>
-                  <p className="truncate text-xs text-muted-foreground">{selectedSummary.job_title}</p>
+                  <p className="truncate text-xs text-muted-foreground">{selectedItem.job_title}</p>
                 </div>
               </div>
-              <StatusRow label={t('conversation')} value={selectedSummary.status === 'open' ? t('status_open') : t('status_closed')} tone={selectedSummary.status === 'open' ? 'green' : 'gray'} />
-              <StatusRow label={t('worker_reply')} value={selectedSummary.last_worker_message_at ? t('received') : t('waiting')} tone={selectedSummary.last_worker_message_at ? 'green' : 'amber'} />
+              {selectedItem.conversation_id ? (
+                <>
+                  <StatusRow label={t('conversation')} value={selectedItem.conversation_status === 'open' ? t('status_open') : t('status_closed')} tone={selectedItem.conversation_status === 'open' ? 'green' : 'gray'} />
+                  <StatusRow label={t('worker_reply')} value={selectedItem.last_worker_message_at ? t('received') : t('waiting')} tone={selectedItem.last_worker_message_at ? 'green' : 'amber'} />
+                </>
+              ) : (
+                <StatusRow label={t('conversation')} value={t('new_applicant')} tone="blue" />
+              )}
               <StatusRow label={t('channel')} value="WhatsApp" tone="blue" />
               <div className="rounded-lg border border-[var(--jale-divider)] bg-white p-3">
                 <p className="text-xs font-bold uppercase text-muted">{t('latest_message')}</p>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--jale-ink)]">
-                  {selectedSummary.last_message_preview ?? t('no_messages')}
+                  {selectedItem.last_message_preview ?? t('no_messages')}
                 </p>
               </div>
             </div>

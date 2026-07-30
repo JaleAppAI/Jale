@@ -166,14 +166,11 @@ export default function JobDetailPage() {
         {t(`jobs.status.${job.status}`)}
       </span>
       {job.status === 'active' && (
-        <>
-          <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('paused')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
-            {t('jobs.toggle.pause')}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
-            {t('jobs.toggle.close')}
-          </Button>
-        </>
+        // Manual "Pause" action intentionally removed (kept backend/status support
+        // and the paused-state resume UI for billing-auto-paused jobs).
+        <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
+          {t('jobs.toggle.close')}
+        </Button>
       )}
       {job.status === 'paused' && (
         <>
@@ -450,7 +447,7 @@ function ApplicantCard({
           <span>{t(`filter.availability_${applicant.availability.replace('-', '')}`)}</span>
         )}
         {applicant.years_experience !== null && (
-          <span>{applicant.years_experience}y exp</span>
+          <span>{t('worker_profile.years_experience', { years: applicant.years_experience })}</span>
         )}
         <span>{t('applicants.applied')}: {new Date(applicant.applied_at).toLocaleDateString()}</span>
       </div>

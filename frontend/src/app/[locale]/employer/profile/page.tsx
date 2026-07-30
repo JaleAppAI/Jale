@@ -20,6 +20,17 @@ import {
     type EmployerProfilePatch,
     type EmployerTrade,
 } from '@/lib/api/employer';
+import { validateEmployerProfileFields, type EmployerProfileField } from '@/lib/employer-profile-form';
+
+const FIELD_LABEL_KEY: Record<EmployerProfileField, string> = {
+    company_name: 'field_company',
+    contact_name: 'field_contact',
+    phone: 'field_phone',
+    city: 'field_city',
+    service_area: 'field_service_area',
+    hiring_trades: 'field_hiring_trades',
+    typical_job_types: 'field_job_types',
+};
 
 export const dynamic = 'force-dynamic';
 
@@ -33,6 +44,7 @@ export default function EmployerProfilePage() {
     const t = useTranslations('employer.profile');
     const tAuth = useTranslations('auth.employer');
     const tCommon = useTranslations('common');
+    const tNav = useTranslations('employer_dashboard');
     const [profile, setProfile] = useState<EmployerProfileData | null>(null);
     const [editing, setEditing] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -67,7 +79,7 @@ export default function EmployerProfilePage() {
 
     if (error) {
         return (
-            <AppShell role="employer" title={t('title')}>
+            <AppShell role="employer" title={tNav('nav.settings')}>
                 <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
                     <p className="text-sm text-error">{error}</p>
                 </main>
@@ -76,7 +88,7 @@ export default function EmployerProfilePage() {
     }
     if (!profile) {
         return (
-            <AppShell role="employer" title={t('title')}>
+            <AppShell role="employer" title={tNav('nav.settings')}>
                 <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
                     <p className="text-sm text-muted">{tCommon('loading')}</p>
                 </main>
@@ -85,7 +97,7 @@ export default function EmployerProfilePage() {
     }
 
     return (
-        <AppShell role="employer" title={t('title')}>
+        <AppShell role="employer" title={tNav('nav.settings')}>
             <div className="mx-auto max-w-5xl px-4 py-6 md:px-6">
                 <DashboardPanel>
                     <PanelHeader
@@ -136,8 +148,22 @@ function EmployerProfileForm(props: {
     const [companySize, setCompanySize] = useState<CompanySize>(props.initial.company_size ?? '1-10');
     const [companyDescription, setCompanyDescription] = useState(props.initial.company_description ?? '');
     const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [missingFields, setMissingFields] = useState<EmployerProfileField[]>([]);
 
     async function save() {
+        setError(null);
+        const missing = validateEmployerProfileFields({
+            company_name: companyName, contact_name: contactName, phone,
+            city, service_area: serviceArea, hiring_trades: hiringTrades, typical_job_types: typicalJobTypes,
+        });
+        setMissingFields(missing);
+        if (missing.length > 0) {
+            setError(t('errors.missing_summary', {
+                fields: missing.map((field) => t(FIELD_LABEL_KEY[field])).join(', '),
+            }));
+            return;
+        }
         setSaving(true);
         try {
             await props.onSave({
@@ -151,6 +177,9 @@ function EmployerProfileForm(props: {
                 company_size: companySize,
                 company_description: companyDescription.trim(),
             });
+        } catch (e) {
+            const err = e as Record<string, unknown>;
+            setError(typeof err.message === 'string' ? err.message : tCommon('error'));
         } finally {
             setSaving(false);
         }
@@ -165,19 +194,19 @@ function EmployerProfileForm(props: {
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <LabeledField label={t('field_company')}>
+            <LabeledField label={t('field_company')} error={missingFields.includes('company_name') ? t('errors.required') : undefined}>
                 <Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
             </LabeledField>
-            <LabeledField label={t('field_contact')}>
+            <LabeledField label={t('field_contact')} error={missingFields.includes('contact_name') ? t('errors.required') : undefined}>
                 <Input value={contactName} onChange={(e) => setContactName(e.target.value)} autoComplete="name" />
             </LabeledField>
-            <LabeledField label={t('field_phone')}>
+            <LabeledField label={t('field_phone')} error={missingFields.includes('phone') ? t('errors.required') : undefined}>
                 <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" />
             </LabeledField>
-            <LabeledField label={t('field_city')}>
+            <LabeledField label={t('field_city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
                 <Input value={city} onChange={(e) => setCity(e.target.value)} />
             </LabeledField>
-            <LabeledField label={t('field_service_area')}>
+            <LabeledField label={t('field_service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
                 <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />
             </LabeledField>
             <LabeledField label={t('field_company_size')}>
@@ -186,12 +215,12 @@ function EmployerProfileForm(props: {
                 </Select>
             </LabeledField>
             <div className="md:col-span-2">
-                <CheckboxGroup label={t('field_hiring_trades')}>
+                <CheckboxGroup label={t('field_hiring_trades')} error={missingFields.includes('hiring_trades') ? t('errors.required') : undefined}>
                     {TRADES.map((trade) => <CheckboxCard key={trade} checked={hiringTrades.includes(trade)} label={tAuth(`trades.${trade}`)} onChange={() => toggleTrade(trade)} />)}
                 </CheckboxGroup>
             </div>
             <div className="md:col-span-2">
-                <CheckboxGroup label={t('field_job_types')}>
+                <CheckboxGroup label={t('field_job_types')} error={missingFields.includes('typical_job_types') ? t('errors.required') : undefined}>
                     {JOB_TYPES.map((jobType) => <CheckboxCard key={jobType} checked={typicalJobTypes.includes(jobType)} label={tAuth(`job_types.${jobType.replace('-', '_')}`)} onChange={() => toggleJobType(jobType)} />)}
                 </CheckboxGroup>
             </div>
@@ -200,6 +229,7 @@ function EmployerProfileForm(props: {
                     <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
                 </LabeledField>
             </div>
+            {error && <div className="md:col-span-2"><p className="text-sm text-error">{error}</p></div>}
             <div className="md:col-span-2 flex gap-2 justify-end">
                 <Button variant="outline" onClick={props.onCancel} disabled={saving}>{t('cancel')}</Button>
                 <Button onClick={save} loading={saving} loadingLabel={tCommon('loading')}>{t('save')}</Button>
@@ -208,11 +238,12 @@ function EmployerProfileForm(props: {
     );
 }
 
-function LabeledField({ label, children }: { label: string; children: ReactNode }) {
+function LabeledField({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
     return (
         <div className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</label>
             {children}
+            {error && <p className="text-xs text-error">{error}</p>}
         </div>
     );
 }
@@ -226,11 +257,12 @@ function Field({ label, value }: { label: string; value: string | null }) {
     );
 }
 
-function CheckboxGroup({ label, children }: { label: string; children: ReactNode }) {
+function CheckboxGroup({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
     return (
         <div className="flex flex-col gap-2">
             <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{children}</div>
+            {error && <p className="text-xs text-error">{error}</p>}
         </div>
     );
 }
