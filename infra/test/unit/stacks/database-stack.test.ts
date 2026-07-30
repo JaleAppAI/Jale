@@ -27,9 +27,9 @@ describe('DatabaseStack', () => {
     });
   });
 
-  test('Secrets Manager secrets exist for admin, matching, AI, admin-console, and billing DB credentials', () => {
-    // RDS-generated jale_admin secret + matching + ai + admin-console + billing = 5.
-    template.resourceCountIs('AWS::SecretsManager::Secret', 5);
+  test('Secrets Manager secrets exist for admin, matching, AI, admin-console, billing, and referrals DB credentials', () => {
+    // RDS-generated jale_admin secret + matching + ai + admin-console + billing + referrals = 6.
+    template.resourceCountIs('AWS::SecretsManager::Secret', 6);
     template.hasResourceProperties('AWS::SecretsManager::Secret', {
       Name: 'jale/matching/db',
       Description: 'jale_matching role DB credentials for matching engine reads/writes',
@@ -80,6 +80,35 @@ describe('DatabaseStack', () => {
         '',
         [
           '{"username":"jale_billing","host":"',
+          expect.objectContaining({
+            'Fn::GetAtt': expect.arrayContaining(['Endpoint.Address']),
+          }),
+          '","port":5432,"dbname":"jale"}',
+        ],
+      ],
+    });
+  });
+
+  test('Referrals DB secret has connection-complete template (host/port/dbname/username)', () => {
+    template.hasResourceProperties('AWS::SecretsManager::Secret', {
+      Name: 'jale/referrals/db',
+      Description: 'jale_public_jobs role DB credentials for the unauthenticated public job/apply-intent Lambdas',
+      GenerateSecretString: Match.objectLike({
+        GenerateStringKey: 'password',
+        ExcludePunctuation: true,
+      }),
+    });
+
+    const secrets = template.findResources('AWS::SecretsManager::Secret');
+    const referrals = Object.values(secrets).find(
+      (r) => r.Properties?.Name === 'jale/referrals/db',
+    );
+    const secretTemplate = referrals?.Properties?.GenerateSecretString?.SecretStringTemplate;
+    expect(secretTemplate).toEqual({
+      'Fn::Join': [
+        '',
+        [
+          '{"username":"jale_public_jobs","host":"',
           expect.objectContaining({
             'Fn::GetAtt': expect.arrayContaining(['Endpoint.Address']),
           }),

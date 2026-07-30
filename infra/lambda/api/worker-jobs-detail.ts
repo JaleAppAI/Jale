@@ -12,7 +12,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!cognitoSub) {
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
     }
-    const jobId = event.pathParameters?.id;
+    const jobId = event.pathParameters?.jobId;
     if (!jobId) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_id' }) };
     }

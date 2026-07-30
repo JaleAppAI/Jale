@@ -37,6 +37,16 @@ export class ApiStack extends cdk.Stack {
   public readonly workerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   /** Exported so BillingStack (and other downstream stacks) can hang routes off /employer */
   public readonly employerResource: apigateway.Resource;
+  /** Exported so ReferralsStack (and other downstream stacks) can hang routes off /worker */
+  public readonly workerResource: apigateway.Resource;
+  /**
+   * Exported so ReferralsStack can hang POST /worker/jobs/{jobId}/share off the
+   * existing /worker/jobs/{jobId} node — NOT a new addResource() call. A second
+   * variable-path resource at this level (even a differently-named one, e.g.
+   * {id} and {jobId} as siblings) is rejected by API Gateway, so downstream
+   * stacks must reuse this node rather than re-declare the path segment.
+   */
+  public readonly workerJobResource: apigateway.Resource;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -512,7 +522,10 @@ export class ApiStack extends cdk.Stack {
 
     // GET /worker/profile
     // PATCH /worker/profile
-    const workerResource = this.api.root.addResource('worker');
+    // Exported as public readonly so ReferralsStack (and other downstream
+    // stacks) can hang routes off /worker.
+    this.workerResource = this.api.root.addResource('worker');
+    const workerResource = this.workerResource;
     const workerProfileResource = workerResource.addResource('profile');
     workerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(workerProfileLambda.function), {
       authorizer: workerAuthorizer,
@@ -524,14 +537,24 @@ export class ApiStack extends cdk.Stack {
     });
 
     // GET /worker/jobs — list open jobs for worker
-    // GET /worker/jobs/{id} — job detail
-    // POST /worker/jobs/{id}/apply — apply to a job
+    // GET /worker/jobs/{jobId} — job detail
+    // POST /worker/jobs/{jobId}/apply — apply to a job
+    // POST /worker/jobs/{jobId}/share — mint a referral share link (ReferralsStack)
+    //
+    // NOTE: this path parameter is named {jobId}, not {id} — renamed here (and
+    // in worker-jobs-detail.ts / worker-jobs-apply.ts, which read
+    // pathParameters.jobId) so ReferralsStack's worker-job-share.ts (which
+    // also reads pathParameters.jobId and must not be modified) can hang its
+    // route off this exact node instead of adding a second, differently-named
+    // variable-path resource at the same level — API Gateway does not allow
+    // two path-parameter siblings under one parent.
     const workerJobsResource = workerResource.addResource('jobs');
     workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    const workerJobResource = workerJobsResource.addResource('{id}');
+    this.workerJobResource = workerJobsResource.addResource('{jobId}');
+    const workerJobResource = this.workerJobResource;
     workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -694,6 +717,26 @@ export class ApiStack extends cdk.Stack {
           HttpMethod: 'POST',
           ThrottlingBurstLimit: 50,
           ThrottlingRateLimit: 20,
+        },
+        // GET /public/jobs/{code} — unauthenticated public job read (ReferralsStack).
+        // Same conservative shape as /legal/tos: cheap to abuse, no other gate.
+        {
+          ResourcePath: '/public/jobs/{code}',
+          HttpMethod: 'GET',
+          ThrottlingBurstLimit: 20,
+          ThrottlingRateLimit: 10,
+        },
+        // POST /public/jobs/{code}/apply-intent — unauthenticated referral-token
+        // mint. This throttle is load-bearing, not cosmetic: nothing in
+        // public-job-apply-intent.ts bounds how many apply tokens a single
+        // caller can mint (no per-caller rate limit in the handler itself), so
+        // this API Gateway throttle is the ONLY abuse control on that route.
+        // Kept tighter than the GET above because minting writes a DB row per call.
+        {
+          ResourcePath: '/public/jobs/{code}/apply-intent',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
         },
       ]);
     }

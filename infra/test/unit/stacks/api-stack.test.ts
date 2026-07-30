@@ -7,6 +7,7 @@ import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { BillingStack } from '../../../lib/stacks/billing-stack';
+import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
 
 describe('ApiStack', () => {
   let template: Template;
@@ -17,6 +18,8 @@ describe('ApiStack', () => {
         otpSmsFromNumber: '+13252210992',
         emailFromAddress: 'billing@jaleapp.ai',
         sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+        publicSiteBaseUrl: 'https://jaleapp.ai',
+        whatsappBusinessNumber: '15551234567',
       },
     });
     const network = new NetworkStack(app, 'TestNetworkStack');
@@ -59,6 +62,19 @@ describe('ApiStack', () => {
       api: api.api,
       employerAuthorizer: api.employerAuthorizer,
       employerResource: api.employerResource,
+    });
+    // ReferralsStack must be created so its routes (and the /public/jobs
+    // throttle entries) are visible in the ApiStack template.
+    new ReferralsStack(app, 'TestReferralsStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      referralsLambdaSg: network.referralsLambdaSg,
+      referralsDbSecret: database.referralsDbSecret,
+      appDbSecret: database.dbSecret,
+      api: api.api,
+      workerAuthorizer: api.workerAuthorizer,
+      workerResource: api.workerResource,
+      workerJobResource: api.workerJobResource,
     });
     template = Template.fromStack(api);
   });
@@ -303,7 +319,7 @@ describe('ApiStack', () => {
     });
   });
 
-  test('POST /worker/jobs/{id}/apply exists with WorkerAuthorizer', () => {
+  test('POST /worker/jobs/{jobId}/apply exists with WorkerAuthorizer', () => {
     template.hasResourceProperties('AWS::ApiGateway::Method', {
       HttpMethod: 'POST',
       AuthorizationType: 'COGNITO_USER_POOLS',
@@ -400,5 +416,134 @@ describe('ApiStack', () => {
     for (const pathPart of ['billing', 'checkout', 'portal', 'webhook']) {
       template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
     }
+  });
+
+  // ── Referrals: MethodSettings throttles (ApiStack owns the only array) ──
+
+  test('centralized MethodSettings includes both new /public/jobs throttle entries', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    expect(stageIds).toHaveLength(1);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    expect(methodSettings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ResourcePath: '/public/jobs/{code}',
+        HttpMethod: 'GET',
+        ThrottlingBurstLimit: 20,
+        ThrottlingRateLimit: 10,
+      }),
+    ]));
+    expect(methodSettings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        ResourcePath: '/public/jobs/{code}/apply-intent',
+        HttpMethod: 'POST',
+        ThrottlingBurstLimit: 10,
+        ThrottlingRateLimit: 5,
+      }),
+    ]));
+  });
+
+  test('MethodSettings still includes the pre-existing /legal/tos and billing entries (no clobber)', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    for (const entry of [
+      { ResourcePath: '/legal/tos', HttpMethod: 'GET' },
+      { ResourcePath: '/auth/worker/signup', HttpMethod: 'POST' },
+      { ResourcePath: '/employer/billing/checkout', HttpMethod: 'POST' },
+      { ResourcePath: '/employer/billing/portal', HttpMethod: 'POST' },
+      { ResourcePath: '/billing/webhook', HttpMethod: 'POST' },
+    ]) {
+      expect(methodSettings).toEqual(expect.arrayContaining([expect.objectContaining(entry)]));
+    }
+  });
+
+  // ── Referrals: no duplicate /worker, /worker/jobs, or {jobId} resources ──
+  //
+  // PathPart strings like 'worker', 'jobs', and '{jobId}' are NOT unique across
+  // the whole app (e.g. /auth/worker also has PathPart 'worker'; /employer/jobs
+  // also has PathPart 'jobs' and its own '{jobId}' child). So the real
+  // "no duplicate" invariant has to be checked structurally: walk the resource
+  // tree by ParentId from the RestApi root, and assert each specific node has
+  // exactly one child with a given PathPart.
+
+  function allResources(): Record<string, any> {
+    return template.findResources('AWS::ApiGateway::Resource');
+  }
+
+  function childrenOf(parentLogicalId: string, pathPart?: string): Array<[string, any]> {
+    return Object.entries(allResources()).filter(([, res]) => {
+      const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+      if (parentRef !== parentLogicalId) return false;
+      return pathPart === undefined || res.Properties?.PathPart === pathPart;
+    });
+  }
+
+  function restApiRootLogicalId(): string {
+    const apis = template.findResources('AWS::ApiGateway::RestApi');
+    const apiIds = Object.keys(apis);
+    expect(apiIds).toHaveLength(1);
+    return apiIds[0];
+  }
+
+  test('exactly one /worker resource hangs directly off the RestApi root', () => {
+    const rootId = restApiRootLogicalId();
+    const workerChildren = childrenOf(rootId, 'worker');
+    expect(workerChildren).toHaveLength(1);
+  });
+
+  test('exactly one "jobs" child under /worker, and exactly one "{jobId}" child under /worker/jobs', () => {
+    const rootId = restApiRootLogicalId();
+    const [workerLogicalId] = childrenOf(rootId, 'worker')[0];
+
+    const jobsChildren = childrenOf(workerLogicalId, 'jobs');
+    expect(jobsChildren).toHaveLength(1);
+    const [workerJobsLogicalId] = jobsChildren[0];
+
+    // The critical check: if ReferralsStack (or anything else) had called
+    // addResource('{jobId}') again here instead of reusing ApiStack's
+    // exported workerJobResource, there would be TWO variable-path children
+    // of /worker/jobs (e.g. '{id}' and '{jobId}' as siblings) — which API
+    // Gateway does not allow and this test would catch.
+    const variableChildren = Object.entries(allResources()).filter(([, res]) => {
+      const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+      return parentRef === workerJobsLogicalId && /^\{.*\}$/.test(res.Properties?.PathPart ?? '');
+    });
+    expect(variableChildren).toHaveLength(1);
+    expect(variableChildren[0][1].Properties.PathPart).toBe('{jobId}');
+  });
+
+  test('the referrals "share" resource is the only new child added under the shared {jobId} node', () => {
+    const rootId = restApiRootLogicalId();
+    const [workerLogicalId] = childrenOf(rootId, 'worker')[0];
+    const [workerJobsLogicalId] = childrenOf(workerLogicalId, 'jobs')[0];
+    const [workerJobLogicalId] = childrenOf(workerJobsLogicalId, '{jobId}')[0];
+
+    const shareChildren = childrenOf(workerJobLogicalId, 'share');
+    expect(shareChildren).toHaveLength(1);
+
+    // {jobId}'s only children should be 'apply' (pre-existing) and 'share'
+    // (ReferralsStack) — nothing else, and in particular no second variable
+    // resource.
+    const allChildren = Object.entries(allResources()).filter(([, res]) => {
+      const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+      return parentRef === workerJobLogicalId;
+    });
+    const pathParts = allChildren.map(([, res]) => res.Properties.PathPart).sort();
+    expect(pathParts).toEqual(['apply', 'share']);
+  });
+
+  // ── Referrals: public routes and worker routes exist and are auth-gated as expected ──
+
+  test('public/jobs path-part resources exist: public, jobs, {code}, apply-intent', () => {
+    for (const pathPart of ['public', '{code}', 'apply-intent']) {
+      template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
+    }
+  });
+
+  test('referrals path-part resource exists: referrals', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'referrals' });
   });
 });
