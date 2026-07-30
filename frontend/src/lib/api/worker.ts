@@ -258,3 +258,35 @@ export async function deleteVaultDocument(token: string, doc_type: DocType): Pro
   const res = await apiFetch(`/worker/vault/${doc_type}`, { method: 'DELETE' }, token);
   if (!res.ok) throw new Error((await res.json()).error ?? 'delete_failed');
 }
+
+// Job-referral sharing (ShareJobPanel)
+
+export type ShareChannel = 'whatsapp' | 'sms' | 'facebook' | 'copy_link' | 'device_share';
+
+export interface ShareJobResponse {
+  code: string;
+  channel: ShareChannel;
+  share_url: string;
+}
+
+/**
+ * Mints (or refreshes) this worker's share link for one (job, channel) pair.
+ * Must be called separately for each channel button -- the per-channel call
+ * is what makes the resulting attribution data meaningful, so never reuse a
+ * `share_url` obtained for one channel on a different channel's handoff.
+ */
+export async function shareJob(
+  token: string,
+  jobId: string,
+  channel: ShareChannel,
+): Promise<ShareJobResponse> {
+  const res = await apiFetch(`/worker/jobs/${jobId}/share`, { method: 'POST', body: JSON.stringify({ channel }) }, token);
+  if (!res.ok) {
+    const body = await readErrorBody(res);
+    const err = new Error(body.error ?? 'share_failed') as WorkerApiError;
+    err.status = res.status;
+    err.code = body.error;
+    throw err;
+  }
+  return res.json();
+}
