@@ -1,10 +1,13 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/public-job';
 import { getPublicJobsDbPool } from '../../../../lambda/lib/db';
+import { getVisitorSalt } from '../../../../lambda/lib/referral-secrets';
 
 jest.mock('../../../../lambda/lib/db');
+jest.mock('../../../../lambda/lib/referral-secrets');
 
 const mockGetPublicJobsDbPool = getPublicJobsDbPool as jest.Mock;
+const mockGetVisitorSalt = getVisitorSalt as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -40,7 +43,7 @@ describe('public-job Lambda', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.ALLOWED_ORIGIN = 'https://jaleapp.ai';
-    delete process.env.REFERRAL_VISITOR_SALT;
+    mockGetVisitorSalt.mockResolvedValue(null); // unconfigured by default
     mockGetPublicJobsDbPool.mockResolvedValue({
       connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
     });
@@ -74,7 +77,7 @@ describe('public-job Lambda', () => {
   });
 
   it('does not bump the counter when the dedupe guard says this visitor was already counted', async () => {
-    process.env.REFERRAL_VISITOR_SALT = 'test-salt';
+    mockGetVisitorSalt.mockResolvedValue('test-salt');
     mockQuery
       .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] })          // job lookup
       .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] })    // share link match
@@ -201,7 +204,7 @@ describe('public-job Lambda', () => {
   });
 
   it('does not throw and inserts a null visitor_hash when the salt is unset', async () => {
-    delete process.env.REFERRAL_VISITOR_SALT;
+    mockGetVisitorSalt.mockResolvedValue(null);
     mockQuery
       .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] })
       .mockResolvedValueOnce({}) // BEGIN

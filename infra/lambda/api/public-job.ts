@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getPublicJobsDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { normalizeCode, isValidJobCode, isValidShareCode, hashVisitor } from '../lib/referral-codes';
+import { getVisitorSalt } from '../lib/referral-secrets';
 
 /**
  * GET /public/jobs/{code}
@@ -131,7 +132,9 @@ export const handler = async (
         const locale = parseLocale(acceptLanguage);
 
         let visitorHash: string | null = null;
-        const salt = process.env.REFERRAL_VISITOR_SALT;
+        // From Secrets Manager, TTL-cached — never an env var, which would put
+        // the one value protecting IP+UA from brute-force into the CFN template.
+        const salt = await getVisitorSalt();
         if (salt && ip && userAgent) {
           visitorHash = hashVisitor(salt, ip, userAgent);
         }

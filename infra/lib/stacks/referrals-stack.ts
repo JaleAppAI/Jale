@@ -111,10 +111,21 @@ export class ReferralsStack extends cdk.Stack {
       );
     }
 
-    // Optional — public-job.ts falls back to storing a null visitor hash when
-    // absent. Never invent a value; only pass through if the operator set one.
-    const referralVisitorSalt = this.node.tryGetContext('referralVisitorSalt')
-      ?? process.env.JALE_REFERRAL_VISITOR_SALT;
+    // The visitor salt lives in Secrets Manager, NOT a Lambda env var: an env
+    // var lands in the CloudFormation template, cdk diff output, and every
+    // lambda:GetFunctionConfiguration response, and this salt is the only
+    // thing making hashVisitor(salt, ip, userAgent) non-invertible — the IP+UA
+    // input space is small enough to brute-force once the salt is known.
+    // Auto-generated; rotating it only resets open de-duplication for the
+    // 30-minute window, which is harmless.
+    const visitorSaltSecret = new secretsmanager.Secret(this, 'ReferralVisitorSaltSecret', {
+      secretName: 'jale/referrals/visitor-salt',
+      description: 'Salt for the public job page visitor hash (IP+UA de-duplication only)',
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+      },
+    });
 
     const lambdaProps = {
       vpc: props.vpc,
@@ -128,12 +139,14 @@ export class ReferralsStack extends cdk.Stack {
       description: 'Public job read endpoint (unauthenticated)',
       environment: {
         REFERRALS_DB_SECRET_ARN: props.referralsDbSecret.secretArn,
+        REFERRAL_VISITOR_SALT_SECRET_ARN: visitorSaltSecret.secretArn,
         ALLOWED_ORIGIN: allowedOrigin,
-        ...(referralVisitorSalt ? { REFERRAL_VISITOR_SALT: referralVisitorSalt } : {}),
       },
       ...lambdaProps,
     });
     props.referralsDbSecret.grantRead(publicJobLambda.function);
+    // Only the public-job Lambda hashes visitors; nothing else may read the salt.
+    visitorSaltSecret.grantRead(publicJobLambda.function);
 
     // ── Lambda: public-job-apply-intent (POST /public/jobs/{code}/apply-intent) ──
     // jale_public_jobs role only. UNAUTHENTICATED.

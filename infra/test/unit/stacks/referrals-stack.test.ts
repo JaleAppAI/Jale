@@ -251,6 +251,33 @@ describe('ReferralsStack', () => {
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
+  test('no Lambda carries the visitor salt as a plaintext env var', () => {
+    // The salt is the only thing making the visitor hash non-invertible; an env
+    // var would put it in the CFN template and every GetFunctionConfiguration
+    // response. It must reach the Lambda only as a Secrets Manager ARN.
+    const fns = template.findResources('AWS::Lambda::Function');
+    for (const [id, fn] of Object.entries(fns)) {
+      const env = (fn as any).Properties?.Environment?.Variables ?? {};
+      expect({ id, has: 'REFERRAL_VISITOR_SALT' in env }).toEqual({ id, has: false });
+    }
+  });
+
+  test('only the public-job Lambda reads the visitor-salt secret', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Public job read endpoint (unauthenticated)',
+      Environment: Match.objectLike({
+        Variables: Match.objectLike({
+          REFERRAL_VISITOR_SALT_SECRET_ARN: Match.anyValue(),
+        }),
+      }),
+    });
+    // And no other Lambda gets the ARN.
+    const fns = template.findResources('AWS::Lambda::Function');
+    const withArn = Object.values(fns).filter((fn: any) =>
+      'REFERRAL_VISITOR_SALT_SECRET_ARN' in (fn.Properties?.Environment?.Variables ?? {}));
+    expect(withArn).toHaveLength(1);
+  });
+
   test('retention sweeper runs on a daily schedule', () => {
     template.hasResourceProperties('AWS::Events::Rule', {
       ScheduleExpression: 'rate(1 day)',
