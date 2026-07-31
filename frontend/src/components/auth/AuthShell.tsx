@@ -70,8 +70,6 @@ function Wordmark({ className = 'h-9' }: { className?: string }) {
 }
 
 export function AuthShell({ variant, brand, children }: AuthShellProps) {
-    const t = useTranslations('auth');
-
     if (variant === 'worker') {
         return (
             <div className="flex min-h-screen flex-col" style={DOT_PATTERN}>
@@ -109,7 +107,6 @@ export function AuthShell({ variant, brand, children }: AuthShellProps) {
                     <Wordmark />
                     <ShellActions />
                 </div>
-                <p className="px-5 pb-5 text-lg font-bold leading-tight text-white">{t('employer.hero')}</p>
             </div>
 
             {/* White form column */}

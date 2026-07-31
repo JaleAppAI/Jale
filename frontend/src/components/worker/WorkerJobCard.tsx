@@ -24,16 +24,11 @@ const WORKER_REASON_KEYS = new Set([
   'fresh_posting',
 ]);
 
-const DOC_LABELS: Record<string, string> = {
-  resume: 'Resume',
-  driver_license: "Driver's License",
-  // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
-  ssn: 'SSN Card / ITIN',
-};
+const KNOWN_DOC_TYPES = ['resume', 'driver_license', 'ssn'];
+const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 
-function jobTypeLabel(type: string) {
-  if (type === 'full-time') return '40 hrs/wk';
-  if (type === 'part-time') return 'Part-time';
+function jobTypeLabel(t: ReturnType<typeof useTranslations>, type: string) {
+  if (KNOWN_JOB_TYPES.includes(type)) return t(`job_type.${type}`);
   return type.replace('-', ' ');
 }
 
@@ -95,7 +90,7 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
                   className="pill pill-info"
                   style={{ fontSize: 10, letterSpacing: '.06em', textTransform: 'uppercase' }}
                 >
-                  {DOC_LABELS[doc] ?? doc}
+                  {KNOWN_DOC_TYPES.includes(doc) ? t(`doc_labels.${doc}`) : doc}
                 </span>
               ))}
             </div>
@@ -120,7 +115,7 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
             className="rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize"
             style={{ background: 'var(--jale-blue-50)', color: 'var(--jale-blue-700)' }}
           >
-            {jobTypeLabel(job.job_type)}
+            {jobTypeLabel(t, job.job_type)}
           </span>
         </div>
       </Card>

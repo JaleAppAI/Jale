@@ -24,3 +24,22 @@ export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
+
+/**
+ * Validates and normalizes an absolute http(s) base URL read from an env var.
+ * Returns null when the value is unset, blank, or not a parseable absolute
+ * http(s) URL. Callers must treat null as a hard configuration error and fail
+ * the request rather than fall back to a relative path — a link with no
+ * origin is dead the moment it's pasted somewhere else (e.g. WhatsApp).
+ */
+export function requireAbsoluteBaseUrl(raw: string | undefined): string | null {
+  if (!raw) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  return raw.replace(/\/+$/, '');
+}

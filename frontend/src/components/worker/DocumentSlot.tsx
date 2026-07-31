@@ -2,6 +2,7 @@
 import { useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/ui/icon';
 import { getAuthUploadUrl, confirmAuthUpload, deleteVaultDocument, uploadFileToS3 } from '@/lib/api/worker';
 import type { DocType, WorkerVaultDoc } from '@/lib/api/worker';
 
@@ -12,7 +13,6 @@ export function DocumentSlot(props: {
   onChange: () => void;
 }) {
   const t = useTranslations('worker_profile.documents');
-  const tCommon = useTranslations('common');
   const fileRef = useRef<HTMLInputElement>(null);
   const [busyAction, setBusyAction] = useState<'upload' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,11 +50,11 @@ export function DocumentSlot(props: {
   }
 
   return (
-    <div className="flex items-center justify-between rounded border p-3">
-      <div>
+    <div className="flex items-center justify-between gap-3 rounded border p-3">
+      <div className="min-w-0">
         <p className="text-sm font-medium">{t(`types.${props.doc_type}`)}</p>
         {props.existing ? (
-          <p className="text-xs text-muted-foreground">
+          <p className="truncate text-xs text-muted-foreground">
             {props.existing.file_name} · {new Date(props.existing.uploaded_at).toLocaleDateString()}
           </p>
         ) : (
@@ -62,9 +62,12 @@ export function DocumentSlot(props: {
         )}
         {error && <p className="text-xs text-error mt-1">{error}</p>}
       </div>
-      <div className="flex gap-2">
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
         {props.existing && (
-          <a href={props.existing.url} target="_blank" rel="noreferrer" className="text-sm text-blue-700 underline self-center">{t('view')}</a>
+          <a href={props.existing.url} target="_blank" rel="noreferrer" aria-label={t('view')} title={t('view')} className="inline-flex h-9 w-9 items-center justify-center rounded-full text-blue-700 hover:bg-[var(--jale-paper-2)] sm:h-auto sm:w-auto sm:gap-1.5 sm:rounded sm:px-2 sm:underline">
+            <Icon name="eye" />
+            <span className="sr-only sm:not-sr-only">{t('view')}</span>
+          </a>
         )}
         <Button
           variant="outline"
@@ -72,12 +75,31 @@ export function DocumentSlot(props: {
           onClick={() => fileRef.current?.click()}
           disabled={busy}
           loading={busyAction === 'upload'}
-          loadingLabel={tCommon('loading')}
+          aria-label={props.existing ? t('replace') : t('upload')}
+          title={props.existing ? t('replace') : t('upload')}
+          // Override Button's default sizeClasses.sm padding (px-4) so the button
+          // stays compact when icon-only (label hidden below sm).
+          className="!px-2 sm:!px-3"
         >
-          {props.existing ? t('replace') : t('upload')}
+          <Icon name="upload" />
+          <span className="sr-only sm:not-sr-only">{props.existing ? t('replace') : t('upload')}</span>
         </Button>
         {props.existing && (
-          <Button variant="outline" size="sm" onClick={handleDelete} disabled={busy} loading={busyAction === 'delete'} loadingLabel={tCommon('loading')}>{t('delete')}</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDelete}
+            disabled={busy}
+            loading={busyAction === 'delete'}
+            aria-label={t('delete')}
+            title={t('delete')}
+            // Override Button's default sizeClasses.sm padding (px-4) so the button
+            // stays compact when icon-only (label hidden below sm).
+            className="!px-2 sm:!px-3"
+          >
+            <Icon name="trash" />
+            <span className="sr-only sm:not-sr-only">{t('delete')}</span>
+          </Button>
         )}
         <input ref={fileRef} type="file" accept="application/pdf,image/jpeg,image/png" hidden onChange={handleFile} />
       </div>

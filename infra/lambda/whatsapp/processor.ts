@@ -79,6 +79,8 @@ import {
   isVoiceIntakeEnabled,
   hashNormalizedPhone,
 } from './lib/runtime-controls';
+import { parseApplyToken } from '../lib/referral-codes';
+import { parkPendingClaim, claimPendingReferral } from './lib/referral-claims';
 import {
   loadPreAuthStateForUpdate,
   savePreAuthState,
@@ -1072,6 +1074,53 @@ async function handleSupportCommand(
   );
 }
 
+/**
+ * Job referrals (migration 056) for a website-registered worker.
+ *
+ * The web-worker bypass above returns before `routeOnboardingV2`, so the
+ * referral hook in the start step never runs for these workers — a code in
+ * their first WhatsApp message would otherwise be silently lost, and these are
+ * exactly the people a referral link sends to the website in the first place.
+ *
+ * Unlike the pre-auth lane, this worker already has a `users` row and is being
+ * moved straight to `ready` here, so there is no later onboarding completion to
+ * claim the code at. Park and claim it in one go instead.
+ *
+ * Isolated behind a SAVEPOINT for the same reason as the start-step hook: this
+ * runs inside the caller's open transaction, so an unguarded failure would
+ * abort it and cost the worker their welcome message. Logs a static metric
+ * only — never the token, the phone number, or the phone hash.
+ */
+async function captureReferralForBypassedWorker(
+  client: PoolClient,
+  whatsappNumber: string,
+  workerId: string,
+  msg: IncomingMessage,
+): Promise<void> {
+  const applyToken = parseApplyToken(msg.body);
+  if (!applyToken) return;
+
+  // Both sides key on conv.whatsapp_number, so the park and the claim agree on
+  // the hash. hashNormalizedPhone only trims, so it is byte-sensitive.
+  const phoneHash = hashNormalizedPhone(whatsappNumber);
+  const now = new Date();
+
+  try {
+    await client.query('SAVEPOINT referral_bypass');
+    await parkPendingClaim(client, phoneHash, applyToken, now);
+    await claimPendingReferral(client, phoneHash, workerId, now);
+    await client.query('RELEASE SAVEPOINT referral_bypass');
+  } catch {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT referral_bypass');
+    } catch {
+      // The transaction is already unusable; the caller's retry/DLQ handling
+      // takes over as it would for any other failed statement.
+    }
+    console.error(JSON.stringify({ metric: 'ReferralBypassCaptureFailed' }));
+  }
+}
+
 async function routeMessage(
   client: PoolClient,
   conv: ConversationRow,
@@ -1095,6 +1144,7 @@ async function routeMessage(
     const webWorker = await findWebRegisteredWorker(client, conv.whatsapp_number);
     if (webWorker) {
       await bypassOnboardingForWebWorker(client, conv, msg, webWorker.id);
+      await captureReferralForBypassedWorker(client, conv.whatsapp_number, webWorker.id, msg);
       return webWorker.id;
     }
   }

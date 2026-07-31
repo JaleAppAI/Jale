@@ -25,6 +25,7 @@ import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/
 import { applicationStatusTone, jobStatusTone } from '@/lib/status';
 import type { WritableJobStatus } from '@/lib/status';
 import { formatStartDate } from '@/lib/date';
+import { PublicListingToggle } from '@/components/employer/PublicListingToggle';
 
 export const dynamic = 'force-dynamic';
 
@@ -166,14 +167,11 @@ export default function JobDetailPage() {
         {t(`jobs.status.${job.status}`)}
       </span>
       {job.status === 'active' && (
-        <>
-          <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('paused')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
-            {t('jobs.toggle.pause')}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
-            {t('jobs.toggle.close')}
-          </Button>
-        </>
+        // Manual "Pause" action intentionally removed (kept backend/status support
+        // and the paused-state resume UI for billing-auto-paused jobs).
+        <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
+          {t('jobs.toggle.close')}
+        </Button>
       )}
       {job.status === 'paused' && (
         <>
@@ -271,6 +269,10 @@ export default function JobDetailPage() {
               </div>
             </div>
           </Card>
+
+          <div className="mb-6">
+            <PublicListingToggle jobId={job.id} initialEnabled={job.public_listing_enabled} />
+          </div>
 
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
             <MetricCard tone="blue" label={t('stats.total_applicants')} value={total} />
@@ -450,7 +452,7 @@ function ApplicantCard({
           <span>{t(`filter.availability_${applicant.availability.replace('-', '')}`)}</span>
         )}
         {applicant.years_experience !== null && (
-          <span>{applicant.years_experience}y exp</span>
+          <span>{t('worker_profile.years_experience', { years: applicant.years_experience })}</span>
         )}
         <span>{t('applicants.applied')}: {new Date(applicant.applied_at).toLocaleDateString()}</span>
       </div>

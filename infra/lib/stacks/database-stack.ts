@@ -17,6 +17,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly aiDbSecret: secretsmanager.ISecret;
   public readonly adminConsoleDbSecret: secretsmanager.ISecret;
   public readonly billingDbSecret: secretsmanager.ISecret;
+  public readonly referralsDbSecret: secretsmanager.ISecret;
   public readonly dbEndpoint: string;
   public readonly dbPort: string;
 
@@ -118,6 +119,28 @@ export class DatabaseStack extends cdk.Stack {
       },
     });
     this.billingDbSecret.applyRemovalPolicy(removalPolicy);
+
+    // Generated credential for the jale_public_jobs role (unauthenticated public
+    // job read + apply-intent). The role itself is created by migration 056
+    // (infra/db/migrations/056_job_referrals.sql) — this secret only provisions
+    // the CDK-managed password half. Its password must still be SET on the
+    // jale_public_jobs role by the migration runners (same bastion-session
+    // pattern used for jale_billing/034), not invented as a new migration here.
+    this.referralsDbSecret = new secretsmanager.Secret(this, 'ReferralsDbSecret', {
+      secretName: 'jale/referrals/db',
+      description: 'jale_public_jobs role DB credentials for the unauthenticated public job/apply-intent Lambdas',
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          username: 'jale_public_jobs',
+          host: this.dbInstance.dbInstanceEndpointAddress,
+          port: 5432,
+          dbname: 'jale',
+        }),
+        generateStringKey: 'password',
+        excludePunctuation: true,
+      },
+    });
+    this.referralsDbSecret.applyRemovalPolicy(removalPolicy);
 
     this.dbEndpoint = this.dbInstance.dbInstanceEndpointAddress;
     this.dbPort = this.dbInstance.dbInstanceEndpointPort;

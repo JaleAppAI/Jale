@@ -86,6 +86,9 @@ describe('database migrations', () => {
       '052',
       '053',
       '054',
+      '055',
+      '056',
+      '057',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -368,6 +371,8 @@ describe('database migrations', () => {
       expect(script).toContain('ALTER ROLE jale_matching WITH PASSWORD');
       expect(script).toContain("starts_with(LogicalResourceId, 'BillingDbSecret')");
       expect(script).toContain('ALTER ROLE jale_billing WITH PASSWORD');
+      expect(script).toContain("starts_with(LogicalResourceId, 'ReferralsDbSecret')");
+      expect(script).toContain('ALTER ROLE jale_public_jobs WITH PASSWORD');
       expect(script).not.toContain('003_whatsapp.sql');
       expect(script).not.toContain('004_jobs.sql');
       expect(script).not.toContain('005_job_applications.sql');

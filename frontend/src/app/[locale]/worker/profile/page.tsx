@@ -15,7 +15,7 @@ import type { WorkerProfileData, WorkerVaultDoc, DocType } from '@/lib/api/worke
 
 export const dynamic = 'force-dynamic';
 
-const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
+const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
 
 export default function WorkerProfilePage() {
   const { idToken } = useAuth();
@@ -110,7 +110,15 @@ export default function WorkerProfilePage() {
                 <Field label={t('field_name')} value={profile.full_name} />
                 <PillListField label={t('field_skills')} items={profile.skills} />
                 <PillListField label={t('field_certifications')} items={profile.certifications ?? []} />
-                <Field label={t('field_availability')} value={profile.availability ?? '-'} />
+                <Field
+                  label={t('field_availability')}
+                  value={
+                    profile.availability &&
+                    ['full_time', 'part_time', 'weekends', 'flexible'].includes(profile.availability)
+                      ? t(`availability.${profile.availability}`)
+                      : '-'
+                  }
+                />
                 <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
                 <Field label={t('field_location')} value={profile.location ?? '-'} />
                 <div className="md:col-span-2"><Field label={t('field_bio')} value={profile.bio ?? '-'} /></div>

@@ -9,6 +9,7 @@ export class NetworkStack extends cdk.Stack {
   public readonly lambdaSg: ec2.SecurityGroup;
   public readonly rdsSg: ec2.SecurityGroup;
   public readonly billingLambdaSg: ec2.SecurityGroup;
+  public readonly referralsLambdaSg: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -93,6 +94,18 @@ export class NetworkStack extends cdk.Stack {
     this.billingLambdaSg.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'HTTPS egress (Stripe, AWS APIs) via NAT');
     this.billingLambdaSg.addEgressRule(this.rdsSg, ec2.Port.tcp(5432), 'PostgreSQL to RDS');
     this.rdsSg.addIngressRule(this.billingLambdaSg, ec2.Port.tcp(5432), 'Allow PostgreSQL access from billing Lambdas');
+
+    // Referrals Lambdas (public job read/apply-intent + worker share/referrals)
+    // get their own SG, same shape as billingLambdaSg: no allow-all outbound,
+    // just HTTPS (Secrets Manager/AWS APIs via NAT) + Postgres to RDS.
+    this.referralsLambdaSg = new ec2.SecurityGroup(this, 'ReferralsLambdaSg', {
+      vpc: this.vpc,
+      description: 'Security group for referrals Lambdas (DB + HTTPS egress only)',
+      allowAllOutbound: false,
+    });
+    this.referralsLambdaSg.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'HTTPS egress (AWS APIs) via NAT');
+    this.referralsLambdaSg.addEgressRule(this.rdsSg, ec2.Port.tcp(5432), 'PostgreSQL to RDS');
+    this.rdsSg.addIngressRule(this.referralsLambdaSg, ec2.Port.tcp(5432), 'Allow PostgreSQL access from referrals Lambdas');
 
     // ---------- VPC Interface Endpoints ----------
     //

@@ -52,6 +52,13 @@ jobs:
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
       JALE_EMPLOYER_CLIENT_ID: ${{ vars.JALE_EMPLOYER_CLIENT_ID }}
+      # Referrals (migration 056): the stack reads these as env fallbacks when
+      # the -c flags are absent. Plain configuration, not secrets. The PHASE1
+      # variable drives the two-deploy {jobId} rename: set true for deploy 1,
+      # unset for deploy 2 (an unset GitHub var is empty, which is falsy).
+      JALE_PUBLIC_SITE_BASE_URL: ${{ vars.JALE_PUBLIC_SITE_BASE_URL }}
+      JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
+      JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -184,6 +191,13 @@ jobs:
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
       JALE_EMPLOYER_CLIENT_ID: ${{ vars.JALE_EMPLOYER_CLIENT_ID }}
+      # Referrals (migration 056): the stack reads these as env fallbacks when
+      # the -c flags are absent. Plain configuration, not secrets. The PHASE1
+      # variable drives the two-deploy {jobId} rename: set true for deploy 1,
+      # unset for deploy 2 (an unset GitHub var is empty, which is falsy).
+      JALE_PUBLIC_SITE_BASE_URL: ${{ vars.JALE_PUBLIC_SITE_BASE_URL }}
+      JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
+      JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
     steps:
       - name: Require AWS deploy role
         shell: bash
