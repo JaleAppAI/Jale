@@ -644,6 +644,45 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
     expect(phase1Api.workerJobResource).toBeUndefined();
   });
 
+  test('the ENV VAR drives phase 1 too — this is how the pipeline flips it without file edits', () => {
+    process.env.JALE_WORKER_JOBS_RENAME_PHASE1 = 'true';
+    try {
+      // No context flag this time: only the env var, exactly as a GitHub
+      // repository variable reaches the pipeline's cdk process.
+      const app = new cdk.App({
+        context: {
+          otpSmsFromNumber: '+13252210992',
+          emailFromAddress: 'billing@jaleapp.ai',
+          sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+          publicSiteBaseUrl: 'https://jaleapp.ai',
+          whatsappBusinessNumber: '15551234567',
+        },
+      });
+      const network = new NetworkStack(app, 'TestNetworkStack');
+      const database = new DatabaseStack(app, 'TestDatabaseStack', { network });
+      const auth = new AuthStack(app, 'TestAuthStack', {
+        vpc: network.vpc,
+        privateSubnets: network.privateSubnets,
+        lambdaSg: network.lambdaSg,
+        dbSecret: database.dbSecret,
+      });
+      const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
+      const envApi = new ApiStack(app, 'TestApiStack', {
+        workerPool: auth.workerPool,
+        employerPool: auth.employerPool,
+        vpc: network.vpc,
+        privateSubnets: network.privateSubnets,
+        lambdaSg: network.lambdaSg,
+        dbSecret: database.dbSecret,
+        employerCandidateRerankQueue,
+        whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
+      });
+      expect(envApi.workerJobResource).toBeUndefined();
+    } finally {
+      delete process.env.JALE_WORKER_JOBS_RENAME_PHASE1;
+    }
+  });
+
   test('worker jobs LIST survives phase 1 — only detail/apply/share are down', () => {
     // GET /worker/jobs (the list) hangs off the jobs node itself, not {jobId},
     // and must keep working through the window.

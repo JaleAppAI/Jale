@@ -15,6 +15,7 @@ on:
           - admin-prerequisites
           - admin
           - billing-prerequisites
+          - referrals
           - all
 
 permissions:
@@ -76,7 +77,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
+          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
           admin_stack_list="JaleDatabaseStack JaleWhatsAppStack JaleAdminStack"
@@ -95,6 +96,14 @@ jobs:
               billing-prerequisites)
                 echo "deploy-stacks=${billing_prerequisites_stack_list}" >> "$GITHUB_OUTPUT"
                 echo "cdk-extra-args=--exclusively" >> "$GITHUB_OUTPUT"
+                ;;
+              referrals)
+                # DatabaseStack owns the jale/referrals/db + visitor-salt secrets
+                # (the bastion password sync needs them to exist); ApiStack and
+                # ReferralsStack must deploy together because the referral routes'
+                # Methods land in the ApiStack template. No --exclusively.
+                echo "deploy-stacks=JaleDatabaseStack JaleApiStack JaleReferralsStack" >> "$GITHUB_OUTPUT"
+                echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
                 ;;
               admin)
                 echo "deploy-stacks=${admin_stack_list}" >> "$GITHUB_OUTPUT"

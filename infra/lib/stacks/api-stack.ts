@@ -590,8 +590,13 @@ export class ApiStack extends cdk.Stack {
     //   Phase 2: cdk deploy                                   (routes restored as {jobId})
     // Phase 1 omits the {jobId} node and its methods entirely, which IS the
     // documented outage window for GET /worker/jobs/{id} and its apply route.
+    // The env fallback exists so the deploy PIPELINE can drive phase 1 from a
+    // GitHub variable (JALE_WORKER_JOBS_RENAME_PHASE1=true) instead of anyone
+    // editing files or passing -c flags mid-deploy. An unset variable is an
+    // empty string, which is falsy — every ordinary deploy is phase 2.
     const workerJobsRenamePhase1 = this.node.tryGetContext('workerJobsRenamePhase1') === true
-      || this.node.tryGetContext('workerJobsRenamePhase1') === 'true';
+      || this.node.tryGetContext('workerJobsRenamePhase1') === 'true'
+      || process.env.JALE_WORKER_JOBS_RENAME_PHASE1 === 'true';
 
     const workerJobsResource = workerResource.addResource('jobs');
     workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
