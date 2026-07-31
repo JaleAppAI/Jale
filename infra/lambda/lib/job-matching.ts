@@ -437,7 +437,30 @@ export async function listMatchedJobsForWorker(
 
   const jobCoordinates = await coordinateSelects(client, 'jobs', 'j');
   const jobsResult = await client.query<MatchableJobRow>(
-    `SELECT j.id,
+    `SELECT ${matchableJobColumns(jobCoordinates)}
+       FROM jobs j
+      WHERE ${filters.join(' AND ')}
+      ORDER BY j.created_at DESC, j.id DESC
+      LIMIT $${params.length}`,
+    params,
+  );
+
+  const ranked = jobsResult.rows
+    .map((job) => scoreJobCandidate(worker, job))
+    .filter((job) => !workerHasProfessionData(worker) || job.match_components.profession > 0)
+    .sort((a, b) => b.match_score - a.match_score || new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id.localeCompare(a.id));
+
+  const isFiltered = Boolean(options.search?.trim() || options.jobType?.trim());
+  const pinned = isFiltered ? null : await referredJobPin(client, worker, workerId, ranked, jobCoordinates);
+  const listed = pinned ? [pinned, ...ranked.filter((job) => job.id !== pinned.id)] : ranked;
+
+  return listed
+    .slice(0, requestedLimit)
+    .map(({ score, components, reasons, ...job }) => job);
+}
+
+function matchableJobColumns(jobCoordinates: { latitude: string; longitude: string }): string {
+  return `j.id,
             j.title,
             COALESCE(j.company, 'Jale') AS company,
             j.location,
@@ -459,18 +482,59 @@ export async function listMatchedJobsForWorker(
             j.required_experience_years,
             j.certifications,
             ${jobCoordinates.latitude} AS latitude,
-            ${jobCoordinates.longitude} AS longitude
-       FROM jobs j
-      WHERE ${filters.join(' AND ')}
-      ORDER BY j.created_at DESC, j.id DESC
-      LIMIT $${params.length}`,
-    params,
-  );
+            ${jobCoordinates.longitude} AS longitude`;
+}
 
-  return jobsResult.rows
-    .map((job) => scoreJobCandidate(worker, job))
-    .filter((job) => !workerHasProfessionData(worker) || job.match_components.profession > 0)
-    .sort((a, b) => b.match_score - a.match_score || new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id.localeCompare(a.id))
-    .slice(0, requestedLimit)
-    .map(({ score, components, reasons, ...job }) => job);
+/**
+ * The job a worker was referred to must never be hidden by match scoring: a
+ * referred worker arrived FOR that job, but the profession filter above knows
+ * nothing about referrals (a "Soldador" never saw the "Welder" job their
+ * friend sent them). Pins the attributed job to the top of an unfiltered
+ * list while it is still active and unapplied; any miss falls through to the
+ * ranked list unchanged.
+ */
+async function referredJobPin(
+  client: PoolClient,
+  worker: WorkerMatchProfile,
+  workerId: string,
+  ranked: ScoredJobCandidate[],
+  jobCoordinates: { latitude: string; longitude: string },
+): Promise<ScoredJobCandidate | null> {
+  const attribution = await client.query<{ job_id: string | null }>(
+    `SELECT COALESCE(latest_job_id, first_job_id) AS job_id
+       FROM worker_attribution
+      WHERE worker_id = $1`,
+    [workerId],
+  );
+  const referredJobId = attribution.rows[0]?.job_id;
+  if (!referredJobId) {
+    return null;
+  }
+
+  const alreadyRanked = ranked.find((job) => job.id === referredJobId);
+  if (alreadyRanked) {
+    alreadyRanked.match_reasons.push('referred_job');
+    return alreadyRanked;
+  }
+
+  const jobResult = await client.query<MatchableJobRow>(
+    `SELECT ${matchableJobColumns(jobCoordinates)}
+       FROM jobs j
+      WHERE j.id = $2
+        AND j.status = 'active'
+        AND NOT EXISTS (
+          SELECT 1
+            FROM job_applications ja
+           WHERE ja.job_id = j.id
+             AND ja.worker_id = $1
+        )`,
+    [workerId, referredJobId],
+  );
+  if (jobResult.rows.length === 0) {
+    return null;
+  }
+
+  const scored = scoreJobCandidate(worker, jobResult.rows[0]);
+  scored.match_reasons.push('referred_job');
+  return scored;
 }
