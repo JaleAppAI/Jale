@@ -2,12 +2,12 @@
  * referrals-rls.integration.test.ts
  *
  * PostgreSQL-backed RLS and constraint tests for the job-referral schema
- * introduced in migration 055 (job_share_links, job_share_opens,
+ * introduced in migration 056 (job_share_links, job_share_opens,
  * worker_attribution, referral_apply_tokens, referral_pending_claims, and the
  * jale_public_jobs anonymous read role).
  *
  * Connection: set JALE_TEST_DATABASE_URL to a local Postgres 16 URL with the
- * full migration chain (001→055) already applied. When absent, all tests are
+ * full migration chain (001→057) already applied. When absent, all tests are
  * explicitly skipped and the concern is logged (Rule 11: no silent skips).
  *
  * The harness mirrors infra/test/unit/db/billing-rls.integration.test.ts:
@@ -20,7 +20,7 @@
  * ---------------------------------------------------------------------------
  * Bootstrapping note (reproduce this to stand up a fresh testbed by hand):
  *
- * Applying migrations 001→055 into a brand-new container requires:
+ * Applying migrations 001→057 into a brand-new container requires:
  *
  *   1. jale_admin must be created as
  *        CREATE ROLE jale_admin WITH LOGIN CREATEROLE CREATEDB NOSUPERUSER;
@@ -54,7 +54,7 @@
  *      repair that recursion class *before* 023 runs into it, and 038 later
  *      repairs the same relationship again for defense in depth. As long as
  *      migrations are applied strictly in the numeric order
- *      001, 002, ..., 019, 020, 020b, 021, ..., 054, 055 (note: plain
+ *      001, 002, ..., 019, 020, 020b, 021, ..., 056, 057 (note: plain
  *      lexical `sort` on most locales places "020b" BEFORE "020_" — use
  *      `LC_ALL=C sort`, or the explicit ordered list in
  *      test/unit/db/migrations/apply-order.test.ts, to get 020 before 020b),
@@ -131,7 +131,7 @@ async function setServiceRolePasswords(superuserUrl: string): Promise<void> {
     await client.query(`ALTER ROLE jale_whatsapp WITH PASSWORD 'test-whatsapp-pw'`);
     await client.query(`ALTER ROLE jale_ai WITH PASSWORD 'test-ai-pw'`);
     await client.query(`ALTER ROLE jale_admin_console WITH PASSWORD 'test-adminconsole-pw'`);
-    // New in migration 055: the anonymous public-jobs read role.
+    // New in migration 056: the anonymous public-jobs read role.
     await client.query(`ALTER ROLE jale_public_jobs WITH PASSWORD 'test-publicjobs-pw'`);
   } finally {
     await client.end();
@@ -260,7 +260,7 @@ async function makeJob(
   }
 }
 
-maybeDescribe('job-referrals RLS integration (migration 055)', () => {
+maybeDescribe('job-referrals RLS integration (migration 056)', () => {
   beforeAll(async () => {
     if (!databaseUrl) return;
 
@@ -370,7 +370,7 @@ maybeDescribe('job-referrals RLS integration (migration 055)', () => {
   // -------------------------------------------------------------------------
   // First-touch immutability is a trigger, not a withheld grant
   // -------------------------------------------------------------------------
-  describe('public listing is opt-IN (migration 056)', () => {
+  describe('public listing is opt-IN (migration 057)', () => {
     // makeJob always sets public_listing_enabled explicitly, so these two tests
     // insert WITHOUT the column: the DB default is precisely what is under
     // test. Before 056 the default was true, which would have made every
@@ -889,7 +889,7 @@ if (!databaseUrl) {
     () => {
       // eslint-disable-next-line no-console
       console.warn(
-        '[referrals-rls.integration] DONE_WITH_CONCERNS: The PostgreSQL RLS gate for migration 055 ' +
+        '[referrals-rls.integration] DONE_WITH_CONCERNS: The PostgreSQL RLS gate for migration 056 ' +
           'was skipped because JALE_TEST_DATABASE_URL is not set in this environment. ' +
           'Run with a local Postgres 16 container to validate all referral RLS assertions.',
       );

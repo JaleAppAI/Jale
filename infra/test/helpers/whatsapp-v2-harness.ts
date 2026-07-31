@@ -207,7 +207,7 @@ interface CompletionRecord {
   runId: string;
   expectedLockVersion: number;
   assessmentProvenance: Record<string, unknown>;
-  /** Job referrals (migration 055): asserts the real `trust.ts` call site
+  /** Job referrals (migration 056): asserts the real `trust.ts` call site
    * actually supplies this — see onboarding-v2-conversation.test.ts's
    * referral-claim coverage. */
   workerPhoneHash?: string;
@@ -1534,7 +1534,7 @@ export class WhatsAppV2Harness {
 
   /** The same fake phone hash `deps.hashNormalizedPhone` would derive for
    * this harness's phone — for asserting `trust.ts` actually threads
-   * `workerPhoneHash` into `completeOnboarding` (job referrals, migration 055). */
+   * `workerPhoneHash` into `completeOnboarding` (job referrals, migration 056). */
   phoneHash(): string {
     return fakeHashNormalizedPhone(this.phone);
   }

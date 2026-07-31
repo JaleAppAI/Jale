@@ -270,6 +270,12 @@ describe('ApiStack', () => {
       template.hasResourceProperties('AWS::Lambda::Function', { Description: description });
     }
   });
+
+  test('Employer inbox Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer inbox endpoint',
+    });
+  });
   // Task 12 — new worker marketplace route assertions
   test('Worker jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
@@ -333,7 +339,7 @@ describe('ApiStack', () => {
 
   test('Employer PATCH routes use EmployerAuthorizer', () => {
     // 5th PATCH is ReferralsStack's /employer/jobs/{jobId}/public-listing
-    // consent toggle (migration 056) — the Method lands in this template
+    // consent toggle (migration 057) — the Method lands in this template
     // because the resource node it hangs off belongs to ApiStack.
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
       HttpMethod: 'PATCH',

@@ -228,7 +228,7 @@ export type EmployerJobDetail = Job & {
   required_docs: Array<'resume' | 'driver_license'>;
   /** Short code for the public job page URL (/j/{public_code}). */
   public_code: string;
-  /** The employer's opt-IN to a public job page. Default false (migration 056). */
+  /** The employer's opt-IN to a public job page. Default false (migration 057). */
   public_listing_enabled: boolean;
 };
 
@@ -312,6 +312,36 @@ export type EmployerConversationMessage = {
 export type EmployerConversationResponse = {
   conversation: EmployerConversationDetail;
   messages: EmployerConversationMessage[];
+};
+
+export type InboxTab = 'active' | 'closed';
+
+export type InboxItem = {
+  application_id: string;
+  worker_id: string;
+  worker_name: string | null;
+  job_id: string;
+  job_title: string;
+  job_status: JobStatus;
+  application_status: ApplicationStatus;
+  applied_at: string;
+  conversation_id: string | null;
+  conversation_status: EmployerConversationStatus | null;
+  last_message_at: string | null;
+  last_worker_message_at: string | null;
+  last_message_preview: string | null;
+  tab: InboxTab;
+};
+
+export type InboxJob = {
+  job_id: string;
+  title: string;
+  status: JobStatus;
+};
+
+export type EmployerInboxResponse = {
+  items: InboxItem[];
+  jobs: InboxJob[];
 };
 
 export type EmployerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';
@@ -414,7 +444,7 @@ export async function updateJob(
 }
 
 /**
- * The employer's opt-IN to a public job page (migration 056). Strictly boolean:
+ * The employer's opt-IN to a public job page (migration 057). Strictly boolean:
  * publishing to the open internet is a consent action, and the API rejects any
  * coerced shape.
  */
@@ -494,6 +524,12 @@ export async function getConversations(
 ): Promise<{ conversations: EmployerConversationSummary[] }> {
   const res = await apiFetch('/employer/conversations', {}, token);
   if (!res.ok) throw new Error((await res.json()).error ?? 'conversations_fetch_failed');
+  return res.json();
+}
+
+export async function getInbox(token: string): Promise<EmployerInboxResponse> {
+  const res = await apiFetch('/employer/inbox', {}, token);
+  if (!res.ok) throw new Error((await res.json()).error ?? 'inbox_fetch_failed');
   return res.json();
 }
 

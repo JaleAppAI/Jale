@@ -63,8 +63,9 @@ const expectedBaselineMigrations = [
   '052_worker_pending_name_and_skills_reset.sql',
   '053_whatsapp_web_worker_bypass.sql',
   '054_remove_onboarding_v2_control.sql',
-  '055_job_referrals.sql',
-  '056_job_public_listing_opt_in.sql',
+  '055_job_conversations_application_index.sql',
+  '056_job_referrals.sql',
+  '057_job_public_listing_opt_in.sql',
 ];
 
 function migrationFiles(): string[] {

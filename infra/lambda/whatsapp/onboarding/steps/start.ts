@@ -29,7 +29,7 @@ export async function handleStartStep(
   const lang: Lang = preAuth?.preferredLanguage ?? session.language ?? 'es';
   const candidateUserId = preAuth?.candidateUserId ?? session.user_id ?? null;
 
-  // Job referrals (migration 055): a referral code is a side effect on
+  // Job referrals (migration 056): a referral code is a side effect on
   // arrival, not a workflow step — it creates no `users` row, sends no OTP,
   // and never changes what gets sent back below. Whether the token is
   // valid, unknown, expired, or already consumed, `parkPendingClaim`

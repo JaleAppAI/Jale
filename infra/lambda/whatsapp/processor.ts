@@ -1075,7 +1075,7 @@ async function handleSupportCommand(
 }
 
 /**
- * Job referrals (migration 055) for a website-registered worker.
+ * Job referrals (migration 056) for a website-registered worker.
  *
  * The web-worker bypass above returns before `routeOnboardingV2`, so the
  * referral hook in the start step never runs for these workers — a code in

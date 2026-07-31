@@ -250,15 +250,15 @@ export default function WorkerProfilePage() {
                 return (
                   <div key={type} className={`border rounded-lg p-3 ${doc ? 'border-green-200 bg-green-50' : 'border-dashed border-red-300 bg-red-50'}`}>
                     <div className="flex justify-between items-center">
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-sm font-semibold">{docLabel[type]}</p>
                         {doc
-                          ? <p className="text-xs text-gray-500">{doc.file_name} - {Math.round(doc.file_size / 1024)} KB</p>
+                          ? <p className="truncate text-xs text-gray-500">{doc.file_name} - {Math.round(doc.file_size / 1024)} KB</p>
                           : <p className="text-xs text-red-500">{t('worker_profile.not_uploaded')}</p>
                         }
                       </div>
                       {doc ? (
-                        <div className="flex gap-2">
+                        <div className="flex shrink-0 gap-2">
                           <a href={doc.url} target="_blank" rel="noreferrer" className="bg-blue-900 text-white text-xs px-3 py-1.5 rounded-lg">
                             {t('worker_profile.view')}
                           </a>

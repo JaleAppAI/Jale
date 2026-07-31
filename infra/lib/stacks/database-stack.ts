@@ -121,8 +121,8 @@ export class DatabaseStack extends cdk.Stack {
     this.billingDbSecret.applyRemovalPolicy(removalPolicy);
 
     // Generated credential for the jale_public_jobs role (unauthenticated public
-    // job read + apply-intent). The role itself is created by migration 055
-    // (infra/db/migrations/055_job_referrals.sql) — this secret only provisions
+    // job read + apply-intent). The role itself is created by migration 056
+    // (infra/db/migrations/056_job_referrals.sql) — this secret only provisions
     // the CDK-managed password half. Its password must still be SET on the
     // jale_public_jobs role by the migration runners (same bastion-session
     // pattern used for jale_billing/034), not invented as a new migration here.

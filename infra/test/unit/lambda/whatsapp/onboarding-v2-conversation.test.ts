@@ -59,7 +59,7 @@ describe('complete onboarding end to end', () => {
 
     expect(h.getCompletions()).toHaveLength(1);
     expect(h.getState().gate?.status).toBe('completed');
-    // Job referrals (migration 055): completeOnboarding's real call site
+    // Job referrals (migration 056): completeOnboarding's real call site
     // (trust.ts) must thread a workerPhoneHash derived from the worker's own
     // phone — proves the wiring is live, not just present-but-unused.
     expect(h.getCompletions()[0].workerPhoneHash).toBe(h.phoneHash());

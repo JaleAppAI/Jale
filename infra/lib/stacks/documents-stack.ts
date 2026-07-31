@@ -120,7 +120,11 @@ export class DocumentsStack extends cdk.Stack {
       ...lambdaProps,
     });
 
-    // Worker doc confirm (authenticated) — worker auth, DB access only
+    // Worker doc confirm (authenticated) — worker auth, DB + S3 read.
+    // S3 read is NOT optional: the handler HeadObjects the uploaded key to
+    // verify content type, encryption and non-zero length before recording the
+    // row. This comment previously read "DB access only", which is how the
+    // missing grantRead below went unnoticed.
     const workerDocConfirmAuthFn = new JaleLambdaFunction(this, 'WorkerDocConfirmAuth', {
       entry: path.join(__dirname, '../../lambda/api/worker-doc-confirm-auth.ts'),
       description: 'worker-doc-confirm-auth',
@@ -158,6 +162,12 @@ export class DocumentsStack extends cdk.Stack {
 
     // Authenticated worker doc Lambda permissions
     docsBucket.grantPut(workerDocUploadUrlAuthFn.function); // PUT presigned URL generation
+    // HeadObject verification. Without this the confirm step cannot read back
+    // the object the browser just PUT, so s3:HeadObject fails with AccessDenied
+    // and the handler reports it as `uploaded_object_not_found` — an upload that
+    // succeeds in S3 but can never be confirmed. grantRead also supplies the
+    // kms:Decrypt that HeadObject needs on an SSE-KMS object.
+    docsBucket.grantRead(workerDocConfirmAuthFn.function);
     docsBucket.grantRead(workerDocumentsListFn.function); // GET presigned URL generation
     docsBucket.grantDelete(workerDocDeleteFn.function); // DELETE object
     props.dbSecret.grantRead(workerDocUploadUrlAuthFn.function);

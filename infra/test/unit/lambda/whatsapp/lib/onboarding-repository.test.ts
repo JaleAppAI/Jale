@@ -580,7 +580,7 @@ describe('completeOnboarding', () => {
     expect(result.workerReadyEventId).toBe('ready-event-2');
   });
 
-  // Job referrals (migration 055): claimPendingReferral runs on the SAME
+  // Job referrals (migration 056): claimPendingReferral runs on the SAME
   // client as the rest of completeOnboarding, so a caller that supplies
   // workerPhoneHash gets the claim attempt inside the same transaction that
   // flips lifecycle to 'ready' — never a second connection, never optional

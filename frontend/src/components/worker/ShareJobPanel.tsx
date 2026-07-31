@@ -78,7 +78,7 @@ export function ShareJobPanel({ jobId }: ShareJobPanelProps) {
       if (apiErr.code === 'share_url_misconfigured') {
         setErrorMsg(t('error_misconfigured'));
       } else if (apiErr.code === 'job_not_found') {
-        // Public listing is opt-in (migration 056): the share endpoint 404s
+        // Public listing is opt-in (migration 057): the share endpoint 404s
         // for a job the employer has not published. To the worker that is
         // "not shareable yet", not a malfunction.
         setErrorMsg(t('error_not_public'));

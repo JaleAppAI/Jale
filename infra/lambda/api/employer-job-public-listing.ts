@@ -7,7 +7,7 @@ import { checkCompliance } from '../legal/check-compliance';
  * PATCH /employer/jobs/{jobId}/public-listing
  *
  * The single write path for jobs.public_listing_enabled — the employer's
- * opt-IN to a public job page (migration 056; default false, nobody is public
+ * opt-IN to a public job page (migration 057; default false, nobody is public
  * until they choose to be).
  *
  * Deliberately its own endpoint rather than a new entry in

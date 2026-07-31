@@ -102,8 +102,9 @@ $MigrationFiles = @(
     '052_worker_pending_name_and_skills_reset.sql',
     '053_whatsapp_web_worker_bypass.sql',
     '054_remove_onboarding_v2_control.sql',
-    '055_job_referrals.sql',
-    '056_job_public_listing_opt_in.sql'
+    '055_job_conversations_application_index.sql',
+    '056_job_referrals.sql',
+    '057_job_public_listing_opt_in.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -195,7 +196,7 @@ if ([string]::IsNullOrEmpty($billingSecretArn) -or $billingSecretArn -eq 'None')
 Write-Host "   billing-secret: $billingSecretArn"
 
 # ---------------------------------------------------------------------------
-# Resolve jale_public_jobs DB secret ARN (public job pages, migration 055).
+# Resolve jale_public_jobs DB secret ARN (public job pages, migration 056).
 # This script always syncs role passwords, so a missing secret is fatal here:
 # a silently skipped sync leaves the vault and database disagreeing and the
 # public page failing every request. Deploy JaleDatabaseStack first.

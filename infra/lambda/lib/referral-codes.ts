@@ -19,11 +19,11 @@ import { createHash, randomBytes } from 'crypto';
 /**
  * Crockford base32: digits plus A-Z minus I, L, O and U. Chosen so a code stays
  * unambiguous when read aloud over the phone or typed by hand. Must stay
- * byte-identical to the alphabet in migration 055's gen_referral_code().
+ * byte-identical to the alphabet in migration 056's gen_referral_code().
  */
 export const CROCKFORD_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
-/** Matches the CHECK constraints in migration 055. */
+/** Matches the CHECK constraints in migration 056. */
 export const CROCKFORD_CHAR_CLASS = '[0-9A-HJKMNP-TV-Z]';
 
 export const JOB_CODE_LENGTH = 6;
@@ -50,7 +50,7 @@ const APPLY_TOKEN_PATTERN = new RegExp(`^${CROCKFORD_CHAR_CLASS}{${APPLY_TOKEN_L
  * Math.random so apply tokens are not guessable.
  *
  * Pure generator: no uniqueness check. Uniqueness is owned by the unique
- * indexes in migration 055 and every caller must retry on unique violation.
+ * indexes in migration 056 and every caller must retry on unique violation.
  */
 export function generateCode(length: number): string {
   if (!Number.isInteger(length) || length < 4 || length > 24) {

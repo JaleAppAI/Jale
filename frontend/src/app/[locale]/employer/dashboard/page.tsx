@@ -159,7 +159,7 @@ export default function EmployerDashboardPage() {
                     </Button>
                 }
             >
-                <div className="mx-auto max-w-[1380px] px-4 py-6 md:px-6">
+                <div className="mx-auto max-w-[1380px] px-4 py-6 pb-24 md:px-6">
                     <section className="mb-5 overflow-hidden rounded-3xl bg-[#111642] text-white shadow-[var(--shadow-card)]">
                         <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,1.4fr)_minmax(280px,.9fr)] md:p-7">
                             <div>

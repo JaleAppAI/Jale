@@ -196,8 +196,9 @@ MIGRATIONS=(
   "052_worker_pending_name_and_skills_reset.sql"
   "053_whatsapp_web_worker_bypass.sql"
   "054_remove_onboarding_v2_control.sql"
-  "055_job_referrals.sql"
-  "056_job_public_listing_opt_in.sql"
+  "055_job_conversations_application_index.sql"
+  "056_job_referrals.sql"
+  "057_job_public_listing_opt_in.sql"
 )
 
 WORKDIR="$(mktemp -d)"
@@ -455,7 +456,7 @@ BILLING_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::Se
   || die "could not find the jale_billing DB secret in $DATABASE_STACK"
 note "   billing-secret: $BILLING_SECRET_ARN"
 
-# jale_public_jobs (migration 055) is the anonymous read role behind the public
+# jale_public_jobs (migration 056) is the anonymous read role behind the public
 # job pages. Its secret only exists once JaleDatabaseStack has deployed with
 # ReferralsDbSecret, so — unlike the four roles above — absence is only fatal
 # when rotating: a plain migration run on a pre-referrals database must not be

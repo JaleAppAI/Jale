@@ -139,7 +139,7 @@ function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): st
 }
 
 /**
- * The job a worker was referred to (migration 055), sent as a second message
+ * The job a worker was referred to (migration 056), sent as a second message
  * after the welcome.
  *
  * Plain text, deliberately. Buttons on WhatsApp require an approved content

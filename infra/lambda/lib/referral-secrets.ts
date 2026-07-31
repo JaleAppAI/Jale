@@ -1,7 +1,7 @@
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 /**
- * Visitor-salt fetch for the public job page (migration 055's visitor_hash).
+ * Visitor-salt fetch for the public job page (migration 056's visitor_hash).
  *
  * The salt lives in Secrets Manager rather than a Lambda environment variable
  * because it is the only thing making hashVisitor(salt, ip, userAgent)

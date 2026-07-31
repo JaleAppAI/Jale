@@ -605,7 +605,7 @@ export async function completeOnboarding(
     expectedLockVersion: number;
     assessmentProvenance: Record<string, unknown>;
     /**
-     * Job referrals (migration 055): the worker's phone hash, derived by the
+     * Job referrals (migration 056): the worker's phone hash, derived by the
      * caller via `hashNormalizedPhone` from whatever phone value is already
      * in scope (`trust.ts` uses `session.whatsapp_number`) — this module
      * never loads or hashes a phone itself, and `jale_whatsapp` has no grant
@@ -659,7 +659,7 @@ export async function completeOnboarding(
     reason: 'onboarding_complete',
   });
 
-  // Job referrals (migration 055): claimed in the SAME transaction that
+  // Job referrals (migration 056): claimed in the SAME transaction that
   // flips lifecycle to 'ready', so the attribution write can never be lost
   // to a later step failing. No-op (never throws) when the caller has no
   // phone hash in scope, or when no unclaimed/unexpired pending claim

@@ -11,7 +11,7 @@ interface PublicListingToggleProps {
   initialEnabled: boolean;
 }
 
-// The employer's opt-IN to a public job page (migration 056). Jobs start
+// The employer's opt-IN to a public job page (migration 057). Jobs start
 // private; nothing becomes publicly readable until the employer flips this.
 // The copy leads with the benefit (reach) but must also state plainly what is
 // shared -- consent that does not say what is shared is not consent.

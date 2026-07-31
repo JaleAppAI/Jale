@@ -634,7 +634,7 @@ describe('releaseWorkerReady', () => {
 
   // ── O2: release-time eligibility reload ──────────────────────────
 
-  describe('referred job (migration 055)', () => {
+  describe('referred job (migration 056)', () => {
     it('sends a second message naming the referred job when it is still active', async () => {
       const { client } = scriptedClient({
         eventStatus: 'processing',

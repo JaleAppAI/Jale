@@ -10,7 +10,7 @@ import { getVisitorSalt } from '../lib/referral-secrets';
  * Unauthenticated. Connects as jale_public_jobs (see lib/db.ts getPublicJobsDbPool).
  * NEVER calls setRlsContext -- there is no Cognito sub on this route. Access
  * control is the jobs_public_read RLS policy plus the column-scoped GRANT from
- * migration 055, not handler discipline.
+ * migration 056, not handler discipline.
  */
 
 const CORS_HEADERS = corsHeaders();
@@ -18,7 +18,7 @@ const CORS_HEADERS = corsHeaders();
 type DeviceKind = 'mobile' | 'tablet' | 'desktop' | 'unknown';
 
 // Column list matches exactly the GRANT SELECT (...) ON jobs TO jale_public_jobs
-// list in migration 055. employer_id and the geo columns from 009 are
+// list in migration 056. employer_id and the geo columns from 009 are
 // deliberately absent from that grant and must never be added here.
 const PUBLIC_JOB_COLUMNS = `
   id, public_code AS code, title, company, location, job_type, description,
@@ -150,7 +150,7 @@ export const handler = async (
           // does not inflate the count. A null visitor_hash cannot be
           // de-duplicated (no salt configured) and always records —
           // under-counting a real visit is worse than a duplicate. Backed by
-          // job_share_opens_visitor_dedupe_idx (migration 056).
+          // job_share_opens_visitor_dedupe_idx (migration 057).
           const inserted = await client.query(
             `INSERT INTO job_share_opens (share_code, job_id, device_kind, locale, visitor_hash)
              SELECT $1, $2, $3, $4, $5

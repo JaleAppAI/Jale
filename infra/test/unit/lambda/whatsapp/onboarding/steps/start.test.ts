@@ -1,5 +1,5 @@
 /**
- * Job referrals (migration 055): `handleStartStep` recognises an apply
+ * Job referrals (migration 056): `handleStartStep` recognises an apply
  * token as a first message, side-effects a parked claim, and otherwise
  * behaves EXACTLY like no code had been sent — same invitation, same
  * cooldown/cap accounting, no `users` row, no OTP. The park attempt is

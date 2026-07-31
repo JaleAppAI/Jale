@@ -2,7 +2,7 @@ import type { PoolClient } from 'pg';
 import { hashToken } from '../../lib/referral-codes';
 
 /**
- * WhatsApp referral carry-through (migration 055): parks a referral code
+ * WhatsApp referral carry-through (migration 056): parks a referral code
  * against a phone before any `users` row exists, and claims it once that
  * phone finishes onboarding and gets a `workerId`.
  *
@@ -112,7 +112,7 @@ export async function parkPendingClaim(
  *
  * `first_*` is inserted once and NEVER updated — the `DO UPDATE SET` list
  * below deliberately omits every `first_*` column, because
- * `worker_attribution_first_touch_immutable` (migration 055) raises on any
+ * `worker_attribution_first_touch_immutable` (migration 056) raises on any
  * UPDATE that changes one. `latest_*` is always refreshed. The share link's
  * `referrer_worker_id` is copied into BOTH `first_referrer_worker_id` and
  * `latest_referrer_worker_id` at write time: `job_share_links.referrer_worker_id`

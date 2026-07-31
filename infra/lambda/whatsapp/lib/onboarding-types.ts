@@ -103,7 +103,7 @@ export type ReleaseRenderRequest =
   | {
       /**
        * The job a worker was referred to, sent right after the welcome. Job
-       * referrals, migration 055.
+       * referrals, migration 056.
        */
       kind: 'referred_job';
       workerId: string;

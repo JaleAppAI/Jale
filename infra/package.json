@@ -18,7 +18,8 @@
     "reset:whatsapp-v2": "ts-node scripts/reset-whatsapp-onboarding-v2.ts",
     "whatsapp:controls": "ts-node scripts/whatsapp-runtime-controls.ts",
     "replay:whatsapp-domain-event": "ts-node scripts/replay-domain-event.ts",
-    "replay:whatsapp-inbound": "ts-node scripts/replay-whatsapp-inbound.ts"
+    "replay:whatsapp-inbound": "ts-node scripts/replay-whatsapp-inbound.ts",
+    "export:csv": "ts-node scripts/export-db-to-csv.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1040.0",

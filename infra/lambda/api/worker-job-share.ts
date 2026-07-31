@@ -7,7 +7,7 @@ import { generateShareCode } from '../lib/referral-codes';
 const CORS_HEADERS = corsHeaders();
 
 // Client-selectable channels only. 'unknown' exists in the DB CHECK constraint
-// (migration 055) so an untagged arrival can still be recorded, but it is a
+// (migration 056) so an untagged arrival can still be recorded, but it is a
 // server-assigned value for opens with a stripped/invalid tag -- a worker
 // minting a share link always knows which button they pressed, so accepting
 // 'unknown' here would let a client masquerade an untagged link as tagged.

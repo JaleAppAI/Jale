@@ -243,9 +243,9 @@
       "show_password": "Mostrar contraseña",
       "hide_password": "Ocultar contraseña",
       "sign_in": "Iniciar sesión",
-      "hero": "Contrata trabajadores calificados rapido.",
-      "signup_title": "Crea tu perfil de empleador",
-      "signup_subtitle": "Dile a los trabajadores quien eres y que puestos sueles contratar.",
+      "hero": "Contrata trabajadores calificados rápido.",
+      "signup_title": "Bienvenido a Jale",
+      "signup_subtitle": "Verifiquemos tu correo para que puedas empezar a contratar.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
       "signup_prompt": "Nuevo aqui?",
@@ -254,8 +254,8 @@
       "signin_link": "Iniciar sesion",
       "back": "Volver",
       "password_note": "La contrasena debe tener al menos 8 caracteres e incluir mayusculas, minusculas, un numero y un simbolo.",
-      "panel_title": "contratacion mas rapida",
-      "panel_body": "Los perfiles de empleador ayudan a los trabajadores a reconocer la empresa detras de cada oportunidad.",
+      "panel_title": "Hecho para la contratación por hora.",
+      "panel_body": "Encuentra trabajadores confiables en construcción, hospitalidad, jardinería, almacenes, manufactura y más.",
       "forgot_link": "¿Olvidaste tu contraseña?",
       "forgot_title": "Restablecer contraseña",
       "forgot_subtitle": "Ingresa tu correo y te enviaremos un código.",
@@ -306,11 +306,15 @@
         "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
         "invalid_credentials": "El correo o la contrasena no son correctos.",
         "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
-        "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo."
+        "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo.",
+        "required": "Este campo es obligatorio.",
+        "missing_summary": "Por favor agrega: {fields}"
       },
-      "panel_bullet_1": "Candidates speak español",
-      "panel_bullet_2": "Verified documentos",
-      "panel_bullet_3": "Contrata en días, not weeks"
+      "panel_bullet_1": "Fuerza laboral bilingüe",
+      "panel_bullet_2": "Perfiles de trabajadores verificados",
+      "panel_bullet_3": "Fotos de trabajos anteriores",
+      "panel_bullet_4": "Mensajea a los candidatos directamente",
+      "panel_bullet_5": "Gratis para empezar"
     },
     "shell": {
       "language_toggle": "English",
@@ -351,7 +355,11 @@
       "edit_button": "Editar",
       "save": "Guardar",
       "saving": "Guardando...",
-      "cancel": "Cancelar"
+      "cancel": "Cancelar",
+      "errors": {
+        "required": "Obligatorio.",
+        "missing_summary": "Por favor agrega: {fields}"
+      }
     }
   },
   "employer_messages": {
@@ -392,6 +400,20 @@
     "message_start_failed": "No se pudo iniciar la conversacion.",
     "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
     "default_initial_message": "Hola, te escribo sobre tu aplicacion de {jobTitle}. Responde aqui cuando estes disponible.",
+    "tab_active": "Activas",
+    "tab_closed": "Cerradas",
+    "all_jobs": "Todos los empleos",
+    "candidates": "Candidatos",
+    "new_applicant": "Nuevo candidato",
+    "new_applicants": "Nuevos candidatos",
+    "not_yet_messaged": "Sin mensajes todavía",
+    "applied_on": "Aplicó el {date}",
+    "first_message_hint": "Al enviar, este candidato recibirá tu mensaje por WhatsApp.",
+    "not_interested": "No me interesa",
+    "not_interested_confirm": "¿Quitar a este candidato de tu lista?",
+    "candidate_unavailable": "Este candidato ya no está disponible.",
+    "empty_tab_active": "Aún no hay candidatos activos. Aparecerán aquí cuando los trabajadores apliquen a tus empleos.",
+    "empty_tab_closed": "Aún no hay conversaciones cerradas.",
     "message_status": {
       "queued": "En cola",
       "waiting_worker_reply": "Esperando respuesta del trabajador",
@@ -432,14 +454,14 @@
       "dashboard": "Panel",
       "jobs": "Mis trabajos",
       "messages": "Mensajes",
-      "workers": "Workers",
+      "workers": "Trabajadores",
       "interviews": "Entrevistas",
       "search_workers": "Buscar workers",
       "boost_job": "Boost un trabajo",
       "jale_direct": "Jale Directo",
-      "analytics": "Analytics",
+      "analytics": "Analíticas",
       "billing": "Facturación",
-      "settings": "Settings",
+      "settings": "Configuración",
       "soon": "Pronto"
     },
     "hero": {
@@ -738,7 +760,17 @@
     },
     "openings_count": "{open}/{total} disponibles",
     "empty": "No hay trabajos activos en este momento.",
-    "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}"
+    "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
+    "doc_labels": {
+      "resume": "Currículum",
+      "driver_license": "Licencia de conducir",
+      "ssn": "Tarjeta SSN / ITIN"
+    },
+    "job_type": {
+      "full-time": "40 hrs/sem",
+      "part-time": "Medio tiempo",
+      "contract": "Contrato"
+    }
   },
   "worker_job_detail": {
     "back": "← Volver a trabajos",
@@ -766,7 +798,19 @@
       "server_error": "No pudimos enviar esta postulacion ahora. Intenta de nuevo en unos minutos.",
       "apply_failed": "No pudimos enviar esta postulacion. Revisa tu perfil y documentos, e intenta de nuevo."
     },
-    "page_title": "Detalle del empleo"
+    "page_title": "Detalle del empleo",
+    "doc_ok": "Subido",
+    "doc_missing": "Falta",
+    "doc_labels": {
+      "resume": "Currículum",
+      "driver_license": "Licencia de conducir",
+      "ssn": "Tarjeta SSN / ITIN"
+    },
+    "job_type": {
+      "full-time": "Tiempo completo",
+      "part-time": "Medio tiempo",
+      "contract": "Contrato"
+    }
   },
   "public_job": {
     "meta_title": "{title} en {company} - Jale",
@@ -877,7 +921,18 @@
       "years_experience": "Años de experiencia",
       "location": "Ubicación",
       "cancel": "Cancelar",
-      "submit": "Guardar y postular"
+      "submit": "Guardar y postular",
+      "availability_label": "Disponibilidad"
+    },
+    "availability": {
+      "full_time": "Tiempo completo",
+      "part_time": "Medio tiempo",
+      "weekends": "Fines de semana",
+      "flexible": "Flexible"
+    },
+    "errors": {
+      "required": "Obligatorio.",
+      "missing_summary": "Por favor agrega: {fields}"
     }
   },
   "billing": {

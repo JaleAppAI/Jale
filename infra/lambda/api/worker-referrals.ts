@@ -54,7 +54,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // We deliberately do NOT join or count worker_attribution here. That
     // table has FORCE ROW LEVEL SECURITY and, for jale_admin, only the
     // worker_attribution_owner policy -- which scopes rows to the CALLER's
-    // own worker_id (migration 055, "A worker reads their own attribution").
+    // own worker_id (migration 056, "A worker reads their own attribution").
     // A COUNT(*) of other workers' worker_attribution rows keyed by
     // first_share_code would be silently filtered to zero by RLS, which is
     // indistinguishable from a true zero -- worse than not reporting it. So

@@ -18,7 +18,7 @@ export interface ReferralsStackProps extends cdk.StackProps {
   /**
    * App DB credential (jale_admin role) — same secret ApiStack Lambdas use.
    * jale_public_jobs is a restricted, unauthenticated-path role: column-scoped
-   * GRANTs plus the jobs_public_read RLS policy (migration 055), nothing more.
+   * GRANTs plus the jobs_public_read RLS policy (migration 056), nothing more.
    * The two worker-authenticated Lambdas (worker-job-share, worker-referrals)
    * read/write tables whose owner RLS policies are TO jale_admin, so they must
    * use this credential, not referralsDbSecret.
@@ -197,7 +197,7 @@ export class ReferralsStack extends cdk.Stack {
 
     // ── Lambda: employer-job-public-listing (PATCH .../public-listing) ──
     // The single write path for jobs.public_listing_enabled — the employer's
-    // opt-IN to a public job page (migration 056). App DB (jale_admin) only;
+    // opt-IN to a public job page (migration 057). App DB (jale_admin) only;
     // ownership is enforced inside the statement.
     const employerJobPublicListingLambda = new JaleLambdaFunction(this, 'EmployerJobPublicListingLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-job-public-listing.ts'),

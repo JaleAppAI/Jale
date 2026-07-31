@@ -194,7 +194,7 @@ export async function releaseWorkerReady(
     ],
   );
 
-  // ── Step 1b: the job this worker was referred to (migration 055) ──
+  // ── Step 1b: the job this worker was referred to (migration 056) ──
   // claimPendingReferral recorded the claim inside the same transaction that
   // flipped lifecycle to 'ready'. Without a second intent here the worker gets
   // the welcome and is never told about the job they actually came for.
@@ -457,7 +457,7 @@ export async function releaseWorkerReady(
   // Was "at most one" outright. That is still the guarantee for any single
   // source_type — a duplicate onboarding_complete is superseded, not sent twice
   // — but the group now carries two distinct kinds: the welcome, and the job the
-  // worker was referred to (migration 055). Collapsing across source_types would
+  // worker was referred to (migration 056). Collapsing across source_types would
   // silently discard the referral message, so the worker would complete
   // onboarding and never learn about the job that brought them here.
   // Mirrors the per-sourceType shape group 2 already uses below.

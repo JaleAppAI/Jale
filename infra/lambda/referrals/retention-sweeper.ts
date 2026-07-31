@@ -1,11 +1,11 @@
 // infra/lambda/referrals/retention-sweeper.ts
 //
-// EventBridge-scheduled retention for the referral tables (migration 055/056).
+// EventBridge-scheduled retention for the referral tables (migrations 056/057).
 // POST /public/jobs/{code}/apply-intent writes a referral_apply_tokens row per
 // unauthenticated request and GET /public/jobs/{code} writes a job_share_opens
 // row per page view; nothing else ever deletes either, so without this sweeper
 // both tables grow without bound on unauthenticated write paths. The partial
-// indexes in 055 (WHERE consumed_at IS NULL / WHERE claimed_at IS NULL) were
+// indexes in 056 (WHERE consumed_at IS NULL / WHERE claimed_at IS NULL) were
 // shaped for exactly this sweep.
 //
 // Runs as jale_admin (the app DB secret): jale_public_jobs deliberately has no
@@ -17,7 +17,7 @@ import { getDbPool } from '../lib/db';
 // Apply tokens are single-use and expire in 24h; a week's grace is ample for
 // debugging a failed hand-off.
 const TOKEN_GRACE_DAYS = 7;
-// A parked claim lives 30 days by design (migration 055); keep claimed/expired
+// A parked claim lives 30 days by design (migration 056); keep claimed/expired
 // rows a further 30 so a support question can still be answered.
 const CLAIM_GRACE_DAYS = 30;
 // Opens are the substrate every referral report is computed from, so this is

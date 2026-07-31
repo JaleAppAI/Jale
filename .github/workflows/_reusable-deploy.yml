@@ -52,7 +52,7 @@ jobs:
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
       JALE_EMPLOYER_CLIENT_ID: ${{ vars.JALE_EMPLOYER_CLIENT_ID }}
-      # Referrals (migration 055): the stack reads these as env fallbacks when
+      # Referrals (migration 056): the stack reads these as env fallbacks when
       # the -c flags are absent. Plain configuration, not secrets. The PHASE1
       # variable drives the two-deploy {jobId} rename: set true for deploy 1,
       # unset for deploy 2 (an unset GitHub var is empty, which is falsy).
@@ -191,7 +191,7 @@ jobs:
       JALE_WORKER_CLIENT_ID: ${{ vars.JALE_WORKER_CLIENT_ID }}
       JALE_EMPLOYER_POOL_ID: ${{ vars.JALE_EMPLOYER_POOL_ID }}
       JALE_EMPLOYER_CLIENT_ID: ${{ vars.JALE_EMPLOYER_CLIENT_ID }}
-      # Referrals (migration 055): the stack reads these as env fallbacks when
+      # Referrals (migration 056): the stack reads these as env fallbacks when
       # the -c flags are absent. Plain configuration, not secrets. The PHASE1
       # variable drives the two-deploy {jobId} rename: set true for deploy 1,
       # unset for deploy 2 (an unset GitHub var is empty, which is falsy).

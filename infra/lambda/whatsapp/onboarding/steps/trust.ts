@@ -114,7 +114,7 @@ async function recordTrustAnswer(
     workerId: gate.userId,
     runId: gate.runId!,
     expectedLockVersion: gate.lockVersion!,
-    // Job referrals (migration 055): the worker's phone hash, derived from
+    // Job referrals (migration 056): the worker's phone hash, derived from
     // the phone already in scope on this session — reuses the same
     // `hashNormalizedPhone` every other lane uses, never a second hasher.
     // Load-bearing invariant: `parkPendingClaim` (start.ts) keys on

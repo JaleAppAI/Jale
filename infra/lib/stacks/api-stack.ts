@@ -361,6 +361,19 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerConversationsUpdateLambda.function);
 
+    const employerInboxLambda = new JaleLambdaFunction(this, 'EmployerInboxLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-inbox.ts'),
+      description: 'Employer inbox endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerInboxLambda.function);
+
     // Token refresh — no auth (refresh token is the credential), no DB
     const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
       entry: path.join(__dirname, '../../lambda/auth/token-refresh.ts'),
@@ -710,6 +723,12 @@ export class ApiStack extends cdk.Stack {
         authorizer: employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
+
+    const employerInboxResource = this.employerResource.addResource('inbox');
+    employerInboxResource.addMethod('GET', new apigateway.LambdaIntegration(employerInboxLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
 
     // POST /auth/refresh — no auth (user's access token may be expired)
     const authResource = this.api.root.addResource('auth');

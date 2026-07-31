@@ -19,12 +19,8 @@ import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
 
-const DOC_LABELS: Record<string, string> = {
-  resume: 'Resume',
-  driver_license: "Driver's License",
-  // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
-  ssn: 'SSN Card / ITIN',
-};
+const KNOWN_DOC_TYPES = ['resume', 'driver_license', 'ssn'];
+const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 
 export default function WorkerJobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
@@ -129,7 +125,7 @@ export default function WorkerJobDetailPage() {
 
     const applyErr = err as WorkerApiError;
     if (applyErr.status === 400 && applyErr.missing_docs?.length) {
-      setError(t('errors.missing_docs', { docs: applyErr.missing_docs.map((d) => DOC_LABELS[d] ?? d).join(', ') }));
+      setError(t('errors.missing_docs', { docs: applyErr.missing_docs.map((d) => (KNOWN_DOC_TYPES.includes(d) ? t(`doc_labels.${d}`) : d)).join(', ') }));
       return;
     }
     if (applyErr.status === 400) {
@@ -192,7 +188,7 @@ export default function WorkerJobDetailPage() {
 
         <DashboardPanel className="mb-6">
           <div className="space-y-4 p-6">
-            <p className="text-xs text-muted-foreground capitalize">{job.job_type.replace('-', ' ')} - {new Date(job.created_at).toLocaleDateString()}</p>
+            <p className="text-xs text-muted-foreground">{KNOWN_JOB_TYPES.includes(job.job_type) ? t(`job_type.${job.job_type}`) : job.job_type} - {new Date(job.created_at).toLocaleDateString()}</p>
 
             {job.description && <p className="text-sm whitespace-pre-wrap">{job.description}</p>}
 
@@ -220,8 +216,9 @@ export default function WorkerJobDetailPage() {
                     const missing = job.missing_docs.includes(d);
                     return (
                       <li key={d} className="text-sm flex items-center gap-2">
-                        <span className={missing ? 'text-error' : 'text-green-700'}>{missing ? 'x' : 'OK'}</span>
-                        <span>{DOC_LABELS[d] ?? d}</span>
+                        <span className={missing ? 'text-error' : 'text-green-700'} aria-hidden="true">{missing ? '✗' : '✓'}</span>
+                        <span className="sr-only">{missing ? t('doc_missing') : t('doc_ok')}</span>
+                        <span>{KNOWN_DOC_TYPES.includes(d) ? t(`doc_labels.${d}`) : d}</span>
                       </li>
                     );
                   })}
