@@ -17,7 +17,7 @@ interface WebApplyButtonProps {
  * its own.
  */
 export function WebApplyButton({ jobId, shareCode, label }: WebApplyButtonProps) {
-  const params = new URLSearchParams({ returnTo: `/worker/jobs/${jobId}` });
+  const params = new URLSearchParams({ job: jobId });
   if (shareCode) params.set('share', shareCode);
 
   return (
