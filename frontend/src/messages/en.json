@@ -837,6 +837,7 @@
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
     "apply_button": "Apply on WhatsApp",
+    "apply_web": "Apply on the website",
     "apply_loading": "Opening WhatsApp...",
     "apply_error": "Something went wrong. Please try again.",
     "apply_hint": "You'll finish applying on WhatsApp - no app download needed.",

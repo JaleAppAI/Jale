@@ -837,6 +837,7 @@
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta de seguro social / ITIN",
     "apply_button": "Postularse por WhatsApp",
+    "apply_web": "Postularme en el sitio web",
     "apply_loading": "Abriendo WhatsApp...",
     "apply_error": "Algo salio mal. Intenta de nuevo.",
     "apply_hint": "Terminaras tu postulacion en WhatsApp - no necesitas descargar ninguna app.",
