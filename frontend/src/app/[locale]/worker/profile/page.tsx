@@ -9,6 +9,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Button } from '@/components/ui/button';
+import { PageSkeleton } from '@/components/ui/PageSkeleton';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
 import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
@@ -90,8 +91,9 @@ export default function WorkerProfilePage() {
   if (error) {
     return (
       <AppShell role="worker" title={t('title')}>
-        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+        <main className="flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center gap-3 px-4">
           <p className="text-sm text-error">{error}</p>
+          <Button variant="outline" onClick={() => { setError(null); loadAll(); }}>{tCommon('retry')}</Button>
         </main>
       </AppShell>
     );
@@ -99,8 +101,8 @@ export default function WorkerProfilePage() {
   if (!profile) {
     return (
       <AppShell role="worker" title={t('title')}>
-        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-          <p className="text-sm text-muted">{tCommon('loading')}</p>
+        <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+          <PageSkeleton label={tCommon('loading')} />
         </main>
       </AppShell>
     );

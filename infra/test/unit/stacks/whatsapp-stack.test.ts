@@ -28,6 +28,13 @@ describe('WhatsAppStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
     });
+    const ai = new AiStack(app, 'TestAiStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
       employerPool: auth.employerPool,
@@ -35,14 +42,8 @@ describe('WhatsAppStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
-    });
-    const ai = new AiStack(app, 'TestAiStack', {
-      vpc: network.vpc,
-      privateSubnets: network.privateSubnets,
-      lambdaSg: network.lambdaSg,
-      aiDbSecret: database.aiDbSecret,
-      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
     });
     // LegalStack must be instantiated to satisfy CDK validation: the
     // DualAuthorizer is created in ApiStack but only "attached to a RestApi"
@@ -64,6 +65,7 @@ describe('WhatsAppStack', () => {
       workerPool: auth.workerPool,
       api: api.api,
       questionGeneratorFn: ai.questionGeneratorFn.function,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
@@ -810,7 +812,19 @@ describe('event-driven outbox wake queues', () => {
           Variables: Match.objectLike({
             TRUST_PIPELINE_STATE_MACHINE_ARN: Match.anyValue(),
             QUESTION_GENERATOR_ARN: Match.anyValue(),
+            ALIAS_GENERATOR_ARN: Match.anyValue(),
             TRUST_ASSESSMENT_QUEUE_URL: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    test('ai-profile-writer Lambda has ALIAS_GENERATOR_ARN env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('ai-profile-writer'),
+        Environment: {
+          Variables: Match.objectLike({
+            ALIAS_GENERATOR_ARN: Match.anyValue(),
           }),
         },
       });
@@ -868,6 +882,13 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
     });
+    const ai = new AiStack(app, 'TestAiStackV2Transport', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
     const api = new ApiStack(app, 'TestApiStackV2Transport', {
       workerPool: auth.workerPool,
       employerPool: auth.employerPool,
@@ -875,14 +896,8 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
-    });
-    const ai = new AiStack(app, 'TestAiStackV2Transport', {
-      vpc: network.vpc,
-      privateSubnets: network.privateSubnets,
-      lambdaSg: network.lambdaSg,
-      aiDbSecret: database.aiDbSecret,
-      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
     });
     new LegalStack(app, 'TestLegalStackV2Transport', {
       vpc: network.vpc,
@@ -900,6 +915,7 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       workerPool: auth.workerPool,
       api: api.api,
       questionGeneratorFn: ai.questionGeneratorFn.function,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',

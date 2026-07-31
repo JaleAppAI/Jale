@@ -3,6 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { setWorkerCoordinates } from '../lib/location';
 import { checkCompliance } from '../legal/check-compliance';
+import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
 
 const CORS_HEADERS = corsHeaders();
 const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
@@ -248,6 +249,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     await client.query('COMMIT');
+
+    // Fire-and-forget: grows the bilingual trade-alias cache for the matcher.
+    // requestTradeAliasGeneration never throws by contract; the try/catch here
+    // is defense in depth so this can never affect the response either way.
+    if (main_trade === 'other' && normalizedTradeOther) {
+      try {
+        await requestTradeAliasGeneration(normalizedTradeOther);
+      } catch {
+        // Swallowed intentionally -- see comment above.
+      }
+    }
 
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(profile) };
   } catch (err) {

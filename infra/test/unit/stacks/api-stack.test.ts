@@ -5,6 +5,7 @@ import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
+import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { BillingStack } from '../../../lib/stacks/billing-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
@@ -33,6 +34,13 @@ describe('ApiStack', () => {
       dbSecret: database.dbSecret,
     });
     const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
+    const ai = new AiStack(app, 'TestAiStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
       employerPool: auth.employerPool,
@@ -41,6 +49,7 @@ describe('ApiStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
       employerCandidateRerankQueue,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     // LegalStack must be created so the dual authorizer is attached to a method
@@ -304,6 +313,17 @@ describe('ApiStack', () => {
   test('Worker profile update Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Worker profile update endpoint',
+    });
+  });
+
+  test('Worker profile update Lambda has ALIAS_GENERATOR_ARN env var', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker profile update endpoint',
+      Environment: {
+        Variables: Match.objectLike({
+          ALIAS_GENERATOR_ARN: Match.anyValue(),
+        }),
+      },
     });
   });
 
@@ -589,6 +609,13 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       dbSecret: database.dbSecret,
     });
     const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
+    const ai = new AiStack(app, 'TestAiStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
     phase1Api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
       employerPool: auth.employerPool,
@@ -597,6 +624,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
       employerCandidateRerankQueue,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     // LegalStack attaches the dual authorizer to a method; without it the
@@ -673,6 +701,13 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
         dbSecret: database.dbSecret,
       });
       const employerCandidateRerankQueue = new sqs.Queue(network, 'EmployerCandidateRerankQueue');
+      const ai = new AiStack(app, 'TestAiStack', {
+        vpc: network.vpc,
+        privateSubnets: network.privateSubnets,
+        lambdaSg: network.lambdaSg,
+        aiDbSecret: database.aiDbSecret,
+        alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+      });
       const envApi = new ApiStack(app, 'TestApiStack', {
         workerPool: auth.workerPool,
         employerPool: auth.employerPool,
@@ -681,6 +716,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
         lambdaSg: network.lambdaSg,
         dbSecret: database.dbSecret,
         employerCandidateRerankQueue,
+        aliasGeneratorFn: ai.aliasGeneratorFn.function,
         whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
       });
       expect(envApi.workerJobResource).toBeUndefined();

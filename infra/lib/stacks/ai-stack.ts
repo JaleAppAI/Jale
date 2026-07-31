@@ -29,6 +29,7 @@ export interface AiStackProps extends cdk.StackProps {
 
 export interface AiStackOutputs {
   readonly questionGeneratorFn: JaleLambdaFunction;
+  readonly aliasGeneratorFn: JaleLambdaFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
 }
 
@@ -45,6 +46,7 @@ function bedrockArns(region: string, account: string): string[] {
 
 export class AiStack extends cdk.Stack implements AiStackOutputs {
   public readonly questionGeneratorFn: JaleLambdaFunction;
+  public readonly aliasGeneratorFn: JaleLambdaFunction;
   public readonly trustAssessmentQueue: sqs.IQueue;
 
   constructor(scope: Construct, id: string, props: AiStackProps) {
@@ -116,6 +118,26 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
     });
     props.aiDbSecret.grantRead(this.questionGeneratorFn.function);
     this.questionGeneratorFn.function.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: bedrockArns(region, account),
+      }),
+    );
+
+    this.aliasGeneratorFn = new JaleLambdaFunction(this, 'AliasGeneratorLambda', {
+      entry: path.join(__dirname, '../../lambda/ai/alias-generator.ts'),
+      description: 'Bedrock bilingual alias generator for trades',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      timeout: 30,
+      environment: {
+        DB_SECRET_ARN: props.aiDbSecret.secretName,
+        BEDROCK_MODEL_ID,
+      },
+      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
+    });
+    props.aiDbSecret.grantRead(this.aliasGeneratorFn.function);
+    this.aliasGeneratorFn.function.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
         resources: bedrockArns(region, account),

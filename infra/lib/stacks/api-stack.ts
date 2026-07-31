@@ -4,6 +4,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
@@ -20,6 +21,7 @@ export interface ApiStackProps extends cdk.StackProps {
   readonly dbSecret: secretsmanager.ISecret;
   readonly candidateMaterializationQueue?: sqs.IQueue;
   readonly employerCandidateRerankQueue?: sqs.IQueue;
+  readonly aliasGeneratorFn: lambda.IFunction;
   /**
    * Exact public Twilio WhatsApp delivery-status callback URL. Required —
    * the employer-conversations Lambdas send WhatsApp messages and must set
@@ -498,9 +500,11 @@ export class ApiStack extends cdk.Stack {
         DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
       },
     });
     props.dbSecret.grantRead(workerProfileUpdateLambda.function);
+    props.aliasGeneratorFn.grantInvoke(workerProfileUpdateLambda.function);
 
     // ── IAM: Cognito permissions for auth Lambdas ──
     // Scoped to the two pool ARNs to respect least privilege.

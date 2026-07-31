@@ -7,6 +7,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Button } from '@/components/ui/button';
+import { PageSkeleton } from '@/components/ui/PageSkeleton';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -80,8 +81,9 @@ export default function EmployerProfilePage() {
     if (error) {
         return (
             <AppShell role="employer" title={tNav('nav.settings')}>
-                <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
+                <main className="flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center gap-3 px-4">
                     <p className="text-sm text-error">{error}</p>
+                    <Button variant="outline" onClick={() => { setError(null); loadProfile(); }}>{tCommon('retry')}</Button>
                 </main>
             </AppShell>
         );
@@ -89,8 +91,8 @@ export default function EmployerProfilePage() {
     if (!profile) {
         return (
             <AppShell role="employer" title={tNav('nav.settings')}>
-                <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-                    <p className="text-sm text-muted">{tCommon('loading')}</p>
+                <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+                    <PageSkeleton label={tCommon('loading')} />
                 </main>
             </AppShell>
         );
