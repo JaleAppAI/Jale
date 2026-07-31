@@ -229,6 +229,63 @@ describe('ReferralsStack', () => {
     });
   });
 
+  test('worker-referral-claim Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker referral claim endpoint',
+    });
+  });
+
+  test('POST /worker/referrals/claim is protected by WorkerAuthorizer', () => {
+    expect(authorizationTypeForLambda('Worker referral claim endpoint')).toBe('COGNITO_USER_POOLS');
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
+  test('worker-referral-claim Lambda uses the app DB secret, not the referrals secret', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Worker referral claim endpoint' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('DB_SECRET_ARN');
+    expect(env).toHaveProperty('REQUIRED_TOS_VERSION');
+    expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
+  });
+
+  test('claim resource hangs off the existing /worker/referrals node', () => {
+    function allResources(): Record<string, any> {
+      return apiTemplate.findResources('AWS::ApiGateway::Resource');
+    }
+    function childrenOf(parentLogicalId: string, pathPart?: string): Array<[string, any]> {
+      return Object.entries(allResources()).filter(([, res]) => {
+        const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+        if (parentRef !== parentLogicalId) return false;
+        return pathPart === undefined || res.Properties?.PathPart === pathPart;
+      });
+    }
+    const apis = apiTemplate.findResources('AWS::ApiGateway::RestApi');
+    const apiIds = Object.keys(apis);
+    expect(apiIds).toHaveLength(1);
+    const rootId = apiIds[0];
+
+    const workerChildren = childrenOf(rootId, 'worker');
+    expect(workerChildren).toHaveLength(1);
+    const [workerLogicalId] = workerChildren[0];
+
+    const referralsChildren = childrenOf(workerLogicalId, 'referrals');
+    expect(referralsChildren).toHaveLength(1);
+    const [referralsLogicalId] = referralsChildren[0];
+
+    const claimChildren = childrenOf(referralsLogicalId, 'claim');
+    expect(claimChildren).toHaveLength(1);
+  });
+
   test('PATCH /employer/jobs/{jobId}/public-listing is protected by EmployerAuthorizer', () => {
     expect(authorizationTypeForLambda('Employer opt-in toggle for the public job page')).toBe('COGNITO_USER_POOLS');
     apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
