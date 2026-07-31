@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { normalizeProfession } from './profession';
 
 export interface WorkerMatchProfile {
   id: string;
@@ -10,6 +11,13 @@ export interface WorkerMatchProfile {
   profile_location: string | null;
   latitude: string | number | null;
   longitude: string | number | null;
+  /** Loaded alongside the profile row (single-query consolidation) so
+   * scoring/alias-lookup never needs a second round trip. */
+  worker_skills?: string[] | null;
+  /** `COALESCE(latest_job_id, first_job_id)` from `worker_attribution`,
+   * loaded via LEFT JOIN on the same query. Null when the worker has no
+   * referral attribution on record. */
+  attributed_job_id?: string | null;
 }
 
 export interface MatchableJobRow {
@@ -86,6 +94,34 @@ export interface ListMatchedJobsOptions {
   jobType?: string;
 }
 
+/** A row from `trade_aliases` (migration 060) -- the self-growing bilingual
+ * trade-alias cache. `aliases` and both canonical names are stored
+ * pre-normalized via `normalizeProfession()`. */
+export interface TradeAliasRow {
+  trade_key: string;
+  canonical_en: string;
+  canonical_es: string;
+  aliases: string[];
+  trade_category: string | null;
+}
+
+/** Resolved profession-matching inputs for ONE worker, computed once per
+ * `listMatchedJobsForWorker` call and threaded through as a plain parameter
+ * object so `scoreJobCandidate`/`scoreProfession` stay pure (no DB access). */
+export interface WorkerProfessionContext {
+  /** Full term pool (legacy fallback terms UNION strongTerms) used only by
+   * the substring/hit-counting fallback rule -- unchanged from before this
+   * task, so a `trade_aliases` cache miss/failure degrades exactly to the
+   * old behavior. */
+  terms: string[];
+  /** Terms confirmed by an actual matched `trade_aliases` row (its aliases
+   * and canonical names). Only THESE are eligible for the length >= 4
+   * whole-phrase upgrade to a full score -- a generic free-text word that
+   * merely split out of unmatched input is not a confirmed signal. */
+  strongTerms: string[];
+  categories: string[];
+}
+
 const PROFESSION_ALIASES: Record<string, string[]> = {
   electrician: ['electrician', 'electrical', 'wire', 'wiring', 'panel', 'journeyman'],
   plumber: ['plumber', 'plumbing', 'pipe', 'pipes', 'fixture', 'fixtures'],
@@ -101,6 +137,7 @@ const TRADE_TO_PROFESSION: Record<string, string> = {
   carpenter: 'carpenter',
   concrete: 'concrete',
   painting: 'painting',
+  drywall: 'drywall',
 };
 
 export function extractZip(value: string | null | undefined): string | null {
@@ -108,8 +145,13 @@ export function extractZip(value: string | null | undefined): string | null {
   return match ? match[0].slice(0, 5) : null;
 }
 
+// Accent-fold (NFD, strip combining marks) BEFORE lowercase/punctuation
+// stripping so accented free text (e.g. worker-entered 'Albanil' with an accent) collapses onto its unaccented
+// form ('albanil') exactly like `normalizeProfession()` in lib/profession.ts.
 function cleanText(value: string | null | undefined): string {
   return (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -143,13 +185,93 @@ function workerProfessionTerms(worker: WorkerMatchProfile): string[] {
   return Array.from(new Set(normalized.split(' ').filter((term) => term.length >= 3)));
 }
 
-function scoreProfession(worker: WorkerMatchProfile, job: MatchableJobRow, reasons: string[]): number {
-  const terms = workerProfessionTerms(worker);
-  if (terms.length === 0) {
+/**
+ * Builds the profession-matching term/category sets for a worker: the
+ * legacy English-only alias terms (always included, so a cache miss/failure
+ * degrades to prior behavior) UNIONED with whatever the bilingual
+ * `trade_aliases` cache resolved (aliases + canonical names + trade_category
+ * of every matched row). Pure -- no DB access; `aliasRows` is looked up by
+ * the caller (see `lookupTradeAliases`).
+ */
+export function buildWorkerProfessionContext(
+  worker: WorkerMatchProfile,
+  aliasRows: TradeAliasRow[] = [],
+): WorkerProfessionContext {
+  const terms = new Set<string>(workerProfessionTerms(worker));
+  const strongTerms = new Set<string>();
+  const categories = new Set<string>();
+
+  // Strict lookup (no `?? worker.main_trade` fallback): only a trade this
+  // repo actually knows how to bridge to a job's enum column resolves here.
+  // An unmapped standardized trade must never silently claim a category
+  // match -- this is the concrete bug the missing 'drywall' entry above was.
+  if (worker.main_trade && worker.main_trade !== 'other') {
+    const category = TRADE_TO_PROFESSION[worker.main_trade];
+    if (category) categories.add(category);
+  }
+
+  for (const row of aliasRows) {
+    for (const alias of row.aliases ?? []) {
+      const cleaned = cleanText(alias);
+      if (cleaned) {
+        terms.add(cleaned);
+        strongTerms.add(cleaned);
+      }
+    }
+    const canonicalEn = cleanText(row.canonical_en);
+    const canonicalEs = cleanText(row.canonical_es);
+    if (canonicalEn) {
+      terms.add(canonicalEn);
+      strongTerms.add(canonicalEn);
+    }
+    if (canonicalEs) {
+      terms.add(canonicalEs);
+      strongTerms.add(canonicalEs);
+    }
+    if (row.trade_category) categories.add(row.trade_category);
+  }
+
+  return {
+    terms: Array.from(terms),
+    strongTerms: Array.from(strongTerms),
+    categories: Array.from(categories),
+  };
+}
+
+/** Whole-phrase (word-boundary-safe) containment check over already-cleaned,
+ * single-spaced text: pads both sides with spaces so a short alias like
+ * "wire" cannot match inside an unrelated longer word. */
+function containsWholePhrase(text: string, phrase: string): boolean {
+  return ` ${text} `.includes(` ${phrase} `);
+}
+
+function scoreProfession(job: MatchableJobRow, context: WorkerProfessionContext, reasons: string[]): number {
+  const { terms, strongTerms, categories } = context;
+  if (terms.length === 0 && categories.length === 0) {
     return 0;
   }
 
+  // (a) True enum-to-enum match: the job's own trade_category is one the
+  // worker resolved to (directly, or via a matched trade_aliases row).
+  if (job.trade_category && categories.includes(job.trade_category)) {
+    reasons.push('profession_exact_or_alias');
+    return 50;
+  }
+
   const jobText = normalizeProfessionText(`${job.title} ${job.trade_category ?? ''} ${job.description ?? ''}`);
+
+  // (b) A single but strong (length >= 4) alias/canonical term CONFIRMED by
+  // a matched trade_aliases row, appearing as a whole word/phrase, is exact
+  // enough on its own to award the full score. Deliberately narrower than
+  // `terms`: on a cache miss/failure `strongTerms` is empty, so this rule
+  // never fires and scoring degrades exactly to rule (c) below (unchanged
+  // legacy behavior).
+  if (strongTerms.some((term) => term.length >= 4 && containsWholePhrase(jobText, term))) {
+    reasons.push('profession_exact_or_alias');
+    return 50;
+  }
+
+  // (c) Legacy fallback: two or more (possibly weak/substring) term hits.
   const hits = terms.filter((term) => jobText.includes(term));
   if (hits.length >= 2) {
     reasons.push('profession_exact_or_alias');
@@ -310,10 +432,11 @@ export function scoreJobCandidate(
   worker: WorkerMatchProfile,
   job: MatchableJobRow,
   now = new Date(),
+  context: WorkerProfessionContext = buildWorkerProfessionContext(worker),
 ): ScoredJobCandidate {
   const reasons: string[] = [];
   const components: MatchComponents = {
-    profession: scoreProfession(worker, job, reasons),
+    profession: scoreProfession(job, context, reasons),
     location: scoreLocation(worker, job, reasons),
     experience: scoreExperience(worker, job, reasons),
     availability: scoreAvailability(worker, job, reasons),
@@ -383,6 +506,68 @@ async function coordinateSelects(
   };
 }
 
+/** Builds the normalized key set used to probe `trade_aliases`: the
+ * worker's own stated trade (main_trade, or main_trade_other when 'other')
+ * PLUS every worker_skills entry -- any of these may independently resolve
+ * to a cached trade row (e.g. a skill of "soldador" resolving the welder
+ * row even when main_trade is unrelated or empty). */
+function buildTradeAliasKeys(worker: WorkerMatchProfile): string[] {
+  const raw: string[] = [];
+  if (worker.main_trade === 'other') {
+    if (worker.main_trade_other) raw.push(worker.main_trade_other);
+  } else if (worker.main_trade) {
+    raw.push(worker.main_trade);
+  }
+  for (const skill of worker.worker_skills ?? []) {
+    if (skill) raw.push(skill);
+  }
+  return Array.from(new Set(raw.map((term) => normalizeProfession(term)).filter(Boolean)));
+}
+
+/**
+ * Probes the bilingual `trade_aliases` cache for every row that could
+ * plausibly describe this worker's trade. Guarded end-to-end: a query
+ * failure (or an empty key set) degrades to the legacy English-only
+ * PROFESSION_ALIASES behavior via `buildWorkerProfessionContext`'s default
+ * union -- the jobs list must never 500 because this enhancement failed.
+ */
+async function lookupTradeAliases(client: PoolClient, worker: WorkerMatchProfile): Promise<TradeAliasRow[]> {
+  const keys = buildTradeAliasKeys(worker);
+  if (keys.length === 0) {
+    return [];
+  }
+
+  try {
+    const result = await client.query<TradeAliasRow>(
+      `SELECT trade_key, canonical_en, canonical_es, aliases, trade_category
+         FROM trade_aliases
+        WHERE trade_key = ANY($1::text[]) OR aliases && $1::text[]`,
+      [keys],
+    );
+    return result.rows;
+  } catch (err) {
+    console.warn(JSON.stringify({
+      metric: 'TradeAliasLookupFailed',
+      reason: (err as { name?: string })?.name ?? 'unknown_error',
+    }));
+    return [];
+  }
+}
+
+// Shared eligibility predicate fragment: used by BOTH the main candidate
+// listing query and the referral-pin fallback fetch below so they can never
+// diverge (a prior version hand-copied this into the pin fetch).
+const JOB_ELIGIBLE_STATUS = `j.status = 'active'`;
+
+function jobNotAppliedPredicate(workerIdParam: string): string {
+  return `NOT EXISTS (
+       SELECT 1
+         FROM job_applications ja
+        WHERE ja.job_id = j.id
+          AND ja.worker_id = ${workerIdParam}
+     )`;
+}
+
 export async function listMatchedJobsForWorker(
   client: PoolClient,
   workerId: string,
@@ -398,9 +583,14 @@ export async function listMatchedJobsForWorker(
             u.city,
             wp.location AS profile_location,
             ${workerCoordinates.latitude} AS latitude,
-            ${workerCoordinates.longitude} AS longitude
+            ${workerCoordinates.longitude} AS longitude,
+            (SELECT COALESCE(array_agg(ws.skill), '{}'::text[])
+               FROM worker_skills ws
+              WHERE ws.worker_id = u.id) AS worker_skills,
+            COALESCE(wa.latest_job_id, wa.first_job_id) AS attributed_job_id
        FROM users u
        LEFT JOIN worker_profiles wp ON wp.user_id = u.id
+       LEFT JOIN worker_attribution wa ON wa.worker_id = u.id
       WHERE u.id = $1
         AND u.user_type = 'worker'`,
     [workerId],
@@ -410,23 +600,25 @@ export async function listMatchedJobsForWorker(
     return [];
   }
 
+  const aliasRows = await lookupTradeAliases(client, worker);
+  const professionContext = buildWorkerProfessionContext(worker, aliasRows);
+
   const params: unknown[] = [workerId];
-  const filters = [
-    `j.status = 'active'`,
-    `NOT EXISTS (
-       SELECT 1
-         FROM job_applications ja
-        WHERE ja.job_id = j.id
-          AND ja.worker_id = $1
-     )`,
-  ];
+  const filters = [JOB_ELIGIBLE_STATUS, jobNotAppliedPredicate('$1')];
+
+  // Single source of truth for "is this list filtered": set exactly where
+  // each filter clause is added, instead of re-deriving the same condition
+  // separately below (a prior version could silently drift from this).
+  let isFiltered = false;
 
   if (options.search?.trim()) {
+    isFiltered = true;
     params.push(`%${options.search.trim()}%`);
     filters.push(`(j.title ILIKE $${params.length} OR j.description ILIKE $${params.length} OR j.location ILIKE $${params.length})`);
   }
 
   if (options.jobType?.trim()) {
+    isFiltered = true;
     params.push(options.jobType.trim());
     filters.push(`j.job_type = $${params.length}`);
   }
@@ -446,12 +638,11 @@ export async function listMatchedJobsForWorker(
   );
 
   const ranked = jobsResult.rows
-    .map((job) => scoreJobCandidate(worker, job))
+    .map((job) => scoreJobCandidate(worker, job, undefined, professionContext))
     .filter((job) => !workerHasProfessionData(worker) || job.match_components.profession > 0)
     .sort((a, b) => b.match_score - a.match_score || new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id.localeCompare(a.id));
 
-  const isFiltered = Boolean(options.search?.trim() || options.jobType?.trim());
-  const pinned = isFiltered ? null : await referredJobPin(client, worker, workerId, ranked, jobCoordinates);
+  const pinned = isFiltered ? null : await referredJobPin(client, worker, ranked, jobCoordinates, professionContext);
   const listed = pinned ? [pinned, ...ranked.filter((job) => job.id !== pinned.id)] : ranked;
 
   return listed
@@ -485,6 +676,16 @@ function matchableJobColumns(jobCoordinates: { latitude: string; longitude: stri
             ${jobCoordinates.longitude} AS longitude`;
 }
 
+/** Explicitly rewrites BOTH `match_reasons` and `reasons` (rather than
+ * mutating one and relying on `scoreJobCandidate` having handed back a
+ * shared array reference) so a future refactor of that internal sharing
+ * can't silently drop the pin reason from one of the two fields. Prepended
+ * (not appended) -- the frontend renders only the first 3 reasons. */
+function withReferredReason(job: ScoredJobCandidate): ScoredJobCandidate {
+  const reasons = ['referred_job', ...job.match_reasons];
+  return { ...job, match_reasons: reasons, reasons };
+}
+
 /**
  * The job a worker was referred to must never be hidden by match scoring: a
  * referred worker arrived FOR that job, but the profession filter above knows
@@ -492,49 +693,48 @@ function matchableJobColumns(jobCoordinates: { latitude: string; longitude: stri
  * friend sent them). Pins the attributed job to the top of an unfiltered
  * list while it is still active and unapplied; any miss falls through to the
  * ranked list unchanged.
+ *
+ * `worker.attributed_job_id` is already loaded (single consolidated worker
+ * query) -- this function makes AT MOST one more query, and only when the
+ * referred job isn't already present in `ranked`. Guarded end-to-end: any
+ * failure here degrades to "no pin", never breaks the jobs list.
  */
 async function referredJobPin(
   client: PoolClient,
   worker: WorkerMatchProfile,
-  workerId: string,
   ranked: ScoredJobCandidate[],
   jobCoordinates: { latitude: string; longitude: string },
+  professionContext: WorkerProfessionContext,
 ): Promise<ScoredJobCandidate | null> {
-  const attribution = await client.query<{ job_id: string | null }>(
-    `SELECT COALESCE(latest_job_id, first_job_id) AS job_id
-       FROM worker_attribution
-      WHERE worker_id = $1`,
-    [workerId],
-  );
-  const referredJobId = attribution.rows[0]?.job_id;
+  const referredJobId = worker.attributed_job_id;
   if (!referredJobId) {
     return null;
   }
 
-  const alreadyRanked = ranked.find((job) => job.id === referredJobId);
-  if (alreadyRanked) {
-    alreadyRanked.match_reasons.push('referred_job');
-    return alreadyRanked;
-  }
+  try {
+    const alreadyRanked = ranked.find((job) => job.id === referredJobId);
+    if (alreadyRanked) {
+      return withReferredReason(alreadyRanked);
+    }
 
-  const jobResult = await client.query<MatchableJobRow>(
-    `SELECT ${matchableJobColumns(jobCoordinates)}
-       FROM jobs j
-      WHERE j.id = $2
-        AND j.status = 'active'
-        AND NOT EXISTS (
-          SELECT 1
-            FROM job_applications ja
-           WHERE ja.job_id = j.id
-             AND ja.worker_id = $1
-        )`,
-    [workerId, referredJobId],
-  );
-  if (jobResult.rows.length === 0) {
+    const jobResult = await client.query<MatchableJobRow>(
+      `SELECT ${matchableJobColumns(jobCoordinates)}
+         FROM jobs j
+        WHERE j.id = $2
+          AND ${JOB_ELIGIBLE_STATUS}
+          AND ${jobNotAppliedPredicate('$1')}`,
+      [worker.id, referredJobId],
+    );
+    if (jobResult.rows.length === 0) {
+      return null;
+    }
+
+    return withReferredReason(scoreJobCandidate(worker, jobResult.rows[0], undefined, professionContext));
+  } catch (err) {
+    console.warn(JSON.stringify({
+      metric: 'ReferredJobPinFailed',
+      reason: (err as { name?: string })?.name ?? 'unknown_error',
+    }));
     return null;
   }
-
-  const scored = scoreJobCandidate(worker, jobResult.rows[0]);
-  scored.match_reasons.push('referred_job');
-  return scored;
 }

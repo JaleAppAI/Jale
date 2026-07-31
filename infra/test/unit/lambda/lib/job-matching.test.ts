@@ -1,9 +1,120 @@
 import {
+  buildWorkerProfessionContext,
   extractZip,
   listMatchedJobsForWorker,
   normalizeProfessionText,
   scoreJobCandidate,
+  type MatchableJobRow,
+  type TradeAliasRow,
+  type WorkerMatchProfile,
 } from '../../../../lambda/lib/job-matching';
+
+// ── Dispatching query mock ──────────────────────────────────────────────
+//
+// Review finding: positional `mockResolvedValueOnce` chains break every time
+// a query is added/removed/reordered. Routes match on a SQL substring (and
+// optionally params), so tests stay valid regardless of call order/count.
+
+type QueryRoute = {
+  test: (sql: string, params: unknown[]) => boolean;
+  handler: (sql: string, params: unknown[]) => { rows: unknown[] } | Promise<{ rows: unknown[] }>;
+};
+
+function buildQuery(routes: QueryRoute[]): jest.Mock {
+  return jest.fn((sql: string, params: unknown[] = []) => {
+    for (const route of routes) {
+      if (route.test(sql, params)) {
+        return route.handler(sql, params);
+      }
+    }
+    return { rows: [] };
+  });
+}
+
+/** `coordinateSelects` -- identical SQL for both `worker_profiles` and
+ * `jobs`, distinguished only by the table-name param. Defaults to "no
+ * lat/lon columns" (NULL::numeric fallback) for every table unless
+ * overridden. */
+function coordinateColumnsRoute(hasCoords: Partial<Record<'worker_profiles' | 'jobs', boolean>> = {}): QueryRoute {
+  return {
+    test: (sql) => /FROM information_schema\.columns/.test(sql),
+    handler: (_sql, params) => {
+      const table = params[0] as 'worker_profiles' | 'jobs';
+      return { rows: hasCoords[table] ? [{ column_name: 'latitude' }, { column_name: 'longitude' }] : [] };
+    },
+  };
+}
+
+function workerRoute(row: Record<string, unknown> | null): QueryRoute {
+  return {
+    test: (sql) => /FROM users u/.test(sql),
+    handler: () => ({ rows: row ? [row] : [] }),
+  };
+}
+
+function tradeAliasesRoute(rowsOrError: TradeAliasRow[] | Error): QueryRoute {
+  return {
+    test: (sql) => /FROM trade_aliases/.test(sql),
+    handler: () => {
+      if (rowsOrError instanceof Error) {
+        throw rowsOrError;
+      }
+      return { rows: rowsOrError };
+    },
+  };
+}
+
+function jobsListRoute(rows: Record<string, unknown>[]): QueryRoute {
+  return {
+    test: (sql) => /FROM jobs j/.test(sql) && /ORDER BY j\.created_at/.test(sql),
+    handler: () => ({ rows }),
+  };
+}
+
+function pinFetchRoute(rows: Record<string, unknown>[]): QueryRoute {
+  return {
+    test: (sql) => /FROM jobs j/.test(sql) && /j\.id = \$2/.test(sql),
+    handler: () => ({ rows }),
+  };
+}
+
+function findCall(query: jest.Mock, pattern: RegExp): [string, unknown[]] | undefined {
+  return query.mock.calls.find(([sql]) => pattern.test(sql)) as [string, unknown[]] | undefined;
+}
+
+function worker(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: 'worker-1',
+    main_trade: 'other',
+    main_trade_other: 'Drywaller',
+    years_experience: '5-9',
+    availability: 'weekends',
+    city: '79928',
+    profile_location: '79928',
+    latitude: null,
+    longitude: null,
+    worker_skills: [],
+    attributed_job_id: null,
+    ...overrides,
+  };
+}
+
+function job(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    id: 'job-1',
+    title: 'Generic Job',
+    company: 'Jale',
+    location: 'El Paso, TX 79928',
+    pay: '$25/hr',
+    job_type: 'full-time',
+    description: '',
+    required_docs: [],
+    created_at: new Date('2026-05-14T12:00:00Z'),
+    latitude: null,
+    longitude: null,
+    ...overrides,
+  };
+}
 
 describe('job-matching pure scoring', () => {
   const now = new Date('2026-05-14T12:00:00Z');
@@ -21,7 +132,7 @@ describe('job-matching pure scoring', () => {
   });
 
   it('ranks same profession and same zip above unrelated nearby jobs', () => {
-    const worker = {
+    const w: WorkerMatchProfile = {
       id: 'worker-1',
       main_trade: 'other',
       main_trade_other: 'Drywaller',
@@ -33,7 +144,7 @@ describe('job-matching pure scoring', () => {
       longitude: null,
     };
 
-    const drywallNearby = scoreJobCandidate(worker, {
+    const drywallNearby = scoreJobCandidate(w, {
       id: 'job-1',
       title: 'Drywall Finisher',
       company: 'Finish Builders',
@@ -46,7 +157,7 @@ describe('job-matching pure scoring', () => {
       longitude: null,
     }, now);
 
-    const plumberNearby = scoreJobCandidate(worker, {
+    const plumberNearby = scoreJobCandidate(w, {
       id: 'job-2',
       title: 'Plumber Helper',
       company: 'Pipe Co',
@@ -66,7 +177,7 @@ describe('job-matching pure scoring', () => {
   });
 
   it('uses coordinates when both worker and job have them', () => {
-    const worker = {
+    const w: WorkerMatchProfile = {
       id: 'worker-1',
       main_trade: 'electrician',
       main_trade_other: null,
@@ -78,7 +189,7 @@ describe('job-matching pure scoring', () => {
       longitude: '-106.1908',
     };
 
-    const result = scoreJobCandidate(worker, {
+    const result = scoreJobCandidate(w, {
       id: 'job-3',
       title: 'Electrician Apprentice',
       company: 'Wire Co',
@@ -96,7 +207,7 @@ describe('job-matching pure scoring', () => {
   });
 
   it('filters out location-only matches when the worker has profession data', async () => {
-    const worker = {
+    const w: WorkerMatchProfile = {
       id: 'worker-1',
       main_trade: 'other',
       main_trade_other: 'Drywaller',
@@ -108,7 +219,7 @@ describe('job-matching pure scoring', () => {
       longitude: null,
     };
 
-    const unrelatedNearby = scoreJobCandidate(worker, {
+    const unrelatedNearby = scoreJobCandidate(w, {
       id: 'job-plumber',
       title: 'Plumber Helper',
       company: 'Pipe Co',
@@ -124,39 +235,100 @@ describe('job-matching pure scoring', () => {
     expect(unrelatedNearby.components.profession).toBe(0);
   });
 
+  it('awards a full profession score on a true enum-to-enum trade_category match with no shared words', () => {
+    const w: WorkerMatchProfile = {
+      id: 'worker-1',
+      main_trade: 'carpenter',
+      main_trade_other: null,
+      years_experience: '5-9',
+      availability: 'full_time',
+      city: '79928',
+      profile_location: '79928',
+      latitude: null,
+      longitude: null,
+    };
+
+    const result = scoreJobCandidate(w, {
+      id: 'job-carpenter',
+      title: 'Site Crew Position #4471',
+      company: 'Acme',
+      location: '79928',
+      pay: '$28/hr',
+      job_type: 'full-time',
+      description: 'General labor at a residential build site.',
+      trade_category: 'carpenter',
+      created_at: now,
+      latitude: null,
+      longitude: null,
+    } as MatchableJobRow, now);
+
+    expect(result.components.profession).toBe(50);
+    expect(result.reasons).toContain('profession_exact_or_alias');
+  });
+
+  it('regression: TRADE_TO_PROFESSION maps drywall so the enum-to-enum path works for it too', () => {
+    const w: WorkerMatchProfile = {
+      id: 'worker-1',
+      main_trade: 'drywall',
+      main_trade_other: null,
+      years_experience: '5-9',
+      availability: 'full_time',
+      city: '79928',
+      profile_location: '79928',
+      latitude: null,
+      longitude: null,
+    };
+
+    const result = scoreJobCandidate(w, {
+      id: 'job-drywall',
+      title: 'Site Crew Position #9912',
+      company: 'Acme',
+      location: '79928',
+      pay: '$28/hr',
+      job_type: 'full-time',
+      description: 'General labor at a residential build site.',
+      trade_category: 'drywall',
+      created_at: now,
+      latitude: null,
+      longitude: null,
+    } as MatchableJobRow, now);
+
+    expect(result.components.profession).toBe(50);
+  });
+
+  it('buildWorkerProfessionContext keeps strongTerms empty on an alias-cache miss (no unwarranted whole-word upgrade)', () => {
+    const w: WorkerMatchProfile = {
+      id: 'worker-1',
+      main_trade: 'other',
+      main_trade_other: 'Roofer',
+      years_experience: '2-4',
+      availability: 'weekends',
+      city: '79928',
+      profile_location: '79928',
+      latitude: null,
+      longitude: null,
+    };
+
+    const context = buildWorkerProfessionContext(w, []);
+    expect(context.strongTerms).toEqual([]);
+    expect(context.terms).toContain('roofer');
+  });
+});
+
+describe('listMatchedJobsForWorker', () => {
   it('lists matches when optional coordinate columns are absent', async () => {
-    const query = jest.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'worker-1',
-          main_trade: 'other',
-          main_trade_other: 'Drywaller',
-          years_experience: '5-9',
-          availability: 'weekends',
-          city: '79928',
-          profile_location: '79928',
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'job-1',
-          title: 'Drywall Profile Match Crew',
-          company: 'Jale Profile Match Fixtures',
-          location: 'El Paso, TX 79928',
-          pay: '$30/hr',
-          job_type: 'contract',
-          description: 'Drywall hanging, taping, and texture project.',
-          required_docs: [],
-          created_at: now,
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] });
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ availability: 'weekends' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([job({
+        id: 'job-1',
+        title: 'Drywall Profile Match Crew',
+        company: 'Jale Profile Match Fixtures',
+        description: 'Drywall hanging, taping, and texture project.',
+        job_type: 'contract',
+      })]),
+    ]);
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -164,64 +336,40 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'api' },
     );
 
-    expect(query).toHaveBeenCalledTimes(5);
-    expect(query.mock.calls[1][0]).toContain('NULL::numeric AS latitude');
-    expect(query.mock.calls[1][0]).toContain('NULL::numeric AS longitude');
-    expect(query.mock.calls[3][0]).toContain('NULL::numeric AS latitude');
-    expect(query.mock.calls[3][0]).toContain('NULL::numeric AS longitude');
+    const workerCall = findCall(query, /FROM users u/);
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(workerCall?.[0]).toContain('NULL::numeric AS latitude');
+    expect(workerCall?.[0]).toContain('NULL::numeric AS longitude');
+    expect(jobsCall?.[0]).toContain('NULL::numeric AS latitude');
+    expect(jobsCall?.[0]).toContain('NULL::numeric AS longitude');
     expect(result).toHaveLength(1);
     expect(result[0].title).toBe('Drywall Profile Match Crew');
     expect(result[0].match_components.profession).toBeGreaterThan(0);
   });
 
   it('scores a wider candidate window before applying the requested limit', async () => {
-    const newerIrrelevantJobs = Array.from({ length: 5 }, (_, index) => ({
+    const now = new Date('2026-05-14T12:00:00Z');
+    const newerIrrelevantJobs = Array.from({ length: 5 }, (_, index) => job({
       id: `job-plumber-${index}`,
       title: `Plumber Helper ${index}`,
       company: 'Pipe Co',
-      location: 'El Paso, TX 79928',
-      pay: '$22/hr',
-      job_type: 'full-time',
       description: 'Pipe runs and fixture installs.',
-      required_docs: [],
       created_at: new Date(now.getTime() - index * 1000),
-      latitude: null,
-      longitude: null,
     }));
-    const olderRelevantJob = {
+    const olderRelevantJob = job({
       id: 'job-drywall-older',
       title: 'Drywall Finisher',
       company: 'Finish Builders',
-      location: 'El Paso, TX 79928',
-      pay: '$30/hr',
-      job_type: 'full-time',
       description: 'Sheetrock hanging, taping, mud, and texture.',
-      required_docs: [],
       created_at: new Date(now.getTime() - 10_000),
-      latitude: null,
-      longitude: null,
-    };
+    });
 
-    const query = jest.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'worker-1',
-          main_trade: 'other',
-          main_trade_other: 'Drywaller',
-          years_experience: '5-9',
-          availability: 'full_time',
-          city: '79928',
-          profile_location: '79928',
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [...newerIrrelevantJobs, olderRelevantJob],
-      })
-      .mockResolvedValueOnce({ rows: [] });
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([...newerIrrelevantJobs, olderRelevantJob]),
+    ]);
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -229,62 +377,29 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'whatsapp' },
     );
 
-    expect(query.mock.calls[3][1]).toContain(50);
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[1]).toContain(50);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('job-drywall-older');
   });
 
   it('pins the referred job even when the profession filter would drop it', async () => {
     // The live gap this guards: a "Soldador" worker referred to a "Welder"
-    // job never saw it in `jobs` — no alias bridges the two, profession
+    // job never saw it in `jobs` -- no alias bridges the two, profession
     // scored 0, and the filter removed it.
-    const query = jest.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'worker-1',
-          main_trade: 'other',
-          main_trade_other: 'Soldador',
-          years_experience: '2-4',
-          availability: 'weekends',
-          city: '79928',
-          profile_location: '79928',
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'job-welder',
-          title: 'Test refer me',
-          company: 'Jale',
-          location: 'El Paso',
-          pay: '$25/hr',
-          job_type: 'full-time',
-          description: 'Welder',
-          required_docs: [],
-          created_at: now,
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [{ job_id: 'job-welder' }] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'job-welder',
-          title: 'Test refer me',
-          company: 'Jale',
-          location: 'El Paso',
-          pay: '$25/hr',
-          job_type: 'full-time',
-          description: 'Welder',
-          required_docs: [],
-          created_at: now,
-          latitude: null,
-          longitude: null,
-        }],
-      });
+    const welderJob = job({
+      id: 'job-welder',
+      title: 'Test refer me',
+      description: 'Welder',
+    });
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: 'job-welder' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+      pinFetchRoute([welderJob]),
+    ]);
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -292,47 +407,26 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'whatsapp' },
     );
 
-    expect(query.mock.calls[4][0]).toContain('worker_attribution');
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('job-welder');
-    expect(result[0].match_reasons).toContain('referred_job');
+    expect(result[0].match_reasons[0]).toBe('referred_job');
   });
 
   it('moves an already-ranked referred job to the top without refetching it', async () => {
-    const drywallJob = (id: string, createdAt: Date) => ({
+    const drywallJob = (id: string, createdAt: Date) => job({
       id,
       title: `Drywall Crew ${id}`,
-      company: 'Finish Builders',
-      location: 'El Paso, TX 79928',
-      pay: '$30/hr',
-      job_type: 'full-time',
       description: 'Sheetrock hanging, taping, mud, and texture.',
-      required_docs: [],
       created_at: createdAt,
-      latitude: null,
-      longitude: null,
     });
 
-    const query = jest.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'worker-1',
-          main_trade: 'other',
-          main_trade_other: 'Drywaller',
-          years_experience: '5-9',
-          availability: 'full_time',
-          city: '79928',
-          profile_location: '79928',
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [drywallJob('job-newer', now), drywallJob('job-referred', new Date(now.getTime() - 10_000))],
-      })
-      .mockResolvedValueOnce({ rows: [{ job_id: 'job-referred' }] });
+    const now = new Date('2026-05-14T12:00:00Z');
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([drywallJob('job-newer', now), drywallJob('job-referred', new Date(now.getTime() - 10_000))]),
+    ]);
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -340,30 +434,21 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'whatsapp' },
     );
 
-    expect(query).toHaveBeenCalledTimes(5);
+    // No pin-fetch query should have run -- the referred job was already
+    // in the ranked candidate set.
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
     expect(result[0].id).toBe('job-referred');
-    expect(result[0].match_reasons).toContain('referred_job');
-    expect(result.map((job) => job.id)).toEqual(['job-referred', 'job-newer']);
+    expect(result[0].match_reasons[0]).toBe('referred_job');
+    expect(result.map((j) => j.id)).toEqual(['job-referred', 'job-newer']);
   });
 
   it('skips the referral pin when the worker searched for something specific', async () => {
-    const query = jest.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'worker-1',
-          main_trade: 'other',
-          main_trade_other: 'Drywaller',
-          years_experience: '5-9',
-          availability: 'full_time',
-          city: '79928',
-          profile_location: '79928',
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] });
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-welder' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -371,31 +456,18 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'whatsapp', search: 'plumber' },
     );
 
-    expect(query).toHaveBeenCalledTimes(4);
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
     expect(result).toHaveLength(0);
   });
 
   it('does not pin a referred job the worker already applied to', async () => {
-    const query = jest.fn()
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({
-        rows: [{
-          id: 'worker-1',
-          main_trade: 'other',
-          main_trade_other: 'Soldador',
-          years_experience: '2-4',
-          availability: 'weekends',
-          city: '79928',
-          profile_location: '79928',
-          latitude: null,
-          longitude: null,
-        }],
-      })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ job_id: 'job-welder' }] })
-      // active + not-applied fetch finds nothing (applied or closed)
-      .mockResolvedValueOnce({ rows: [] });
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: 'job-welder' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+      pinFetchRoute([]), // active + not-applied fetch finds nothing (applied or closed)
+    ]);
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -403,7 +475,131 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'whatsapp' },
     );
 
-    expect(query).toHaveBeenCalledTimes(6);
     expect(result).toHaveLength(0);
+  });
+
+  it('resolves an organic Soldador-to-Welder match via the trade_aliases cache, without any pin', async () => {
+    const welderRow: TradeAliasRow = {
+      trade_key: 'welder',
+      canonical_en: 'Welder',
+      canonical_es: 'Soldador',
+      aliases: ['welder', 'welding', 'weld', 'soldador', 'soldadura'],
+      trade_category: null,
+    };
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: null })),
+      tradeAliasesRoute([welderRow]),
+      jobsListRoute([job({ id: 'job-welder', title: 'Welder needed', description: 'Arc welding for structural steel.' })]),
+    ]);
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].match_components.profession).toBe(50);
+    expect(result[0].match_reasons).not.toContain('referred_job');
+  });
+
+  it('folds accents so "Albañil" resolves the seeded concrete trade_aliases row', async () => {
+    const concreteRow: TradeAliasRow = {
+      trade_key: 'concrete',
+      canonical_en: 'Concrete',
+      canonical_es: 'Concreto',
+      aliases: ['concrete', 'cement', 'concreto', 'cemento', 'albanil', 'rebar', 'formwork', 'finisher'],
+      trade_category: 'concrete',
+    };
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Albañil', attributed_job_id: null })),
+      tradeAliasesRoute([concreteRow]),
+      jobsListRoute([job({ id: 'job-concrete', title: 'Concrete Crew', description: 'Pouring and finishing foundations.' })]),
+    ]);
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    // The real proof the accent actually folded: the trade_aliases lookup
+    // key is the unaccented 'albanil', not the raw 'Albañil' input.
+    const aliasCall = findCall(query, /FROM trade_aliases/);
+    expect(aliasCall?.[1]).toEqual([['albanil']]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].match_components.profession).toBe(50);
+  });
+
+  it('degrades to legacy behavior on a trade_aliases cache miss, without throwing', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade: 'other', main_trade_other: 'Roofer', attributed_job_id: null })),
+      tradeAliasesRoute([]),
+      jobsListRoute([job({ id: 'job-roofer', title: 'Helper wanted', description: 'General site helper, various tasks.' })]),
+    ]);
+
+    await expect(listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    )).resolves.toBeDefined();
+  });
+
+  it('degrades gracefully when the trade_aliases query itself rejects', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: null })),
+      tradeAliasesRoute(new Error('connection reset')),
+      jobsListRoute([job({ id: 'job-welder', title: 'Welder needed', description: 'Arc welding.' })]),
+    ]);
+
+    await expect(listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    )).resolves.toBeDefined();
+  });
+
+  it('resolves a trade via worker_skills even when main_trade is unrelated', async () => {
+    const welderRow: TradeAliasRow = {
+      trade_key: 'welder',
+      canonical_en: 'Welder',
+      canonical_es: 'Soldador',
+      aliases: ['welder', 'welding', 'weld', 'soldador', 'soldadura'],
+      trade_category: null,
+    };
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({
+        main_trade: 'electrician',
+        main_trade_other: null,
+        worker_skills: ['soldador'],
+        attributed_job_id: null,
+      })),
+      tradeAliasesRoute([welderRow]),
+      jobsListRoute([
+        job({ id: 'job-welder', title: 'Welder needed', description: 'Arc welding for structural steel.' }),
+        job({ id: 'job-unrelated', title: 'Front desk clerk', description: 'Answer phones and greet visitors.' }),
+      ]),
+    ]);
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(result.map((j) => j.id)).toEqual(['job-welder']);
+    expect(result[0].match_components.profession).toBe(50);
+
+    const aliasCall = findCall(query, /FROM trade_aliases/);
+    expect(aliasCall?.[1]).toEqual([expect.arrayContaining(['electrician', 'soldador'])]);
   });
 });
