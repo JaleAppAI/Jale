@@ -842,7 +842,13 @@
     "apply_hint": "Terminaras tu postulacion en WhatsApp - no necesitas descargar ninguna app.",
     "closed_title": "Este trabajo ya no acepta postulaciones",
     "closed_body": "Pero hay mas trabajo esperandote en Jale.",
-    "browse_jobs": "Ver mas trabajos en Jale"
+    "browse_jobs": "Ver mas trabajos en Jale",
+    "eyebrow": "Puesto disponible",
+    "referred_banner": "Un amigo te recomendó este trabajo",
+    "requirements": "Lo que necesitas",
+    "experience_chip": "{years, plural, one {#+ año de experiencia} other {#+ años de experiencia}}",
+    "openings_chip": "{count, plural, one {# vacante} other {# vacantes}}",
+    "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores."
   },
   "employer_job_visibility": {
     "title": "Pagina publica del trabajo",
@@ -850,7 +856,10 @@
     "shares": "Se comparte: titulo, empresa, ubicacion, pago y descripcion. Nunca se comparte: tus datos de contacto, tus otros trabajos, ni quienes se postularon.",
     "enabled": "Publica: cualquiera con el enlace puede leer esta oferta",
     "disabled": "Privada: solo trabajadores con sesion en Jale pueden verla",
-    "error": "No se pudo actualizar la visibilidad. Intenta de nuevo."
+    "error": "No se pudo actualizar la visibilidad. Intenta de nuevo.",
+    "link_label": "Enlace público",
+    "copy": "Copiar",
+    "copied": "¡Copiado!"
   },
   "job_share": {
     "title": "Comparte este trabajo",

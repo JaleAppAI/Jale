@@ -66,6 +66,7 @@ const expectedBaselineMigrations = [
   '055_job_conversations_application_index.sql',
   '056_job_referrals.sql',
   '057_job_public_listing_opt_in.sql',
+  '058_referral_open_dedupe_grant.sql',
 ];
 
 function migrationFiles(): string[] {
