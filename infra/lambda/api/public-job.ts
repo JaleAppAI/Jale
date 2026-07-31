@@ -201,11 +201,16 @@ export const handler = async (
       };
     }
 
-    const { id: _internalId, ...publicJob } = job;
+    // `id` IS included here, deliberately, for an active job only -- the
+    // closed view above must never gain it. Any authenticated worker can
+    // already read any active job by UUID (RLS policy jobs_worker_read_active,
+    // migration 007/020b/038), so this leaks nothing new; it's what lets the
+    // post-signup redirect land straight on the existing /worker/jobs/{id}
+    // page with zero new lookup endpoints.
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify(publicJob),
+      body: JSON.stringify(job),
     };
   } catch (err) {
     console.error('public-job error:', errorMessage(err));

@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { apiFetch } from '@/lib/api';
@@ -12,6 +13,7 @@ import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
 import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerVaultDoc, DocType } from '@/lib/api/worker';
+import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/referral-return';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +22,7 @@ const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
 export default function WorkerProfilePage() {
   const { idToken } = useAuth();
   const { handleLegalWall } = useRequireAuth();
+  const router = useRouter();
   const t = useTranslations('worker_profile');
   const tCommon = useTranslations('common');
 
@@ -55,6 +58,18 @@ export default function WorkerProfilePage() {
             years_experience: next.years_experience, location: next.location, bio: next.bio,
             certifications: next.certifications ?? [],
           });
+        }
+
+        // This is the second stop of the web-apply signup journey: the form
+        // sent a fresh signup here (so the typed profile above gets saved)
+        // instead of straight to the job. If a referral is still waiting,
+        // finish the journey now.
+        const referral = readPendingReferral();
+        const jobId = validateJobId(referral?.jobId);
+        if (jobId) {
+          clearPendingReferral();
+          router.push(`/worker/jobs/${jobId}`);
+          return;
         }
       }
     } catch (err) {

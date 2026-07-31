@@ -57,12 +57,14 @@ export interface ReferralsStackProps extends cdk.StackProps {
  *   POST /public/jobs/{code}/apply-intent        → public-job-apply-intent Lambda (UNAUTHENTICATED)
  *   POST /worker/jobs/{jobId}/share               → worker-job-share Lambda (worker auth)
  *   GET  /worker/referrals                       → worker-referrals Lambda (worker auth)
+ *   POST /worker/referrals/claim                 → worker-referral-claim Lambda (worker auth)
  *
  * Secret isolation:
  *   public-job              : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   public-job-apply-intent : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   worker-job-share         : DB_SECRET_ARN (app DB / jale_admin) only
  *   worker-referrals         : DB_SECRET_ARN (app DB / jale_admin) only
+ *   worker-referral-claim    : DB_SECRET_ARN (app DB / jale_admin) only
  *
  * Per the recorded BillingStack correction (applies here too): user-facing
  * Lambdas use appDbSecret (jale_admin) because owner RLS policies are TO
@@ -195,6 +197,21 @@ export class ReferralsStack extends cdk.Stack {
     });
     props.appDbSecret.grantRead(workerReferralsLambda.function);
 
+    // ── Lambda: worker-referral-claim (POST /worker/referrals/claim) ──
+    // App DB (jale_admin) only. Worker-authenticated. Writes worker_attribution
+    // for the web referral-apply flow (as opposed to worker-job-share, which
+    // mints the link; this Lambda claims it once the referred worker signs up).
+    const workerReferralClaimLambda = new JaleLambdaFunction(this, 'WorkerReferralClaimLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-referral-claim.ts'),
+      description: 'Worker referral claim endpoint',
+      environment: {
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      ...lambdaProps,
+    });
+    props.appDbSecret.grantRead(workerReferralClaimLambda.function);
+
     // ── Lambda: employer-job-public-listing (PATCH .../public-listing) ──
     // The single write path for jobs.public_listing_enabled — the employer's
     // opt-IN to a public job page (migration 057). App DB (jale_admin) only;
@@ -264,10 +281,16 @@ export class ReferralsStack extends cdk.Stack {
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
 
-    // GET /worker/referrals
-    props.workerResource
-      .addResource('referrals')
-      .addMethod('GET', new apigateway.LambdaIntegration(workerReferralsLambda.function), {
+    // GET  /worker/referrals
+    // POST /worker/referrals/claim
+    const workerReferralsResource = props.workerResource.addResource('referrals');
+    workerReferralsResource.addMethod('GET', new apigateway.LambdaIntegration(workerReferralsLambda.function), {
+      authorizer: props.workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    workerReferralsResource
+      .addResource('claim')
+      .addMethod('POST', new apigateway.LambdaIntegration(workerReferralClaimLambda.function), {
         authorizer: props.workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
