@@ -9,6 +9,7 @@ import type { Job } from '@/lib/api/worker';
 import { humanizeReasonCode, normalizeMatchScore, scoreBandForScore, truncateMatchReason } from '@/lib/match';
 
 const WORKER_REASON_KEYS = new Set([
+  'referred_job',
   'profession_exact_or_alias',
   'profession_partial',
   'distance_under_5_miles',

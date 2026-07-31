@@ -201,6 +201,7 @@ MIGRATIONS=(
   "057_job_public_listing_opt_in.sql"
   "058_referral_open_dedupe_grant.sql"
   "059_share_link_claim_read.sql"
+  "060_trade_aliases.sql"
 )
 
 WORKDIR="$(mktemp -d)"

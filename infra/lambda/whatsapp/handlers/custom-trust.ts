@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { requestTradeAliasGeneration } from '../../lib/trade-alias-request';
 
 const lambdaClient = new LambdaClient({});
 
@@ -16,22 +17,20 @@ function questionGeneratorArn(): string {
 
 // Contract: lowercase, trim, collapse whitespace, hyphens/punctuation to spaces,
 // strip accents. Must match normalizeProfession() in lambda/ai/question-generator.ts.
-export function normalizeProfession(raw: string): string {
-  return raw
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[-./]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+export { normalizeProfession } from '../../lib/profession';
 
 export async function loadOrGenerateQuestions(
   client: PoolClient,
   professionKey: string,
   professionRaw: string,
 ): Promise<TrustQuestion[]> {
+  // Grows the bilingual trade-alias cache for the matcher. Awaited (rather
+  // than fired-and-forgotten with `void`) so it can't be aborted by a frozen
+  // Lambda execution environment; the helper never throws by contract and
+  // its Event-type invoke returns in milliseconds, so this never affects the
+  // trust-question flow below.
+  await requestTradeAliasGeneration(professionRaw);
+
   const cached = await client.query<{ questions: TrustQuestion[] }>(
     'SELECT questions FROM trade_questions WHERE profession_key = $1',
     [professionKey],

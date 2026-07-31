@@ -11,6 +11,7 @@
       "fair": "Match posible"
     },
     "reasons": {
+      "referred_job": "Un amigo te recomendó este trabajo",
       "profession_exact_or_alias": "Oficio coincide",
       "profession_partial": "Oficio relacionado",
       "distance_under_5_miles": "A menos de 5 millas",

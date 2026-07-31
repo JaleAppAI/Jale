@@ -131,6 +131,7 @@ const api = new ApiStack(app, 'JaleApiStack', {
   employerPool: auth.employerPool,
   candidateMaterializationQueue: matching.candidateMaterializationQueue,
   employerCandidateRerankQueue: matching.employerCandidateRerankQueue,
+  aliasGeneratorFn: ai.aliasGeneratorFn.function,
   whatsappStatusCallbackUrl,
   // FrontendStack lives in us-east-1 (CloudFront ACM requirement) and
   // references this API. Enable cross-region exports.
@@ -184,6 +185,7 @@ new WhatsAppStack(app, 'JaleWhatsAppStack', {
   api: api.api,
   workerRerankQueue: matching.workerRerankQueue,
   questionGeneratorFn: ai.questionGeneratorFn.function,
+  aliasGeneratorFn: ai.aliasGeneratorFn.function,
   trustAssessmentQueue: ai.trustAssessmentQueue,
   statusCallbackUrl: whatsappStatusCallbackUrl,
   alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),

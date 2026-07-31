@@ -61,6 +61,13 @@ describe('AiStack', () => {
     });
   });
 
+  it('creates alias-generator Lambda', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('alias'),
+      Timeout: 30,
+    });
+  });
+
   it('limits trust-scorer SQS concurrency without reserved concurrency', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Async trust scorer with stale-claim recovery',

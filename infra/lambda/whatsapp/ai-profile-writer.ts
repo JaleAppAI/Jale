@@ -18,6 +18,7 @@ import {
   type VoiceExtractionFields,
 } from './lib/voice-events';
 import { hashNormalizedPhone } from './lib/runtime-controls';
+import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const s3 = new S3Client({});
@@ -257,6 +258,13 @@ async function loadOrGenerateCustomTrustQuestions(
   professionKey: string,
   professionRaw: string,
 ): Promise<TrustQuestion[]> {
+  // Grows the bilingual trade-alias cache for the matcher. Awaited (rather
+  // than fired-and-forgotten with `void`) so it can't be aborted by a frozen
+  // Lambda execution environment; the helper never throws by contract and
+  // its Event-type invoke returns in milliseconds, so this never affects the
+  // trust-question flow below.
+  await requestTradeAliasGeneration(professionRaw);
+
   const cached = await client.query<{ questions: TrustQuestion[] }>(
     'SELECT questions FROM trade_questions WHERE profession_key = $1',
     [professionKey],

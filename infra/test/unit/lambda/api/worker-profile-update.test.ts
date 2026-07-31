@@ -3,14 +3,17 @@ import { handler } from '../../../../lambda/api/worker-profile-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { setWorkerCoordinates } from '../../../../lambda/lib/location';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { requestTradeAliasGeneration } from '../../../../lambda/lib/trade-alias-request';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/location');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/trade-alias-request');
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockSetWorkerCoordinates = setWorkerCoordinates as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
+const mockRequestTradeAliasGeneration = requestTradeAliasGeneration as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -28,6 +31,7 @@ describe('worker-profile-update', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockSetWorkerCoordinates.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockRequestTradeAliasGeneration.mockResolvedValue(undefined);
   });
   afterAll(() => { process.env = env; });
 
@@ -247,5 +251,52 @@ describe('worker-profile-update', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockSetWorkerCoordinates).toHaveBeenCalledWith(expect.any(Object), 'u', 39.961176, -82.998794, 'map_pin');
+  });
+
+  describe('trade alias generation trigger', () => {
+    const okQuery = () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('INSERT INTO worker_profiles')) {
+          return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
+        }
+        return Promise.resolve({});
+      });
+    };
+
+    it('triggers alias generation when main_trade is other with non-empty main_trade_other', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ main_trade: 'other', main_trade_other: '  Soldador de arco  ' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRequestTradeAliasGeneration).toHaveBeenCalledWith('Soldador de arco');
+    });
+
+    it('does not change the 200 response when alias generation fails', async () => {
+      okQuery();
+      mockRequestTradeAliasGeneration.mockRejectedValueOnce(new Error('invoke failed'));
+
+      const res = await handler(mkEv({ main_trade: 'other', main_trade_other: 'Soldador' }));
+
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('does not trigger alias generation for a non-other trade', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ main_trade: 'electrician' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRequestTradeAliasGeneration).not.toHaveBeenCalled();
+    });
+
+    it('does not trigger alias generation when main_trade is unset', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ availability: 'full_time' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockRequestTradeAliasGeneration).not.toHaveBeenCalled();
+    });
   });
 });
