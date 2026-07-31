@@ -155,7 +155,8 @@ describe('job-matching pure scoring', () => {
           latitude: null,
           longitude: null,
         }],
-      });
+      })
+      .mockResolvedValueOnce({ rows: [] });
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -163,7 +164,7 @@ describe('job-matching pure scoring', () => {
       { limit: 5, channel: 'api' },
     );
 
-    expect(query).toHaveBeenCalledTimes(4);
+    expect(query).toHaveBeenCalledTimes(5);
     expect(query.mock.calls[1][0]).toContain('NULL::numeric AS latitude');
     expect(query.mock.calls[1][0]).toContain('NULL::numeric AS longitude');
     expect(query.mock.calls[3][0]).toContain('NULL::numeric AS latitude');
@@ -219,7 +220,8 @@ describe('job-matching pure scoring', () => {
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({
         rows: [...newerIrrelevantJobs, olderRelevantJob],
-      });
+      })
+      .mockResolvedValueOnce({ rows: [] });
 
     const result = await listMatchedJobsForWorker(
       { query } as never,
@@ -230,5 +232,178 @@ describe('job-matching pure scoring', () => {
     expect(query.mock.calls[3][1]).toContain(50);
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe('job-drywall-older');
+  });
+
+  it('pins the referred job even when the profession filter would drop it', async () => {
+    // The live gap this guards: a "Soldador" worker referred to a "Welder"
+    // job never saw it in `jobs` — no alias bridges the two, profession
+    // scored 0, and the filter removed it.
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'worker-1',
+          main_trade: 'other',
+          main_trade_other: 'Soldador',
+          years_experience: '2-4',
+          availability: 'weekends',
+          city: '79928',
+          profile_location: '79928',
+          latitude: null,
+          longitude: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'job-welder',
+          title: 'Test refer me',
+          company: 'Jale',
+          location: 'El Paso',
+          pay: '$25/hr',
+          job_type: 'full-time',
+          description: 'Welder',
+          required_docs: [],
+          created_at: now,
+          latitude: null,
+          longitude: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [{ job_id: 'job-welder' }] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'job-welder',
+          title: 'Test refer me',
+          company: 'Jale',
+          location: 'El Paso',
+          pay: '$25/hr',
+          job_type: 'full-time',
+          description: 'Welder',
+          required_docs: [],
+          created_at: now,
+          latitude: null,
+          longitude: null,
+        }],
+      });
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(query.mock.calls[4][0]).toContain('worker_attribution');
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('job-welder');
+    expect(result[0].match_reasons).toContain('referred_job');
+  });
+
+  it('moves an already-ranked referred job to the top without refetching it', async () => {
+    const drywallJob = (id: string, createdAt: Date) => ({
+      id,
+      title: `Drywall Crew ${id}`,
+      company: 'Finish Builders',
+      location: 'El Paso, TX 79928',
+      pay: '$30/hr',
+      job_type: 'full-time',
+      description: 'Sheetrock hanging, taping, mud, and texture.',
+      required_docs: [],
+      created_at: createdAt,
+      latitude: null,
+      longitude: null,
+    });
+
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'worker-1',
+          main_trade: 'other',
+          main_trade_other: 'Drywaller',
+          years_experience: '5-9',
+          availability: 'full_time',
+          city: '79928',
+          profile_location: '79928',
+          latitude: null,
+          longitude: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [drywallJob('job-newer', now), drywallJob('job-referred', new Date(now.getTime() - 10_000))],
+      })
+      .mockResolvedValueOnce({ rows: [{ job_id: 'job-referred' }] });
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(query).toHaveBeenCalledTimes(5);
+    expect(result[0].id).toBe('job-referred');
+    expect(result[0].match_reasons).toContain('referred_job');
+    expect(result.map((job) => job.id)).toEqual(['job-referred', 'job-newer']);
+  });
+
+  it('skips the referral pin when the worker searched for something specific', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'worker-1',
+          main_trade: 'other',
+          main_trade_other: 'Drywaller',
+          years_experience: '5-9',
+          availability: 'full_time',
+          city: '79928',
+          profile_location: '79928',
+          latitude: null,
+          longitude: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp', search: 'plumber' },
+    );
+
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not pin a referred job the worker already applied to', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{
+          id: 'worker-1',
+          main_trade: 'other',
+          main_trade_other: 'Soldador',
+          years_experience: '2-4',
+          availability: 'weekends',
+          city: '79928',
+          profile_location: '79928',
+          latitude: null,
+          longitude: null,
+        }],
+      })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ job_id: 'job-welder' }] })
+      // active + not-applied fetch finds nothing (applied or closed)
+      .mockResolvedValueOnce({ rows: [] });
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(query).toHaveBeenCalledTimes(6);
+    expect(result).toHaveLength(0);
   });
 });
