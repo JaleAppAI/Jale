@@ -16,6 +16,10 @@ const lexend = Lexend({
 });
 
 export const metadata: Metadata = {
+  // Needed so relative openGraph/twitter `images` paths (e.g. the public job
+  // page's OG image) resolve to absolute URLs -- required for link previews
+  // in WhatsApp/iMessage/Twitter, which will not fetch a relative image URL.
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || "https://jaleapp.ai"),
   title: "Jale",
   description: "Find work. Find workers.",
 };

@@ -194,6 +194,58 @@ export async function releaseWorkerReady(
     ],
   );
 
+  // ── Step 1b: the job this worker was referred to (migration 056) ──
+  // claimPendingReferral recorded the claim inside the same transaction that
+  // flipped lifecycle to 'ready'. Without a second intent here the worker gets
+  // the welcome and is never told about the job they actually came for.
+  //
+  // source_id is the JOB id, not the worker id, so the batch `FROM jobs` lookup
+  // in step 3 resolves it with no extra query and the job's CURRENT status is
+  // what decides the copy — a worker may take days to finish onboarding.
+  //
+  // SAVEPOINT-isolated: this runs inside the caller's transaction, where a bare
+  // try/catch is not enough (an errored statement aborts the whole transaction,
+  // so every later statement would fail too). A referral must never cost the
+  // worker their welcome message.
+  try {
+    await client.query('SAVEPOINT referral_job_intent');
+    const claim = await client.query<{ job_id: string; referrer_worker_id: string | null }>(
+      `SELECT job_id, referrer_worker_id FROM referral_pending_claims WHERE claimed_worker_id = $1`,
+      [workerId],
+    );
+    if (claim.rows[0]) {
+      // A visitor can reach the public page untagged and tap Apply themselves,
+      // producing a real claim with no referrer. Carry that fact on the payload
+      // so the copy does not tell them a friend referred them when none did.
+      const referred = claim.rows[0].referrer_worker_id !== null;
+      await client.query(
+        `INSERT INTO worker_message_intents
+            (user_id, category, owner_service, source_type, source_id, dedupe_key,
+             priority, status, policy_version, payload, expires_at)
+         VALUES ($1, 'onboarding', 'onboarding-v2', 'referred_job', $2, $3,
+                 2, 'eligible', $4, $5::jsonb, NULL)
+         ON CONFLICT ON CONSTRAINT worker_message_intent_dedupe DO NOTHING`,
+        [
+          workerId,
+          claim.rows[0].job_id,
+          `referral-job:${workerId}`,
+          DELIVERY_POLICY_VERSION,
+          JSON.stringify({ kind: 'referred_job', referred }),
+        ],
+      );
+    }
+    await client.query('RELEASE SAVEPOINT referral_job_intent');
+  } catch {
+    try {
+      await client.query('ROLLBACK TO SAVEPOINT referral_job_intent');
+    } catch {
+      // Transaction already unusable; the caller's retry/DLQ handling takes
+      // over as it would for any other failed statement.
+    }
+    // Static metric only — never the job id, phone number or token.
+    console.error(JSON.stringify({ metric: 'ReferralJobIntentFailed', workerId }));
+  }
+
   // ── Step 2: lease this worker's not-yet-materialized business intents ──
   // `outbox_id IS NULL` excludes anything enqueueWorkerMessage already rendered
   // and authorized inline (onboarding/security intents with a registered
@@ -252,11 +304,19 @@ export async function releaseWorkerReady(
   // ── Step 3: reload live source rows — never trust the stored payload for
   // eligibility. ──
   const jobAlertIntents = working.filter((i) => i.category === 'job_alert');
-  const jobRows = jobAlertIntents.length
+  // referred_job intents carry a job id in source_id too, so they share this one
+  // lookup. location/pay are additive here and only read by the referred-job
+  // renderer; both are nullable on jobs (migration 003).
+  const referredJobIntents = working.filter((i) => i.sourceType === 'referred_job');
+  const jobIdsToLoad = [...new Set([...jobAlertIntents, ...referredJobIntents].map((i) => i.sourceId))];
+  const jobRows = jobIdsToLoad.length
     ? (
-        await client.query<{ id: string; status: string; title: string; company: string }>(
-          `SELECT id, status, title, company FROM jobs WHERE id = ANY($1::uuid[])`,
-          [jobAlertIntents.map((i) => i.sourceId)],
+        await client.query<{
+          id: string; status: string; title: string; company: string;
+          location: string | null; pay: string | null;
+        }>(
+          `SELECT id, status, title, company, location, pay FROM jobs WHERE id = ANY($1::uuid[])`,
+          [jobIdsToLoad],
         )
       ).rows
     : [];
@@ -393,12 +453,25 @@ export async function releaseWorkerReady(
     // the intent simply returns to the deferred pool for a future release.
   }
 
-  // ── Group 1: onboarding — at most one. ──
+  // ── Group 1: onboarding — at most one PER source_type. ──
+  // Was "at most one" outright. That is still the guarantee for any single
+  // source_type — a duplicate onboarding_complete is superseded, not sent twice
+  // — but the group now carries two distinct kinds: the welcome, and the job the
+  // worker was referred to (migration 056). Collapsing across source_types would
+  // silently discard the referral message, so the worker would complete
+  // onboarding and never learn about the job that brought them here.
+  // Mirrors the per-sourceType shape group 2 already uses below.
   const onboardingSurvivors = survivors.filter((i) => i.category === 'onboarding');
-  let onboardingKept: WorkingIntent[] = [];
-  if (onboardingSurvivors.length > 0) {
-    const sorted = withinGroupOrder(onboardingSurvivors);
-    onboardingKept = [sorted[0]];
+  const onboardingBySourceType = new Map<string, WorkingIntent[]>();
+  for (const intent of onboardingSurvivors) {
+    const list = onboardingBySourceType.get(intent.sourceType) ?? [];
+    list.push(intent);
+    onboardingBySourceType.set(intent.sourceType, list);
+  }
+  const onboardingKept: WorkingIntent[] = [];
+  for (const list of onboardingBySourceType.values()) {
+    const sorted = withinGroupOrder(list);
+    onboardingKept.push(sorted[0]);
     for (const extra of sorted.slice(1)) {
       await discard(extra, 'superseded', 'onboarding_already_confirmed');
       superseded++;
@@ -466,10 +539,43 @@ export async function releaseWorkerReady(
   const language: PreferredLanguage = gate?.preferredLanguage ?? 'es';
   const renderPlan: RenderPlanEntry[] = [];
 
-  if (onboardingKept.length > 0) {
+  // Group 1 now holds two distinct kinds, so each gets its own render entry —
+  // one shared request across both would render the referred job as a second
+  // welcome message.
+  const completeKept = onboardingKept.filter((i) => i.sourceType !== 'referred_job');
+  const referredJobKept = onboardingKept.filter((i) => i.sourceType === 'referred_job');
+
+  if (completeKept.length > 0) {
     renderPlan.push({
       request: { kind: 'onboarding_complete', workerId, language },
-      intents: withinGroupOrder(onboardingKept),
+      intents: withinGroupOrder(completeKept),
+    });
+  }
+
+  if (referredJobKept.length > 0) {
+    // The job's CURRENT status decides the copy. A job filled while the worker
+    // was still onboarding yields job: null and the honest "already taken"
+    // variant — never a dead listing, and never silence.
+    const referredJob = jobById.get(referredJobKept[0].sourceId);
+    renderPlan.push({
+      request: {
+        kind: 'referred_job',
+        workerId,
+        language,
+        // Recorded when the intent was synthesized; false for an untagged
+        // arrival, so the copy never invents a referrer.
+        referred: referredJobKept[0].payload.referred === true,
+        job: referredJob && referredJob.status === 'active'
+          ? {
+              jobId: referredJob.id,
+              title: referredJob.title,
+              companyName: referredJob.company ?? '',
+              location: referredJob.location,
+              pay: referredJob.pay,
+            }
+          : null,
+      },
+      intents: withinGroupOrder(referredJobKept),
     });
   }
 

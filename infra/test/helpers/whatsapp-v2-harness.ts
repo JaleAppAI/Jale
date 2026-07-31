@@ -207,6 +207,11 @@ interface CompletionRecord {
   runId: string;
   expectedLockVersion: number;
   assessmentProvenance: Record<string, unknown>;
+  /** Job referrals (migration 056): asserts the real `trust.ts` call site
+   * actually supplies this — see onboarding-v2-conversation.test.ts's
+   * referral-claim coverage. */
+  workerPhoneHash?: string;
+  now?: Date;
 }
 
 function createFakeGateRepo(
@@ -1525,6 +1530,13 @@ export class WhatsAppV2Harness {
 
   getCompletions(): CompletionRecord[] {
     return [...this.gateRepo._completions];
+  }
+
+  /** The same fake phone hash `deps.hashNormalizedPhone` would derive for
+   * this harness's phone — for asserting `trust.ts` actually threads
+   * `workerPhoneHash` into `completeOnboarding` (job referrals, migration 056). */
+  phoneHash(): string {
+    return fakeHashNormalizedPhone(this.phone);
   }
 
   getCompletionClients(): unknown[] {

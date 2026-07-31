@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const PUBLIC_PATTERNS = [
   /^\/[a-z]{2}\/upload\//,
+  /^\/[a-z]{2}\/j\//,
   /^\/terms\/?$/,
   /^\/privacypolicy\/?$/,
   /^\/sms-opt-in\/?$/,

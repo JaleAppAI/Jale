@@ -15,6 +15,7 @@ import { DocumentsStack } from '../lib/stacks/documents-stack';
 import { AdminStack } from '../lib/stacks/admin-stack';
 import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
 import { BillingStack } from '../lib/stacks/billing-stack';
+import { ReferralsStack } from '../lib/stacks/referrals-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
 import { resolveWhatsappStatusCallbackUrl } from '../lib/whatsapp-status-callback-url';
 
@@ -60,6 +61,7 @@ database.matchingDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.aiDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.adminConsoleDbSecret.grantRead(bastion.bastionHost.instance.role);
 database.billingDbSecret.grantRead(bastion.bastionHost.instance.role);
+database.referralsDbSecret.grantRead(bastion.bastionHost.instance.role);
 
 // Bastion needs scoped access to internal DB role secrets used by migration and
 // runbook operations. The WhatsApp migration script creates/updates its secret;
@@ -78,6 +80,7 @@ bastion.bastionHost.instance.role.addToPrincipalPolicy(
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/ai/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/admin-console/db*`,
       `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/billing/db*`,
+      `arn:aws:secretsmanager:${env.region ?? '*'}:${env.account ?? '*'}:secret:jale/referrals/db*`,
     ],
   }),
 );
@@ -144,6 +147,21 @@ new BillingStack(app, 'JaleBillingStack', {
   api: api.api,
   employerAuthorizer: api.employerAuthorizer,
   employerResource: api.employerResource,
+});
+
+new ReferralsStack(app, 'JaleReferralsStack', {
+  env,
+  vpc: network.vpc,
+  privateSubnets: network.privateSubnets,
+  referralsLambdaSg: network.referralsLambdaSg,
+  referralsDbSecret: database.referralsDbSecret,
+  appDbSecret: database.dbSecret,
+  api: api.api,
+  workerAuthorizer: api.workerAuthorizer,
+  workerResource: api.workerResource,
+  workerJobResource: api.workerJobResource,
+  employerAuthorizer: api.employerAuthorizer,
+  employerJobResource: api.employerJobResource,
 });
 
 new LegalStack(app, 'JaleLegalStack', {

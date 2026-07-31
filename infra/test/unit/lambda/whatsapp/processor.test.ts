@@ -1734,6 +1734,72 @@ describe('Processor Lambda', () => {
       expect(outboxBodies()).toContain('¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.');
     });
 
+    it('parks AND claims a referral code for a bypassed web worker, who has no later onboarding completion to claim it at', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-referral' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'new', language: 'es', user_id: null })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'web-worker-1' }] }) // findWebRegisteredWorker → match
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ onboarding_state_id: 'state-1', run_id: 'run-1' }],
+        }) // bypass_onboarding_for_web_worker definer
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation (idle + bind)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // queueOutboxText welcome
+        // captureReferralForBypassedWorker, isolated behind a SAVEPOINT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SAVEPOINT referral_bypass
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ share_code: null, job_id: 'job-1', locale: 'es' }],
+        }) // parkPendingClaim: consume the apply token
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // parkPendingClaim: upsert referral_pending_claims
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ job_id: 'job-1', share_code: null, referrer_worker_id: 'referrer-1' }],
+        }) // claimPendingReferral: claim the parked row
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // claimPendingReferral: upsert worker_attribution
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // RELEASE SAVEPOINT referral_bypass
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: no rows needed for this assertion
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-web-referral',
+          From: 'whatsapp:+15125551234',
+          Body: 'I want to apply for this job: JALE-8F4K2QRS',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      // The token is consumed and a claim parked...
+      expect(findQueryByPattern(/UPDATE referral_apply_tokens/i)).toBeTruthy();
+      expect(findQueryByPattern(/INSERT INTO referral_pending_claims/i)).toBeTruthy();
+      // ...and claimed immediately, because this worker skips onboarding and so
+      // will never reach completeOnboarding, where the normal lane claims it.
+      expect(findQueryByPattern(/UPDATE referral_pending_claims/i)).toBeTruthy();
+      const attribution = findQueryByPattern(/INSERT INTO worker_attribution/i);
+      expect(attribution).toBeTruthy();
+      expect(attribution).toContain('web-worker-1');
+
+      // Isolated behind a savepoint so a referral failure cannot abort the
+      // transaction carrying the bypass itself.
+      const statements = mockQuery.mock.calls.map((c: any[]) => c[0]);
+      expect(statements).toContain('SAVEPOINT referral_bypass');
+      expect(statements).toContain('RELEASE SAVEPOINT referral_bypass');
+
+      // The bypass itself is unaffected.
+      expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
+    });
+
     it('does not bypass a WhatsApp-origin worker missing an email — goes through the v2 lane', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN

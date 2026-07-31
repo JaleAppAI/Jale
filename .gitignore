@@ -67,3 +67,6 @@ infra/scripts/.frontend-fast-deploy-last.env
 
 # Code review scratch artifacts
 .claude-review/
+
+# Operator spike notes: sandbox object IDs and run records, never for the repo
+scripts/stripe-spike/RESULTS.md

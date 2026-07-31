@@ -15,7 +15,7 @@ const mockRelease = jest.fn();
 
 const ev = {
   requestContext: { authorizer: { claims: { sub: 'w-sub' } } },
-  pathParameters: { id: 'job-1' },
+  pathParameters: { jobId: 'job-1' },
 } as unknown as APIGatewayProxyEvent;
 
 describe('worker-jobs-apply', () => {

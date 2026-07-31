@@ -144,6 +144,26 @@ describe('run-migrations.sh', () => {
     expect(script).not.toMatch(/echo\s+"?\$PGPASSWORD"?/);
     expect(script).not.toMatch(/echo\s+"?\$MATCHING_PW"?/);
     expect(script).not.toMatch(/echo\s+"?\$BILLING_PW"?/);
+    expect(script).not.toMatch(/echo\s+"?\$PUBLIC_JOBS_PW"?/);
+  });
+
+  it('syncs jale_public_jobs and PROVES the login before reporting success', () => {
+    const script = readScript();
+
+    // The sync itself, from the CDK-generated secret.
+    expect(script).toContain('ALTER ROLE jale_public_jobs WITH PASSWORD');
+    // The self-test: a real login as the role, against the one table it exists
+    // for, so vault/database drift dies on the bastion instead of surfacing as
+    // a public page that 500s every request.
+    expect(script).toContain('-U jale_public_jobs');
+    expect(script).toContain('SELECT count(*) FROM jobs WHERE public_listing_enabled');
+    expect(script).toContain('jale_public_jobs credential check FAILED');
+    // A rotate must never silently skip the sync when the secret is missing.
+    expect(script).toContain('refusing to silently skip the jale_public_jobs password sync');
+    // The password variable is wiped with the others.
+    expect(script).toMatch(/unset PGPASSWORD.*PUBLIC_JOBS_PW/);
+    // Fresh-bootstrap warnings name the role so an operator cannot miss it.
+    expect(script).toContain('jale_whatsapp, jale_public_jobs.');
   });
 
   it('fails fast when the manifest and the migrations directory disagree', () => {

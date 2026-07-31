@@ -102,7 +102,9 @@ $MigrationFiles = @(
     '052_worker_pending_name_and_skills_reset.sql',
     '053_whatsapp_web_worker_bypass.sql',
     '054_remove_onboarding_v2_control.sql',
-    '055_job_conversations_application_index.sql'
+    '055_job_conversations_application_index.sql',
+    '056_job_referrals.sql',
+    '057_job_public_listing_opt_in.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -194,6 +196,25 @@ if ([string]::IsNullOrEmpty($billingSecretArn) -or $billingSecretArn -eq 'None')
 Write-Host "   billing-secret: $billingSecretArn"
 
 # ---------------------------------------------------------------------------
+# Resolve jale_public_jobs DB secret ARN (public job pages, migration 056).
+# This script always syncs role passwords, so a missing secret is fatal here:
+# a silently skipped sync leaves the vault and database disagreeing and the
+# public page failing every request. Deploy JaleDatabaseStack first.
+# ---------------------------------------------------------------------------
+Write-Host ">> Resolving jale_public_jobs DB secret ARN..."
+$referralsSecretArn = (aws cloudformation describe-stack-resources `
+        --stack-name $DatabaseStack `
+        --region $Region `
+        --query "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'ReferralsDbSecret')].PhysicalResourceId | [0]" `
+        --output text).Trim()
+
+if ([string]::IsNullOrEmpty($referralsSecretArn) -or $referralsSecretArn -eq 'None') {
+    Write-Host "!! Could not find jale/referrals/db secret in $DatabaseStack — deploy JaleDatabaseStack first; refusing to silently skip the jale_public_jobs password sync." -ForegroundColor Red
+    exit 1
+}
+Write-Host "   referrals-secret: $referralsSecretArn"
+
+# ---------------------------------------------------------------------------
 # Verify migration files + base64-encode.
 # ---------------------------------------------------------------------------
 $migrationsB64 = [ordered]@{}
@@ -223,6 +244,7 @@ DB_SECRET_ARN="__DB_SECRET_ARN__"
 MATCHING_SECRET_ARN="__MATCHING_SECRET_ARN__"
 ADMIN_CONSOLE_SECRET_ARN="__ADMIN_CONSOLE_SECRET_ARN__"
 BILLING_SECRET_ARN="__BILLING_SECRET_ARN__"
+REFERRALS_SECRET_ARN="__REFERRALS_SECRET_ARN__"
 WA_DB_SECRET_NAME="__WA_DB_SECRET_NAME__"
 
 echo ">> Fetching jale_admin creds from $DB_SECRET_ARN"
@@ -278,6 +300,23 @@ BILLING_SECRET_JSON=$(aws secretsmanager get-secret-value \
 BILLING_PW=$(echo "$BILLING_SECRET_JSON" | jq -r .password)
 "${PG_CMD[@]}" -c "ALTER ROLE jale_billing WITH PASSWORD '$BILLING_PW';"
 
+echo ">> Setting jale_public_jobs password from generated secret..."
+REFERRALS_SECRET_JSON=$(aws secretsmanager get-secret-value \
+  --secret-id "$REFERRALS_SECRET_ARN" \
+  --region "$REGION" \
+  --query SecretString --output text)
+PUBLIC_JOBS_PW=$(echo "$REFERRALS_SECRET_JSON" | jq -r .password)
+"${PG_CMD[@]}" -c "ALTER ROLE jale_public_jobs WITH PASSWORD '$PUBLIC_JOBS_PW';"
+# Prove the login works before this run can report success: catches vault vs
+# database drift AND a broken grant here, not as a public page that 500s.
+PUBLIC_JOBS_CHECK=$(PGPASSWORD="$PUBLIC_JOBS_PW" psql -h "$DB_HOST" -p "$DB_PORT" \
+  -U jale_public_jobs -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+  -tAc "SELECT count(*) FROM jobs WHERE public_listing_enabled") || {
+  echo "!! jale_public_jobs credential check FAILED — vault and database disagree, or the role grant is broken" >&2
+  exit 1
+}
+echo "   jale_public_jobs credential check OK ($PUBLIC_JOBS_CHECK publicly listed jobs)"
+
 echo ">> Generating jale_whatsapp password + setting ALTER ROLE..."
 WA_PW=$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-24)
 "${PG_CMD[@]}" -c "ALTER ROLE jale_whatsapp WITH PASSWORD '$WA_PW';"
@@ -331,6 +370,7 @@ $dbSecretArnSafe = $dbSecretArn -replace '\$', '$$$$'
 $matchingSecretArnSafe = $matchingSecretArn -replace '\$', '$$$$'
 $adminConsoleSecretArnSafe = $adminConsoleSecretArn -replace '\$', '$$$$'
 $billingSecretArnSafe = $billingSecretArn -replace '\$', '$$$$'
+$referralsSecretArnSafe = $referralsSecretArn -replace '\$', '$$$$'
 $regionSafe = $Region -replace '\$', '$$$$'
 $waDbSecretNameSafe = $WaDbSecretName -replace '\$', '$$$$'
 $fileArrayLiteralSafe = $fileArrayLiteral -replace '\$', '$$$$'
@@ -342,6 +382,7 @@ $remoteScript = $remoteTemplate `
     -replace '__MATCHING_SECRET_ARN__', $matchingSecretArnSafe `
     -replace '__ADMIN_CONSOLE_SECRET_ARN__', $adminConsoleSecretArnSafe `
     -replace '__BILLING_SECRET_ARN__', $billingSecretArnSafe `
+    -replace '__REFERRALS_SECRET_ARN__', $referralsSecretArnSafe `
     -replace '__WA_DB_SECRET_NAME__', $waDbSecretNameSafe `
     -replace '__MIGRATION_FILES_ARRAY__', $fileArrayLiteralSafe `
     -replace '__MIGRATION_B64_ASSIGNMENTS__', $b64AssignmentsSafe

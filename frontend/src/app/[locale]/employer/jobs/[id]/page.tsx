@@ -25,6 +25,7 @@ import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/
 import { applicationStatusTone, jobStatusTone } from '@/lib/status';
 import type { WritableJobStatus } from '@/lib/status';
 import { formatStartDate } from '@/lib/date';
+import { PublicListingToggle } from '@/components/employer/PublicListingToggle';
 
 export const dynamic = 'force-dynamic';
 
@@ -268,6 +269,10 @@ export default function JobDetailPage() {
               </div>
             </div>
           </Card>
+
+          <div className="mb-6">
+            <PublicListingToggle jobId={job.id} initialEnabled={job.public_listing_enabled} />
+          </div>
 
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
             <MetricCard tone="blue" label={t('stats.total_applicants')} value={total} />

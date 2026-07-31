@@ -114,6 +114,19 @@ async function recordTrustAnswer(
     workerId: gate.userId,
     runId: gate.runId!,
     expectedLockVersion: gate.lockVersion!,
+    // Job referrals (migration 056): the worker's phone hash, derived from
+    // the phone already in scope on this session — reuses the same
+    // `hashNormalizedPhone` every other lane uses, never a second hasher.
+    // Load-bearing invariant: `parkPendingClaim` (start.ts) keys on
+    // `hashNormalizedPhone(msg.from)`, computed once in `routeOnboardingV2`
+    // from `conv.whatsapp_number`; this call must hash that SAME string
+    // (`session.whatsapp_number`, sourced from the same column in
+    // processor.ts) or the two hashes diverge and a parked claim can never
+    // be found here — a silent no-op, not an error. `hashNormalizedPhone`
+    // only `.trim()`s its input despite its "E.164-normalized" name, so this
+    // is byte-sensitive, not just semantically-sensitive.
+    workerPhoneHash: deps.hashNormalizedPhone(session.whatsapp_number),
+    now,
     assessmentProvenance: {
       trade,
       professionKey: normalizeTrade(trade),

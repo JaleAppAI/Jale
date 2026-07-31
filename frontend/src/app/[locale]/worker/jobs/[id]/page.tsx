@@ -10,6 +10,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { Button } from '@/components/ui/button';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { ProfileCompleteModal, ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { formatStartDate } from '@/lib/date';
@@ -229,6 +230,12 @@ export default function WorkerJobDetailPage() {
                 )}
               </div>
             )}
+          </div>
+        </DashboardPanel>
+
+        <DashboardPanel className="mb-6">
+          <div className="p-6">
+            <ShareJobPanel jobId={id} />
           </div>
         </DashboardPanel>
 

@@ -37,6 +37,25 @@ export class ApiStack extends cdk.Stack {
   public readonly workerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   /** Exported so BillingStack (and other downstream stacks) can hang routes off /employer */
   public readonly employerResource: apigateway.Resource;
+  /** Exported so ReferralsStack (and other downstream stacks) can hang routes off /worker */
+  public readonly workerResource: apigateway.Resource;
+  /**
+   * Exported so ReferralsStack can hang POST /worker/jobs/{jobId}/share off the
+   * existing /worker/jobs/{jobId} node — NOT a new addResource() call. A second
+   * variable-path resource at this level (even a differently-named one, e.g.
+   * {id} and {jobId} as siblings) is rejected by API Gateway, so downstream
+   * stacks must reuse this node rather than re-declare the path segment.
+   *
+   * Undefined during a phase-1 rename deploy (-c workerJobsRenamePhase1=true),
+   * when the node is deliberately absent — consumers must skip their routes.
+   */
+  public readonly workerJobResource?: apigateway.Resource;
+  /**
+   * Exported so ReferralsStack can hang PATCH
+   * /employer/jobs/{jobId}/public-listing off the existing employer {jobId}
+   * node — same reuse-don't-redeclare rule as workerJobResource above.
+   */
+  public readonly employerJobResource: apigateway.Resource;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -525,7 +544,10 @@ export class ApiStack extends cdk.Stack {
 
     // GET /worker/profile
     // PATCH /worker/profile
-    const workerResource = this.api.root.addResource('worker');
+    // Exported as public readonly so ReferralsStack (and other downstream
+    // stacks) can hang routes off /worker.
+    this.workerResource = this.api.root.addResource('worker');
+    const workerResource = this.workerResource;
     const workerProfileResource = workerResource.addResource('profile');
     workerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(workerProfileLambda.function), {
       authorizer: workerAuthorizer,
@@ -537,23 +559,76 @@ export class ApiStack extends cdk.Stack {
     });
 
     // GET /worker/jobs — list open jobs for worker
-    // GET /worker/jobs/{id} — job detail
-    // POST /worker/jobs/{id}/apply — apply to a job
+    // GET /worker/jobs/{jobId} — job detail
+    // POST /worker/jobs/{jobId}/apply — apply to a job
+    // POST /worker/jobs/{jobId}/share — mint a referral share link (ReferralsStack)
+    //
+    // NOTE: this path parameter is named {jobId}, not {id} — renamed here (and
+    // in worker-jobs-detail.ts / worker-jobs-apply.ts, which read
+    // pathParameters.jobId) so ReferralsStack's worker-job-share.ts (which
+    // also reads pathParameters.jobId and must not be modified) can hang its
+    // route off this exact node instead of adding a second, differently-named
+    // variable-path resource at the same level — API Gateway does not allow
+    // two path-parameter siblings under one parent.
+    //
+    // ─────────────────────────────────────────────────────────────────────────
+    // DEPLOY WARNING — this rename REQUIRES A TWO-PHASE DEPLOY. Read before
+    // shipping it the first time.
+    //
+    // CDK derives a resource's logical id from its path segment, so renaming
+    // {id} -> {jobId} is not an update in CloudFormation's eyes: it is a DELETE
+    // of the old resource plus a CREATE of a new one. That cascades to the
+    // child `apply` resource and every method under both.
+    //
+    // CloudFormation's default order is create-new-then-delete-old, and that
+    // order CANNOT work here: creating {jobId} while {id} still exists is
+    // exactly the sibling collision described above, so API Gateway rejects it
+    // and the stack update rolls back.
+    //
+    // Sequence it deliberately instead:
+    //   Phase 1 — deploy with the OLD {id} node and its methods removed.
+    //             GET /worker/jobs/{id} and POST /worker/jobs/{id}/apply are
+    //             UNAVAILABLE from here until phase 2 completes. Job detail and
+    //             job apply are high-traffic worker endpoints; pick the window.
+    //   Phase 2 — deploy this file as written, creating {jobId} and its methods.
+    //
+    // Client URLs are unchanged either way (callers build the path from the job
+    // id value, never the parameter name), so no frontend or app release is
+    // coupled to this. Verify both routes respond after phase 2 before
+    // considering the deploy done.
+    // ─────────────────────────────────────────────────────────────────────────
+    // The two-phase sequence above is expressed as a CONTEXT FLAG so the
+    // operator checks out nothing and edits nothing mid-deploy:
+    //   Phase 1: cdk deploy -c workerJobsRenamePhase1=true   (routes DOWN)
+    //   Phase 2: cdk deploy                                   (routes restored as {jobId})
+    // Phase 1 omits the {jobId} node and its methods entirely, which IS the
+    // documented outage window for GET /worker/jobs/{id} and its apply route.
+    // The env fallback exists so the deploy PIPELINE can drive phase 1 from a
+    // GitHub variable (JALE_WORKER_JOBS_RENAME_PHASE1=true) instead of anyone
+    // editing files or passing -c flags mid-deploy. An unset variable is an
+    // empty string, which is falsy — every ordinary deploy is phase 2.
+    const workerJobsRenamePhase1 = this.node.tryGetContext('workerJobsRenamePhase1') === true
+      || this.node.tryGetContext('workerJobsRenamePhase1') === 'true'
+      || process.env.JALE_WORKER_JOBS_RENAME_PHASE1 === 'true';
+
     const workerJobsResource = workerResource.addResource('jobs');
     workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    const workerJobResource = workerJobsResource.addResource('{id}');
-    workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
-      authorizer: workerAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
-    });
-    const workerJobApplyResource = workerJobResource.addResource('apply');
-    workerJobApplyResource.addMethod('POST', new apigateway.LambdaIntegration(workerJobsApplyLambda.function), {
-      authorizer: workerAuthorizer,
-      authorizationType: apigateway.AuthorizationType.COGNITO,
-    });
+    if (!workerJobsRenamePhase1) {
+      this.workerJobResource = workerJobsResource.addResource('{jobId}');
+      const workerJobResource = this.workerJobResource;
+      workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
+        authorizer: workerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+      const workerJobApplyResource = workerJobResource.addResource('apply');
+      workerJobApplyResource.addMethod('POST', new apigateway.LambdaIntegration(workerJobsApplyLambda.function), {
+        authorizer: workerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+    }
 
     // GET /worker/applications — list worker's own applications
     const workerApplicationsResource = workerResource.addResource('applications');
@@ -591,7 +666,8 @@ export class ApiStack extends cdk.Stack {
     // GET /employer/jobs/{jobId} — job posting detail
     // PATCH /employer/jobs/{jobId} — toggle active/closed status
     // GET /employer/jobs/{jobId}/applicants — list applicants for a job
-    const employerJobResource = employerJobsResource.addResource('{jobId}');
+    this.employerJobResource = employerJobsResource.addResource('{jobId}');
+    const employerJobResource = this.employerJobResource;
     employerJobResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobsDetailLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -713,6 +789,34 @@ export class ApiStack extends cdk.Stack {
           HttpMethod: 'POST',
           ThrottlingBurstLimit: 50,
           ThrottlingRateLimit: 20,
+        },
+        // GET /public/jobs/{code} — unauthenticated public job read (ReferralsStack).
+        // Same conservative shape as /legal/tos: cheap to abuse, no other gate.
+        {
+          ResourcePath: '/public/jobs/{code}',
+          HttpMethod: 'GET',
+          ThrottlingBurstLimit: 20,
+          ThrottlingRateLimit: 10,
+        },
+        // POST /public/jobs/{code}/apply-intent — unauthenticated referral-token
+        // mint. Nothing in public-job-apply-intent.ts bounds how many apply
+        // tokens a caller can mint, so this is the only brake on the route.
+        //
+        // Be precise about what it is: MethodSettings throttles are STAGE-WIDE
+        // across all callers, not per-caller (per-client would need a usage plan
+        // plus API keys). So this caps total minting, and one abuser saturating
+        // the limit degrades the route for real workers rather than being
+        // isolated. Sizing it is a trade-off between abuse volume and denying
+        // legitimate applicants, not a security boundary. Revisit with usage
+        // plans if abuse becomes real.
+        //
+        // this API Gateway throttle is the ONLY abuse control on that route.
+        // Kept tighter than the GET above because minting writes a DB row per call.
+        {
+          ResourcePath: '/public/jobs/{code}/apply-intent',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
         },
       ]);
     }
