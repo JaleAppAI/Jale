@@ -455,6 +455,25 @@ BILLING_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::Se
   || die "could not find the jale_billing DB secret in $DATABASE_STACK"
 note "   billing-secret: $BILLING_SECRET_ARN"
 
+# jale_public_jobs (migration 055) is the anonymous read role behind the public
+# job pages. Its secret only exists once JaleDatabaseStack has deployed with
+# ReferralsDbSecret, so — unlike the four roles above — absence is only fatal
+# when rotating: a plain migration run on a pre-referrals database must not be
+# bricked by it, but a rotate must NEVER silently skip the sync (a skipped sync
+# is exactly the vault/database password drift that leaves the public page
+# failing every request while everything else looks healthy).
+note "Resolving jale_public_jobs DB secret ARN..."
+REFERRALS_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'ReferralsDbSecret')].PhysicalResourceId | [0]")
+if [[ -z "$REFERRALS_SECRET_ARN" || "$REFERRALS_SECRET_ARN" == "None" ]]; then
+  if $ROTATE_SECRETS; then
+    die "could not find the jale/referrals/db secret in $DATABASE_STACK — deploy JaleDatabaseStack first; refusing to silently skip the jale_public_jobs password sync"
+  fi
+  note "   referrals-secret: not found (JaleDatabaseStack predates ReferralsDbSecret) — jale_public_jobs sync unavailable until it deploys"
+  REFERRALS_SECRET_ARN=""
+else
+  note "   referrals-secret: $REFERRALS_SECRET_ARN"
+fi
+
 # ---------------------------------------------------------------------------
 # Read the ledger.
 # ---------------------------------------------------------------------------
@@ -692,14 +711,14 @@ fi
 # acknowledge skipping them.
 if $FRESH_DATABASE && (( ${n_exec:-0} > 0 )) && ! $ROTATE_SECRETS && ! $SKIP_SECRETS; then
   echo "!! This looks like a fresh-database bootstrap: $LEDGER_TABLE was absent or empty before this run, and migrations were just applied." >&2
-  echo "!! Without --rotate-secrets, these roles have no usable password: jale_matching, jale_admin_console, jale_billing, jale_whatsapp." >&2
+  echo "!! Without --rotate-secrets, these roles have no usable password: jale_matching, jale_admin_console, jale_billing, jale_whatsapp, jale_public_jobs." >&2
   echo "!! The secret $WA_DB_SECRET_NAME does not exist." >&2
   echo "!! Re-run with --rotate-secrets to provision them, or pass --skip-secrets to acknowledge this and continue anyway." >&2
   die "refusing to report success from a fresh-database bootstrap with credential-less roles"
 fi
 
 if $FRESH_DATABASE && (( ${n_exec:-0} > 0 )) && $SKIP_SECRETS && ! $ROTATE_SECRETS; then
-  note "--skip-secrets acknowledged: jale_matching, jale_admin_console, jale_billing, jale_whatsapp have no usable password and $WA_DB_SECRET_NAME was not created."
+  note "--skip-secrets acknowledged: jale_matching, jale_admin_console, jale_billing, jale_whatsapp, jale_public_jobs have no usable password and $WA_DB_SECRET_NAME was not created."
 fi
 
 # ---------------------------------------------------------------------------
@@ -722,6 +741,22 @@ BILLING_PW=\$(aws secretsmanager get-secret-value --secret-id "$BILLING_SECRET_A
   --region "\$REGION" --query SecretString --output text | jq -r .password)
 "\${PG[@]}" -q -c "ALTER ROLE jale_billing WITH PASSWORD '\$BILLING_PW';"
 
+# jale_public_jobs: copy the CDK-generated vault password onto the role, then
+# PROVE the login works before this session can report success. The check also
+# exercises the role's one grant (public job columns), so both password drift
+# and a broken grant die here on the bastion instead of surfacing as a public
+# page that 500s every request. Neither value is ever printed.
+PUBLIC_JOBS_PW=\$(aws secretsmanager get-secret-value --secret-id "$REFERRALS_SECRET_ARN" \
+  --region "\$REGION" --query SecretString --output text | jq -r .password)
+"\${PG[@]}" -q -c "ALTER ROLE jale_public_jobs WITH PASSWORD '\$PUBLIC_JOBS_PW';"
+PUBLIC_JOBS_CHECK=\$(PGPASSWORD="\$PUBLIC_JOBS_PW" psql -h "\$DB_HOST" -p "\$DB_PORT" \
+  -U jale_public_jobs -d "\$DB_NAME" -v ON_ERROR_STOP=1 \
+  -tAc "SELECT count(*) FROM jobs WHERE public_listing_enabled") || {
+  echo "!! jale_public_jobs credential check FAILED — vault and database disagree, or the role's grant on jobs is broken" >&2
+  exit 1
+}
+echo "   jale_public_jobs credential check OK (\$PUBLIC_JOBS_CHECK publicly listed jobs)"
+
 WA_PW=\$(openssl rand -base64 32 | tr -d '=+/' | cut -c1-24)
 "\${PG[@]}" -q -c "ALTER ROLE jale_whatsapp WITH PASSWORD '\$WA_PW';"
 
@@ -740,7 +775,7 @@ else
   echo "   created $WA_DB_SECRET_NAME"
 fi
 
-unset PGPASSWORD WA_PW SECRET_STRING MATCHING_PW ADMIN_CONSOLE_PW BILLING_PW
+unset PGPASSWORD WA_PW SECRET_STRING MATCHING_PW ADMIN_CONSOLE_PW BILLING_PW PUBLIC_JOBS_PW PUBLIC_JOBS_CHECK
 echo "$SENTINEL"
 ROTATE
   } > "$WORKDIR/rotate.sh"
