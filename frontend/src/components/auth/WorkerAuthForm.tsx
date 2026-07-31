@@ -13,7 +13,14 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
-import { stashPendingReferral, readPendingReferral, clearPendingReferral, validateReturnTo } from '@/lib/referral-return';
+import {
+    stashPendingReferral,
+    readPendingReferral,
+    clearPendingReferral,
+    validateJobId,
+    markAuthFlowCompleting,
+    clearAuthFlowCompleting,
+} from '@/lib/referral-return';
 
 const OTP_LENGTH = 6;
 const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
@@ -29,14 +36,14 @@ export default function WorkerAuthForm() {
     const tCommon = useTranslations('common');
     const { setTokens } = useAuth();
 
-    // Referred-stranger web-apply carry-through: stash returnTo/share as soon
-    // as they show up on the URL so they survive the multi-step OTP flow
+    // Referred-stranger web-apply carry-through: stash job/share as soon as
+    // they show up on the URL so they survive the multi-step OTP flow
     // (including a page reload mid-flow).
     useEffect(() => {
-        const returnTo = searchParams.get('returnTo');
+        const jobId = searchParams.get('job');
         const shareCode = searchParams.get('share');
-        if (returnTo || shareCode) {
-            stashPendingReferral({ returnTo, shareCode });
+        if (jobId || shareCode) {
+            stashPendingReferral({ jobId, shareCode });
         } else {
             // A plain, param-free visit to this page (e.g. an existing
             // worker logging in directly) must not resurrect a stale
@@ -120,18 +127,37 @@ export default function WorkerAuthForm() {
         setIsLoading(true);
         try {
             const tokens = await workerVerifyOtp(user, code);
+
+            // Claim single ownership of this authenticated transition BEFORE
+            // setTokens flips isAuthenticated -- otherwise auth/worker/page's
+            // own already-authenticated effect fires on the same tick and
+            // both sides claim the referral and race on the redirect.
+            markAuthFlowCompleting();
             setTokens(tokens, 'worker');
 
             const stash = readPendingReferral();
             if (stash?.shareCode) {
-                try {
-                    await claimReferral(tokens.idToken, stash.shareCode);
-                } catch {
-                    // Best-effort: a bad/expired share code must never break signup.
-                }
+                // Fire-and-forget: the claim result is never surfaced to the
+                // user, so don't make them wait on it, and a bad/expired
+                // code must never break signup.
+                claimReferral(tokens.idToken, stash.shareCode).catch(() => {});
             }
-            clearPendingReferral();
-            router.push(validateReturnTo(stash?.returnTo) ?? '/worker/profile');
+
+            // Signup left a pendingWorkerProfile stash -- /worker/profile is
+            // the only page that applies it, so it must always be the next
+            // stop for a fresh signup. It reads pendingReferral itself once
+            // the profile save lands, and continues on to the job from
+            // there. A login (no pendingWorkerProfile) goes straight to the
+            // validated job, same as before.
+            const isSignup = Boolean(sessionStorage.getItem('pendingWorkerProfile'));
+            if (isSignup) {
+                router.push('/worker/profile');
+            } else {
+                const jobId = validateJobId(stash?.jobId);
+                router.push(jobId ? `/worker/jobs/${jobId}` : '/worker/profile');
+                clearPendingReferral();
+            }
+            clearAuthFlowCompleting();
         } catch (err) {
             setError(t(authErrorKey(err)));
         } finally {

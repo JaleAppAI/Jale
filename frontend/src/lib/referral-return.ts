@@ -1,21 +1,23 @@
-// Validates and carries the referral "return" destination through the worker
-// signup/OTP flow. Kept deliberately narrow: the only thing we ever redirect
-// to after auth is an internal /worker/jobs/{uuid} path, never an arbitrary
-// URL supplied by a query string.
+// Validates and carries the referral context through the worker
+// signup/OTP flow. Kept deliberately narrow: the redirect target is built
+// from a bare job UUID, never a caller-supplied path -- an attacker-supplied
+// query param that cannot express a path cannot express an open redirect.
 
 const STORAGE_KEY = 'pendingReferral';
+const COMPLETING_KEY = 'authFlowCompleting';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PendingReferral {
-  returnTo: string | null;
+  jobId: string | null;
   shareCode: string | null;
 }
 
-/** Accepts ONLY an internal worker-job path -- never an open redirect. */
-export function validateReturnTo(value: string | null | undefined): string | null {
+/** Accepts ONLY a bare job UUID -- never a path, and never anything that
+ * could be interpreted as one. */
+export function validateJobId(value: string | null | undefined): string | null {
   if (!value) return null;
-  return /^\/worker\/jobs\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
-    ? value
-    : null;
+  return UUID_RE.test(value) ? value : null;
 }
 
 /**
@@ -40,9 +42,9 @@ export function readPendingReferral(): PendingReferral | null {
   try {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== 'object') return null;
-    const returnTo = typeof parsed.returnTo === 'string' ? parsed.returnTo : null;
+    const jobId = typeof parsed.jobId === 'string' ? parsed.jobId : null;
     const shareCode = typeof parsed.shareCode === 'string' ? parsed.shareCode : null;
-    return { returnTo, shareCode };
+    return { jobId, shareCode };
   } catch {
     return null;
   }
@@ -52,6 +54,38 @@ export function clearPendingReferral(): void {
   if (typeof sessionStorage === 'undefined') return;
   try {
     sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // best-effort only
+  }
+}
+
+// Single-ownership hand-off between WorkerAuthForm and the auth/worker page:
+// while the form is mid-flow (between OTP success and its own router.push),
+// this flag tells the page's already-authenticated-effect to stand down so
+// the two don't both claim the referral and race on the redirect.
+
+export function markAuthFlowCompleting(): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.setItem(COMPLETING_KEY, '1');
+  } catch {
+    // best-effort only
+  }
+}
+
+export function isAuthFlowCompleting(): boolean {
+  if (typeof sessionStorage === 'undefined') return false;
+  try {
+    return sessionStorage.getItem(COMPLETING_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function clearAuthFlowCompleting(): void {
+  if (typeof sessionStorage === 'undefined') return;
+  try {
+    sessionStorage.removeItem(COMPLETING_KEY);
   } catch {
     // best-effort only
   }
