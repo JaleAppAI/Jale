@@ -89,6 +89,8 @@
 
 import { randomBytes } from 'crypto';
 import { Client } from 'pg';
+import type { PoolClient } from 'pg';
+import { writeWebAttribution } from '../../../lambda/lib/referral-attribution';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
 
@@ -938,13 +940,17 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
     });
   });
   // -------------------------------------------------------------------------
-  // writeWebAttribution (worker-referral-claim.ts / referral-attribution.ts):
-  // the web referral-apply claim's upsert, run directly as SQL against the
-  // exact statement writeWebAttribution issues.
+  // writeWebAttribution -- the REAL exported function (referral-attribution.ts),
+  // run against real Postgres under the CLAIMER's RLS context.
+  //
+  // Review lesson baked in: an earlier revision replayed a hand-copied INSERT
+  // with pre-resolved parameters and only ever built SELF-referrals -- so it
+  // stayed green while the RLS-gated share-link SELECT (the exact statement
+  // that filtered to zero rows for every genuine referral before migration
+  // 059) went untested. These tests call the real function, and the primary
+  // fixture is the genuine shape: referrer and claimer are DIFFERENT workers.
   // -------------------------------------------------------------------------
-  describe('writeWebAttribution upsert (web referral-apply claim)', () => {
-    // Local copies rather than hoisting the ones from the first-touch describe
-    // block above -- this file is mutation-verified and must not be rewritten.
+  describe('writeWebAttribution (real function, real RLS)', () => {
     async function makeClaimWorker(): Promise<{ id: string; cognitoSub: string }> {
       const cognitoSub = `referrals-claim-worker-${randomCode(16)}`;
       const client = new Client({ connectionString: superuserUrl });
@@ -965,10 +971,10 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
     /** Mints a job_share_links row as superuser, bypassing RLS. */
     async function makeShareLink(
       channel: string,
-      overrides: Partial<{ jobId: string; referrerWorkerId: string | null }> = {},
-    ): Promise<{ code: string; jobId: string; referrerWorkerId: string | null }> {
-      const jobId = overrides.jobId ?? (await makeJob());
-      const referrerWorkerId = overrides.referrerWorkerId ?? workerUserId;
+      referrerWorkerId: string | null,
+      jobId?: string,
+    ): Promise<{ code: string; jobId: string }> {
+      const resolvedJobId = jobId ?? (await makeJob());
       const code = randomCode(8);
       const client = new Client({ connectionString: superuserUrl });
       await client.connect();
@@ -976,109 +982,76 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
         await client.query(
           `INSERT INTO job_share_links (code, job_id, referrer_worker_id, channel)
            VALUES ($1, $2, $3, $4)`,
-          [code, jobId, referrerWorkerId, channel],
+          [code, resolvedJobId, referrerWorkerId, channel],
         );
       } finally {
         await client.end();
       }
-      return { code, jobId, referrerWorkerId };
+      return { code, jobId: resolvedJobId };
     }
 
-    /** The exact statement writeWebAttribution (referral-attribution.ts) issues. */
-    async function runUpsert(
-      client: Client,
+    /** Runs the real function as jale_admin under the given cognito context. */
+    async function claimAs(
+      cognitoSub: string,
       workerId: string,
       shareCode: string,
-      channel: string,
-      jobId: string,
-      referrerWorkerId: string | null,
-    ) {
-      const nowIso = new Date().toISOString();
-      return client.query(
-        `INSERT INTO worker_attribution
-            (worker_id,
-             first_share_code, first_channel, first_job_id, first_referrer_worker_id, first_seen_at,
-             latest_share_code, latest_channel, latest_job_id, latest_referrer_worker_id, latest_seen_at,
-             created_at, updated_at)
-         VALUES ($1,
-                 $2, $3, $4, $5, $6,
-                 $2, $3, $4, $5, $6,
-                 $6, $6)
-         ON CONFLICT (worker_id) DO UPDATE
-            SET latest_share_code         = EXCLUDED.latest_share_code,
-                latest_channel             = EXCLUDED.latest_channel,
-                latest_job_id              = EXCLUDED.latest_job_id,
-                latest_referrer_worker_id  = EXCLUDED.latest_referrer_worker_id,
-                latest_seen_at             = EXCLUDED.latest_seen_at,
-                updated_at                 = EXCLUDED.updated_at`,
-        [workerId, shareCode, channel, jobId, referrerWorkerId, nowIso],
+    ): Promise<{ written: boolean }> {
+      return asAdmin(adminUrl, cognitoSub, (client) =>
+        writeWebAttribution(client as unknown as PoolClient, workerId, shareCode, new Date()),
       );
     }
 
-    it('as jale_admin WITH app.current_user_id set for a fresh worker, the upsert persists (rowCount === 1)', async () => {
+    it('a GENUINE referral persists: referrer and claimer are different workers (migration 059)', async () => {
+      const referrer = await makeClaimWorker();
       const claimer = await makeClaimWorker();
-      const link = await makeShareLink('whatsapp', { referrerWorkerId: claimer.id });
+      const link = await makeShareLink('copy_link', referrer.id);
 
-      const result = await asAdmin(adminUrl, claimer.cognitoSub, (client) =>
-        runUpsert(client, claimer.id, link.code, 'whatsapp', link.jobId, link.referrerWorkerId),
+      const result = await claimAs(claimer.cognitoSub, claimer.id, link.code);
+      expect(result.written).toBe(true);
+
+      const row = await asAdmin(adminUrl, claimer.cognitoSub, (client) =>
+        client.query<{ first_channel: string; first_referrer_worker_id: string }>(
+          `SELECT first_channel, first_referrer_worker_id
+             FROM worker_attribution WHERE worker_id = $1`,
+          [claimer.id],
+        ),
       );
-      expect(result.rowCount).toBe(1);
+      expect(row.rows).toHaveLength(1);
+      expect(row.rows[0].first_channel).toBe('copy_link');
+      expect(row.rows[0].first_referrer_worker_id).toBe(referrer.id);
     });
 
-    it('WITHOUT app.current_user_id set, the write does not persist -- pins the FORCE-RLS trap', async () => {
-      const claimer = await makeClaimWorker();
-      const link = await makeShareLink('sms', { referrerWorkerId: claimer.id });
+    it('a SELF-referral earns nothing: claiming your own link writes no row', async () => {
+      const worker = await makeClaimWorker();
+      const link = await makeShareLink('whatsapp', worker.id);
 
-      // The INSERT's WITH CHECK failure mode under FORCE RLS is a thrown
-      // permission/RLS error (42501), not a silent zero-row UPDATE -- unlike
-      // an UPDATE, whose USING clause can simply match nothing. Either way,
-      // the invariant that must hold is: no row exists afterward for this
-      // worker. Assert on that invariant (checked as superuser, bypassing
-      // RLS) rather than asserting a specific rowCount/throw shape, so the
-      // test pins the real security property regardless of which failure mode
-      // Postgres takes.
-      const client = new Client({ connectionString: adminUrl });
-      await client.connect();
-      try {
-        await client.query('BEGIN');
-        // Deliberately NOT calling SET LOCAL app.current_user_id here.
-        await runUpsert(client, claimer.id, link.code, 'sms', link.jobId, link.referrerWorkerId).catch(() => {});
-        await client.query('COMMIT');
-      } finally {
-        await client.end();
-      }
+      const result = await claimAs(worker.cognitoSub, worker.id, link.code);
+      expect(result.written).toBe(false);
 
       const check = new Client({ connectionString: superuserUrl });
       await check.connect();
       try {
-        const result = await check.query(
-          `SELECT 1 FROM worker_attribution WHERE worker_id = $1`,
-          [claimer.id],
-        );
-        expect(result.rows).toHaveLength(0);
+        const rows = await check.query(`SELECT 1 FROM worker_attribution WHERE worker_id = $1`, [worker.id]);
+        expect(rows.rows).toHaveLength(0);
       } finally {
         await check.end();
       }
     });
 
-    it('a second claim with a different share code moves latest_* and leaves first_* untouched', async () => {
+    it('an unknown share code returns written:false without error', async () => {
       const claimer = await makeClaimWorker();
-      const link1 = await makeShareLink('whatsapp', { referrerWorkerId: claimer.id });
-      // Same job+referrer, different channel -- the partial unique index
-      // (job_id, referrer_worker_id, channel) requires a distinct channel to
-      // mint a second link for the same job+referrer pair.
-      const link2 = await makeShareLink('facebook', {
-        jobId: link1.jobId,
-        referrerWorkerId: claimer.id,
-      });
+      const result = await claimAs(claimer.cognitoSub, claimer.id, 'ZZZZZZZ2');
+      expect(result.written).toBe(false);
+    });
 
-      await asAdmin(adminUrl, claimer.cognitoSub, (client) =>
-        runUpsert(client, claimer.id, link1.code, 'whatsapp', link1.jobId, link1.referrerWorkerId),
-      );
-      const second = await asAdmin(adminUrl, claimer.cognitoSub, (client) =>
-        runUpsert(client, claimer.id, link2.code, 'facebook', link2.jobId, link2.referrerWorkerId),
-      );
-      expect(second.rowCount).toBe(1);
+    it('a second genuine claim moves latest_* and leaves first_* untouched', async () => {
+      const referrer = await makeClaimWorker();
+      const claimer = await makeClaimWorker();
+      const link1 = await makeShareLink('whatsapp', referrer.id);
+      const link2 = await makeShareLink('facebook', referrer.id, link1.jobId);
+
+      expect((await claimAs(claimer.cognitoSub, claimer.id, link1.code)).written).toBe(true);
+      expect((await claimAs(claimer.cognitoSub, claimer.id, link2.code)).written).toBe(true);
 
       const row = await asAdmin(adminUrl, claimer.cognitoSub, (client) =>
         client.query<{
@@ -1092,11 +1065,52 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
           [claimer.id],
         ),
       );
-      expect(row.rows).toHaveLength(1);
       expect(row.rows[0].first_share_code).toBe(link1.code);
       expect(row.rows[0].first_channel).toBe('whatsapp');
       expect(row.rows[0].latest_share_code).toBe(link2.code);
       expect(row.rows[0].latest_channel).toBe('facebook');
+    });
+
+    it('WITHOUT an RLS context no attribution row can persist -- pins the FORCE-RLS trap', async () => {
+      const referrer = await makeClaimWorker();
+      const claimer = await makeClaimWorker();
+      const link = await makeShareLink('sms', referrer.id);
+
+      const client = new Client({ connectionString: adminUrl });
+      await client.connect();
+      try {
+        await client.query('BEGIN');
+        // Deliberately NOT setting app.current_user_id.
+        await writeWebAttribution(client as unknown as PoolClient, claimer.id, link.code, new Date()).catch(() => {});
+        await client.query('COMMIT').catch(() => {});
+      } finally {
+        await client.end();
+      }
+
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const rows = await check.query(`SELECT 1 FROM worker_attribution WHERE worker_id = $1`, [claimer.id]);
+        expect(rows.rows).toHaveLength(0);
+      } finally {
+        await check.end();
+      }
+    });
+
+    it('a revoked link cannot be claimed', async () => {
+      const referrer = await makeClaimWorker();
+      const claimer = await makeClaimWorker();
+      const link = await makeShareLink('copy_link', referrer.id);
+      const revoke = new Client({ connectionString: superuserUrl });
+      await revoke.connect();
+      try {
+        await revoke.query(`UPDATE job_share_links SET revoked_at = now() WHERE code = $1`, [link.code]);
+      } finally {
+        await revoke.end();
+      }
+
+      const result = await claimAs(claimer.cognitoSub, claimer.id, link.code);
+      expect(result.written).toBe(false);
     });
   });
 });

@@ -1,7 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { checkCompliance } from '../legal/check-compliance';
 import { normalizeCode, isValidShareCode } from '../lib/referral-codes';
 import { writeWebAttribution } from '../lib/referral-attribution';
 
@@ -12,8 +11,9 @@ const CORS_HEADERS = corsHeaders();
  *
  * Called once, right after a worker finishes signup on the web referral-apply
  * path, with the `shareCode` carried in the browser from the public job page
- * URL (`/j/{code}?r={shareCode}`). Mirrors worker-job-share.ts for auth, the
- * compliance gate, RLS context, and the worker-only check.
+ * URL (`/j/{code}?r={shareCode}`). Mirrors worker-job-share.ts for auth, RLS
+ * context, and the worker-only check -- but deliberately NOT the compliance
+ * gate (see the inline note below).
  *
  * An unknown or revoked share code is NOT an error -- `{ claimed: false }`
  * with a 200 status, identically to a valid-shaped code that simply doesn't
@@ -53,16 +53,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('BEGIN');
     await setRlsContext(client, cognitoSub);
 
-    const compliance = await checkCompliance(client, cognitoSub, process.env.REQUIRED_TOS_VERSION!);
-    if (!compliance.userExists) {
-      await client.query('COMMIT');
-      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
-    }
-    if (!compliance.compliant) {
-      await client.query('COMMIT');
-      return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
-    }
-
+    // DELIBERATELY NO checkCompliance/ToS gate here, unlike the sibling worker
+    // endpoints. This endpoint fires seconds after OTP verification, BEFORE the
+    // user has ever been shown the legal wall (post-confirmation creates the
+    // users row with no tos_version, and acceptance happens later on the first
+    // protected page) -- a compliance gate would 403 every brand-new signup,
+    // silently losing the referral it exists to record. Recording where an
+    // account came from is internal bookkeeping about the signup itself, not a
+    // legal-gated user action: it grants nothing, reveals nothing, and writes
+    // only the caller's own attribution row.
     const workerRes = await client.query(`SELECT id, user_type FROM users WHERE cognito_sub = $1`, [cognitoSub]);
     if (workerRes.rows.length === 0) {
       await client.query('COMMIT');

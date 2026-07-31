@@ -1,5 +1,6 @@
 import type { PoolClient } from 'pg';
 import { hashToken } from '../../lib/referral-codes';
+import { writeAttribution } from '../../lib/referral-attribution';
 
 /**
  * WhatsApp referral carry-through (migration 056): parks a referral code
@@ -164,25 +165,22 @@ export async function claimPendingReferral(
     channel = shareResult.rows[0]?.channel ?? 'unknown';
   }
 
-  await client.query(
-    `INSERT INTO worker_attribution
-        (worker_id,
-         first_share_code, first_channel, first_job_id, first_referrer_worker_id, first_seen_at,
-         latest_share_code, latest_channel, latest_job_id, latest_referrer_worker_id, latest_seen_at,
-         created_at, updated_at)
-     VALUES ($1,
-             $2, $3, $4, $5, $6,
-             $2, $3, $4, $5, $6,
-             $6, $6)
-     ON CONFLICT (worker_id) DO UPDATE
-        SET latest_share_code         = EXCLUDED.latest_share_code,
-            latest_channel             = EXCLUDED.latest_channel,
-            latest_job_id              = EXCLUDED.latest_job_id,
-            latest_referrer_worker_id  = EXCLUDED.latest_referrer_worker_id,
-            latest_seen_at             = EXCLUDED.latest_seen_at,
-            updated_at                 = EXCLUDED.updated_at`,
-    [workerId, claim.share_code, channel, claim.job_id, claim.referrer_worker_id, nowIso],
+  // Delegates to the single shared upsert (lib/referral-attribution.ts) —
+  // review found this statement existing in three diverged copies, and this
+  // lane's copy reported success even when FORCE RLS silently filtered the
+  // write to zero rows. The shared implementation is loud about that case.
+  const { written } = await writeAttribution(
+    client,
+    workerId,
+    {
+      jobId: claim.job_id,
+      channel,
+      shareCode: claim.share_code,
+      referrerWorkerId: claim.referrer_worker_id,
+    },
+    now,
+    'WhatsappAttributionNotPersisted',
   );
 
-  return { claimed: true };
+  return { claimed: written };
 }

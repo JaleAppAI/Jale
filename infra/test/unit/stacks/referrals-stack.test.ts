@@ -254,7 +254,10 @@ describe('ReferralsStack', () => {
     expect(fns).toHaveLength(1);
     const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
     expect(env).toHaveProperty('DB_SECRET_ARN');
-    expect(env).toHaveProperty('REQUIRED_TOS_VERSION');
+    // Deliberately NO REQUIRED_TOS_VERSION: the claim endpoint has no
+    // compliance gate (it fires post-OTP, pre-legal-wall -- see the handler's
+    // inline note). Its absence here pins that design.
+    expect(env).not.toHaveProperty('REQUIRED_TOS_VERSION');
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 

@@ -1,72 +1,55 @@
 import type { PoolClient } from 'pg';
 
 /**
- * Web referral-apply attribution: writes `worker_attribution` for a worker
- * who just signed up after landing on a public job page via a share link
- * (`?r=<shareCode>`), claimed directly at signup rather than parked/claimed
- * through the WhatsApp carry-through (see `../whatsapp/lib/referral-claims.ts`
- * for that lane's equivalent, `claimPendingReferral`).
+ * Worker attribution writes, shared by BOTH referral lanes:
  *
- * Caller owns the transaction (same contract as `claimPendingReferral`): no
- * BEGIN/COMMIT/ROLLBACK here.
+ *   - the web apply flow (`writeWebAttribution`, called by
+ *     `api/worker-referral-claim.ts` as the authenticated claimer), and
+ *   - the WhatsApp carry-through (`claimPendingReferral` in
+ *     `../whatsapp/lib/referral-claims.ts`, which delegates its upsert here).
  *
- * SECURITY NOTE — read this before assuming this function "just works" under
- * RLS: `job_share_links` has exactly one `jale_admin` policy in migration 056,
- * `job_share_links_owner`, scoped to `referrer_worker_id = current caller`.
- * The caller of this function's SELECT is the WORKER BEING REFERRED (the
- * claimer), not the referrer who minted the link — those are, by definition
- * of a referral, two different people. Under FORCE ROW LEVEL SECURITY that
- * means the SELECT below returns zero rows for every real (non-self) referral
- * once `setRlsContext` has set `app.current_user_id` to the claimer's sub, and
- * this function will always return `{ written: false }` in production. This
- * is a pre-existing RLS gap in the schema this task was scoped to build
- * against (migration 056/057), not something introduced here — fixing it
- * requires a migration (e.g. a second SELECT policy scoped to
- * `revoked_at IS NULL`, mirroring `job_share_links_public_read`), which is out
- * of scope for this task (`infra/db/migrations/` is off-limits). Flagged here
- * and in the task's final report rather than worked around with a role switch
- * or a SECURITY DEFINER function, either of which would change the security
- * model outside this task's authorization.
+ * One implementation on purpose: review found the upsert existed in three
+ * textually identical copies that had already diverged (the WhatsApp lane
+ * reported success on a silently RLS-filtered write). The statement below is
+ * the only copy; both lanes and the integration tests exercise this exact
+ * function.
+ *
+ * Caller owns the transaction: no BEGIN/COMMIT/ROLLBACK here.
  */
-export async function writeWebAttribution(
+
+export interface AttributionSource {
+  jobId: string;
+  /** The channel that EARNED the referral — always the share link's own
+   * channel, never hardcoded and never supplied by a client. */
+  channel: string;
+  shareCode: string | null;
+  referrerWorkerId: string | null;
+}
+
+/**
+ * Upserts `worker_attribution` for a worker.
+ *
+ * `first_*` is inserted once and NEVER updated — the `DO UPDATE SET` list
+ * deliberately omits every `first_*` column, because
+ * `worker_attribution_first_touch_immutable` (migration 056) raises on any
+ * UPDATE that changes one. `latest_*` is always refreshed. The referrer is
+ * denormalized into BOTH `first_referrer_worker_id` and
+ * `latest_referrer_worker_id`: `job_share_links.referrer_worker_id` is
+ * `ON DELETE SET NULL`, so this copy is what preserves credit after a
+ * referring worker's account is later deleted.
+ *
+ * A zero-row result under FORCE RLS is a silently filtered write, not a
+ * no-op — logged loudly (static metric, never a code or phone value) and
+ * reported as `{ written: false }`, never swallowed as success.
+ */
+export async function writeAttribution(
   client: PoolClient,
   workerId: string,
-  shareCode: string,
+  source: AttributionSource,
   now: Date,
+  metric: string,
 ): Promise<{ written: boolean }> {
   const nowIso = now.toISOString();
-
-  const linkResult = await client.query<{
-    job_id: string;
-    channel: string;
-    referrer_worker_id: string | null;
-  }>(
-    `SELECT job_id, channel, referrer_worker_id
-       FROM job_share_links
-      WHERE code = $1
-        AND revoked_at IS NULL`,
-    [shareCode],
-  );
-
-  const link = linkResult.rows[0];
-  if (!link) {
-    return { written: false };
-  }
-
-  // The channel that EARNED the referral is the share link's own channel —
-  // never hardcoded here, never a channel supplied by the client. See
-  // claimPendingReferral's identical rationale in
-  // ../whatsapp/lib/referral-claims.ts.
-  const { job_id: jobId, channel, referrer_worker_id: referrerWorkerId } = link;
-
-  // `first_*` is inserted once and NEVER updated -- the `DO UPDATE SET` list
-  // below deliberately omits every `first_*` column, because
-  // `worker_attribution_first_touch_immutable` (migration 056) raises on any
-  // UPDATE that changes one. `latest_*` is always refreshed. The share link's
-  // `referrer_worker_id` is copied into BOTH `first_referrer_worker_id` and
-  // `latest_referrer_worker_id` at write time: `job_share_links.referrer_worker_id`
-  // is `ON DELETE SET NULL`, so this denormalization is what preserves credit
-  // after a referring worker's account is later deleted.
   const upsertResult = await client.query(
     `INSERT INTO worker_attribution
         (worker_id,
@@ -84,15 +67,67 @@ export async function writeWebAttribution(
             latest_referrer_worker_id  = EXCLUDED.latest_referrer_worker_id,
             latest_seen_at             = EXCLUDED.latest_seen_at,
             updated_at                 = EXCLUDED.updated_at`,
-    [workerId, shareCode, channel, jobId, referrerWorkerId, nowIso],
+    [workerId, source.shareCode, source.channel, source.jobId, source.referrerWorkerId, nowIso],
   );
 
-  // A zero-row result under FORCE RLS is a silently filtered write, not a
-  // no-op -- that must be loud, never swallowed as a quiet `{ written: false }`.
   if (upsertResult.rowCount !== 1) {
-    console.error(JSON.stringify({ metric: 'WebAttributionNotPersisted', workerId }));
+    console.error(JSON.stringify({ metric, workerId }));
+    return { written: false };
+  }
+  return { written: true };
+}
+
+/**
+ * Web referral-apply attribution: resolves a share code and credits the
+ * referral for the authenticated claimer.
+ *
+ * The share-link read relies on `job_share_links_claim_read` (migration 059):
+ * a share code is a capability token, so possession of the code IS the
+ * authorization to resolve it — the same contract the anonymous public role
+ * already has. Before 059, the only `jale_admin` policy was owner-scoped and
+ * this read returned zero rows for every genuine (non-self) referral.
+ */
+export async function writeWebAttribution(
+  client: PoolClient,
+  workerId: string,
+  shareCode: string,
+  now: Date,
+): Promise<{ written: boolean }> {
+  const linkResult = await client.query<{
+    job_id: string;
+    channel: string;
+    referrer_worker_id: string | null;
+  }>(
+    `SELECT job_id, channel, referrer_worker_id
+       FROM job_share_links
+      WHERE code = $1
+        AND revoked_at IS NULL`,
+    [shareCode],
+  );
+
+  const link = linkResult.rows[0];
+  if (!link) {
     return { written: false };
   }
 
-  return { written: true };
+  // Self-referral guard: a worker claiming their OWN share link earns no
+  // credit. Without this, the first_* immutability trigger would make the
+  // self-credit permanent and any future referral reward keyed on
+  // first_referrer_worker_id would pay a worker for referring themselves.
+  if (link.referrer_worker_id !== null && link.referrer_worker_id === workerId) {
+    return { written: false };
+  }
+
+  return writeAttribution(
+    client,
+    workerId,
+    {
+      jobId: link.job_id,
+      channel: link.channel,
+      shareCode,
+      referrerWorkerId: link.referrer_worker_id,
+    },
+    now,
+    'WebAttributionNotPersisted',
+  );
 }

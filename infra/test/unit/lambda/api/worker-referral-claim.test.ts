@@ -84,18 +84,28 @@ describe('worker-referral-claim', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('returns 409 user_not_provisioned when compliance says the user does not exist', async () => {
-    mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: false, currentVersion: null });
+  it('does NOT gate on ToS compliance -- a fresh post-OTP signup with no tos_version can claim', async () => {
+    // Review finding: this endpoint fires seconds after OTP, BEFORE the legal
+    // wall has ever been shown; a compliance gate here 403'd every brand-new
+    // signup and silently lost the referral. The gate was removed on purpose;
+    // this test pins that checkCompliance is never even consulted.
+    mockHappyPath({ job_id: 'job-1', channel: 'copy_link', referrer_worker_id: 'referrer-1' });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ claimed: true });
+    expect(mockCheckCompliance).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 user_not_provisioned when no users row exists for the sub', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (typeof q === 'string' && q.includes('SELECT id, user_type FROM users')) {
+        return Promise.resolve({ rows: [] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body)).toEqual({ error: 'user_not_provisioned' });
-  });
-
-  it('returns 403 legal_required when the user has not accepted the required ToS', async () => {
-    mockCheckCompliance.mockResolvedValue({ compliant: false, userExists: true, currentVersion: '0.9' });
-    const res = await handler(makeEvent());
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.body).error).toBe('legal_required');
   });
 
   it('returns 403 worker_only when the caller is an employer', async () => {

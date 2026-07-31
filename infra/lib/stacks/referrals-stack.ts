@@ -206,7 +206,6 @@ export class ReferralsStack extends cdk.Stack {
       description: 'Worker referral claim endpoint',
       environment: {
         DB_SECRET_ARN: props.appDbSecret.secretArn,
-        REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
       },
       ...lambdaProps,
