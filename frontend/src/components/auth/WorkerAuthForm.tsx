@@ -1,17 +1,26 @@
 'use client';
-import { useState, useRef, type MutableRefObject, type ReactNode } from 'react';
+import { useState, useRef, useEffect, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
+import { useSearchParams } from 'next/navigation';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
-import type { WorkerAvailability, WorkerExperience, WorkerProfilePatch, WorkerTrade } from '@/lib/api/worker';
+import { claimReferral, type WorkerAvailability, type WorkerExperience, type WorkerProfilePatch, type WorkerTrade } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
+import {
+    stashPendingReferral,
+    readPendingReferral,
+    clearPendingReferral,
+    validateJobId,
+    markAuthFlowCompleting,
+    clearAuthFlowCompleting,
+} from '@/lib/referral-return';
 
 const OTP_LENGTH = 6;
 const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
@@ -22,9 +31,27 @@ type Step = 'login' | 'signup' | 'otp';
 
 export default function WorkerAuthForm() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const t = useTranslations('auth.worker');
     const tCommon = useTranslations('common');
     const { setTokens } = useAuth();
+
+    // Referred-stranger web-apply carry-through: stash job/share as soon as
+    // they show up on the URL so they survive the multi-step OTP flow
+    // (including a page reload mid-flow).
+    useEffect(() => {
+        const jobId = searchParams.get('job');
+        const shareCode = searchParams.get('share');
+        if (jobId || shareCode) {
+            stashPendingReferral({ jobId, shareCode });
+        } else {
+            // A plain, param-free visit to this page (e.g. an existing
+            // worker logging in directly) must not resurrect a stale
+            // referral left over from an earlier, abandoned attempt.
+            clearPendingReferral();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const [step, setStep] = useState<Step>('login');
     const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
@@ -100,8 +127,37 @@ export default function WorkerAuthForm() {
         setIsLoading(true);
         try {
             const tokens = await workerVerifyOtp(user, code);
+
+            // Claim single ownership of this authenticated transition BEFORE
+            // setTokens flips isAuthenticated -- otherwise auth/worker/page's
+            // own already-authenticated effect fires on the same tick and
+            // both sides claim the referral and race on the redirect.
+            markAuthFlowCompleting();
             setTokens(tokens, 'worker');
-            router.push('/worker/profile');
+
+            const stash = readPendingReferral();
+            if (stash?.shareCode) {
+                // Fire-and-forget: the claim result is never surfaced to the
+                // user, so don't make them wait on it, and a bad/expired
+                // code must never break signup.
+                claimReferral(tokens.idToken, stash.shareCode).catch(() => {});
+            }
+
+            // Signup left a pendingWorkerProfile stash -- /worker/profile is
+            // the only page that applies it, so it must always be the next
+            // stop for a fresh signup. It reads pendingReferral itself once
+            // the profile save lands, and continues on to the job from
+            // there. A login (no pendingWorkerProfile) goes straight to the
+            // validated job, same as before.
+            const isSignup = Boolean(sessionStorage.getItem('pendingWorkerProfile'));
+            if (isSignup) {
+                router.push('/worker/profile');
+            } else {
+                const jobId = validateJobId(stash?.jobId);
+                router.push(jobId ? `/worker/jobs/${jobId}` : '/worker/profile');
+                clearPendingReferral();
+            }
+            clearAuthFlowCompleting();
         } catch (err) {
             setError(t(authErrorKey(err)));
         } finally {

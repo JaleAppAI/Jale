@@ -146,7 +146,7 @@ describe('claimPendingReferral', () => {
     query
       .mockResolvedValueOnce({ rows: [{ job_id: JOB_ID, share_code: SHARE_CODE, referrer_worker_id: REFERRER_ID }] }) // claim UPDATE
       .mockResolvedValueOnce({ rows: [{ channel: 'facebook' }] }) // channel lookup on the share link
-      .mockResolvedValueOnce({ rows: [] }); // worker_attribution upsert
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // worker_attribution upsert persists
 
     const result = await claimPendingReferral(client, PHONE_HASH, WORKER_ID, NOW);
 
@@ -175,7 +175,7 @@ describe('claimPendingReferral', () => {
     const { query, client } = makeClient();
     query
       .mockResolvedValueOnce({ rows: [{ job_id: JOB_ID, share_code: null, referrer_worker_id: null }] }) // claim UPDATE, no share_code
-      .mockResolvedValueOnce({ rows: [] }); // worker_attribution upsert — no channel lookup, since share_code is null
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }); // worker_attribution upsert persists — no channel lookup, since share_code is null
 
     await claimPendingReferral(client, PHONE_HASH, WORKER_ID, NOW);
 

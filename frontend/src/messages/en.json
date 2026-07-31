@@ -837,12 +837,19 @@
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
     "apply_button": "Apply on WhatsApp",
+    "apply_web": "Apply on the website",
     "apply_loading": "Opening WhatsApp...",
     "apply_error": "Something went wrong. Please try again.",
     "apply_hint": "You'll finish applying on WhatsApp - no app download needed.",
     "closed_title": "This job is no longer accepting applications",
     "closed_body": "But there's more work waiting for you on Jale.",
-    "browse_jobs": "See other jobs on Jale"
+    "browse_jobs": "See other jobs on Jale",
+    "eyebrow": "Open position",
+    "referred_banner": "A friend sent you this job",
+    "requirements": "What you need",
+    "experience_chip": "{years, plural, one {#+ year experience} other {#+ years experience}}",
+    "openings_chip": "{count, plural, one {# opening} other {# openings}}",
+    "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
   },
   "employer_job_visibility": {
     "title": "Public job page",
@@ -850,7 +857,10 @@
     "shares": "Shared publicly: job title, company, location, pay and description. Never shared: your contact details, your other jobs, or anyone who has applied.",
     "enabled": "Public - anyone with the link can read this posting",
     "disabled": "Private - only workers signed in to Jale can see it",
-    "error": "Could not update visibility. Please try again."
+    "error": "Could not update visibility. Please try again.",
+    "link_label": "Public link",
+    "copy": "Copy",
+    "copied": "Copied!"
   },
   "job_share": {
     "title": "Share this job",

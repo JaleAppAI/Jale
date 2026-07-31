@@ -133,7 +133,9 @@ describe('public-job Lambda', () => {
     expect(body.code).toBe('ABC123');
     expect(body.title).toBe('Warehouse Associate');
     expect(body.status).toBe('active');
-    expect(body.id).toBeUndefined();
+    // `id` IS returned for an active job -- it's what lets the post-signup
+    // redirect land on /worker/jobs/{id} with no new lookup endpoint.
+    expect(body.id).toBe('job-uuid');
     expect(body.employer_id).toBeUndefined();
   });
 
@@ -154,6 +156,8 @@ describe('public-job Lambda', () => {
       status: 'closed',
       applications_closed: true,
     });
+    // The closed view must NOT gain `id` -- only the active branch includes it.
+    expect(body.id).toBeUndefined();
   });
 
   it('records an untagged open when r is malformed', async () => {
