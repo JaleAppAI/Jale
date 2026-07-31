@@ -416,6 +416,65 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
     });
   });
 
+  describe('jale_public_jobs: the REAL open-record statement (migration 058)', () => {
+    // Production finding (2026-07-31): the de-duplication guard reads
+    // job_share_opens via NOT EXISTS before inserting, but the role was only
+    // granted INSERT — every open was dropped with "permission denied" while
+    // the page rendered fine. This suite previously never exercised the
+    // statement at all, and a plain INSERT...VALUES would still pass today.
+    // So: run the EXACT statement public-job.ts executes. If the handler's
+    // SQL changes shape again, change it here in lockstep.
+    const GUARDED_OPEN_INSERT = `INSERT INTO job_share_opens (share_code, job_id, device_kind, locale, visitor_hash)
+             SELECT $1, $2, $3, $4, $5
+              WHERE $5::text IS NULL
+                 OR NOT EXISTS (
+                   SELECT 1 FROM job_share_opens
+                    WHERE visitor_hash = $5
+                      AND job_id = $2
+                      AND opened_at > now() - interval '30 minutes'
+                 )
+             RETURNING id`;
+
+    it('records an open with a non-null visitor hash (the guard must be readable)', async () => {
+      const jobId = await makeJob();
+      const visitorHash = randomHash();
+      const inserted = await asPublicJobs(publicUrl, (client) =>
+        client.query(GUARDED_OPEN_INSERT, [null, jobId, 'mobile', 'es', visitorHash]),
+      );
+      expect(inserted.rows).toHaveLength(1);
+    });
+
+    it('the same visitor within the window is a no-op at the DB layer', async () => {
+      const jobId = await makeJob();
+      const visitorHash = randomHash();
+      await asPublicJobs(publicUrl, (client) =>
+        client.query(GUARDED_OPEN_INSERT, [null, jobId, 'mobile', 'es', visitorHash]),
+      );
+      const repeat = await asPublicJobs(publicUrl, (client) =>
+        client.query(GUARDED_OPEN_INSERT, [null, jobId, 'mobile', 'es', visitorHash]),
+      );
+      expect(repeat.rows).toHaveLength(0);
+    });
+
+    it('a null visitor hash always records (no salt configured must not under-count)', async () => {
+      const jobId = await makeJob();
+      const first = await asPublicJobs(publicUrl, (client) =>
+        client.query(GUARDED_OPEN_INSERT, [null, jobId, 'unknown', null, null]),
+      );
+      const second = await asPublicJobs(publicUrl, (client) =>
+        client.query(GUARDED_OPEN_INSERT, [null, jobId, 'unknown', null, null]),
+      );
+      expect(first.rows).toHaveLength(1);
+      expect(second.rows).toHaveLength(1);
+    });
+
+    it('the grant stays column-scoped: the role cannot read share_code from opens', async () => {
+      await expect(
+        asPublicJobs(publicUrl, (client) => client.query(`SELECT share_code FROM job_share_opens LIMIT 1`)),
+      ).rejects.toThrow(/permission denied/);
+    });
+  });
+
   describe('worker_attribution: first-touch immutability trigger', () => {
     // Each test below creates its OWN brand-new worker (unique cognito_sub,
     // hence a worker_id that has never existed in worker_attribution before)
