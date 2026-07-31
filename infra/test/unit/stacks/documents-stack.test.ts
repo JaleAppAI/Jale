@@ -4,6 +4,7 @@ import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
 import { AuthStack } from '../../../lib/stacks/auth-stack';
 import { ApiStack } from '../../../lib/stacks/api-stack';
+import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { DocumentsStack } from '../../../lib/stacks/documents-stack';
 
@@ -27,6 +28,13 @@ describe('DocumentsStack', () => {
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
     });
+    const ai = new AiStack(app, 'TestAiStack', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
     const api = new ApiStack(app, 'TestApiStack', {
       workerPool: auth.workerPool,
       employerPool: auth.employerPool,
@@ -34,6 +42,7 @@ describe('DocumentsStack', () => {
       privateSubnets: network.privateSubnets,
       lambdaSg: network.lambdaSg,
       dbSecret: database.dbSecret,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
       whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
     });
     new LegalStack(app, 'TestLegalStack', {

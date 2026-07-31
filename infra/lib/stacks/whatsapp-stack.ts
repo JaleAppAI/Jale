@@ -36,6 +36,7 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly api: apigateway.RestApi;
   readonly workerRerankQueue?: sqs.IQueue;
   readonly questionGeneratorFn: lambda.IFunction;
+  readonly aliasGeneratorFn: lambda.IFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
   /** Exact public API Gateway URL configured in Twilio for delivery callbacks. */
   readonly statusCallbackUrl: string;
@@ -460,6 +461,7 @@ export class WhatsAppStack extends cdk.Stack {
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
         QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+        ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
       nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-lambda'],
@@ -468,6 +470,7 @@ export class WhatsAppStack extends cdk.Stack {
     twilioSecret.grantRead(aiProfileWriterLambda.function);
     mediaBucket.grantRead(aiProfileWriterLambda.function);
     props.questionGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
+    props.aliasGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
     // Stream B (Task 8d): a voice note ingested from the v2 lane's
     // profile.voice_choice step completes through this SAME lambda; its v2
     // branch re-enters the v2 onboarding lane by sending a synthetic `#vp`
@@ -556,6 +559,10 @@ export class WhatsAppStack extends cdk.Stack {
       props.questionGeneratorFn.functionArn,
     );
     this.processorLambda.function.addEnvironment(
+      'ALIAS_GENERATOR_ARN',
+      props.aliasGeneratorFn.functionArn,
+    );
+    this.processorLambda.function.addEnvironment(
       'TRUST_ASSESSMENT_QUEUE_URL',
       props.trustAssessmentQueue.queueUrl,
     );
@@ -564,6 +571,7 @@ export class WhatsAppStack extends cdk.Stack {
     trustVoicePipeline.stateMachine.grantStartExecution(this.processorLambda.function);
     props.trustAssessmentQueue.grantSendMessages(this.processorLambda.function);
     props.questionGeneratorFn.grantInvoke(this.processorLambda.function);
+    props.aliasGeneratorFn.grantInvoke(this.processorLambda.function);
 
     // Public Twilio delivery-status receiver. Authentication is the Twilio
     // HMAC signature; it needs DB + Twilio secrets but no Cognito authorizer.
