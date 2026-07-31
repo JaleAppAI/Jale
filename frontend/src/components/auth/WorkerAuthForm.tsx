@@ -1,17 +1,19 @@
 'use client';
-import { useState, useRef, type MutableRefObject, type ReactNode } from 'react';
+import { useState, useRef, useEffect, type MutableRefObject, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
+import { useSearchParams } from 'next/navigation';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
-import type { WorkerAvailability, WorkerExperience, WorkerProfilePatch, WorkerTrade } from '@/lib/api/worker';
+import { claimReferral, type WorkerAvailability, type WorkerExperience, type WorkerProfilePatch, type WorkerTrade } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select } from '@/components/ui/select';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
+import { stashPendingReferral, readPendingReferral, clearPendingReferral, validateReturnTo } from '@/lib/referral-return';
 
 const OTP_LENGTH = 6;
 const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
@@ -22,9 +24,27 @@ type Step = 'login' | 'signup' | 'otp';
 
 export default function WorkerAuthForm() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const t = useTranslations('auth.worker');
     const tCommon = useTranslations('common');
     const { setTokens } = useAuth();
+
+    // Referred-stranger web-apply carry-through: stash returnTo/share as soon
+    // as they show up on the URL so they survive the multi-step OTP flow
+    // (including a page reload mid-flow).
+    useEffect(() => {
+        const returnTo = searchParams.get('returnTo');
+        const shareCode = searchParams.get('share');
+        if (returnTo || shareCode) {
+            stashPendingReferral({ returnTo, shareCode });
+        } else {
+            // A plain, param-free visit to this page (e.g. an existing
+            // worker logging in directly) must not resurrect a stale
+            // referral left over from an earlier, abandoned attempt.
+            clearPendingReferral();
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const [step, setStep] = useState<Step>('login');
     const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
@@ -101,7 +121,17 @@ export default function WorkerAuthForm() {
         try {
             const tokens = await workerVerifyOtp(user, code);
             setTokens(tokens, 'worker');
-            router.push('/worker/profile');
+
+            const stash = readPendingReferral();
+            if (stash?.shareCode) {
+                try {
+                    await claimReferral(tokens.idToken, stash.shareCode);
+                } catch {
+                    // Best-effort: a bad/expired share code must never break signup.
+                }
+            }
+            clearPendingReferral();
+            router.push(validateReturnTo(stash?.returnTo) ?? '/worker/profile');
         } catch (err) {
             setError(t(authErrorKey(err)));
         } finally {

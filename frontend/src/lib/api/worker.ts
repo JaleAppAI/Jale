@@ -290,3 +290,25 @@ export async function shareJob(
   }
   return res.json();
 }
+
+export interface ClaimReferralResponse {
+  claimed: boolean;
+}
+
+/**
+ * Claims a referral share code for the just-authenticated worker. Called
+ * best-effort right after OTP verification in the web-apply carry-through --
+ * a bad/expired code must never break signup, so callers should wrap this in
+ * their own try/catch and swallow failures.
+ */
+export async function claimReferral(token: string, shareCode: string): Promise<ClaimReferralResponse> {
+  const res = await apiFetch('/worker/referrals/claim', { method: 'POST', body: JSON.stringify({ shareCode }) }, token);
+  if (!res.ok) {
+    const body = await readErrorBody(res);
+    const err = new Error(body.error ?? 'claim_failed') as WorkerApiError;
+    err.status = res.status;
+    err.code = body.error;
+    throw err;
+  }
+  return res.json();
+}

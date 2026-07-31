@@ -6,6 +6,7 @@ import { formatStartDate } from '@/lib/date';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
 import { ApplyButton } from './ApplyButton';
+import { WebApplyButton } from './WebApplyButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -271,6 +272,9 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
           <div className="mt-4">
             <ApplyButton code={active.code} shareCode={shareCode} />
             <p className="text-center text-xs text-[var(--jale-ink-2)] mt-3">{t('apply_hint')}</p>
+            {active.id && (
+              <WebApplyButton jobId={active.id} shareCode={shareCode} label={t('apply_web')} />
+            )}
           </div>
 
           <TrustFooter text={t('about_jale')} />

@@ -12,6 +12,10 @@ export type PublicJobDocType = 'resume' | 'driver_license' | 'ssn';
 
 export interface PublicJobActive {
   code: string;
+  /** Internal worker-job UUID; added by a parallel backend task, so it may
+   * be absent on older payloads. Only used to build the "Apply on the
+   * website" link -- code defensively against it being undefined. */
+  id?: string;
   title: string;
   company: string;
   location: string;
