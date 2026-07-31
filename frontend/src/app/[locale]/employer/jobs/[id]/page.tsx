@@ -271,7 +271,7 @@ export default function JobDetailPage() {
           </Card>
 
           <div className="mb-6">
-            <PublicListingToggle jobId={job.id} initialEnabled={job.public_listing_enabled} />
+            <PublicListingToggle jobId={job.id} initialEnabled={job.public_listing_enabled} publicCode={job.public_code} />
           </div>
 
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
