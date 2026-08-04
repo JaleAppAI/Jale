@@ -124,6 +124,8 @@ export type WorkerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' |
 export type WorkerExperience = '0-1' | '2-4' | '5-9' | '10+';
 export type WorkerAvailability = 'full_time' | 'part_time' | 'weekends' | 'flexible';
 
+export type PreferredCity = { city_key: string; city: string; state: string };
+
 export type WorkerProfileData = {
   id: string;
   phone: string;
@@ -138,6 +140,7 @@ export type WorkerProfileData = {
   main_trade_other?: string | null;
   has_transportation?: boolean | null;
   certifications?: string[] | null;
+  preferred_cities?: PreferredCity[];
 };
 
 export type WorkerVaultDoc = {
@@ -149,8 +152,17 @@ export type WorkerVaultDoc = {
   url: string;
 };
 
+/**
+ * `latitude`/`longitude` must be sent together (all-or-none) — sending only
+ * one is meaningless to the backend geocode/coordinate write path.
+ * `preferred_cities`, when present, replaces the worker's full preferred-city
+ * list (already declared on `WorkerProfileData`; not re-declared here).
+ */
 export type WorkerProfilePatch = Partial<Omit<WorkerProfileData, 'id' | 'phone' | 'years_experience'> & {
   years_experience: number | WorkerExperience | null;
+  latitude: number;
+  longitude: number;
+  location_source: 'geocoded_zip' | 'geocoded_address';
 }>;
 
 export type WorkerApiError = Error & {
@@ -170,7 +182,7 @@ async function readErrorBody(res: Response): Promise<{ error?: string; missing_d
 export async function getJobs(
   token: string,
   filters?: { search?: string; job_type?: string },
-): Promise<{ jobs: Job[] }> {
+): Promise<{ jobs: Job[]; other_jobs?: Job[] }> {
   const qs = new URLSearchParams();
   if (filters?.search) qs.set('search', filters.search);
   if (filters?.job_type) qs.set('job_type', filters.job_type);

@@ -1,7 +1,8 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { setWorkerCoordinates } from '../lib/location';
+import { setWorkerCoordinates, type WorkerLocationSource } from '../lib/location';
+import { parsePreferredCities, type CityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
 
@@ -9,6 +10,9 @@ const CORS_HEADERS = corsHeaders();
 const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
 const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'] as const;
 const VALID_AVAIL = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
+// 'map_pin' is deliberately absent: no client can drop a pin yet, and its
+// confidence (100) would outrank every later correction. See migration 061 §4.
+const VALID_LOCATION_SOURCES = ['geocoded_zip', 'geocoded_address'] as const satisfies readonly WorkerLocationSource[];
 const MAX_CERTIFICATIONS = 20;
 const MAX_CERTIFICATION_LENGTH = 200;
 const MAX_EXPERIENCE_YEARS = 80;
@@ -136,6 +140,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
     }
 
+    const hasLocationSource = Object.prototype.hasOwnProperty.call(body, 'location_source');
+    if (hasLocationSource && !VALID_LOCATION_SOURCES.includes(body.location_source)) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_location_source', valid: VALID_LOCATION_SOURCES }) };
+    }
+
+    const preferredProvided = Object.prototype.hasOwnProperty.call(body, 'preferred_cities');
+    let preferredCities: CityFields[] = [];
+    if (preferredProvided) {
+      const parsed = parsePreferredCities(body.preferred_cities);
+      if (!parsed.ok) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: parsed.error }) };
+      }
+      preferredCities = parsed.value;
+    }
+
     const pool = await getDbPool();
     client = await pool.connect();
     await client.query('BEGIN');
@@ -216,7 +235,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          experience_months,
          location,
          bio,
-         certifications`,
+         certifications,
+         COALESCE((
+           SELECT json_agg(json_build_object('city_key', wpc.city_key, 'city', wpc.city, 'state', wpc.state) ORDER BY wpc.created_at, wpc.city_key)
+           FROM worker_preferred_cities wpc
+           WHERE wpc.user_id = worker_profiles.user_id
+         ), '[]'::json) AS preferred_cities`,
       [
         cognitoSub,
         availability ?? null,
@@ -244,8 +268,34 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       }
       profile.skills = skillsToWrite;
     }
+    // Full replacement, so it only runs when the client actually sent the field
+    // -- an ordinary profile save that omits it must not wipe the worker's
+    // cities. The RETURNING above already carried the stored list; this
+    // overwrites it with the new one because those rows post-date that read.
+    //
+    // The 061 RLS policy resolves the row owner through user_type = 'worker',
+    // so a non-worker account reaching this endpoint with preferred_cities
+    // writes zero rows and trips the transaction, surfacing as a 500 rather
+    // than a 403. Known and accepted: the security outcome is correct and no
+    // client can legitimately produce that call.
+    if (preferredProvided) {
+      await client.query('DELETE FROM worker_preferred_cities WHERE user_id = $1', [profile.user_id]);
+      if (preferredCities.length > 0) {
+        await client.query(
+          `INSERT INTO worker_preferred_cities (user_id, city_key, city, state)
+           SELECT $1, x.city_key, x.city, x.state
+           FROM jsonb_to_recordset($2::jsonb) AS x(city_key text, city text, state text)`,
+          [profile.user_id, JSON.stringify(preferredCities)],
+        );
+      }
+      profile.preferred_cities = preferredCities;
+    }
     if (hasLatitude) {
-      await setWorkerCoordinates(client, profile.user_id, body.latitude, body.longitude, 'map_pin');
+      // Precedence is by confidence: geocoded_zip (30) < geocoded_address (70),
+      // and within 7 days a stored higher-confidence fix wins by design -- a ZIP
+      // centroid must not overwrite a full-address geocode.
+      const source = hasLocationSource ? body.location_source : 'geocoded_address';
+      await setWorkerCoordinates(client, profile.user_id, body.latitude, body.longitude, source);
     }
 
     await client.query('COMMIT');

@@ -2,7 +2,8 @@
   "common": {
     "loading": "Loading...",
     "error": "Something went wrong",
-    "retry": "Try again"
+    "retry": "Try again",
+    "location_no_matches": "No matches"
   },
   "match": {
     "score_bands": {

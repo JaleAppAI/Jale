@@ -92,6 +92,12 @@ export interface ListMatchedJobsOptions {
   channel: 'api' | 'whatsapp';
   search?: string;
   jobType?: string;
+  /** Strict filter: only jobs whose city_key is in this list. Applied in SQL
+   * (not post-scoring) so workers in low-volume cities aren't starved by the
+   * recency-ordered candidate cap. */
+  cityKeys?: string[];
+  /** Fallback query: only jobs whose city_key is NOT in this list (or NULL). */
+  excludeCityKeys?: string[];
 }
 
 /** A row from `trade_aliases` (migration 060) -- the self-growing bilingual
@@ -606,9 +612,11 @@ export async function listMatchedJobsForWorker(
   const params: unknown[] = [workerId];
   const filters = [JOB_ELIGIBLE_STATUS, jobNotAppliedPredicate('$1')];
 
-  // Single source of truth for "is this list filtered": set exactly where
-  // each filter clause is added, instead of re-deriving the same condition
-  // separately below (a prior version could silently drift from this).
+  // Single source of truth for "is this list filtered" (= suppress the
+  // referral pin): set exactly where each filter clause is added, instead of
+  // re-deriving the same condition separately below (a prior version could
+  // silently drift from this). One deliberate exception -- `cityKeys` adds a
+  // clause without setting this; see the comment at that branch.
   let isFiltered = false;
 
   if (options.search?.trim()) {
@@ -621,6 +629,23 @@ export async function listMatchedJobsForWorker(
     isFiltered = true;
     params.push(options.jobType.trim());
     filters.push(`j.job_type = $${params.length}`);
+  }
+
+  // Deliberately does NOT set `isFiltered`: a referral is a stronger signal
+  // than a city preference, so a worker referred to a job outside their
+  // preferred cities must still see it pinned.
+  if (options.cityKeys?.length) {
+    params.push(options.cityKeys);
+    filters.push(`j.city_key = ANY($${params.length}::text[])`);
+  }
+
+  if (options.excludeCityKeys?.length) {
+    // The exclude form is only ever the "jobs elsewhere" fallback, which runs
+    // beside a primary query that already pinned the referral -- pinning again
+    // here would surface the same job in both lists.
+    isFiltered = true;
+    params.push(options.excludeCityKeys);
+    filters.push(`(j.city_key IS NULL OR NOT (j.city_key = ANY($${params.length}::text[])))`);
   }
 
   const requestedLimit = Math.max(1, Math.min(options.limit, 100));

@@ -3,15 +3,18 @@ import { handler } from '../../../../lambda/api/employer-jobs-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { setJobCoordinates } from '../../../../lambda/lib/location';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
+jest.mock('../../../../lambda/lib/location');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockResolveEntitlements = resolveEntitlements as jest.Mock;
+const mockSetJobCoordinates = setJobCoordinates as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -34,6 +37,7 @@ describe('employer-jobs-update', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockSetJobCoordinates.mockResolvedValue(undefined);
     // Default: employer_free plan with 1 slot, 0 active jobs — won't affect non-active transitions
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
   });
@@ -436,5 +440,85 @@ describe('employer-jobs-update', () => {
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('forbidden');
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Field-edit path — city triple + coordinates
+  // ---------------------------------------------------------------------------
+
+  it('updates the city triple on a field edit', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, city_key: 'austin-tx', city: 'Austin', state: 'TX',
+    }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET'));
+    expect(updateCall[0]).toContain('city_key');
+    expect(updateCall[1]).toEqual(expect.arrayContaining(['austin-tx', 'Austin', 'TX']));
+  });
+
+  it('clears the city triple when a field edit omits it', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET'));
+    expect(updateCall[0]).toContain('city_key');
+    // params for city_key/city/state must be null — pinned positionally:
+    // EDITABLE_COLUMNS gains 3 entries at the end; job id is the final param.
+    expect(updateCall[1].slice(-4, -1)).toEqual([null, null, null]);
+  });
+
+  it('rejects a mismatched city_key on edit (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, city_key: 'austin-tx', city: 'El Paso', state: 'TX',
+    }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_city_key');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('stores coordinates on a field edit when both are provided', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27, longitude: -97.74 }) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockSetJobCoordinates).toHaveBeenCalledWith(expect.anything(), JOB_ID, 30.27, -97.74, 'manual');
+  });
+
+  it('does not set coordinates when none are provided', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockSetJobCoordinates).not.toHaveBeenCalled();
+  });
+
+  it('rejects a field edit with only one coordinate (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27 }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_coordinates');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an out-of-range latitude on a field edit (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 91, longitude: -97.74 }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_latitude');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an out-of-range longitude on a field edit (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27, longitude: 181 }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_longitude');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rolls back the whole edit when storing coordinates fails', async () => {
+    mockCurrentJob();
+    mockSetJobCoordinates.mockRejectedValueOnce(new Error('invalid_latitude'));
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27, longitude: -97.74 }) }));
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).error).toBe('internal_error');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 });

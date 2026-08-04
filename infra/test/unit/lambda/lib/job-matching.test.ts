@@ -602,4 +602,137 @@ describe('listMatchedJobsForWorker', () => {
     const aliasCall = findCall(query, /FROM trade_aliases/);
     expect(aliasCall?.[1]).toEqual([expect.arrayContaining(['electrician', 'soldador'])]);
   });
+
+  it('filters by preferred city keys in SQL', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      cityKeys: ['el-paso-tx', 'austin-tx'],
+    });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).toContain('j.city_key = ANY(');
+    expect(jobsCall?.[1]).toEqual(expect.arrayContaining([['el-paso-tx', 'austin-tx']]));
+  });
+
+  it('excludes city keys for the fallback query', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      excludeCityKeys: ['el-paso-tx'],
+    });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).toContain('j.city_key IS NULL OR NOT (j.city_key = ANY(');
+    expect(jobsCall?.[1]).toEqual(expect.arrayContaining([['el-paso-tx']]));
+  });
+
+  it('still pins the referred job when a city filter is applied', async () => {
+    // Load-bearing: the `cityKeys` branch must NOT set `isFiltered`. A worker
+    // referred to a job OUTSIDE their preferred cities must still see it
+    // pinned -- the referral is a stronger signal than the city preference.
+    // The handler tests can't catch a regression here (they mock this lib).
+    const outOfCityJob = job({
+      id: 'job-referred-elsewhere',
+      title: 'Drywall Crew',
+      description: 'Sheetrock hanging, taping, mud, and texture.',
+      location: 'Austin, TX',
+    });
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred-elsewhere' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+      pinFetchRoute([outOfCityJob]),
+    ]);
+
+    const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      cityKeys: ['el-paso-tx'],
+    });
+
+    expect(result[0]?.id).toBe('job-referred-elsewhere');
+    expect(result[0]?.match_reasons[0]).toBe('referred_job');
+  });
+
+  it('skips the referral pin on the excludeCityKeys fallback query', async () => {
+    // The fallback runs alongside a primary query that already pinned the
+    // referral; re-pinning here would surface the same job in both lists.
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred-elsewhere' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+      pinFetchRoute([job({ id: 'job-referred-elsewhere' })]),
+    ]);
+
+    const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      excludeCityKeys: ['el-paso-tx'],
+    });
+
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
+    expect(result).toHaveLength(0);
+  });
+
+  it('applies no city clause when no keys are given', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).not.toContain('city_key');
+  });
+
+  it('keeps the LIMIT placeholder index correct when city filters are applied', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      search: 'drywall',
+      jobType: 'contract',
+      cityKeys: ['el-paso-tx'],
+      excludeCityKeys: ['austin-tx'],
+    });
+
+    const [sql, params] = findCall(query, /FROM jobs j/)!;
+    // Every `$n` in the WHERE/LIMIT clauses must resolve to a real param, and
+    // the LIMIT must still be the last one (city filters push before it).
+    const limitIndex = Number(/LIMIT \$(\d+)/.exec(sql)?.[1]);
+    expect(limitIndex).toBe(params.length);
+    expect(params[limitIndex - 1]).toBe(50);
+
+    const includeIndex = params.findIndex((p) => Array.isArray(p) && p[0] === 'el-paso-tx') + 1;
+    const excludeIndex = params.findIndex((p) => Array.isArray(p) && p[0] === 'austin-tx') + 1;
+    expect(sql).toContain(`j.city_key = ANY($${includeIndex}::text[])`);
+    expect(sql).toContain(`NOT (j.city_key = ANY($${excludeIndex}::text[]))`);
+  });
 });

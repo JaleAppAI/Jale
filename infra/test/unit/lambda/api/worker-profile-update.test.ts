@@ -239,7 +239,7 @@ describe('worker-profile-update', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
-  it('sets worker map_pin coordinates after profile upsert when both coordinates are present', async () => {
+  it('sets worker coordinates after profile upsert when both coordinates are present', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('INSERT INTO worker_profiles')) {
         return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
@@ -250,7 +250,115 @@ describe('worker-profile-update', () => {
     const res = await handler(mkEv({ latitude: 39.961176, longitude: -82.998794 }));
 
     expect(res.statusCode).toBe(200);
-    expect(mockSetWorkerCoordinates).toHaveBeenCalledWith(expect.any(Object), 'u', 39.961176, -82.998794, 'map_pin');
+    expect(mockSetWorkerCoordinates).toHaveBeenCalledWith(expect.any(Object), 'u', 39.961176, -82.998794, 'geocoded_address');
+  });
+
+  describe('preferred cities and location source', () => {
+    const okQuery = () => {
+      mockQuery.mockImplementation((q: string) => {
+        if (q.includes('INSERT INTO worker_profiles')) {
+          return Promise.resolve({ rows: [{ user_id: 'u', skills: [], availability: null, years_experience: null, experience_months: null, location: null, bio: null, certifications: [] }] });
+        }
+        return Promise.resolve({});
+      });
+    };
+
+    it('replaces preferred cities in the same transaction', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({
+        preferred_cities: [
+          { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' },
+          { city_key: 'austin-tx', city: 'Austin', state: 'TX' },
+        ],
+      }));
+
+      expect(res.statusCode).toBe(200);
+      const deleteCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('DELETE FROM worker_preferred_cities'));
+      expect(deleteCall).toBeDefined();
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_preferred_cities'));
+      expect(insertCall).toBeDefined();
+      expect(insertCall?.[1]).toEqual(['u', JSON.stringify([
+        { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' },
+        { city_key: 'austin-tx', city: 'Austin', state: 'TX' },
+      ])]);
+      expect(JSON.parse(res.body).preferred_cities).toHaveLength(2);
+    });
+
+    it('leaves preferred cities untouched when the field is omitted', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ availability: 'full_time' }));
+
+      expect(res.statusCode).toBe(200);
+      const deleteCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('DELETE FROM worker_preferred_cities'));
+      expect(deleteCall).toBeUndefined();
+    });
+
+    it('clears preferred cities when an empty list is sent', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ preferred_cities: [] }));
+
+      expect(res.statusCode).toBe(200);
+      const deleteCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('DELETE FROM worker_preferred_cities'));
+      expect(deleteCall).toBeDefined();
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_preferred_cities'));
+      expect(insertCall).toBeUndefined();
+    });
+
+    it('rejects more than 10 preferred cities (400)', async () => {
+      const many = Array.from({ length: 11 }, (_, i) => ({ city_key: `city-${i}-tx`, city: `City ${i}`, state: 'TX' }));
+
+      const res = await handler(mkEv({ preferred_cities: many }));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('too_many_preferred_cities');
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed preferred cities (400)', async () => {
+      const res = await handler(mkEv({ preferred_cities: [{ city: 'El Paso' }] }));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('invalid_preferred_cities');
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('records the client-supplied geocoded_zip source', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ location: 'El Paso, TX 79901', latitude: 31.76, longitude: -106.49, location_source: 'geocoded_zip' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSetWorkerCoordinates).toHaveBeenCalledWith(expect.anything(), expect.anything(), 31.76, -106.49, 'geocoded_zip');
+    });
+
+    it('defaults to geocoded_address when source is omitted', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ location: 'El Paso, TX', latitude: 31.76, longitude: -106.49 }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSetWorkerCoordinates).toHaveBeenCalledWith(expect.anything(), expect.anything(), 31.76, -106.49, 'geocoded_address');
+    });
+
+    it('ignores a location_source sent without coordinates', async () => {
+      okQuery();
+
+      const res = await handler(mkEv({ location: 'El Paso, TX', location_source: 'geocoded_zip' }));
+
+      expect(res.statusCode).toBe(200);
+      expect(mockSetWorkerCoordinates).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid location_source (400)', async () => {
+      const res = await handler(mkEv({ latitude: 31.76, longitude: -106.49, location_source: 'gps' }));
+
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('invalid_location_source');
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
   });
 
   describe('trade alias generation trigger', () => {

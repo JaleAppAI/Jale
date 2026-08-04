@@ -213,4 +213,33 @@ describe('employer-jobs-create', () => {
     expect(callOrder.indexOf('resolve_entitlements')).toBeLessThan(callOrder.indexOf('count'));
     expect(callOrder.indexOf('count')).toBeLessThan(callOrder.indexOf('insert'));
   });
+
+  it('stores the city triple when provided', async () => {
+    const res = await handler(makeEvent({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[0]).toContain('city_key');
+    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX']);
+  });
+
+  it('accepts a job without city fields (degraded picker)', async () => {
+    const res = await handler(makeEvent({}));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1].slice(21)).toEqual([null, null, null]);
+  });
+
+  it('rejects a partial city triple (400)', async () => {
+    const res = await handler(makeEvent({ city: 'El Paso' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_city_fields');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched city_key (400)', async () => {
+    const res = await handler(makeEvent({ city_key: 'austin-tx', city: 'El Paso', state: 'TX' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_city_key');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
 });

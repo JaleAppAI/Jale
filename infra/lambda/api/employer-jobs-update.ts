@@ -2,7 +2,9 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { setJobCoordinates } from '../lib/location';
+import { parseCityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -157,6 +159,7 @@ const EDITABLE_COLUMNS = [
   'shift_schedule', 'transportation_required', 'work_authorization_required',
   'language_preference', 'number_of_workers_needed', 'trade_category',
   'required_experience_years', 'required_experience_months', 'certifications',
+  'city_key', 'city', 'state',
 ] as const;
 
 async function handleFieldEdit(
@@ -184,6 +187,16 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: jobFields.error, ...(jobFields.valid ? { valid: jobFields.valid } : {}) }) };
   }
   const f = jobFields.value;
+
+  const cityFields = parseCityFields(body);
+  if (!cityFields.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: cityFields.error }) };
+  }
+
+  const coordinates = parseOptionalCoordinates(body);
+  if (!coordinates.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: coordinates.error }) };
+  }
 
   let client;
   try {
@@ -254,6 +267,11 @@ async function handleFieldEdit(
       required_experience_years: f.required_experience_years,
       required_experience_months: f.required_experience_months,
       certifications: f.certifications,
+      // Omitting the triple clears stale keys on purpose: if the employer changed the
+      // location text without picking a city, the old key must not keep matching.
+      city_key: cityFields.value?.city_key ?? null,
+      city: cityFields.value?.city ?? null,
+      state: cityFields.value?.state ?? null,
     };
     const setClauses = EDITABLE_COLUMNS.map((col, i) => `${col} = $${i + 1}`).join(', ');
     const params = EDITABLE_COLUMNS.map((col) => values[col]);
@@ -268,9 +286,16 @@ async function handleFieldEdit(
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
+         city_key, city, state,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],
     );
+
+    // Deliberate asymmetry with the city triple above: an omitted triple CLEARS the
+    // stored city keys, but omitted coordinates PRESERVE the existing pin.
+    if (coordinates.value) {
+      await setJobCoordinates(client, jobId, coordinates.value.latitude, coordinates.value.longitude, 'manual');
+    }
 
     await client.query('COMMIT');
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(result.rows[0]) };

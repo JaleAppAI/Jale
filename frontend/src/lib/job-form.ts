@@ -11,6 +11,11 @@ export type PayInterval = typeof PAY_INTERVALS[number];
 export type JobForm = {
   title: string;
   location: string;
+  city_key: string | null;
+  city: string | null;
+  state: string | null;
+  latitude: number | null;
+  longitude: number | null;
   job_type: 'full-time' | 'part-time' | 'contract';
   description: string;
   pay_min: string;
@@ -30,7 +35,9 @@ export type JobForm = {
 };
 
 export const initialForm: JobForm = {
-  title: '', location: '', job_type: 'full-time', description: '',
+  title: '', location: '',
+  city_key: null, city: null, state: null, latitude: null, longitude: null,
+  job_type: 'full-time', description: '',
   pay_min: '', pay_max: '', pay_interval: 'hourly', start_date: '',
   expected_duration: '', shift_schedule: '', transportation_required: false,
   work_authorization_required: false, language_preference: ['any'],
@@ -79,6 +86,12 @@ export function jobFormToPayload(form: JobForm): JobWritePayload {
     trade_category: form.trade_category as string,
     required_experience_years: parseOptionalNumber(form.required_experience_years),
     certifications: splitDedupe(form.certifications),
+    ...(form.city_key && form.city && form.state
+      ? { city_key: form.city_key, city: form.city, state: form.state }
+      : {}),
+    ...(form.latitude != null && form.longitude != null
+      ? { latitude: form.latitude, longitude: form.longitude }
+      : {}),
   };
 }
 
@@ -87,6 +100,11 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
   return {
     title: job.title ?? '',
     location: job.location ?? '',
+    city_key: job.city_key ?? null,
+    city: job.city ?? null,
+    state: job.state ?? null,
+    latitude: job.latitude != null ? Number(job.latitude) : null,
+    longitude: job.longitude != null ? Number(job.longitude) : null,
     job_type: job.job_type,
     description: job.description ?? '',
     pay_min: job.pay_min != null ? String(job.pay_min) : '',

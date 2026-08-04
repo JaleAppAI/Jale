@@ -2,8 +2,9 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
+import { parseCityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -40,6 +41,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       required_experience_years?: number | null;
       required_experience_months?: number | null;
       certifications?: string[];
+      city_key?: string;
+      city?: string;
+      state?: string;
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -75,18 +79,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const hasLatitude = Object.prototype.hasOwnProperty.call(body, 'latitude');
-    const hasLongitude = Object.prototype.hasOwnProperty.call(body, 'longitude');
-    if (hasLatitude !== hasLongitude) {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_coordinates' }) };
+    const coordinates = parseOptionalCoordinates(body as Record<string, unknown>);
+    if (!coordinates.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: coordinates.error }) };
     }
-    if (hasLatitude) {
-      if (typeof body.latitude !== 'number' || !Number.isFinite(body.latitude) || body.latitude < -90 || body.latitude > 90) {
-        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_latitude' }) };
-      }
-      if (typeof body.longitude !== 'number' || !Number.isFinite(body.longitude) || body.longitude < -180 || body.longitude > 180) {
-        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_longitude' }) };
-      }
+
+    const cityFields = parseCityFields(body as Record<string, unknown>);
+    if (!cityFields.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: cityFields.error }) };
     }
 
     const pool = await getDbPool();
@@ -164,17 +164,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          trade_category,
          required_experience_years,
          required_experience_months,
-         certifications
+         certifications,
+         city_key,
+         city,
+         state
        )
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
          transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
-         trade_category, required_experience_years, required_experience_months, certifications`,
+         trade_category, required_experience_years, required_experience_months, certifications,
+         city_key, city, state`,
       [
         userId,
         title.trim(),
@@ -197,12 +201,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.required_experience_years,
         jobFields.value.required_experience_months,
         jobFields.value.certifications,
+        cityFields.value?.city_key ?? null,
+        cityFields.value?.city ?? null,
+        cityFields.value?.state ?? null,
       ],
     );
     const job = result.rows[0];
 
-    if (hasLatitude) {
-      await setJobCoordinates(client, job.id, body.latitude!, body.longitude!, 'manual');
+    if (coordinates.value) {
+      await setJobCoordinates(client, job.id, coordinates.value.latitude, coordinates.value.longitude, 'manual');
     }
 
     await client.query('COMMIT');
