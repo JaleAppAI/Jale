@@ -1465,6 +1465,88 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       }
     });
 
+    it('coexists with an organic (no-referrer) row for the same job+channel -- the rebuilt organic index requires BOTH referrer columns NULL', async () => {
+      // Before 063 rebuilt job_share_links_organic_channel_key, its predicate
+      // was WHERE referrer_worker_id IS NULL alone, so an employer-referred
+      // row (referrer_worker_id NULL, referrer_employer_id set) would have
+      // collided with a true organic row for the same job+channel. This is
+      // the specific behavior the rebuild exists to fix.
+      const jobId = await makeJob();
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, 'device_share')`,
+          [randomCode(8), jobId, employerUserId],
+        );
+        const result = await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_worker_id, referrer_employer_id, channel)
+           VALUES ($1, $2, NULL, NULL, 'device_share')`,
+          [randomCode(8), jobId],
+        );
+        expect(result.rowCount).toBe(1);
+      } finally {
+        await client.end();
+      }
+    });
+
+    it('the employer partial unique index is a live ON CONFLICT arbiter under the real owner RLS context (jale_admin, not superuser)', async () => {
+      // The spec calls this index "the ON CONFLICT arbiter another task's
+      // INSERT will target" -- that INSERT runs as jale_admin under the
+      // rebuilt job_share_links_owner WITH CHECK, not as a superuser that
+      // bypasses RLS. If the DO UPDATE branch's resulting row got filtered
+      // by the policy's USING clause, this would silently affect zero rows
+      // (056's documented hazard class) instead of the real upsert the
+      // downstream task depends on.
+      const cognitoSub = `referrals-employer-arbiter-${randomCode(16)}`;
+      const setup = new Client({ connectionString: superuserUrl });
+      let employerId: string;
+      await setup.connect();
+      try {
+        const result = await setup.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, created_at, updated_at)
+           VALUES ($1, 'employer', now(), now())
+           RETURNING id`,
+          [cognitoSub],
+        );
+        employerId = result.rows[0].id;
+      } finally {
+        await setup.end();
+      }
+      const jobId = await makeJob({ employer_id: employerId });
+
+      const upsertSql = `
+        INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+        VALUES ($1, $2, $3, 'facebook')
+        ON CONFLICT (job_id, referrer_employer_id, channel) WHERE referrer_employer_id IS NOT NULL
+        DO UPDATE SET updated_at = now()`;
+
+      const first = await asAdmin(adminUrl, cognitoSub, (client) =>
+        client.query(upsertSql, [randomCode(8), jobId, employerId]),
+      );
+      expect(first.rowCount).toBe(1);
+
+      // Second call with a different code param hits the DO UPDATE branch --
+      // the arbiter is (job_id, referrer_employer_id, channel), not code.
+      const second = await asAdmin(adminUrl, cognitoSub, (client) =>
+        client.query(upsertSql, [randomCode(8), jobId, employerId]),
+      );
+      expect(second.rowCount).toBe(1);
+
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const rows = await check.query(
+          `SELECT count(*)::text AS count FROM job_share_links WHERE job_id = $1 AND referrer_employer_id = $2`,
+          [jobId, employerId],
+        );
+        expect(rows.rows[0].count).toBe('1');
+      } finally {
+        await check.end();
+      }
+    });
+
     it('a row with BOTH referrer_worker_id and referrer_employer_id set violates the exclusivity CHECK', async () => {
       const jobId = await makeJob();
       const client = new Client({ connectionString: superuserUrl });
