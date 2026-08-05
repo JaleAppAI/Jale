@@ -366,8 +366,8 @@ describe('employer-jobs-update', () => {
   };
 
   // Mock the current-job SELECT the edit path runs before UPDATE.
-  function mockCurrentJob(over: Partial<{ job_type: string; required_docs: string[]; applicant_count: number; hired_count: number }> = {}) {
-    const row = { job_type: 'full-time', required_docs: ['resume'], applicant_count: 0, hired_count: 0, ...over };
+  function mockCurrentJob(over: Partial<{ job_type: string; required_docs: string[]; applicant_count: number; hired_count: number; city: string | null; state_region: string | null }> = {}) {
+    const row = { job_type: 'full-time', required_docs: ['resume'], applicant_count: 0, hired_count: 0, city: null, state_region: null, ...over };
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
         return Promise.resolve({ rowCount: 1, rows: [row] });
@@ -436,5 +436,147 @@ describe('employer-jobs-update', () => {
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('forbidden');
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Field-edit path -- city/state_region recompute
+  // ---------------------------------------------------------------------------
+
+  function findUpdateCall() {
+    return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('UPDATE jobs SET'));
+  }
+
+  it('recomputes city/state_region from location on every field edit', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'El Paso, TX' }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    // city, state_region are the last two SET params, followed by the WHERE id param.
+    expect(params[params.length - 3]).toBe('El Paso');
+    expect(params[params.length - 2]).toBe('TX');
+  });
+
+  it('explicit city/state_region body fields win over the parsed location', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({
+      body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: 'North Austin', state_region: 'ok' }),
+    }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[params.length - 3]).toBe('North Austin');
+    expect(params[params.length - 2]).toBe('OK');
+  });
+
+  it('preserves the existing city/state_region when the new location is unparseable and no explicit override is given', async () => {
+    mockCurrentJob({ city: 'El Paso', state_region: 'TX' });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: '79928' }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    // A bare ZIP never parses -- the pre-existing city/state_region must survive
+    // this edit rather than being nulled out just because location changed.
+    expect(params[params.length - 3]).toBe('El Paso');
+    expect(params[params.length - 2]).toBe('TX');
+  });
+
+  it('rejects an invalid explicit city on field edit, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, city: '   ' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_city');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid explicit state_region on field edit, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, state_region: 'Texas' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_state_region');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('never enqueues a visibility event from a field edit', async () => {
+    mockCurrentJob();
+    await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    const enqueued = mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
+    expect(enqueued).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Visibility-event hook -- status-branch transition matrix
+  // ---------------------------------------------------------------------------
+
+  function makeVisibilityQueryMock(opts: {
+    currentStatus: string;
+    publicListingEnabled: boolean;
+    newStatus: string;
+    publicCode?: string;
+    activeJobs?: number;
+  }) {
+    const { currentStatus, publicListingEnabled, newStatus, publicCode = 'JOBCOD', activeJobs = 0 } = opts;
+    return (q: string) => {
+      if (q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
+      if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({ rows: [{ status: currentStatus, public_listing_enabled: publicListingEnabled, public_code: publicCode }] });
+      }
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, title: 'Concrete Finisher', location: 'Columbus, OH',
+            pay: null, job_type: 'contract', status: newStatus, created_at: 'now',
+            pay_min: null, pay_max: null, pay_interval: null, start_date: null,
+            expected_duration: null, shift_schedule: null, transportation_required: false,
+            work_authorization_required: false, language_preference: ['any'],
+            number_of_workers_needed: 1, hired_count: 0, open_count: 1,
+            trade_category: 'concrete', required_experience_years: null,
+            required_experience_months: null, certifications: [], applicant_count: 0,
+          }],
+        });
+      }
+      return Promise.resolve({});
+    };
+  }
+
+  function findVisibilityEnqueueCall() {
+    return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
+  }
+
+  it("enqueues 'published' on paused->active while listed", async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+    mockQuery.mockImplementation(makeVisibilityQueryMock({ currentStatus: 'paused', publicListingEnabled: true, newStatus: 'active' }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+    expect(res.statusCode).toBe(200);
+    const enqueueCall = findVisibilityEnqueueCall();
+    expect(enqueueCall).toBeDefined();
+    expect(enqueueCall![1]).toEqual([JOB_ID, 'JOBCOD', 'published']);
+  });
+
+  it("enqueues 'removed' on active->paused while listed", async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({ currentStatus: 'active', publicListingEnabled: true, newStatus: 'paused' }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'paused' }) }));
+    expect(res.statusCode).toBe(200);
+    const enqueueCall = findVisibilityEnqueueCall();
+    expect(enqueueCall![1]).toEqual([JOB_ID, 'JOBCOD', 'removed']);
+  });
+
+  it('does NOT enqueue on paused->active while NOT listed', async () => {
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+    mockQuery.mockImplementation(makeVisibilityQueryMock({ currentStatus: 'paused', publicListingEnabled: false, newStatus: 'active' }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+    expect(res.statusCode).toBe(200);
+    expect(findVisibilityEnqueueCall()).toBeUndefined();
+  });
+
+  it('does NOT enqueue on active->active (already active, listed -- no transition)', async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({ currentStatus: 'active', publicListingEnabled: true, newStatus: 'active' }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+    expect(res.statusCode).toBe(200);
+    expect(findVisibilityEnqueueCall()).toBeUndefined();
+  });
+
+  it('does NOT enqueue on paused->closed even when listed (job was never effectively visible)', async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({ currentStatus: 'paused', publicListingEnabled: true, newStatus: 'closed' }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'closed' }) }));
+    expect(res.statusCode).toBe(200);
+    expect(findVisibilityEnqueueCall()).toBeUndefined();
   });
 });

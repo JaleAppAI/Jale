@@ -55,8 +55,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Ownership + hired-worker guard, locking the job row for the transaction.
     // Ownership is enforced by the users join; rowCount === 0 means forbidden (and does
     // not distinguish "not found" from "not yours", to avoid leaking job existence).
-    const owned = await client.query<{ id: string; hired_count: number }>(
+    // status/public_listing_enabled/public_code are captured here too, for the
+    // visibility-event hook below -- deleting an effectively-visible job must
+    // notify the same way turning off its listing would.
+    const owned = await client.query<{
+      id: string; hired_count: number; status: string; public_listing_enabled: boolean; public_code: string;
+    }>(
       `SELECT jobs.id,
+              jobs.status,
+              jobs.public_listing_enabled,
+              jobs.public_code,
               (SELECT COUNT(*)::int FROM job_applications
                  WHERE job_id = jobs.id AND status = 'hired') AS hired_count
        FROM jobs JOIN users u ON u.id = jobs.employer_id
@@ -71,6 +79,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (owned.rows[0].hired_count > 0) {
       await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'job_has_hired_workers' }) };
+    }
+    const ownedRow = owned.rows[0];
+    const wasEffectivelyVisible = ownedRow.status === 'active' && ownedRow.public_listing_enabled === true;
+
+    // Enqueue the removal notice BEFORE deleting the job row, while jobs.id = $1
+    // still exists to be referenced. A 'removed' event must outlive the job it
+    // describes (the whole point is notifying Google after the row is gone), so
+    // this must never be ordered after the DELETE below -- doing so would either
+    // violate a FK on job_visibility_events.job_id (if one exists) or, if that FK
+    // cascades, have the DELETE immediately wipe out the very event we just wrote.
+    if (wasEffectivelyVisible && ownedRow.public_code) {
+      await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, ownedRow.public_code, 'removed']);
     }
 
     // job_conversations first: cascades its messages/outbox and clears the
