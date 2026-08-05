@@ -11,13 +11,19 @@ interface PublicListingToggleProps {
   initialEnabled: boolean;
   /** The job's short public code -- what /j/{code} resolves. */
   publicCode: string;
+  /**
+   * Notified with the server-confirmed enabled state after a successful
+   * toggle, so a parent that needs the current value (e.g. to gate a
+   * sibling share panel) doesn't have to duplicate this component's state.
+   */
+  onEnabledChange?: (enabled: boolean) => void;
 }
 
 // The employer's opt-IN to a public job page (migration 057). Jobs start
 // private; nothing becomes publicly readable until the employer flips this.
 // The copy leads with the benefit (reach) but must also state plainly what is
 // shared -- consent that does not say what is shared is not consent.
-export function PublicListingToggle({ jobId, initialEnabled, publicCode }: PublicListingToggleProps) {
+export function PublicListingToggle({ jobId, initialEnabled, publicCode, onEnabledChange }: PublicListingToggleProps) {
   const t = useTranslations('employer_job_visibility');
   const { idToken } = useAuth();
 
@@ -52,6 +58,7 @@ export function PublicListingToggle({ jobId, initialEnabled, publicCode }: Publi
       const result = await updateJobPublicListing(idToken, jobId, next);
       // Trust the server's answer, not the optimistic value.
       setEnabled(result.public_listing_enabled);
+      onEnabledChange?.(result.public_listing_enabled);
     } catch {
       setErrorMsg(t('error'));
     } finally {

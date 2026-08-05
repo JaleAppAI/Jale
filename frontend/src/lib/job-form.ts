@@ -11,6 +11,8 @@ export type PayInterval = typeof PAY_INTERVALS[number];
 export type JobForm = {
   title: string;
   location: string;
+  city: string;
+  state_region: string;
   job_type: 'full-time' | 'part-time' | 'contract';
   description: string;
   pay_min: string;
@@ -30,7 +32,7 @@ export type JobForm = {
 };
 
 export const initialForm: JobForm = {
-  title: '', location: '', job_type: 'full-time', description: '',
+  title: '', location: '', city: '', state_region: '', job_type: 'full-time', description: '',
   pay_min: '', pay_max: '', pay_interval: 'hourly', start_date: '',
   expected_duration: '', shift_schedule: '', transportation_required: false,
   work_authorization_required: false, language_preference: ['any'],
@@ -59,10 +61,23 @@ export function validateJobNumbers(form: JobForm): 'number' | 'pay_range' | 'hea
   return null;
 }
 
+// A US state/territory postal abbreviation: exactly two letters. Empty is
+// valid (the field is optional) -- callers decide whether empty is allowed
+// for their step; this only rejects a non-empty value that isn't 2 letters.
+const STATE_REGION_PATTERN = /^[A-Za-z]{2}$/;
+
+export function validateJobLocationFields(form: JobForm): 'state_region' | null {
+  const stateRegion = form.state_region.trim();
+  if (stateRegion && !STATE_REGION_PATTERN.test(stateRegion)) return 'state_region';
+  return null;
+}
+
 export function jobFormToPayload(form: JobForm): JobWritePayload {
   return {
     title: form.title.trim(),
     location: form.location.trim(),
+    city: form.city.trim() || undefined,
+    state_region: form.state_region.trim().toUpperCase() || undefined,
     job_type: form.job_type,
     description: form.description.trim() || undefined,
     required_docs: DOC_TYPES.filter((doc) => form.required_docs[doc]),
@@ -87,6 +102,8 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
   return {
     title: job.title ?? '',
     location: job.location ?? '',
+    city: job.city ?? '',
+    state_region: job.state_region ?? '',
     job_type: job.job_type,
     description: job.description ?? '',
     pay_min: job.pay_min != null ? String(job.pay_min) : '',
