@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyIntent, getPublicJob, isClosedJob, PublicJobNotFoundError } from '../publicJob';
-import type { PublicJobActive, PublicJobClosed } from '../publicJob';
+import { applyIntent, getPublicJob, getPublicJobsList, isClosedJob, PublicJobNotFoundError } from '../publicJob';
+import type { PublicJobActive, PublicJobClosed, PublicJobListItem } from '../publicJob';
 
 // No jsdom/testing-library in this repo (vitest.config.ts runs the 'node'
 // environment only) -- these are pure fetch-logic tests, not component
@@ -123,5 +123,82 @@ describe('applyIntent', () => {
   it('throws on a non-ok response', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: 'job_not_active' }, 409));
     await expect(applyIntent('ABC123')).rejects.toThrow('apply_intent_failed');
+  });
+});
+
+describe('getPublicJobsList', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  const item = (code: string): PublicJobListItem => ({
+    code,
+    title: `Job ${code}`,
+    city: 'Austin',
+    state_region: 'TX',
+    trade_category: 'electrician',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-02T00:00:00.000Z',
+  });
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    process.env.NEXT_PUBLIC_API_BASE_URL = 'https://api.example.test';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns an empty array immediately when NEXT_PUBLIC_API_BASE_URL is unset', async () => {
+    delete process.env.NEXT_PUBLIC_API_BASE_URL;
+    const jobs = await getPublicJobsList();
+    expect(jobs).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fetches a single page when next_cursor is null', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ jobs: [item('A'), item('B')], next_cursor: null }));
+    const jobs = await getPublicJobsList();
+    expect(jobs.map((j) => j.code)).toEqual(['A', 'B']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/public/jobs?limit=500',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('follows next_cursor across pages until it goes null', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: 'page2' }))
+      .mockResolvedValueOnce(jsonResponse({ jobs: [item('B')], next_cursor: null }));
+    const jobs = await getPublicJobsList();
+    expect(jobs.map((j) => j.code)).toEqual(['A', 'B']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      'https://api.example.test/public/jobs?limit=500&cursor=page2',
+      expect.objectContaining({ cache: 'no-store' }),
+    );
+  });
+
+  it('tolerates a fetch rejection and returns whatever was already accumulated', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: 'page2' }))
+      .mockRejectedValueOnce(new Error('network down'));
+    const jobs = await getPublicJobsList();
+    expect(jobs.map((j) => j.code)).toEqual(['A']);
+  });
+
+  it('tolerates a non-ok response by stopping and returning what it has', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: 'page2' }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'internal_error' }, 500));
+    const jobs = await getPublicJobsList();
+    expect(jobs.map((j) => j.code)).toEqual(['A']);
+  });
+
+  it('never throws, even on a completely broken first call', async () => {
+    fetchMock.mockRejectedValue(new Error('dns failure'));
+    await expect(getPublicJobsList()).resolves.toEqual([]);
   });
 });
