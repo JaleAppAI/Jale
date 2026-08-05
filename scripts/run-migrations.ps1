@@ -107,7 +107,10 @@ $MigrationFiles = @(
     '057_job_public_listing_opt_in.sql',
     '058_referral_open_dedupe_grant.sql',
     '059_share_link_claim_read.sql',
-    '060_trade_aliases.sql'
+    '060_trade_aliases.sql',
+    '061_job_geo_and_seo_grants.sql',
+    '062_job_visibility_outbox.sql',
+    '063_employer_referral_links.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
