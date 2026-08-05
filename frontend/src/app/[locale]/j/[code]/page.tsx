@@ -5,6 +5,8 @@ import { Link } from '@/i18n/navigation';
 import { formatStartDate } from '@/lib/date';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
+import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJsonLd';
+import { buildJobPageUrls } from '@/lib/seo/siteUrl';
 import { ApplyButton } from './ApplyButton';
 import { WebApplyButton } from './WebApplyButton';
 
@@ -42,6 +44,16 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
   const t = await getTranslations({ locale: params.locale, namespace: 'public_job' });
   const shareCode = firstParam(searchParams?.r);
 
+  // Canonical decision (fixed): the `/en/` URL is canonical for BOTH
+  // locales -- one job, one indexed URL, no en/es duplicate-content split.
+  // This only depends on the code param, not on locale or fetch success, so
+  // it applies identically to every branch below (active, closed, error).
+  const { en: canonicalUrl, es: esUrl } = buildJobPageUrls(params.code);
+  const alternates: Metadata['alternates'] = {
+    canonical: canonicalUrl,
+    languages: { en: canonicalUrl, es: esUrl },
+  };
+
   try {
     // Same call (same URL + options) as the page component below -- Next's
     // fetch request memoization dedupes these into one network request per
@@ -54,6 +66,7 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
       return {
         title,
         description,
+        alternates,
         openGraph: { title, description, images: [{ url: OG_IMAGE_PATH, width: 1800, height: 918 }] },
         twitter: { card: 'summary_large_image', title, description, images: [OG_IMAGE_PATH] },
       };
@@ -64,6 +77,7 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
     return {
       title,
       description,
+      alternates,
       openGraph: { title, description, images: [{ url: OG_IMAGE_PATH, width: 1800, height: 918 }], type: 'website' },
       twitter: { card: 'summary_large_image', title, description, images: [OG_IMAGE_PATH] },
     };
@@ -71,6 +85,7 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
     return {
       title: t('meta_title_generic'),
       description: t('meta_description_generic'),
+      alternates,
       openGraph: { images: [{ url: OG_IMAGE_PATH, width: 1800, height: 918 }] },
       twitter: { card: 'summary_large_image', images: [OG_IMAGE_PATH] },
     };
@@ -141,6 +156,12 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
   }
 
   const active: PublicJobActive = job;
+  // Canonical URL, same derivation as generateMetadata's `alternates` --
+  // the `/en/` URL is canonical for both locales, so this is what
+  // schema.org JobPosting.url points at regardless of which locale is
+  // being rendered.
+  const { en: canonicalUrl } = buildJobPageUrls(active.code);
+  const jobPostingJsonLd = buildJobPostingJsonLd(active, canonicalUrl);
   const jobTypeLabel = active.job_type ? active.job_type.replace('-', ' ') : '';
   const languageLabel = (code: 'any' | 'en' | 'es') => t(`language_${code}`);
   const startDate = active.start_date
@@ -173,6 +194,14 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
 
   return (
     <div className="min-h-screen bg-[var(--jale-paper)]">
+      {/* Structured data for search engines -- active jobs only, never for
+          the closed/error branches above. Escaping the employer-authored
+          description against script-breakout XSS happens inside
+          serializeJsonLd, not here. */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(jobPostingJsonLd) }}
+      />
       <BrandBand />
 
       <main className="px-4 -mt-10">

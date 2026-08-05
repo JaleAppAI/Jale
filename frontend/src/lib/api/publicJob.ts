@@ -39,6 +39,11 @@ export interface PublicJobActive {
   required_docs: PublicJobDocType[];
   status: 'active';
   created_at: string;
+  /** Structured location columns added by a parallel backend task, for
+   * schema.org jobLocation. May be absent on older payloads -- code
+   * defensively against undefined, same as `id` above. */
+  city?: string | null;
+  state_region?: string | null;
 }
 
 export interface PublicJobClosed {
@@ -103,4 +108,58 @@ export async function applyIntent(code: string, shareCode?: string | null): Prom
   );
   if (!res.ok) throw new Error('apply_intent_failed');
   return res.json();
+}
+
+/** One row of the public job listing feed (GET /public/jobs), used by the
+ * sitemap and RSS feed. A narrower projection than PublicJobActive --
+ * mirrors whatever `infra/lambda/api/public-job-list.ts` (a parallel
+ * backend task) actually returns for this endpoint. */
+export interface PublicJobListItem {
+  code: string;
+  title: string;
+  city?: string | null;
+  state_region?: string | null;
+  trade_category?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface PublicJobsListResponse {
+  jobs: PublicJobListItem[];
+  next_cursor: string | null;
+}
+
+/** Maximum pages to follow before giving up, so a misbehaving API (a
+ * `next_cursor` that never goes null) can't hang the sitemap/feed build. */
+const MAX_LIST_PAGES = 200;
+
+/**
+ * Fetches every active public job by following `next_cursor` until it goes
+ * null. Used to build the sitemap and RSS feed at request time.
+ *
+ * Never throws: sitemap.ts and feed.xml must never 500, so any fetch or
+ * parse failure here is swallowed and whatever pages were already
+ * accumulated (possibly none) are returned instead.
+ */
+export async function getPublicJobsList(): Promise<PublicJobListItem[]> {
+  const results: PublicJobListItem[] = [];
+  const base = process.env.NEXT_PUBLIC_API_BASE_URL;
+  if (!base) return results;
+
+  let cursor: string | null = null;
+  try {
+    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+      const qs = new URLSearchParams({ limit: '500' });
+      if (cursor) qs.set('cursor', cursor);
+      const res = await fetch(`${base}/public/jobs?${qs.toString()}`, { cache: 'no-store' });
+      if (!res.ok) break;
+      const body: PublicJobsListResponse = await res.json();
+      if (Array.isArray(body?.jobs)) results.push(...body.jobs);
+      cursor = body?.next_cursor ?? null;
+      if (!cursor) break;
+    }
+  } catch {
+    // Tolerate any fetch/parse failure -- return whatever was accumulated.
+  }
+  return results;
 }
