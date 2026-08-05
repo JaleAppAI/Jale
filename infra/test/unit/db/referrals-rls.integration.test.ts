@@ -1113,6 +1113,375 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       expect(result.written).toBe(false);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // job_visibility_events outbox (migration 062): enqueue is SECURITY
+  // DEFINER; a direct INSERT is blocked because FORCE RLS + no INSERT policy
+  // means the table default-denies that command for every role, including
+  // the owner.
+  // -------------------------------------------------------------------------
+  describe('job_visibility_events outbox (migration 062)', () => {
+    it('enqueue_job_visibility_event() inserts a row under jale_admin', async () => {
+      const jobId = await makeJob();
+      const publicCode = randomCode(6);
+      await asAdmin(adminUrl, employerCognitoSub, (client) =>
+        client.query(`SELECT enqueue_job_visibility_event($1, $2, 'published')`, [jobId, publicCode]),
+      );
+
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const rows = await check.query<{ event_kind: string; status: string }>(
+          `SELECT event_kind, status FROM job_visibility_events WHERE job_id = $1 AND public_code = $2`,
+          [jobId, publicCode],
+        );
+        expect(rows.rows).toHaveLength(1);
+        expect(rows.rows[0].event_kind).toBe('published');
+        expect(rows.rows[0].status).toBe('pending');
+      } finally {
+        await check.end();
+      }
+    });
+
+    it('a direct INSERT into job_visibility_events as jale_admin affects zero rows or errors', async () => {
+      const jobId = await makeJob();
+      const publicCode = randomCode(6);
+      let rowCount: number | null = null;
+      let caught: unknown = null;
+      try {
+        const result = await asAdmin(adminUrl, employerCognitoSub, (client) =>
+          client.query(
+            `INSERT INTO job_visibility_events (job_id, public_code, event_kind) VALUES ($1, $2, 'published')`,
+            [jobId, publicCode],
+          ),
+        );
+        rowCount = result.rowCount;
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught !== null || rowCount === 0).toBe(true);
+
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const rows = await check.query(
+          `SELECT 1 FROM job_visibility_events WHERE job_id = $1 AND public_code = $2`,
+          [jobId, publicCode],
+        );
+        expect(rows.rows).toHaveLength(0);
+      } finally {
+        await check.end();
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Employer-referrer job_share_links (migration 063)
+  // -------------------------------------------------------------------------
+  describe('job_share_links: employer referrer (migration 063)', () => {
+    async function makeFreshEmployer(): Promise<{ id: string; cognitoSub: string }> {
+      const cognitoSub = `referrals-fresh-employer-${randomCode(16)}`;
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, created_at, updated_at)
+           VALUES ($1, 'employer', now(), now())
+           RETURNING id`,
+          [cognitoSub],
+        );
+        return { id: result.rows[0].id, cognitoSub };
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function makeFreshWorker(): Promise<{ id: string; cognitoSub: string }> {
+      const cognitoSub = `referrals-fresh-worker-vis-${randomCode(16)}`;
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, created_at, updated_at)
+           VALUES ($1, 'worker', now(), now())
+           RETURNING id`,
+          [cognitoSub],
+        );
+        return { id: result.rows[0].id, cognitoSub };
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function makeEmployerLink(jobId: string, employerId: string, channel: string): Promise<string> {
+      const code = randomCode(8);
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, $4)`,
+          [code, jobId, employerId, channel],
+        );
+      } finally {
+        await client.end();
+      }
+      return code;
+    }
+
+    it('is visible to its owning employer under the extended owner policy', async () => {
+      const employer = await makeFreshEmployer();
+      const jobId = await makeJob({ employer_id: employer.id });
+      const code = await makeEmployerLink(jobId, employer.id, 'facebook');
+
+      const result = await asAdmin(adminUrl, employer.cognitoSub, (client) =>
+        client.query(`SELECT code FROM job_share_links WHERE code = $1`, [code]),
+      );
+      expect(result.rows).toHaveLength(1);
+    });
+
+    it('is NOT visible to a different user under the owner policy (revoked, to isolate from the 059 claim-read policy)', async () => {
+      // job_share_links_claim_read (059) is USING (revoked_at IS NULL) with
+      // no referrer predicate at all, so ANY unrevoked row is visible to ANY
+      // jale_admin session by exact code -- that is by design (059: a code
+      // is a capability token). Testing owner-scoping on an unrevoked row
+      // would therefore pass for the wrong reason. Revoking removes that
+      // permissive policy from consideration, isolating the extended
+      // job_share_links_owner policy as the only one that could grant access.
+      const employer = await makeFreshEmployer();
+      const otherWorker = await makeFreshWorker();
+      const jobId = await makeJob({ employer_id: employer.id });
+      const code = await makeEmployerLink(jobId, employer.id, 'sms');
+
+      const revoke = new Client({ connectionString: superuserUrl });
+      await revoke.connect();
+      try {
+        await revoke.query(`UPDATE job_share_links SET revoked_at = now() WHERE code = $1`, [code]);
+      } finally {
+        await revoke.end();
+      }
+
+      const ownerView = await asAdmin(adminUrl, employer.cognitoSub, (client) =>
+        client.query(`SELECT code FROM job_share_links WHERE code = $1`, [code]),
+      );
+      expect(ownerView.rows).toHaveLength(1);
+
+      const otherView = await asAdmin(adminUrl, otherWorker.cognitoSub, (client) =>
+        client.query(`SELECT code FROM job_share_links WHERE code = $1`, [code]),
+      );
+      expect(otherView.rows).toHaveLength(0);
+    });
+
+    it('resolves through the claim-read path (job_share_links_claim_read, 059) for any caller when revoked_at IS NULL', async () => {
+      const employer = await makeFreshEmployer();
+      const claimer = await makeFreshWorker();
+      const jobId = await makeJob({ employer_id: employer.id });
+      const code = await makeEmployerLink(jobId, employer.id, 'whatsapp');
+
+      const result = await asAdmin(adminUrl, claimer.cognitoSub, (client) =>
+        client.query(`SELECT code, revoked_at FROM job_share_links WHERE code = $1`, [code]),
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].revoked_at).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // jobs: public geo/SEO columns (migration 061)
+  // -------------------------------------------------------------------------
+  describe('jale_public_jobs: geo/SEO column grant (migration 061)', () => {
+    it('can SELECT city, state_region, updated_at', async () => {
+      const jobId = await makeJob();
+      const setup = new Client({ connectionString: superuserUrl });
+      await setup.connect();
+      try {
+        await setup.query(`UPDATE jobs SET city = 'Austin', state_region = 'TX' WHERE id = $1`, [jobId]);
+      } finally {
+        await setup.end();
+      }
+
+      const result = await asPublicJobs(publicUrl, (client) =>
+        client.query<{ city: string; state_region: string }>(
+          `SELECT city, state_region, updated_at FROM jobs WHERE id = $1`,
+          [jobId],
+        ),
+      );
+      expect(result.rows).toHaveLength(1);
+      expect(result.rows[0].city).toBe('Austin');
+      expect(result.rows[0].state_region).toBe('TX');
+    });
+
+    it('still cannot SELECT employer_id', async () => {
+      const jobId = await makeJob();
+      await expect(
+        asPublicJobs(publicUrl, (client) =>
+          client.query(`SELECT employer_id FROM jobs WHERE id = $1`, [jobId]),
+        ),
+      ).rejects.toThrow(/permission denied/i);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // worker_attribution: employer referrer first-touch immutability (063)
+  // -------------------------------------------------------------------------
+  describe('worker_attribution: employer referrer first-touch immutability (migration 063)', () => {
+    async function makeWorker(): Promise<{ id: string; cognitoSub: string }> {
+      const cognitoSub = `referrals-emp-attr-worker-${randomCode(16)}`;
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, created_at, updated_at)
+           VALUES ($1, 'worker', now(), now())
+           RETURNING id`,
+          [cognitoSub],
+        );
+        return { id: result.rows[0].id, cognitoSub };
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function seedAttribution(workerId: string): Promise<void> {
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO worker_attribution (worker_id, first_channel, first_seen_at)
+           VALUES ($1, 'whatsapp', now())`,
+          [workerId],
+        );
+      } finally {
+        await client.end();
+      }
+    }
+
+    it('UPDATE changing first_referrer_employer_id raises', async () => {
+      const worker = await makeWorker();
+      await seedAttribution(worker.id);
+      await expect(
+        asAdmin(adminUrl, worker.cognitoSub, (client) =>
+          client.query(
+            `UPDATE worker_attribution SET first_referrer_employer_id = gen_random_uuid() WHERE worker_id = $1`,
+            [worker.id],
+          ),
+        ),
+      ).rejects.toThrow(/immutable/i);
+    });
+
+    it('UPDATE changing latest_referrer_employer_id succeeds', async () => {
+      const worker = await makeWorker();
+      await seedAttribution(worker.id);
+      const result = await asAdmin(adminUrl, worker.cognitoSub, (client) =>
+        client.query(
+          `UPDATE worker_attribution SET latest_referrer_employer_id = gen_random_uuid() WHERE worker_id = $1`,
+          [worker.id],
+        ),
+      );
+      expect(result.rowCount).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // job_share_links_employer_channel_key uniqueness (migration 063)
+  // -------------------------------------------------------------------------
+  describe('job_share_links_employer_channel_key uniqueness (migration 063)', () => {
+    it('a duplicate (job_id, referrer_employer_id, channel) insert violates the unique index', async () => {
+      const jobId = await makeJob();
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, 'facebook')`,
+          [randomCode(8), jobId, employerUserId],
+        );
+        await expect(
+          client.query(
+            `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+             VALUES ($1, $2, $3, 'facebook')`,
+            [randomCode(8), jobId, employerUserId],
+          ),
+        ).rejects.toThrow(/unique/i);
+      } finally {
+        await client.end();
+      }
+    });
+
+    it('the same job+channel for a DIFFERENT employer inserts fine', async () => {
+      const jobId = await makeJob();
+      const otherEmployerClient = new Client({ connectionString: superuserUrl });
+      await otherEmployerClient.connect();
+      let otherEmployerId: string;
+      try {
+        const result = await otherEmployerClient.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, created_at, updated_at)
+           VALUES ($1, 'employer', now(), now())
+           RETURNING id`,
+          [`referrals-dedupe-employer-${randomCode(16)}`],
+        );
+        otherEmployerId = result.rows[0].id;
+      } finally {
+        await otherEmployerClient.end();
+      }
+
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, 'whatsapp')`,
+          [randomCode(8), jobId, employerUserId],
+        );
+        const result = await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, 'whatsapp')`,
+          [randomCode(8), jobId, otherEmployerId],
+        );
+        expect(result.rowCount).toBe(1);
+      } finally {
+        await client.end();
+      }
+    });
+
+    it('coexists with a worker-referrer row for the same job+channel', async () => {
+      const jobId = await makeJob();
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, 'copy_link')`,
+          [randomCode(8), jobId, employerUserId],
+        );
+        const result = await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_worker_id, channel)
+           VALUES ($1, $2, $3, 'copy_link')`,
+          [randomCode(8), jobId, workerUserId],
+        );
+        expect(result.rowCount).toBe(1);
+      } finally {
+        await client.end();
+      }
+    });
+
+    it('a row with BOTH referrer_worker_id and referrer_employer_id set violates the exclusivity CHECK', async () => {
+      const jobId = await makeJob();
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await expect(
+          client.query(
+            `INSERT INTO job_share_links (code, job_id, referrer_worker_id, referrer_employer_id, channel)
+             VALUES ($1, $2, $3, $4, 'unknown')`,
+            [randomCode(8), jobId, workerUserId, employerUserId],
+          ),
+        ).rejects.toThrow(/check/i);
+      } finally {
+        await client.end();
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
