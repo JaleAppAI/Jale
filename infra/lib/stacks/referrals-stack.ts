@@ -53,18 +53,24 @@ export interface ReferralsStackProps extends cdk.StackProps {
  * ReferralsStack — worker-to-worker job referrals.
  *
  * Routes:
+ *   GET  /public/jobs                            → public-jobs-list Lambda (UNAUTHENTICATED)
  *   GET  /public/jobs/{code}                    → public-job Lambda (UNAUTHENTICATED)
  *   POST /public/jobs/{code}/apply-intent        → public-job-apply-intent Lambda (UNAUTHENTICATED)
  *   POST /worker/jobs/{jobId}/share               → worker-job-share Lambda (worker auth)
  *   GET  /worker/referrals                       → worker-referrals Lambda (worker auth)
  *   POST /worker/referrals/claim                 → worker-referral-claim Lambda (worker auth)
+ *   POST /employer/jobs/{jobId}/share             → employer-job-share Lambda (employer auth)
  *
  * Secret isolation:
  *   public-job              : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
+ *   public-jobs-list         : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   public-job-apply-intent : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   worker-job-share         : DB_SECRET_ARN (app DB / jale_admin) only
  *   worker-referrals         : DB_SECRET_ARN (app DB / jale_admin) only
  *   worker-referral-claim    : DB_SECRET_ARN (app DB / jale_admin) only
+ *   employer-job-share       : DB_SECRET_ARN (app DB / jale_admin) only
+ *   visibility-outbox-drain  : DB_SECRET_ARN (app DB / jale_admin) plus the
+ *                              read-only jale/referrals/google-indexing-key secret
  *
  * Per the recorded BillingStack correction (applies here too): user-facing
  * Lambdas use appDbSecret (jale_admin) because owner RLS policies are TO
@@ -248,6 +254,86 @@ export class ReferralsStack extends cdk.Stack {
       targets: [new eventTargets.LambdaFunction(retentionSweeperLambda.function)],
     });
 
+    // ── Lambda: public-jobs-list (GET /public/jobs) ──
+    // jale_public_jobs role only. UNAUTHENTICATED. Mirrors public-job's
+    // secret/env wiring exactly -- same restricted DB role, same absence of
+    // DB_SECRET_ARN. No visitor-salt secret: this Lambda never hashes a
+    // visitor (that only happens on the single-job read/open path).
+    const publicJobsListLambda = new JaleLambdaFunction(this, 'PublicJobsListLambda', {
+      entry: path.join(__dirname, '../../lambda/api/public-jobs-list.ts'),
+      description: 'Public job index endpoint (unauthenticated, SEO/search)',
+      environment: {
+        REFERRALS_DB_SECRET_ARN: props.referralsDbSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      ...lambdaProps,
+    });
+    props.referralsDbSecret.grantRead(publicJobsListLambda.function);
+
+    // ── Lambda: employer-job-share (POST /employer/jobs/{jobId}/share) ──
+    // App DB (jale_admin) only. Employer-authenticated. Exact mirror of
+    // worker-job-share's env wiring -- same TOS gate, same absolute-base-URL
+    // requirement for the minted share link.
+    const employerJobShareLambda = new JaleLambdaFunction(this, 'EmployerJobShareLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-job-share.ts'),
+      description: 'Employer job share-link minting endpoint',
+      environment: {
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      ...lambdaProps,
+    });
+    props.appDbSecret.grantRead(employerJobShareLambda.function);
+
+    // ── Secret: Google Indexing API service-account key ──
+    // jale/referrals/google-indexing-key holds a real Google Cloud
+    // service-account JSON key (client_email + private_key) issued OUTSIDE
+    // this AWS account -- CDK cannot generate a value for it the way it does
+    // for `jale/referrals/db`'s CDK-managed DB password. That makes this an
+    // OPERATOR-CREATED secret, the same category as `jale/whatsapp/twilio` /
+    // `jale/whatsapp/db` / `jale/whatsapp/otp-twilio` (see WhatsAppStack and
+    // CLAUDE.md's secrets inventory), not the same category as
+    // `jale/referrals/db` despite the shared `jale/referrals/*` name prefix.
+    // So this follows the WhatsAppStack precedent -- `fromSecretNameV2`
+    // import, `.secretName` (not `.secretArn`) into the env var -- rather
+    // than `new secretsmanager.Secret(...)`. It also matches
+    // GOOGLE_INDEXING_SECRET_NAME's own name: a secret NAME, not an ARN.
+    // The operator must create the real secret out-of-band (empty/placeholder
+    // until seeded) before the first scheduled drain can send anything;
+    // visibility-outbox-drain.ts already treats a missing/malformed value as
+    // "skip this cycle", never a hard failure.
+    const googleIndexingKeySecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      'GoogleIndexingKeySecret',
+      'jale/referrals/google-indexing-key',
+    );
+
+    // ── Lambda: visibility-outbox-drain (EventBridge, every 5 minutes) ──
+    // Drains job_visibility_events (migration 062) and notifies Google's
+    // Indexing API. Runs as jale_admin (appDbSecret) -- see the table's RLS
+    // comment for why the drain path is a narrow direct SELECT/UPDATE policy
+    // rather than a SECURITY DEFINER pair. Only this Lambda gets the Google
+    // service-account secret grant.
+    const visibilityOutboxDrainLambda = new JaleLambdaFunction(this, 'VisibilityOutboxDrainLambda', {
+      entry: path.join(__dirname, '../../lambda/referrals/visibility-outbox-drain.ts'),
+      description: 'Job visibility outbox drain — Google Indexing API notifications',
+      environment: {
+        DB_SECRET_ARN: props.appDbSecret.secretArn,
+        GOOGLE_INDEXING_SECRET_NAME: googleIndexingKeySecret.secretName,
+        PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
+      },
+      ...lambdaProps,
+    });
+    props.appDbSecret.grantRead(visibilityOutboxDrainLambda.function);
+    googleIndexingKeySecret.grantRead(visibilityOutboxDrainLambda.function);
+
+    new events.Rule(this, 'VisibilityOutboxDrainRule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new eventTargets.LambdaFunction(visibilityOutboxDrainLambda.function)],
+    });
+
     // ── Routes ──
 
     // GET /public/jobs/{code}
@@ -257,6 +343,11 @@ export class ReferralsStack extends cdk.Stack {
     // unauthenticated methods to the shared API.
     const publicResource = props.api.root.addResource('public');
     const publicJobsResource = publicResource.addResource('jobs');
+
+    // GET /public/jobs — unauthenticated index (SEO/search), on the SAME
+    // parent resource as {code} below, not a newly-declared one.
+    publicJobsResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobsListLambda.function));
+
     const publicJobResource = publicJobsResource.addResource('{code}');
     publicJobResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobLambda.function));
 
@@ -300,6 +391,16 @@ export class ReferralsStack extends cdk.Stack {
     props.employerJobResource
       .addResource('public-listing')
       .addMethod('PATCH', new apigateway.LambdaIntegration(employerJobPublicListingLambda.function), {
+        authorizer: props.employerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      });
+
+    // POST /employer/jobs/{jobId}/share — employer-authenticated, hangs off
+    // the EXISTING employer {jobId} node exported by ApiStack. Exact mirror
+    // of the public-listing mount above.
+    props.employerJobResource
+      .addResource('share')
+      .addMethod('POST', new apigateway.LambdaIntegration(employerJobShareLambda.function), {
         authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });

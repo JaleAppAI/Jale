@@ -794,6 +794,15 @@ export class ApiStack extends cdk.Stack {
           ThrottlingBurstLimit: 50,
           ThrottlingRateLimit: 20,
         },
+        // GET /public/jobs — unauthenticated public job index (ReferralsStack,
+        // SEO/search). Same conservative shape as /public/jobs/{code} and
+        // /legal/tos: cheap to abuse, no other gate.
+        {
+          ResourcePath: '/public/jobs',
+          HttpMethod: 'GET',
+          ThrottlingBurstLimit: 20,
+          ThrottlingRateLimit: 10,
+        },
         // GET /public/jobs/{code} — unauthenticated public job read (ReferralsStack).
         // Same conservative shape as /legal/tos: cheap to abuse, no other gate.
         {
