@@ -169,6 +169,11 @@ export async function claimPendingReferral(
   // review found this statement existing in three diverged copies, and this
   // lane's copy reported success even when FORCE RLS silently filtered the
   // write to zero rows. The shared implementation is loud about that case.
+  //
+  // referrerEmployerId is always null here: referral_pending_claims (migration
+  // 056) only ever carries a referrer_worker_id -- the WhatsApp apply-token
+  // carry-through is a worker-referral-only lane, employer share links are not
+  // threaded through it.
   const { written } = await writeAttribution(
     client,
     workerId,
@@ -177,6 +182,7 @@ export async function claimPendingReferral(
       channel,
       shareCode: claim.share_code,
       referrerWorkerId: claim.referrer_worker_id,
+      referrerEmployerId: null,
     },
     now,
     'WhatsappAttributionNotPersisted',
