@@ -31,7 +31,7 @@ describe('worker-referral-claim', () => {
   });
   afterAll(() => { process.env = env; });
 
-  function mockHappyPath(linkRow: { job_id: string; channel: string; referrer_worker_id: string | null } | null) {
+  function mockHappyPath(linkRow: { job_id: string; channel: string; referrer_worker_id: string | null; referrer_employer_id?: string | null } | null) {
     mockQuery.mockImplementation((q: string) => {
       if (typeof q !== 'string') return Promise.resolve({});
       if (q.includes('SELECT id, user_type FROM users')) {
@@ -89,7 +89,7 @@ describe('worker-referral-claim', () => {
     // wall has ever been shown; a compliance gate here 403'd every brand-new
     // signup and silently lost the referral. The gate was removed on purpose;
     // this test pins that checkCompliance is never even consulted.
-    mockHappyPath({ job_id: 'job-1', channel: 'copy_link', referrer_worker_id: 'referrer-1' });
+    mockHappyPath({ job_id: 'job-1', channel: 'copy_link', referrer_worker_id: 'referrer-1', referrer_employer_id: null });
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ claimed: true });
@@ -119,7 +119,7 @@ describe('worker-referral-claim', () => {
   });
 
   it('happy path: setRlsContext is called with the caller sub before the attribution write, returns { claimed: true }', async () => {
-    mockHappyPath({ job_id: 'job-1', channel: 'whatsapp', referrer_worker_id: 'referrer-1' });
+    mockHappyPath({ job_id: 'job-1', channel: 'whatsapp', referrer_worker_id: 'referrer-1', referrer_employer_id: null });
     const res = await handler(makeEvent());
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ claimed: true });
@@ -148,7 +148,7 @@ describe('worker-referral-claim', () => {
   it('never logs the share code in any log line', async () => {
     const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    mockHappyPath({ job_id: 'job-1', channel: 'facebook', referrer_worker_id: 'referrer-1' });
+    mockHappyPath({ job_id: 'job-1', channel: 'facebook', referrer_worker_id: 'referrer-1', referrer_employer_id: null });
     await handler(makeEvent({ body: JSON.stringify({ shareCode: 'ABCDEFGH' }) }));
 
     const allLoggedText = [...consoleErrorSpy.mock.calls, ...consoleLogSpy.mock.calls]
@@ -167,7 +167,7 @@ describe('worker-referral-claim', () => {
       if (typeof q !== 'string') return Promise.resolve({});
       if (q.includes('SELECT id, user_type FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id', user_type: 'worker' }] });
       if (q.includes('FROM job_share_links')) {
-        return Promise.resolve({ rows: [{ job_id: 'job-1', channel: 'sms', referrer_worker_id: 'referrer-1' }] });
+        return Promise.resolve({ rows: [{ job_id: 'job-1', channel: 'sms', referrer_worker_id: 'referrer-1', referrer_employer_id: null }] });
       }
       if (q.includes('INSERT INTO worker_attribution')) return Promise.resolve({ rowCount: 0 });
       return Promise.resolve({});
