@@ -10,6 +10,7 @@ import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade 
 import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
@@ -282,7 +283,7 @@ export default function EmployerAuthForm() {
                             />
                         </Field>
                         <Field label={t('fields.city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
-                            <Input value={city} onChange={(e) => setCity(e.target.value)} />
+                            <LocationPicker value={city} onChange={(v) => setCity(v.label)} />
                         </Field>
                         <Field label={t('fields.service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
                             <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />

@@ -45,6 +45,32 @@ export const initialForm: JobForm = {
   certifications: '', required_docs: { resume: false, driver_license: false },
 };
 
+// Structural shape of the LocationPicker's onChange payload. Declared here
+// rather than imported from '@/components/ui/LocationPicker' so lib/ keeps no
+// dependency on components/; LocationPickerValue satisfies this type.
+export type JobFormLocation = {
+  label: string;
+  cityKey: string | null;
+  city: string | null;
+  state: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
+
+// Fold a LocationPicker selection into a JobForm. A free-typed value arrives
+// with null ids/coordinates, which clears any previously picked city.
+export function applyLocationToJobForm(form: JobForm, v: JobFormLocation): JobForm {
+  return {
+    ...form,
+    location: v.label,
+    city_key: v.cityKey,
+    city: v.city,
+    state: v.state,
+    latitude: v.latitude,
+    longitude: v.longitude,
+  };
+}
+
 export function parseOptionalNumber(value: string): number | null {
   if (!value.trim()) return null;
   const parsed = Number(value);

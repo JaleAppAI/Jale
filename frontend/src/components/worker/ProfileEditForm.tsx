@@ -3,7 +3,10 @@ import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import type { WorkerProfileData } from '@/lib/api/worker';
+import { LocationPicker } from '@/components/ui/LocationPicker';
+import { CityMultiSelect } from '@/components/ui/CityMultiSelect';
+import type { LocationSource } from '@/lib/location-search';
+import type { PreferredCity, WorkerProfileData, WorkerProfilePatch } from '@/lib/api/worker';
 import { splitDedupe } from '@/lib/text';
 import { validateWorkerProfileFields, type WorkerProfileField } from '@/lib/worker-profile-form';
 
@@ -19,7 +22,7 @@ const FIELD_LABEL_KEY: Record<WorkerProfileField, string> = {
 export function ProfileEditForm(props: {
   initial: WorkerProfileData;
   onCancel: () => void;
-  onSave: (patch: Partial<WorkerProfileData>) => Promise<void>;
+  onSave: (patch: WorkerProfilePatch) => Promise<void>;
 }) {
   const t = useTranslations('worker_profile.edit');
   const tFields = useTranslations('worker_profile');
@@ -31,6 +34,8 @@ export function ProfileEditForm(props: {
   const [location, setLocation] = useState(props.initial.location ?? '');
   const [bio, setBio] = useState(props.initial.bio ?? '');
   const [certs, setCerts] = useState((props.initial.certifications ?? []).join(', '));
+  const [coords, setCoords] = useState<{ latitude: number; longitude: number; location_source: LocationSource } | null>(null);
+  const [preferredCities, setPreferredCities] = useState<PreferredCity[]>(props.initial.preferred_cities ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [missingFields, setMissingFields] = useState<WorkerProfileField[]>([]);
@@ -61,6 +66,8 @@ export function ProfileEditForm(props: {
         location: location.trim() || null,
         bio: bio.trim() || null,
         certifications: splitDedupe(certs),
+        preferred_cities: preferredCities,
+        ...(coords ?? {}),
       });
     } catch (e) {
       const err = e as Record<string, unknown>;
@@ -85,8 +92,23 @@ export function ProfileEditForm(props: {
       </select>
       <Input type="number" min={0} max={80} placeholder={t('years_experience')} value={yearsExp} onChange={(e) => setYearsExp(e.target.value)} />
       <div>
-        <Input placeholder={t('location')} value={location} onChange={(e) => setLocation(e.target.value)} />
+        <LocationPicker
+          placeholder={t('location')}
+          value={location}
+          onChange={(v) => {
+            setLocation(v.label);
+            setCoords(
+              v.latitude != null && v.longitude != null && v.source
+                ? { latitude: v.latitude, longitude: v.longitude, location_source: v.source }
+                : null,
+            );
+          }}
+        />
         {missingFields.includes('location') && <p className="text-xs text-error mt-1">{tFields('errors.required')}</p>}
+      </div>
+      <div>
+        <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--jale-ink-2)' }}>{t('preferred_cities_label')}</p>
+        <CityMultiSelect value={preferredCities} onChange={setPreferredCities} />
       </div>
       <textarea className="w-full rounded border px-3 py-2 text-sm" rows={3} placeholder={t('bio')} value={bio} onChange={(e) => setBio(e.target.value)} />
       <Input placeholder={t('certifications_placeholder')} value={certs} onChange={(e) => setCerts(e.target.value)} />

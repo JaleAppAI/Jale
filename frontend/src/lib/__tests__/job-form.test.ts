@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { initialForm, jobFormToPayload, jobToForm, type JobForm } from '@/lib/job-form';
+import {
+  applyLocationToJobForm, initialForm, jobFormToPayload, jobToForm, type JobForm,
+} from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
 const base: JobForm = { ...initialForm, title: 'Roofer', location: 'El Paso, TX', trade_category: 'other' };
@@ -87,6 +89,72 @@ describe('jobFormToPayload city + coordinates', () => {
       latitude: 0, longitude: 0,
     });
     expect(payload).toMatchObject({ latitude: 0, longitude: 0 });
+  });
+});
+
+describe('applyLocationToJobForm', () => {
+  it('fills the label, city triple and coordinates from a picked suggestion', () => {
+    const next = applyLocationToJobForm(base, {
+      label: 'El Paso, TX 79901',
+      cityKey: 'el-paso-tx',
+      city: 'El Paso',
+      state: 'TX',
+      latitude: 31.76,
+      longitude: -106.49,
+    });
+
+    expect(next).toMatchObject({
+      location: 'El Paso, TX 79901',
+      city_key: 'el-paso-tx',
+      city: 'El Paso',
+      state: 'TX',
+      latitude: 31.76,
+      longitude: -106.49,
+    });
+    // Untouched fields survive the spread.
+    expect(next.title).toBe('Roofer');
+    expect(next.trade_category).toBe('other');
+  });
+
+  it('nulls a previously picked city when the user free-types over it', () => {
+    const picked = applyLocationToJobForm(base, {
+      label: 'El Paso, TX 79901',
+      cityKey: 'el-paso-tx',
+      city: 'El Paso',
+      state: 'TX',
+      latitude: 31.76,
+      longitude: -106.49,
+    });
+
+    const typed = applyLocationToJobForm(picked, {
+      label: 'El Pas',
+      cityKey: null,
+      city: null,
+      state: null,
+      latitude: null,
+      longitude: null,
+    });
+
+    expect(typed.location).toBe('El Pas');
+    expect(typed.city_key).toBeNull();
+    expect(typed.city).toBeNull();
+    expect(typed.state).toBeNull();
+    expect(typed.latitude).toBeNull();
+    expect(typed.longitude).toBeNull();
+  });
+
+  it('does not mutate the input form', () => {
+    applyLocationToJobForm(base, {
+      label: 'El Paso, TX 79901',
+      cityKey: 'el-paso-tx',
+      city: 'El Paso',
+      state: 'TX',
+      latitude: 31.76,
+      longitude: -106.49,
+    });
+
+    expect(base.location).toBe('El Paso, TX');
+    expect(base.city_key).toBeNull();
   });
 });
 

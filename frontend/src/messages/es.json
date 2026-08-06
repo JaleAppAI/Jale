@@ -3,7 +3,10 @@
     "loading": "Cargando...",
     "error": "Algo salió mal",
     "retry": "Intente de nuevo",
-    "location_no_matches": "Sin resultados"
+    "location_no_matches": "Sin resultados",
+    "city_multi_placeholder": "Agrega una ciudad o código postal…",
+    "city_multi_max": "Puedes agregar hasta {max} ciudades",
+    "city_multi_remove": "Quitar {city}, {state}"
   },
   "match": {
     "score_bands": {
@@ -587,6 +590,7 @@
       "job_title_placeholder": "ej. Operador de montacargas",
       "location": "Ubicación",
       "location_placeholder": "Hayward, CA",
+      "location_pick_required": "Selecciona una ciudad de las sugerencias",
       "job_type": "Tipo de empleo",
       "job_type_fulltime": "Tiempo completo",
       "job_type_parttime": "Medio tiempo",
@@ -754,6 +758,10 @@
   "worker_home": {
     "title": "Buscar trabajos",
     "search_placeholder": "Buscar por título o ubicación",
+    "cities_all": "Todas las ciudades",
+    "cities_edit": "Editar ciudades",
+    "cities_done": "Listo",
+    "other_jobs_header": "Otros trabajos fuera de tus ciudades",
     "filter": {
       "all": "Todos",
       "full_time": "Tiempo completo",
@@ -906,6 +914,7 @@
     "edit": {
       "full_name": "Nombre completo",
       "skills_placeholder": "Habilidades (separadas por comas)",
+      "availability_label": "Disponibilidad",
       "availability": {
         "full_time": "Tiempo completo",
         "part_time": "Medio tiempo",
@@ -914,6 +923,7 @@
       },
       "years_experience": "Años de experiencia",
       "location": "Ubicación",
+      "preferred_cities_label": "Ciudades donde quieres encontrar trabajo",
       "bio": "Acerca de ti",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
       "save": "Guardar",

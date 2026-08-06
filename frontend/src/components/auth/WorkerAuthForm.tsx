@@ -11,6 +11,7 @@ import type { CognitoUser } from 'amazon-cognito-identity-js';
 import { claimReferral, type WorkerAvailability, type WorkerExperience, type WorkerProfilePatch, type WorkerTrade } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 import {
@@ -233,7 +234,7 @@ export default function WorkerAuthForm() {
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
                     </Field>
-                    <Field label={t('fields.city')}><Input value={city} onChange={(e) => setCity(e.target.value)} /></Field>
+                    <Field label={t('fields.city')}><LocationPicker value={city} onChange={(v) => setCity(v.label)} /></Field>
                     <Field label={t('fields.main_trade')}>
                         <Select value={mainTrade} onChange={(e) => setMainTrade(e.target.value as WorkerTrade)}>
                             {TRADES.map((trade) => <option key={trade} value={trade}>{t(`trades.${trade}`)}</option>)}
