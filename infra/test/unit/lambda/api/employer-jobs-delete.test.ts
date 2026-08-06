@@ -97,4 +97,38 @@ describe('employer-jobs-delete', () => {
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
+
+  it("enqueues a 'removed' visibility event, BEFORE the DELETEs, when the deleted job was effectively visible", async () => {
+    const calls: Array<[string, unknown[] | undefined]> = [];
+    mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      calls.push([sql.replace(/\s+/g, ' ').trim(), params]);
+      if (/FROM jobs\s+JOIN users/i.test(sql)) {
+        return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'active', public_listing_enabled: true, public_code: 'ABC123' }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    const res = await handler(makeEvent());
+    expect(res.statusCode).toBe(200);
+
+    const enqueueIdx = calls.findIndex(([sql]) => sql.includes('enqueue_job_visibility_event'));
+    expect(enqueueIdx).toBeGreaterThanOrEqual(0);
+    expect(calls[enqueueIdx][1]).toEqual([JOB_ID, 'ABC123', 'removed']);
+
+    // Must run before any of the destructive deletes, while jobs.id still exists
+    // to be referenced -- see the comment in employer-jobs-delete.ts.
+    const firstDeleteIdx = calls.findIndex(([sql]) => sql.startsWith('DELETE'));
+    expect(enqueueIdx).toBeLessThan(firstDeleteIdx);
+  });
+
+  it('does NOT enqueue a visibility event for a paused (non-active) job even if listed', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/FROM jobs\s+JOIN users/i.test(sql)) {
+        return { rowCount: 1, rows: [{ id: JOB_ID, hired_count: 0, status: 'paused', public_listing_enabled: true, public_code: 'ABC123' }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    await handler(makeEvent());
+    const enqueued = mockQuery.mock.calls.some((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
+    expect(enqueued).toBe(false);
+  });
 });

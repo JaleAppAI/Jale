@@ -168,7 +168,7 @@ describe('claimPendingReferral', () => {
     expect(attributionCall[0]).toMatch(/latest_referrer_worker_id/);
     // The share link's ACTUAL channel ('facebook') is recorded, never a
     // fabricated 'whatsapp' — the arrival transport is not the earned channel.
-    expect(attributionCall[1]).toEqual([WORKER_ID, SHARE_CODE, 'facebook', JOB_ID, REFERRER_ID, NOW.toISOString()]);
+    expect(attributionCall[1]).toEqual([WORKER_ID, SHARE_CODE, 'facebook', JOB_ID, REFERRER_ID, null, NOW.toISOString()]);
   });
 
   it('records channel "unknown" (never "whatsapp") when the claim has no share_code at all', async () => {
@@ -184,7 +184,7 @@ describe('claimPendingReferral', () => {
 
     const attributionCall = query.mock.calls[1];
     expect(attributionCall[0]).toMatch(/INSERT INTO worker_attribution/);
-    expect(attributionCall[1]).toEqual([WORKER_ID, null, 'unknown', JOB_ID, null, NOW.toISOString()]);
+    expect(attributionCall[1]).toEqual([WORKER_ID, null, 'unknown', JOB_ID, null, null, NOW.toISOString()]);
   });
 
   it('writes first_* only once: a second call with a different referrer only moves latest_*, never first_*', async () => {
@@ -224,7 +224,7 @@ describe('claimPendingReferral', () => {
     expect(setClause).not.toMatch(/first_referrer_worker_id/);
     expect(setClause).not.toMatch(/first_seen_at/);
     expect(setClause).toMatch(/latest_referrer_worker_id\s*=\s*EXCLUDED\.latest_referrer_worker_id/);
-    expect(secondAttributionCall[1]).toEqual([WORKER_ID, secondShareCode, 'facebook', secondJobId, secondReferrer, later.toISOString()]);
+    expect(secondAttributionCall[1]).toEqual([WORKER_ID, secondShareCode, 'facebook', secondJobId, secondReferrer, null, later.toISOString()]);
   });
 
   it('never logs a phone or phone_hash (query params carry it, but no console call is made)', async () => {

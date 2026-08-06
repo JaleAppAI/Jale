@@ -475,6 +475,23 @@ describe('ApiStack', () => {
     ]));
   });
 
+  test('centralized MethodSettings includes exactly one GET /public/jobs throttle entry, same shape as /public/jobs/{code}', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    // A plain arrayContaining/arrayWith check would still pass if this entry
+    // were accidentally duplicated -- assert cardinality explicitly.
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/public/jobs' && s.HttpMethod === 'GET',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 20,
+      ThrottlingRateLimit: 10,
+    }));
+  });
+
   test('MethodSettings still includes the pre-existing /legal/tos and billing entries (no clobber)', () => {
     const stages = template.findResources('AWS::ApiGateway::Stage');
     const stageIds = Object.keys(stages);
@@ -572,6 +589,48 @@ describe('ApiStack', () => {
     for (const pathPart of ['public', '{code}', 'apply-intent']) {
       template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
     }
+  });
+
+  test('GET /public/jobs hangs off the same "jobs" node as {code}, not a second one', () => {
+    const rootId = restApiRootLogicalId();
+    const publicChildren = childrenOf(rootId, 'public');
+    expect(publicChildren).toHaveLength(1);
+    const [publicLogicalId] = publicChildren[0];
+
+    const jobsChildren = childrenOf(publicLogicalId, 'jobs');
+    expect(jobsChildren).toHaveLength(1);
+    const [publicJobsLogicalId] = jobsChildren[0];
+
+    const methods = template.findResources('AWS::ApiGateway::Method', {
+      Properties: { HttpMethod: 'GET' },
+    });
+    const getMethodsOnPublicJobs = Object.values(methods).filter((m: any) => {
+      const parentRef = m.Properties?.ResourceId?.['Fn::GetAtt']?.[0] ?? m.Properties?.ResourceId?.Ref;
+      return parentRef === publicJobsLogicalId;
+    });
+    expect(getMethodsOnPublicJobs).toHaveLength(1);
+    expect((getMethodsOnPublicJobs[0] as any).Properties.AuthorizationType).toBe('NONE');
+  });
+
+  test('employer {jobId} node gains a "share" child alongside applicants/candidates/public-listing', () => {
+    const rootId = restApiRootLogicalId();
+    const employerChildren = childrenOf(rootId, 'employer');
+    expect(employerChildren).toHaveLength(1);
+    const [employerLogicalId] = employerChildren[0];
+
+    const employerJobsChildren = childrenOf(employerLogicalId, 'jobs');
+    expect(employerJobsChildren).toHaveLength(1);
+    const [employerJobsLogicalId] = employerJobsChildren[0];
+
+    const jobIdChildren = Object.entries(allResources()).filter(([, res]) => {
+      const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+      return parentRef === employerJobsLogicalId && /^\{.*\}$/.test(res.Properties?.PathPart ?? '');
+    });
+    expect(jobIdChildren).toHaveLength(1);
+    const [employerJobIdLogicalId] = jobIdChildren[0];
+
+    const pathParts = childrenOf(employerJobIdLogicalId).map(([, res]) => res.Properties.PathPart).sort();
+    expect(pathParts).toEqual(['applicants', 'candidates', 'public-listing', 'share']);
   });
 
   test('referrals path-part resource exists: referrals', () => {

@@ -200,6 +200,8 @@ export type Job = {
   id: string;
   title: string;
   location: string;
+  city?: string | null;
+  state_region?: string | null;
   pay: string | null;
   job_type: 'full-time' | 'part-time' | 'contract';
   status: JobStatus;
@@ -400,6 +402,10 @@ export async function getJobs(token: string): Promise<Job[]> {
 export type JobWritePayload = {
   title: string;
   location: string;
+  /** `null` is an explicit clear-override (backend: resolveJobLocationFields);
+   *  omitting the key entirely defers to the parsed location instead. */
+  city?: string | null;
+  state_region?: string | null;
   job_type: string;
   description?: string;
   required_docs?: string[];
@@ -458,6 +464,26 @@ export async function updateJobPublicListing(
     body: JSON.stringify({ enabled }),
   }, token);
   if (!res.ok) throw await parseApiError(res, 'update_failed');
+  return res.json();
+}
+
+/**
+ * Mints (or refreshes) a trackable public share link for this job -- distinct
+ * from the raw /j/{public_code} URL PublicListingToggle already surfaces --
+ * for print/QR distribution (job fairs, flyers). Requires the job's
+ * public-listing opt-in (migration 057); the endpoint 404s (`job_not_found`)
+ * for a job that isn't published yet, and can 500 (`share_url_misconfigured`)
+ * if the share-link origin isn't configured.
+ */
+export async function shareEmployerJob(
+  token: string,
+  jobId: string,
+): Promise<{ code: string; share_url: string }> {
+  const res = await apiFetch(`/employer/jobs/${jobId}/share`, {
+    method: 'POST',
+    body: JSON.stringify({ channel: 'copy_link' }),
+  }, token);
+  if (!res.ok) throw await parseApiError(res, 'share_failed');
   return res.json();
 }
 

@@ -50,6 +50,8 @@ describe('employer-jobs-detail', () => {
       id: JOB_ID,
       title: 'Forklift Driver',
       location: 'Houston',
+      city: 'Houston',
+      state_region: 'TX',
       job_type: 'full-time',
       status: 'active',
       description: 'Unload trucks and stage materials.',
@@ -66,7 +68,20 @@ describe('employer-jobs-detail', () => {
 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual(row);
+    expect(JSON.parse(res.body).city).toBe('Houston');
+    expect(JSON.parse(res.body).state_region).toBe('TX');
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'employer-sub-1');
+  });
+
+  it('selects city and state_region in the job lookup query', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, title, location')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+    await handler(baseEvent);
+    const jobLookupCall = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT id, title, location'));
+    expect(jobLookupCall![0]).toMatch(/\bcity\b/);
+    expect(jobLookupCall![0]).toMatch(/\bstate_region\b/);
   });
 
   it('normalizes nullable required_docs for the frontend contract', async () => {

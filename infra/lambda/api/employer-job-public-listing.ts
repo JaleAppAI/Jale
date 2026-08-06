@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 /**
@@ -68,16 +69,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
+    // The CTE captures the pre-update status and enabled value so the
+    // visibility-event decision below can tell an actual on/off transition
+    // apart from a no-op write, without a second round trip.
     const result = await client.query(
       `WITH employer_job AS (
-         SELECT j.id FROM jobs j
+         SELECT j.id, j.status, j.public_listing_enabled AS old_enabled FROM jobs j
            JOIN users u ON u.id = j.employer_id
           WHERE j.id = $2 AND u.cognito_sub = $3
        )
        UPDATE jobs SET public_listing_enabled = $1
          FROM employer_job
         WHERE jobs.id = employer_job.id
-       RETURNING jobs.id, jobs.public_code, jobs.public_listing_enabled`,
+       RETURNING jobs.id, jobs.public_code, jobs.public_listing_enabled,
+         employer_job.status, employer_job.old_enabled`,
       [enabled, jobId, cognitoSub],
     );
 
@@ -88,9 +93,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'job_not_found' }) };
     }
 
+    const row = result.rows[0];
+
+    // Effective public visibility is status='active' AND public_listing_enabled.
+    // This endpoint only ever changes the enabled half of that pair, so a
+    // status change elsewhere (e.g. pausing) cannot make either side of this
+    // comparison stale within the same statement.
+    const wasVisible = isEffectivelyVisible(row.status, row.old_enabled);
+    const isVisible = isEffectivelyVisible(row.status, row.public_listing_enabled);
+    await enqueueVisibilityTransition(client, jobId, row.public_code, wasVisible, isVisible);
+
     await client.query('COMMIT');
 
-    const row = result.rows[0];
     return {
       statusCode: 200,
       headers: CORS_HEADERS,

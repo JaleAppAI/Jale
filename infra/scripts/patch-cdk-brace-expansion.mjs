@@ -1,7 +1,7 @@
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const patchedVersion = '5.0.8';
+const patchedVersion = '5.0.9';
 const installRoot = resolve('node_modules');
 const sourcePath = resolve(installRoot, 'brace-expansion');
 const targetPath = resolve(installRoot, 'aws-cdk-lib/node_modules/brace-expansion');
