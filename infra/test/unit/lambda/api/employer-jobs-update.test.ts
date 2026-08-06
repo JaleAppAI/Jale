@@ -114,6 +114,8 @@ describe('employer-jobs-update', () => {
             trade_category: 'concrete',
             required_experience_years: 2,
             certifications: [],
+            public_code: 'PUB123',
+            public_listing_enabled: true,
             applicant_count: 4,
           }],
         });
@@ -129,7 +131,12 @@ describe('employer-jobs-update', () => {
       hired_count: 1,
       open_count: 2,
       number_of_workers_needed: 3,
+      public_code: 'PUB123',
+      public_listing_enabled: true,
     });
+    const statusUpdateCall = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('UPDATE jobs SET status'));
+    expect(statusUpdateCall[0]).toContain('public_code');
+    expect(statusUpdateCall[0]).toContain('public_listing_enabled');
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
     expect(mockCheckCompliance).toHaveBeenCalledWith(expect.anything(), 'e-sub', 'v1.0');
     expect(mockQuery).toHaveBeenCalledWith(
@@ -445,6 +452,15 @@ describe('employer-jobs-update', () => {
   // ---------------------------------------------------------------------------
   // Field-edit path — city triple + coordinates
   // ---------------------------------------------------------------------------
+
+  it('returns the public listing fields on a field edit so the detail page can setJob(updated)', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET'));
+    expect(updateCall[0]).toContain('public_code');
+    expect(updateCall[0]).toContain('public_listing_enabled');
+  });
 
   it('updates the city triple on a field edit', async () => {
     mockCurrentJob();

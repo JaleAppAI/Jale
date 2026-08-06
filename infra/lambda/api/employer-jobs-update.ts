@@ -127,6 +127,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          jobs.workers_hired AS hired_count,
          GREATEST(jobs.number_of_workers_needed - jobs.workers_hired, 0) AS open_count,
          jobs.trade_category, jobs.required_experience_years, jobs.required_experience_months, jobs.certifications,
+         jobs.public_code, jobs.public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
       [status, jobId, cognitoSub],
     );
@@ -287,6 +288,7 @@ async function handleFieldEdit(
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state,
+         public_code, public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],
     );
