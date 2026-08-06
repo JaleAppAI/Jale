@@ -98,6 +98,10 @@ export interface ListMatchedJobsOptions {
   cityKeys?: string[];
   /** Fallback query: only jobs whose city_key is NOT in this list (or NULL). */
   excludeCityKeys?: string[];
+  /** Preferred-city centroids (migration 064): distance scoring anchors in
+   * addition to the worker's own coordinate. They describe the worker, not
+   * the filter -- pass them on fallback (excludeCityKeys) queries too. */
+  cityAnchors?: CityAnchor[];
 }
 
 /** A row from `trade_aliases` (migration 060) -- the self-growing bilingual
@@ -307,48 +311,65 @@ function distanceMiles(lat1: number, lon1: number, lat2: number, lon2: number): 
   return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function scoreLocation(worker: WorkerMatchProfile, job: MatchableJobRow, reasons: string[]): number {
+function distanceTierScore(miles: number): { score: number; reason: string } | null {
+  if (miles <= 5) return { score: 30, reason: 'distance_under_5_miles' };
+  if (miles <= 15) return { score: 24, reason: 'distance_under_15_miles' };
+  if (miles <= 30) return { score: 16, reason: 'distance_under_30_miles' };
+  if (miles <= 50) return { score: 8, reason: 'distance_under_50_miles' };
+  return null;
+}
+
+function zipOrTextScore(worker: WorkerMatchProfile, job: MatchableJobRow): { score: number; reason: string } | null {
+  const workerZip = extractZip(worker.profile_location) ?? extractZip(worker.city);
+  const jobZip = extractZip(job.location);
+  if (workerZip && jobZip && workerZip === jobZip) {
+    return { score: 30, reason: 'zip_exact' };
+  }
+  const workerLocation = cleanText(worker.profile_location ?? worker.city);
+  const jobLocation = cleanText(job.location);
+  if (workerLocation && jobLocation && (jobLocation.includes(workerLocation) || workerLocation.includes(jobLocation))) {
+    return { score: 18, reason: 'location_text_match' };
+  }
+  return null;
+}
+
+function scoreLocation(
+  worker: WorkerMatchProfile,
+  job: MatchableJobRow,
+  reasons: string[],
+  anchors: CityAnchor[] = [],
+): number {
   const workerLat = toNumber(worker.latitude);
   const workerLon = toNumber(worker.longitude);
   const jobLat = toNumber(job.latitude);
   const jobLon = toNumber(job.longitude);
+  const hasOwnCoordinate = workerLat !== null && workerLon !== null;
 
-  if (workerLat !== null && workerLon !== null && jobLat !== null && jobLon !== null) {
-    const miles = distanceMiles(workerLat, workerLon, jobLat, jobLon);
-    if (miles <= 5) {
-      reasons.push('distance_under_5_miles');
-      return 30;
-    }
-    if (miles <= 15) {
-      reasons.push('distance_under_15_miles');
-      return 24;
-    }
-    if (miles <= 30) {
-      reasons.push('distance_under_30_miles');
-      return 16;
-    }
-    if (miles <= 50) {
-      reasons.push('distance_under_50_miles');
-      return 8;
-    }
-    return 0;
+  const points: CityAnchor[] = hasOwnCoordinate
+    ? [{ latitude: workerLat, longitude: workerLon }, ...anchors]
+    : [...anchors];
+
+  let distance: { score: number; reason: string } | null = null;
+  if (jobLat !== null && jobLon !== null && points.length > 0) {
+    const miles = Math.min(...points.map((p) => distanceMiles(p.latitude, p.longitude, jobLat, jobLon)));
+    distance = distanceTierScore(miles);
   }
 
-  const workerZip = extractZip(worker.profile_location) ?? extractZip(worker.city);
-  const jobZip = extractZip(job.location);
-  if (workerZip && jobZip && workerZip === jobZip) {
-    reasons.push('zip_exact');
-    return 30;
+  // A worker with a real coordinate keeps the legacy distance-only branch
+  // (now min-over-anchors): coordinates are strictly better information
+  // than ZIP/text, exactly as before this change.
+  if (hasOwnCoordinate && jobLat !== null && jobLon !== null) {
+    if (distance) reasons.push(distance.reason);
+    return distance?.score ?? 0;
   }
 
-  const workerLocation = cleanText(worker.profile_location ?? worker.city);
-  const jobLocation = cleanText(job.location);
-  if (workerLocation && jobLocation && (jobLocation.includes(workerLocation) || workerLocation.includes(jobLocation))) {
-    reasons.push('location_text_match');
-    return 18;
-  }
-
-  return 0;
+  // No own coordinate: anchors must only ever ADD signal. Take the better
+  // of the anchor-distance tier and the legacy ZIP/text fallback so a
+  // worker whose anchors are all far keeps their zip_exact/text points.
+  const fallback = zipOrTextScore(worker, job);
+  const winner = (distance?.score ?? 0) >= (fallback?.score ?? 0) ? distance : fallback;
+  if (winner) reasons.push(winner.reason);
+  return winner?.score ?? 0;
 }
 
 function workerYears(value: string | number | null): number | null {
@@ -439,11 +460,12 @@ export function scoreJobCandidate(
   job: MatchableJobRow,
   now = new Date(),
   context: WorkerProfessionContext = buildWorkerProfessionContext(worker),
+  anchors: CityAnchor[] = [],
 ): ScoredJobCandidate {
   const reasons: string[] = [];
   const components: MatchComponents = {
     profession: scoreProfession(job, context, reasons),
-    location: scoreLocation(worker, job, reasons),
+    location: scoreLocation(worker, job, reasons, anchors),
     experience: scoreExperience(worker, job, reasons),
     availability: scoreAvailability(worker, job, reasons),
     freshness: scoreFreshness(job, now, reasons),
@@ -649,6 +671,7 @@ export async function listMatchedJobsForWorker(
 
   const aliasRows = await lookupTradeAliases(client, worker);
   const professionContext = buildWorkerProfessionContext(worker, aliasRows);
+  const anchors = options.cityAnchors ?? [];
 
   const params: unknown[] = [workerId];
   const filters = [JOB_ELIGIBLE_STATUS, jobNotAppliedPredicate('$1')];
@@ -704,11 +727,11 @@ export async function listMatchedJobsForWorker(
   );
 
   const ranked = jobsResult.rows
-    .map((job) => scoreJobCandidate(worker, job, undefined, professionContext))
+    .map((job) => scoreJobCandidate(worker, job, undefined, professionContext, anchors))
     .filter((job) => !workerHasProfessionData(worker) || job.match_components.profession > 0)
     .sort((a, b) => b.match_score - a.match_score || new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id.localeCompare(a.id));
 
-  const pinned = isFiltered ? null : await referredJobPin(client, worker, ranked, jobCoordinates, professionContext);
+  const pinned = isFiltered ? null : await referredJobPin(client, worker, ranked, jobCoordinates, professionContext, anchors);
   const listed = pinned ? [pinned, ...ranked.filter((job) => job.id !== pinned.id)] : ranked;
 
   return listed
@@ -771,6 +794,7 @@ async function referredJobPin(
   ranked: ScoredJobCandidate[],
   jobCoordinates: { latitude: string; longitude: string },
   professionContext: WorkerProfessionContext,
+  anchors: CityAnchor[] = [],
 ): Promise<ScoredJobCandidate | null> {
   const referredJobId = worker.attributed_job_id;
   if (!referredJobId) {
@@ -795,7 +819,7 @@ async function referredJobPin(
       return null;
     }
 
-    return withReferredReason(scoreJobCandidate(worker, jobResult.rows[0], undefined, professionContext));
+    return withReferredReason(scoreJobCandidate(worker, jobResult.rows[0], undefined, professionContext, anchors));
   } catch (err) {
     console.warn(JSON.stringify({
       metric: 'ReferredJobPinFailed',

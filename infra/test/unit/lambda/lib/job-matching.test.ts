@@ -315,6 +315,84 @@ describe('job-matching pure scoring', () => {
     expect(context.strongTerms).toEqual([]);
     expect(context.terms).toContain('roofer');
   });
+
+  describe('cityAnchors distance scoring', () => {
+    const elPaso = { latitude: 31.7619, longitude: -106.485 };
+    const lasCruces = { latitude: 32.3199, longitude: -106.7637 };
+
+    it('scores a job near a second-city anchor even when the worker coordinate is far', () => {
+      const scored = scoreJobCandidate(
+        worker({ latitude: 31.7619, longitude: -106.485, city: null, profile_location: null }) as never,
+        job({ latitude: 32.3199, longitude: -106.7637, location: 'Las Cruces, NM' }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [lasCruces],
+      );
+      expect(scored.match_components.location).toBe(30);
+      expect(scored.match_reasons).toContain('distance_under_5_miles');
+    });
+
+    it('takes the nearest anchor (min), not the first', () => {
+      const scored = scoreJobCandidate(
+        worker({ latitude: null, longitude: null, city: null, profile_location: null }) as never,
+        job({ latitude: 31.7619, longitude: -106.485 }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [lasCruces, elPaso],
+      );
+      expect(scored.match_components.location).toBe(30);
+    });
+
+    it('a coordinate-less worker keeps ZIP points when every anchor is far (max rule)', () => {
+      // Job text says El Paso 79928 (matching the worker's ZIP) but its
+      // coordinates are Dallas -- ~570mi from the single El Paso anchor, so
+      // the distance tier is null and the legacy zip_exact must win the max.
+      const scored = scoreJobCandidate(
+        worker({ latitude: null, longitude: null, profile_location: '79928', city: '79928' }) as never,
+        job({ latitude: 32.7767, longitude: -96.797, location: 'El Paso, TX 79928' }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [elPaso],
+      );
+      expect(scored.match_components.location).toBe(30);
+      expect(scored.match_reasons).toContain('zip_exact');
+    });
+
+    it('scores the referral-pinned job with the city anchors', async () => {
+      const query = buildQuery([
+        coordinateColumnsRoute({ jobs: true }),
+        workerRoute(worker({
+          latitude: null, longitude: null, city: null, profile_location: null,
+          attributed_job_id: 'job-ref',
+        })),
+        tradeAliasesRoute([]),
+        jobsListRoute([]),
+        pinFetchRoute([job({ id: 'job-ref', latitude: 32.3199, longitude: -106.7637, location: 'Las Cruces, NM' })]),
+      ]);
+
+      const jobs = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+        limit: 5,
+        channel: 'api',
+        cityAnchors: [lasCruces],
+      });
+
+      expect(jobs[0].id).toBe('job-ref');
+      expect(jobs[0].match_components.location).toBe(30);
+      expect(jobs[0].match_reasons).toContain('distance_under_5_miles');
+    });
+
+    it('no anchors and no coordinates degrades to exactly the legacy text path', () => {
+      const scored = scoreJobCandidate(
+        worker({ latitude: null, longitude: null, profile_location: 'El Paso', city: null }) as never,
+        job({ latitude: null, longitude: null, location: 'El Paso, TX' }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [],
+      );
+      expect(scored.match_components.location).toBe(18);
+      expect(scored.match_reasons).toContain('location_text_match');
+    });
+  });
 });
 
 describe('listMatchedJobsForWorker', () => {
