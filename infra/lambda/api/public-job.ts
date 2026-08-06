@@ -18,10 +18,13 @@ const CORS_HEADERS = corsHeaders();
 type DeviceKind = 'mobile' | 'tablet' | 'desktop' | 'unknown';
 
 // Column list matches exactly the GRANT SELECT (...) ON jobs TO jale_public_jobs
-// list in migration 056. employer_id and the geo columns from 009 are
+// list in migration 056, extended by migration 061's column-scoped grant of
+// city/state_region/updated_at (added for the public job page's schema.org
+// jobLocation). employer_id and any OTHER geo column from 009 remain
 // deliberately absent from that grant and must never be added here.
 const PUBLIC_JOB_COLUMNS = `
-  id, public_code AS code, title, company, location, job_type, description,
+  id, public_code AS code, title, company, location, city, state_region,
+  job_type, description,
   pay, pay_min, pay_max, pay_interval, start_date, expected_duration,
   shift_schedule, trade_category, required_experience_years,
   required_experience_months, certifications, language_preference,

@@ -417,6 +417,209 @@ describe('ReferralsStack', () => {
 
   // ── Security group: no allow-all egress ──────────────────────────────────
 
+  // ── Sprint 19: public-jobs-list, employer-job-share, visibility-outbox-drain ──
+
+  test('public-jobs-list Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Public job index endpoint (unauthenticated, SEO/search)',
+    });
+  });
+
+  test('public-jobs-list Lambda has REFERRALS_DB_SECRET_ARN but NOT DB_SECRET_ARN', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Public job index endpoint (unauthenticated, SEO/search)' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('REFERRALS_DB_SECRET_ARN');
+    expect(env).not.toHaveProperty('DB_SECRET_ARN');
+    // Never hashes a visitor -- must not carry the visitor-salt ARN (that
+    // stays exclusive to public-job, per the test below).
+    expect(env).not.toHaveProperty('REFERRAL_VISITOR_SALT_SECRET_ARN');
+  });
+
+  test('GET /public/jobs has NO authorizer', () => {
+    expect(authorizationTypeForLambda('Public job index endpoint (unauthenticated, SEO/search)')).toBe('NONE');
+  });
+
+  test('employer-job-share Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer job share-link minting endpoint',
+    });
+  });
+
+  test('employer-job-share Lambda has DB_SECRET_ARN, REQUIRED_TOS_VERSION and PUBLIC_SITE_BASE_URL but NOT REFERRALS_DB_SECRET_ARN', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Employer job share-link minting endpoint' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('DB_SECRET_ARN');
+    expect(env).toHaveProperty('REQUIRED_TOS_VERSION');
+    expect(env).toHaveProperty('PUBLIC_SITE_BASE_URL', 'https://jaleapp.ai');
+    expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
+  });
+
+  test('POST /employer/jobs/{jobId}/share is protected by EmployerAuthorizer', () => {
+    expect(authorizationTypeForLambda('Employer job share-link minting endpoint')).toBe('COGNITO_USER_POOLS');
+    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
+  test('share resource hangs off the existing /employer/jobs/{jobId} node, not a newly created one', () => {
+    function allApiResources(): Record<string, any> {
+      return apiTemplate.findResources('AWS::ApiGateway::Resource');
+    }
+    function childrenOf(parentLogicalId: string, pathPart?: string): Array<[string, any]> {
+      return Object.entries(allApiResources()).filter(([, res]) => {
+        const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+        if (parentRef !== parentLogicalId) return false;
+        return pathPart === undefined || res.Properties?.PathPart === pathPart;
+      });
+    }
+    const apis = apiTemplate.findResources('AWS::ApiGateway::RestApi');
+    const apiIds = Object.keys(apis);
+    expect(apiIds).toHaveLength(1);
+    const rootId = apiIds[0];
+
+    const employerChildren = childrenOf(rootId, 'employer');
+    expect(employerChildren).toHaveLength(1);
+    const [employerLogicalId] = employerChildren[0];
+
+    const employerJobsChildren = childrenOf(employerLogicalId, 'jobs');
+    expect(employerJobsChildren).toHaveLength(1);
+    const [employerJobsLogicalId] = employerJobsChildren[0];
+
+    const variableChildren = Object.entries(allApiResources()).filter(([, res]) => {
+      const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+      return parentRef === employerJobsLogicalId && /^\{.*\}$/.test(res.Properties?.PathPart ?? '');
+    });
+    expect(variableChildren).toHaveLength(1);
+    const [employerJobLogicalId] = variableChildren[0];
+
+    const jobIdChildren = childrenOf(employerJobLogicalId);
+    const pathParts = jobIdChildren.map(([, res]) => res.Properties.PathPart).sort();
+    expect(pathParts).toEqual(['applicants', 'candidates', 'public-listing', 'share']);
+  });
+
+  test('visibility-outbox-drain Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Job visibility outbox drain — Google Indexing API notifications',
+    });
+  });
+
+  test('visibility-outbox-drain Lambda has DB_SECRET_ARN, GOOGLE_INDEXING_SECRET_NAME and PUBLIC_SITE_BASE_URL, no ALLOWED_ORIGIN', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Job visibility outbox drain — Google Indexing API notifications' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('DB_SECRET_ARN');
+    expect(env).toHaveProperty('GOOGLE_INDEXING_SECRET_NAME');
+    expect(env).toHaveProperty('PUBLIC_SITE_BASE_URL', 'https://jaleapp.ai');
+    // Never calls corsHeaders() -- it's not an API Gateway-fronted handler.
+    expect(env).not.toHaveProperty('ALLOWED_ORIGIN');
+    expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
+  });
+
+  test('visibility-outbox-drain Lambda has reservedConcurrentExecutions=1 (overlap guard)', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Job visibility outbox drain — Google Indexing API notifications',
+      ReservedConcurrentExecutions: 1,
+    });
+  });
+
+  test('no other referrals Lambda has ReservedConcurrentExecutions set', () => {
+    const fns = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: Match.not('Job visibility outbox drain — Google Indexing API notifications') },
+    });
+    for (const [id, fn] of Object.entries(fns)) {
+      expect({ id, reserved: (fn as any).Properties?.ReservedConcurrentExecutions }).toEqual({ id, reserved: undefined });
+    }
+  });
+
+  test('visibility outbox drain runs every 5 minutes, targeting the drain Lambda specifically', () => {
+    const fnResources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Job visibility outbox drain — Google Indexing API notifications' },
+    });
+    const fnLogicalIds = Object.keys(fnResources);
+    expect(fnLogicalIds).toHaveLength(1);
+    const [drainFnLogicalId] = fnLogicalIds;
+
+    const rules = template.findResources('AWS::Events::Rule', {
+      Properties: { ScheduleExpression: 'rate(5 minutes)' },
+    });
+    const matches = Object.values(rules).filter((rule: any) => {
+      const targets = rule.Properties?.Targets ?? [];
+      return targets.some((t: any) => {
+        const arnRef = t.Arn?.['Fn::GetAtt']?.[0];
+        return arnRef === drainFnLogicalId;
+      });
+    });
+    expect(matches).toHaveLength(1);
+  });
+
+  test('retention sweeper (daily) and visibility drain (5 min) are two distinct rules', () => {
+    const dailyRules = template.findResources('AWS::Events::Rule', {
+      Properties: { ScheduleExpression: 'rate(1 day)' },
+    });
+    const fiveMinRules = template.findResources('AWS::Events::Rule', {
+      Properties: { ScheduleExpression: 'rate(5 minutes)' },
+    });
+    expect(Object.keys(dailyRules)).toHaveLength(1);
+    expect(Object.keys(fiveMinRules)).toHaveLength(1);
+  });
+
+  test('the Google indexing secret grant is scoped to the drain Lambda only', () => {
+    const fnResources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Job visibility outbox drain — Google Indexing API notifications' },
+    });
+    const fnLogicalIds = Object.keys(fnResources);
+    expect(fnLogicalIds).toHaveLength(1);
+    const [drainFnLogicalId] = fnLogicalIds;
+
+    // fromSecretNameV2 does not synthesize an AWS::SecretsManager::Secret
+    // resource in THIS stack (it's an operator-created secret referenced by
+    // name, matching the WhatsAppStack precedent) -- so the only synth-time
+    // evidence of the grant is the secret name appearing in an IAM policy.
+    // Assert it appears in exactly one policy, and that policy belongs to
+    // the drain Lambda's role.
+    const policies = template.findResources('AWS::IAM::Policy');
+    const matchingPolicies = Object.entries(policies).filter(([, policy]) => {
+      const policyJson = JSON.stringify((policy as any).Properties);
+      return policyJson.includes('jale/referrals/google-indexing-key');
+    });
+    expect(matchingPolicies).toHaveLength(1);
+    const [, matchingPolicy] = matchingPolicies[0];
+    const roleRefs: string[] = (matchingPolicy as any).Properties.Roles.map(
+      (r: any) => r.Ref ?? JSON.stringify(r),
+    );
+
+    // The drain Lambda's role is a sibling resource named after its logical
+    // id with a Role suffix pattern; assert via the function's DependsOn/role
+    // relationship instead of guessing the exact logical id string --
+    // find the function resource and compare its Role reference.
+    const drainFnRoleRef = (fnResources[drainFnLogicalId] as any).Properties.Role['Fn::GetAtt'][0];
+    expect(roleRefs).toContain(drainFnRoleRef);
+
+    // And no OTHER Lambda's role policy references the secret name.
+    const otherFnLogicalIds = Object.keys(template.findResources('AWS::Lambda::Function'))
+      .filter((id) => id !== drainFnLogicalId);
+    for (const id of otherFnLogicalIds) {
+      const roleRef = (template.findResources('AWS::Lambda::Function')[id] as any).Properties.Role?.['Fn::GetAtt']?.[0];
+      if (!roleRef) continue;
+      expect(roleRefs).not.toContain(roleRef);
+    }
+  });
+
   test('referrals Lambda security group has no allow-all outbound egress', () => {
     const sgResources = networkTemplate.findResources('AWS::EC2::SecurityGroup', {
       Properties: { GroupDescription: Match.stringLikeRegexp('referrals Lambdas') },

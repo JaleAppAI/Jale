@@ -3,6 +3,8 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { resolveJobLocationFields } from '../lib/job-location-parse';
+import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -65,17 +67,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // Fetch the current status + public listing state once, up front. This backs
+    // two independent things: the A7 entitlement gate below (which only needs
+    // currentStatus) and the visibility-event decision after the UPDATE (which
+    // needs public_listing_enabled + public_code too, regardless of which way the
+    // status is transitioning). FOR UPDATE OF jobs locks the row for the rest of
+    // this transaction -- matching the field-edit path's idiom below -- so a
+    // concurrent status change on the same job cannot read this same row between
+    // this SELECT and the UPDATE, which would otherwise let two concurrent
+    // requests both decide the visibility-event transition from the same
+    // stale currentStatus/public_listing_enabled snapshot (TOCTOU).
+    const currentResult = await client.query<{ status: string; public_listing_enabled: boolean; public_code: string }>(
+      `SELECT jobs.status, jobs.public_listing_enabled, jobs.public_code
+         FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2
+         FOR UPDATE OF jobs`,
+      [jobId, cognitoSub],
+    );
+    const currentRow = currentResult.rows?.[0];
+    const currentStatus = currentRow?.status;
+
     // A7: Gate non-active→active transitions against the plan's active job limit.
     // Transitions that do not activate a job (active→paused, active→closed, active→active,
     // paused→paused, paused→closed) consume no slot and bypass the gate entirely.
     if (status === 'active') {
-      // Fetch the current job status to determine if this is a slot-consuming transition.
-      const currentResult = await client.query<{ status: string }>(
-        `SELECT jobs.status FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2`,
-        [jobId, cognitoSub],
-      );
-      const currentStatus = currentResult.rows[0]?.status;
-
       if (currentStatus !== 'active') {
         // Non-active→active: this consumes a slot. Enforce the entitlement gate.
         // Lock the employer's users row to serialize all concurrent slot consumers.
@@ -135,6 +149,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
 
+    // Effective public visibility is status='active' AND public_listing_enabled.
+    // public_listing_enabled is untouched by this status-only update, so
+    // currentRow's value holds for both sides of the comparison.
+    if (currentRow?.public_listing_enabled === true && currentRow.public_code) {
+      const wasVisible = isEffectivelyVisible(currentStatus ?? '', currentRow.public_listing_enabled);
+      const isVisible = isEffectivelyVisible(status, currentRow.public_listing_enabled);
+      await enqueueVisibilityTransition(client, jobId, currentRow.public_code, wasVisible, isVisible);
+    }
+
     await client.query('COMMIT');
 
     return {
@@ -157,6 +180,7 @@ const EDITABLE_COLUMNS = [
   'shift_schedule', 'transportation_required', 'work_authorization_required',
   'language_preference', 'number_of_workers_needed', 'trade_category',
   'required_experience_years', 'required_experience_months', 'certifications',
+  'city', 'state_region',
 ] as const;
 
 async function handleFieldEdit(
@@ -178,6 +202,14 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: requiredDocsResult.error, valid: requiredDocsResult.valid }) };
   }
   const required_docs = requiredDocsResult.value;
+
+  // Recomputed on every edit (location is always present in this full-replacement
+  // payload); explicit city/state_region body fields win over the parse -- an
+  // employer must always be able to correct a location the parser can't handle.
+  const locationFields = resolveJobLocationFields(location.trim(), body.city, body.state_region);
+  if (!locationFields.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: locationFields.error }) };
+  }
 
   const jobFields = parseJobFields(body);
   if (!jobFields.ok) {
@@ -204,10 +236,13 @@ async function handleFieldEdit(
 
     const current = await client.query<{
       job_type: string; required_docs: string[] | null; applicant_count: number; hired_count: number;
+      city: string | null; state_region: string | null;
     }>(
       `SELECT jobs.job_type,
               jobs.required_docs,
               jobs.workers_hired AS hired_count,
+              jobs.city,
+              jobs.state_region,
               (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count
          FROM jobs JOIN users u ON u.id = jobs.employer_id
         WHERE jobs.id = $1 AND u.cognito_sub = $2
@@ -254,6 +289,15 @@ async function handleFieldEdit(
       required_experience_years: f.required_experience_years,
       required_experience_months: f.required_experience_months,
       certifications: f.certifications,
+      // A null resolution from an unparseable location with NO explicit
+      // override (absent key) preserves whatever city/state_region the job
+      // already has -- e.g. from an earlier backfill or explicit edit --
+      // rather than nulling out a good value just because this particular
+      // edit didn't touch location. An explicit `null` override is different:
+      // it is a deliberate clear and must win over that fallback, writing
+      // NULL even though cur.city/state_region may be set.
+      city: locationFields.cityCleared ? null : (locationFields.value.city ?? cur.city),
+      state_region: locationFields.stateRegionCleared ? null : (locationFields.value.state_region ?? cur.state_region),
     };
     const setClauses = EDITABLE_COLUMNS.map((col, i) => `${col} = $${i + 1}`).join(', ');
     const params = EDITABLE_COLUMNS.map((col) => values[col]);

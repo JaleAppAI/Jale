@@ -7,7 +7,7 @@ import { ApiError, updateJob, type EmployerJobDetail } from '@/lib/api/employer'
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  jobFormToPayload, jobToForm, validateJobNumbers,
+  jobFormToPayload, jobToForm, validateJobNumbers, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -58,6 +58,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
     if (code === 'number') return setError(t('modal.validation_number'));
     if (code === 'pay_range') return setError(t('modal.validation_pay_range'));
     if (code === 'headcount') return setError(t('modal.validation_headcount'));
+    if (validateJobLocationFields(form) === 'state_region') return setError(t('modal.validation_state_region'));
     if (Number(form.number_of_workers_needed) < job.hired_count) {
       return setError(t('modal.validation_headcount'));
     }
@@ -102,6 +103,19 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                 <option value="part-time">{t('modal.job_type_parttime')}</option>
                 <option value="contract">{t('modal.job_type_contract')}</option>
               </Select>
+            </Field>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label={t('modal.city')}>
+              <Input value={form.city} onChange={(e) => update('city', e.target.value)} placeholder={t('modal.city_placeholder')} />
+            </Field>
+            <Field label={t('modal.state_region')}>
+              <Input
+                value={form.state_region}
+                onChange={(e) => update('state_region', e.target.value.toUpperCase())}
+                placeholder={t('modal.state_region_placeholder')}
+                maxLength={2}
+              />
             </Field>
           </div>
           <Field label={t('modal.trade_category')} required>

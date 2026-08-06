@@ -8,7 +8,7 @@ import { ApiError, createJob, Job } from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  initialForm, jobFormToPayload, validateJobNumbers,
+  initialForm, jobFormToPayload, validateJobNumbers, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -68,6 +68,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const validateCurrentStep = (): string | null => {
     if (step === 1) {
       if (!form.title.trim() || !form.location.trim() || !form.trade_category) return t('modal.validation_required');
+      if (validateJobLocationFields(form) === 'state_region') return t('modal.validation_state_region');
       return null;
     }
     if (step === 2) {
@@ -167,6 +168,19 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                     <option value="part-time">{t('modal.job_type_parttime')}</option>
                     <option value="contract">{t('modal.job_type_contract')}</option>
                   </Select>
+                </Field>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <Field label={t('modal.city')}>
+                  <Input value={form.city} onChange={(e) => update('city', e.target.value)} placeholder={t('modal.city_placeholder')} />
+                </Field>
+                <Field label={t('modal.state_region')}>
+                  <Input
+                    value={form.state_region}
+                    onChange={(e) => update('state_region', e.target.value.toUpperCase())}
+                    placeholder={t('modal.state_region_placeholder')}
+                    maxLength={2}
+                  />
                 </Field>
               </div>
               <Field label={t('modal.trade_category')} required>

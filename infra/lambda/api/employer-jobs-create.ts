@@ -3,6 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs } from '../lib/job-fields';
+import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { setJobCoordinates } from '../lib/location';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -40,6 +41,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       required_experience_years?: number | null;
       required_experience_months?: number | null;
       certifications?: string[];
+      city?: string | null;
+      state_region?: string | null;
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -65,6 +68,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
     const required_docs = requiredDocsResult.value;
+
+    // Explicit city/state_region body fields win over the parse -- an employer
+    // must always be able to correct a location the parser can't handle.
+    const locationFields = resolveJobLocationFields(location.trim(), body.city, body.state_region);
+    if (!locationFields.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: locationFields.error }) };
+    }
 
     const jobFields = parseJobFields(body as Record<string, unknown>);
     if (!jobFields.ok) {
@@ -164,17 +174,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          trade_category,
          required_experience_years,
          required_experience_months,
-         certifications
+         certifications,
+         city,
+         state_region
        )
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
          transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
-         trade_category, required_experience_years, required_experience_months, certifications`,
+         trade_category, required_experience_years, required_experience_months, certifications,
+         city, state_region`,
       [
         userId,
         title.trim(),
@@ -197,6 +210,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.required_experience_years,
         jobFields.value.required_experience_months,
         jobFields.value.certifications,
+        locationFields.value.city,
+        locationFields.value.state_region,
       ],
     );
     const job = result.rows[0];

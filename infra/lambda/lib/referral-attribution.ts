@@ -23,7 +23,13 @@ export interface AttributionSource {
    * channel, never hardcoded and never supplied by a client. */
   channel: string;
   shareCode: string | null;
+  /** At most one of referrerWorkerId / referrerEmployerId is non-null, mirroring
+   * the job_share_links CHECK constraint (migration 063) — a link is referred
+   * by a worker or an employer, never both. Every caller must pass both keys
+   * explicitly (as null where not applicable) so neither referrer kind can be
+   * silently dropped from one lane while the other keeps it. */
   referrerWorkerId: string | null;
+  referrerEmployerId: string | null;
 }
 
 /**
@@ -33,10 +39,14 @@ export interface AttributionSource {
  * deliberately omits every `first_*` column, because
  * `worker_attribution_first_touch_immutable` (migration 056) raises on any
  * UPDATE that changes one. `latest_*` is always refreshed. The referrer is
- * denormalized into BOTH `first_referrer_worker_id` and
- * `latest_referrer_worker_id`: `job_share_links.referrer_worker_id` is
+ * denormalized into BOTH `first_referrer_worker_id`/`first_referrer_employer_id`
+ * and `latest_referrer_worker_id`/`latest_referrer_employer_id`: both
+ * `job_share_links.referrer_worker_id` and `.referrer_employer_id` are
  * `ON DELETE SET NULL`, so this copy is what preserves credit after a
- * referring worker's account is later deleted.
+ * referring account is later deleted. Exactly one of the worker/employer pair
+ * is non-null per touch (or both null for an organic, unreferred arrival) —
+ * this function never fabricates the other kind, it only persists whatever
+ * `source` already carries.
  *
  * A zero-row result under FORCE RLS is a silently filtered write, not a
  * no-op — logged loudly (static metric, never a code or phone value) and
@@ -53,21 +63,22 @@ export async function writeAttribution(
   const upsertResult = await client.query(
     `INSERT INTO worker_attribution
         (worker_id,
-         first_share_code, first_channel, first_job_id, first_referrer_worker_id, first_seen_at,
-         latest_share_code, latest_channel, latest_job_id, latest_referrer_worker_id, latest_seen_at,
+         first_share_code, first_channel, first_job_id, first_referrer_worker_id, first_referrer_employer_id, first_seen_at,
+         latest_share_code, latest_channel, latest_job_id, latest_referrer_worker_id, latest_referrer_employer_id, latest_seen_at,
          created_at, updated_at)
      VALUES ($1,
-             $2, $3, $4, $5, $6,
-             $2, $3, $4, $5, $6,
-             $6, $6)
+             $2, $3, $4, $5, $6, $7,
+             $2, $3, $4, $5, $6, $7,
+             $7, $7)
      ON CONFLICT (worker_id) DO UPDATE
-        SET latest_share_code         = EXCLUDED.latest_share_code,
-            latest_channel             = EXCLUDED.latest_channel,
-            latest_job_id              = EXCLUDED.latest_job_id,
-            latest_referrer_worker_id  = EXCLUDED.latest_referrer_worker_id,
-            latest_seen_at             = EXCLUDED.latest_seen_at,
-            updated_at                 = EXCLUDED.updated_at`,
-    [workerId, source.shareCode, source.channel, source.jobId, source.referrerWorkerId, nowIso],
+        SET latest_share_code           = EXCLUDED.latest_share_code,
+            latest_channel               = EXCLUDED.latest_channel,
+            latest_job_id                = EXCLUDED.latest_job_id,
+            latest_referrer_worker_id    = EXCLUDED.latest_referrer_worker_id,
+            latest_referrer_employer_id  = EXCLUDED.latest_referrer_employer_id,
+            latest_seen_at               = EXCLUDED.latest_seen_at,
+            updated_at                   = EXCLUDED.updated_at`,
+    [workerId, source.shareCode, source.channel, source.jobId, source.referrerWorkerId, source.referrerEmployerId, nowIso],
   );
 
   if (upsertResult.rowCount !== 1) {
@@ -97,8 +108,9 @@ export async function writeWebAttribution(
     job_id: string;
     channel: string;
     referrer_worker_id: string | null;
+    referrer_employer_id: string | null;
   }>(
-    `SELECT job_id, channel, referrer_worker_id
+    `SELECT job_id, channel, referrer_worker_id, referrer_employer_id
        FROM job_share_links
       WHERE code = $1
         AND revoked_at IS NULL`,
@@ -118,6 +130,15 @@ export async function writeWebAttribution(
     return { written: false };
   }
 
+  // Defensive parity with the worker check above. An employer-referred link's
+  // referrer_employer_id is a users.id from the employer side of the table,
+  // so it cannot legitimately equal the claiming worker's own id -- but the
+  // guard costs nothing and closes the same self-credit hazard should that
+  // invariant ever be violated upstream.
+  if (link.referrer_employer_id !== null && link.referrer_employer_id === workerId) {
+    return { written: false };
+  }
+
   return writeAttribution(
     client,
     workerId,
@@ -126,6 +147,7 @@ export async function writeWebAttribution(
       channel: link.channel,
       shareCode,
       referrerWorkerId: link.referrer_worker_id,
+      referrerEmployerId: link.referrer_employer_id,
     },
     now,
     'WebAttributionNotPersisted',
