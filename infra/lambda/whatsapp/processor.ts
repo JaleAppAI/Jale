@@ -14,7 +14,7 @@ import {
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
-import { listMatchedJobsForWorker, loadWorkerPreferredCityKeys } from '../lib/job-matching';
+import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
 import {
   declineLatestWorkerConversationFromButtonText,
   declineWorkerConversationFromButton,
@@ -1773,17 +1773,21 @@ async function handleIdle(
     // preferred cities sees those first, topped up with out-of-city jobs when
     // the cities run short. WhatsApp has no "other jobs" section header, so
     // the fill is appended -- each job template shows its own location.
-    const cityKeys = await loadWorkerPreferredCityKeys(client, conv.user_id);
+    const preferredCities = await loadWorkerPreferredCities(client, conv.user_id);
+    const cityKeys = preferredCities.map((row) => row.city_key);
+    const cityAnchors = cityAnchorsFrom(preferredCities);
     let jobs = await listMatchedJobsForWorker(client, conv.user_id, {
       limit: 5,
       channel: 'whatsapp',
       ...(cityKeys.length > 0 ? { cityKeys } : {}),
+      ...(cityAnchors.length > 0 ? { cityAnchors } : {}),
     });
     if (cityKeys.length > 0 && jobs.length < 5) {
       const fallback = await listMatchedJobsForWorker(client, conv.user_id, {
         limit: 5,
         channel: 'whatsapp',
         excludeCityKeys: cityKeys,
+        ...(cityAnchors.length > 0 ? { cityAnchors } : {}),
       });
       // The referral pin is fetched by id with no city filter, so it can come
       // back from both queries -- never send the same job twice.

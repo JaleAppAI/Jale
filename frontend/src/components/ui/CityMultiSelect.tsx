@@ -60,7 +60,13 @@ export function CityMultiSelect({
       return;
     }
     if (!atMax && !value.some((c) => c.city_key === v.cityKey)) {
-      const next = [...value, { city_key: v.cityKey, city: v.city, state: v.state }];
+      const next = [...value, {
+        city_key: v.cityKey,
+        city: v.city,
+        state: v.state,
+        latitude: v.latitude,
+        longitude: v.longitude,
+      }];
       onChange(next);
       if (next.length >= MAX_CITIES) {
         // Hitting the cap unmounts the picker input — keep focus on the

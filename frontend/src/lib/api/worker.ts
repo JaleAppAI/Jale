@@ -124,7 +124,13 @@ export type WorkerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' |
 export type WorkerExperience = '0-1' | '2-4' | '5-9' | '10+';
 export type WorkerAvailability = 'full_time' | 'part_time' | 'weekends' | 'flexible';
 
-export type PreferredCity = { city_key: string; city: string; state: string };
+export type PreferredCity = {
+  city_key: string;
+  city: string;
+  state: string;
+  latitude?: number | null;
+  longitude?: number | null;
+};
 
 export type WorkerProfileData = {
   id: string;

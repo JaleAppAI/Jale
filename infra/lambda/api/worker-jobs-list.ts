@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { listMatchedJobsForWorker } from '../lib/job-matching';
+import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -51,11 +51,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
     }
 
-    const cityResult = await client.query<{ city_key: string }>(
-      `SELECT city_key FROM worker_preferred_cities WHERE user_id = $1 ORDER BY created_at`,
-      [workerId],
-    );
-    const cityKeys = cityResult.rows.map((row) => row.city_key);
+    const preferredCities = await loadWorkerPreferredCities(client, workerId);
+    const cityKeys = preferredCities.map((row) => row.city_key);
+    const cityAnchors = cityAnchorsFrom(preferredCities);
 
     const jobs = await listMatchedJobsForWorker(client, workerId, {
       limit: 100,
@@ -63,6 +61,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       search,
       jobType,
       ...(cityKeys.length > 0 ? { cityKeys } : {}),
+      ...(cityAnchors.length > 0 ? { cityAnchors } : {}),
     });
 
     let otherJobs: typeof jobs = [];
@@ -73,6 +72,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         search,
         jobType,
         excludeCityKeys: cityKeys,
+        ...(cityAnchors.length > 0 ? { cityAnchors } : {}),
       });
       // A referral-pinned job is fetched by id with no city filter, so it can
       // come back from both queries -- never show the same job twice.

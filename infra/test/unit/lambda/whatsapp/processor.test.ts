@@ -70,10 +70,15 @@ jest.mock('../../../../lambda/lib/db', () => ({
 }));
 
 const mockListMatchedJobsForWorker = jest.fn();
-const mockLoadWorkerPreferredCityKeys = jest.fn();
+const mockLoadWorkerPreferredCities = jest.fn();
 jest.mock('../../../../lambda/lib/job-matching', () => ({
   listMatchedJobsForWorker: mockListMatchedJobsForWorker,
-  loadWorkerPreferredCityKeys: mockLoadWorkerPreferredCityKeys,
+  loadWorkerPreferredCities: mockLoadWorkerPreferredCities,
+  // Real implementation: pure, trivially safe to use unmocked semantics here.
+  cityAnchorsFrom: (rows: Array<{ latitude: unknown; longitude: unknown }>) =>
+    rows
+      .filter((r) => r.latitude !== null && r.longitude !== null)
+      .map((r) => ({ latitude: Number(r.latitude), longitude: Number(r.longitude) })),
 }));
 
 // ── v2 routing branch mocks ──────────────────────────────────────────────
@@ -243,8 +248,8 @@ describe('Processor Lambda', () => {
     mockConnect.mockReset();
     mockRelease.mockReset();
     mockListMatchedJobsForWorker.mockReset();
-    mockLoadWorkerPreferredCityKeys.mockReset();
-    mockLoadWorkerPreferredCityKeys.mockResolvedValue([]);
+    mockLoadWorkerPreferredCities.mockReset();
+    mockLoadWorkerPreferredCities.mockResolvedValue([]);
     process.env = {
       ...originalEnv,
       WORKER_POOL_ID: 'pool-abc',
@@ -1214,7 +1219,10 @@ describe('Processor Lambda', () => {
     });
 
     it('filters the jobs list to the worker preferred cities', async () => {
-      mockLoadWorkerPreferredCityKeys.mockResolvedValue(['el-paso-tx', 'las-cruces-nm']);
+      mockLoadWorkerPreferredCities.mockResolvedValue([
+        { city_key: 'el-paso-tx', latitude: 31.7619, longitude: -106.485 },
+        { city_key: 'las-cruces-nm', latitude: null, longitude: null },
+      ]);
       mockListMatchedJobsForWorker.mockResolvedValue([
         { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso, TX', pay: '$25/hr' },
         { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso, TX', pay: '$22/hr' },
@@ -1248,17 +1256,20 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      expect(mockLoadWorkerPreferredCityKeys).toHaveBeenCalledWith(expect.any(Object), 'user-1');
+      expect(mockLoadWorkerPreferredCities).toHaveBeenCalledWith(expect.any(Object), 'user-1');
       expect(mockListMatchedJobsForWorker).toHaveBeenCalledTimes(1);
       expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
         limit: 5,
         channel: 'whatsapp',
         cityKeys: ['el-paso-tx', 'las-cruces-nm'],
+        cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
       });
     });
 
     it('tops up with out-of-city jobs when the preferred cities run short, deduped and capped at 5', async () => {
-      mockLoadWorkerPreferredCityKeys.mockResolvedValue(['el-paso-tx']);
+      mockLoadWorkerPreferredCities.mockResolvedValue([
+        { city_key: 'el-paso-tx', latitude: 31.7619, longitude: -106.485 },
+      ]);
       mockListMatchedJobsForWorker.mockImplementation(
         async (_client: unknown, _workerId: string, options: { cityKeys?: string[]; excludeCityKeys?: string[] }) => {
           if (options.cityKeys) {
@@ -1307,11 +1318,13 @@ describe('Processor Lambda', () => {
         limit: 5,
         channel: 'whatsapp',
         cityKeys: ['el-paso-tx'],
+        cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
       });
       expect(mockListMatchedJobsForWorker).toHaveBeenNthCalledWith(2, expect.any(Object), 'user-1', {
         limit: 5,
         channel: 'whatsapp',
         excludeCityKeys: ['el-paso-tx'],
+        cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
       });
 
       // City jobs first, then out-of-city fill: deduped (job-referral appears
@@ -2079,8 +2092,8 @@ describe('v2 routing branch', () => {
     mockConnect.mockReset();
     mockRelease.mockReset();
     mockListMatchedJobsForWorker.mockReset();
-    mockLoadWorkerPreferredCityKeys.mockReset();
-    mockLoadWorkerPreferredCityKeys.mockResolvedValue([]);
+    mockLoadWorkerPreferredCities.mockReset();
+    mockLoadWorkerPreferredCities.mockResolvedValue([]);
     process.env = {
       ...originalEnv,
       WORKER_POOL_ID: 'pool-abc',
