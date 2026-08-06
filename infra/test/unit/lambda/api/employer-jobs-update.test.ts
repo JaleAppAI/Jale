@@ -183,12 +183,16 @@ describe('employer-jobs-update', () => {
   // activeJobs: count returned for active job count.
   function makeUpdateQueryMock(currentJobStatus: string, activeJobs: number) {
     return (q: string) => {
-      if (q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
+      // The pre-read (current job status fetch) now carries its own
+      // "FOR UPDATE OF jobs" row lock (fix: TOCTOU on status change), so it
+      // must be matched BEFORE the generic entitlement-lock "FOR UPDATE"
+      // check below, or this branch would never be reached.
       if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
         // current job status fetch
         return Promise.resolve({ rows: [{ status: currentJobStatus }] });
       }
+      if (q.includes('FROM users') && q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
       if (q.includes('UPDATE jobs')) {
         return Promise.resolve({
           rowCount: 1,
@@ -263,7 +267,12 @@ describe('employer-jobs-update', () => {
     // Gate NOT applied: no FOR UPDATE and no active-job-count gate query (distinct from
     // the applicant_count subselect in the UPDATE RETURNING clause).
     const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
-    expect(calls.some((s: string) => s.includes('FOR UPDATE'))).toBe(false);
+    // Specific to the entitlement lock (`FROM users ... FOR UPDATE`), not a
+    // generic "FOR UPDATE" substring check -- the pre-read query always runs
+    // and always carries its own "FOR UPDATE OF jobs" (fix: TOCTOU on status
+    // change), which would otherwise make this assertion trivially true for
+    // the wrong reason regardless of whether the entitlement gate ran.
+    expect(calls.some((s: string) => s.includes('FROM users') && s.includes('FOR UPDATE'))).toBe(false);
     expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
   });
@@ -293,7 +302,12 @@ describe('employer-jobs-update', () => {
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
-    expect(calls.some((s: string) => s.includes('FOR UPDATE'))).toBe(false);
+    // Specific to the entitlement lock (`FROM users ... FOR UPDATE`), not a
+    // generic "FOR UPDATE" substring check -- the pre-read query always runs
+    // and always carries its own "FOR UPDATE OF jobs" (fix: TOCTOU on status
+    // change), which would otherwise make this assertion trivially true for
+    // the wrong reason regardless of whether the entitlement gate ran.
+    expect(calls.some((s: string) => s.includes('FROM users') && s.includes('FOR UPDATE'))).toBe(false);
     expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
   });
@@ -328,7 +342,12 @@ describe('employer-jobs-update', () => {
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
-    expect(calls.some((s: string) => s.includes('FOR UPDATE'))).toBe(false);
+    // Specific to the entitlement lock (`FROM users ... FOR UPDATE`), not a
+    // generic "FOR UPDATE" substring check -- the pre-read query always runs
+    // and always carries its own "FOR UPDATE OF jobs" (fix: TOCTOU on status
+    // change), which would otherwise make this assertion trivially true for
+    // the wrong reason regardless of whether the entitlement gate ran.
+    expect(calls.some((s: string) => s.includes('FROM users') && s.includes('FOR UPDATE'))).toBe(false);
     expect(calls.some((s: string) => s.includes('active_jobs'))).toBe(false);
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
   });
@@ -492,6 +511,50 @@ describe('employer-jobs-update', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
+  it('rejects a state_region that is not a real USPS code even though it matches the 2-letter shape', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, state_region: 'ZZ' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_state_region');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('an explicit null city clears it to NULL, even though the job already has a stored city', async () => {
+    mockCurrentJob({ city: 'El Paso', state_region: 'TX' });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: null }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    // city is NULL (cleared) despite both a parseable location ("Austin") and
+    // a pre-existing stored value ("El Paso") that the old fallback-to-cur
+    // behavior would otherwise have preserved.
+    expect(params[params.length - 3]).toBeNull();
+    expect(params[params.length - 2]).toBe('TX');
+  });
+
+  it('an explicit null state_region clears it to NULL, even though the job already has a stored state_region', async () => {
+    mockCurrentJob({ city: 'El Paso', state_region: 'TX' });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', state_region: null }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[params.length - 3]).toBe('Austin');
+    expect(params[params.length - 2]).toBeNull();
+  });
+
+  it('both city and state_region explicitly null clears both, ignoring both the parse and the stored values', async () => {
+    mockCurrentJob({ city: 'El Paso', state_region: 'TX' });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: null, state_region: null }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[params.length - 3]).toBeNull();
+    expect(params[params.length - 2]).toBeNull();
+  });
+
+  it('an explicit empty-string city still 400s -- null clears, but empty string is never valid', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, city: '' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_city');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
   it('never enqueues a visibility event from a field edit', async () => {
     mockCurrentJob();
     await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
@@ -512,11 +575,14 @@ describe('employer-jobs-update', () => {
   }) {
     const { currentStatus, publicListingEnabled, newStatus, publicCode = 'JOBCOD', activeJobs = 0 } = opts;
     return (q: string) => {
-      if (q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
-      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
+      // Same ordering fix as makeUpdateQueryMock above: the pre-read now has
+      // its own "FOR UPDATE OF jobs", so it must be matched before the
+      // generic entitlement-lock "FOR UPDATE" check.
       if (q.includes('SELECT') && q.includes('jobs.status') && !q.includes('UPDATE jobs')) {
         return Promise.resolve({ rows: [{ status: currentStatus, public_listing_enabled: publicListingEnabled, public_code: publicCode }] });
       }
+      if (q.includes('FROM users') && q.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (q.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: activeJobs }] });
       if (q.includes('UPDATE jobs')) {
         return Promise.resolve({
           rowCount: 1,
@@ -578,5 +644,20 @@ describe('employer-jobs-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ status: 'closed' }) }));
     expect(res.statusCode).toBe(200);
     expect(findVisibilityEnqueueCall()).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // TOCTOU guard on the status-change pre-read
+  // ---------------------------------------------------------------------------
+
+  it('locks the pre-read row with FOR UPDATE OF jobs, so a concurrent status change cannot race the visibility-event decision', async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({ currentStatus: 'paused', publicListingEnabled: true, newStatus: 'active' }));
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+    await handler(makeEvent({ body: JSON.stringify({ status: 'active' }) }));
+    const preReadCall = mockQuery.mock.calls.find(
+      (c) => typeof c[0] === 'string' && c[0].includes('jobs.status') && !c[0].includes('UPDATE jobs'),
+    );
+    expect(preReadCall).toBeDefined();
+    expect(preReadCall![0]).toContain('FOR UPDATE OF jobs');
   });
 });

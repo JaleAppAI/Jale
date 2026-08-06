@@ -76,8 +76,14 @@ export function jobFormToPayload(form: JobForm): JobWritePayload {
   return {
     title: form.title.trim(),
     location: form.location.trim(),
-    city: form.city.trim() || undefined,
-    state_region: form.state_region.trim().toUpperCase() || undefined,
+    // Blank means "clear" now, not "omit" -- the Edit modal is prefilled with
+    // stored city/state_region (employer-jobs-detail.ts now returns them), so
+    // an employer who deliberately blanks the field out is choosing to clear
+    // it, not leaving it untouched. `null` is the wire signal
+    // resolveJobLocationFields (backend) treats as an explicit clear-override,
+    // distinct from an omitted key which falls back to the parsed location.
+    city: form.city.trim() || null,
+    state_region: form.state_region.trim().toUpperCase() || null,
     job_type: form.job_type,
     description: form.description.trim() || undefined,
     required_docs: DOC_TYPES.filter((doc) => form.required_docs[doc]),

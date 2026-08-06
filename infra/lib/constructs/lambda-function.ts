@@ -32,6 +32,11 @@ export interface JaleLambdaFunctionProps {
   /** Node modules to bundle despite the @aws-sdk/* externalModules exclusion.
    *  Use for SDK packages NOT provided by the Node 20.x runtime (e.g. @aws-sdk/s3-request-presigner). */
   nodeModules?: string[];
+  /** Reserved concurrent executions. Use to cap a Lambda to N concurrent
+   *  invocations (e.g. 1, to serialize a scheduled drain against itself
+   *  instead of relying on an invocation-frequency assumption). Omit for the
+   *  AWS default (unreserved, shared account concurrency pool). */
+  reservedConcurrentExecutions?: number;
 }
 
 export class JaleLambdaFunction extends Construct {
@@ -64,6 +69,7 @@ export class JaleLambdaFunction extends Construct {
       deadLetterQueue: props.deadLetterQueue,
       retryAttempts: props.retryAttempts,
       maxEventAge: props.maxEventAge,
+      reservedConcurrentExecutions: props.reservedConcurrentExecutions,
       bundling: {
         externalModules: ['pg-native', '@aws-sdk/*'],
         nodeModules: props.nodeModules,

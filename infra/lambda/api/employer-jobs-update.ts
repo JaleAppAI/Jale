@@ -4,6 +4,7 @@ import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
+import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -70,10 +71,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // two independent things: the A7 entitlement gate below (which only needs
     // currentStatus) and the visibility-event decision after the UPDATE (which
     // needs public_listing_enabled + public_code too, regardless of which way the
-    // status is transitioning).
+    // status is transitioning). FOR UPDATE OF jobs locks the row for the rest of
+    // this transaction -- matching the field-edit path's idiom below -- so a
+    // concurrent status change on the same job cannot read this same row between
+    // this SELECT and the UPDATE, which would otherwise let two concurrent
+    // requests both decide the visibility-event transition from the same
+    // stale currentStatus/public_listing_enabled snapshot (TOCTOU).
     const currentResult = await client.query<{ status: string; public_listing_enabled: boolean; public_code: string }>(
       `SELECT jobs.status, jobs.public_listing_enabled, jobs.public_code
-         FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2`,
+         FROM jobs JOIN users u ON u.id = jobs.employer_id WHERE jobs.id = $1 AND u.cognito_sub = $2
+         FOR UPDATE OF jobs`,
       [jobId, cognitoSub],
     );
     const currentRow = currentResult.rows?.[0];
@@ -146,13 +153,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // public_listing_enabled is untouched by this status-only update, so
     // currentRow's value holds for both sides of the comparison.
     if (currentRow?.public_listing_enabled === true && currentRow.public_code) {
-      const wasVisible = currentStatus === 'active';
-      const isVisible = status === 'active';
-      if (!wasVisible && isVisible) {
-        await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, currentRow.public_code, 'published']);
-      } else if (wasVisible && !isVisible) {
-        await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, currentRow.public_code, 'removed']);
-      }
+      const wasVisible = isEffectivelyVisible(currentStatus ?? '', currentRow.public_listing_enabled);
+      const isVisible = isEffectivelyVisible(status, currentRow.public_listing_enabled);
+      await enqueueVisibilityTransition(client, jobId, currentRow.public_code, wasVisible, isVisible);
     }
 
     await client.query('COMMIT');
@@ -286,12 +289,15 @@ async function handleFieldEdit(
       required_experience_years: f.required_experience_years,
       required_experience_months: f.required_experience_months,
       certifications: f.certifications,
-      // A null resolution (unparseable location, no explicit override) preserves
-      // whatever city/state_region the job already has -- e.g. from an earlier
-      // backfill or explicit edit -- rather than nulling out a good value just
-      // because this particular edit didn't touch location.
-      city: locationFields.value.city ?? cur.city,
-      state_region: locationFields.value.state_region ?? cur.state_region,
+      // A null resolution from an unparseable location with NO explicit
+      // override (absent key) preserves whatever city/state_region the job
+      // already has -- e.g. from an earlier backfill or explicit edit --
+      // rather than nulling out a good value just because this particular
+      // edit didn't touch location. An explicit `null` override is different:
+      // it is a deliberate clear and must win over that fallback, writing
+      // NULL even though cur.city/state_region may be set.
+      city: locationFields.cityCleared ? null : (locationFields.value.city ?? cur.city),
+      state_region: locationFields.stateRegionCleared ? null : (locationFields.value.state_region ?? cur.state_region),
     };
     const setClauses = EDITABLE_COLUMNS.map((col, i) => `${col} = $${i + 1}`).join(', ');
     const params = EDITABLE_COLUMNS.map((col) => values[col]);

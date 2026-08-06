@@ -1,11 +1,24 @@
 /**
  * Backfill jobs.city / jobs.state_region from jobs.location for existing rows.
  *
- * Only touches jobs where city IS NULL, so it is safe to re-run: a row already
- * backfilled (or one an employer has since edited directly) is never revisited.
- * A location the parser can't confidently handle is left NULL rather than
- * guessed -- see infra/lambda/lib/job-location-parse.ts for exactly what it
- * recognizes.
+ * Only touches jobs where city IS NULL AND location IS NOT NULL (that filter
+ * lives in list_jobs_missing_geo() below, migration 061), so it is safe to
+ * re-run: a row already backfilled (or one an employer has since edited
+ * directly) is never revisited. A location the parser can't confidently
+ * handle is left NULL rather than guessed -- see
+ * infra/lambda/lib/job-location-parse.ts for exactly what it recognizes.
+ *
+ * Reads and writes go through two SECURITY DEFINER functions
+ * (list_jobs_missing_geo(), set_job_geo()), not raw SELECT/UPDATE on jobs.
+ * jobs is ENABLE+FORCE ROW LEVEL SECURITY (migration 003) with owner-keyed
+ * policies on app.current_user_id; this script connects as jale_admin with
+ * no Cognito sub (there is no request to derive one from), so a raw query
+ * here would silently see/affect zero rows under those policies. The two
+ * functions carry their own narrow capability-flag policies for exactly this
+ * case -- see migration 061's "Geo backfill access" section for the full
+ * rationale. set_job_geo() also re-validates city/state_region server-side
+ * and raises on a bad state code, so a malformed parse result can never be
+ * written even if this script's own validation were bypassed.
  *
  * Usage (from the infra/ directory, so `pg`/`ts-node` resolve; or set
  * NODE_PATH=<repo>/infra/node_modules and TS_NODE_PROJECT=<repo>/infra/tsconfig.json
@@ -64,11 +77,9 @@ async function main(): Promise<void> {
   let updated = 0;
 
   try {
-    const { rows } = await client.query<JobRow>(
-      `SELECT id, location FROM jobs WHERE city IS NULL ORDER BY created_at`,
-    );
+    const { rows } = await client.query<JobRow>(`SELECT * FROM list_jobs_missing_geo()`);
 
-    console.log(`${dryRun ? '[dry-run] ' : ''}Found ${rows.length} job(s) with city IS NULL.`);
+    console.log(`${dryRun ? '[dry-run] ' : ''}Found ${rows.length} job(s) with city IS NULL and location IS NOT NULL.`);
 
     for (const job of rows) {
       const result = parseJobLocation(job.location);
@@ -84,13 +95,18 @@ async function main(): Promise<void> {
       );
 
       if (!dryRun) {
-        // WHERE city IS NULL again here: idempotent even if two runs overlap,
-        // and never clobbers a value an employer or another process already set.
-        const res = await client.query(
-          `UPDATE jobs SET city = $2, state_region = $3 WHERE id = $1 AND city IS NULL`,
+        // set_job_geo() re-validates city/state_region and its own UPDATE is
+        // guarded by `AND city IS NULL` (same guard the old raw SQL here
+        // used to carry) -- so this is safe even if two runs overlap, or an
+        // employer sets city via the Edit modal between this job being
+        // listed and this call landing: whichever write reaches the row
+        // first wins, and the loser's set_job_geo() call returns false
+        // without clobbering it.
+        const res = await client.query<{ set_job_geo: boolean }>(
+          `SELECT set_job_geo($1, $2, $3)`,
           [job.id, result.city, result.state_region],
         );
-        if (res.rowCount === 1) updated += 1;
+        if (res.rows[0]?.set_job_geo) updated += 1;
       }
     }
 

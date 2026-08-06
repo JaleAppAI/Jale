@@ -530,6 +530,22 @@ describe('ReferralsStack', () => {
     expect(env).not.toHaveProperty('REFERRALS_DB_SECRET_ARN');
   });
 
+  test('visibility-outbox-drain Lambda has reservedConcurrentExecutions=1 (overlap guard)', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Job visibility outbox drain — Google Indexing API notifications',
+      ReservedConcurrentExecutions: 1,
+    });
+  });
+
+  test('no other referrals Lambda has ReservedConcurrentExecutions set', () => {
+    const fns = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: Match.not('Job visibility outbox drain — Google Indexing API notifications') },
+    });
+    for (const [id, fn] of Object.entries(fns)) {
+      expect({ id, reserved: (fn as any).Properties?.ReservedConcurrentExecutions }).toEqual({ id, reserved: undefined });
+    }
+  });
+
   test('visibility outbox drain runs every 5 minutes, targeting the drain Lambda specifically', () => {
     const fnResources = template.findResources('AWS::Lambda::Function', {
       Properties: { Description: 'Job visibility outbox drain — Google Indexing API notifications' },

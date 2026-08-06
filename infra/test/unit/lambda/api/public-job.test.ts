@@ -17,6 +17,8 @@ const ACTIVE_JOB_ROW = {
   title: 'Warehouse Associate',
   company: 'Acme Co',
   location: 'Miami, FL',
+  city: 'Miami',
+  state_region: 'FL',
   job_type: 'full_time',
   description: 'Lift boxes',
   pay: 20,
@@ -137,6 +139,22 @@ describe('public-job Lambda', () => {
     // redirect land on /worker/jobs/{id} with no new lookup endpoint.
     expect(body.id).toBe('job-uuid');
     expect(body.employer_id).toBeUndefined();
+    // city/state_region (migration 061's column-scoped grant) are selected
+    // and returned for schema.org jobLocation on the public job page.
+    expect(body.city).toBe('Miami');
+    expect(body.state_region).toBe('FL');
+  });
+
+  it('selects city and state_region in the job lookup query', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({}) // open insert
+      .mockResolvedValueOnce({}); // COMMIT
+    await handler(makeEvent({ code: 'ABC123' }));
+    const jobLookupCall = mockQuery.mock.calls[0];
+    expect(jobLookupCall[0]).toMatch(/\bcity\b/);
+    expect(jobLookupCall[0]).toMatch(/\bstate_region\b/);
   });
 
   it('returns the minimal closed view for a non-active job, not a 404', async () => {

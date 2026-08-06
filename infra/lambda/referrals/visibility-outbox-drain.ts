@@ -129,24 +129,28 @@ async function markSent(pool: DbPoolLike, id: string): Promise<void> {
 }
 
 /**
- * 429/5xx: always leaves the row 'pending' for the next drain cycle -- the failure is
- * Google's, not the row's, so (unlike markAttemptOrFail below) this never marks 'failed'.
- * Operator note: attempt_count still increments here, and the claim query's
- * `attempt_count < MAX_ATTEMPTS` filter means a row that hits enough consecutive
- * 429/5xx responses stops being claimed at all -- 'pending' forever, but
- * invisible to this drain. Watch for that (e.g. a `status='pending' AND
- * attempt_count >= 8` alert) rather than assuming every stuck row eventually
- * surfaces as 'failed'.
+ * 429/5xx: leaves the row 'pending' for the next drain cycle -- the failure is
+ * Google's, not the row's, so this normally never marks 'failed' the way
+ * markAttemptOrFail below does for other 4xx. The one exception is when the
+ * incremented attempt_count would reach MAX_ATTEMPTS: the claim query's
+ * `attempt_count < MAX_ATTEMPTS` filter means a 'pending' row at that count is
+ * unclaimable by any future drain cycle, so leaving it 'pending' would create
+ * exactly the same invisible-forever row this comment used to just warn
+ * operators to watch for. Marking it 'failed' at that point makes the
+ * terminal state observable (a `status='failed'` alert) instead of silent.
  */
-async function markRetryPending(pool: DbPoolLike, id: string, message: string): Promise<void> {
+async function markRetryPending(pool: DbPoolLike, id: string, attemptCountBefore: number, message: string): Promise<'pending' | 'failed'> {
+  const nextAttempt = attemptCountBefore + 1;
+  const status: 'pending' | 'failed' = nextAttempt >= MAX_ATTEMPTS ? 'failed' : 'pending';
   await withShortTransaction(pool, async (client) => {
     await client.query(
       `UPDATE job_visibility_events
-          SET status = 'pending', attempt_count = attempt_count + 1, last_error = $2
+          SET status = $2, attempt_count = attempt_count + 1, last_error = $3
         WHERE id = $1`,
-      [id, message],
+      [id, status, message],
     );
   });
+  return status;
 }
 
 /** Other 4xx: bounded retry, terminal 'failed' once attempt_count reaches MAX_ATTEMPTS. */
@@ -260,14 +264,16 @@ export async function handler(): Promise<DrainResult> {
     const message = `Google indexing HTTP ${res.status}${errorText ? `: ${errorText.slice(0, 500)}` : ''}`;
 
     if (res.status === 429) {
-      await markRetryPending(pool, row.id, message);
-      result.pendingRetry += 1;
+      const retryStatus = await markRetryPending(pool, row.id, row.attempt_count, message);
+      if (retryStatus === 'failed') result.failed += 1;
+      else result.pendingRetry += 1;
       result.haltedOnQuota = true;
       break; // quota exhausted -- stop the batch rather than burn through it on 429s
     }
     if (res.status >= 500) {
-      await markRetryPending(pool, row.id, message);
-      result.pendingRetry += 1;
+      const retryStatus = await markRetryPending(pool, row.id, row.attempt_count, message);
+      if (retryStatus === 'failed') result.failed += 1;
+      else result.pendingRetry += 1;
       continue;
     }
 

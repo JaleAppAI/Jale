@@ -1322,6 +1322,178 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
   });
 
   // -------------------------------------------------------------------------
+  // jobs: geo backfill SECURITY DEFINER functions (migration 061 amendment)
+  // -------------------------------------------------------------------------
+  describe('geo backfill functions: list_jobs_missing_geo() / set_job_geo() (migration 061)', () => {
+    /** A bare jale_admin connection with NO app.current_user_id GUC set --
+     * exactly how scripts/backfill-job-geo.ts connects (it is an operator
+     * script, not a request-scoped Lambda; there is no Cognito sub to set). */
+    async function asAdminNoRlsContext<T>(fn: (client: Client) => Promise<T>): Promise<T> {
+      const client = new Client({ connectionString: adminUrl });
+      await client.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn(client);
+        await client.query('COMMIT');
+        return result;
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        await client.end();
+      }
+    }
+
+    it('a direct SELECT under RLS with no GUC set returns zero rows (pins the bug this migration fixes)', async () => {
+      const jobId = await makeJob(); // location set, city left NULL by makeJob
+      const direct = await asAdminNoRlsContext((client) =>
+        client.query(`SELECT id, location FROM jobs WHERE city IS NULL AND location IS NOT NULL AND id = $1`, [jobId]),
+      );
+      expect(direct.rows).toHaveLength(0);
+    });
+
+    it('list_jobs_missing_geo() returns the same row as jale_admin with no GUC set', async () => {
+      const jobId = await makeJob();
+      const viaFunction = await asAdminNoRlsContext((client) =>
+        client.query<{ id: string; location: string }>(`SELECT * FROM list_jobs_missing_geo()`),
+      );
+      const match = viaFunction.rows.find((r) => r.id === jobId);
+      expect(match).toBeDefined();
+      expect(match!.location).toBe('Austin, TX');
+    });
+
+    it('list_jobs_missing_geo() excludes a job that already has a city', async () => {
+      const jobWithCity = await makeJob();
+      const setup = new Client({ connectionString: superuserUrl });
+      await setup.connect();
+      try {
+        await setup.query(`UPDATE jobs SET city = 'Austin', state_region = 'TX' WHERE id = $1`, [jobWithCity]);
+      } finally {
+        await setup.end();
+      }
+
+      const result = await asAdminNoRlsContext((client) =>
+        client.query<{ id: string }>(`SELECT * FROM list_jobs_missing_geo()`),
+      );
+      const ids = result.rows.map((r) => r.id);
+      expect(ids).not.toContain(jobWithCity);
+    });
+
+    // Note: `location IS NOT NULL` in list_jobs_missing_geo()'s WHERE clause
+    // is defensive rather than independently testable here -- jobs.location
+    // is itself NOT NULL (migration 003), so a row with a null location
+    // cannot exist in this schema at all.
+
+    it('set_job_geo() updates city/state_region and returns true, as jale_admin with no GUC set', async () => {
+      const jobId = await makeJob();
+      const result = await asAdminNoRlsContext((client) =>
+        client.query<{ set_job_geo: boolean }>(`SELECT set_job_geo($1, $2, $3)`, [jobId, 'El Paso', 'TX']),
+      );
+      expect(result.rows[0].set_job_geo).toBe(true);
+
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const row = await check.query<{ city: string; state_region: string }>(
+          `SELECT city, state_region FROM jobs WHERE id = $1`,
+          [jobId],
+        );
+        expect(row.rows[0].city).toBe('El Paso');
+        expect(row.rows[0].state_region).toBe('TX');
+      } finally {
+        await check.end();
+      }
+    });
+
+    it('set_job_geo() is a no-clobber guard: a job that already has a city returns false and keeps its existing value', async () => {
+      const jobId = await makeJob();
+      const setup = new Client({ connectionString: superuserUrl });
+      await setup.connect();
+      try {
+        await setup.query(`UPDATE jobs SET city = 'North Austin', state_region = 'TX' WHERE id = $1`, [jobId]);
+      } finally {
+        await setup.end();
+      }
+
+      // Simulates a losing writer -- an overlapping backfill run, or an
+      // employer's own Edit-modal write landing between this job being
+      // listed and this call -- calling set_job_geo() with a DIFFERENT
+      // value than what is already there.
+      const result = await asAdminNoRlsContext((client) =>
+        client.query<{ set_job_geo: boolean }>(`SELECT set_job_geo($1, $2, $3)`, [jobId, 'Austin', 'TX']),
+      );
+      expect(result.rows[0].set_job_geo).toBe(false);
+
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const row = await check.query<{ city: string }>(`SELECT city FROM jobs WHERE id = $1`, [jobId]);
+        // The pre-existing value survives untouched -- not overwritten by
+        // the losing call's ('Austin', 'TX') arguments.
+        expect(row.rows[0].city).toBe('North Austin');
+      } finally {
+        await check.end();
+      }
+    });
+
+    it('set_job_geo() returns false and writes nothing for a job id that does not exist', async () => {
+      const result = await asAdminNoRlsContext((client) =>
+        client.query<{ set_job_geo: boolean }>(
+          `SELECT set_job_geo($1, $2, $3)`,
+          ['00000000-0000-4000-8000-000000000000', 'Austin', 'TX'],
+        ),
+      );
+      expect(result.rows[0].set_job_geo).toBe(false);
+    });
+
+    it('set_job_geo() rejects a state code that is not exactly 2 uppercase letters', async () => {
+      const jobId = await makeJob();
+      await expect(
+        asAdminNoRlsContext((client) =>
+          client.query(`SELECT set_job_geo($1, $2, $3)`, [jobId, 'El Paso', 'ZZZ']),
+        ),
+      ).rejects.toThrow(/p_state must be a 2-letter uppercase code/i);
+
+      // Confirmed unmodified — the rejected call wrote nothing.
+      const check = new Client({ connectionString: superuserUrl });
+      await check.connect();
+      try {
+        const row = await check.query<{ city: string | null }>(`SELECT city FROM jobs WHERE id = $1`, [jobId]);
+        expect(row.rows[0].city).toBeNull();
+      } finally {
+        await check.end();
+      }
+    });
+
+    it('set_job_geo() rejects a lowercase state code -- the format CHECK requires uppercase', async () => {
+      const jobId = await makeJob();
+      await expect(
+        asAdminNoRlsContext((client) =>
+          client.query(`SELECT set_job_geo($1, $2, $3)`, [jobId, 'El Paso', 'tx']),
+        ),
+      ).rejects.toThrow(/p_state must be a 2-letter uppercase code/i);
+    });
+
+    it('set_job_geo() rejects an empty city', async () => {
+      const jobId = await makeJob();
+      await expect(
+        asAdminNoRlsContext((client) =>
+          client.query(`SELECT set_job_geo($1, $2, $3)`, [jobId, '   ', 'TX']),
+        ),
+      ).rejects.toThrow(/p_city must be a non-empty string/i);
+    });
+
+    it('EXECUTE on both functions is not available to PUBLIC', async () => {
+      // jale_whatsapp has no grant on either function -- proves REVOKE ALL
+      // FROM PUBLIC actually took effect, not just that jale_admin happens
+      // to have it via a role membership.
+      await expect(
+        asWhatsapp(whatsappUrl, (client) => client.query(`SELECT * FROM list_jobs_missing_geo()`)),
+      ).rejects.toThrow(/permission denied/i);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // worker_attribution: employer referrer first-touch immutability (063)
   // -------------------------------------------------------------------------
   describe('worker_attribution: employer referrer first-touch immutability (migration 063)', () => {

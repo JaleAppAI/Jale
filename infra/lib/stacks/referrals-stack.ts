@@ -324,6 +324,16 @@ export class ReferralsStack extends cdk.Stack {
         GOOGLE_INDEXING_SECRET_NAME: googleIndexingKeySecret.secretName,
         PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
+      // Caps this Lambda to one concurrent invocation. The handler's own
+      // concurrency note documents why: its claim transaction commits (and
+      // releases row locks) before the per-row network I/O and UPDATEs run,
+      // so FOR UPDATE SKIP LOCKED alone does not protect against a second
+      // invocation started by an overlapping EventBridge trigger (e.g. a
+      // retried/duplicate scheduled invoke) claiming and double-processing
+      // rows mid-batch. This assumes a single scheduled invocation at a time,
+      // which reservedConcurrentExecutions: 1 now enforces instead of leaving
+      // it as an unenforced assumption.
+      reservedConcurrentExecutions: 1,
       ...lambdaProps,
     });
     props.appDbSecret.grantRead(visibilityOutboxDrainLambda.function);

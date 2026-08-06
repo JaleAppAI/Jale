@@ -402,8 +402,10 @@ export async function getJobs(token: string): Promise<Job[]> {
 export type JobWritePayload = {
   title: string;
   location: string;
-  city?: string;
-  state_region?: string;
+  /** `null` is an explicit clear-override (backend: resolveJobLocationFields);
+   *  omitting the key entirely defers to the parsed location instead. */
+  city?: string | null;
+  state_region?: string | null;
   job_type: string;
   description?: string;
   required_docs?: string[];

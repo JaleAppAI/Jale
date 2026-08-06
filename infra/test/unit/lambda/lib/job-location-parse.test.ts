@@ -52,27 +52,27 @@ describe('parseJobLocation', () => {
 describe('resolveJobLocationFields', () => {
   it('uses the parsed values when no explicit fields are given', () => {
     const res = resolveJobLocationFields('Austin, TX', undefined, undefined);
-    expect(res).toEqual({ ok: true, value: { city: 'Austin', state_region: 'TX' } });
+    expect(res).toEqual({ ok: true, value: { city: 'Austin', state_region: 'TX' }, cityCleared: false, stateRegionCleared: false });
   });
 
   it('returns nulls when the location is unparseable and no explicit fields are given', () => {
     const res = resolveJobLocationFields('79928', undefined, undefined);
-    expect(res).toEqual({ ok: true, value: { city: null, state_region: null } });
+    expect(res).toEqual({ ok: true, value: { city: null, state_region: null }, cityCleared: false, stateRegionCleared: false });
   });
 
   it('explicit city wins over the parsed city', () => {
     const res = resolveJobLocationFields('Austin, TX', 'North Austin', undefined);
-    expect(res).toEqual({ ok: true, value: { city: 'North Austin', state_region: 'TX' } });
+    expect(res).toEqual({ ok: true, value: { city: 'North Austin', state_region: 'TX' }, cityCleared: false, stateRegionCleared: false });
   });
 
   it('explicit state_region wins over the parsed state, normalized to uppercase', () => {
     const res = resolveJobLocationFields('Austin, TX', undefined, 'ok');
-    expect(res).toEqual({ ok: true, value: { city: 'Austin', state_region: 'OK' } });
+    expect(res).toEqual({ ok: true, value: { city: 'Austin', state_region: 'OK' }, cityCleared: false, stateRegionCleared: false });
   });
 
   it('explicit fields can rescue an otherwise-unparseable location', () => {
     const res = resolveJobLocationFields('79928', 'El Paso', 'tx');
-    expect(res).toEqual({ ok: true, value: { city: 'El Paso', state_region: 'TX' } });
+    expect(res).toEqual({ ok: true, value: { city: 'El Paso', state_region: 'TX' }, cityCleared: false, stateRegionCleared: false });
   });
 
   it('rejects a blank explicit city', () => {
@@ -90,8 +90,37 @@ describe('resolveJobLocationFields', () => {
     expect(res).toEqual({ ok: false, error: 'invalid_state_region' });
   });
 
+  it('rejects an explicit state_region that matches the 2-letter shape but is not a real USPS code', () => {
+    const res = resolveJobLocationFields('Austin, TX', undefined, 'ZZ');
+    expect(res).toEqual({ ok: false, error: 'invalid_state_region' });
+  });
+
   it('rejects a non-string explicit city or state_region', () => {
     expect(resolveJobLocationFields('Austin, TX', 123, undefined)).toEqual({ ok: false, error: 'invalid_city' });
     expect(resolveJobLocationFields('Austin, TX', undefined, 123)).toEqual({ ok: false, error: 'invalid_state_region' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Explicit null = clear-override (distinct from an absent/undefined key)
+  // ---------------------------------------------------------------------------
+
+  it('explicit null city resolves to null even though the location parses to a real city', () => {
+    const res = resolveJobLocationFields('Austin, TX', null, undefined);
+    expect(res).toEqual({ ok: true, value: { city: null, state_region: 'TX' }, cityCleared: true, stateRegionCleared: false });
+  });
+
+  it('explicit null state_region resolves to null even though the location parses to a real state', () => {
+    const res = resolveJobLocationFields('Austin, TX', undefined, null);
+    expect(res).toEqual({ ok: true, value: { city: 'Austin', state_region: null }, cityCleared: false, stateRegionCleared: true });
+  });
+
+  it('explicit null for both clears both, with both cleared flags true', () => {
+    const res = resolveJobLocationFields('Austin, TX', null, null);
+    expect(res).toEqual({ ok: true, value: { city: null, state_region: null }, cityCleared: true, stateRegionCleared: true });
+  });
+
+  it('explicit empty string is still invalid -- only null clears, not empty string', () => {
+    const res = resolveJobLocationFields('Austin, TX', '', undefined);
+    expect(res).toEqual({ ok: false, error: 'invalid_city' });
   });
 });

@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -81,7 +82,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'job_has_hired_workers' }) };
     }
     const ownedRow = owned.rows[0];
-    const wasEffectivelyVisible = ownedRow.status === 'active' && ownedRow.public_listing_enabled === true;
+    const wasEffectivelyVisible = isEffectivelyVisible(ownedRow.status, ownedRow.public_listing_enabled);
 
     // Enqueue the removal notice BEFORE deleting the job row, while jobs.id = $1
     // still exists to be referenced. A 'removed' event must outlive the job it
@@ -89,8 +90,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // this must never be ordered after the DELETE below -- doing so would either
     // violate a FK on job_visibility_events.job_id (if one exists) or, if that FK
     // cascades, have the DELETE immediately wipe out the very event we just wrote.
-    if (wasEffectivelyVisible && ownedRow.public_code) {
-      await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, ownedRow.public_code, 'removed']);
+    // One-sided transition: deletion always makes the job non-visible afterward
+    // (isVisible=false), so this only ever enqueues 'removed', never 'published'.
+    if (ownedRow.public_code) {
+      await enqueueVisibilityTransition(client, jobId, ownedRow.public_code, wasEffectivelyVisible, false);
     }
 
     // job_conversations first: cascades its messages/outbox and clears the

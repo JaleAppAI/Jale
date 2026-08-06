@@ -2,14 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { initialForm, jobFormToPayload, validateJobLocationFields } from '@/lib/job-form';
 
 describe('jobFormToPayload city/state_region', () => {
-  it('omits city and state_region from the wire payload when both are empty', () => {
+  it('serializes city and state_region as null (an explicit clear) when both are empty', () => {
     const payload = jobFormToPayload({ ...initialForm, title: 'Job', location: 'Hayward, CA', trade_category: 'electrician' });
-    // "Omitted" means the key must not survive JSON serialization -- the
-    // actual wire contract apiFetch sends -- not merely `=== undefined` on
-    // the in-memory object (which `toEqual` can't distinguish from absent).
+    // `null` -- not omitted -- is the wire signal the backend's
+    // resolveJobLocationFields treats as a deliberate clear-override. Blank
+    // used to mean "omit" (defer to the parsed location); it now means
+    // "clear", because the Edit modal is prefilled with the job's stored
+    // city/state_region, so a blanked-out field is a deliberate choice.
     const wire = JSON.parse(JSON.stringify(payload));
-    expect(wire).not.toHaveProperty('city');
-    expect(wire).not.toHaveProperty('state_region');
+    expect(wire).toHaveProperty('city', null);
+    expect(wire).toHaveProperty('state_region', null);
   });
 
   it('trims and includes city when present', () => {
@@ -27,10 +29,16 @@ describe('jobFormToPayload city/state_region', () => {
     expect(payload.state_region).toBe('TX');
   });
 
-  it('omits state_region when it is only whitespace', () => {
+  it('serializes state_region as null when it is only whitespace', () => {
     const payload = jobFormToPayload({ ...initialForm, state_region: '   ' });
     const wire = JSON.parse(JSON.stringify(payload));
-    expect(wire).not.toHaveProperty('state_region');
+    expect(wire).toHaveProperty('state_region', null);
+  });
+
+  it('serializes city as null when it is only whitespace', () => {
+    const payload = jobFormToPayload({ ...initialForm, city: '   ' });
+    const wire = JSON.parse(JSON.stringify(payload));
+    expect(wire).toHaveProperty('city', null);
   });
 });
 

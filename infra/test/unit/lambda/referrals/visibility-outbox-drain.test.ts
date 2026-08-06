@@ -139,9 +139,11 @@ describe('visibility-outbox-drain', () => {
     // Only one indexing call made -- the batch stopped after the 429.
     expect(mockFetch).toHaveBeenCalledTimes(2); // 1 token exchange + 1 indexing call
     const updateCall = pool.updateQuery.mock.calls.find((c: any[]) => c[0].includes('UPDATE job_visibility_events'));
-    expect(updateCall[0]).toContain("status = 'pending'");
+    // status is now a bound parameter ($2), not a literal -- markRetryPending
+    // computes 'pending' vs 'failed' from attempt_count, so the SQL text
+    // itself no longer hardcodes 'pending'. Assert the resolved param instead.
     expect(updateCall[0]).toContain('attempt_count = attempt_count + 1');
-    expect(updateCall[1][0]).toBe('evt-1');
+    expect(updateCall[1]).toEqual(['evt-1', 'pending', expect.stringContaining('429')]);
   });
 
   it('5xx leaves the row pending and continues to the next row (no batch halt)', async () => {
@@ -156,6 +158,37 @@ describe('visibility-outbox-drain', () => {
     const res = await handler();
     expect(res).toEqual({ sent: 1, pendingRetry: 1, failed: 0, haltedOnQuota: false });
     expect(mockFetch).toHaveBeenCalledTimes(3); // token + 2 indexing calls
+  });
+
+  it('5xx at MAX_ATTEMPTS-1 (7) transitions the row to failed instead of an unclaimable pending', async () => {
+    // attempt_count = 7 -> next attempt is 8 = MAX_ATTEMPTS -> the row would
+    // otherwise land back at 'pending' with attempt_count = 8, which the
+    // claim query's `attempt_count < MAX_ATTEMPTS` filter can never select
+    // again. 'failed' makes that terminal state observable instead.
+    const pool = makePool([makeRow({ id: 'evt-1', attempt_count: 7 })]);
+    mockGetDbPool.mockResolvedValue(pool);
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(indexingResponse(503));
+
+    const res = await handler();
+    expect(res).toEqual({ sent: 0, pendingRetry: 0, failed: 1, haltedOnQuota: false });
+    const updateCall = pool.updateQuery.mock.calls.find((c: any[]) => c[0].includes('UPDATE job_visibility_events'));
+    expect(updateCall[1]).toEqual(['evt-1', 'failed', expect.stringContaining('503')]);
+  });
+
+  it('429 at MAX_ATTEMPTS-1 (7) also transitions to failed, and still halts the batch on quota', async () => {
+    const rows = [makeRow({ id: 'evt-1', attempt_count: 7 }), makeRow({ id: 'evt-2' })];
+    const pool = makePool(rows);
+    mockGetDbPool.mockResolvedValue(pool);
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(indexingResponse(429));
+
+    const res = await handler();
+    expect(res).toEqual({ sent: 0, pendingRetry: 0, failed: 1, haltedOnQuota: true });
+    const updateCall = pool.updateQuery.mock.calls.find((c: any[]) => c[0].includes('UPDATE job_visibility_events'));
+    expect(updateCall[1]).toEqual(['evt-1', 'failed', expect.stringContaining('429')]);
   });
 
   it('other 4xx below MAX_ATTEMPTS stays pending', async () => {

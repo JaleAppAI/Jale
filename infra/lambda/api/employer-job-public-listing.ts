@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 /**
@@ -98,13 +99,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // This endpoint only ever changes the enabled half of that pair, so a
     // status change elsewhere (e.g. pausing) cannot make either side of this
     // comparison stale within the same statement.
-    if (row.status === 'active') {
-      if (row.old_enabled === false && row.public_listing_enabled === true) {
-        await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, row.public_code, 'published']);
-      } else if (row.old_enabled === true && row.public_listing_enabled === false) {
-        await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, row.public_code, 'removed']);
-      }
-    }
+    const wasVisible = isEffectivelyVisible(row.status, row.old_enabled);
+    const isVisible = isEffectivelyVisible(row.status, row.public_listing_enabled);
+    await enqueueVisibilityTransition(client, jobId, row.public_code, wasVisible, isVisible);
 
     await client.query('COMMIT');
 

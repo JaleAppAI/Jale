@@ -193,12 +193,61 @@ describe('getPublicJobsList', () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: 'page2' }))
       .mockResolvedValueOnce(jsonResponse({ error: 'internal_error' }, 500));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const jobs = await getPublicJobsList();
     expect(jobs.map((j) => j.code)).toEqual(['A']);
+    // Truncation is observable, not silent.
+    expect(errorSpy).toHaveBeenCalledWith(JSON.stringify({ metric: 'PublicJobsListTruncated', status: 500 }));
   });
 
   it('never throws, even on a completely broken first call', async () => {
     fetchMock.mockRejectedValue(new Error('dns failure'));
     await expect(getPublicJobsList()).resolves.toEqual([]);
+  });
+
+  it('retries a 429 in place (same page) up to 2 times with a delay, then succeeds on the 3rd attempt', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'rate_limited' }, 429))
+      .mockResolvedValueOnce(jsonResponse({ error: 'rate_limited' }, 429))
+      .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: null }));
+    const delayFn = vi.fn().mockResolvedValue(undefined);
+
+    const jobs = await getPublicJobsList(delayFn);
+
+    expect(jobs.map((j) => j.code)).toEqual(['A']);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(delayFn).toHaveBeenCalledTimes(2);
+    expect(delayFn).toHaveBeenCalledWith(500);
+    // Every retry hit the exact same page (no cursor advanced between them).
+    for (const call of fetchMock.mock.calls) {
+      expect(call[0]).toBe('https://api.example.test/public/jobs?limit=500');
+    }
+  });
+
+  it('gives up after MAX_PAGE_RETRIES consecutive 429s and logs the truncation with status 429', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'rate_limited' }, 429));
+    const delayFn = vi.fn().mockResolvedValue(undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const jobs = await getPublicJobsList(delayFn);
+
+    expect(jobs).toEqual([]);
+    // Initial attempt + 2 retries = 3 fetches total, 2 delays.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(delayFn).toHaveBeenCalledTimes(2);
+    expect(errorSpy).toHaveBeenCalledWith(JSON.stringify({ metric: 'PublicJobsListTruncated', status: 429 }));
+  });
+
+  it('a 429 retry that recovers on a later page does not log truncation at all', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'rate_limited' }, 429))
+      .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: null }));
+    const delayFn = vi.fn().mockResolvedValue(undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const jobs = await getPublicJobsList(delayFn);
+
+    expect(jobs.map((j) => j.code)).toEqual(['A']);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 });

@@ -129,7 +129,18 @@ export interface ResolvedJobLocationFields {
 }
 
 export type ResolveJobLocationFieldsResult =
-  | { ok: true; value: ResolvedJobLocationFields }
+  | {
+      ok: true;
+      value: ResolvedJobLocationFields;
+      /** True when the caller sent an explicit `null` for city -- a deliberate
+       * clear, distinct from an absent key falling back to the parse. Callers
+       * that otherwise fall back to a previously-stored value (e.g.
+       * employer-jobs-update's field-edit path) must check this before
+       * applying that fallback, or a clear-override would be silently undone. */
+      cityCleared: boolean;
+      /** Same as cityCleared, for state_region. */
+      stateRegionCleared: boolean;
+    }
   | { ok: false; error: 'invalid_city' | 'invalid_state_region' };
 
 /**
@@ -137,6 +148,14 @@ export type ResolveJobLocationFieldsResult =
  * fields, which win over the parse when present. Used by employer-jobs-create
  * and employer-jobs-update's field-edit path so an employer can always
  * correct a location the parser can't handle.
+ *
+ * `null` for either field is an explicit clear-override: the resolved value
+ * is null regardless of what the location parses to, and it never falls back
+ * to a caller-held previous value either (see cityCleared/stateRegionCleared
+ * above). An absent key (`undefined`) is different -- it defers entirely to
+ * the parse, which is what lets a caller preserve an existing value when the
+ * parse comes back null. An empty string is neither: it is always invalid,
+ * the same as before this distinction existed.
  */
 export function resolveJobLocationFields(
   location: string,
@@ -146,20 +165,34 @@ export function resolveJobLocationFields(
   const parsed = parseJobLocation(location);
   let city: string | null = parsed?.city ?? null;
   let state_region: string | null = parsed?.state_region ?? null;
+  let cityCleared = false;
+  let stateRegionCleared = false;
 
-  if (explicitCity !== undefined && explicitCity !== null) {
+  if (explicitCity === null) {
+    city = null;
+    cityCleared = true;
+  } else if (explicitCity !== undefined) {
     if (typeof explicitCity !== 'string') return { ok: false, error: 'invalid_city' };
     const trimmed = explicitCity.trim();
     if (!trimmed || trimmed.length > CITY_MAX_LENGTH) return { ok: false, error: 'invalid_city' };
     city = trimmed;
   }
 
-  if (explicitStateRegion !== undefined && explicitStateRegion !== null) {
+  if (explicitStateRegion === null) {
+    state_region = null;
+    stateRegionCleared = true;
+  } else if (explicitStateRegion !== undefined) {
     if (typeof explicitStateRegion !== 'string') return { ok: false, error: 'invalid_state_region' };
     const upper = explicitStateRegion.trim().toUpperCase();
-    if (!STATE_REGION_RE.test(upper)) return { ok: false, error: 'invalid_state_region' };
+    // Validated against the same USPS_STATE_CODES set the parser itself uses
+    // (resolveStateToken above) -- not just the two-letter shape -- so an
+    // explicit override of a stray-but-regex-valid code (e.g. 'ZZ') is
+    // rejected the same way an unrecognized token is during parsing.
+    if (!STATE_REGION_RE.test(upper) || !USPS_STATE_CODES.has(upper)) {
+      return { ok: false, error: 'invalid_state_region' };
+    }
     state_region = upper;
   }
 
-  return { ok: true, value: { city, state_region } };
+  return { ok: true, value: { city, state_region }, cityCleared, stateRegionCleared };
 }
