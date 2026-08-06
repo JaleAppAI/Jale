@@ -14,7 +14,7 @@ import {
 } from '@aws-sdk/client-sfn';
 import { applyWorkerToJob } from '../lib/applications';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
-import { listMatchedJobsForWorker } from '../lib/job-matching';
+import { listMatchedJobsForWorker, loadWorkerPreferredCityKeys } from '../lib/job-matching';
 import {
   declineLatestWorkerConversationFromButtonText,
   declineWorkerConversationFromButton,
@@ -1769,10 +1769,27 @@ async function handleIdle(
       `SELECT set_config('app.current_internal_user_id', $1, true)`,
       [conv.user_id],
     );
-    const jobs = await listMatchedJobsForWorker(client, conv.user_id, {
+    // Same city semantics as the web feed (worker-jobs-list): a worker with
+    // preferred cities sees those first, topped up with out-of-city jobs when
+    // the cities run short. WhatsApp has no "other jobs" section header, so
+    // the fill is appended -- each job template shows its own location.
+    const cityKeys = await loadWorkerPreferredCityKeys(client, conv.user_id);
+    let jobs = await listMatchedJobsForWorker(client, conv.user_id, {
       limit: 5,
       channel: 'whatsapp',
+      ...(cityKeys.length > 0 ? { cityKeys } : {}),
     });
+    if (cityKeys.length > 0 && jobs.length < 5) {
+      const fallback = await listMatchedJobsForWorker(client, conv.user_id, {
+        limit: 5,
+        channel: 'whatsapp',
+        excludeCityKeys: cityKeys,
+      });
+      // The referral pin is fetched by id with no city filter, so it can come
+      // back from both queries -- never send the same job twice.
+      const seen = new Set(jobs.map((job) => job.id));
+      jobs = [...jobs, ...fallback.filter((job) => !seen.has(job.id))].slice(0, 5);
+    }
     if (jobs.length === 0) {
       await reply(client, msg,'jobs_none', conv.language);
       return null;

@@ -70,6 +70,7 @@ const expectedBaselineMigrations = [
   '059_share_link_claim_read.sql',
   '060_trade_aliases.sql',
   '061_city_keys_and_preferred_cities.sql',
+  '062_preferred_cities_whatsapp_read.sql',
 ];
 
 function migrationFiles(): string[] {

@@ -2,6 +2,7 @@ import {
   buildWorkerProfessionContext,
   extractZip,
   listMatchedJobsForWorker,
+  loadWorkerPreferredCityKeys,
   normalizeProfessionText,
   scoreJobCandidate,
   type MatchableJobRow,
@@ -734,5 +735,31 @@ describe('listMatchedJobsForWorker', () => {
     const excludeIndex = params.findIndex((p) => Array.isArray(p) && p[0] === 'austin-tx') + 1;
     expect(sql).toContain(`j.city_key = ANY($${includeIndex}::text[])`);
     expect(sql).toContain(`NOT (j.city_key = ANY($${excludeIndex}::text[]))`);
+  });
+});
+
+describe('loadWorkerPreferredCityKeys', () => {
+  it('returns the worker preferred city keys in created_at order', async () => {
+    const query = buildQuery([
+      {
+        test: (sql) => /FROM worker_preferred_cities/.test(sql),
+        handler: () => ({ rows: [{ city_key: 'el-paso-tx' }, { city_key: 'las-cruces-nm' }] }),
+      },
+    ]);
+
+    const keys = await loadWorkerPreferredCityKeys({ query } as never, 'worker-1');
+
+    expect(keys).toEqual(['el-paso-tx', 'las-cruces-nm']);
+    const [sql, params] = findCall(query, /FROM worker_preferred_cities/)!;
+    expect(sql).toContain('ORDER BY created_at');
+    expect(params).toEqual(['worker-1']);
+  });
+
+  it('returns an empty list for a worker with no preferred cities', async () => {
+    const query = buildQuery([]);
+
+    const keys = await loadWorkerPreferredCityKeys({ query } as never, 'worker-1');
+
+    expect(keys).toEqual([]);
   });
 });

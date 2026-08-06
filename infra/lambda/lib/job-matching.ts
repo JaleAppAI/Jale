@@ -574,6 +574,21 @@ function jobNotAppliedPredicate(workerIdParam: string): string {
      )`;
 }
 
+/** The worker's chosen feed cities (migration 061), oldest pick first --
+ * the same order the web feed uses. Callers pass the keys to
+ * `listMatchedJobsForWorker` as `cityKeys`/`excludeCityKeys`; an empty
+ * result means "no preference" and the list stays unfiltered. */
+export async function loadWorkerPreferredCityKeys(
+  client: PoolClient,
+  workerId: string,
+): Promise<string[]> {
+  const result = await client.query<{ city_key: string }>(
+    `SELECT city_key FROM worker_preferred_cities WHERE user_id = $1 ORDER BY created_at`,
+    [workerId],
+  );
+  return result.rows.map((row) => row.city_key);
+}
+
 export async function listMatchedJobsForWorker(
   client: PoolClient,
   workerId: string,
