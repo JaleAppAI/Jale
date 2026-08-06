@@ -62,7 +62,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           wp.availability, wp.years_experience, wp.experience_months, wp.location, wp.bio,
           COALESCE(wp.certifications, '{}'::text[]) AS certifications,
           COALESCE((
-            SELECT json_agg(json_build_object('city_key', wpc.city_key, 'city', wpc.city, 'state', wpc.state) ORDER BY wpc.created_at, wpc.city_key)
+            SELECT json_agg(json_build_object('city_key', wpc.city_key, 'city', wpc.city, 'state', wpc.state,
+                   'latitude', wpc.latitude, 'longitude', wpc.longitude) ORDER BY wpc.created_at, wpc.city_key)
             FROM worker_preferred_cities wpc
             WHERE wpc.user_id = u.id
           ), '[]'::json) AS preferred_cities

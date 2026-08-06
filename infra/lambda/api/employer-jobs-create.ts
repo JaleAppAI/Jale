@@ -4,7 +4,7 @@ import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
-import { parseCityFields } from '../lib/city-fields';
+import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -88,6 +88,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!cityFields.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: cityFields.error }) };
     }
+
+    // Degraded-picker fallback: no triple sent -> best-effort parse of the
+    // free-text location, so the job still enters city-filtered feeds.
+    const cityTriple = cityFields.value ?? parseCityFromLocation(location);
 
     const pool = await getDbPool();
     client = await pool.connect();
@@ -201,9 +205,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.required_experience_years,
         jobFields.value.required_experience_months,
         jobFields.value.certifications,
-        cityFields.value?.city_key ?? null,
-        cityFields.value?.city ?? null,
-        cityFields.value?.state ?? null,
+        cityTriple?.city_key ?? null,
+        cityTriple?.city ?? null,
+        cityTriple?.state ?? null,
       ],
     );
     const job = result.rows[0];

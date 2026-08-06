@@ -204,6 +204,8 @@ MIGRATIONS=(
   "060_trade_aliases.sql"
   "061_city_keys_and_preferred_cities.sql"
   "062_preferred_cities_whatsapp_read.sql"
+  "063_city_key_backfill_repair.sql"
+  "064_preferred_city_centroids.sql"
 )
 
 WORKDIR="$(mktemp -d)"

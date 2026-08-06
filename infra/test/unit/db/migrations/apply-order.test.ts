@@ -71,6 +71,8 @@ const expectedBaselineMigrations = [
   '060_trade_aliases.sql',
   '061_city_keys_and_preferred_cities.sql',
   '062_preferred_cities_whatsapp_read.sql',
+  '063_city_key_backfill_repair.sql',
+  '064_preferred_city_centroids.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -572,6 +574,28 @@ describe('migration apply order baseline', () => {
 
     // jale_admin does NOT get billing_webhook_events write grant
     expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
+  });
+
+  it('re-runs the 061 backfills under a USING(true) helper role in migration 063', () => {
+    const sql = readMigration('063_city_key_backfill_repair.sql');
+    expect(sql).toContain('CREATE ROLE jale_location_backfill');
+    expect(sql).toContain('GRANT jale_location_backfill TO jale_admin WITH SET TRUE, INHERIT FALSE');
+    expect(sql).toContain('SET ROLE jale_location_backfill');
+    expect(sql).toContain('RESET ROLE');
+    expect(sql).toContain('WHERE city_key IS NULL');
+    expect(sql).toContain("WHERE location_source = 'map_pin'");
+    // The write policies are one-shot: created before the backfill, dropped after.
+    expect(sql).toContain('DROP POLICY IF EXISTS jobs_location_backfill_update ON jobs;');
+    // The SELECT policy on jobs survives for the ops monitoring query.
+    expect(sql).toContain('jobs_location_backfill_select');
+  });
+
+  it('adds range-checked centroid columns to worker_preferred_cities in migration 064', () => {
+    const sql = readMigration('064_preferred_city_centroids.sql');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS latitude  NUMERIC(9,6)');
+    expect(sql).toContain('ADD COLUMN IF NOT EXISTS longitude NUMERIC(9,6)');
+    expect(sql).toContain('worker_preferred_cities_coords_complete');
+    expect(sql).toContain('(latitude IS NULL) = (longitude IS NULL)');
   });
 
   maybeIt('applies migrations 001-034 against a local Postgres database', async () => {

@@ -217,4 +217,16 @@ describe('worker-jobs-list', () => {
     expect(mockListMatchedJobsForWorker.mock.calls[0][2].cityKeys).toBeUndefined();
     expect(JSON.parse(res.body).other_jobs).toBeUndefined();
   });
+
+  it('caps other_jobs at 20', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });  // beforeEach resets all mocks; every happy-path test sets this itself
+    mockCityKeys(['el-paso-tx']);
+    mockListMatchedJobsForWorker
+      .mockResolvedValueOnce([job('city-1')])                                        // main: below threshold
+      .mockResolvedValueOnce(Array.from({ length: 30 }, (_, i) => job(`other-${i}`))); // fallback: 30
+    const res = await handler(baseEvent as unknown as APIGatewayProxyEvent);
+    const body = JSON.parse(res.body);
+    expect(body.other_jobs).toHaveLength(20);
+    expect(body.other_jobs[0].id).toBe('other-0');  // ranked order preserved, tail dropped
+  });
 });

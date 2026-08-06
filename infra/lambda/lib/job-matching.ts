@@ -489,7 +489,7 @@ function workerHasProfessionData(worker: WorkerMatchProfile): boolean {
   );
 }
 
-type CoordinateTable = 'worker_profiles' | 'jobs';
+type CoordinateTable = 'worker_profiles' | 'jobs' | 'worker_preferred_cities';
 
 async function coordinateSelects(
   client: PoolClient,
@@ -574,19 +574,45 @@ function jobNotAppliedPredicate(workerIdParam: string): string {
      )`;
 }
 
-/** The worker's chosen feed cities (migration 061), oldest pick first --
- * the same order the web feed uses. Callers pass the keys to
- * `listMatchedJobsForWorker` as `cityKeys`/`excludeCityKeys`; an empty
- * result means "no preference" and the list stays unfiltered. */
-export async function loadWorkerPreferredCityKeys(
+export interface PreferredCityRow {
+  city_key: string;
+  latitude: string | number | null;
+  longitude: string | number | null;
+}
+
+export interface CityAnchor {
+  latitude: number;
+  longitude: number;
+}
+
+/** The worker's chosen feed cities (migration 061), oldest pick first, with
+ * their centroids (migration 064; NULL before it applies -- the coordinate
+ * columns are probed like worker_profiles/jobs coordinates are). Callers
+ * derive `cityKeys` for filtering and `cityAnchors` (via cityAnchorsFrom)
+ * for distance scoring. Empty result = no preference = unfiltered. */
+export async function loadWorkerPreferredCities(
   client: PoolClient,
   workerId: string,
-): Promise<string[]> {
-  const result = await client.query<{ city_key: string }>(
-    `SELECT city_key FROM worker_preferred_cities WHERE user_id = $1 ORDER BY created_at`,
+): Promise<PreferredCityRow[]> {
+  const coordinates = await coordinateSelects(client, 'worker_preferred_cities', 'wpc');
+  const result = await client.query<PreferredCityRow>(
+    `SELECT wpc.city_key,
+            ${coordinates.latitude} AS latitude,
+            ${coordinates.longitude} AS longitude
+       FROM worker_preferred_cities wpc
+      WHERE wpc.user_id = $1
+      ORDER BY wpc.created_at`,
     [workerId],
   );
-  return result.rows.map((row) => row.city_key);
+  return result.rows;
+}
+
+export function cityAnchorsFrom(rows: PreferredCityRow[]): CityAnchor[] {
+  return rows.flatMap((row) => {
+    const latitude = toNumber(row.latitude);
+    const longitude = toNumber(row.longitude);
+    return latitude !== null && longitude !== null ? [{ latitude, longitude }] : [];
+  });
 }
 
 export async function listMatchedJobsForWorker(

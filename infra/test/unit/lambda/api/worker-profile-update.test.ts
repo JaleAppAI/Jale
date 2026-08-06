@@ -279,8 +279,8 @@ describe('worker-profile-update', () => {
       const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_preferred_cities'));
       expect(insertCall).toBeDefined();
       expect(insertCall?.[1]).toEqual(['u', JSON.stringify([
-        { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' },
-        { city_key: 'austin-tx', city: 'Austin', state: 'TX' },
+        { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX', latitude: null, longitude: null },
+        { city_key: 'austin-tx', city: 'Austin', state: 'TX', latitude: null, longitude: null },
       ])]);
       expect(JSON.parse(res.body).preferred_cities).toHaveLength(2);
     });
@@ -358,6 +358,22 @@ describe('worker-profile-update', () => {
       expect(res.statusCode).toBe(400);
       expect(JSON.parse(res.body).error).toBe('invalid_location_source');
       expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('stores preferred-city coordinates and returns them', async () => {
+      okQuery();
+      const res = await handler(mkEv({
+        preferred_cities: [
+          { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX', latitude: 31.7619, longitude: -106.485 },
+        ],
+      }));
+      expect(res.statusCode).toBe(200);
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_preferred_cities'));
+      expect(insertCall?.[0]).toContain('latitude');
+      expect(insertCall?.[1]).toEqual(['u', JSON.stringify([
+        { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX', latitude: 31.7619, longitude: -106.485 },
+      ])]);
+      expect(JSON.parse(res.body).preferred_cities[0].latitude).toBe(31.7619);
     });
   });
 

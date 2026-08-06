@@ -4,7 +4,7 @@ import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
-import { parseCityFields } from '../lib/city-fields';
+import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -194,6 +194,11 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: cityFields.error }) };
   }
 
+  // Runs conceptually AFTER the clear-on-omit below: when no triple is sent
+  // the stored key is being replaced anyway, so a parseable location text
+  // must re-key the job rather than leave it invisible to city filters.
+  const cityTriple = cityFields.value ?? parseCityFromLocation(location);
+
   const coordinates = parseOptionalCoordinates(body);
   if (!coordinates.ok) {
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: coordinates.error }) };
@@ -268,11 +273,12 @@ async function handleFieldEdit(
       required_experience_years: f.required_experience_years,
       required_experience_months: f.required_experience_months,
       certifications: f.certifications,
-      // Omitting the triple clears stale keys on purpose: if the employer changed the
-      // location text without picking a city, the old key must not keep matching.
-      city_key: cityFields.value?.city_key ?? null,
-      city: cityFields.value?.city ?? null,
-      state: cityFields.value?.state ?? null,
+      // Omitting the triple replaces the stored keys on purpose: either with a
+      // fresh parse of the new location text, or with NULL when it is
+      // unparseable -- a stale key must never keep matching the old city.
+      city_key: cityTriple?.city_key ?? null,
+      city: cityTriple?.city ?? null,
+      state: cityTriple?.state ?? null,
     };
     const setClauses = EDITABLE_COLUMNS.map((col, i) => `${col} = $${i + 1}`).join(', ');
     const params = EDITABLE_COLUMNS.map((col) => values[col]);

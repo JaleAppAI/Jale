@@ -237,7 +237,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          bio,
          certifications,
          COALESCE((
-           SELECT json_agg(json_build_object('city_key', wpc.city_key, 'city', wpc.city, 'state', wpc.state) ORDER BY wpc.created_at, wpc.city_key)
+           SELECT json_agg(json_build_object('city_key', wpc.city_key, 'city', wpc.city, 'state', wpc.state,
+                  'latitude', wpc.latitude, 'longitude', wpc.longitude) ORDER BY wpc.created_at, wpc.city_key)
            FROM worker_preferred_cities wpc
            WHERE wpc.user_id = worker_profiles.user_id
          ), '[]'::json) AS preferred_cities`,
@@ -282,9 +283,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await client.query('DELETE FROM worker_preferred_cities WHERE user_id = $1', [profile.user_id]);
       if (preferredCities.length > 0) {
         await client.query(
-          `INSERT INTO worker_preferred_cities (user_id, city_key, city, state)
-           SELECT $1, x.city_key, x.city, x.state
-           FROM jsonb_to_recordset($2::jsonb) AS x(city_key text, city text, state text)`,
+          `INSERT INTO worker_preferred_cities (user_id, city_key, city, state, latitude, longitude)
+           SELECT $1, x.city_key, x.city, x.state, x.latitude, x.longitude
+           FROM jsonb_to_recordset($2::jsonb) AS x(city_key text, city text, state text, latitude numeric, longitude numeric)`,
           [profile.user_id, JSON.stringify(preferredCities)],
         );
       }

@@ -1,8 +1,9 @@
 import {
   buildWorkerProfessionContext,
+  cityAnchorsFrom,
   extractZip,
   listMatchedJobsForWorker,
-  loadWorkerPreferredCityKeys,
+  loadWorkerPreferredCities,
   normalizeProfessionText,
   scoreJobCandidate,
   type MatchableJobRow,
@@ -36,11 +37,11 @@ function buildQuery(routes: QueryRoute[]): jest.Mock {
  * `jobs`, distinguished only by the table-name param. Defaults to "no
  * lat/lon columns" (NULL::numeric fallback) for every table unless
  * overridden. */
-function coordinateColumnsRoute(hasCoords: Partial<Record<'worker_profiles' | 'jobs', boolean>> = {}): QueryRoute {
+function coordinateColumnsRoute(hasCoords: Partial<Record<'worker_profiles' | 'jobs' | 'worker_preferred_cities', boolean>> = {}): QueryRoute {
   return {
     test: (sql) => /FROM information_schema\.columns/.test(sql),
     handler: (_sql, params) => {
-      const table = params[0] as 'worker_profiles' | 'jobs';
+      const table = params[0] as 'worker_profiles' | 'jobs' | 'worker_preferred_cities';
       return { rows: hasCoords[table] ? [{ column_name: 'latitude' }, { column_name: 'longitude' }] : [] };
     },
   };
@@ -738,28 +739,52 @@ describe('listMatchedJobsForWorker', () => {
   });
 });
 
-describe('loadWorkerPreferredCityKeys', () => {
-  it('returns the worker preferred city keys in created_at order', async () => {
+describe('loadWorkerPreferredCities', () => {
+  it('returns city keys with centroids in created_at order, guarded by the column probe', async () => {
     const query = buildQuery([
+      coordinateColumnsRoute({ worker_preferred_cities: true }),
       {
         test: (sql) => /FROM worker_preferred_cities/.test(sql),
-        handler: () => ({ rows: [{ city_key: 'el-paso-tx' }, { city_key: 'las-cruces-nm' }] }),
+        handler: () => ({ rows: [
+          { city_key: 'el-paso-tx', latitude: '31.7619', longitude: '-106.4850' },
+          { city_key: 'las-cruces-nm', latitude: null, longitude: null },
+        ] }),
       },
     ]);
 
-    const keys = await loadWorkerPreferredCityKeys({ query } as never, 'worker-1');
+    const rows = await loadWorkerPreferredCities({ query } as never, 'worker-1');
 
-    expect(keys).toEqual(['el-paso-tx', 'las-cruces-nm']);
+    expect(rows).toEqual([
+      { city_key: 'el-paso-tx', latitude: '31.7619', longitude: '-106.4850' },
+      { city_key: 'las-cruces-nm', latitude: null, longitude: null },
+    ]);
     const [sql, params] = findCall(query, /FROM worker_preferred_cities/)!;
-    expect(sql).toContain('ORDER BY created_at');
+    expect(sql).toContain('ORDER BY wpc.created_at');
     expect(params).toEqual(['worker-1']);
   });
 
-  it('returns an empty list for a worker with no preferred cities', async () => {
-    const query = buildQuery([]);
+  it('selects NULL coordinates before migration 064 is applied', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),  // no coordinate columns anywhere
+      {
+        test: (sql) => /FROM worker_preferred_cities/.test(sql),
+        handler: () => ({ rows: [{ city_key: 'el-paso-tx', latitude: null, longitude: null }] }),
+      },
+    ]);
 
-    const keys = await loadWorkerPreferredCityKeys({ query } as never, 'worker-1');
+    await loadWorkerPreferredCities({ query } as never, 'worker-1');
 
-    expect(keys).toEqual([]);
+    const [sql] = findCall(query, /FROM worker_preferred_cities/)!;
+    expect(sql).toContain('NULL::numeric AS latitude');
+  });
+});
+
+describe('cityAnchorsFrom', () => {
+  it('keeps only rows with a complete numeric pair', () => {
+    expect(cityAnchorsFrom([
+      { city_key: 'a-tx', latitude: '31.5', longitude: '-106.1' },
+      { city_key: 'b-tx', latitude: null, longitude: null },
+      { city_key: 'c-tx', latitude: 'not-a-number', longitude: '-106.1' },
+    ])).toEqual([{ latitude: 31.5, longitude: -106.1 }]);
   });
 });

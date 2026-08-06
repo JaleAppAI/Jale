@@ -222,11 +222,28 @@ describe('employer-jobs-create', () => {
     expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX']);
   });
 
-  it('accepts a job without city fields (degraded picker)', async () => {
-    const res = await handler(makeEvent({}));
+  it('derives the city triple from parseable location text when no picker triple is sent', async () => {
+    const res = await handler(makeEvent({}));  // location defaults to 'Columbus, OH'
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1].slice(21)).toEqual(['columbus-oh', 'Columbus', 'OH']);
+  });
+
+  it('accepts a job with unparseable location and no city fields (degraded picker)', async () => {
+    const res = await handler(makeEvent({ location: 'Near the old stadium' }));
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
     expect(insertCall[1].slice(21)).toEqual([null, null, null]);
+  });
+
+  it('a picker triple wins over the location text parse', async () => {
+    const res = await handler(makeEvent({
+      location: 'Columbus, OH',
+      city_key: 'el-paso-tx', city: 'El Paso', state: 'TX',
+    }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX']);
   });
 
   it('rejects a partial city triple (400)', async () => {

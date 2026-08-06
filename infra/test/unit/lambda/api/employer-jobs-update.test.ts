@@ -473,15 +473,33 @@ describe('employer-jobs-update', () => {
     expect(updateCall[1]).toEqual(expect.arrayContaining(['austin-tx', 'Austin', 'TX']));
   });
 
-  it('clears the city triple when a field edit omits it', async () => {
+  it('clears the city triple when a field edit omits it and the location is unparseable', async () => {
     mockCurrentJob();
-    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Near the old stadium' }) }));
     expect(res.statusCode).toBe(200);
     const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET'));
     expect(updateCall[0]).toContain('city_key');
     // params for city_key/city/state must be null — pinned positionally:
-    // EDITABLE_COLUMNS gains 3 entries at the end; job id is the final param.
-    expect(updateCall[1].slice(-4, -1)).toEqual([null, null, null]);
+    expect(updateCall[1].slice(20, 23)).toEqual([null, null, null]);
+  });
+
+  it('derives the city triple from parseable location text when a field edit omits the triple', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'El Paso, TX 79912' }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET'));
+    expect(updateCall[1].slice(20, 23)).toEqual(['el-paso-tx', 'El Paso', 'TX']);
+  });
+
+  it('a picker triple wins over the location text parse on edit', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, location: 'El Paso, TX',
+      city_key: 'austin-tx', city: 'Austin', state: 'TX',
+    }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET'));
+    expect(updateCall[1].slice(20, 23)).toEqual(['austin-tx', 'Austin', 'TX']);
   });
 
   it('rejects a mismatched city_key on edit (400)', async () => {

@@ -1,4 +1,4 @@
-import { slugCityKey, parseCityFields, parsePreferredCities } from '../../../../lambda/lib/city-fields';
+import { slugCityKey, parseCityFields, parsePreferredCities, parseCityFromLocation } from '../../../../lambda/lib/city-fields';
 
 describe('slugCityKey', () => {
   it('slugifies city + state', () => {
@@ -53,7 +53,10 @@ describe('parsePreferredCities', () => {
   });
 
   it('accepts up to 10 and dedupes by key', () => {
-    expect(parsePreferredCities([el, austin, el])).toEqual({ ok: true, value: [el, austin] });
+    expect(parsePreferredCities([el, austin, el])).toEqual({
+      ok: true,
+      value: [{ ...el, latitude: null, longitude: null }, { ...austin, latitude: null, longitude: null }],
+    });
   });
 
   it('rejects more than 10', () => {
@@ -63,11 +66,71 @@ describe('parsePreferredCities', () => {
 
   it('dedupes before enforcing the limit', () => {
     const many = Array.from({ length: 12 }, () => el);
-    expect(parsePreferredCities(many)).toEqual({ ok: true, value: [el] });
+    expect(parsePreferredCities(many)).toEqual({ ok: true, value: [{ ...el, latitude: null, longitude: null }] });
   });
 
   it('rejects non-arrays and bad items', () => {
     expect(parsePreferredCities('nope' as never)).toEqual({ ok: false, error: 'invalid_preferred_cities' });
     expect(parsePreferredCities([{ city_key: 'austin-tx', city: 'El Paso', state: 'TX' }])).toEqual({ ok: false, error: 'invalid_preferred_cities' });
+  });
+});
+
+describe('parseCityFromLocation', () => {
+  it.each([
+    ['El Paso, TX', { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' }],
+    ['El Paso, TX 79912', { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' }],
+    ['El Paso, tx 79912-1234', { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' }],
+    ["Coeur d'Alene, ID", { city_key: 'coeur-d-alene-id', city: "Coeur d'Alene", state: 'ID' }],
+    ['Winston-Salem, NC', { city_key: 'winston-salem-nc', city: 'Winston-Salem', state: 'NC' }],
+    ['  Columbus ,  OH  ', { city_key: 'columbus-oh', city: 'Columbus', state: 'OH' }],
+  ])('parses %s', (input, expected) => {
+    expect(parseCityFromLocation(input)).toEqual(expected);
+  });
+
+  it('normalizes exotic whitespace before matching (NBSP)', () => {
+    expect(parseCityFromLocation('El Paso, TX 79912')).toEqual({
+      city_key: 'el-paso-tx', city: 'El Paso', state: 'TX',
+    });
+  });
+
+  it.each([
+    ['79912'],                 // bare ZIP
+    ['El Paso'],               // no comma
+    ['El Paso, Texas'],        // full state name
+    ['Near the stadium'],      // free text
+    ['123 Main St, El Paso'],  // leading digits
+    [''],
+  ])('returns null for %s', (input) => {
+    expect(parseCityFromLocation(input)).toBeNull();
+  });
+});
+
+describe('parsePreferredCities coordinates', () => {
+  const triple = { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' };
+
+  it('passes coordinates through when both are valid', () => {
+    const res = parsePreferredCities([{ ...triple, latitude: 31.7619, longitude: -106.485 }]);
+    expect(res).toEqual({ ok: true, value: [{ ...triple, latitude: 31.7619, longitude: -106.485 }] });
+  });
+
+  it('treats null coordinates as absent (legacy GET->PATCH round-trip)', () => {
+    const res = parsePreferredCities([{ ...triple, latitude: null, longitude: null }]);
+    expect(res).toEqual({ ok: true, value: [{ ...triple, latitude: null, longitude: null }] });
+  });
+
+  it('normalizes missing coordinates to null', () => {
+    const res = parsePreferredCities([triple]);
+    expect(res).toEqual({ ok: true, value: [{ ...triple, latitude: null, longitude: null }] });
+  });
+
+  it.each([
+    [{ latitude: 31.76 }],                          // one-sided
+    [{ latitude: 91, longitude: -106.4 }],          // lat out of range
+    [{ latitude: 31.76, longitude: -181 }],         // lon out of range
+    [{ latitude: '31.76', longitude: -106.4 }],     // non-number
+    [{ latitude: NaN, longitude: -106.4 }],         // non-finite
+  ])('rejects invalid coordinate shape %j', (coords) => {
+    expect(parsePreferredCities([{ ...triple, ...coords }]))
+      .toEqual({ ok: false, error: 'invalid_preferred_cities' });
   });
 });
