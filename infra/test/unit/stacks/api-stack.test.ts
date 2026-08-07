@@ -475,6 +475,36 @@ describe('ApiStack', () => {
     ]));
   });
 
+  test('centralized MethodSettings includes exactly one POST /public/jobs/{code}/open throttle entry', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/public/jobs/{code}/open' && s.HttpMethod === 'POST',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 20,
+      ThrottlingRateLimit: 10,
+    }));
+  });
+
+  test('centralized MethodSettings includes exactly one GET /public/jobs/{code}/referrer throttle entry', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/public/jobs/{code}/referrer' && s.HttpMethod === 'GET',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 20,
+      ThrottlingRateLimit: 10,
+    }));
+  });
+
   test('centralized MethodSettings includes exactly one GET /public/jobs throttle entry, same shape as /public/jobs/{code}', () => {
     const stages = template.findResources('AWS::ApiGateway::Stage');
     const stageIds = Object.keys(stages);
