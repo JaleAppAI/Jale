@@ -7,7 +7,7 @@ import { ApiError, updateJob, type EmployerJobDetail } from '@/lib/api/employer'
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  jobFormToPayload, jobToForm, validateJobNumbers, validateJobLocationFields,
+  jobFormToEditPayload, jobToForm, validateJobNumbers, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,6 +27,11 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
   const { idToken } = useAuth();
 
   const [form, setForm] = useState<JobForm>(() => jobToForm(job));
+  // Snapshot of the form as it was prefilled, so jobFormToEditPayload can
+  // tell "started blank, still blank" (omit the key) apart from "started
+  // with a value, now blanked" (send an explicit clear). Captured once, not
+  // re-derived from `job`, so edits within this session can't shift it.
+  const [initialForm] = useState<JobForm>(() => jobToForm(job));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -65,7 +70,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
     setLoading(true);
     setError('');
     try {
-      const updated = await updateJob(idToken!, job.id, jobFormToPayload(form));
+      const updated = await updateJob(idToken!, job.id, jobFormToEditPayload(form, initialForm));
       onJobUpdated(updated);
       onClose();
     } catch (err) {

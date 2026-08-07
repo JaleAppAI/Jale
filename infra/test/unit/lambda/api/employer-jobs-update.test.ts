@@ -406,6 +406,38 @@ describe('employer-jobs-update', () => {
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
+  it('includes city and state_region in the RETURNING clause and the response (fix: geo was dropped from the edit RETURNING list)', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{ job_type: 'full-time', required_docs: ['resume'], applicant_count: 0, hired_count: 0, city: null, state_region: null }],
+        });
+      }
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{ id: JOB_ID, ...VALID_EDIT, status: 'active', hired_count: 0, open_count: 1, applicant_count: 0, city: 'Austin', state_region: 'TX' }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.city).toBe('Austin');
+    expect(body.state_region).toBe('TX');
+
+    // Pin the SQL contract itself, not just the mock pass-through: the
+    // RETURNING clause (not just the SET clause, which already writes these
+    // columns) must project city/state_region back out, matching
+    // employer-jobs-create.ts's RETURNING list.
+    const updateCall = findUpdateCall();
+    const returningClause = (updateCall![0] as string).split('RETURNING')[1];
+    expect(returningClause).toMatch(/\bcity\b/);
+    expect(returningClause).toMatch(/\bstate_region\b/);
+  });
+
   it('rejects invalid field values with 400', async () => {
     mockCurrentJob();
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, trade_category: 'astronaut' }) }));

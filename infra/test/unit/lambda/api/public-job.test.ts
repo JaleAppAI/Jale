@@ -1,13 +1,10 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/public-job';
 import { getPublicJobsDbPool } from '../../../../lambda/lib/db';
-import { getVisitorSalt } from '../../../../lambda/lib/referral-secrets';
 
 jest.mock('../../../../lambda/lib/db');
-jest.mock('../../../../lambda/lib/referral-secrets');
 
 const mockGetPublicJobsDbPool = getPublicJobsDbPool as jest.Mock;
-const mockGetVisitorSalt = getVisitorSalt as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
@@ -45,7 +42,6 @@ describe('public-job Lambda', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.ALLOWED_ORIGIN = 'https://jaleapp.ai';
-    mockGetVisitorSalt.mockResolvedValue(null); // unconfigured by default
     mockGetPublicJobsDbPool.mockResolvedValue({
       connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
     });
@@ -53,46 +49,15 @@ describe('public-job Lambda', () => {
 
   const makeEvent = (opts: {
     code?: string;
-    r?: string;
     headers?: Record<string, string>;
     ip?: string;
   }): APIGatewayProxyEvent =>
     ({
       pathParameters: opts.code !== undefined ? { code: opts.code } : null,
-      queryStringParameters: opts.r !== undefined ? { r: opts.r } : null,
+      queryStringParameters: null,
       headers: opts.headers ?? {},
       requestContext: { identity: { sourceIp: opts.ip ?? '1.2.3.4' } },
     }) as unknown as APIGatewayProxyEvent;
-
-  it('does not record an open for a link-preview crawler, but still returns the job', async () => {
-    // Pasting a link into WhatsApp triggers Meta's crawler immediately: without
-    // this guard, open_count reads 1 before any human clicks, and that number
-    // is shown straight to the referring worker.
-    mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }); // job lookup only
-    const res = await handler(makeEvent({
-      code: 'ABC123',
-      headers: { 'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)' },
-    }));
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).title).toBe('Warehouse Associate');
-    expect(mockQuery.mock.calls.some((c) => /INSERT INTO job_share_opens/i.test(c[0]))).toBe(false);
-  });
-
-  it('does not bump the counter when the dedupe guard says this visitor was already counted', async () => {
-    mockGetVisitorSalt.mockResolvedValue('test-salt');
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] })          // job lookup
-      .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] })    // share link match
-      .mockResolvedValueOnce({})                                  // BEGIN
-      .mockResolvedValueOnce({ rows: [] })                        // guarded INSERT -> already seen
-      .mockResolvedValueOnce({});                                 // COMMIT
-    const res = await handler(makeEvent({
-      code: 'ABC123', r: 'ABCD1234',
-      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; like Mac OS X)' },
-    }));
-    expect(res.statusCode).toBe(200);
-    expect(mockQuery.mock.calls.some((c) => /open_count = open_count \+ 1/.test(c[0]))).toBe(false);
-  });
 
   it('returns 400 when code is missing', async () => {
     const res = await handler(makeEvent({}));
@@ -124,11 +89,7 @@ describe('public-job Lambda', () => {
   });
 
   it('returns the full public projection for an active job', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert
-      .mockResolvedValueOnce({}); // COMMIT
+    mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }); // job lookup only -- company present
     const res = await handler(makeEvent({ code: 'ABC123' }));
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -146,11 +107,7 @@ describe('public-job Lambda', () => {
   });
 
   it('selects city and state_region in the job lookup query', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert
-      .mockResolvedValueOnce({}); // COMMIT
+    mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }); // job lookup only
     await handler(makeEvent({ code: 'ABC123' }));
     const jobLookupCall = mockQuery.mock.calls[0];
     expect(jobLookupCall[0]).toMatch(/\bcity\b/);
@@ -158,11 +115,7 @@ describe('public-job Lambda', () => {
   });
 
   it('returns the minimal closed view for a non-active job, not a 404', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, status: 'filled' }] })
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert
-      .mockResolvedValueOnce({}); // COMMIT
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, status: 'filled' }] });
     const res = await handler(makeEvent({ code: 'ABC123' }));
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -178,100 +131,47 @@ describe('public-job Lambda', () => {
     expect(body.id).toBeUndefined();
   });
 
-  it('records an untagged open when r is malformed', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({}) // BEGIN (no share lookup query, since r is invalid shape)
-      .mockResolvedValueOnce({}) // open insert
-      .mockResolvedValueOnce({}); // COMMIT
-    const res = await handler(makeEvent({ code: 'ABC123', r: 'not-a-valid-share-code' }));
-    expect(res.statusCode).toBe(200);
-    const openInsertCall = mockQuery.mock.calls[2];
-    expect(openInsertCall[0]).toContain('INSERT INTO job_share_opens');
-    expect(openInsertCall[1][0]).toBeNull();
-  });
+  describe('company fallback', () => {
+    it('does not query public_job_company when the job row already has a company', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }); // company: 'Acme Co'
+      const res = await handler(makeEvent({ code: 'ABC123' }));
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).company).toBe('Acme Co');
+      // Only the single job lookup query -- no extra round trip.
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
 
-  it('records an untagged open when r points at a different job', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({ rows: [] }) // share link lookup -- no match for this job
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({}) // open insert
-      .mockResolvedValueOnce({}); // COMMIT
-    const res = await handler(makeEvent({ code: 'ABC123', r: 'ABCD1234' }));
-    expect(res.statusCode).toBe(200);
-    const openInsertCall = mockQuery.mock.calls[3];
-    expect(openInsertCall[0]).toContain('INSERT INTO job_share_opens');
-    expect(openInsertCall[1][0]).toBeNull();
-  });
+    it('calls public_job_company and merges the result when the job row has a null company', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, company: null }] }) // job lookup
+        .mockResolvedValueOnce({ rows: [{ company: 'Fallback Inc' }] }); // public_job_company
+      const res = await handler(makeEvent({ code: 'ABC123' }));
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).company).toBe('Fallback Inc');
 
-  it('tags the open and bumps open_count when r matches a live share link', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] }) // share link lookup -- match
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] }) // guarded insert -> recorded
-      .mockResolvedValueOnce({}) // open_count bump
-      .mockResolvedValueOnce({}); // COMMIT
-    const res = await handler(makeEvent({ code: 'ABC123', r: 'ABCD1234' }));
-    expect(res.statusCode).toBe(200);
-    const openInsertCall = mockQuery.mock.calls[3];
-    expect(openInsertCall[1][0]).toBe('ABCD1234');
-    const bumpCall = mockQuery.mock.calls[4];
-    expect(bumpCall[0]).toContain('UPDATE job_share_links');
-    expect(bumpCall[0]).toContain('open_count');
-    // Both statements landed inside the same transaction, then committed once.
-    expect(mockQuery.mock.calls[2][0]).toBe('BEGIN');
-    expect(mockQuery.mock.calls[5][0]).toBe('COMMIT');
-  });
+      const fallbackCall = mockQuery.mock.calls[1];
+      expect(fallbackCall[0]).toMatch(/public_job_company/);
+      expect(fallbackCall[1]).toEqual(['job-uuid']);
+    });
 
-  it('does not throw and inserts a null visitor_hash when the salt is unset', async () => {
-    mockGetVisitorSalt.mockResolvedValue(null);
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] })
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] }) // guarded insert -> recorded
-      .mockResolvedValueOnce({}); // COMMIT
-    const res = await handler(
-      makeEvent({ code: 'ABC123', headers: { 'User-Agent': 'Mozilla/5.0' } }),
-    );
-    expect(res.statusCode).toBe(200);
-    const openInsertCall = mockQuery.mock.calls[2];
-    expect(openInsertCall[1][4]).toBeNull(); // visitor_hash param
-  });
+    it('leaves company null when public_job_company itself returns null', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, company: null }] })
+        .mockResolvedValueOnce({ rows: [{ company: null }] });
+      const res = await handler(makeEvent({ code: 'ABC123' }));
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).company).toBeNull();
+    });
 
-  it('still returns the job when recording the open throws', async () => {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockRejectedValueOnce(new Error('insert failed')) // open insert throws
-      .mockResolvedValueOnce({}); // ROLLBACK
-    const res = await handler(makeEvent({ code: 'ABC123' }));
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).code).toBe('ABC123');
-    expect(mockQuery.mock.calls[3][0]).toBe('ROLLBACK');
-    expect(mockQuery.mock.calls.some((call) => call[0] === 'COMMIT')).toBe(false);
-    expect(mockRelease).toHaveBeenCalled();
-  });
-
-  it('rolls back and never commits the open insert when the counter update rejects', async () => {
-    // Guards the atomicity fix: open_count is surfaced straight to the
-    // referring worker, so a partial write (insert lands, update fails) must
-    // never be left committed.
-    mockQuery
-      .mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] }) // job lookup
-      .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] }) // share link lookup -- match
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] }) // guarded insert -> recorded
-      .mockRejectedValueOnce(new Error('update failed')) // counter bump rejects
-      .mockResolvedValueOnce({}); // ROLLBACK
-    const res = await handler(makeEvent({ code: 'ABC123', r: 'ABCD1234' }));
-    // The request still succeeds -- recording an open must never fail it.
-    expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body).code).toBe('ABC123');
-    // The insert did run, but inside the transaction that was then rolled back.
-    expect(mockQuery.mock.calls[3][0]).toContain('INSERT INTO job_share_opens');
-    expect(mockQuery.mock.calls[5][0]).toBe('ROLLBACK');
-    expect(mockQuery.mock.calls.some((call) => call[0] === 'COMMIT')).toBe(false);
+    it('also applies the fallback to the closed-job minimal view', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, status: 'filled', company: null }] })
+        .mockResolvedValueOnce({ rows: [{ company: 'Fallback Inc' }] });
+      const res = await handler(makeEvent({ code: 'ABC123' }));
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body.status).toBe('closed');
+      expect(body.company).toBe('Fallback Inc');
+    });
   });
 });
