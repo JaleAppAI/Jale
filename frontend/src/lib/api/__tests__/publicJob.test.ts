@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyIntent, getPublicJob, getPublicJobsList, isClosedJob, PublicJobNotFoundError } from '../publicJob';
+import {
+  applyIntent,
+  getPublicJob,
+  getPublicJobsList,
+  getReferrerContext,
+  isClosedJob,
+  PublicJobNotFoundError,
+  sendOpenBeacon,
+} from '../publicJob';
 import type { PublicJobActive, PublicJobClosed, PublicJobListItem } from '../publicJob';
 
 // No jsdom/testing-library in this repo (vitest.config.ts runs the 'node'
@@ -49,28 +57,14 @@ describe('getPublicJob', () => {
     vi.restoreAllMocks();
   });
 
-  it('fetches the job by code with no ?r when shareCode is absent', async () => {
+  it('fetches the job by code with no ?r querystring and no side-effect option', async () => {
     fetchMock.mockResolvedValue(jsonResponse(ACTIVE_JOB));
     const job = await getPublicJob('ABC123');
     expect(job).toEqual(ACTIVE_JOB);
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.example.test/public/jobs/ABC123',
-      expect.objectContaining({ cache: 'no-store' }),
+      expect.objectContaining({ next: { revalidate: 60 } }),
     );
-  });
-
-  it('passes a present ?r through untouched (aside from URI-encoding)', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(ACTIVE_JOB));
-    await getPublicJob('ABC123', 'SHARE001');
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.example.test/public/jobs/ABC123?r=SHARE001',
-      expect.objectContaining({ cache: 'no-store' }),
-    );
-  });
-
-  it('renders normally (no throw) on a malformed/garbage share code -- the API is responsible for ignoring it', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(ACTIVE_JOB));
-    await expect(getPublicJob('ABC123', 'not-a-real-code!!')).resolves.toEqual(ACTIVE_JOB);
   });
 
   it('throws PublicJobNotFoundError on 404', async () => {
@@ -94,6 +88,115 @@ describe('isClosedJob', () => {
   it('is true only for the closed-job shape', () => {
     expect(isClosedJob(CLOSED_JOB)).toBe(true);
     expect(isClosedJob(ACTIVE_JOB)).toBe(false);
+  });
+});
+
+describe('getReferrerContext', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    process.env.NEXT_PUBLIC_API_BASE_URL = 'https://api.example.test';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('fetches the referrer endpoint with ?r= and returns kind/first_name on 200', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ kind: 'worker', first_name: 'Maria' }));
+    const ctx = await getReferrerContext('ABC123', 'SHARE001');
+    expect(ctx).toEqual({ kind: 'worker', first_name: 'Maria' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/public/jobs/ABC123/referrer?r=SHARE001',
+    );
+  });
+
+  it('normalizes a missing first_name to null', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ kind: 'employer' }));
+    const ctx = await getReferrerContext('ABC123', 'SHARE001');
+    expect(ctx).toEqual({ kind: 'employer', first_name: null });
+  });
+
+  it('resolves to null on 404', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'not_found' }, 404));
+    await expect(getReferrerContext('ABC123', 'BAD')).resolves.toBeNull();
+  });
+
+  it('resolves to null on an unrecognized kind', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ kind: 'admin', first_name: 'X' }));
+    await expect(getReferrerContext('ABC123', 'SHARE001')).resolves.toBeNull();
+  });
+
+  it('resolves to null (never throws) on a network failure', async () => {
+    fetchMock.mockRejectedValue(new Error('network down'));
+    await expect(getReferrerContext('ABC123', 'SHARE001')).resolves.toBeNull();
+  });
+
+  it('resolves to null (never throws) on a JSON parse failure', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('bad json');
+      },
+    } as unknown as Response);
+    await expect(getReferrerContext('ABC123', 'SHARE001')).resolves.toBeNull();
+  });
+});
+
+describe('sendOpenBeacon', () => {
+  beforeEach(() => {
+    process.env.NEXT_PUBLIC_API_BASE_URL = 'https://api.example.test';
+  });
+
+  it('POSTs to the open endpoint with {r: shareCode} when a share code is present', () => {
+    const send = vi.fn();
+    sendOpenBeacon('ABC123', 'SHARE001', send);
+    expect(send).toHaveBeenCalledWith(
+      'https://api.example.test/public/jobs/ABC123/open',
+      JSON.stringify({ r: 'SHARE001' }),
+    );
+  });
+
+  it('omits r from the body when shareCode is null', () => {
+    const send = vi.fn();
+    sendOpenBeacon('ABC123', null, send);
+    expect(send).toHaveBeenCalledWith(
+      'https://api.example.test/public/jobs/ABC123/open',
+      JSON.stringify({}),
+    );
+  });
+
+  it('never throws, even when the injected sender throws synchronously', () => {
+    const send = vi.fn(() => {
+      throw new Error('boom');
+    });
+    expect(() => sendOpenBeacon('ABC123', null, send)).not.toThrow();
+  });
+
+  it('uses navigator.sendBeacon by default when available', () => {
+    const sendBeacon = vi.fn().mockReturnValue(true);
+    vi.stubGlobal('navigator', { sendBeacon });
+    sendOpenBeacon('ABC123', 'SHARE001');
+    expect(sendBeacon).toHaveBeenCalledTimes(1);
+    const [url, blob] = sendBeacon.mock.calls[0];
+    expect(url).toBe('https://api.example.test/public/jobs/ABC123/open');
+    expect(blob).toBeInstanceOf(Blob);
+    vi.unstubAllGlobals();
+  });
+
+  it('falls back to keepalive fetch when navigator.sendBeacon is unavailable', () => {
+    vi.stubGlobal('navigator', {});
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    sendOpenBeacon('ABC123', null);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/public/jobs/ABC123/open',
+      expect.objectContaining({ method: 'POST', keepalive: true, body: JSON.stringify({}) }),
+    );
+    vi.unstubAllGlobals();
   });
 });
 

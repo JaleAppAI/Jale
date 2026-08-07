@@ -482,12 +482,12 @@ export async function updateJobPublicListing(
 }
 
 /**
- * Mints (or refreshes) a trackable public share link for this job -- distinct
- * from the raw /j/{public_code} URL PublicListingToggle already surfaces --
- * for print/QR distribution (job fairs, flyers). Requires the job's
- * public-listing opt-in (migration 057); the endpoint 404s (`job_not_found`)
- * for a job that isn't published yet, and can 500 (`share_url_misconfigured`)
- * if the share-link origin isn't configured.
+ * Mints (or refreshes) a trackable public share link for this job -- the only
+ * link PublicListingCard ever shows the employer (the bare /j/{public_code}
+ * URL is never displayed) -- for print/QR distribution (job fairs, flyers).
+ * Requires the job's public-listing opt-in (migration 057); the endpoint
+ * 404s (`job_not_found`) for a job that isn't published yet, and can 500
+ * (`share_url_misconfigured`) if the share-link origin isn't configured.
  */
 export async function shareEmployerJob(
   token: string,

@@ -1,17 +1,19 @@
 'use client';
 
 import { useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { applyIntent } from '@/lib/api/publicJob';
 
 interface ApplyButtonProps {
   code: string;
-  shareCode?: string;
 }
 
-export function ApplyButton({ code, shareCode }: ApplyButtonProps) {
+export function ApplyButton({ code }: ApplyButtonProps) {
   const t = useTranslations('public_job');
+  const searchParams = useSearchParams();
+  const shareCode = searchParams.get('r') ?? undefined;
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 

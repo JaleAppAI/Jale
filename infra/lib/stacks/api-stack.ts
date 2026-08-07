@@ -811,6 +811,26 @@ export class ApiStack extends cdk.Stack {
           ThrottlingBurstLimit: 20,
           ThrottlingRateLimit: 10,
         },
+        // POST /public/jobs/{code}/open — unauthenticated open-tracking beacon
+        // (ReferralsStack). Same conservative shape as the GET reads above: it
+        // never returns a 5xx and does one bounded write per call, but nothing
+        // else bounds how many opens a caller can record.
+        {
+          ResourcePath: '/public/jobs/{code}/open',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 20,
+          ThrottlingRateLimit: 10,
+        },
+        // GET /public/jobs/{code}/referrer — unauthenticated referrer-context
+        // lookup (ReferralsStack). Same conservative shape as /public/jobs/{code}:
+        // cheap read, no other gate, and the 404-collapse behavior already
+        // prevents share-code enumeration, not this throttle.
+        {
+          ResourcePath: '/public/jobs/{code}/referrer',
+          HttpMethod: 'GET',
+          ThrottlingBurstLimit: 20,
+          ThrottlingRateLimit: 10,
+        },
         // POST /public/jobs/{code}/apply-intent — unauthenticated referral-token
         // mint. Nothing in public-job-apply-intent.ts bounds how many apply
         // tokens a caller can mint, so this is the only brake on the route.

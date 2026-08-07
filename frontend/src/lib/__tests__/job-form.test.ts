@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyLocationToJobForm, initialForm, jobFormToPayload, jobToForm, validateJobLocationFields, type JobForm,
+  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, type JobForm,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
@@ -42,9 +42,9 @@ const baseJob: EmployerJobDetail = {
   public_listing_enabled: false,
 };
 
-describe('jobFormToPayload city + coordinates', () => {
+describe('jobFormToCreatePayload city + coordinates', () => {
   it('includes the city triple and coordinates when picked', () => {
-    const payload = jobFormToPayload({
+    const payload = jobFormToCreatePayload({
       ...base,
       city_key: 'el-paso-tx', city: 'El Paso', state: 'TX',
       latitude: 31.76, longitude: -106.49,
@@ -56,7 +56,7 @@ describe('jobFormToPayload city + coordinates', () => {
   });
 
   it('omits city and coordinates when not picked', () => {
-    const payload = jobFormToPayload(base);
+    const payload = jobFormToCreatePayload(base);
     expect('city_key' in payload).toBe(false);
     expect('city' in payload).toBe(false);
     expect('state' in payload).toBe(false);
@@ -65,7 +65,7 @@ describe('jobFormToPayload city + coordinates', () => {
   });
 
   it('omits the whole city triple when it is only partially picked', () => {
-    const payload = jobFormToPayload({
+    const payload = jobFormToCreatePayload({
       ...base,
       city_key: 'el-paso-tx', city: 'El Paso', state: null,
     });
@@ -75,7 +75,7 @@ describe('jobFormToPayload city + coordinates', () => {
   });
 
   it('still sends coordinates when no city has been picked (gates are independent)', () => {
-    const payload = jobFormToPayload({
+    const payload = jobFormToCreatePayload({
       ...base,
       latitude: 31.76, longitude: -106.49,
     });
@@ -84,7 +84,7 @@ describe('jobFormToPayload city + coordinates', () => {
   });
 
   it('sends latitude/longitude of 0 (a `!= null` gate, not truthiness)', () => {
-    const payload = jobFormToPayload({
+    const payload = jobFormToCreatePayload({
       ...base,
       latitude: 0, longitude: 0,
     });
@@ -186,39 +186,75 @@ describe('jobToForm city + coordinates prefill', () => {
 // string field (trim/uppercase/null-when-blank), independent of the
 // city_key/city/state picker triple. That design isn't carried forward here:
 // per the merge doctrine, `city` stays the nullable picker field above (see
-// 'jobFormToPayload city + coordinates' and 'applyLocationToJobForm'), and
-// this frontend has no separate free-text SEO city input to exercise. Only
-// state_region -- which IS a genuinely new, independent field -- is added.
+// 'jobFormToCreatePayload city + coordinates' and 'applyLocationToJobForm'),
+// and this frontend has no separate free-text SEO city input to exercise.
+// jobFormToCreatePayload/jobFormToEditPayload don't touch `city` at all -- it
+// travels solely via jobFormToBasePayload's all-or-none triple spread. Only
+// state_region -- which IS a genuinely new, independent field -- is
+// exercised below.
 // ---------------------------------------------------------------------------
 
-describe('jobFormToPayload state_region', () => {
-  it('serializes state_region as null (an explicit clear) when empty, independent of the city triple', () => {
-    const payload = jobFormToPayload({ ...initialForm, title: 'Job', location: 'Hayward, CA', trade_category: 'electrician' });
-    // `null` -- not omitted -- is the wire signal the backend's
-    // resolveJobLocationFields treats as a deliberate clear-override. Blank
-    // used to mean "omit" (defer to the parsed location); it now means
-    // "clear", because the Edit modal is prefilled with the job's stored
-    // state_region, so a blanked-out field is a deliberate choice.
+describe('jobFormToCreatePayload state_region', () => {
+  it('create+blank: omits state_region entirely (undefined -> backend auto-parses location)', () => {
+    const payload = jobFormToCreatePayload({
+      ...initialForm,
+      title: 'Job',
+      location: 'Hayward, CA',
+      trade_category: 'electrician',
+    });
+    // There is no previously-stored value to protect on create, so a blank
+    // field must be OMITTED (key absent), not sent as an explicit `null` --
+    // an explicit null would override the backend's auto-parse of `location`
+    // and clear state_region on every create where the employer left the
+    // field blank (the prod-live bug this fix addresses).
     const wire = JSON.parse(JSON.stringify(payload));
-    expect(wire).toHaveProperty('state_region', null);
+    expect(wire).not.toHaveProperty('state_region');
+    expect(payload.state_region).toBeUndefined();
     // Untouched by state_region: the city triple is still all-or-none omitted.
     expect('city' in payload).toBe(false);
   });
 
-  it('uppercases a lowercase state_region in the payload', () => {
-    const payload = jobFormToPayload({ ...initialForm, state_region: 'ca' });
+  it('create+filled: includes the uppercased state_region', () => {
+    const payload = jobFormToCreatePayload({ ...initialForm, state_region: 'ca' });
     expect(payload.state_region).toBe('CA');
   });
 
-  it('trims whitespace around state_region before uppercasing', () => {
-    const payload = jobFormToPayload({ ...initialForm, state_region: '  tx  ' });
-    expect(payload.state_region).toBe('TX');
+  it('trims a whitespace-only state_region down to omitted, same as fully blank', () => {
+    const payload = jobFormToCreatePayload({ ...initialForm, state_region: '   ' });
+    const wire = JSON.parse(JSON.stringify(payload));
+    expect(wire).not.toHaveProperty('state_region');
   });
+});
 
-  it('serializes state_region as null when it is only whitespace', () => {
-    const payload = jobFormToPayload({ ...initialForm, state_region: '   ' });
+describe('jobFormToEditPayload state_region', () => {
+  it('edit prefilled->blanked: sends an explicit null clear-override for a field that started non-empty', () => {
+    const initial = { ...initialForm, state_region: 'TX' };
+    const blanked = { ...initial, state_region: '' };
+    const payload = jobFormToEditPayload(blanked, initial);
     const wire = JSON.parse(JSON.stringify(payload));
     expect(wire).toHaveProperty('state_region', null);
+  });
+
+  it('edit blank->blank: omits the key when the field started empty and is still empty', () => {
+    const initial = { ...initialForm, state_region: '' };
+    const stillBlank = { ...initial };
+    const payload = jobFormToEditPayload(stillBlank, initial);
+    const wire = JSON.parse(JSON.stringify(payload));
+    expect(wire).not.toHaveProperty('state_region');
+  });
+
+  it('edit filled->filled: sends the new uppercased value regardless of the initial value', () => {
+    const initial = { ...initialForm, state_region: 'TX' };
+    const edited = { ...initial, state_region: 'ca' };
+    const payload = jobFormToEditPayload(edited, initial);
+    expect(payload.state_region).toBe('CA');
+  });
+
+  it('edit blank->filled: sends the new value even though the field started empty', () => {
+    const initial = { ...initialForm, state_region: '' };
+    const filled = { ...initial, state_region: 'ca' };
+    const payload = jobFormToEditPayload(filled, initial);
+    expect(payload.state_region).toBe('CA');
   });
 });
 

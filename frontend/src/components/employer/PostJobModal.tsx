@@ -8,7 +8,7 @@ import { ApiError, createJob, Job } from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  initialForm, jobFormToPayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
+  initialForm, jobFormToCreatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -103,7 +103,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setError('');
     setLimitReached(false);
     try {
-      const job = await createJob(idToken!, jobFormToPayload(form));
+      const job = await createJob(idToken!, jobFormToCreatePayload(form));
       onJobCreated(job);
       handleClose();
     } catch (err) {

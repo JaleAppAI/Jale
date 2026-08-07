@@ -205,16 +205,17 @@ MIGRATIONS=(
   "061_job_geo_and_seo_grants.sql"
   "062_job_visibility_outbox.sql"
   "063_employer_referral_links.sql"
-  # 064-067 are the location-feature migrations, applied to prod pre-merge
-  # under the numbers 061-064 (before main's independent 061-063 existed).
-  # On a ledger-tracked database that already has them, baseline through
-  # migration 067 (preferred city centroids). NOTE: never write a full
+  "064_public_job_context_functions.sql"
+  # 065-068 are the location-feature migrations, applied to prod pre-merge
+  # under the numbers 061-064 (before main minted its own 061-064). On a
+  # ledger-tracked database that already has them, baseline through
+  # migration 068 (preferred city centroids). NOTE: never write a full
   # NNN_name.sql filename in comments inside this array -- the manifest test
   # scrapes this block for filenames, comments included.
-  "064_city_keys_and_preferred_cities.sql"
-  "065_preferred_cities_whatsapp_read.sql"
-  "066_city_key_backfill_repair.sql"
-  "067_preferred_city_centroids.sql"
+  "065_city_keys_and_preferred_cities.sql"
+  "066_preferred_cities_whatsapp_read.sql"
+  "067_city_key_backfill_repair.sql"
+  "068_preferred_city_centroids.sql"
 )
 
 WORKDIR="$(mktemp -d)"

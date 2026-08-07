@@ -1,9 +1,9 @@
--- 064_city_keys_and_preferred_cities.sql
+-- 065_city_keys_and_preferred_cities.sql
 -- (Applied to production pre-merge as 061_city_keys_and_preferred_cities.sql;
---  renumbered when main's independent 061-063 merged in. Ledger adopters:
---  baseline through 067_preferred_city_centroids.sql.)
+--  renumbered as main minted its own 061-064. Ledger adopters:
+--  baseline through 068_preferred_city_centroids.sql.)
 -- Canonical city identity for job/worker matching, plus the worker's chosen
--- cities. Run AFTER 063_employer_referral_links.sql, connected as jale_admin (NOT the
+-- cities. Run AFTER 064_public_job_context_functions.sql, connected as jale_admin (NOT the
 -- RDS master user).
 --
 --   city_key = lower(city) with non-alphanumerics collapsed to '-',
