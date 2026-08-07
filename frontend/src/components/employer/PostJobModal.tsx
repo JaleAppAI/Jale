@@ -1,14 +1,17 @@
 'use client';
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { ApiError, createJob, Job } from '@/lib/api/employer';
+import {
+  ApiError, createJob, deleteJobTemplate, listJobTemplates, saveJobTemplate,
+  Job, JobTemplate,
+} from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  initialForm, jobFormToCreatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
+  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -35,6 +38,35 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [error, setError] = useState('');
   const [limitReached, setLimitReached] = useState(false);
 
+  // Template state. Templates are a convenience layer on top of job
+  // creation: a failure to load, save, or delete one must never block
+  // posting a job.
+  const [templates, setTemplates] = useState<JobTemplate[]>([]);
+  const [checkCity, setCheckCity] = useState(false);
+  const [saveAsTemplate, setSaveAsTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [templateNotice, setTemplateNotice] = useState<'' | 'saved' | 'limit' | 'name_taken'>('');
+  const [templateLimit, setTemplateLimit] = useState<number | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [savingTemplateOnly, setSavingTemplateOnly] = useState(false);
+
+  // Silent background load whenever the modal opens -- the wizard must work
+  // exactly the same with zero templates, so any failure here is swallowed.
+  useEffect(() => {
+    if (!open || !idToken) return;
+    let cancelled = false;
+    listJobTemplates(idToken)
+      .then((list) => {
+        if (!cancelled) setTemplates(list);
+      })
+      .catch(() => {
+        // Templates are an enhancement; the modal must work without them.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, idToken]);
+
   if (!open) return null;
 
   const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
@@ -46,7 +78,52 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setForm(initialForm);
     setError('');
     setLimitReached(false);
+    setCheckCity(false);
+    setSaveAsTemplate(false);
+    setTemplateName('');
+    setTemplateNotice('');
+    setTemplateLimit(null);
+    setConfirmDeleteId(null);
+    setSavingTemplateOnly(false);
     onClose();
+  };
+
+  const applyTemplate = (template: JobTemplate) => {
+    const { form: prefilled, cityPrefilled } = jobFormFromTemplatePayload(template.payload);
+    setForm(prefilled);
+    setCheckCity(cityPrefilled);
+    setConfirmDeleteId(null);
+  };
+
+  const handleDeleteTemplate = async (templateId: string) => {
+    setConfirmDeleteId(null);
+    try {
+      await deleteJobTemplate(idToken!, templateId);
+      setTemplates((current) => current.filter((tpl) => tpl.id !== templateId));
+    } catch {
+      // Deletion is best-effort; leave the template in the list on failure.
+    }
+  };
+
+  const handleSaveTemplateOnly = async () => {
+    const name = templateName.trim();
+    if (!name) return;
+    setSavingTemplateOnly(true);
+    setTemplateNotice('');
+    try {
+      const saved = await saveJobTemplate(idToken!, { name, payload: jobFormToCreatePayload(form) });
+      setTemplates((current) => [saved, ...current.filter((tpl) => tpl.id !== saved.id)]);
+      setTemplateNotice('saved');
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'template_limit_reached') {
+        setTemplateNotice('limit');
+        setTemplateLimit(err.payload.template_limit ?? null);
+      } else if (err instanceof ApiError && err.code === 'template_name_taken') {
+        setTemplateNotice('name_taken');
+      }
+    } finally {
+      setSavingTemplateOnly(false);
+    }
   };
 
   const toggleDoc = (doc: DocType) => {
@@ -102,6 +179,24 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setLoading(true);
     setError('');
     setLimitReached(false);
+    setTemplateNotice('');
+
+    const name = templateName.trim();
+    if (saveAsTemplate && name) {
+      try {
+        await saveJobTemplate(idToken!, { name, payload: jobFormToCreatePayload(form) });
+      } catch (err) {
+        // Template failures never block the job post -- surface the notice
+        // and keep going.
+        if (err instanceof ApiError && err.code === 'template_limit_reached') {
+          setTemplateNotice('limit');
+          setTemplateLimit(err.payload.template_limit ?? null);
+        } else if (err instanceof ApiError && err.code === 'template_name_taken') {
+          setTemplateNotice('name_taken');
+        }
+      }
+    }
+
     try {
       const job = await createJob(idToken!, jobFormToCreatePayload(form));
       onJobCreated(job);
@@ -158,21 +253,67 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <div className="overflow-y-auto px-5 py-5">
           {step === 1 && (
             <div className="grid gap-4">
+              {templates.length > 0 && (
+                <Field label={t('modal.template_select_label')}>
+                  <div className="flex flex-col gap-1 rounded-[10px] border border-[var(--jale-divider)] p-2">
+                    {templates.map((template) => (
+                      <div
+                        key={template.id}
+                        className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-[var(--jale-paper-2)]"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => applyTemplate(template)}
+                          className="flex-1 truncate text-left text-sm font-medium text-[var(--jale-ink)]"
+                        >
+                          {template.name}
+                        </button>
+                        {confirmDeleteId === template.id ? (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteTemplate(template.id)}
+                            className="shrink-0 text-xs font-bold text-[var(--jale-danger)]"
+                          >
+                            {t('modal.template_delete_confirm')}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(template.id)}
+                            aria-label={t('modal.template_delete_label', { name: template.name })}
+                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs text-[var(--jale-ink-2)] hover:bg-[var(--jale-danger-bg)]"
+                          >
+                            x
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </Field>
+              )}
               <Field label={t('modal.job_title')} required>
                 <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
               </Field>
               <div className="grid gap-3 md:grid-cols-2">
                 <Field label={t('modal.location')} required>
-                  <LocationPicker
-                    value={form.location}
-                    placeholder={t('modal.location_placeholder')}
-                    onChange={(v) => {
-                      setForm((c) => applyLocationToJobForm(c, v));
-                      // A real pick resolves the "pick a city" error; drop it
-                      // immediately instead of waiting for the next step.
-                      if (v.cityKey) setError('');
-                    }}
-                  />
+                  <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-blue-500)]' : undefined}>
+                    <LocationPicker
+                      value={form.location}
+                      placeholder={t('modal.location_placeholder')}
+                      onChange={(v) => {
+                        setForm((c) => applyLocationToJobForm(c, v));
+                        // Any location edit resolves the "verify the
+                        // prefilled city" nudge, same as clearing the error.
+                        setCheckCity(false);
+                        // A real pick resolves the "pick a city" error; drop it
+                        // immediately instead of waiting for the next step.
+                        if (v.cityKey) setError('');
+                      }}
+                    />
+                  </div>
+                  {checkCity && (
+                    <p className="mt-1 text-xs font-medium text-[var(--jale-blue-700)]">{t('modal.template_check_city')}</p>
+                  )}
                 </Field>
                 <Field label={t('modal.job_type')}>
                   <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
@@ -302,6 +443,60 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                     </span>
                   </button>
                 ))}
+              </div>
+
+              <div className="mt-5 rounded-[10px] border border-[var(--jale-divider)] p-4">
+                <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
+                  <input
+                    type="checkbox"
+                    checked={saveAsTemplate}
+                    onChange={(e) => setSaveAsTemplate(e.target.checked)}
+                  />
+                  {t('modal.template_save_toggle')}
+                </label>
+                {saveAsTemplate && (
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                    <Input
+                      value={templateName}
+                      onChange={(e) => setTemplateName(e.target.value)}
+                      placeholder={t('modal.template_name_placeholder')}
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleSaveTemplateOnly}
+                      loading={savingTemplateOnly}
+                      loadingLabel={tCommon('loading')}
+                      disabled={!templateName.trim()}
+                    >
+                      {t('modal.template_save_only')}
+                    </Button>
+                  </div>
+                )}
+                {templateNotice === 'saved' && (
+                  <p className="mt-2 text-xs font-semibold text-[var(--jale-blue-700)]">{t('modal.template_saved')}</p>
+                )}
+                {templateNotice === 'name_taken' && (
+                  <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
+                )}
+                {templateNotice === 'limit' && (
+                  <div className="mt-2 rounded-2xl border border-[var(--jale-danger)]/30 bg-[var(--jale-danger-bg)] p-3">
+                    <p
+                      className="text-xs font-semibold text-[var(--jale-danger)]"
+                      title={templateLimit != null ? String(templateLimit) : undefined}
+                    >
+                      {t('modal.template_limit_reached')}
+                    </p>
+                    <Link
+                      href="/employer/billing"
+                      onClick={handleClose}
+                      className="mt-2 inline-flex h-8 items-center justify-center rounded-full bg-[var(--jale-blue-900)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-950,#0e0e3d)]"
+                    >
+                      {tBilling('limit_reached.cta')}
+                    </Link>
+                  </div>
+                )}
               </div>
             </div>
           )}

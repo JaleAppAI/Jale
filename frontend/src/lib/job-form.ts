@@ -222,3 +222,17 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     },
   };
 }
+
+// Prefill a JobForm from a saved template payload. Delegates to jobToForm
+// (the payload is the create-request shape, a subset-compatible cousin of
+// EmployerJobDetail) and then blanks start_date -- templates never carry a
+// date. cityPrefilled drives the "check the city" highlight in the modal.
+export function jobFormFromTemplatePayload(
+  payload: Partial<JobWritePayload>,
+): { form: JobForm; cityPrefilled: boolean } {
+  const form = jobToForm(payload as unknown as EmployerJobDetail);
+  return {
+    form: { ...form, start_date: '' },
+    cityPrefilled: form.city_key !== null,
+  };
+}

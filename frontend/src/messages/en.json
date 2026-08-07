@@ -652,7 +652,17 @@
       "edit_title": "Edit job",
       "edit_save": "Save changes",
       "locked_note": "Locked — this job has applicants",
-      "edit_error": "Could not save changes. Please try again."
+      "edit_error": "Could not save changes. Please try again.",
+      "template_select_label": "Start from a template",
+      "template_save_toggle": "Save as template",
+      "template_name_placeholder": "Template name",
+      "template_saved": "Template saved",
+      "template_check_city": "Check the city before posting",
+      "template_limit_reached": "Template limit reached — upgrade for more",
+      "template_name_taken": "You already have a template with that name",
+      "template_delete_label": "Delete template {name}",
+      "template_delete_confirm": "Delete?",
+      "template_save_only": "Save template only"
     },
     "worker_profile": {
       "back": "Back to applicants",
