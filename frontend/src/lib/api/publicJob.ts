@@ -72,27 +72,94 @@ export class PublicJobNotFoundError extends Error {
 /**
  * Fetches the public projection of a job by its short public code.
  *
- * `shareCode` is the raw `?r=` value, passed straight through untouched -- a
- * missing or malformed value is not validated client-side; the API silently
- * ignores an unmatched share code and still returns the job normally.
- *
- * Uses `cache: 'no-store'` so status changes (e.g. a job closing) are always
- * reflected, and so the open-recording side effect on the API fires once per
- * real visit. Next.js's fetch request memoization (same URL + options within
- * one render pass) means calling this from both `generateMetadata` and the
- * page component for the same request dedupes to a single network call --
- * do not add a `no-cache`-busting query param or a differing options object
- * between those two call sites, or opens will be double-counted.
+ * Uses `{ next: { revalidate: 60 } }` (ISR) -- this endpoint no longer takes
+ * a `?r=` query string and no longer has a side effect (the open-recording
+ * side effect moved to `sendOpenBeacon`, fired client-side by
+ * `ReferralContext`, once per real visit). Next.js's fetch request
+ * memoization (same URL + options within one render pass) means calling
+ * this from both `generateMetadata` and the page component for the same
+ * request dedupes to a single network call -- `generateMetadata` and the
+ * page component MUST call this with identical options, so do not add a
+ * differing options object between those two call sites.
  */
-export async function getPublicJob(code: string, shareCode?: string | null): Promise<PublicJob> {
-  const qs = shareCode ? `?r=${encodeURIComponent(shareCode)}` : '';
+export async function getPublicJob(code: string): Promise<PublicJob> {
   const res = await fetch(
-    `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}${qs}`,
-    { cache: 'no-store' },
+    `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}`,
+    { next: { revalidate: 60 } },
   );
   if (res.status === 404) throw new PublicJobNotFoundError();
   if (!res.ok) throw new Error('public_job_fetch_failed');
   return res.json();
+}
+
+export interface PublicJobReferrerContext {
+  kind: 'worker' | 'employer';
+  first_name: string | null;
+}
+
+/**
+ * Fetches who shared this job link (GET /public/jobs/{code}/referrer?r=).
+ *
+ * Called client-side from `ReferralContext` only when a `?r=` share tag is
+ * present. Never throws -- a 404 (unmatched/expired share code), a non-200
+ * response, or a network/parse failure all resolve to `null`, and the
+ * caller renders no referral banner in that case.
+ */
+export async function getReferrerContext(
+  code: string,
+  shareCode: string,
+): Promise<PublicJobReferrerContext | null> {
+  try {
+    const res = await fetch(
+      `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}/referrer?r=${encodeURIComponent(shareCode)}`,
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data?.kind !== 'worker' && data?.kind !== 'employer') return null;
+    return { kind: data.kind, first_name: data.first_name ?? null };
+  } catch {
+    return null;
+  }
+}
+
+/** Default `sendOpenBeacon` transport: `navigator.sendBeacon` when
+ * available (fires-and-forgets even if the page navigates away right
+ * after, e.g. to WhatsApp), falling back to a `keepalive` fetch in
+ * environments without it (e.g. older browsers, some in-app webviews). */
+function defaultSend(url: string, body: string): boolean | Promise<unknown> {
+  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+    return navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
+  }
+  return fetch(url, {
+    method: 'POST',
+    body,
+    keepalive: true,
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(() => {});
+}
+
+/**
+ * Records a page-open event (POST /public/jobs/{code}/open, body `{r?}`,
+ * always 204). Fire-and-forget: never throws, has no return value, and does
+ * not await its transport, so it can safely be called from a `useEffect`
+ * that fires once per real visit.
+ *
+ * `send` is injectable for tests -- the default transport reaches for
+ * `navigator.sendBeacon`, which does not exist in this repo's node-only
+ * vitest environment.
+ */
+export function sendOpenBeacon(
+  code: string,
+  shareCode: string | null,
+  send: (url: string, body: string) => boolean | Promise<unknown> = defaultSend,
+): void {
+  try {
+    const url = `${process.env.NEXT_PUBLIC_API_BASE_URL}/public/jobs/${encodeURIComponent(code)}/open`;
+    const body = JSON.stringify(shareCode ? { r: shareCode } : {});
+    send(url, body);
+  } catch {
+    // Never throws -- a failed beacon must never affect the page.
+  }
 }
 
 export interface ApplyIntentResponse {

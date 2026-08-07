@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import { notFound } from 'next/navigation';
 import { getTranslations } from 'next-intl/server';
 import { Link } from '@/i18n/navigation';
@@ -9,8 +10,9 @@ import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJson
 import { buildJobPageUrls } from '@/lib/seo/siteUrl';
 import { ApplyButton } from './ApplyButton';
 import { WebApplyButton } from './WebApplyButton';
+import { ReferralContext } from './ReferralContext';
 
-export const dynamic = 'force-dynamic';
+export const revalidate = 60;
 
 interface PageParams {
   locale: string;
@@ -19,7 +21,6 @@ interface PageParams {
 
 interface PageProps {
   params: PageParams;
-  searchParams?: { r?: string | string[] };
 }
 
 // Never render employer contact details here -- the public API cannot return
@@ -28,21 +29,23 @@ interface PageProps {
 // Design notes (first-contact page): the reader is a referred stranger on a
 // phone, arriving from a chat app, deciding in seconds. Facts are ranked the
 // way a trade worker decides -- title, then PAY (promoted out of the detail
-// grid into its own strip), then where/when, then everything else as quiet
-// chips. The navy band up top echoes the chat header they just left; the teal
-// referral ribbon renders ONLY when a share tag is present, because structure
-// should encode what is true. Teal is reserved for the referral thread and
-// used nowhere else on the page.
+// grid into its own strip), then where/when, then everything else in
+// dedicated cards below. The navy band up top echoes the chat header they
+// just left; the teal referral ribbon (rendered by `ReferralContext`, a
+// client component) shows ONLY when a share tag is present, because
+// structure should encode what is true. Teal is reserved for the referral
+// thread and used nowhere else on the page.
+//
+// Nothing in this file (or generateMetadata below) may read `searchParams`
+// -- doing so forces this route into dynamic (force-dynamic-equivalent)
+// rendering, defeating the `revalidate = 60` ISR config above. The `?r=`
+// share tag is read entirely client-side, by `ReferralContext`,
+// `ApplyButton`, and `WebApplyButton` via `useSearchParams()`.
 
 const OG_IMAGE_PATH = '/brand/wordmark-navy.png';
 
-function firstParam(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-export async function generateMetadata({ params, searchParams }: PageProps): Promise<Metadata> {
+export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
   const t = await getTranslations({ locale: params.locale, namespace: 'public_job' });
-  const shareCode = firstParam(searchParams?.r);
 
   // Canonical decision (fixed): the `/en/` URL is canonical for BOTH
   // locales -- one job, one indexed URL, no en/es duplicate-content split.
@@ -57,8 +60,8 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
   try {
     // Same call (same URL + options) as the page component below -- Next's
     // fetch request memoization dedupes these into one network request per
-    // visit, so the open-recording side effect on the API fires only once.
-    const job = await getPublicJob(params.code, shareCode);
+    // revalidation window.
+    const job = await getPublicJob(params.code);
 
     if (isClosedJob(job)) {
       const title = t('meta_title', { title: job.title, company: job.company });
@@ -97,7 +100,7 @@ export async function generateMetadata({ params, searchParams }: PageProps): Pro
 function BrandBand() {
   return (
     <header className="bg-[var(--jale-blue-900)] pt-7 pb-16 px-4">
-      <div className="max-w-md mx-auto">
+      <div className="max-w-md md:max-w-2xl mx-auto">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/brand/wordmark-white.png" alt="Jale" className="h-7 w-auto" />
       </div>
@@ -114,13 +117,42 @@ function TrustFooter({ text }: { text: string }) {
   );
 }
 
-export default async function PublicJobPage({ params, searchParams }: PageProps) {
+/** One row in the "Details" kv grid. Skips rendering when value is falsy so
+ * callers can build the array unconditionally. */
+interface DetailRow {
+  label: string;
+  value: string;
+  /** Only the raw `trade_category` value benefits from title-casing (it's
+   * an unlabeled taxonomy string, e.g. "electrician"). Dates and numbers
+   * must NOT get this -- `capitalize` mangles Spanish month names and
+   * prepositions (e.g. "1 de enero" -> "1 De Enero"). */
+  capitalizeValue?: boolean;
+}
+
+function DetailsGrid({ rows }: { rows: DetailRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+      {rows.map((row) => (
+        <div key={row.label}>
+          <p className="text-[11px] uppercase tracking-wide text-[var(--jale-ink-2)]">{row.label}</p>
+          <p
+            className={`text-sm font-semibold text-[var(--jale-ink)] ${row.capitalizeValue ? 'capitalize' : ''}`}
+          >
+            {row.value}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default async function PublicJobPage({ params }: PageProps) {
   const t = await getTranslations({ locale: params.locale, namespace: 'public_job' });
-  const shareCode = firstParam(searchParams?.r);
 
   let job;
   try {
-    job = await getPublicJob(params.code, shareCode);
+    job = await getPublicJob(params.code);
   } catch (err) {
     if (err instanceof PublicJobNotFoundError) notFound();
     throw err;
@@ -131,22 +163,31 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
       <div className="min-h-screen bg-[var(--jale-paper)]">
         <BrandBand />
         <main className="px-4 -mt-10">
-          <div className="max-w-md mx-auto">
-            <div className="bg-[var(--jale-card)] border border-[var(--jale-divider)] rounded-2xl shadow-sm p-6">
-              <h1 className="text-xl font-bold text-[var(--jale-ink)] mb-1">{job.title}</h1>
-              <p className="text-sm text-[var(--jale-ink-2)] mb-5">
-                {job.company} · {job.location}
-              </p>
-              <div className="rounded-xl bg-[var(--jale-paper-2)] p-4">
-                <p className="text-sm font-semibold text-[var(--jale-ink)] mb-1">{t('closed_title')}</p>
-                <p className="text-sm text-[var(--jale-ink-2)]">{t('closed_body')}</p>
+          <div className="max-w-md md:max-w-2xl mx-auto">
+            <div className="bg-[var(--jale-card)] border border-[var(--jale-divider)] rounded-2xl shadow-sm overflow-hidden">
+              {/* A closed job still had a real visit -- record the open
+                  beacon (and the referral banner, if any) same as the
+                  active branch below, so opens aren't undercounted just
+                  because the job happened to close first. */}
+              <Suspense fallback={null}>
+                <ReferralContext code={job.code} />
+              </Suspense>
+              <div className="p-6">
+                <h1 className="text-xl font-bold text-[var(--jale-ink)] mb-1">{job.title}</h1>
+                <p className="text-sm text-[var(--jale-ink-2)] mb-5">
+                  {job.company} · {job.location}
+                </p>
+                <div className="rounded-xl bg-[var(--jale-paper-2)] p-4">
+                  <p className="text-sm font-semibold text-[var(--jale-ink)] mb-1">{t('closed_title')}</p>
+                  <p className="text-sm text-[var(--jale-ink-2)]">{t('closed_body')}</p>
+                </div>
+                <Link
+                  href="/"
+                  className="mt-5 flex w-full items-center justify-center rounded-xl bg-[var(--jale-blue-500)] px-4 py-3.5 text-sm font-semibold text-white hover:bg-[var(--jale-blue-600)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jale-blue-500)]"
+                >
+                  {t('browse_jobs')}
+                </Link>
               </div>
-              <Link
-                href="/"
-                className="mt-5 flex w-full items-center justify-center rounded-xl bg-[var(--jale-blue-500)] px-4 py-3.5 text-sm font-semibold text-white hover:bg-[var(--jale-blue-600)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--jale-blue-500)]"
-              >
-                {t('browse_jobs')}
-              </Link>
             </div>
             <TrustFooter text={t('about_jale')} />
           </div>
@@ -167,30 +208,57 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
   const startDate = active.start_date
     ? (formatStartDate(active.start_date, params.locale) ?? active.start_date)
     : null;
+  const postedDate = formatStartDate(active.created_at, params.locale) ?? active.created_at;
   const showPay = Boolean(active.pay && active.pay !== 'Pay not specified');
 
+  // The header location line: company, then whichever of the structured
+  // city/state_region pair and the free-text location field actually exist.
+  const cityState =
+    active.city && active.state_region ? `${active.city}, ${active.state_region}` : null;
+  const headerLine = [active.company, cityState, active.location].filter(Boolean).join(' · ');
+
   // Minor facts become quiet chips: scannable on a phone, no label-grid.
-  const chips: string[] = [];
-  if (jobTypeLabel) chips.push(jobTypeLabel);
-  if (active.trade_category) chips.push(active.trade_category);
+  // Trade and experience move into dedicated cards below (Details / What
+  // you need); only job type, openings, and language stay as chips here.
+  // The language chip carries an `aria-label` prefixed with the
+  // `language_preference` label ("Language: English") since the visible
+  // chip text is bare, for screen-reader clarity.
+  const chips: { text: string; ariaLabel?: string }[] = [];
+  if (jobTypeLabel) chips.push({ text: jobTypeLabel });
   if (active.language_preference && active.language_preference.length > 0) {
-    chips.push(active.language_preference.map(languageLabel).join(' / '));
-  }
-  if (active.required_experience_years != null && active.required_experience_years > 0) {
-    chips.push(t('experience_chip', { years: active.required_experience_years }));
+    const languageText = active.language_preference.map(languageLabel).join(' / ');
+    chips.push({ text: languageText, ariaLabel: `${t('language_preference')}: ${languageText}` });
   }
   if (active.number_of_workers_needed != null && active.number_of_workers_needed > 1) {
-    chips.push(t('openings_chip', { count: active.number_of_workers_needed }));
+    chips.push({ text: t('openings_chip', { count: active.number_of_workers_needed }) });
   }
 
-  // Requirements: only what the applicant must bring or accept.
-  const requirements: string[] = [];
-  for (const d of active.required_docs) requirements.push(docLabel(t, d));
-  if (active.certifications && active.certifications.length > 0) {
-    for (const c of active.certifications) requirements.push(c);
+  // "What you need" checklist: only what the applicant must bring or
+  // accept. Rendered as one row per requirement kind (docs and
+  // certifications group into a single row each, rather than one row per
+  // item) so the card stays compact.
+  const needRows: string[] = [];
+  if (active.required_docs.length > 0) {
+    needRows.push(`${t('required_docs')}: ${active.required_docs.map((d) => docLabel(t, d)).join(', ')}`);
   }
-  if (active.transportation_required) requirements.push(t('transportation_required'));
-  if (active.work_authorization_required) requirements.push(t('work_authorization_required'));
+  if (active.certifications && active.certifications.length > 0) {
+    needRows.push(`${t('certifications')}: ${active.certifications.join(', ')}`);
+  }
+  const experienceText = formatExperience(t, active.required_experience_years, active.required_experience_months);
+  if (experienceText) needRows.push(`${t('required_experience')}: ${experienceText}`);
+  if (active.transportation_required) needRows.push(t('transportation_required'));
+  if (active.work_authorization_required) needRows.push(t('work_authorization_required'));
+
+  // "Details" grid: secondary facts a decided applicant might still check.
+  const detailRows: DetailRow[] = [];
+  if (active.expected_duration) detailRows.push({ label: t('duration'), value: active.expected_duration });
+  if (active.trade_category) {
+    detailRows.push({ label: t('trade_category'), value: active.trade_category, capitalizeValue: true });
+  }
+  detailRows.push({ label: t('posted'), value: postedDate });
+  if (active.number_of_workers_needed != null) {
+    detailRows.push({ label: t('openings'), value: String(active.number_of_workers_needed) });
+  }
 
   return (
     <div className="min-h-screen bg-[var(--jale-paper)]">
@@ -205,28 +273,20 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
       <BrandBand />
 
       <main className="px-4 -mt-10">
-        <div className="max-w-md mx-auto">
+        <div className="max-w-md md:max-w-2xl mx-auto space-y-4">
           <article className="bg-[var(--jale-card)] border border-[var(--jale-divider)] rounded-2xl shadow-sm overflow-hidden">
             {/* The signature: rendered ONLY when this visit carries a share
                 tag. Teal marks the referral thread and nothing else. */}
-            {shareCode && (
-              <p className="flex items-center gap-2 bg-[var(--jale-teal-50)] text-[var(--jale-ink)] text-[13px] font-medium px-5 py-2.5 border-b border-[var(--jale-divider)]">
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-2 w-2 rounded-full bg-[var(--jale-teal-500)] shrink-0"
-                />
-                {t('referred_banner')}
-              </p>
-            )}
+            <Suspense fallback={null}>
+              <ReferralContext code={active.code} />
+            </Suspense>
 
             <div className="p-5">
               <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)] mb-1.5">
                 {t('eyebrow')}
               </p>
               <h1 className="text-2xl font-bold leading-tight text-[var(--jale-ink)]">{active.title}</h1>
-              <p className="text-sm text-[var(--jale-ink-2)] mt-1.5 mb-4">
-                {active.company} · {active.location}
-              </p>
+              {headerLine && <p className="text-sm text-[var(--jale-ink-2)] mt-1.5 mb-4">{headerLine}</p>}
 
               {/* Pay is THE deciding fact for this reader; it gets a strip,
                   not a grid cell. Start/schedule ride along when present. */}
@@ -259,50 +319,67 @@ export default async function PublicJobPage({ params, searchParams }: PageProps)
                 </div>
               )}
 
-              {active.description && (
-                <p className="text-sm leading-relaxed whitespace-pre-wrap text-[var(--jale-ink)] mb-4">
-                  {active.description}
-                </p>
-              )}
-
               {chips.length > 0 && (
-                <ul className="flex flex-wrap gap-2 mb-1">
+                <ul className="flex flex-wrap gap-2">
                   {chips.map((chip) => (
                     <li
-                      key={chip}
+                      key={chip.text}
+                      aria-label={chip.ariaLabel}
                       className="text-xs capitalize text-[var(--jale-ink-2)] bg-[var(--jale-paper-2)] border border-[var(--jale-divider)] rounded-full px-3 py-1"
                     >
-                      {chip}
+                      {chip.text}
                     </li>
                   ))}
                 </ul>
               )}
-
-              {requirements.length > 0 && (
-                <div className="mt-4 pt-4 border-t border-[var(--jale-divider)]">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)] mb-2">
-                    {t('requirements')}
-                  </p>
-                  <ul className="space-y-1.5">
-                    {requirements.map((r) => (
-                      <li key={r} className="flex items-start gap-2 text-sm text-[var(--jale-ink)]">
-                        <span aria-hidden="true" className="text-[var(--jale-ink-2)] mt-px">
-                          –
-                        </span>
-                        {r}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
             </div>
           </article>
 
-          <div className="mt-4">
-            <ApplyButton code={active.code} shareCode={shareCode} />
+          {active.description && (
+            <section className="bg-[var(--jale-card)] border border-[var(--jale-divider)] rounded-2xl shadow-sm p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)] mb-2">
+                {t('about_job')}
+              </p>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap text-[var(--jale-ink)]">
+                {active.description}
+              </p>
+            </section>
+          )}
+
+          {needRows.length > 0 && (
+            <section className="bg-[var(--jale-card)] border border-[var(--jale-divider)] rounded-2xl shadow-sm p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)] mb-2">
+                {t('what_you_need')}
+              </p>
+              <ul className="space-y-1.5">
+                {needRows.map((row) => (
+                  <li key={row} className="flex items-start gap-2 text-sm text-[var(--jale-ink)]">
+                    <span aria-hidden="true" className="text-[var(--jale-success)] mt-px">
+                      &#10003;
+                    </span>
+                    {row}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          <section className="bg-[var(--jale-card)] border border-[var(--jale-divider)] rounded-2xl shadow-sm p-5">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--jale-ink-2)] mb-3">
+              {t('details')}
+            </p>
+            <DetailsGrid rows={detailRows} />
+          </section>
+
+          <div>
+            <Suspense fallback={null}>
+              <ApplyButton code={active.code} />
+            </Suspense>
             <p className="text-center text-xs text-[var(--jale-ink-2)] mt-3">{t('apply_hint')}</p>
             {active.id && (
-              <WebApplyButton jobId={active.id} shareCode={shareCode} label={t('apply_web')} />
+              <Suspense fallback={null}>
+                <WebApplyButton jobId={active.id} label={t('apply_web')} />
+              </Suspense>
             )}
           </div>
 
@@ -317,4 +394,18 @@ function docLabel(t: Awaited<ReturnType<typeof getTranslations>>, doc: PublicJob
   if (doc === 'resume') return t('doc_resume');
   if (doc === 'driver_license') return t('doc_driver_license');
   return t('doc_ssn');
+}
+
+/** Combines required_experience_years/months into one localized phrase
+ * ("2 years 6 months", "3 years", "6 months"). Returns null when neither
+ * field is set (or both are zero), so callers can skip the row entirely. */
+function formatExperience(
+  t: Awaited<ReturnType<typeof getTranslations>>,
+  years: number | null | undefined,
+  months: number | null | undefined,
+): string | null {
+  const parts: string[] = [];
+  if (years) parts.push(t('experience_years_unit', { n: years }));
+  if (months) parts.push(t('experience_months_unit', { n: months }));
+  return parts.length > 0 ? parts.join(' ') : null;
 }

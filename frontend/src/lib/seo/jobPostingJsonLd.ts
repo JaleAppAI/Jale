@@ -106,10 +106,6 @@ export function buildJobPostingJsonLd(job: PublicJobActive, canonicalUrl: string
     title: job.title,
     datePosted: toDateOnly(job.created_at),
     validThrough: computeValidThrough(job.created_at),
-    hiringOrganization: {
-      '@type': 'Organization',
-      name: job.company,
-    },
     identifier: {
       '@type': 'PropertyValue',
       name: 'Jale',
@@ -117,6 +113,16 @@ export function buildJobPostingJsonLd(job: PublicJobActive, canonicalUrl: string
     },
     url: canonicalUrl,
   };
+
+  // Never emit `hiringOrganization: { name: null }` -- schema.org consumers
+  // treat a present-but-null name as worse than an absent property. If the
+  // API ever returns a blank company, drop the whole property instead.
+  if (job.company) {
+    jsonLd.hiringOrganization = {
+      '@type': 'Organization',
+      name: job.company,
+    };
+  }
 
   if (job.description) {
     jsonLd.description = formatDescription(job.description);
