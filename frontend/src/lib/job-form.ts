@@ -11,8 +11,16 @@ export type PayInterval = typeof PAY_INTERVALS[number];
 export type JobForm = {
   title: string;
   location: string;
-  city: string;
+  city_key: string | null;
+  city: string | null;
+  state: string | null;
+  /** Independent SEO-region override (backend: resolveJobLocationFields).
+   *  Always a string (never null) in form state -- blank means "not set" and
+   *  serializes to an explicit `null` clear on the wire, same as the picker
+   *  fields' blank/cleared state. */
   state_region: string;
+  latitude: number | null;
+  longitude: number | null;
   job_type: 'full-time' | 'part-time' | 'contract';
   description: string;
   pay_min: string;
@@ -32,13 +40,42 @@ export type JobForm = {
 };
 
 export const initialForm: JobForm = {
-  title: '', location: '', city: '', state_region: '', job_type: 'full-time', description: '',
+  title: '', location: '',
+  city_key: null, city: null, state: null, state_region: '',
+  latitude: null, longitude: null,
+  job_type: 'full-time', description: '',
   pay_min: '', pay_max: '', pay_interval: 'hourly', start_date: '',
   expected_duration: '', shift_schedule: '', transportation_required: false,
   work_authorization_required: false, language_preference: ['any'],
   number_of_workers_needed: '1', trade_category: '', required_experience_years: '',
   certifications: '', required_docs: { resume: false, driver_license: false },
 };
+
+// Structural shape of the LocationPicker's onChange payload. Declared here
+// rather than imported from '@/components/ui/LocationPicker' so lib/ keeps no
+// dependency on components/; LocationPickerValue satisfies this type.
+export type JobFormLocation = {
+  label: string;
+  cityKey: string | null;
+  city: string | null;
+  state: string | null;
+  latitude: number | null;
+  longitude: number | null;
+};
+
+// Fold a LocationPicker selection into a JobForm. A free-typed value arrives
+// with null ids/coordinates, which clears any previously picked city.
+export function applyLocationToJobForm(form: JobForm, v: JobFormLocation): JobForm {
+  return {
+    ...form,
+    location: v.label,
+    city_key: v.cityKey,
+    city: v.city,
+    state: v.state,
+    latitude: v.latitude,
+    longitude: v.longitude,
+  };
+}
 
 export function parseOptionalNumber(value: string): number | null {
   if (!value.trim()) return null;
@@ -94,52 +131,61 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     trade_category: form.trade_category as string,
     required_experience_years: parseOptionalNumber(form.required_experience_years),
     certifications: splitDedupe(form.certifications),
+    ...(form.city_key && form.city && form.state
+      ? { city_key: form.city_key, city: form.city, state: form.state }
+      : {}),
+    ...(form.latitude != null && form.longitude != null
+      ? { latitude: form.latitude, longitude: form.longitude }
+      : {}),
   };
 }
 
 /**
- * CREATE path: there is no previously-stored city/state_region to protect, so
- * a blank field is OMITTED from the payload entirely (the key is absent,
+ * CREATE path: there is no previously-stored state_region to protect, so a
+ * blank field is OMITTED from the payload entirely (the key is absent,
  * `undefined`) rather than sent as an explicit `null`. That lets the
- * backend's resolveJobLocationFields fall back to auto-parsing city/state out
- * of the free-text `location` field -- which is what a new job with a blank
- * city input actually wants. Sending an explicit `null` here (the old,
- * buggy, single-function behavior) forced the parsed location to be
- * discarded on every create where the employer left city/state blank.
+ * backend's resolveJobLocationFields fall back to auto-parsing the SEO
+ * city/state_region out of the free-text `location` field -- which is what a
+ * new job with a blank state_region input actually wants. Sending an
+ * explicit `null` here (the old, buggy, single-function behavior) forced the
+ * parsed location to be discarded on every create where the employer left
+ * state_region blank.
+ *
+ * The city/state/city_key matching-identity triple is NOT this function's
+ * concern -- it is folded in wholesale (or omitted wholesale) by
+ * jobFormToBasePayload above, via the LocationPicker/applyLocationToJobForm
+ * path. This frontend has no separate free-text SEO city input.
  */
 export function jobFormToCreatePayload(form: JobForm): JobWritePayload {
-  const cityTrimmed = form.city.trim();
   const stateTrimmed = form.state_region.trim().toUpperCase();
   return {
     ...jobFormToBasePayload(form),
-    city: cityTrimmed || undefined,
     state_region: stateTrimmed || undefined,
   };
 }
 
 /**
  * EDIT path: the form is prefilled from the stored job (see jobToForm), so a
- * blank field is ambiguous unless we know what it started as:
+ * blank state_region is ambiguous unless we know what it started as:
  *   - started non-empty, now blank -> the employer deliberately cleared it:
  *     send an explicit `null` (resolveJobLocationFields' clear-override).
  *   - started empty, still blank -> never touched: OMIT the key so the
  *     backend's auto-parse from `location` still gets a chance to fill it in,
  *     the same as create.
  *   - non-blank current value -> send it, same as create.
- * `initial` is the city/state_region the form was prefilled with (typically
- * the loaded job, or the initial JobForm snapshot taken before edits began).
+ * `initial` is the state_region the form was prefilled with (typically the
+ * loaded job, or the initial JobForm snapshot taken before edits began).
+ * See jobFormToCreatePayload above re: the city/state/city_key triple, which
+ * this function also does not touch directly.
  */
 export function jobFormToEditPayload(
   form: JobForm,
-  initial: Pick<JobForm, 'city' | 'state_region'>,
+  initial: Pick<JobForm, 'state_region'>,
 ): JobWritePayload {
-  const cityTrimmed = form.city.trim();
   const stateTrimmed = form.state_region.trim().toUpperCase();
-  const initialCityHadValue = initial.city.trim().length > 0;
   const initialStateHadValue = initial.state_region.trim().length > 0;
   return {
     ...jobFormToBasePayload(form),
-    city: cityTrimmed || (initialCityHadValue ? null : undefined),
     state_region: stateTrimmed || (initialStateHadValue ? null : undefined),
   };
 }
@@ -149,8 +195,12 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
   return {
     title: job.title ?? '',
     location: job.location ?? '',
-    city: job.city ?? '',
+    city_key: job.city_key ?? null,
+    city: job.city ?? null,
+    state: job.state ?? null,
     state_region: job.state_region ?? '',
+    latitude: job.latitude != null ? Number(job.latitude) : null,
+    longitude: job.longitude != null ? Number(job.longitude) : null,
     job_type: job.job_type,
     description: job.description ?? '',
     pay_min: job.pay_min != null ? String(job.pay_min) : '',

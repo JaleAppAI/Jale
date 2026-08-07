@@ -13,7 +13,7 @@ import { PageSkeleton } from '@/components/ui/PageSkeleton';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
 import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
-import type { WorkerProfileData, WorkerVaultDoc, DocType } from '@/lib/api/worker';
+import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType } from '@/lib/api/worker';
 import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/referral-return';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +43,7 @@ export default function WorkerProfilePage() {
         skills: p.skills ?? [], availability: p.availability,
         years_experience: p.years_experience, location: p.location, bio: p.bio,
         certifications: p.certifications ?? [],
+        preferred_cities: p.preferred_cities ?? [],
       });
       const d = await getVaultDocuments(idToken);
       setDocs(d.documents);
@@ -58,6 +59,7 @@ export default function WorkerProfilePage() {
             skills: next.skills ?? [], availability: next.availability,
             years_experience: next.years_experience, location: next.location, bio: next.bio,
             certifications: next.certifications ?? [],
+            preferred_cities: next.preferred_cities ?? [],
           });
         }
 
@@ -81,7 +83,7 @@ export default function WorkerProfilePage() {
 
   useEffect(() => { loadAll(); }, [idToken]);
 
-  async function handleSave(patch: Partial<WorkerProfileData>) {
+  async function handleSave(patch: WorkerProfilePatch) {
     if (!idToken) return;
     await updateWorkerProfile(idToken, patch);
     setEditing(false);
@@ -138,6 +140,10 @@ export default function WorkerProfilePage() {
                 />
                 <Field label={t('field_years_experience')} value={profile.years_experience?.toString() ?? '-'} />
                 <Field label={t('field_location')} value={profile.location ?? '-'} />
+                <PillListField
+                  label={t('edit.preferred_cities_label')}
+                  items={(profile.preferred_cities ?? []).map((c) => `${c.city}, ${c.state}`)}
+                />
                 <div className="md:col-span-2"><Field label={t('field_bio')} value={profile.bio ?? '-'} /></div>
               </div>
             )}

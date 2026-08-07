@@ -111,7 +111,13 @@ $MigrationFiles = @(
     '061_job_geo_and_seo_grants.sql',
     '062_job_visibility_outbox.sql',
     '063_employer_referral_links.sql',
-    '064_public_job_context_functions.sql'
+    '064_public_job_context_functions.sql',
+    # 065-068 = location feature, applied to prod pre-merge as 061-064
+    # (before main minted its own 061-064).
+    '065_city_keys_and_preferred_cities.sql',
+    '066_preferred_cities_whatsapp_read.sql',
+    '067_city_key_backfill_repair.sql',
+    '068_preferred_city_centroids.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

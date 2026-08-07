@@ -200,8 +200,12 @@ export type Job = {
   id: string;
   title: string;
   location: string;
+  city_key?: string | null;
   city?: string | null;
+  state?: string | null;
   state_region?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   pay: string | null;
   job_type: 'full-time' | 'part-time' | 'contract';
   status: JobStatus;
@@ -399,6 +403,12 @@ export async function getJobs(token: string): Promise<Job[]> {
   return data.jobs;
 }
 
+/**
+ * `city_key`/`city`/`state` are all-or-none — send all three or none at all;
+ * a partial triple is meaningless to the backend and will be rejected.
+ * `latitude`/`longitude` are likewise all-or-none, and independent of the
+ * city triple (coordinates may be sent without a picked city, or vice versa).
+ */
 export type JobWritePayload = {
   title: string;
   location: string;
@@ -422,6 +432,10 @@ export type JobWritePayload = {
   required_experience_years?: number | null;
   pay_interval?: string | null;
   certifications?: string[];
+  latitude?: number;
+  longitude?: number;
+  city_key?: string;
+  state?: string;
 };
 
 export async function createJob(token: string, data: JobWritePayload): Promise<Job> {

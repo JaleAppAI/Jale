@@ -9,6 +9,7 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { Button } from '@/components/ui/button';
 import { PageSkeleton } from '@/components/ui/PageSkeleton';
 import { Input } from '@/components/ui/input';
+import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
@@ -206,7 +207,7 @@ function EmployerProfileForm(props: {
                 <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} inputMode="tel" />
             </LabeledField>
             <LabeledField label={t('field_city')} error={missingFields.includes('city') ? t('errors.required') : undefined}>
-                <Input value={city} onChange={(e) => setCity(e.target.value)} />
+                <LocationPicker value={city} onChange={(v) => setCity(v.label)} />
             </LabeledField>
             <LabeledField label={t('field_service_area')} error={missingFields.includes('service_area') ? t('errors.required') : undefined}>
                 <Input value={serviceArea} onChange={(e) => setServiceArea(e.target.value)} />

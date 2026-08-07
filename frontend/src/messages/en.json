@@ -2,7 +2,11 @@
   "common": {
     "loading": "Loading...",
     "error": "Something went wrong",
-    "retry": "Try again"
+    "retry": "Try again",
+    "location_no_matches": "No matches",
+    "city_multi_placeholder": "Add a city or ZIP…",
+    "city_multi_max": "You can add up to {max} cities",
+    "city_multi_remove": "Remove {city}, {state}"
   },
   "match": {
     "score_bands": {
@@ -586,6 +590,7 @@
       "job_title_placeholder": "e.g. Forklift operator",
       "location": "Location",
       "location_placeholder": "Hayward, CA",
+      "location_pick_required": "Select a city from the suggestions",
       "city": "City",
       "city_placeholder": "Hayward",
       "state_region": "State",
@@ -758,6 +763,10 @@
   "worker_home": {
     "title": "Find jobs",
     "search_placeholder": "Search by title or location",
+    "cities_all": "All cities",
+    "cities_edit": "Edit cities",
+    "cities_done": "Done",
+    "other_jobs_header": "Other jobs outside your cities",
     "filter": {
       "all": "All",
       "full_time": "Full-time",
@@ -930,6 +939,7 @@
     "edit": {
       "full_name": "Full name",
       "skills_placeholder": "Skills (comma separated)",
+      "availability_label": "Availability",
       "availability": {
         "full_time": "Full-time",
         "part_time": "Part-time",
@@ -938,6 +948,7 @@
       },
       "years_experience": "Years of experience",
       "location": "Location",
+      "preferred_cities_label": "Cities where you want to find work",
       "bio": "About you",
       "certifications_placeholder": "OSHA 10, forklift, CDL",
       "save": "Save",

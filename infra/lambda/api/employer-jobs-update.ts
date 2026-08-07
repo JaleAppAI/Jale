@@ -2,7 +2,9 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { setJobCoordinates } from '../lib/location';
+import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
@@ -139,6 +141,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          jobs.workers_hired AS hired_count,
          GREATEST(jobs.number_of_workers_needed - jobs.workers_hired, 0) AS open_count,
          jobs.trade_category, jobs.required_experience_years, jobs.required_experience_months, jobs.certifications,
+         jobs.public_code, jobs.public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = $2) AS applicant_count`,
       [status, jobId, cognitoSub],
     );
@@ -180,7 +183,7 @@ const EDITABLE_COLUMNS = [
   'shift_schedule', 'transportation_required', 'work_authorization_required',
   'language_preference', 'number_of_workers_needed', 'trade_category',
   'required_experience_years', 'required_experience_months', 'certifications',
-  'city', 'state_region',
+  'city_key', 'city', 'state', 'state_region',
 ] as const;
 
 async function handleFieldEdit(
@@ -216,6 +219,25 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: jobFields.error, ...(jobFields.valid ? { valid: jobFields.valid } : {}) }) };
   }
   const f = jobFields.value;
+
+  const cityFields = parseCityFields(body);
+  if (!cityFields.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: cityFields.error }) };
+  }
+
+  // Runs conceptually AFTER the clear-on-omit below: when no triple is sent
+  // the stored key is being replaced anyway, so a parseable location text
+  // must re-key the job rather than leave it invisible to city filters.
+  // An explicit `city: null` (SEO clear semantics) suppresses the derive too:
+  // a deliberately cleared city must not resurrect as a matching city_key.
+  const cityTriple = locationFields.cityCleared
+    ? null
+    : (cityFields.value ?? parseCityFromLocation(location));
+
+  const coordinates = parseOptionalCoordinates(body);
+  if (!coordinates.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: coordinates.error }) };
+  }
 
   let client;
   try {
@@ -289,14 +311,18 @@ async function handleFieldEdit(
       required_experience_years: f.required_experience_years,
       required_experience_months: f.required_experience_months,
       certifications: f.certifications,
-      // A null resolution from an unparseable location with NO explicit
-      // override (absent key) preserves whatever city/state_region the job
-      // already has -- e.g. from an earlier backfill or explicit edit --
-      // rather than nulling out a good value just because this particular
-      // edit didn't touch location. An explicit `null` override is different:
-      // it is a deliberate clear and must win over that fallback, writing
-      // NULL even though cur.city/state_region may be set.
-      city: locationFields.cityCleared ? null : (locationFields.value.city ?? cur.city),
+      // Matching identity (city_key/state): an omitted triple replaces the
+      // stored keys on purpose -- a fresh parse of the new location text, or
+      // NULL when unparseable. A stale key must never keep matching the old
+      // city's feed.
+      city_key: cityTriple?.city_key ?? null,
+      state: cityTriple?.state ?? null,
+      // Shared display column: a validated triple wins; otherwise the SEO
+      // resolver's rules apply -- explicit null clears, and an unparseable
+      // location with NO explicit override preserves the stored value (a
+      // text-only edit must not null a good SEO city; matching correctness
+      // lives in city_key above, which DOES reset).
+      city: cityTriple?.city ?? (locationFields.cityCleared ? null : (locationFields.value.city ?? cur.city)),
       state_region: locationFields.stateRegionCleared ? null : (locationFields.value.state_region ?? cur.state_region),
     };
     const setClauses = EDITABLE_COLUMNS.map((col, i) => `${col} = $${i + 1}`).join(', ');
@@ -312,10 +338,17 @@ async function handleFieldEdit(
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
-         city, state_region,
+         city_key, city, state, state_region,
+         public_code, public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],
     );
+
+    // Deliberate asymmetry with the city triple above: an omitted triple CLEARS the
+    // stored city keys, but omitted coordinates PRESERVE the existing pin.
+    if (coordinates.value) {
+      await setJobCoordinates(client, jobId, coordinates.value.latitude, coordinates.value.longitude, 'manual');
+    }
 
     await client.query('COMMIT');
     return { statusCode: 200, headers: CORS_HEADERS, body: JSON.stringify(result.rows[0]) };

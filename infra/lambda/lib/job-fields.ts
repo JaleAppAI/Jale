@@ -182,6 +182,40 @@ export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsRes
   };
 }
 
+export interface ParsedCoordinates {
+  latitude: number;
+  longitude: number;
+}
+
+export type ParseCoordinatesResult =
+  | { ok: true; value: ParsedCoordinates | null }
+  | { ok: false; error: 'invalid_coordinates' | 'invalid_latitude' | 'invalid_longitude' };
+
+/**
+ * All-or-none parse of an optional latitude/longitude pair on a request body.
+ * ok+null  → neither field present (the caller leaves any existing pin alone).
+ * ok+value → a complete, in-range pair.
+ * error    → only one of the two present, or a value that is not a finite
+ *            in-range number. Presence is hasOwnProperty-based, so an explicit
+ *            `null` counts as present and fails validation rather than being
+ *            treated as an omission.
+ */
+export function parseOptionalCoordinates(body: Record<string, unknown>): ParseCoordinatesResult {
+  const hasLatitude = Object.prototype.hasOwnProperty.call(body, 'latitude');
+  const hasLongitude = Object.prototype.hasOwnProperty.call(body, 'longitude');
+  if (hasLatitude !== hasLongitude) return { ok: false, error: 'invalid_coordinates' };
+  if (!hasLatitude) return { ok: true, value: null };
+
+  const { latitude, longitude } = body;
+  if (typeof latitude !== 'number' || !Number.isFinite(latitude) || latitude < -90 || latitude > 90) {
+    return { ok: false, error: 'invalid_latitude' };
+  }
+  if (typeof longitude !== 'number' || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
+    return { ok: false, error: 'invalid_longitude' };
+  }
+  return { ok: true, value: { latitude, longitude } };
+}
+
 export function formatPayRange(payMin: number | null, payMax: number | null): string | null {
   if (payMin === null && payMax === null) return null;
   if (payMin !== null && payMax !== null) return payMin === payMax ? `$${payMin}` : `$${payMin}-$${payMax}`;

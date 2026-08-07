@@ -8,12 +8,14 @@ import { ApiError, createJob, Job } from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  initialForm, jobFormToCreatePayload, validateJobNumbers, validateJobLocationFields,
+  initialForm, jobFormToCreatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { locationDatasetFailed } from '@/lib/location-search';
 
 interface Props {
   open: boolean;
@@ -68,6 +70,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const validateCurrentStep = (): string | null => {
     if (step === 1) {
       if (!form.title.trim() || !form.location.trim() || !form.trade_category) return t('modal.validation_required');
+      if (!form.city_key && !locationDatasetFailed()) return t('modal.location_pick_required');
       if (validateJobLocationFields(form) === 'state_region') return t('modal.validation_state_region');
       return null;
     }
@@ -160,7 +163,16 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Field>
               <div className="grid gap-3 md:grid-cols-2">
                 <Field label={t('modal.location')} required>
-                  <Input value={form.location} onChange={(e) => update('location', e.target.value)} placeholder={t('modal.location_placeholder')} />
+                  <LocationPicker
+                    value={form.location}
+                    placeholder={t('modal.location_placeholder')}
+                    onChange={(v) => {
+                      setForm((c) => applyLocationToJobForm(c, v));
+                      // A real pick resolves the "pick a city" error; drop it
+                      // immediately instead of waiting for the next step.
+                      if (v.cityKey) setError('');
+                    }}
+                  />
                 </Field>
                 <Field label={t('modal.job_type')}>
                   <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
@@ -170,19 +182,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                   </Select>
                 </Field>
               </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label={t('modal.city')}>
-                  <Input value={form.city} onChange={(e) => update('city', e.target.value)} placeholder={t('modal.city_placeholder')} />
-                </Field>
-                <Field label={t('modal.state_region')}>
-                  <Input
-                    value={form.state_region}
-                    onChange={(e) => update('state_region', e.target.value.toUpperCase())}
-                    placeholder={t('modal.state_region_placeholder')}
-                    maxLength={2}
-                  />
-                </Field>
-              </div>
+              <Field label={t('modal.state_region')}>
+                <Input
+                  value={form.state_region}
+                  onChange={(e) => update('state_region', e.target.value.toUpperCase())}
+                  placeholder={t('modal.state_region_placeholder')}
+                  maxLength={2}
+                />
+              </Field>
               <Field label={t('modal.trade_category')} required>
                 <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
                   <option value="">{t('modal.select_placeholder')}</option>
