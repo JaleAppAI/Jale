@@ -857,21 +857,14 @@
     "openings_chip": "{count, plural, one {# vacante} other {# vacantes}}",
     "about_jale": "Jale conecta a trabajadores y empleadores por WhatsApp: sin currículum, sin descargas. Siempre gratis para trabajadores."
   },
-  "employer_job_visibility": {
-    "title": "Pagina publica del trabajo",
-    "benefit": "Hacer publica esta oferta permite que llegue a mas personas: tus trabajadores pueden compartirla directamente y alguien puede leerla sin tener cuenta.",
-    "shares": "Se comparte: titulo, empresa, ubicacion, pago y descripcion. Nunca se comparte: tus datos de contacto, tus otros trabajos, ni quienes se postularon.",
-    "enabled": "Publica: cualquiera con el enlace puede leer esta oferta",
-    "disabled": "Privada: solo trabajadores con sesion en Jale pueden verla",
-    "error": "No se pudo actualizar la visibilidad. Intenta de nuevo.",
-    "link_label": "Enlace público",
-    "copy": "Copiar",
-    "copied": "¡Copiado!"
-  },
-  "employer_job_share": {
-    "title": "Enlace y código QR para compartir",
-    "subtitle": "Obtén un enlace rastreable o un código QR para imprimir de \"{jobTitle}\" -- útil para ferias de empleo y volantes.",
-    "disabled_hint": "Activa la página pública del trabajo arriba para desbloquear un enlace y código QR para compartir.",
+  "employer_job_listing": {
+    "title": "Página pública del trabajo",
+    "benefit": "Hacer pública esta oferta permite que llegue a más personas: tus trabajadores pueden compartirla directamente y alguien puede leerla sin tener cuenta.",
+    "shares": "Se comparte: título, empresa, ubicación, pago y descripción. Nunca se comparte: tus datos de contacto, tus otros trabajos, ni quiénes se postularon.",
+    "enabled": "Pública: cualquiera con el enlace puede leer esta oferta",
+    "disabled": "Privada: solo trabajadores con sesión en Jale pueden verla",
+    "toggle_error": "No se pudo actualizar la visibilidad. Intenta de nuevo.",
+    "subtitle": "Obtén un enlace o código QR para compartir \"{jobTitle}\" -- útil para ferias de empleo y volantes.",
     "get_link": "Obtener enlace",
     "loading": "Obteniendo enlace...",
     "copy_link": "Copiar enlace",
@@ -881,7 +874,8 @@
     "error_misconfigured": "Compartir no está disponible en este momento. Intenta más tarde.",
     "error_not_public": "Este trabajo todavía no tiene página pública, así que no se puede compartir.",
     "error_generic": "No pudimos crear un enlace para compartir en este momento. Intenta de nuevo.",
-    "error_qr": "No pudimos generar el código QR. Intenta de nuevo."
+    "error_qr": "No pudimos generar el código QR. Intenta de nuevo.",
+    "tracked_caption": "Las visitas y registros desde este enlace se rastrean y se acreditan a tu negocio."
   },
   "job_share": {
     "title": "Comparte este trabajo",
