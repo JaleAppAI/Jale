@@ -1736,6 +1736,242 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // public_referrer_context() / public_job_company() (migration 064)
+  // -------------------------------------------------------------------------
+  describe('public job context functions (migration 064)', () => {
+    async function getJobPublicCode(jobId: string): Promise<string> {
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ public_code: string }>(
+          `SELECT public_code FROM jobs WHERE id = $1`,
+          [jobId],
+        );
+        return result.rows[0].public_code;
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function makeNamedWorker(fullName: string | null): Promise<{ id: string; cognitoSub: string }> {
+      const cognitoSub = `referrals-context-worker-${randomCode(16)}`;
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, full_name, created_at, updated_at)
+           VALUES ($1, 'worker', $2, now(), now())
+           RETURNING id`,
+          [cognitoSub, fullName],
+        );
+        return { id: result.rows[0].id, cognitoSub };
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function makeNamedEmployer(): Promise<{ id: string; cognitoSub: string }> {
+      const cognitoSub = `referrals-context-employer-${randomCode(16)}`;
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        const result = await client.query<{ id: string }>(
+          `INSERT INTO users (cognito_sub, user_type, created_at, updated_at)
+           VALUES ($1, 'employer', now(), now())
+           RETURNING id`,
+          [cognitoSub],
+        );
+        return { id: result.rows[0].id, cognitoSub };
+      } finally {
+        await client.end();
+      }
+    }
+
+    async function makeWorkerShareLink(jobId: string, referrerWorkerId: string): Promise<string> {
+      const code = randomCode(8);
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_worker_id, channel)
+           VALUES ($1, $2, $3, 'whatsapp')`,
+          [code, jobId, referrerWorkerId],
+        );
+      } finally {
+        await client.end();
+      }
+      return code;
+    }
+
+    async function makeEmployerShareLink(jobId: string, referrerEmployerId: string): Promise<string> {
+      const code = randomCode(8);
+      const client = new Client({ connectionString: superuserUrl });
+      await client.connect();
+      try {
+        await client.query(
+          `INSERT INTO job_share_links (code, job_id, referrer_employer_id, channel)
+           VALUES ($1, $2, $3, 'facebook')`,
+          [code, jobId, referrerEmployerId],
+        );
+      } finally {
+        await client.end();
+      }
+      return code;
+    }
+
+    describe('public_referrer_context', () => {
+      it('(a) a worker-referrer link resolves to kind worker with the first name token, as jale_public_jobs', async () => {
+        const referrer = await makeNamedWorker('Maria Lopez');
+        const jobId = await makeJob();
+        const publicCode = await getJobPublicCode(jobId);
+        const code = await makeWorkerShareLink(jobId, referrer.id);
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query<{ kind: string; first_name: string | null }>(
+            `SELECT * FROM public_referrer_context($1, $2)`,
+            [code, publicCode],
+          ),
+        );
+        expect(result.rows).toEqual([{ kind: 'worker', first_name: 'Maria' }]);
+      });
+
+      it('(b) an employer-referrer link resolves to kind employer with a null first name', async () => {
+        const employer = await makeNamedEmployer();
+        const jobId = await makeJob({ employer_id: employer.id });
+        const publicCode = await getJobPublicCode(jobId);
+        const code = await makeEmployerShareLink(jobId, employer.id);
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query<{ kind: string; first_name: string | null }>(
+            `SELECT * FROM public_referrer_context($1, $2)`,
+            [code, publicCode],
+          ),
+        );
+        expect(result.rows).toEqual([{ kind: 'employer', first_name: null }]);
+      });
+
+      it('(c) a revoked code returns zero rows', async () => {
+        const referrer = await makeNamedWorker('Juan Perez');
+        const jobId = await makeJob();
+        const publicCode = await getJobPublicCode(jobId);
+        const code = await makeWorkerShareLink(jobId, referrer.id);
+        const revoke = new Client({ connectionString: superuserUrl });
+        await revoke.connect();
+        try {
+          await revoke.query(`UPDATE job_share_links SET revoked_at = now() WHERE code = $1`, [code]);
+        } finally {
+          await revoke.end();
+        }
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query(`SELECT * FROM public_referrer_context($1, $2)`, [code, publicCode]),
+        );
+        expect(result.rows).toHaveLength(0);
+      });
+
+      it('(d) an unknown code returns zero rows', async () => {
+        const jobId = await makeJob();
+        const publicCode = await getJobPublicCode(jobId);
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query(`SELECT * FROM public_referrer_context($1, $2)`, ['ZZZZZZZ2', publicCode]),
+        );
+        expect(result.rows).toHaveLength(0);
+      });
+
+      it('(e) a valid code with the WRONG job public_code returns zero rows', async () => {
+        const referrer = await makeNamedWorker('Ana Diaz');
+        const jobId = await makeJob();
+        const otherJobId = await makeJob();
+        const otherPublicCode = await getJobPublicCode(otherJobId);
+        const code = await makeWorkerShareLink(jobId, referrer.id);
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query(`SELECT * FROM public_referrer_context($1, $2)`, [code, otherPublicCode]),
+        );
+        expect(result.rows).toHaveLength(0);
+      });
+
+      it('(f) a worker referrer with a NULL full_name resolves to kind worker with a null first name', async () => {
+        const referrer = await makeNamedWorker(null);
+        const jobId = await makeJob();
+        const publicCode = await getJobPublicCode(jobId);
+        const code = await makeWorkerShareLink(jobId, referrer.id);
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query<{ kind: string; first_name: string | null }>(
+            `SELECT * FROM public_referrer_context($1, $2)`,
+            [code, publicCode],
+          ),
+        );
+        expect(result.rows).toEqual([{ kind: 'worker', first_name: null }]);
+      });
+
+      it('(g) jale_public_jobs still cannot SELECT directly from users or employer_profiles -- the definer functions are the only door', async () => {
+        await expect(
+          asPublicJobs(publicUrl, (client) => client.query(`SELECT full_name FROM users LIMIT 1`)),
+        ).rejects.toThrow(/permission denied/i);
+        await expect(
+          asPublicJobs(publicUrl, (client) => client.query(`SELECT company_name FROM employer_profiles LIMIT 1`)),
+        ).rejects.toThrow(/permission denied/i);
+      });
+    });
+
+    describe('public_job_company', () => {
+      it('(h) a job with company set returns that value', async () => {
+        const jobId = await makeJob();
+        const setup = new Client({ connectionString: superuserUrl });
+        await setup.connect();
+        try {
+          await setup.query(`UPDATE jobs SET company = 'Acme Construction' WHERE id = $1`, [jobId]);
+        } finally {
+          await setup.end();
+        }
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query<{ public_job_company: string | null }>(`SELECT public_job_company($1)`, [jobId]),
+        );
+        expect(result.rows[0].public_job_company).toBe('Acme Construction');
+      });
+
+      it('(h) a job with NULL company falls back to the employer profile company_name', async () => {
+        const employer = await makeNamedEmployer();
+        const jobId = await makeJob({ employer_id: employer.id });
+        const setup = new Client({ connectionString: superuserUrl });
+        await setup.connect();
+        try {
+          await setup.query(`UPDATE jobs SET company = NULL WHERE id = $1`, [jobId]);
+          await setup.query(
+            `INSERT INTO employer_profiles (user_id, company_name) VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET company_name = EXCLUDED.company_name`,
+            [employer.id, 'Diaz Roofing LLC'],
+          );
+        } finally {
+          await setup.end();
+        }
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query<{ public_job_company: string | null }>(`SELECT public_job_company($1)`, [jobId]),
+        );
+        expect(result.rows[0].public_job_company).toBe('Diaz Roofing LLC');
+      });
+
+      it('(h) a job with neither company nor an employer profile returns null', async () => {
+        const employer = await makeNamedEmployer();
+        const jobId = await makeJob({ employer_id: employer.id });
+        const setup = new Client({ connectionString: superuserUrl });
+        await setup.connect();
+        try {
+          await setup.query(`UPDATE jobs SET company = NULL WHERE id = $1`, [jobId]);
+        } finally {
+          await setup.end();
+        }
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query<{ public_job_company: string | null }>(`SELECT public_job_company($1)`, [jobId]),
+        );
+        expect(result.rows[0].public_job_company).toBeNull();
+      });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
