@@ -207,12 +207,15 @@ MIGRATIONS=(
   "063_employer_referral_links.sql"
   # 064-067 are the location-feature migrations, applied to prod pre-merge
   # under the numbers 061-064 (before main's independent 061-063 existed).
-  # On a ledger-tracked database that already has them:
-  #   --baseline-through 067_preferred_city_centroids.sql
+  # On a ledger-tracked database that already has them, baseline through
+  # migration 067 (preferred city centroids). NOTE: never write a full
+  # NNN_name.sql filename in comments inside this array -- the manifest test
+  # scrapes this block for filenames, comments included.
   "064_city_keys_and_preferred_cities.sql"
   "065_preferred_cities_whatsapp_read.sql"
   "066_city_key_backfill_repair.sql"
   "067_preferred_city_centroids.sql"
+  "068_employer_job_templates.sql"
 )
 
 WORKDIR="$(mktemp -d)"

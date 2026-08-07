@@ -116,7 +116,8 @@ $MigrationFiles = @(
     '064_city_keys_and_preferred_cities.sql',
     '065_preferred_cities_whatsapp_read.sql',
     '066_city_key_backfill_repair.sql',
-    '067_preferred_city_centroids.sql'
+    '067_preferred_city_centroids.sql',
+    '068_employer_job_templates.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
