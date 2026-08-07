@@ -45,7 +45,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `SELECT id, title, location, pay, job_type, status, description, required_docs, created_at,
+      `SELECT id, title, location, city, state_region, pay, job_type, status, description, required_docs, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
          transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,

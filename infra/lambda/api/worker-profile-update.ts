@@ -11,7 +11,7 @@ const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painti
 const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'] as const;
 const VALID_AVAIL = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 // 'map_pin' is deliberately absent: no client can drop a pin yet, and its
-// confidence (100) would outrank every later correction. See migration 061 §4.
+// confidence (100) would outrank every later correction. See migration 064 section 4.
 const VALID_LOCATION_SOURCES = ['geocoded_zip', 'geocoded_address'] as const satisfies readonly WorkerLocationSource[];
 const MAX_CERTIFICATIONS = 20;
 const MAX_CERTIFICATION_LENGTH = 200;
@@ -274,7 +274,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // cities. The RETURNING above already carried the stored list; this
     // overwrites it with the new one because those rows post-date that read.
     //
-    // The 061 RLS policy resolves the row owner through user_type = 'worker',
+    // The 064 RLS policy resolves the row owner through user_type = 'worker',
     // so a non-worker account reaching this endpoint with preferred_cities
     // writes zero rows and trips the transaction, surfacing as a 500 rather
     // than a 403. Known and accepted: the security outcome is correct and no

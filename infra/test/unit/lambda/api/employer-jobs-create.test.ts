@@ -214,26 +214,30 @@ describe('employer-jobs-create', () => {
     expect(callOrder.indexOf('count')).toBeLessThan(callOrder.indexOf('insert'));
   });
 
+  // INSERT positional params (0-based): 21 city_key, 22 city, 23 state, 24 state_region.
+
   it('stores the city triple when provided', async () => {
     const res = await handler(makeEvent({ city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' }));
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
     expect(insertCall[0]).toContain('city_key');
-    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX']);
+    // state_region is derived from location ('Columbus, OH') independently of
+    // the picker triple, which only feeds city_key/city/state.
+    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
   });
 
   it('derives the city triple from parseable location text when no picker triple is sent', async () => {
     const res = await handler(makeEvent({}));  // location defaults to 'Columbus, OH'
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1].slice(21)).toEqual(['columbus-oh', 'Columbus', 'OH']);
+    expect(insertCall[1].slice(21)).toEqual(['columbus-oh', 'Columbus', 'OH', 'OH']);
   });
 
   it('accepts a job with unparseable location and no city fields (degraded picker)', async () => {
     const res = await handler(makeEvent({ location: 'Near the old stadium' }));
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1].slice(21)).toEqual([null, null, null]);
+    expect(insertCall[1].slice(21)).toEqual([null, null, null, null]);
   });
 
   it('a picker triple wins over the location text parse', async () => {
@@ -243,14 +247,28 @@ describe('employer-jobs-create', () => {
     }));
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX']);
+    // state_region still derives from location ('Columbus, OH' -> OH),
+    // independently of the picker triple overriding city_key/city/state.
+    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
   });
 
-  it('rejects a partial city triple (400)', async () => {
+  it('accepts a lone `city` field (no city_key/state) as the SEO-only channel -- no longer a 400 partial triple', async () => {
+    // Doctrine change: only city_key/state presence triggers the all-three
+    // requirement. A lone `city` is legal (parseCityFields returns ok+null),
+    // so this now creates successfully. Because the default location
+    // ('Columbus, OH') IS derivable via parseCityFromLocation, that derived
+    // triple's city ("Columbus") wins over the explicit `city: 'El Paso'` for
+    // the shared column -- see resolveJobLocationFields/cityTriple ordering
+    // in employer-jobs-create.ts. The explicit `city` only wins when no
+    // triple is sent AND the location itself is unparseable (see the
+    // employer-jobs-update.test.ts SEO-channel tests for that case).
     const res = await handler(makeEvent({ city: 'El Paso' }));
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.body).error).toBe('invalid_city_fields');
-    expect(mockGetDbPool).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][21]).toBe('columbus-oh');
+    expect(insertCall[1][22]).toBe('Columbus');
+    expect(insertCall[1][23]).toBe('OH');
+    expect(insertCall[1][24]).toBe('OH');
   });
 
   it('rejects a mismatched city_key (400)', async () => {

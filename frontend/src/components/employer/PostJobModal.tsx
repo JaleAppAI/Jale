@@ -8,7 +8,7 @@ import { ApiError, createJob, Job } from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  initialForm, jobFormToPayload, validateJobNumbers, applyLocationToJobForm,
+  initialForm, jobFormToPayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -71,6 +71,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     if (step === 1) {
       if (!form.title.trim() || !form.location.trim() || !form.trade_category) return t('modal.validation_required');
       if (!form.city_key && !locationDatasetFailed()) return t('modal.location_pick_required');
+      if (validateJobLocationFields(form) === 'state_region') return t('modal.validation_state_region');
       return null;
     }
     if (step === 2) {
@@ -181,6 +182,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                   </Select>
                 </Field>
               </div>
+              <Field label={t('modal.state_region')}>
+                <Input
+                  value={form.state_region}
+                  onChange={(e) => update('state_region', e.target.value.toUpperCase())}
+                  placeholder={t('modal.state_region_placeholder')}
+                  maxLength={2}
+                />
+              </Field>
               <Field label={t('modal.trade_category')} required>
                 <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
                   <option value="">{t('modal.select_placeholder')}</option>

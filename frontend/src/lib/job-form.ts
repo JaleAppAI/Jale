@@ -14,6 +14,11 @@ export type JobForm = {
   city_key: string | null;
   city: string | null;
   state: string | null;
+  /** Independent SEO-region override (backend: resolveJobLocationFields).
+   *  Always a string (never null) in form state -- blank means "not set" and
+   *  serializes to an explicit `null` clear on the wire, same as the picker
+   *  fields' blank/cleared state. */
+  state_region: string;
   latitude: number | null;
   longitude: number | null;
   job_type: 'full-time' | 'part-time' | 'contract';
@@ -36,7 +41,8 @@ export type JobForm = {
 
 export const initialForm: JobForm = {
   title: '', location: '',
-  city_key: null, city: null, state: null, latitude: null, longitude: null,
+  city_key: null, city: null, state: null, state_region: '',
+  latitude: null, longitude: null,
   job_type: 'full-time', description: '',
   pay_min: '', pay_max: '', pay_interval: 'hourly', start_date: '',
   expected_duration: '', shift_schedule: '', transportation_required: false,
@@ -92,10 +98,29 @@ export function validateJobNumbers(form: JobForm): 'number' | 'pay_range' | 'hea
   return null;
 }
 
+// A US state/territory postal abbreviation: exactly two letters. Empty is
+// valid (the field is optional) -- callers decide whether empty is allowed
+// for their step; this only rejects a non-empty value that isn't 2 letters.
+const STATE_REGION_PATTERN = /^[A-Za-z]{2}$/;
+
+export function validateJobLocationFields(form: JobForm): 'state_region' | null {
+  const stateRegion = form.state_region.trim();
+  if (stateRegion && !STATE_REGION_PATTERN.test(stateRegion)) return 'state_region';
+  return null;
+}
+
 export function jobFormToPayload(form: JobForm): JobWritePayload {
   return {
     title: form.title.trim(),
     location: form.location.trim(),
+    // Blank means "clear" now, not "omit" -- the Edit modal is prefilled with
+    // the job's stored state_region (employer-jobs-detail.ts returns it), so
+    // an employer who deliberately blanks the field out is choosing to clear
+    // it, not leaving it untouched. `null` is the wire signal
+    // resolveJobLocationFields (backend) treats as an explicit clear-override,
+    // distinct from an omitted key which falls back to the parsed location.
+    // Independent of the city_key/city/state picker triple below.
+    state_region: form.state_region.trim().toUpperCase() || null,
     job_type: form.job_type,
     description: form.description.trim() || undefined,
     required_docs: DOC_TYPES.filter((doc) => form.required_docs[doc]),
@@ -129,6 +154,7 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     city_key: job.city_key ?? null,
     city: job.city ?? null,
     state: job.state ?? null,
+    state_region: job.state_region ?? '',
     latitude: job.latitude != null ? Number(job.latitude) : null,
     longitude: job.longitude != null ? Number(job.longitude) : null,
     job_type: job.job_type,

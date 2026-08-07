@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyLocationToJobForm, initialForm, jobFormToPayload, jobToForm, type JobForm,
+  applyLocationToJobForm, initialForm, jobFormToPayload, jobToForm, validateJobLocationFields, type JobForm,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
@@ -176,5 +176,68 @@ describe('jobToForm city + coordinates prefill', () => {
     expect(form.state).toBeNull();
     expect(form.latitude).toBeNull();
     expect(form.longitude).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// state_region -- independent SEO-region override (backend: resolveJobLocationFields)
+//
+// Note: origin/main's version of this file also tested `city` as a free-text
+// string field (trim/uppercase/null-when-blank), independent of the
+// city_key/city/state picker triple. That design isn't carried forward here:
+// per the merge doctrine, `city` stays the nullable picker field above (see
+// 'jobFormToPayload city + coordinates' and 'applyLocationToJobForm'), and
+// this frontend has no separate free-text SEO city input to exercise. Only
+// state_region -- which IS a genuinely new, independent field -- is added.
+// ---------------------------------------------------------------------------
+
+describe('jobFormToPayload state_region', () => {
+  it('serializes state_region as null (an explicit clear) when empty, independent of the city triple', () => {
+    const payload = jobFormToPayload({ ...initialForm, title: 'Job', location: 'Hayward, CA', trade_category: 'electrician' });
+    // `null` -- not omitted -- is the wire signal the backend's
+    // resolveJobLocationFields treats as a deliberate clear-override. Blank
+    // used to mean "omit" (defer to the parsed location); it now means
+    // "clear", because the Edit modal is prefilled with the job's stored
+    // state_region, so a blanked-out field is a deliberate choice.
+    const wire = JSON.parse(JSON.stringify(payload));
+    expect(wire).toHaveProperty('state_region', null);
+    // Untouched by state_region: the city triple is still all-or-none omitted.
+    expect('city' in payload).toBe(false);
+  });
+
+  it('uppercases a lowercase state_region in the payload', () => {
+    const payload = jobFormToPayload({ ...initialForm, state_region: 'ca' });
+    expect(payload.state_region).toBe('CA');
+  });
+
+  it('trims whitespace around state_region before uppercasing', () => {
+    const payload = jobFormToPayload({ ...initialForm, state_region: '  tx  ' });
+    expect(payload.state_region).toBe('TX');
+  });
+
+  it('serializes state_region as null when it is only whitespace', () => {
+    const payload = jobFormToPayload({ ...initialForm, state_region: '   ' });
+    const wire = JSON.parse(JSON.stringify(payload));
+    expect(wire).toHaveProperty('state_region', null);
+  });
+});
+
+describe('validateJobLocationFields', () => {
+  it('allows an empty state_region (optional field)', () => {
+    expect(validateJobLocationFields({ ...initialForm, state_region: '' })).toBeNull();
+  });
+
+  it('allows a valid 2-letter state_region regardless of case', () => {
+    expect(validateJobLocationFields({ ...initialForm, state_region: 'ca' })).toBeNull();
+    expect(validateJobLocationFields({ ...initialForm, state_region: 'TX' })).toBeNull();
+  });
+
+  it('rejects a state_region that mixes letters and digits', () => {
+    expect(validateJobLocationFields({ ...initialForm, state_region: '1A' })).toBe('state_region');
+  });
+
+  it('rejects a state_region with the wrong length', () => {
+    expect(validateJobLocationFields({ ...initialForm, state_region: 'CAL' })).toBe('state_region');
+    expect(validateJobLocationFields({ ...initialForm, state_region: 'C' })).toBe('state_region');
   });
 });

@@ -99,4 +99,53 @@ describe('employer-job-public-listing', () => {
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('legal_required');
   });
+
+  // ---------------------------------------------------------------------------
+  // Visibility-event hook -- transition matrix
+  // ---------------------------------------------------------------------------
+
+  function findEnqueueCall() {
+    return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
+  }
+
+  it("enqueues 'published' on false->true while the job is active", async () => {
+    mockUpdateReturning([{ id: JOB_ID, public_code: 'JOBCOD', public_listing_enabled: true, status: 'active', old_enabled: false }]);
+    const res = await handler(makeEvent({ body: JSON.stringify({ enabled: true }) }));
+    expect(res.statusCode).toBe(200);
+    const enqueueCall = findEnqueueCall();
+    expect(enqueueCall).toBeDefined();
+    expect(enqueueCall![1]).toEqual([JOB_ID, 'JOBCOD', 'published']);
+    // Must be inside the same transaction, before COMMIT.
+    const calls = mockQuery.mock.calls.map((c) => c[0]);
+    expect(calls.indexOf(calls.find((c) => typeof c === 'string' && c.includes('enqueue_job_visibility_event')))).toBeLessThan(calls.indexOf('COMMIT'));
+  });
+
+  it("enqueues 'removed' on true->false while the job is active", async () => {
+    mockUpdateReturning([{ id: JOB_ID, public_code: 'JOBCOD', public_listing_enabled: false, status: 'active', old_enabled: true }]);
+    const res = await handler(makeEvent({ body: JSON.stringify({ enabled: false }) }));
+    expect(res.statusCode).toBe(200);
+    const enqueueCall = findEnqueueCall();
+    expect(enqueueCall![1]).toEqual([JOB_ID, 'JOBCOD', 'removed']);
+  });
+
+  it('does NOT enqueue when turning on a listing for a paused (non-active) job', async () => {
+    mockUpdateReturning([{ id: JOB_ID, public_code: 'JOBCOD', public_listing_enabled: true, status: 'paused', old_enabled: false }]);
+    const res = await handler(makeEvent({ body: JSON.stringify({ enabled: true }) }));
+    expect(res.statusCode).toBe(200);
+    expect(findEnqueueCall()).toBeUndefined();
+  });
+
+  it('does NOT enqueue on a no-op write (already enabled, staying enabled)', async () => {
+    mockUpdateReturning([{ id: JOB_ID, public_code: 'JOBCOD', public_listing_enabled: true, status: 'active', old_enabled: true }]);
+    const res = await handler(makeEvent({ body: JSON.stringify({ enabled: true }) }));
+    expect(res.statusCode).toBe(200);
+    expect(findEnqueueCall()).toBeUndefined();
+  });
+
+  it('does NOT enqueue on a no-op write (already disabled, staying disabled)', async () => {
+    mockUpdateReturning([{ id: JOB_ID, public_code: 'JOBCOD', public_listing_enabled: false, status: 'active', old_enabled: false }]);
+    const res = await handler(makeEvent({ body: JSON.stringify({ enabled: false }) }));
+    expect(res.statusCode).toBe(200);
+    expect(findEnqueueCall()).toBeUndefined();
+  });
 });

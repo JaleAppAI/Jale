@@ -68,13 +68,16 @@ function parseOne(item: Record<string, unknown>): Ok<CityFields> | Err {
 
 /**
  * All-or-none parse of city_key/city/state on a request body.
- * ok+null   → none of the three fields present (legal: degraded picker).
+ * ok+null   → neither city_key nor state present (legal: either the degraded
+ *             picker sent nothing, or the caller is using the SEO channel's
+ *             `city`-only/`state_region` fields instead).
  * ok+value  → consistent, normalized triple.
- * error     → partial or invalid input.
+ * error     → city_key or state present without a full, consistent triple.
  */
 export function parseCityFields(body: Record<string, unknown>): Ok<CityFields | null> | Err {
+  const hasKeyOrState = ['city_key', 'state'].some((k) => Object.prototype.hasOwnProperty.call(body, k) && body[k] !== null && body[k] !== undefined);
+  if (!hasKeyOrState) return { ok: true, value: null };
   const present = ['city_key', 'city', 'state'].filter((k) => Object.prototype.hasOwnProperty.call(body, k) && body[k] !== null && body[k] !== undefined);
-  if (present.length === 0) return { ok: true, value: null };
   if (present.length !== 3) return { ok: false, error: 'invalid_city_fields' };
   return parseOne(body);
 }

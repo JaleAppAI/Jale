@@ -19,8 +19,20 @@ describe('parseCityFields', () => {
       .toEqual({ ok: true, value: { city_key: 'el-paso-tx', city: 'El Paso', state: 'TX' } });
   });
 
-  it('rejects a partial triple', () => {
-    expect(parseCityFields({ city: 'El Paso' })).toEqual({ ok: false, error: 'invalid_city_fields' });
+  it('treats a lone `city` (no city_key/state) as the SEO-only channel: ok+null', () => {
+    expect(parseCityFields({ city: 'El Paso' })).toEqual({ ok: true, value: null });
+  });
+
+  it('rejects `state` present without city_key/city', () => {
+    expect(parseCityFields({ state: 'TX' })).toEqual({ ok: false, error: 'invalid_city_fields' });
+  });
+
+  it('rejects `city_key` present without city/state', () => {
+    expect(parseCityFields({ city_key: 'el-paso-tx' })).toEqual({ ok: false, error: 'invalid_city_fields' });
+  });
+
+  it('treats `city: null` alone as absent (ok+null)', () => {
+    expect(parseCityFields({ city: null })).toEqual({ ok: true, value: null });
   });
 
   it('rejects a key that does not match slug(city, state)', () => {
@@ -72,6 +84,10 @@ describe('parsePreferredCities', () => {
   it('rejects non-arrays and bad items', () => {
     expect(parsePreferredCities('nope' as never)).toEqual({ ok: false, error: 'invalid_preferred_cities' });
     expect(parsePreferredCities([{ city_key: 'austin-tx', city: 'El Paso', state: 'TX' }])).toEqual({ ok: false, error: 'invalid_preferred_cities' });
+  });
+
+  it('still rejects a lone-city item (parsePreferredCities requires a full triple per item, unlike parseCityFields)', () => {
+    expect(parsePreferredCities([{ city: 'El Paso' }])).toEqual({ ok: false, error: 'invalid_preferred_cities' });
   });
 });
 

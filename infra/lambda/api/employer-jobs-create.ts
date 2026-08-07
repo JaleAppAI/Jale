@@ -3,6 +3,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs } from '../lib/job-fields';
+import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
@@ -42,8 +43,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       required_experience_months?: number | null;
       certifications?: string[];
       city_key?: string;
-      city?: string;
+      city?: string | null;
       state?: string;
+      state_region?: string | null;
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -70,6 +72,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     const required_docs = requiredDocsResult.value;
 
+    // Explicit city/state_region body fields win over the parse -- an employer
+    // must always be able to correct a location the parser can't handle.
+    const locationFields = resolveJobLocationFields(location.trim(), body.city, body.state_region);
+    if (!locationFields.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: locationFields.error }) };
+    }
+
     const jobFields = parseJobFields(body as Record<string, unknown>);
     if (!jobFields.ok) {
       return {
@@ -91,7 +100,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // Degraded-picker fallback: no triple sent -> best-effort parse of the
     // free-text location, so the job still enters city-filtered feeds.
-    const cityTriple = cityFields.value ?? parseCityFromLocation(location);
+    // An explicit `city: null` (the SEO fields' deliberate-clear semantics)
+    // suppresses the derive too -- a cleared city must not resurrect as a
+    // city_key and keep the job matching the old city's feed.
+    const cityTriple = locationFields.cityCleared
+      ? null
+      : (cityFields.value ?? parseCityFromLocation(location));
 
     const pool = await getDbPool();
     client = await pool.connect();
@@ -171,10 +185,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          certifications,
          city_key,
          city,
-         state
+         state,
+         state_region
        )
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -182,7 +197,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
-         city_key, city, state`,
+         city_key, city, state, state_region`,
       [
         userId,
         title.trim(),
@@ -205,9 +220,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.required_experience_years,
         jobFields.value.required_experience_months,
         jobFields.value.certifications,
+        // The two location systems share the `city` column: the validated
+        // picker triple wins, then the SEO resolver's (explicit-or-parsed)
+        // city -- identical strings whenever both are present.
         cityTriple?.city_key ?? null,
-        cityTriple?.city ?? null,
+        cityTriple?.city ?? locationFields.value.city,
         cityTriple?.state ?? null,
+        locationFields.value.state_region,
       ],
     );
     const job = result.rows[0];

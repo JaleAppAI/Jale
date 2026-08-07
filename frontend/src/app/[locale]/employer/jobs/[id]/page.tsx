@@ -26,6 +26,7 @@ import { applicationStatusTone, jobStatusTone } from '@/lib/status';
 import type { WritableJobStatus } from '@/lib/status';
 import { formatStartDate } from '@/lib/date';
 import { PublicListingToggle } from '@/components/employer/PublicListingToggle';
+import { EmployerShareJobPanel } from '@/components/employer/EmployerShareJobPanel';
 
 export const dynamic = 'force-dynamic';
 
@@ -270,8 +271,18 @@ export default function JobDetailPage() {
             </div>
           </Card>
 
-          <div className="mb-6">
-            <PublicListingToggle jobId={job.id} initialEnabled={job.public_listing_enabled} publicCode={job.public_code} />
+          <div className="mb-6 space-y-3">
+            <PublicListingToggle
+              jobId={job.id}
+              initialEnabled={job.public_listing_enabled}
+              publicCode={job.public_code}
+              onEnabledChange={(enabled) => setJob((current) => current ? { ...current, public_listing_enabled: enabled } : current)}
+            />
+            <EmployerShareJobPanel
+              jobId={job.id}
+              publicListingEnabled={job.public_listing_enabled}
+              jobTitle={job.title}
+            />
           </div>
 
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">

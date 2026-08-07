@@ -202,10 +202,17 @@ MIGRATIONS=(
   "058_referral_open_dedupe_grant.sql"
   "059_share_link_claim_read.sql"
   "060_trade_aliases.sql"
-  "061_city_keys_and_preferred_cities.sql"
-  "062_preferred_cities_whatsapp_read.sql"
-  "063_city_key_backfill_repair.sql"
-  "064_preferred_city_centroids.sql"
+  "061_job_geo_and_seo_grants.sql"
+  "062_job_visibility_outbox.sql"
+  "063_employer_referral_links.sql"
+  # 064-067 are the location-feature migrations, applied to prod pre-merge
+  # under the numbers 061-064 (before main's independent 061-063 existed).
+  # On a ledger-tracked database that already has them:
+  #   --baseline-through 067_preferred_city_centroids.sql
+  "064_city_keys_and_preferred_cities.sql"
+  "065_preferred_cities_whatsapp_read.sql"
+  "066_city_key_backfill_repair.sql"
+  "067_preferred_city_centroids.sql"
 )
 
 WORKDIR="$(mktemp -d)"
