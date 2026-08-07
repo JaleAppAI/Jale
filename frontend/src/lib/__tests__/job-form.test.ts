@@ -116,6 +116,29 @@ describe('applyLocationToJobForm', () => {
     expect(next.trade_category).toBe('other');
   });
 
+  it('derives state_region from the picked state (no input of its own) and blanks it on free text', () => {
+    const picked = applyLocationToJobForm(base, {
+      label: 'El Paso, TX 79901',
+      cityKey: 'el-paso-tx',
+      city: 'El Paso',
+      state: 'TX',
+      latitude: 31.76,
+      longitude: -106.49,
+    });
+    expect(picked.state_region).toBe('TX');
+
+    const freeTyped = applyLocationToJobForm(picked, {
+      label: 'somewhere near the border',
+      cityKey: null,
+      city: null,
+      state: null,
+      latitude: null,
+      longitude: null,
+    });
+    // Blank -> the payload omits it and the backend parses the location text.
+    expect(freeTyped.state_region).toBe('');
+  });
+
   it('nulls a previously picked city when the user free-types over it', () => {
     const picked = applyLocationToJobForm(base, {
       label: 'El Paso, TX 79901',

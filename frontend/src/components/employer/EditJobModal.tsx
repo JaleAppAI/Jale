@@ -124,14 +124,6 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
               </Select>
             </Field>
           </div>
-          <Field label={t('modal.state_region')}>
-            <Input
-              value={form.state_region}
-              onChange={(e) => update('state_region', e.target.value.toUpperCase())}
-              placeholder={t('modal.state_region_placeholder')}
-              maxLength={2}
-            />
-          </Field>
           <Field label={t('modal.trade_category')} required>
             <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
               <option value="">{t('modal.select_placeholder')}</option>
