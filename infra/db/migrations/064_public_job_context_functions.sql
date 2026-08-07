@@ -25,7 +25,14 @@
 --   specific job the caller is viewing, via public_code) and users (to
 --   resolve the referring worker's first name) DO need new gated policies,
 --   since neither table's existing policies admit a SECURITY DEFINER session
---   with no app.current_user_id set.
+--   with no app.current_user_id set. The jobs join is deliberately STRICTER
+--   than 056's jobs_public_read policy (`USING (public_listing_enabled)`,
+--   status excluded on purpose so a filled/paused job still renders a
+--   friendly closed page instead of a 404): this function additionally
+--   requires status = 'active', because a referrer's identity (a worker's
+--   first name) is a step more sensitive than the closed-page copy and must
+--   stop being resolvable the moment a listing is unpublished, paused, or
+--   closed -- not just when it is fully un-listed.
 --
 -- public_job_company(p_job_id):
 --   Reads jobs (new jobs_company_lookup policy, same GUC as above) and
@@ -113,6 +120,14 @@ BEGIN
        WHERE l.code = p_code
          AND l.revoked_at IS NULL
          AND j.public_code = p_job_public_code
+         -- Referrer-identity leak guard: an unpublished, paused, or closed
+         -- job must resolve to zero rows here, even though the job itself
+         -- may still render a friendly closed public page under the looser
+         -- jobs_public_read policy. Without this, a share code for a job the
+         -- employer has since un-listed (or paused/closed) would still
+         -- reveal who referred it.
+         AND j.public_listing_enabled
+         AND j.status = 'active'
          -- Organic shares (both referrer columns NULL) yield NO row -- there
          -- is no referrer to attribute, not a row with a NULL kind.
          AND (l.referrer_worker_id IS NOT NULL OR l.referrer_employer_id IS NOT NULL);

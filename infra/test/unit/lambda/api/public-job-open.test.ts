@@ -93,6 +93,58 @@ describe('public-job-open Lambda', () => {
     expect(mockQuery.mock.calls[5][0]).toBe('COMMIT');
   });
 
+  // Ported from prod's public-job.test.ts (git history), adapted to this
+  // endpoint's own mocking shape (204 responses, no job body in the result).
+  it('does not bump the counter when the dedupe guard says this visitor was already counted', async () => {
+    mockGetVisitorSalt.mockResolvedValue('test-salt');
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] })      // job lookup
+      .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] })    // share link match
+      .mockResolvedValueOnce({})                                  // BEGIN
+      .mockResolvedValueOnce({ rows: [] })                        // guarded INSERT -> already seen
+      .mockResolvedValueOnce({});                                 // COMMIT
+
+    const res = await handler(makeEvent({
+      code: 'ABC123',
+      body: JSON.stringify({ r: 'ABCD1234' }),
+      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; like Mac OS X)' },
+    }));
+
+    expect(res.statusCode).toBe(204);
+    expect(mockQuery.mock.calls.some((c) => /open_count = open_count \+ 1/.test(c[0]))).toBe(false);
+    // The dedupe no-op is not an error -- the transaction still commits.
+    expect(mockQuery.mock.calls[4][0]).toBe('COMMIT');
+  });
+
+  // Ported from prod's public-job.test.ts (git history), adapted to this
+  // endpoint's own mocking shape (204 responses, no job body in the result).
+  it('rolls back and never commits the open insert when the counter-UPDATE rejects', async () => {
+    // Guards the atomicity fix: open_count is surfaced straight to the
+    // referring worker, so a partial write (insert lands, update fails) must
+    // never be left committed.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] })      // job lookup
+      .mockResolvedValueOnce({ rows: [{ code: 'ABCD1234' }] })    // share link match
+      .mockResolvedValueOnce({})                                  // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'open-1' }] })        // guarded insert -> recorded
+      .mockRejectedValueOnce(new Error('update failed'))          // counter bump rejects
+      .mockResolvedValueOnce({});                                 // ROLLBACK
+
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await handler(makeEvent({
+      code: 'ABC123',
+      body: JSON.stringify({ r: 'ABCD1234' }),
+    }));
+
+    // Recording an open must never fail the (fire-and-forget) request.
+    expect(res.statusCode).toBe(204);
+    // The insert did run, but inside the transaction that was then rolled back.
+    expect(mockQuery.mock.calls[3][0]).toContain('INSERT INTO job_share_opens');
+    expect(mockQuery.mock.calls[5][0]).toBe('ROLLBACK');
+    expect(mockQuery.mock.calls.some((call) => call[0] === 'COMMIT')).toBe(false);
+    errorSpy.mockRestore();
+  });
+
   it('records an untagged open (share_code null) when r is malformed', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] }) // job lookup

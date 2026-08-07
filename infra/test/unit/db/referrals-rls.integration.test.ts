@@ -1908,6 +1908,30 @@ maybeDescribe('job-referrals RLS integration (migration 056)', () => {
         expect(result.rows).toEqual([{ kind: 'worker', first_name: null }]);
       });
 
+      it('(i) a matching share code whose job has public_listing_enabled = false returns zero rows (referrer-identity leak guard)', async () => {
+        const referrer = await makeNamedWorker('Unpublished Referrer');
+        const jobId = await makeJob({ public_listing_enabled: false });
+        const publicCode = await getJobPublicCode(jobId);
+        const code = await makeWorkerShareLink(jobId, referrer.id);
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query(`SELECT * FROM public_referrer_context($1, $2)`, [code, publicCode]),
+        );
+        expect(result.rows).toHaveLength(0);
+      });
+
+      it('(j) a matching share code whose job has status = paused returns zero rows (referrer-identity leak guard)', async () => {
+        const referrer = await makeNamedWorker('Paused Referrer');
+        const jobId = await makeJob({ status: 'paused' });
+        const publicCode = await getJobPublicCode(jobId);
+        const code = await makeWorkerShareLink(jobId, referrer.id);
+
+        const result = await asPublicJobs(publicUrl, (client) =>
+          client.query(`SELECT * FROM public_referrer_context($1, $2)`, [code, publicCode]),
+        );
+        expect(result.rows).toHaveLength(0);
+      });
+
       it('(g) jale_public_jobs still cannot SELECT directly from users or employer_profiles -- the definer functions are the only door', async () => {
         await expect(
           asPublicJobs(publicUrl, (client) => client.query(`SELECT full_name FROM users LIMIT 1`)),

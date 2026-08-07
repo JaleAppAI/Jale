@@ -1,3 +1,5 @@
+import type { APIGatewayProxyEvent } from 'aws-lambda';
+
 /**
  * Shared CORS headers for Lambda responses.
  *
@@ -23,6 +25,22 @@ export type UserType = (typeof VALID_USER_TYPES)[number];
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * Case-insensitive header lookup on an APIGatewayProxyEvent. API Gateway does
+ * not guarantee header key casing (e.g. `User-Agent` vs `user-agent`), so a
+ * plain `event.headers['User-Agent']` lookup is unreliable. Shared by the
+ * public-jobs endpoints (public-job-open.ts, public-job-apply-intent.ts) --
+ * was previously duplicated verbatim in both.
+ */
+export function getHeader(event: APIGatewayProxyEvent, name: string): string | undefined {
+  const headers = event.headers ?? {};
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lower) return headers[key] ?? undefined;
+  }
+  return undefined;
 }
 
 /**

@@ -275,6 +275,7 @@ export default function JobDetailPage() {
               jobId={job.id}
               initialEnabled={job.public_listing_enabled}
               jobTitle={job.title}
+              publicCode={job.public_code}
             />
           </div>
 

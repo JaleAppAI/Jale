@@ -281,6 +281,20 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     }
   });
 
+  test('public SEO surface cache policy caps MaxTTL at 60s (bounds unpublish staleness)', () => {
+    // maxTtl was previously 300s, which could leave an unpublished/paused job's
+    // page served stale at the edge for up to 5 minutes after the employer
+    // acted. Capped at 60s so worst-case staleness (edge + ISR) stays ~2 min.
+    template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
+      CachePolicyConfig: Match.objectLike({
+        Comment: Match.stringLikeRegexp('Short-TTL cache for public job pages'),
+        DefaultTTL: 60,
+        MaxTTL: 60,
+        MinTTL: 0,
+      }),
+    });
+  });
+
   test('creates Route 53 A and AAAA records', () => {
     template.hasResourceProperties('AWS::Route53::RecordSet', {
       Type: 'A',

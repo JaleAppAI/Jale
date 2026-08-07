@@ -884,7 +884,9 @@
     "error_not_public": "This job doesn't have a public page yet, so it can't be shared.",
     "error_generic": "Couldn't create a share link right now. Please try again.",
     "error_qr": "Couldn't generate the QR code. Please try again.",
-    "tracked_caption": "Opens and signups from this link are tracked and credited to your business."
+    "tracked_caption": "Opens and signups from this link are tracked and credited to your business.",
+    "fallback_link_label": "Backup link",
+    "fallback_link_untracked": "This link works, but opens and signups from it won't be tracked or credited to your business. Try \"Get share link\" again later for a trackable link."
   },
   "job_share": {
     "title": "Share this job",

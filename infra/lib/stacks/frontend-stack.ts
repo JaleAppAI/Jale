@@ -242,12 +242,20 @@ function handler(event) {
     // Query strings are excluded from the cache key so that `?r=` share codes on
     // job links (referral attribution) never fragment the cache into one entry
     // per share code.
+    //
+    // maxTtl is capped at 60s (not 300s) so that unpublishing a job (toggling
+    // public_listing_enabled off, or pausing/closing it) cannot leave a stale
+    // "still public" edge response served for up to 5 minutes after the
+    // employer acted. Worst case now: an edge cache entry can be up to 60s
+    // stale, plus the underlying Next.js ISR page can itself be up to 60s
+    // stale, for a combined worst-case staleness of ~2 minutes -- an
+    // acceptable trade against the extra Lambda load from an even shorter TTL.
     const publicPagesCachePolicy = new cloudfront.CachePolicy(this, 'PublicPagesShortTtl', {
       comment:
         'Short-TTL cache for public job pages + SEO files; query strings excluded so ?r= share codes never fragment the cache',
       minTtl: cdk.Duration.seconds(0),
       defaultTtl: cdk.Duration.seconds(60),
-      maxTtl: cdk.Duration.seconds(300),
+      maxTtl: cdk.Duration.seconds(60),
       enableAcceptEncodingGzip: true,
       enableAcceptEncodingBrotli: true,
       cookieBehavior: cloudfront.CacheCookieBehavior.none(),

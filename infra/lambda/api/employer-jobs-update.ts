@@ -312,6 +312,7 @@ async function handleFieldEdit(
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
+         city, state_region,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],
     );

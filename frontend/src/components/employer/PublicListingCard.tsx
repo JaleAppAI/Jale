@@ -12,6 +12,13 @@ interface PublicListingCardProps {
   /** The job's current opt-in state, from the detail fetch. */
   initialEnabled: boolean;
   jobTitle: string;
+  /**
+   * The job's short public code (/j/{publicCode}). Optional so callers that
+   * don't have it yet degrade gracefully, but in practice always passed --
+   * it backs the untracked fallback link shown when the tracked share fetch
+   * fails, so an employer is never left with literally no link to hand out.
+   */
+  publicCode?: string;
 }
 
 // The employer's opt-IN to a public job page (migration 057), merged with the
@@ -21,12 +28,15 @@ interface PublicListingCardProps {
 // also state plainly what is shared -- consent that does not say what is
 // shared is not consent.
 //
-// The bare /j/{public_code} URL is intentionally never shown here: the
-// tracked share link minted by POST /employer/jobs/{jobId}/share is the only
-// link an employer ever sees, so every open/signup can be credited to their
-// business. The share half only renders once the toggle is on, and turning
-// the toggle off clears any fetched share link so stale link UI can't linger.
-export function PublicListingCard({ jobId, initialEnabled, jobTitle }: PublicListingCardProps) {
+// The bare /j/{public_code} URL is intentionally NOT shown as the primary
+// link: the tracked share link minted by POST /employer/jobs/{jobId}/share is
+// preferred whenever it's available, so opens/signups can be credited to the
+// employer's business. But when that fetch FAILS (shareError set) and
+// publicCode is known, the bare link is shown as a copyable fallback -- an
+// employer must never be left with no link at all just because the tracking
+// endpoint had a bad moment. The fallback is explicitly labeled untracked so
+// it's never confused with the tracked link.
+export function PublicListingCard({ jobId, initialEnabled, jobTitle, publicCode }: PublicListingCardProps) {
   const t = useTranslations('employer_job_listing');
   const { idToken } = useAuth();
 
@@ -41,6 +51,13 @@ export function PublicListingCard({ jobId, initialEnabled, jobTitle }: PublicLis
   const [copiedLink, setCopiedLink] = useState(false);
   const [generatingQr, setGeneratingQr] = useState(false);
   const [shareError, setShareError] = useState<string | null>(null);
+  const [copiedFallback, setCopiedFallback] = useState(false);
+
+  // Same origin as the app -- the public page lives on this domain, so no
+  // config is needed and the link is correct in every environment.
+  const fallbackUrl = publicCode
+    ? (typeof window !== 'undefined' ? `${window.location.origin}/j/${publicCode}` : `/j/${publicCode}`)
+    : null;
 
   function clearShareState() {
     setShareUrl(null);
@@ -99,6 +116,18 @@ export function PublicListingCard({ jobId, initialEnabled, jobTitle }: PublicLis
       await navigator.clipboard.writeText(shareUrl);
       setCopiedLink(true);
       window.setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      // Clipboard can be unavailable (permissions, http); the URL is visible
+      // as text either way, so failing quietly loses nothing.
+    }
+  }
+
+  async function handleCopyFallback() {
+    if (!fallbackUrl) return;
+    try {
+      await navigator.clipboard.writeText(fallbackUrl);
+      setCopiedFallback(true);
+      window.setTimeout(() => setCopiedFallback(false), 2000);
     } catch {
       // Clipboard can be unavailable (permissions, http); the URL is visible
       // as text either way, so failing quietly loses nothing.
@@ -205,6 +234,32 @@ export function PublicListingCard({ jobId, initialEnabled, jobTitle }: PublicLis
           )}
 
           {shareError && <p className="text-sm text-red-600">{shareError}</p>}
+
+          {/* No-link-on-share-failure fallback: the tracked-link fetch above
+              failed, but the employer still needs SOME link to hand out.
+              Only shown when the tracked link never came through -- once
+              shareUrl exists, the tracked link is the only link shown. */}
+          {shareError && !shareUrl && fallbackUrl && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-muted-foreground">{t('fallback_link_label')}</p>
+              <div className="flex items-center gap-2 rounded-lg bg-gray-50 border px-3 py-2">
+                <Input
+                  readOnly
+                  value={fallbackUrl}
+                  onFocus={(e) => e.currentTarget.select()}
+                  className="font-mono text-xs sm:text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyFallback}
+                  className="shrink-0 text-sm font-semibold text-blue-700 hover:text-blue-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                >
+                  {copiedFallback ? t('copied') : t('copy_link')}
+                </button>
+              </div>
+              <p className="text-xs text-muted-foreground">{t('fallback_link_untracked')}</p>
+            </div>
+          )}
         </div>
       )}
     </div>

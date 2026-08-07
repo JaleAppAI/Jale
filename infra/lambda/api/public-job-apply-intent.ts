@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getPublicJobsDbPool } from '../lib/db';
-import { corsHeaders, errorMessage } from '../lib/http';
+import { corsHeaders, errorMessage, getHeader } from '../lib/http';
 import {
   normalizeCode,
   isValidJobCode,
@@ -21,15 +21,6 @@ import {
 const CORS_HEADERS = corsHeaders();
 const UNIQUE_VIOLATION = '23505';
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-
-function getHeader(event: APIGatewayProxyEvent, name: string): string | undefined {
-  const headers = event.headers ?? {};
-  const lower = name.toLowerCase();
-  for (const key of Object.keys(headers)) {
-    if (key.toLowerCase() === lower) return headers[key] ?? undefined;
-  }
-  return undefined;
-}
 
 /** Returns a confident 2-letter locale, or null. Never throws on malformed input. */
 function parseLocale(acceptLanguage: string | undefined): string | null {

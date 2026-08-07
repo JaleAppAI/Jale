@@ -884,7 +884,9 @@
     "error_not_public": "Este trabajo todavía no tiene página pública, así que no se puede compartir.",
     "error_generic": "No pudimos crear un enlace para compartir en este momento. Intenta de nuevo.",
     "error_qr": "No pudimos generar el código QR. Intenta de nuevo.",
-    "tracked_caption": "Las visitas y registros desde este enlace se rastrean y se acreditan a tu negocio."
+    "tracked_caption": "Las visitas y registros desde este enlace se rastrean y se acreditan a tu negocio.",
+    "fallback_link_label": "Enlace de respaldo",
+    "fallback_link_untracked": "Este enlace funciona, pero las visitas y registros desde él no se rastrearán ni se acreditarán a tu negocio. Intenta \"Obtener enlace\" de nuevo más tarde para conseguir un enlace rastreable."
   },
   "job_share": {
     "title": "Comparte este trabajo",

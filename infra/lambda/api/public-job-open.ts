@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getPublicJobsDbPool } from '../lib/db';
-import { corsHeaders, errorMessage } from '../lib/http';
+import { corsHeaders, errorMessage, getHeader } from '../lib/http';
 import { normalizeCode, isValidJobCode, isValidShareCode, hashVisitor } from '../lib/referral-codes';
 import { getVisitorSalt } from '../lib/referral-secrets';
 
@@ -49,15 +49,6 @@ function parseLocale(acceptLanguage: string | undefined): string | null {
   const match = first.match(/^([a-zA-Z]{2})(?:[-_][a-zA-Z]{2,})?(?:;.*)?$/);
   if (!match) return null;
   return match[1].toLowerCase();
-}
-
-function getHeader(event: APIGatewayProxyEvent, name: string): string | undefined {
-  const headers = event.headers ?? {};
-  const lower = name.toLowerCase();
-  for (const key of Object.keys(headers)) {
-    if (key.toLowerCase() === lower) return headers[key] ?? undefined;
-  }
-  return undefined;
 }
 
 export const handler = async (

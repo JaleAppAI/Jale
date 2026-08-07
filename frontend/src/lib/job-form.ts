@@ -72,18 +72,12 @@ export function validateJobLocationFields(form: JobForm): 'state_region' | null 
   return null;
 }
 
-export function jobFormToPayload(form: JobForm): JobWritePayload {
+type BasePayload = Omit<JobWritePayload, 'city' | 'state_region'>;
+
+function jobFormToBasePayload(form: JobForm): BasePayload {
   return {
     title: form.title.trim(),
     location: form.location.trim(),
-    // Blank means "clear" now, not "omit" -- the Edit modal is prefilled with
-    // stored city/state_region (employer-jobs-detail.ts now returns them), so
-    // an employer who deliberately blanks the field out is choosing to clear
-    // it, not leaving it untouched. `null` is the wire signal
-    // resolveJobLocationFields (backend) treats as an explicit clear-override,
-    // distinct from an omitted key which falls back to the parsed location.
-    city: form.city.trim() || null,
-    state_region: form.state_region.trim().toUpperCase() || null,
     job_type: form.job_type,
     description: form.description.trim() || undefined,
     required_docs: DOC_TYPES.filter((doc) => form.required_docs[doc]),
@@ -100,6 +94,53 @@ export function jobFormToPayload(form: JobForm): JobWritePayload {
     trade_category: form.trade_category as string,
     required_experience_years: parseOptionalNumber(form.required_experience_years),
     certifications: splitDedupe(form.certifications),
+  };
+}
+
+/**
+ * CREATE path: there is no previously-stored city/state_region to protect, so
+ * a blank field is OMITTED from the payload entirely (the key is absent,
+ * `undefined`) rather than sent as an explicit `null`. That lets the
+ * backend's resolveJobLocationFields fall back to auto-parsing city/state out
+ * of the free-text `location` field -- which is what a new job with a blank
+ * city input actually wants. Sending an explicit `null` here (the old,
+ * buggy, single-function behavior) forced the parsed location to be
+ * discarded on every create where the employer left city/state blank.
+ */
+export function jobFormToCreatePayload(form: JobForm): JobWritePayload {
+  const cityTrimmed = form.city.trim();
+  const stateTrimmed = form.state_region.trim().toUpperCase();
+  return {
+    ...jobFormToBasePayload(form),
+    city: cityTrimmed || undefined,
+    state_region: stateTrimmed || undefined,
+  };
+}
+
+/**
+ * EDIT path: the form is prefilled from the stored job (see jobToForm), so a
+ * blank field is ambiguous unless we know what it started as:
+ *   - started non-empty, now blank -> the employer deliberately cleared it:
+ *     send an explicit `null` (resolveJobLocationFields' clear-override).
+ *   - started empty, still blank -> never touched: OMIT the key so the
+ *     backend's auto-parse from `location` still gets a chance to fill it in,
+ *     the same as create.
+ *   - non-blank current value -> send it, same as create.
+ * `initial` is the city/state_region the form was prefilled with (typically
+ * the loaded job, or the initial JobForm snapshot taken before edits began).
+ */
+export function jobFormToEditPayload(
+  form: JobForm,
+  initial: Pick<JobForm, 'city' | 'state_region'>,
+): JobWritePayload {
+  const cityTrimmed = form.city.trim();
+  const stateTrimmed = form.state_region.trim().toUpperCase();
+  const initialCityHadValue = initial.city.trim().length > 0;
+  const initialStateHadValue = initial.state_region.trim().length > 0;
+  return {
+    ...jobFormToBasePayload(form),
+    city: cityTrimmed || (initialCityHadValue ? null : undefined),
+    state_region: stateTrimmed || (initialStateHadValue ? null : undefined),
   };
 }
 
