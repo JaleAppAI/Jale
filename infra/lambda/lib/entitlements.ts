@@ -6,6 +6,7 @@ import type { PoolClient } from 'pg';
 export interface Entitlements {
   planCode: string;
   activeJobLimit: number;
+  templateLimit: number;
 }
 
 export async function resolveEntitlements(
@@ -35,5 +36,7 @@ export async function resolveEntitlements(
   if (res.rows.length !== 1) throw new Error('billing_plan_catalog_invalid');
   const limit = Number(res.rows[0].entitlements?.active_job_limit);
   if (!Number.isInteger(limit) || limit < 0) throw new Error('billing_plan_catalog_invalid');
-  return { planCode: res.rows[0].plan_code, activeJobLimit: limit };
+  const templateLimit = Number(res.rows[0].entitlements?.template_limit);
+  if (!Number.isInteger(templateLimit) || templateLimit < 0) throw new Error('billing_plan_catalog_invalid');
+  return { planCode: res.rows[0].plan_code, activeJobLimit: limit, templateLimit };
 }

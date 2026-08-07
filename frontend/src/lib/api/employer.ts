@@ -18,6 +18,7 @@ export type ApiErrorPayload = {
   plan_code?: string;
   active_job_limit?: number;
   active_jobs?: number;
+  template_limit?: number;
   requiredVersion?: string;
   currentVersion?: string;
   required?: string[];
@@ -27,6 +28,7 @@ const ALLOWED_PAYLOAD_KEYS = [
   'plan_code',
   'active_job_limit',
   'active_jobs',
+  'template_limit',
   'requiredVersion',
   'currentVersion',
   'required',
@@ -516,6 +518,33 @@ export async function updateJobStatus(
 
 export async function deleteJob(token: string, jobId: string): Promise<void> {
   const res = await apiFetch(`/employer/jobs/${jobId}`, { method: 'DELETE' }, token);
+  if (!res.ok) throw await parseApiError(res, 'delete_failed');
+}
+
+export type JobTemplate = {
+  id: string;
+  name: string;
+  payload: JobWritePayload;
+  updated_at: string;
+};
+
+export async function listJobTemplates(token: string): Promise<JobTemplate[]> {
+  const res = await apiFetch('/employer/templates', {}, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return (await res.json()).templates;
+}
+
+export async function saveJobTemplate(
+  token: string,
+  data: { id?: string; name: string; payload: JobWritePayload },
+): Promise<JobTemplate> {
+  const res = await apiFetch('/employer/templates', { method: 'POST', body: JSON.stringify(data) }, token);
+  if (!res.ok) throw await parseApiError(res, 'save_failed');
+  return res.json();
+}
+
+export async function deleteJobTemplate(token: string, templateId: string): Promise<void> {
+  const res = await apiFetch(`/employer/templates/${templateId}`, { method: 'DELETE' }, token);
   if (!res.ok) throw await parseApiError(res, 'delete_failed');
 }
 
