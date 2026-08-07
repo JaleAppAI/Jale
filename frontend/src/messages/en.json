@@ -857,21 +857,14 @@
     "openings_chip": "{count, plural, one {# opening} other {# openings}}",
     "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
   },
-  "employer_job_visibility": {
+  "employer_job_listing": {
     "title": "Public job page",
     "benefit": "Making this posting public lets it reach more people - your workers can share it directly, and someone can read it without an account.",
     "shares": "Shared publicly: job title, company, location, pay and description. Never shared: your contact details, your other jobs, or anyone who has applied.",
     "enabled": "Public - anyone with the link can read this posting",
     "disabled": "Private - only workers signed in to Jale can see it",
-    "error": "Could not update visibility. Please try again.",
-    "link_label": "Public link",
-    "copy": "Copy",
-    "copied": "Copied!"
-  },
-  "employer_job_share": {
-    "title": "Shareable link and QR code",
-    "subtitle": "Get a trackable link or a printable QR code for \"{jobTitle}\" -- handy for job fairs and flyers.",
-    "disabled_hint": "Turn on the public job page above to unlock a shareable link and QR code.",
+    "toggle_error": "Could not update visibility. Please try again.",
+    "subtitle": "Get a shareable link or QR code for \"{jobTitle}\" -- handy for job fairs and flyers.",
     "get_link": "Get share link",
     "loading": "Getting link...",
     "copy_link": "Copy link",
@@ -881,7 +874,8 @@
     "error_misconfigured": "Sharing isn't available right now. Please try again later.",
     "error_not_public": "This job doesn't have a public page yet, so it can't be shared.",
     "error_generic": "Couldn't create a share link right now. Please try again.",
-    "error_qr": "Couldn't generate the QR code. Please try again."
+    "error_qr": "Couldn't generate the QR code. Please try again.",
+    "tracked_caption": "Opens and signups from this link are tracked and credited to your business."
   },
   "job_share": {
     "title": "Share this job",
