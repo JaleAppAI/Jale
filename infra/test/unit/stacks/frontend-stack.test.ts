@@ -290,7 +290,7 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
         Comment: Match.stringLikeRegexp('Short-TTL cache for public job pages'),
         DefaultTTL: 60,
         MaxTTL: 60,
-        MinTTL: 0,
+        MinTTL: 60,
       }),
     });
   });
