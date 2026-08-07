@@ -244,6 +244,43 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     expect(code).toContain('delete request.headers.authorization');
   });
 
+  test('CloudFront has short-TTL cache behaviors for public SEO surfaces', () => {
+    template.hasResourceProperties(
+      'AWS::CloudFront::Distribution',
+      Match.objectLike({
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({ PathPattern: '/en/j/*' }),
+            Match.objectLike({ PathPattern: '/es/j/*' }),
+            Match.objectLike({ PathPattern: '/sitemap.xml' }),
+            Match.objectLike({ PathPattern: '/feed.xml' }),
+            Match.objectLike({ PathPattern: '/robots.txt' }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  test('public SEO surface behaviors use a real cache policy, not CACHING_DISABLED', () => {
+    const distros = template.findResources('AWS::CloudFront::Distribution');
+    const distro = Object.values(distros)[0] as {
+      Properties: {
+        DistributionConfig: {
+          CacheBehaviors?: Array<{ PathPattern: string; CachePolicyId: string }>;
+        };
+      };
+    };
+    const behaviors = distro.Properties.DistributionConfig.CacheBehaviors ?? [];
+    const CACHING_DISABLED_ID = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad';
+
+    for (const pattern of ['/en/j/*', '/sitemap.xml']) {
+      const behavior = behaviors.find((b) => b.PathPattern === pattern);
+      expect(behavior).toBeDefined();
+      expect(behavior?.CachePolicyId).toBeDefined();
+      expect(behavior?.CachePolicyId).not.toBe(CACHING_DISABLED_ID);
+    }
+  });
+
   test('creates Route 53 A and AAAA records', () => {
     template.hasResourceProperties('AWS::Route53::RecordSet', {
       Type: 'A',
