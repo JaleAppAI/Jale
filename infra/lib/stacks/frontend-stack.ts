@@ -237,6 +237,32 @@ function handler(event) {
       },
     );
 
+    // Public SEO surfaces (job pages + crawler files) are server-rendered but not
+    // user-specific — short-TTL edge caching is safe and takes load off the Lambda.
+    // Query strings are excluded from the cache key so that `?r=` share codes on
+    // job links (referral attribution) never fragment the cache into one entry
+    // per share code.
+    //
+    // maxTtl is capped at 60s (not 300s) so that unpublishing a job (toggling
+    // public_listing_enabled off, or pausing/closing it) cannot leave a stale
+    // "still public" edge response served for up to 5 minutes after the
+    // employer acted. Worst case now: an edge cache entry can be up to 60s
+    // stale, plus the underlying Next.js ISR page can itself be up to 60s
+    // stale, for a combined worst-case staleness of ~2 minutes -- an
+    // acceptable trade against the extra Lambda load from an even shorter TTL.
+    const publicPagesCachePolicy = new cloudfront.CachePolicy(this, 'PublicPagesShortTtl', {
+      comment:
+        'Short-TTL cache for public job pages + SEO files; query strings excluded so ?r= share codes never fragment the cache',
+      minTtl: cdk.Duration.seconds(0),
+      defaultTtl: cdk.Duration.seconds(60),
+      maxTtl: cdk.Duration.seconds(60),
+      enableAcceptEncodingGzip: true,
+      enableAcceptEncodingBrotli: true,
+      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+      headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+      queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
+    });
+
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {
       // Backend API → existing API Gateway
       '/api/*': {
@@ -269,6 +295,32 @@ function handler(event) {
         ],
       },
     };
+
+    // Public job pages + SEO files: server-rendered from the same Lambda as the
+    // default behavior, but safe to cache briefly since they carry no per-viewer
+    // content. Query strings are excluded from the cache policy (see
+    // publicPagesCachePolicy) so `?r=` share codes don't fragment the cache.
+    for (const publicPagePattern of [
+      '/en/j/*',
+      '/es/j/*',
+      '/sitemap.xml',
+      '/feed.xml',
+      '/robots.txt',
+    ]) {
+      additionalBehaviors[publicPagePattern] = {
+        origin: lambdaOrigin,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: publicPagesCachePolicy,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
+        compress: true,
+        functionAssociations: [
+          {
+            function: stripFrontendAuthorization,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
+      };
+    }
 
     // /survey/* → Amplify (only if origin domain provided)
     if (props.surveyOriginDomain) {

@@ -143,6 +143,45 @@ describe('ReferralsStack', () => {
     const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
     expect(env).toHaveProperty('REFERRALS_DB_SECRET_ARN');
     expect(env).not.toHaveProperty('DB_SECRET_ARN');
+    // The salt moved to public-job-open.ts: this Lambda is now a pure read
+    // and no longer hashes visitors.
+    expect(env).not.toHaveProperty('REFERRAL_VISITOR_SALT_SECRET_ARN');
+  });
+
+  test('public-job-open Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Public job open-tracking beacon endpoint (unauthenticated)',
+    });
+  });
+
+  test('public-job-open Lambda has REFERRALS_DB_SECRET_ARN and REFERRAL_VISITOR_SALT_SECRET_ARN but NOT DB_SECRET_ARN', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Public job open-tracking beacon endpoint (unauthenticated)' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('REFERRALS_DB_SECRET_ARN');
+    expect(env).toHaveProperty('REFERRAL_VISITOR_SALT_SECRET_ARN');
+    expect(env).not.toHaveProperty('DB_SECRET_ARN');
+  });
+
+  test('public-job-referrer Lambda exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Public job referrer-context lookup endpoint (unauthenticated)',
+    });
+  });
+
+  test('public-job-referrer Lambda has REFERRALS_DB_SECRET_ARN but NOT DB_SECRET_ARN or the visitor salt', () => {
+    const resources = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: 'Public job referrer-context lookup endpoint (unauthenticated)' },
+    });
+    const fns = Object.values(resources);
+    expect(fns).toHaveLength(1);
+    const env = (fns[0] as any).Properties.Environment?.Variables ?? {};
+    expect(env).toHaveProperty('REFERRALS_DB_SECRET_ARN');
+    expect(env).not.toHaveProperty('DB_SECRET_ARN');
+    expect(env).not.toHaveProperty('REFERRAL_VISITOR_SALT_SECRET_ARN');
   });
 
   test('public-job-apply-intent Lambda has REFERRALS_DB_SECRET_ARN and WHATSAPP_BUSINESS_NUMBER but NOT DB_SECRET_ARN', () => {
@@ -214,6 +253,49 @@ describe('ReferralsStack', () => {
 
   test('POST /public/jobs/{code}/apply-intent has NO authorizer', () => {
     expect(authorizationTypeForLambda('Public job apply-intent endpoint (unauthenticated)')).toBe('NONE');
+  });
+
+  test('POST /public/jobs/{code}/open has NO authorizer', () => {
+    expect(authorizationTypeForLambda('Public job open-tracking beacon endpoint (unauthenticated)')).toBe('NONE');
+  });
+
+  test('GET /public/jobs/{code}/referrer has NO authorizer', () => {
+    expect(authorizationTypeForLambda('Public job referrer-context lookup endpoint (unauthenticated)')).toBe('NONE');
+  });
+
+  test('open and referrer resources hang off the existing /public/jobs/{code} node', () => {
+    function allResources(): Record<string, any> {
+      return apiTemplate.findResources('AWS::ApiGateway::Resource');
+    }
+    function childrenOf(parentLogicalId: string, pathPart?: string): Array<[string, any]> {
+      return Object.entries(allResources()).filter(([, res]) => {
+        const parentRef = res.Properties?.ParentId?.['Fn::GetAtt']?.[0] ?? res.Properties?.ParentId?.Ref;
+        if (parentRef !== parentLogicalId) return false;
+        return pathPart === undefined || res.Properties?.PathPart === pathPart;
+      });
+    }
+    const apis = apiTemplate.findResources('AWS::ApiGateway::RestApi');
+    const apiIds = Object.keys(apis);
+    expect(apiIds).toHaveLength(1);
+    const rootId = apiIds[0];
+
+    const publicChildren = childrenOf(rootId, 'public');
+    expect(publicChildren).toHaveLength(1);
+    const [publicLogicalId] = publicChildren[0];
+
+    const publicJobsChildren = childrenOf(publicLogicalId, 'jobs');
+    expect(publicJobsChildren).toHaveLength(1);
+    const [publicJobsLogicalId] = publicJobsChildren[0];
+
+    const codeChildren = childrenOf(publicJobsLogicalId, '{code}');
+    expect(codeChildren).toHaveLength(1);
+    const [codeLogicalId] = codeChildren[0];
+
+    // {code}'s children are exactly 'apply-intent', 'open' and 'referrer' —
+    // nothing else, and no duplicates.
+    const codeChildResources = childrenOf(codeLogicalId);
+    const pathParts = codeChildResources.map(([, res]) => res.Properties.PathPart).sort();
+    expect(pathParts).toEqual(['apply-intent', 'open', 'referrer']);
   });
 
   test('POST /worker/jobs/{jobId}/share is protected by WorkerAuthorizer', () => {
@@ -331,16 +413,17 @@ describe('ReferralsStack', () => {
     }
   });
 
-  test('only the public-job Lambda reads the visitor-salt secret', () => {
+  test('only the public-job-open Lambda reads the visitor-salt secret', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Public job read endpoint (unauthenticated)',
+      Description: 'Public job open-tracking beacon endpoint (unauthenticated)',
       Environment: Match.objectLike({
         Variables: Match.objectLike({
           REFERRAL_VISITOR_SALT_SECRET_ARN: Match.anyValue(),
         }),
       }),
     });
-    // And no other Lambda gets the ARN.
+    // And no other Lambda gets the ARN -- specifically not public-job (the
+    // salt moved out of it) and not public-job-referrer (never hashes a visitor).
     const fns = template.findResources('AWS::Lambda::Function');
     const withArn = Object.values(fns).filter((fn: any) =>
       'REFERRAL_VISITOR_SALT_SECRET_ARN' in (fn.Properties?.Environment?.Variables ?? {}));
@@ -365,7 +448,7 @@ describe('ReferralsStack', () => {
   });
 
   test('public/jobs/{code} path resources exist', () => {
-    for (const pathPart of ['public', 'jobs', '{code}', 'apply-intent']) {
+    for (const pathPart of ['public', 'jobs', '{code}', 'apply-intent', 'open', 'referrer']) {
       apiTemplate.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: pathPart });
     }
   });

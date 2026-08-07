@@ -55,6 +55,8 @@ export interface ReferralsStackProps extends cdk.StackProps {
  * Routes:
  *   GET  /public/jobs                            → public-jobs-list Lambda (UNAUTHENTICATED)
  *   GET  /public/jobs/{code}                    → public-job Lambda (UNAUTHENTICATED)
+ *   POST /public/jobs/{code}/open                 → public-job-open Lambda (UNAUTHENTICATED)
+ *   GET  /public/jobs/{code}/referrer             → public-job-referrer Lambda (UNAUTHENTICATED)
  *   POST /public/jobs/{code}/apply-intent        → public-job-apply-intent Lambda (UNAUTHENTICATED)
  *   POST /worker/jobs/{jobId}/share               → worker-job-share Lambda (worker auth)
  *   GET  /worker/referrals                       → worker-referrals Lambda (worker auth)
@@ -64,6 +66,10 @@ export interface ReferralsStackProps extends cdk.StackProps {
  * Secret isolation:
  *   public-job              : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   public-jobs-list         : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
+ *   public-job-open          : REFERRALS_DB_SECRET_ARN (jale_public_jobs) plus the
+ *                              REFERRAL_VISITOR_SALT_SECRET_ARN (the only Lambda
+ *                              that hashes visitors)
+ *   public-job-referrer      : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   public-job-apply-intent : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   worker-job-share         : DB_SECRET_ARN (app DB / jale_admin) only
  *   worker-referrals         : DB_SECRET_ARN (app DB / jale_admin) only
@@ -144,10 +150,28 @@ export class ReferralsStack extends cdk.Stack {
     };
 
     // ── Lambda: public-job (GET /public/jobs/{code}) ──
-    // jale_public_jobs role only. UNAUTHENTICATED.
+    // jale_public_jobs role only. UNAUTHENTICATED. Pure read -- no `r`
+    // parsing, no crawler/device/locale helpers, no visitor hashing. That all
+    // moved to public-job-open.ts, so this Lambda no longer needs the
+    // visitor-salt secret.
     const publicJobLambda = new JaleLambdaFunction(this, 'PublicJobLambda', {
       entry: path.join(__dirname, '../../lambda/api/public-job.ts'),
       description: 'Public job read endpoint (unauthenticated)',
+      environment: {
+        REFERRALS_DB_SECRET_ARN: props.referralsDbSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      ...lambdaProps,
+    });
+    props.referralsDbSecret.grantRead(publicJobLambda.function);
+
+    // ── Lambda: public-job-open (POST /public/jobs/{code}/open) ──
+    // jale_public_jobs role only. UNAUTHENTICATED. Fire-and-forget open beacon
+    // -- crawler filtering, share-link matching, visitor hashing, and the
+    // job_share_opens insert/open_count bump (split out of public-job.ts).
+    const publicJobOpenLambda = new JaleLambdaFunction(this, 'PublicJobOpenLambda', {
+      entry: path.join(__dirname, '../../lambda/api/public-job-open.ts'),
+      description: 'Public job open-tracking beacon endpoint (unauthenticated)',
       environment: {
         REFERRALS_DB_SECRET_ARN: props.referralsDbSecret.secretArn,
         REFERRAL_VISITOR_SALT_SECRET_ARN: visitorSaltSecret.secretArn,
@@ -155,9 +179,23 @@ export class ReferralsStack extends cdk.Stack {
       },
       ...lambdaProps,
     });
-    props.referralsDbSecret.grantRead(publicJobLambda.function);
-    // Only the public-job Lambda hashes visitors; nothing else may read the salt.
-    visitorSaltSecret.grantRead(publicJobLambda.function);
+    props.referralsDbSecret.grantRead(publicJobOpenLambda.function);
+    // Only the public-job-open Lambda hashes visitors; nothing else may read the salt.
+    visitorSaltSecret.grantRead(publicJobOpenLambda.function);
+
+    // ── Lambda: public-job-referrer (GET /public/jobs/{code}/referrer) ──
+    // jale_public_jobs role only. UNAUTHENTICATED. Never hashes a visitor --
+    // no visitor-salt secret grant.
+    const publicJobReferrerLambda = new JaleLambdaFunction(this, 'PublicJobReferrerLambda', {
+      entry: path.join(__dirname, '../../lambda/api/public-job-referrer.ts'),
+      description: 'Public job referrer-context lookup endpoint (unauthenticated)',
+      environment: {
+        REFERRALS_DB_SECRET_ARN: props.referralsDbSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      ...lambdaProps,
+    });
+    props.referralsDbSecret.grantRead(publicJobReferrerLambda.function);
 
     // ── Lambda: public-job-apply-intent (POST /public/jobs/{code}/apply-intent) ──
     // jale_public_jobs role only. UNAUTHENTICATED.
@@ -361,15 +399,27 @@ export class ReferralsStack extends cdk.Stack {
     const publicJobResource = publicJobsResource.addResource('{code}');
     publicJobResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobLambda.function));
 
+    // POST /public/jobs/{code}/open — unauthenticated open-tracking beacon,
+    // options argument omitted entirely, matching the DocumentsStack/LegalStack
+    // precedent for downstream stacks adding unauthenticated methods.
+    const publicJobOpenResource = publicJobResource.addResource('open');
+    publicJobOpenResource.addMethod('POST', new apigateway.LambdaIntegration(publicJobOpenLambda.function));
+
+    // GET /public/jobs/{code}/referrer — unauthenticated referrer-context
+    // lookup, same unauthenticated shape as the routes above.
+    const publicJobReferrerResource = publicJobResource.addResource('referrer');
+    publicJobReferrerResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobReferrerLambda.function));
+
     const publicJobApplyIntentResource = publicJobResource.addResource('apply-intent');
     publicJobApplyIntentResource.addMethod(
       'POST',
       new apigateway.LambdaIntegration(publicJobApplyIntentLambda.function),
     );
 
-    // NOTE: throttles for the two routes above (20/10 GET, 10/5 POST) live in
-    // ApiStack's centralized MethodSettings block. ReferralsStack must NOT
-    // call addPropertyOverride('MethodSettings').
+    // NOTE: throttles for the routes above (GET {code} 20/10, POST open
+    // 20/10, GET referrer 20/10, POST apply-intent 10/5) live in ApiStack's
+    // centralized MethodSettings block. ReferralsStack must NOT call
+    // addPropertyOverride('MethodSettings').
 
     // POST /worker/jobs/{jobId}/share — hangs off the EXISTING {jobId} node
     // exported by ApiStack, not a new addResource() call. Absent during a

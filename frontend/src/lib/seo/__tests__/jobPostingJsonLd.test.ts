@@ -110,6 +110,19 @@ describe('buildJobPostingJsonLd', () => {
     });
   });
 
+  describe('hiringOrganization', () => {
+    it('omits hiringOrganization entirely (never {name: null}) when company is empty', () => {
+      const job: PublicJobActive = { ...BASE_JOB, company: '' };
+      const result = buildJobPostingJsonLd(job, CANONICAL_URL) as Record<string, unknown>;
+      expect(result).not.toHaveProperty('hiringOrganization');
+    });
+
+    it('emits hiringOrganization when company is present', () => {
+      const result = buildJobPostingJsonLd(BASE_JOB, CANONICAL_URL) as Record<string, unknown>;
+      expect(result.hiringOrganization).toEqual({ '@type': 'Organization', name: 'Acme Co' });
+    });
+  });
+
   describe('jobLocation', () => {
     it('omits jobLocation entirely when city and state_region are both absent', () => {
       const job: PublicJobActive = { ...BASE_JOB, city: null, state_region: null };
