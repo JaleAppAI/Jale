@@ -250,10 +250,17 @@ function handler(event) {
     // stale, plus the underlying Next.js ISR page can itself be up to 60s
     // stale, for a combined worst-case staleness of ~2 minutes -- an
     // acceptable trade against the extra Lambda load from an even shorter TTL.
+    // minTtl is 60s ON PURPOSE, not 0: the Next.js origin serves these routes
+    // with `Cache-Control: private, no-cache, no-store` at runtime (next-intl's
+    // request-scoped locale resolution keeps the render dynamic even though the
+    // route declares revalidate=60), and with a zero minimum TTL CloudFront
+    // honors that header and never caches. Per CloudFront's TTL rules, a
+    // non-zero minimum TTL caches the response for minTtl even when the origin
+    // says no-cache/no-store -- which is exactly the designed 60s edge cache.
     const publicPagesCachePolicy = new cloudfront.CachePolicy(this, 'PublicPagesShortTtl', {
       comment:
         'Short-TTL cache for public job pages + SEO files; query strings excluded so ?r= share codes never fragment the cache',
-      minTtl: cdk.Duration.seconds(0),
+      minTtl: cdk.Duration.seconds(60),
       defaultTtl: cdk.Duration.seconds(60),
       maxTtl: cdk.Duration.seconds(60),
       enableAcceptEncodingGzip: true,
