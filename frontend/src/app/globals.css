@@ -94,6 +94,7 @@
   --color-input:           var(--input);
   --color-input-focus:     var(--input-focus);
   --color-muted:           var(--muted);
+  --color-muted-foreground: var(--jale-ink-2);
   --color-placeholder:     var(--placeholder);
   --color-border:          var(--border);
   --color-error:           var(--error);
