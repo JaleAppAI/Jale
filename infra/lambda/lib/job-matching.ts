@@ -98,7 +98,7 @@ export interface ListMatchedJobsOptions {
   cityKeys?: string[];
   /** Fallback query: only jobs whose city_key is NOT in this list (or NULL). */
   excludeCityKeys?: string[];
-  /** Preferred-city centroids (migration 067): distance scoring anchors in
+  /** Preferred-city centroids (migration 068): distance scoring anchors in
    * addition to the worker's own coordinate. They describe the worker, not
    * the filter -- pass them on fallback (excludeCityKeys) queries too. */
   cityAnchors?: CityAnchor[];
@@ -607,8 +607,8 @@ export interface CityAnchor {
   longitude: number;
 }
 
-/** The worker's chosen feed cities (migration 064), oldest pick first, with
- * their centroids (migration 067; NULL before it applies -- the coordinate
+/** The worker's chosen feed cities (migration 065), oldest pick first, with
+ * their centroids (migration 068; NULL before it applies -- the coordinate
  * columns are probed like worker_profiles/jobs coordinates are). Callers
  * derive `cityKeys` for filtering and `cityAnchors` (via cityAnchorsFrom)
  * for distance scoring. Empty result = no preference = unfiltered. */

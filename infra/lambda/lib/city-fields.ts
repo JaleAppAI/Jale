@@ -22,7 +22,7 @@ export function slugCityKey(city: string, state: string): string {
   return `${slugifyCityPart(city)}-${state.trim().toLowerCase()}`;
 }
 
-// Mirrors the SQL backfill parse in migrations 061/063 -- keep the three in
+// Mirrors the SQL backfill parse in migrations 065/067 -- keep the three in
 // sync. Accepts "City, ST" and "City, ST 12345[-6789]"; anything else is
 // null (never guess -- a wrong city surfaces the job in the wrong feed).
 const LOCATION_CITY_RE = /^\s*([A-Za-z][A-Za-z .'-]*?)\s*,\s*([A-Za-z]{2})(?:\s+\d{5}(?:-\d{4})?)?\s*$/;

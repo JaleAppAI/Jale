@@ -1,6 +1,6 @@
--- 066_city_key_backfill_repair.sql
+-- 067_city_key_backfill_repair.sql
 -- (Applied to production pre-merge as 063_city_key_backfill_repair.sql.)
--- Re-runs BOTH data backfills from 064 (applied pre-merge as 061), which silently updated 0 rows:
+-- Re-runs BOTH data backfills from 065 (applied pre-merge as 061), which silently updated 0 rows:
 -- jobs and worker_profiles are FORCE ROW LEVEL SECURITY (003), their
 -- policies key on app.current_user_id, and the bastion migration runner
 -- (jale_admin, NOBYPASSRLS per 020b) never sets that var -- so every
@@ -17,7 +17,7 @@
 --
 -- (As plain jale_admin that query reads 0 forever -- RLS, not truth.)
 --
--- Run AFTER 065_preferred_cities_whatsapp_read.sql, connected as
+-- Run AFTER 066_preferred_cities_whatsapp_read.sql, connected as
 -- jale_admin (NOT the RDS master user). Forward-only (ADR-005).
 
 BEGIN;
@@ -52,7 +52,7 @@ GRANT jale_location_backfill TO jale_admin WITH SET TRUE, INHERIT FALSE;
 
 SET ROLE jale_location_backfill;
 
--- 1) City backfill: identical parse to 064 section 2 (kept in sync with
+-- 1) City backfill: identical parse to 065 section 2 (kept in sync with
 --    parseCityFromLocation in infra/lambda/lib/city-fields.ts).
 WITH parsed AS (
   SELECT id, m[1] AS city, upper(m[2]) AS state
@@ -72,7 +72,7 @@ SET city     = p.city,
 FROM parsed p
 WHERE j.id = p.id;
 
--- 2) map_pin confidence rewrite: identical to 064 section 4, same rationale
+-- 2) map_pin confidence rewrite: identical to 065 section 4, same rationale
 --    (see that migration's comments); location_updated_at deliberately untouched.
 UPDATE worker_profiles
 SET location_source     = 'geocoded_address',

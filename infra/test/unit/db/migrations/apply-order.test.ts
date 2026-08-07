@@ -72,11 +72,12 @@ const expectedBaselineMigrations = [
   '061_job_geo_and_seo_grants.sql',
   '062_job_visibility_outbox.sql',
   '063_employer_referral_links.sql',
-  '064_city_keys_and_preferred_cities.sql',
-  '065_preferred_cities_whatsapp_read.sql',
-  '066_city_key_backfill_repair.sql',
-  '067_preferred_city_centroids.sql',
-  '068_employer_job_templates.sql',
+  '064_public_job_context_functions.sql',
+  '065_city_keys_and_preferred_cities.sql',
+  '066_preferred_cities_whatsapp_read.sql',
+  '067_city_key_backfill_repair.sql',
+  '068_preferred_city_centroids.sql',
+  '069_employer_job_templates.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -580,8 +581,8 @@ describe('migration apply order baseline', () => {
     expect(migration).not.toContain('GRANT SELECT, INSERT, UPDATE ON billing_webhook_events TO jale_admin');
   });
 
-  it('re-runs the 064 backfills under a USING(true) helper role in migration 066', () => {
-    const sql = readMigration('066_city_key_backfill_repair.sql');
+  it('re-runs the 065 backfills under a USING(true) helper role in migration 067', () => {
+    const sql = readMigration('067_city_key_backfill_repair.sql');
     expect(sql).toContain('CREATE ROLE jale_location_backfill');
     expect(sql).toContain('GRANT jale_location_backfill TO jale_admin WITH SET TRUE, INHERIT FALSE');
     expect(sql).toContain('SET ROLE jale_location_backfill');
@@ -594,16 +595,16 @@ describe('migration apply order baseline', () => {
     expect(sql).toContain('jobs_location_backfill_select');
   });
 
-  it('adds range-checked centroid columns to worker_preferred_cities in migration 067', () => {
-    const sql = readMigration('067_preferred_city_centroids.sql');
+  it('adds range-checked centroid columns to worker_preferred_cities in migration 068', () => {
+    const sql = readMigration('068_preferred_city_centroids.sql');
     expect(sql).toContain('ADD COLUMN IF NOT EXISTS latitude  NUMERIC(9,6)');
     expect(sql).toContain('ADD COLUMN IF NOT EXISTS longitude NUMERIC(9,6)');
     expect(sql).toContain('worker_preferred_cities_coords_complete');
     expect(sql).toContain('(latitude IS NULL) = (longitude IS NULL)');
   });
 
-  it('adds the employer job templates table with entitlement seeds in migration 068', () => {
-    const sql = readMigration('068_employer_job_templates.sql');
+  it('adds the employer job templates table with entitlement seeds in migration 069', () => {
+    const sql = readMigration('069_employer_job_templates.sql');
     expect(sql).toContain('CREATE TABLE employer_job_templates');
     expect(sql).toContain('UNIQUE (employer_id, name)');
     expect(sql).toContain('ALTER TABLE employer_job_templates FORCE ROW LEVEL SECURITY;');

@@ -1,4 +1,4 @@
--- 067_preferred_city_centroids.sql
+-- 068_preferred_city_centroids.sql
 -- (Applied to production pre-merge as 064_preferred_city_centroids.sql.)
 -- City centroids for the worker's preferred cities, so distance scoring can
 -- anchor on every chosen city, not just the single worker_profiles
@@ -6,10 +6,10 @@
 -- CHECKs, both-or-neither completeness). Nullable: pre-064 rows and
 -- degraded-picker saves have no coordinates and degrade to prior scoring.
 --
--- Existing table-level grants (064: jale_admin; 065: jale_whatsapp SELECT)
+-- Existing table-level grants (065: jale_admin; 066: jale_whatsapp SELECT)
 -- cover new columns automatically; no policy changes.
 --
--- Run AFTER 066_city_key_backfill_repair.sql, connected as jale_admin
+-- Run AFTER 067_city_key_backfill_repair.sql, connected as jale_admin
 -- (NOT the RDS master user). Forward-only (ADR-005).
 
 BEGIN;

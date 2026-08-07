@@ -1,4 +1,4 @@
--- 068_employer_job_templates.sql
+-- 069_employer_job_templates.sql
 -- Named, reusable job-posting templates for employers, plus the per-plan
 -- template_limit entitlement. The payload column stores EXACTLY the
 -- employer-jobs-create request-body shape, validated at write time by the
@@ -9,7 +9,7 @@
 -- Only the employer web API reads or writes templates, so grants go to
 -- jale_admin alone. RLS mirrors the jobs employer-self policies.
 --
--- Run AFTER 067_preferred_city_centroids.sql, connected as jale_admin
+-- Run AFTER 068_preferred_city_centroids.sql, connected as jale_admin
 -- (NOT the RDS master user). Forward-only (ADR-005). Deploy BEFORE the
 -- lambda rollout: resolveEntitlements parses template_limit strictly.
 
