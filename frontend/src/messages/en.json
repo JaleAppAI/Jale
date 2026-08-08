@@ -711,60 +711,10 @@
       "edit_error": "Could not save changes. Please try again."
     },
     "worker_profile": {
-      "back": "Back to applicants",
-      "share_upload_link": "Share Upload Link",
-      "link_copied": "Link copied to clipboard!",
-      "documents": "Documents",
-      "required": "Required",
-      "optional": "Optional",
-      "not_uploaded": "Not uploaded yet",
-      "request": "Request",
-      "view": "View",
-      "download": "Download",
-      "status_label": "Application Status",
-      "save_status": "Save",
       "doc_resume": "Resume",
       "doc_driver_license": "Driver's License",
       "doc_ssn": "SSN Card",
-      "phone": "Phone",
-      "location": "Location",
-      "skills": "Skills",
-      "availability_label": "Availability",
-      "applied": "Applied",
-      "saving_status": "Saving...",
-      "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}",
-      "fallback_name": "Unknown worker",
-      "fallback_phone": "Phone unavailable",
-      "fallback_location": "Location unavailable",
-      "fallback_experience": "Experience unavailable",
-      "fallback_availability": "Availability unavailable",
-      "fallback_skills": "No skills listed",
-      "fallback_applied": "Date unavailable",
-      "error_missing_job": "This worker profile needs a job id. Return to applicants and open it again.",
-      "error_load_profile": "Failed to load profile. Please try again.",
-      "error_create_link": "Failed to create upload link. Please try again.",
-      "error_save_status": "Failed to save status. Please try again.",
-      "availability": {
-        "immediate": "Immediate",
-        "2_weeks": "2 weeks",
-        "1_month": "1 month",
-        "full_time": "Full-time",
-        "part_time": "Part-time",
-        "weekends": "Weekends",
-        "flexible": "Flexible"
-      },
-      "trade": "Trade",
-      "fallback_trade": "Trade not specified",
-      "transportation_yes": "Has own transportation",
-      "transportation_no": "No own transportation",
-      "trades": {
-        "electrician": "Electrician",
-        "plumber": "Plumber",
-        "carpenter": "Carpenter",
-        "concrete": "Concrete",
-        "painting": "Painting",
-        "other": "Other"
-      }
+      "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
     },
     "post_job_docs": {
       "step_label": "Step 2 of 2",
@@ -775,6 +725,66 @@
       "next": "Next: Document Requirements",
       "back": "Back",
       "submit": "Post Job"
+    }
+  },
+  "employer_worker_profile": {
+    "back": "Back to applicants",
+    "phone": "Phone",
+    "location": "Location",
+    "experience": "Experience",
+    "availability_label": "Availability",
+    "trade": "Trade",
+    "transportation": "Transportation",
+    "transportation_yes": "Has own transportation",
+    "transportation_no": "No own transportation",
+    "skills": "Skills",
+    "documents": "Documents",
+    "share_upload_link": "Share Upload Link",
+    "link_copied": "Link copied to clipboard!",
+    "not_uploaded": "Not uploaded yet",
+    "request": "Request",
+    "view": "View",
+    "download": "Download",
+    "status_label": "Application Status",
+    "save_status": "Save",
+    "saving_status": "Saving...",
+    "applied": "Applied",
+    "fallback_name": "Unknown worker",
+    "fallback_phone": "Phone unavailable",
+    "fallback_location": "Location unavailable",
+    "fallback_experience": "Experience unavailable",
+    "fallback_availability": "Availability unavailable",
+    "fallback_trade": "Trade not specified",
+    "fallback_skills": "No skills listed",
+    "fallback_applied": "Date unavailable",
+    "availability": {
+      "immediate": "Immediate",
+      "2_weeks": "2 weeks",
+      "1_month": "1 month",
+      "full_time": "Full-time",
+      "part_time": "Part-time",
+      "weekends": "Weekends",
+      "flexible": "Flexible"
+    },
+    "trades": {
+      "electrician": "Electrician",
+      "plumber": "Plumber",
+      "carpenter": "Carpenter",
+      "concrete": "Concrete",
+      "painting": "Painting",
+      "other": "Other"
+    },
+    "invalid_link": {
+      "title": "Incomplete link",
+      "body": "This applicant link is missing the job it belongs to. Open the applicant again from that job's applicant list."
+    },
+    "not_found": {
+      "title": "Applicant not found",
+      "body": "This worker is not an applicant on this job, or the link is out of date."
+    },
+    "forbidden": {
+      "title": "No access to this applicant",
+      "body": "You can only open workers who applied to one of your own jobs."
     }
   },
   "upload_page": {
