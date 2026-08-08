@@ -197,23 +197,19 @@ html { scroll-behavior: smooth; }
                         {/* The locked style's dot+text badge, in place of the
                             tinted pill this eyebrow used to be. `Badge` hard-codes
                             `--jale-ink-2` for its label, which is unreadable on
-                            brand navy, so the colour is applied through a
-                            descendant variant: `.wrapper span` outranks the
-                            single-class utility inside the component, so it wins
-                            regardless of stylesheet order (two same-property
-                            utilities on one element would not).
+                            brand navy, so the label colour comes in through
+                            `labelClassName`.
                             The label rides `--jale-blue-300` rather than the
                             brand `-500`: at 11px, blue-500 on this navy measures
                             3.7:1, under AA, while blue-300 clears it at ~6.5:1.
                             The dot keeps brand blue -- it carries no text. */}
-                        <span className="[&_span]:text-[var(--jale-blue-300)]">
-                            <Badge
-                                dotClassName="bg-[var(--jale-blue-500)]"
-                                className="uppercase tracking-[.08em]"
-                            >
-                                {t('hero.eyebrow')}
-                            </Badge>
-                        </span>
+                        <Badge
+                            dotClassName="bg-[var(--jale-blue-500)]"
+                            labelClassName="text-[var(--jale-blue-300)]"
+                            className="uppercase tracking-[.08em]"
+                        >
+                            {t('hero.eyebrow')}
+                        </Badge>
                         <h1
                             className="mt-[18px] font-extrabold text-white"
                             style={{ fontSize: 'clamp(2.75rem, 8vw, 5.25rem)', lineHeight: 0.98, letterSpacing: '-0.04em' }}

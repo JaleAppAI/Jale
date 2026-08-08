@@ -40,19 +40,27 @@ const toneDotClasses: Record<BadgeTone, string> = {
 export function Badge({
     tone = 'neutral',
     dotClassName,
+    labelClassName,
     className = '',
     children,
 }: {
     tone?: BadgeTone;
     /** Override the dot colour when a caller needs a tone the palette lacks. */
     dotClassName?: string;
+    /**
+     * Override the label colour. Needed on brand surfaces: the default ink-2 is
+     * tuned for card/paper grounds and is unreadable on the navy panels. Applied
+     * to the label element itself, because a colour passed via `className` would
+     * land on the wrapper and lose to the label's own utility.
+     */
+    labelClassName?: string;
     className?: string;
     children: ReactNode;
 }) {
     return (
         <span
             className={[
-                'inline-flex min-w-0 items-center gap-1.5 text-[11px] font-semibold leading-tight text-[var(--jale-ink-2)]',
+                'inline-flex min-w-0 items-center gap-1.5 text-[11px] font-semibold leading-tight',
                 className,
             ]
                 .filter(Boolean)
@@ -64,7 +72,9 @@ export function Badge({
                     .filter(Boolean)
                     .join(' ')}
             />
-            <span className="min-w-0">{children}</span>
+            <span className={['min-w-0', labelClassName ?? 'text-[var(--jale-ink-2)]'].join(' ')}>
+                {children}
+            </span>
         </span>
     );
 }

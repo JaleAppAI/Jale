@@ -184,7 +184,15 @@ input[type="password"]::-ms-clear { display: none; }
 input[type="password"]::-webkit-contacts-auto-fill-button,
 input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
 
-a { color: inherit; text-decoration: none; }
+/* Layered on purpose. An UNLAYERED rule beats every cascade layer no matter the
+   specificity, so while this lived outside `@layer base` it silently outranked
+   Tailwind's utilities: `text-white` on an `<a>` never applied, and a
+   link-shaped primary button rendered ink-on-blue (~3.5:1, under AA) instead of
+   white-on-blue. Inside `base` it still overrides the browser default while any
+   utility on the anchor itself now wins, which is what call sites expect. */
+@layer base {
+  a { color: inherit; text-decoration: none; }
+}
 
 /* ===== UTILITY CLASSES ============================================== */
 .jale-wordmark {
