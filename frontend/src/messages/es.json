@@ -711,60 +711,10 @@
       "edit_error": "No se pudieron guardar los cambios. Intenta de nuevo."
     },
     "worker_profile": {
-      "back": "Volver a postulantes",
-      "share_upload_link": "Compartir enlace de carga",
-      "link_copied": "¡Enlace copiado!",
-      "documents": "Documentos",
-      "required": "Requerido",
-      "optional": "Opcional",
-      "not_uploaded": "Aún no subido",
-      "request": "Solicitar",
-      "view": "Ver",
-      "download": "Descargar",
-      "status_label": "Estado de postulación",
-      "save_status": "Guardar",
       "doc_resume": "Currículum",
       "doc_driver_license": "Licencia de conducir",
       "doc_ssn": "Tarjeta SSN",
-      "phone": "Teléfono",
-      "location": "Ubicación",
-      "skills": "Habilidades",
-      "availability_label": "Disponibilidad",
-      "applied": "Aplicó",
-      "saving_status": "Guardando...",
-      "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}",
-      "fallback_name": "Trabajador sin nombre",
-      "fallback_phone": "Teléfono no disponible",
-      "fallback_location": "Ubicación no disponible",
-      "fallback_experience": "Experiencia no disponible",
-      "fallback_availability": "Disponibilidad no disponible",
-      "fallback_skills": "No hay habilidades registradas",
-      "fallback_applied": "Fecha no disponible",
-      "error_missing_job": "Este perfil de trabajador necesita un id de empleo. Vuelve a candidatos y ábrelo de nuevo.",
-      "error_load_profile": "No se pudo cargar el perfil. Intenta de nuevo.",
-      "error_create_link": "No se pudo crear el enlace de carga. Intenta de nuevo.",
-      "error_save_status": "No se pudo guardar el estado. Intenta de nuevo.",
-      "availability": {
-        "immediate": "Inmediata",
-        "2_weeks": "2 semanas",
-        "1_month": "1 mes",
-        "full_time": "Tiempo completo",
-        "part_time": "Medio tiempo",
-        "weekends": "Fines de semana",
-        "flexible": "Flexible"
-      },
-      "trade": "Oficio",
-      "fallback_trade": "Oficio no especificado",
-      "transportation_yes": "Tiene transporte propio",
-      "transportation_no": "Sin transporte propio",
-      "trades": {
-        "electrician": "Electricista",
-        "plumber": "Plomero",
-        "carpenter": "Carpintero",
-        "concrete": "Concreto",
-        "painting": "Pintura",
-        "other": "Otro"
-      }
+      "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
     },
     "post_job_docs": {
       "step_label": "Paso 2 de 2",
@@ -775,6 +725,66 @@
       "next": "Siguiente: Requisitos de documentos",
       "back": "Atrás",
       "submit": "Publicar trabajo"
+    }
+  },
+  "employer_worker_profile": {
+    "back": "Volver a postulantes",
+    "phone": "Teléfono",
+    "location": "Ubicación",
+    "experience": "Experiencia",
+    "availability_label": "Disponibilidad",
+    "trade": "Oficio",
+    "transportation": "Transporte",
+    "transportation_yes": "Tiene transporte propio",
+    "transportation_no": "Sin transporte propio",
+    "skills": "Habilidades",
+    "documents": "Documentos",
+    "share_upload_link": "Compartir enlace de carga",
+    "link_copied": "¡Enlace copiado!",
+    "not_uploaded": "Aún no subido",
+    "request": "Solicitar",
+    "view": "Ver",
+    "download": "Descargar",
+    "status_label": "Estado de postulación",
+    "save_status": "Guardar",
+    "saving_status": "Guardando...",
+    "applied": "Aplicó",
+    "fallback_name": "Trabajador sin nombre",
+    "fallback_phone": "Teléfono no disponible",
+    "fallback_location": "Ubicación no disponible",
+    "fallback_experience": "Experiencia no disponible",
+    "fallback_availability": "Disponibilidad no disponible",
+    "fallback_trade": "Oficio no especificado",
+    "fallback_skills": "No hay habilidades registradas",
+    "fallback_applied": "Fecha no disponible",
+    "availability": {
+      "immediate": "Inmediata",
+      "2_weeks": "2 semanas",
+      "1_month": "1 mes",
+      "full_time": "Tiempo completo",
+      "part_time": "Medio tiempo",
+      "weekends": "Fines de semana",
+      "flexible": "Flexible"
+    },
+    "trades": {
+      "electrician": "Electricista",
+      "plumber": "Plomero",
+      "carpenter": "Carpintero",
+      "concrete": "Concreto",
+      "painting": "Pintura",
+      "other": "Otro"
+    },
+    "invalid_link": {
+      "title": "Enlace incompleto",
+      "body": "A este enlace de postulante le falta el empleo al que pertenece. Abra al postulante de nuevo desde la lista de postulantes de ese empleo."
+    },
+    "not_found": {
+      "title": "Postulante no encontrado",
+      "body": "Este trabajador no es postulante de este empleo, o el enlace ya no es válido."
+    },
+    "forbidden": {
+      "title": "Sin acceso a este postulante",
+      "body": "Solo puede abrir trabajadores que se hayan postulado a uno de sus empleos."
     }
   },
   "upload_page": {
