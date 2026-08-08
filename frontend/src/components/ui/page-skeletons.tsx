@@ -227,29 +227,50 @@ export function ThreadSkeleton() {
  * Centered-card archetype: the narrow single-card pages (auth, legal accept,
  * token upload). `title` adds the heading block those pages render above the
  * body copy.
+ *
+ * `card={false}` drops the card wrapper and renders only its contents. That is
+ * for the surfaces whose SHELL already draws the card -- `AuthShell` does, and
+ * nesting a second one would put a card inside a card and cost exactly the
+ * layout shift these skeletons exist to prevent.
  */
-export function CenteredCardSkeleton({ title = false }: { title?: boolean }) {
+export function CenteredCardSkeleton({
+    title = false,
+    card = true,
+}: {
+    title?: boolean;
+    card?: boolean;
+}) {
+    const body = (
+        <>
+            {title ? (
+                <div className="mb-6 space-y-2">
+                    <Skeleton className="h-5 w-2/3" />
+                    <SkeletonLine width="w-1/2" tone="paper" />
+                </div>
+            ) : null}
+
+            <div className="space-y-4">
+                {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="space-y-2">
+                        <Skeleton className="h-2.5 w-20" />
+                        <Skeleton className="h-11 w-full rounded-[var(--radius-input)]" />
+                    </div>
+                ))}
+            </div>
+
+            <Skeleton className="mt-6 h-11 w-full rounded-full" />
+        </>
+    );
+
     return (
         <SkeletonRegion className="mx-auto w-full max-w-md">
-            <div className="rounded-[var(--radius-card)] bg-[var(--jale-card)] p-6 shadow-[var(--shadow-card)]">
-                {title ? (
-                    <div className="mb-6 space-y-2">
-                        <Skeleton className="h-5 w-2/3" />
-                        <SkeletonLine width="w-1/2" tone="paper" />
-                    </div>
-                ) : null}
-
-                <div className="space-y-4">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                        <div key={i} className="space-y-2">
-                            <Skeleton className="h-2.5 w-20" />
-                            <Skeleton className="h-11 w-full rounded-[var(--radius-input)]" />
-                        </div>
-                    ))}
+            {card ? (
+                <div className="rounded-[var(--radius-card)] bg-[var(--jale-card)] p-6 shadow-[var(--shadow-card)]">
+                    {body}
                 </div>
-
-                <Skeleton className="mt-6 h-11 w-full rounded-full" />
-            </div>
+            ) : (
+                body
+            )}
         </SkeletonRegion>
     );
 }
