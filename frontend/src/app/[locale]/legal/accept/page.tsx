@@ -5,32 +5,20 @@ import LegalWall from '@/components/legal/LegalWall';
 /**
  * The legal wall route.
  *
- * `LegalWall` is frozen (auth-critical): it owns the `/legal/tos` fetch, the
- * accept POST, the `legalReturnUrl` handoff and the redirect that lets the rest
- * of the app load. Everything this page can legitimately decide is therefore
- * the auth gate and the landmark — the component draws its own `<main>` and its
- * own centering frame.
+ * `LegalWall` owns the whole screen: the `/legal/tos` fetch (on `usePageData`),
+ * its skeleton / error / accept surfaces, the `legalReturnUrl` handoff and the
+ * redirect that lets the rest of the app load. It renders its own `<main>` and
+ * its own centering frame, so this page adds no wrapper — nesting a second
+ * `<main>` put two landmarks in the document.
  *
- * Consequently the state surfaces this page would otherwise own live inside the
- * frozen component and are NOT migrated here:
- *   - S1  its fetch-phase copy is a plain "Loading…" line, not the
- *         `CenteredCardSkeleton` that `loading.tsx` renders for the route.
- *   - S5  its fetch failure is a hand-rolled message + retry, not `ErrorState`
- *         by kind (it also swallows the kind: `catch { setFetchError(true) }`).
- *   - S7  its accept failure is a bare `<p class="text-error">`, not
- *         `InlineFeedback tone="danger"`.
- * Moving those onto `usePageData` / the foundation primitives requires editing
- * `components/legal/LegalWall.tsx`; see the contract-change request filed with
- * this change.
- *
- * `useRequireAuth()` is the same gate `usePageData` arms internally
- * (`useRequireAuth({ enabled: requireAuth })`), so the auth contract already
- * matches the hook's.
+ * `useRequireAuth()` here is deliberately redundant with the gate `usePageData`
+ * arms inside the component (`useRequireAuth({ enabled: requireAuth })`). Both
+ * resolve to the same idempotent `router.replace('/auth/<type>')`, and this one
+ * keeps the route guarded at the ROUTE level — the screen that gates the whole
+ * authenticated app should not depend on a child component to stay guarded.
  */
 export default function LegalAcceptPage() {
     useRequireAuth();
 
-    // No wrapper element: `LegalWall` renders the `<main>` landmark itself, and
-    // nesting a second one produced two `main`s in the document.
     return <LegalWall />;
 }
