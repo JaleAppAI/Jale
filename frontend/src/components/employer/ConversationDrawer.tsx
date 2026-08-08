@@ -1,15 +1,23 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from '@/i18n/navigation';
-import { LegalWallError } from '@/lib/api';
+import { usePageData } from '@/hooks/usePageData';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Button } from '@/components/ui/button';
+import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorState } from '@/components/ui/error-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Skeleton, SkeletonCircle, SkeletonLine } from '@/components/ui/skeleton';
-import { ConversationThread } from '@/components/employer/ConversationThread';
+import { useToast } from '@/components/ui/toast';
+import {
+  ConversationThread,
+  formatMessageTime,
+  initialsFor,
+} from '@/components/employer/ConversationThread';
+import { isLegalWallError } from '@/lib/api';
 import {
   closeConversation,
   getConversation,
@@ -17,134 +25,122 @@ import {
   sendConversationMessage,
 } from '@/lib/api/employer';
 import type {
-  EmployerConversationDetail,
-  EmployerConversationMessage,
+  EmployerConversationResponse,
   EmployerConversationSummary,
 } from '@/lib/api/employer';
+
+/**
+ * The floating conversations drawer, mounted in the root layout on EVERY page.
+ *
+ * Two things follow from "every page" and are easy to get wrong:
+ *
+ *  - Both `usePageData` instances pass `requireAuth: false`. The default arms a
+ *    redirect to /auth for anyone without a session, and this component renders
+ *    on the public landing page too -- the default would bounce every anonymous
+ *    visitor off the marketing site. The legal-wall handling is still wanted,
+ *    which is why the hook is used rather than hand-rolled.
+ *  - Nothing is fetched until the drawer is actually opened by an employer.
+ *    `canFetch` is in `deps`, so closing the drawer aborts whatever was in
+ *    flight and stops the poll instead of leaving it running behind a closed
+ *    panel.
+ *
+ * Send and close follow the same contract as the conversations page, because
+ * both surfaces render the same `ConversationThread`: `onSend`/`onClose` reject
+ * on failure, the draft survives, and the dialog reports it.
+ */
+
+const RETURN_URL = '/employer/conversations';
+const THREAD_POLL_MS = 15000;
 
 export function ConversationDrawer() {
   const { idToken, isAuthenticated, userType } = useAuth();
   const router = useRouter();
   const t = useTranslations('employer_messages');
   const tCommon = useTranslations('common');
-  const errorMessage = useErrorMessage();
+  const translateError = useErrorMessage();
+  const toast = useToast();
+
   const [open, setOpen] = useState(false);
-  const [conversations, setConversations] = useState<EmployerConversationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [conversation, setConversation] = useState<EmployerConversationDetail | null>(null);
-  const [messages, setMessages] = useState<EmployerConversationMessage[]>([]);
-  const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [pollNoticeDismissed, setPollNoticeDismissed] = useState(false);
 
-  // Distinguishing "still fetching the list" from "the list is empty" is the
-  // whole point of this flag: without it the drawer opened onto "No
-  // conversations" every single time and then filled in, which reads as a bug.
-  const [listLoading, setListLoading] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
-  const [threadError, setThreadError] = useState<string | null>(null);
-  /** Failure of a send/close, shown against the composer. */
-  const [actionError, setActionError] = useState<string | null>(null);
-  /** A poll tick failed over messages already on screen. */
-  const [threadRefreshFailed, setThreadRefreshFailed] = useState(false);
-  const [listReloadToken, setListReloadToken] = useState(0);
-  const [threadReloadToken, setThreadReloadToken] = useState(0);
+  const isEmployer = userType === 'employer';
+  const canFetch = open && isEmployer;
 
-  function handleDrawerLegalWall(err: unknown) {
-    if (err instanceof LegalWallError) {
-      sessionStorage.setItem('legalReturnUrl', '/employer/conversations');
+  const routeLegalWall = useCallback(
+    (err: unknown): boolean => {
+      if (!isLegalWallError(err)) return false;
+      sessionStorage.setItem('legalReturnUrl', RETURN_URL);
       router.replace('/legal/accept');
-    }
-  }
+      return true;
+    },
+    [router],
+  );
 
+  const list = usePageData<EmployerConversationSummary[] | null>({
+    fetcher: async ({ token }) => {
+      if (!canFetch) return null;
+      const res = await getConversations(token);
+      return res.conversations.filter((item) => item.status === 'open');
+    },
+    requireAuth: false,
+    legalReturnUrl: RETURN_URL,
+    deps: [canFetch],
+    isEmpty: (data) => data !== null && data.length === 0,
+  });
+
+  const { setData: setListData } = list;
+  const conversations = list.data ?? [];
+
+  const thread = usePageData<EmployerConversationResponse | null>({
+    fetcher: ({ token }) =>
+      canFetch && selectedId ? getConversation(token, selectedId) : Promise.resolve(null),
+    requireAuth: false,
+    legalReturnUrl: RETURN_URL,
+    deps: [canFetch, selectedId],
+    pollMs: canFetch && selectedId ? THREAD_POLL_MS : undefined,
+  });
+
+  const { setData: setThreadData, refresh: refreshThread, refreshError: threadRefreshError } = thread;
+
+  const conversation = thread.data?.conversation ?? null;
+  const messages = thread.data?.messages ?? [];
+
+  // A composer error belongs to the thread it was raised in.
   useEffect(() => {
-    if (!open || !idToken || userType !== 'employer') return;
-    let active = true;
-    setListLoading(true);
-    setListError(null);
-    getConversations(idToken)
-      .then((res) => {
-        if (!active) return;
-        const openConversations = res.conversations.filter((item) => item.status === 'open');
-        setConversations(openConversations);
-        setSelectedId((current) => current ?? openConversations[0]?.id ?? null);
-      })
-      .catch((err) => {
-        if (!active) return;
-        handleDrawerLegalWall(err);
-        // The legal wall is a redirect, not a message: showing an error under
-        // it would be a screen the user cannot act on.
-        if (!(err instanceof LegalWallError)) setListError(errorMessage(err));
-      })
-      .finally(() => {
-        if (active) setListLoading(false);
-      });
-    return () => { active = false; };
-  }, [open, idToken, userType, listReloadToken]);
+    setComposerError(null);
+  }, [selectedId]);
 
+  // Dismissing the poll banner silences this outage, not every future one.
   useEffect(() => {
-    if (!open || !idToken || !selectedId) return;
-    let active = true;
-    let firstLoad = true;
-    // Tracks whether messages have EVER arrived for this thread, which is what
-    // separates "the thread failed to load" from "a refresh of a thread the
-    // user is reading failed". The second must never clear the transcript.
-    let loadedOnce = false;
-
-    async function load() {
-      if (firstLoad) {
-        setLoading(true);
-        setThreadError(null);
-      }
-      try {
-        const detail = await getConversation(idToken!, selectedId!);
-        if (!active) return;
-        setConversation(detail.conversation);
-        setMessages(detail.messages);
-        setThreadError(null);
-        setThreadRefreshFailed(false);
-        loadedOnce = true;
-      } catch (err) {
-        if (!active) return;
-        handleDrawerLegalWall(err);
-        if (err instanceof LegalWallError) return;
-        if (loadedOnce) {
-          // Keep the last messages on screen; just say we are retrying.
-          setThreadRefreshFailed(true);
-        } else {
-          setThreadError(errorMessage(err));
-        }
-      } finally {
-        if (active) setLoading(false);
-        firstLoad = false;
-      }
-    }
-
-    load();
-    const interval = window.setInterval(load, 15000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [open, idToken, selectedId, threadReloadToken, router]);
-
-  if (!isAuthenticated || userType !== 'employer') return null;
+    if (threadRefreshError === null) setPollNoticeDismissed(false);
+  }, [threadRefreshError]);
 
   async function handleSend(body: string) {
     if (!idToken || !selectedId) return;
     setSending(true);
-    setActionError(null);
+    setComposerError(null);
     try {
       const detail = await sendConversationMessage(idToken, selectedId, body);
-      setConversation(detail.conversation);
-      setMessages(detail.messages);
+      setThreadData(detail);
+      setListData((prev) =>
+        (prev ?? []).map((item) =>
+          item.id === detail.conversation.id
+            ? {
+                ...item,
+                last_message_at: detail.conversation.last_message_at,
+                last_message_preview: detail.conversation.last_message_preview,
+              }
+            : item,
+        ),
+      );
     } catch (err) {
-      handleDrawerLegalWall(err);
-      if (!(err instanceof LegalWallError)) setActionError(errorMessage(err));
-      // Re-raised deliberately. ConversationThread clears the composer only
-      // when onSend RESOLVES, so swallowing here would delete the message the
-      // user just typed. The banner above is the user-facing handling; the
-      // rejection is what preserves their draft so they can retry.
+      if (!routeLegalWall(err)) setComposerError(translateError(err));
+      // Re-raised so `ConversationThread` keeps the draft it would otherwise
+      // clear. The line above is what the user reads; this is what they keep.
       throw err;
     } finally {
       setSending(false);
@@ -153,132 +149,171 @@ export function ConversationDrawer() {
 
   async function handleClose() {
     if (!idToken || !selectedId) return;
+    const closedId = selectedId;
     setClosing(true);
-    setActionError(null);
     try {
-      const detail = await closeConversation(idToken, selectedId);
-      setConversation(detail.conversation);
-      setMessages(detail.messages);
-      setConversations((current) => current.filter((item) => item.id !== selectedId));
+      await closeConversation(idToken, closedId);
+      // The drawer only ever lists OPEN threads, so a closed one leaves it.
+      setListData((prev) => (prev ?? []).filter((item) => item.id !== closedId));
       setSelectedId(null);
+      toast.success(t('conversation_closed'));
     } catch (err) {
-      // Nothing to preserve here (no draft), so this one is fully handled: a
-      // failed close used to reject into nowhere and leave the button spinning
-      // back to idle with no explanation.
-      handleDrawerLegalWall(err);
-      if (!(err instanceof LegalWallError)) setActionError(errorMessage(err));
+      routeLegalWall(err);
+      // Rejected so the confirmation dialog stays open and explains itself.
+      throw err;
     } finally {
       setClosing(false);
     }
   }
+
+  // Every hook above runs unconditionally; only the OUTPUT is gated. Workers and
+  // signed-out visitors never see the drawer, and `canFetch` keeps them from
+  // ever hitting an employer endpoint.
+  if (!isAuthenticated || !isEmployer) return null;
+
+  const listBusy = list.phase === 'auth' || list.phase === 'loading';
 
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="fixed bottom-5 right-5 z-30 inline-flex items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-lg"
+        aria-expanded={open}
+        className="fixed bottom-5 right-5 z-30 inline-flex cursor-pointer items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-[var(--shadow-modal)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
       >
+        {/* WhatsApp brand green -- the one sanctioned literal, same in both themes. */}
         <span className="h-2 w-2 rounded-full bg-[#25D366]" />
         {open ? t('drawer_close') : t('drawer_button')}
       </button>
 
-      {open && (
-        <div className="fixed bottom-20 right-5 z-30 flex h-[620px] max-h-[calc(100vh-7rem)] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-[var(--jale-divider)] bg-white shadow-2xl">
-          <aside className="hidden w-60 border-r border-[var(--jale-divider)] bg-[#fbfcff] sm:block">
-            <div className="border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white">
+      {open ? (
+        <div className="anim-fade-in fixed bottom-20 right-5 z-30 flex h-[620px] max-h-[calc(100vh-7rem)] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)]">
+          {/* List pane. Below sm it owns the whole drawer until a thread is
+              picked -- a 240px list and a transcript will not share 358px. */}
+          <aside
+            className={[
+              'min-w-0 flex-col border-[var(--jale-divider)] bg-[var(--jale-paper-2)] sm:flex sm:w-60 sm:shrink-0 sm:border-r',
+              selectedId ? 'hidden' : 'flex w-full',
+            ].join(' ')}
+          >
+            <div className="shrink-0 border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white">
               <p className="text-sm font-bold">{t('title')}</p>
               <p className="mt-0.5 text-[11px] text-white/45">WhatsApp</p>
             </div>
-            <div className="max-h-[560px] overflow-y-auto">
-              {listLoading ? (
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {listBusy ? (
                 <ConversationListSkeleton label={tCommon('loading')} />
-              ) : listError ? (
-                <div className="p-3">
-                  <InlineFeedback tone="danger">
-                    <span className="block">{listError}</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="mt-2"
-                      onClick={() => setListReloadToken((n) => n + 1)}
-                    >
-                      {tCommon('retry')}
-                    </Button>
-                  </InlineFeedback>
-                </div>
+              ) : list.phase === 'error' && list.errorKind ? (
+                <ErrorState kind={list.errorKind} onRetry={list.retry} compact />
               ) : conversations.length === 0 ? (
-                <p className="p-3 text-xs text-muted">{t('empty')}</p>
-              ) : conversations.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setSelectedId(item.id)}
-                  className={[
-                    'flex w-full gap-2 border-b border-[#f0f2f5] p-3 text-left text-sm transition-colors',
-                    selectedId === item.id ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-white',
-                  ].join(' ')}
-                >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--jale-blue-50)] text-[10px] font-extrabold text-[var(--jale-blue-700)]">
-                    {initialsFor(item.worker_name ?? t('unknown_worker'))}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block truncate font-bold text-[var(--jale-ink)]">{item.worker_name ?? t('unknown_worker')}</span>
-                    <span className="block truncate text-xs text-muted-foreground">{item.job_title}</span>
-                    <span className="mt-1 block truncate text-[11px] text-muted">{item.last_message_preview ?? t('no_messages')}</span>
-                  </span>
-                </button>
-              ))}
+                <EmptyState icon="message" variant="filtered" title={t('empty')} body={t('empty_drawer_body')} />
+              ) : (
+                <ul className="divide-y divide-[var(--jale-divider)]">
+                  {conversations.map((item) => {
+                    const name = item.worker_name ?? t('unknown_worker');
+                    const selected = selectedId === item.id;
+                    return (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedId(item.id)}
+                          aria-current={selected ? 'true' : undefined}
+                          className={[
+                            'flex w-full cursor-pointer gap-2 p-3 text-left transition-colors',
+                            'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                            selected ? 'bg-[var(--jale-blue-50)]' : 'hover:bg-[var(--jale-card)]',
+                          ].join(' ')}
+                        >
+                          <span className="avatar-initials h-8 w-8 shrink-0 text-[10px]">
+                            {initialsFor(name)}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-baseline justify-between gap-2">
+                              <span className="truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
+                              <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
+                                {formatMessageTime(item.last_message_at)}
+                              </span>
+                            </span>
+                            <span className="block truncate text-xs text-[var(--jale-ink-2)]">
+                              {item.job_title}
+                            </span>
+                            <span className="mt-1 flex items-center gap-1.5">
+                              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#25D366]" />
+                              <span className="truncate text-[11px] text-[var(--jale-ink-2)]">
+                                {item.last_message_preview ?? t('no_messages')}
+                              </span>
+                            </span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </div>
           </aside>
-          <div className="flex min-w-0 flex-1 flex-col">
-            <div className="flex items-center justify-between border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white sm:hidden">
-              <p className="text-sm font-bold">{t('title')}</p>
-              <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+
+          {/* Thread pane. */}
+          <div
+            className={[
+              'min-w-0 flex-1 flex-col sm:flex',
+              selectedId ? 'flex' : 'hidden',
+            ].join(' ')}
+          >
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--jale-divider)] bg-[var(--jale-blue-900)] p-3 text-white sm:hidden">
+              <p className="truncate text-sm font-bold">{t('title')}</p>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
                 {t('hide')}
               </Button>
             </div>
 
-            {/* Transient: the transcript below is still the last known good one. */}
-            {threadRefreshFailed && !threadError ? (
-              <div className="shrink-0 px-3 pt-2">
-                <InlineFeedback tone="warning">{tCommon('feedback.refresh_failed')}</InlineFeedback>
+            {/* A failed poll over messages already on screen: a footnote, never
+                a replacement for the transcript. */}
+            {threadRefreshError !== null && !pollNoticeDismissed ? (
+              <div className="shrink-0 border-b border-[var(--jale-divider)] p-2">
+                <InlineFeedback tone="warning" onDismiss={() => setPollNoticeDismissed(true)}>
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span>{tCommon('feedback.refresh_failed')}</span>
+                    <button
+                      type="button"
+                      onClick={() => void refreshThread()}
+                      className="cursor-pointer font-bold underline underline-offset-2 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                    >
+                      {tCommon('retry')}
+                    </button>
+                  </span>
+                </InlineFeedback>
               </div>
             ) : null}
 
-            {threadError ? (
-              <div className="flex flex-1 items-center justify-center p-4">
-                <InlineFeedback tone="danger">
-                  <span className="block">{threadError}</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2"
-                    onClick={() => setThreadReloadToken((n) => n + 1)}
-                  >
-                    {tCommon('retry')}
-                  </Button>
-                </InlineFeedback>
+            {!selectedId ? (
+              <div className="flex flex-1 items-center justify-center">
+                <EmptyState icon="message" title={t('empty_select')} body={t('empty_select_body')} />
+              </div>
+            ) : thread.phase === 'error' && thread.errorKind ? (
+              <div className="flex flex-1 items-center justify-center">
+                <ErrorState kind={thread.errorKind} onRetry={thread.retry} compact />
               </div>
             ) : (
               <ConversationThread
-                key={conversation?.id ?? 'none'}
+                key={selectedId}
                 conversation={conversation}
                 messages={messages}
-                loading={loading}
+                loading={thread.phase !== 'ready'}
                 sending={sending}
                 closing={closing}
-                // ConversationThread already renders this against the composer
-                // with role="alert" and aria-describedby on the textarea.
-                errorMessage={actionError}
+                errorMessage={composerError}
                 onSend={handleSend}
                 onClose={conversation?.status === 'open' ? handleClose : undefined}
+                onBack={() => setSelectedId(null)}
+                backHiddenFrom="sm"
                 compact
               />
             )}
           </div>
         </div>
-      )}
+      ) : null}
     </>
   );
 }
@@ -292,22 +327,18 @@ function ConversationListSkeleton({ label }: { label: string }) {
   return (
     <div role="status">
       <span className="sr-only">{label}</span>
-      {Array.from({ length: 4 }).map((_, i) => (
-        <div key={i} className="flex w-full gap-2 border-b border-[#f0f2f5] p-3">
-          <SkeletonCircle size={32} />
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <SkeletonLine width="w-2/3" />
-            <SkeletonLine width="w-1/2" tone="paper" />
-            <Skeleton className="h-2.5 w-3/4" />
-          </div>
-        </div>
-      ))}
+      <ul className="divide-y divide-[var(--jale-divider)]">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <li key={i} className="flex w-full gap-2 p-3">
+            <SkeletonCircle size={32} />
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <SkeletonLine width="w-2/3" />
+              <SkeletonLine width="w-1/2" tone="paper" />
+              <Skeleton className="h-2.5 w-3/4" />
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
-}
-
-function initialsFor(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return 'W';
-  return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
 }
