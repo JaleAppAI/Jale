@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
@@ -268,10 +268,18 @@ export function usePageData<T>(options: UsePageDataOptions<T>): UsePageDataResul
 
     // `empty` is a property of loaded data only. Reporting it while loading is
     // exactly the "no results" flash this hook exists to prevent.
-    const empty = useMemo(() => {
-        if (state.phase !== 'ready' || state.data === null) return false;
-        return isEmptyRef.current ? isEmptyRef.current(state.data) : false;
-    }, [state.phase, state.data]);
+    // Deliberately NOT memoized. `isEmpty` is read through a ref (so a caller
+    // can pass a fresh inline closure every render without retriggering the
+    // fetch effects), and a ref read is invisible to a dependency array: a
+    // predicate that closes over component state — `items.filter(byTab).length
+    // === 0` is the motivating case — would keep reporting the answer it gave
+    // when `data` last changed, and an emptied tab would render a stale list.
+    // The predicate is a cheap array check; recomputing it per render is
+    // cheaper than the class of bug memoizing it invites.
+    const empty =
+        state.phase === 'ready' && state.data !== null && isEmptyRef.current
+            ? isEmptyRef.current(state.data)
+            : false;
 
     return {
         phase: state.phase,
