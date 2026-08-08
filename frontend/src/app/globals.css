@@ -218,7 +218,9 @@ a { color: inherit; text-decoration: none; }
   height: 32px;
   border-radius: 8px;
   background: var(--jale-blue-50);
-  color: var(--jale-blue-600);
+  /* blue-700, not blue-600: both tokens flip in the dark theme, so the tile
+     stays legible. blue-600 does not flip and would sit mid-blue on navy. */
+  color: var(--jale-blue-700);
   display: inline-flex;
   align-items: center;
   justify-content: center;
