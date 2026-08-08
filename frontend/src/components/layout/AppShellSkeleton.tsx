@@ -48,7 +48,7 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                 <Sidebar role={role} homeHref={homeHref} chip={chip} />
 
                 <section className="min-w-0">
-                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-3 backdrop-blur md:px-6">
+                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div className="min-w-0">
                                 {/* Occupies the h1 (text-2xl / md:text-3xl) line box. */}
@@ -62,6 +62,8 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                                     nav above: the theme switch needs no data and is usable
                                     the instant the shell paints. */}
                                 <ThemeToggle />
+                                {/* Matches `InitialsAvatar size={40} square`: 40px,
+                                    12px radius, blue-50 tint — minus the letters. */}
                                 <div className="h-10 w-10 rounded-xl bg-[var(--jale-blue-50)]" />
                                 <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
                             </div>

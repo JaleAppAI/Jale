@@ -1090,6 +1090,8 @@
     "worker_workspace": "Worker workspace",
     "worker_role": "Worker",
     "worker_fallback": "Your profile",
-    "worker_nav_main": "Menu"
+    "worker_nav_main": "Menu",
+    "primary_nav": "Main navigation",
+    "mobile_nav": "Mobile navigation"
   }
 }

@@ -4,6 +4,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
+import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 
 // Routes that render their own chrome (AppShell for /employer|/worker,
@@ -80,14 +81,20 @@ export function Header() {
 
                     {isAuthenticated && (
                         <>
-                            {/* Profile avatar link */}
+                            {/* Profile avatar link. This header has no profile fetch,
+                                so the role letter IS the content — passed as the
+                                fallback rather than faked into a name. */}
                             <Link
                                 href={userType === 'worker' ? '/worker/profile' : '/employer/profile'}
                                 aria-label={t('profile')}
-                                className="avatar-initials square"
-                                style={{ width: 34, height: 34 }}
+                                className="inline-flex rounded-xl focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                             >
-                                {userType === 'worker' ? 'W' : 'E'}
+                                <InitialsAvatar
+                                    name=""
+                                    fallback={userType === 'worker' ? 'W' : 'E'}
+                                    size={34}
+                                    square
+                                />
                             </Link>
                             <Button variant="outline" size="sm" onClick={handleSignOut} loading={signingOut} loadingLabel={tCommon('loading')}>
                                 {t('sign_out')}
