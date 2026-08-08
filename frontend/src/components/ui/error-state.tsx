@@ -34,13 +34,6 @@ const RETRYABLE: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
     'server',
 ]);
 
-/** Kinds where the resource is gone/blocked, so the only move is to go back. */
-const GO_BACK_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
-    'not_found',
-    'gone',
-    'forbidden',
-]);
-
 /** Transient/connectivity problems read as a caution, not a failure. */
 const WARNING_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>(['offline', 'timeout']);
 
@@ -81,7 +74,12 @@ export function ErrorState({
     const resolvedBody = body ?? t(`errors.${kind === 'legal_wall' ? 'unknown' : kind}`);
 
     const showRetry = Boolean(onRetry) && (RETRYABLE.has(kind) || kind === 'unknown');
-    const showBack = Boolean(backHref) && GO_BACK_KINDS.has(kind);
+    // Passing `backHref` IS the request for a back link, so honour it for any
+    // kind. Gating it on a kind allowlist instead meant a caller whose failure
+    // is unrecoverable but unlisted — an invalid link is a `validation` failure
+    // — had to mislabel the kind as `not_found` just to get the button, which
+    // buries the real kind from anyone reading the call site later.
+    const showBack = Boolean(backHref);
 
     const warning = WARNING_KINDS.has(kind);
     const tileClasses = warning
