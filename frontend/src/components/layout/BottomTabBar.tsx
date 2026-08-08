@@ -12,10 +12,14 @@ import { workerPrimaryNav, isNavItemActive } from './nav-config';
  */
 export function BottomTabBar() {
     const t = useTranslations('header');
+    const tShell = useTranslations('app_shell');
     const pathname = usePathname();
 
     return (
-        <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_95%,transparent)] backdrop-blur lg:hidden pb-[env(safe-area-inset-bottom)]">
+        <nav
+            aria-label={tShell('mobile_nav')}
+            className="fixed inset-x-0 bottom-0 z-20 border-t border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_95%,transparent)] backdrop-blur lg:hidden pb-[env(safe-area-inset-bottom)]"
+        >
             <ul className="mx-auto flex max-w-lg items-stretch justify-around">
                 {workerPrimaryNav.map((item) => {
                     const active = isNavItemActive(item, pathname);
@@ -25,7 +29,10 @@ export function BottomTabBar() {
                                 href={item.href}
                                 aria-current={active ? 'page' : undefined}
                                 className={[
-                                    'flex flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-semibold',
+                                    // min-h keeps every tab at the 48px touch
+                                    // minimum even where the label wraps to one
+                                    // short line.
+                                    'flex min-h-12 flex-col items-center justify-center gap-1 py-3 text-[11px] font-semibold transition-colors',
                                     active ? 'text-[var(--jale-blue-700)]' : 'text-[var(--jale-ink-2)]',
                                 ].join(' ')}
                             >

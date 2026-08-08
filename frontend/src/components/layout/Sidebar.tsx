@@ -39,30 +39,33 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
 
     return (
         <aside className="hidden bg-[var(--jale-sidebar)] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col lg:self-start">
-            <div className="border-b border-white/10 px-6 py-6">
-                <Link href={homeHref} className="text-3xl font-extrabold text-white">
+            <div className="border-b border-white/10 px-6 py-7">
+                <Link href={homeHref} className="text-3xl font-extrabold tracking-tight text-white">
                     Jale
                 </Link>
-                <p className="mt-1 text-xs font-semibold uppercase text-white/55">
+                <p className="mt-1.5 text-[11px] font-bold uppercase tracking-wider text-white/55">
                     {role === 'employer' ? t('shell.employer_workspace') : tShell('worker_workspace')}
                 </p>
             </div>
 
             <div className="border-b border-white/10 px-6 py-5">
                 <div className="flex items-center gap-3">
-                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
+                    {/* Not `InitialsAvatar`: that is the blue-50/blue-700 tint for
+                        light surfaces. This tile sits ON the navy rail, where the
+                        readable pairing is solid brand blue with white. */}
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
                         {chip.initials}
                     </div>
                     <div className="min-w-0">
                         <p className="truncate text-sm font-bold">{chip.name}</p>
-                        <p className="truncate text-xs text-white/55">
+                        <p className="truncate text-xs font-medium text-white/55">
                             {chip.meta || (role === 'employer' ? t('shell.plan_label') : tShell('worker_role'))}
                         </p>
                     </div>
                 </div>
             </div>
 
-            <nav className="flex-1 overflow-y-auto px-4 py-5">
+            <nav aria-label={tShell('primary_nav')} className="flex-1 overflow-y-auto px-4 py-6">
                 {role === 'employer' ? (
                     <EmployerNav t={t} pathname={pathname} />
                 ) : (
@@ -79,8 +82,14 @@ function NavLink({ item, active, label }: { item: NavItem; active: boolean; labe
             href={item.href}
             aria-current={active ? 'page' : undefined}
             className={[
-                'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold',
-                active ? 'bg-white/15 text-white' : 'text-white/80 hover:bg-white/10 hover:text-white',
+                'flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60',
+                // Active is a solid brand pill rather than a white wash: the tint
+                // is a token, so it holds its meaning when the rail deepens in
+                // the dark theme, and it never reads as "hovered".
+                active
+                    ? 'bg-[var(--jale-blue-500)] text-white'
+                    : 'text-white/80 hover:bg-white/10 hover:text-white',
             ].join(' ')}
         >
             <Icon name={item.icon} />
@@ -89,11 +98,19 @@ function NavLink({ item, active, label }: { item: NavItem; active: boolean; labe
     );
 }
 
+function NavSectionLabel({ children }: { children: string }) {
+    return (
+        <p className="mb-2 px-2 text-[11px] font-bold uppercase tracking-wider text-white/45">
+            {children}
+        </p>
+    );
+}
+
 function WorkerNav({ navLabel, pathname }: { navLabel: string; pathname: string }) {
     const tHeader = useTranslations('header');
     return (
         <>
-            <p className="mb-2 px-2 text-[11px] font-bold uppercase text-white/45">{navLabel}</p>
+            <NavSectionLabel>{navLabel}</NavSectionLabel>
             <div className="space-y-1">
                 {workerPrimaryNav.map((item) => (
                     <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={tHeader(item.labelKey)} />
@@ -112,7 +129,7 @@ function EmployerNav({
 }) {
     return (
         <>
-            <p className="mb-2 px-2 text-[11px] font-bold uppercase text-white/45">{t('nav.main')}</p>
+            <NavSectionLabel>{t('nav.main')}</NavSectionLabel>
             <div className="space-y-1">
                 {employerPrimaryNav.map((item) => (
                     <NavLink key={item.key} item={item} active={isNavItemActive(item, pathname)} label={t(item.labelKey)} />

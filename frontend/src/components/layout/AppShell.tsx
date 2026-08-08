@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
+import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { apiFetch } from '@/lib/api';
 import { getEmployerProfile } from '@/lib/api/employer';
@@ -105,12 +106,12 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                 <Sidebar role={role} homeHref={homeHref} chip={resolvedChip} />
 
                 <section className="min-w-0">
-                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-3 backdrop-blur md:px-6">
+                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div className="min-w-0">
-                                <h1 className="text-2xl font-extrabold text-[var(--jale-ink)] md:text-3xl">{title}</h1>
+                                <h1 className="text-2xl font-extrabold tracking-tight text-[var(--jale-ink)] md:text-3xl">{title}</h1>
                                 {subtitle ? (
-                                    <p className="mt-1 text-sm font-semibold text-[var(--jale-ink-2)]">{subtitle}</p>
+                                    <p className="mt-1 text-sm font-medium text-[var(--jale-ink-2)]">{subtitle}</p>
                                 ) : null}
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
@@ -118,7 +119,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                                 <Link
                                     href={pathname}
                                     locale={otherLocale}
-                                    className="inline-flex h-10 items-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)] px-4 text-xs font-bold text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]"
+                                    className="inline-flex h-10 items-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)] px-4 text-xs font-bold text-[var(--jale-ink)] transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                                 >
                                     {tHeader('language_toggle')}
                                 </Link>
@@ -126,9 +127,18 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                                 <Link
                                     href={profileHref}
                                     aria-label={tHeader('profile')}
-                                    className="avatar-initials square h-10 w-10"
+                                    className="inline-flex rounded-xl focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                                 >
-                                    {resolvedChip.initials}
+                                    {/* Fed the raw name, not `resolvedChip.name`: pre-fetch
+                                        that is a localized placeholder ("Your profile"),
+                                        and initialising it would show "YP"/"TP" instead of
+                                        the role letter. */}
+                                    <InitialsAvatar
+                                        name={chip?.name ?? ''}
+                                        fallback={initialsFallback}
+                                        size={40}
+                                        square
+                                    />
                                 </Link>
                                 <Button
                                     variant="outline"
