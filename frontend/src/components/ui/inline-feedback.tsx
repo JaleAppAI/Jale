@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 import { useTranslations } from 'next-intl';
+import { Icon } from './icon';
 
 /**
  * Inline feedback banner — result of an action, shown in place (next to the
@@ -66,7 +67,7 @@ export function InlineFeedback({
                     aria-label={t('feedback.dismiss')}
                     className="-mr-1 -mt-0.5 shrink-0 cursor-pointer rounded p-1 leading-none opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                 >
-                    <span aria-hidden="true">&times;</span>
+                    <Icon name="x" />
                 </button>
             ) : null}
         </div>

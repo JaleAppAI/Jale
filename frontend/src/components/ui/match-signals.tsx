@@ -1,9 +1,11 @@
 import type { ScoreBand } from '@/lib/match';
 
+// The -text tokens hold exactly the hexes these used to hardcode, so light
+// rendering is unchanged; going through the tokens is what re-tints them dark.
 const BAND_STYLES: Record<ScoreBand, { background: string; color: string }> = {
-  strong: { background: 'var(--jale-success-bg)', color: '#1f7a44' },
+  strong: { background: 'var(--jale-success-bg)', color: 'var(--jale-success-text)' },
   good: { background: 'var(--jale-blue-50)', color: 'var(--jale-blue-700)' },
-  fair: { background: 'var(--jale-warning-bg)', color: '#8a4400' },
+  fair: { background: 'var(--jale-warning-bg)', color: 'var(--jale-warning-text)' },
 };
 
 export function MatchScoreBadge({

@@ -19,7 +19,7 @@ const variantClasses: Record<ButtonVariant, string> = {
   secondary:
     "bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)] hover:bg-[var(--jale-blue-100)]",
   outline:
-    "border border-[var(--jale-divider)] bg-white text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]",
+    "border border-[var(--jale-divider)] bg-[var(--jale-card)] text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]",
   ghost:
     "bg-transparent text-[var(--jale-ink)] border border-[var(--jale-divider)] hover:bg-[var(--jale-paper-2)]",
   error:

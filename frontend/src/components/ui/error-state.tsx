@@ -1,6 +1,7 @@
 'use client';
 
 import { useTranslations } from 'next-intl';
+import type { ErrorKind } from '@/lib/api/errors';
 import { Button } from './button';
 import { Icon, type IconName } from './icon';
 import { StateAction } from './empty-state';
@@ -15,22 +16,12 @@ import { StateAction } from './empty-state';
  * phrasing.
  */
 
-// TODO(wp-c): import ErrorKind from '@/lib/api/errors'
-// The canonical union is being introduced by a parallel work package; this
-// local copy keeps the component self-contained until the two are unified.
-export type ErrorKind =
-    | 'offline'
-    | 'timeout'
-    | 'unauthorized'
-    | 'forbidden'
-    | 'not_found'
-    | 'gone'
-    | 'conflict'
-    | 'validation'
-    | 'rate_limited'
-    | 'server'
-    | 'legal_wall'
-    | 'unknown';
+/**
+ * `ErrorKind` is single-sourced in `@/lib/api/errors` (where `classifyError`
+ * produces it). Re-exported here so existing `import type { ErrorKind } from
+ * '.../error-state'` call sites keep resolving to the same canonical union.
+ */
+export type { ErrorKind };
 
 /**
  * Kinds where trying the exact same thing again can plausibly succeed. Offering
@@ -54,9 +45,10 @@ const GO_BACK_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>([
 const WARNING_KINDS: ReadonlySet<ErrorKind> = new Set<ErrorKind>(['offline', 'timeout']);
 
 function iconFor(kind: ErrorKind): IconName {
+    if (kind === 'offline' || kind === 'timeout') return 'wifi-off';
     if (kind === 'not_found' || kind === 'gone') return 'search';
-    if (kind === 'offline' || kind === 'timeout' || kind === 'rate_limited') return 'clock';
-    return 'bell';
+    if (kind === 'rate_limited') return 'clock';
+    return 'alert';
 }
 
 export function ErrorState({

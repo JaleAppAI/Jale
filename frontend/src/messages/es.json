@@ -43,6 +43,10 @@
       "sent": "Enviado",
       "copied": "Enlace copiado",
       "refresh_failed": "Se perdió la conexión. Reintentando…"
+    },
+    "theme": {
+      "toggle_to_dark": "Cambiar a tema oscuro",
+      "toggle_to_light": "Cambiar a tema claro"
     }
   },
   "match": {

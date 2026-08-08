@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { PanelHeader } from '@/components/ui/panel-header';
@@ -141,6 +142,7 @@ function EmployerProfileForm(props: {
     const t = useTranslations('employer.profile');
     const tAuth = useTranslations('auth.employer');
     const tCommon = useTranslations('common');
+    const errorMessage = useErrorMessage();
     const [companyName, setCompanyName] = useState(props.initial.company_name ?? props.initial.full_name ?? '');
     const [contactName, setContactName] = useState(props.initial.contact_name ?? '');
     const [phone, setPhone] = useState(props.initial.phone ?? '');
@@ -181,8 +183,10 @@ function EmployerProfileForm(props: {
                 company_description: companyDescription.trim(),
             });
         } catch (e) {
-            const err = e as Record<string, unknown>;
-            setError(typeof err.message === 'string' ? err.message : tCommon('error'));
+            // Never `err.message`: on a failed save that is a backend error
+            // CODE or an exception string -- untranslated, and sometimes server
+            // detail. Classify it into one of the reviewed bilingual sentences.
+            setError(errorMessage(e));
         } finally {
             setSaving(false);
         }

@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { SkeletonLine } from '@/components/ui/skeleton';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { Sidebar, type SidebarChip } from './Sidebar';
 import { BottomTabBar } from './BottomTabBar';
 import type { ShellRole } from './nav-config';
@@ -47,7 +48,7 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                 <Sidebar role={role} homeHref={homeHref} chip={chip} />
 
                 <section className="min-w-0">
-                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/92 px-4 py-3 backdrop-blur md:px-6">
+                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-3 backdrop-blur md:px-6">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div className="min-w-0">
                                 {/* Occupies the h1 (text-2xl / md:text-3xl) line box. */}
@@ -56,9 +57,13 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                                 </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
-                                <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-white" />
+                                <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
+                                {/* Real control, not a placeholder — same reasoning as the
+                                    nav above: the theme switch needs no data and is usable
+                                    the instant the shell paints. */}
+                                <ThemeToggle />
                                 <div className="h-10 w-10 rounded-xl bg-[var(--jale-blue-50)]" />
-                                <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-white" />
+                                <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
                             </div>
                         </div>
                     </header>

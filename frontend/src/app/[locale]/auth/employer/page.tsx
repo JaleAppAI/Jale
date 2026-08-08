@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { sanitizeReturnPath } from '@/lib/login-url';
 import EmployerAuthForm, { EmployerBrandPanel } from '@/components/auth/EmployerAuthForm';
 import { AuthShell } from '@/components/auth/AuthShell';
+import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,7 +29,18 @@ export default function EmployerAuthPage() {
         }
     }, [isLoading, isAuthenticated, userType, router, searchParams]);
 
-    if (isLoading || isAuthenticated) return null;
+    // Not `return null`: that blanked the whole viewport between the route's
+    // loading.tsx unmounting and the form mounting, and left an
+    // already-signed-in user staring at nothing until the redirect above
+    // landed. This markup is byte-identical to ./loading.tsx, so the shell
+    // simply stays put and only the form column fills in.
+    if (isLoading || isAuthenticated) {
+        return (
+            <AuthShell variant="employer" brand={<EmployerBrandPanel />}>
+                <CenteredCardSkeleton title card={false} />
+            </AuthShell>
+        );
+    }
 
     return (
         <AuthShell variant="employer" brand={<EmployerBrandPanel />}>

@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { validateWorkerProfileFields, type WorkerProfileField } from '@/lib/worker-profile-form';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 
 const AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 type Availability = (typeof AVAILABILITY)[number];
@@ -32,6 +33,7 @@ export function ProfileCompleteModal(props: {
   const t = useTranslations('worker_profile.complete_modal');
   const tFields = useTranslations('worker_profile');
   const tCommon = useTranslations('common');
+  const errorMessage = useErrorMessage();
   const [fullName, setFullName] = useState('');
   const [skills, setSkills] = useState('');
   const [availability, setAvailability] = useState<Availability>('full_time');
@@ -85,8 +87,10 @@ export function ProfileCompleteModal(props: {
         years_experience: Math.min(Math.max(Number(yearsExp) || 0, 0), 80),
       });
     } catch (e) {
-      const err = e as Record<string, unknown>;
-      setError(typeof err.message === 'string' ? err.message : 'error');
+      // Was `err.message` with a bare 'error' fallback -- the first is an
+      // untranslated backend code, the second rendered the literal word
+      // "error" to the user. Both become a real sentence in both locales.
+      setError(errorMessage(e));
     } finally {
       setSubmitting(false);
     }

@@ -4,6 +4,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
 
 // Routes that render their own chrome (AppShell for /employer|/worker,
 // AuthShell for /auth). `/legal` and `/upload` keep the global Header.
@@ -47,7 +48,7 @@ export function Header() {
     };
 
     return (
-        <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/90 backdrop-blur-md">
+        <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_90%,transparent)] backdrop-blur-md">
             <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
                 {/* Wordmark */}
                 <Link href="/" className="jale-wordmark">
@@ -74,6 +75,8 @@ export function Header() {
                     >
                         {t('language_toggle')}
                     </Link>
+
+                    <ThemeToggle />
 
                     {isAuthenticated && (
                         <>

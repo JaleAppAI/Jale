@@ -9,6 +9,7 @@ import type { LocationSource } from '@/lib/location-search';
 import type { PreferredCity, WorkerProfileData, WorkerProfilePatch } from '@/lib/api/worker';
 import { splitDedupe } from '@/lib/text';
 import { validateWorkerProfileFields, type WorkerProfileField } from '@/lib/worker-profile-form';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 
 const AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 
@@ -27,6 +28,7 @@ export function ProfileEditForm(props: {
   const t = useTranslations('worker_profile.edit');
   const tFields = useTranslations('worker_profile');
   const tCommon = useTranslations('common');
+  const errorMessage = useErrorMessage();
   const [fullName, setFullName] = useState(props.initial.full_name ?? '');
   const [skills, setSkills] = useState((props.initial.skills ?? []).join(', '));
   const [availability, setAvailability] = useState<string>(props.initial.availability ?? 'full_time');
@@ -70,8 +72,9 @@ export function ProfileEditForm(props: {
         ...(coords ?? {}),
       });
     } catch (e) {
-      const err = e as Record<string, unknown>;
-      setError(typeof err.message === 'string' ? err.message : tCommon('error'));
+      // Never `err.message`: that is a backend error code or an exception
+      // string, neither of which is translated copy.
+      setError(errorMessage(e));
     } finally {
       setSaving(false);
     }

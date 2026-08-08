@@ -43,6 +43,10 @@
       "sent": "Sent",
       "copied": "Link copied",
       "refresh_failed": "Connection lost. Retrying…"
+    },
+    "theme": {
+      "toggle_to_dark": "Switch to dark theme",
+      "toggle_to_light": "Switch to light theme"
     }
   },
   "match": {

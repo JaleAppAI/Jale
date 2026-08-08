@@ -31,15 +31,20 @@
 
   /* Surfaces */
   --jale-paper:    #e3eaf2;
-  --jale-paper-2:  #f4f6fa;
-  --jale-card:     #ffffff;
-  --jale-input:    #fafbfd;
-  --jale-divider:  #d8dde6;
+  --jale-paper-2:  #ccd7ea;
+  --jale-card:     #ebebeb;
+  --jale-input:    #f4f4f4;
+  --jale-divider:  #d1d1d1;
   --jale-ink:      #181855;
   --jale-ink-2:    #5b6480;
   --jale-placeholder: #a1a9b8;
   /* App-shell ground behind the sidebar + content column. */
   --jale-shell:    #eef2f7;
+  /* Navy nav rail. A token (not a literal) so the dark theme can deepen it. */
+  --jale-sidebar:  #10143b;
+  /* Scrim behind modal panels. Token so dark mode can go darker than the
+     light theme's ink tint without every Modal call site knowing about it. */
+  --jale-backdrop: rgba(24,24,85,.45);
 
   /* Semantic */
   /* AA-contrast on white at small sizes; matches the pill-success text green. */
@@ -59,10 +64,10 @@
 
   /* Motion */
   --motion-duration-fast: 150ms;
-  --motion-duration-base: 200ms;
+  --motion-duration-base: 90ms;
   --motion-duration-slow: 300ms;
-  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-standard: linear;
+  --motion-ease-out: linear;
 
   /* Mapped roles (used by Tailwind theme + components) */
   --background:      var(--jale-paper);
@@ -133,6 +138,7 @@
   --color-jale-ink-2:      var(--jale-ink-2);
   --color-jale-divider:    var(--jale-divider);
   --color-jale-shell:      var(--jale-shell);
+  --color-jale-sidebar:    var(--jale-sidebar);
   --color-jale-success-text: var(--jale-success-text);
   --color-jale-warning-text: var(--jale-warning-text);
   --color-jale-danger-text:  var(--jale-danger-text);
@@ -202,15 +208,19 @@ a { color: inherit; text-decoration: none; }
 }
 .pill-success { background: var(--jale-success-bg); color: var(--jale-success); }
 .pill-info    { background: var(--jale-blue-50);    color: var(--jale-blue-700); }
-.pill-warn    { background: var(--jale-warning-bg); color: #8a4400; }
-.pill-danger  { background: var(--jale-danger-bg);  color: #a51e28; }
+/* The -text tokens hold exactly the hexes these two used to hardcode, so light
+   rendering is byte-identical; the indirection is what lets dark re-tint them. */
+.pill-warn    { background: var(--jale-warning-bg); color: var(--jale-warning-text); }
+.pill-danger  { background: var(--jale-danger-bg);  color: var(--jale-danger-text); }
 
 .stat-icon {
   width: 32px;
   height: 32px;
   border-radius: 8px;
   background: var(--jale-blue-50);
-  color: var(--jale-blue-600);
+  /* blue-700, not blue-600: both tokens flip in the dark theme, so the tile
+     stays legible. blue-600 does not flip and would sit mid-blue on navy. */
+  color: var(--jale-blue-700);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -244,22 +254,57 @@ a { color: inherit; text-decoration: none; }
   animation: jale-fade-in var(--motion-duration-base) var(--motion-ease-out) both;
 }
 
-/* Stagger a list's direct children. Delays cap at 240ms so long lists never
+/* Stagger a list's direct children. Delays cap at 640ms so long lists never
    feel like they are still loading. */
 .anim-stagger > * {
   animation: jale-fade-in var(--motion-duration-base) var(--motion-ease-out) both;
 }
 .anim-stagger > :nth-child(1) { animation-delay: 0ms; }
-.anim-stagger > :nth-child(2) { animation-delay: 30ms; }
-.anim-stagger > :nth-child(3) { animation-delay: 60ms; }
-.anim-stagger > :nth-child(4) { animation-delay: 90ms; }
-.anim-stagger > :nth-child(5) { animation-delay: 120ms; }
-.anim-stagger > :nth-child(6) { animation-delay: 150ms; }
-.anim-stagger > :nth-child(7) { animation-delay: 180ms; }
-.anim-stagger > :nth-child(8) { animation-delay: 210ms; }
-.anim-stagger > :nth-child(n+9) { animation-delay: 240ms; }
+.anim-stagger > :nth-child(2) { animation-delay: 80ms; }
+.anim-stagger > :nth-child(3) { animation-delay: 160ms; }
+.anim-stagger > :nth-child(4) { animation-delay: 240ms; }
+.anim-stagger > :nth-child(5) { animation-delay: 320ms; }
+.anim-stagger > :nth-child(6) { animation-delay: 400ms; }
+.anim-stagger > :nth-child(7) { animation-delay: 480ms; }
+.anim-stagger > :nth-child(8) { animation-delay: 560ms; }
+.anim-stagger > :nth-child(n+9) { animation-delay: 640ms; }
 
 @media (prefers-reduced-motion: reduce) {
   .anim-fade-in,
   .anim-stagger > * { animation: none; }
+}
+
+/* ===== COLOR SCHEME ================================================== */
+/* Tells the UA which palette to draw native chrome from, so date pickers,
+   select popups, scrollbars and autofill follow the app instead of fighting
+   it. `.dark` is set on <html> by the no-FOUC script in [locale]/layout.tsx. */
+:root { color-scheme: light; }
+.dark { color-scheme: dark; }
+
+/* ===== DARK THEME ==================================================== */
+/* Overrides the token layer only — nothing here targets a component. Role
+   tokens (`--primary`, `--input-focus`, shadows) are re-pointed directly
+   rather than via the brand ramp, because `@theme inline` resolves
+   `--color-*` to these vars at use time, so a runtime override cascades
+   through every Tailwind utility built on them.
+   Must stay AFTER :root: `.dark` and `:root` have equal specificity, so
+   source order is what makes these win. */
+.dark {
+  --jale-paper:   #0d1130;  --jale-paper-2: #1d2352;  --jale-card:  #161b44;
+  --jale-input:   #12163a;  --input-focus:  #1b2150;  --jale-divider: #2a3164;
+  --jale-shell:   #101438;  --jale-sidebar: #0a0d26;
+  --jale-ink:     #e9edfb;  --jale-ink-2:   #9aa4cb;  --jale-placeholder: #6d7699;
+  --primary:      #4585ff;  --primary-hover:#78a4ff;
+  --jale-blue-50: #24305c;  --jale-blue-700:#a8c5ff;
+  --jale-success: #7fd6a4;  --jale-success-bg: rgba(31,122,68,.28);  --jale-success-text: #7fd6a4;
+  --jale-warning: #ffc07d;  --jale-warning-bg: rgba(182,90,0,.26);   --jale-warning-text: #ffc07d;
+  --jale-danger:  #ff9aa4;  --jale-danger-bg:  rgba(212,49,60,.24);  --jale-danger-text:  #ff9aa4;
+  --dot-color: rgba(120,164,255,.14);
+  --shadow-card:  0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.35);
+  --shadow-focus: 0 0 0 3px rgba(69,133,255,.25);
+  --shadow-btn:   0 4px 12px rgba(69,133,255,.35);
+  --shadow-modal: 0 20px 50px -10px rgba(0,0,0,.5);
+  /* Not in the light block's ink tint: over a dark page a 45% navy scrim is
+     nearly invisible, so the modal would stop reading as modal. */
+  --jale-backdrop: rgba(0,0,0,.55);
 }

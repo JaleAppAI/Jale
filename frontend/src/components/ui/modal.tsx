@@ -4,6 +4,7 @@ import * as React from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslations } from 'next-intl';
+import { Icon } from './icon';
 
 /**
  * Accessible modal dialog.
@@ -185,9 +186,11 @@ export function Modal({
     return createPortal(
         <div
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            // The canonical ink tint. Inline because it is a one-off alpha
-            // composite, not a palette token.
-            style={{ backgroundColor: 'rgba(24,24,85,.45)' }}
+            // The scrim is a token (`--jale-backdrop`) rather than a literal:
+            // the light theme's 45% ink tint all but disappears over a dark
+            // page, so dark swaps in a deeper black. Still inline because it is
+            // an alpha composite, not a Tailwind colour utility.
+            style={{ backgroundColor: 'var(--jale-backdrop)' }}
             onMouseDown={handleBackdropMouseDown}
             onClick={handleBackdropClick}
         >
@@ -199,7 +202,7 @@ export function Modal({
                 tabIndex={-1}
                 className={[
                     'anim-fade-in flex w-full flex-col overflow-hidden outline-none',
-                    'max-h-[92vh] rounded-[var(--radius-card)] bg-white shadow-[var(--shadow-modal)]',
+                    'max-h-[92vh] rounded-[var(--radius-card)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)]',
                     sizeClasses[size],
                 ].join(' ')}
             >
@@ -212,9 +215,9 @@ export function Modal({
                             type="button"
                             onClick={onClose}
                             aria-label={t('feedback.dismiss')}
-                            className="-mr-1.5 -mt-1 shrink-0 cursor-pointer rounded p-1.5 text-lg leading-none text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-paper-2)] hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                            className="-mr-1.5 -mt-1 shrink-0 cursor-pointer rounded p-1.5 leading-none text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-paper-2)] hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                         >
-                            <span aria-hidden="true">&times;</span>
+                            <Icon name="x" />
                         </button>
                     </div>
                 ) : null}
@@ -222,7 +225,7 @@ export function Modal({
                 <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
 
                 {footer ? (
-                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--jale-divider)] bg-white px-5 py-3">
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-[var(--jale-divider)] bg-[var(--jale-card)] px-5 py-3">
                         {footer}
                     </div>
                 ) : null}

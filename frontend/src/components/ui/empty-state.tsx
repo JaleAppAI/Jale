@@ -101,8 +101,12 @@ export function EmptyState({
                 className,
             ].join(' ')}
         >
-            {/* 40px tile — the `.stat-icon` recipe one step up in size. */}
-            <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--jale-blue-50)] text-[var(--jale-blue-600)]">
+            {/* 40px tile — the `.stat-icon` recipe one step up in size.
+                blue-700 rather than blue-600 on the blue-50 tint: that is the
+                pairing every other tinted chip in the kit uses, and the only
+                one where BOTH tokens flip in dark (blue-600 does not, so it
+                would end up mid-blue on dark navy). */}
+            <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]">
                 <Icon name={resolvedIcon} />
             </span>
 
