@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Spinner } from "./spinner";
 
 type ButtonVariant = "primary" | "deep" | "secondary" | "outline" | "ghost" | "error";
 type ButtonSize = "default" | "sm" | "lg";
@@ -65,10 +66,7 @@ export function Button({
           {children}
         </span>
         <span className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? "" : "invisible"}`}>
-          <span
-            aria-hidden="true"
-            className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
-          />
+          <Spinner size="md" />
           <span>{loadingLabel ?? children}</span>
         </span>
       </span>
