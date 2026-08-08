@@ -6,7 +6,44 @@
     "location_no_matches": "No matches",
     "city_multi_placeholder": "Add a city or ZIP…",
     "city_multi_max": "You can add up to {max} cities",
-    "city_multi_remove": "Remove {city}, {state}"
+    "city_multi_remove": "Remove {city}, {state}",
+    "errors": {
+      "offline": "You appear to be offline. Check your connection and try again.",
+      "timeout": "This is taking longer than expected. Please try again.",
+      "unauthorized": "Your session expired. Please sign in again.",
+      "forbidden": "You don't have access to this.",
+      "not_found": "We couldn't find what you're looking for.",
+      "gone": "This is no longer available.",
+      "conflict": "That didn't go through because something changed. Refresh and try again.",
+      "validation": "Some information is missing or invalid. Please review and try again.",
+      "rate_limited": "Too many attempts. Please wait a moment and try again.",
+      "server": "Something went wrong on our side. Please try again in a few minutes.",
+      "unknown": "Something went wrong. Please try again."
+    },
+    "error_state": {
+      "title": "Something went wrong",
+      "not_found_title": "Not found",
+      "offline_title": "No connection",
+      "go_back": "Go back",
+      "go_home": "Go to home"
+    },
+    "empty_state": {
+      "no_results_title": "No results",
+      "no_results_body": "Try different filters or search terms.",
+      "clear_filters": "Clear filters"
+    },
+    "not_found_page": {
+      "title": "Page not found",
+      "body": "The page you're looking for doesn't exist or was moved.",
+      "cta": "Go to home"
+    },
+    "feedback": {
+      "dismiss": "Dismiss",
+      "saved": "Saved",
+      "sent": "Sent",
+      "copied": "Link copied",
+      "refresh_failed": "Connection lost. Retrying…"
+    }
   },
   "match": {
     "score_bands": {

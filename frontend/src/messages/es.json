@@ -6,7 +6,44 @@
     "location_no_matches": "Sin resultados",
     "city_multi_placeholder": "Agrega una ciudad o código postal…",
     "city_multi_max": "Puedes agregar hasta {max} ciudades",
-    "city_multi_remove": "Quitar {city}, {state}"
+    "city_multi_remove": "Quitar {city}, {state}",
+    "errors": {
+      "offline": "Parece que no tiene conexión. Revise su internet e intente de nuevo.",
+      "timeout": "Esto está tardando más de lo esperado. Intente de nuevo.",
+      "unauthorized": "Su sesión expiró. Inicie sesión de nuevo.",
+      "forbidden": "No tiene acceso a esto.",
+      "not_found": "No encontramos lo que busca.",
+      "gone": "Esto ya no está disponible.",
+      "conflict": "No se pudo completar porque algo cambió. Actualice e intente de nuevo.",
+      "validation": "Falta información o hay datos inválidos. Revise e intente de nuevo.",
+      "rate_limited": "Demasiados intentos. Espere un momento e intente de nuevo.",
+      "server": "Algo falló de nuestro lado. Intente de nuevo en unos minutos.",
+      "unknown": "Algo salió mal. Intente de nuevo."
+    },
+    "error_state": {
+      "title": "Algo salió mal",
+      "not_found_title": "No encontrado",
+      "offline_title": "Sin conexión",
+      "go_back": "Volver",
+      "go_home": "Ir al inicio"
+    },
+    "empty_state": {
+      "no_results_title": "Sin resultados",
+      "no_results_body": "Pruebe con otros filtros o términos de búsqueda.",
+      "clear_filters": "Quitar filtros"
+    },
+    "not_found_page": {
+      "title": "Página no encontrada",
+      "body": "La página que busca no existe o fue movida.",
+      "cta": "Ir al inicio"
+    },
+    "feedback": {
+      "dismiss": "Cerrar",
+      "saved": "Guardado",
+      "sent": "Enviado",
+      "copied": "Enlace copiado",
+      "refresh_failed": "Se perdió la conexión. Reintentando…"
+    }
   },
   "match": {
     "score_bands": {
