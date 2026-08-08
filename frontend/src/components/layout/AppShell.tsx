@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { apiFetch } from '@/lib/api';
 import { getEmployerProfile } from '@/lib/api/employer';
 import type { WorkerProfileData } from '@/lib/api/worker';
@@ -104,7 +105,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                 <Sidebar role={role} homeHref={homeHref} chip={resolvedChip} />
 
                 <section className="min-w-0">
-                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/92 px-4 py-3 backdrop-blur md:px-6">
+                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-3 backdrop-blur md:px-6">
                         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                             <div className="min-w-0">
                                 <h1 className="text-2xl font-extrabold text-[var(--jale-ink)] md:text-3xl">{title}</h1>
@@ -117,10 +118,11 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                                 <Link
                                     href={pathname}
                                     locale={otherLocale}
-                                    className="inline-flex h-10 items-center rounded-full border border-[var(--jale-divider)] bg-white px-4 text-xs font-bold text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]"
+                                    className="inline-flex h-10 items-center rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)] px-4 text-xs font-bold text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]"
                                 >
                                     {tHeader('language_toggle')}
                                 </Link>
+                                <ThemeToggle />
                                 <Link
                                     href={profileHref}
                                     aria-label={tHeader('profile')}

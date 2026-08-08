@@ -27,8 +27,10 @@ type SidebarProps = {
 };
 
 /**
- * Desktop navy sidebar (`#10143b`). Hidden below `lg`. The navy is the one hex
- * the dashboard itself hardcodes, so it is preserved here intentionally.
+ * Desktop navy sidebar (`--jale-sidebar`, `#10143b` in the light theme -- the
+ * one navy the dashboard itself hardcoded, preserved exactly). It is a token
+ * rather than a literal so the dark theme can deepen it; the white-on-navy
+ * foreground is correct in both themes and stays literal.
  */
 export function Sidebar({ role, homeHref, chip }: SidebarProps) {
     const t = useTranslations('employer_dashboard');
@@ -36,7 +38,7 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
     const pathname = usePathname();
 
     return (
-        <aside className="hidden bg-[#10143b] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col lg:self-start">
+        <aside className="hidden bg-[var(--jale-sidebar)] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col lg:self-start">
             <div className="border-b border-white/10 px-6 py-6">
                 <Link href={homeHref} className="text-3xl font-extrabold text-white">
                     Jale

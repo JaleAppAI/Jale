@@ -121,7 +121,7 @@ export function DashboardSkeleton() {
                 {Array.from({ length: 4 }).map((_, i) => (
                     <div
                         key={i}
-                        className="min-h-[128px] rounded-2xl border border-[var(--jale-divider)] bg-white p-4"
+                        className="min-h-[128px] rounded-2xl border border-[var(--jale-divider)] bg-[var(--jale-card)] p-4"
                     >
                         <Skeleton className="mb-4 h-9 w-9 rounded-xl" />
                         <Skeleton className="h-7 w-16" />
@@ -163,7 +163,7 @@ export function DashboardSkeleton() {
 export function ThreadSkeleton() {
     return (
         <SkeletonRegion>
-            <section className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--jale-divider)] bg-white xl:grid-cols-[320px_minmax(0,1fr)_280px]">
+            <section className="grid min-h-[680px] overflow-hidden rounded-lg border border-[var(--jale-divider)] bg-[var(--jale-card)] xl:grid-cols-[320px_minmax(0,1fr)_280px]">
                 {/* Pane 1 — thread list */}
                 <aside className="border-b border-[var(--jale-divider)] xl:border-b-0 xl:border-r">
                     <div className="border-b border-[var(--jale-divider)] px-4 py-3">

@@ -39,8 +39,8 @@ const TOAST_TTL_MS = 5000;
 const MAX_TOASTS = 3;
 
 const toneIcons: Record<ToastTone, IconName> = {
-    success: 'spark',
-    danger: 'bell',
+    success: 'check',
+    danger: 'alert',
     info: 'message',
 };
 
@@ -132,7 +132,7 @@ function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id:
                 <div
                     key={toast.id}
                     role={toast.tone === 'danger' ? 'alert' : undefined}
-                    className="anim-fade-in pointer-events-auto flex items-start gap-2.5 rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-white px-3.5 py-3 text-sm shadow-[var(--shadow-card)]"
+                    className="anim-fade-in pointer-events-auto flex items-start gap-2.5 rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-card)] px-3.5 py-3 text-sm shadow-[var(--shadow-card)]"
                 >
                     <span
                         className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${feedbackToneClasses[toast.tone]}`}
@@ -146,9 +146,9 @@ function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id:
                         type="button"
                         onClick={() => onDismiss(toast.id)}
                         aria-label={t('feedback.dismiss')}
-                        className="-mr-1 shrink-0 cursor-pointer rounded p-1 text-base leading-none text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-paper-2)] hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                        className="-mr-1 shrink-0 cursor-pointer rounded p-1 leading-none text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-paper-2)] hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                     >
-                        <span aria-hidden="true">&times;</span>
+                        <Icon name="x" />
                     </button>
                 </div>
             ))}

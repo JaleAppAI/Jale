@@ -14,7 +14,7 @@ export function Select({
           "pl-3.5 pr-9 py-2.5 text-sm font-medium",
           "text-[var(--jale-ink)]",
           "transition-[background-color,border-color,box-shadow] duration-150",
-          "focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]",
+          "focus:outline-none focus:bg-[var(--input-focus)] focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           className,
         ].join(" ")}

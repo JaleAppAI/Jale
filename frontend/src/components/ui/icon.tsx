@@ -6,6 +6,10 @@ import * as React from 'react';
  *
  * `home` was added for the AppShell top-bar / worker nav; every other glyph
  * matches the dashboard's originals 1:1.
+ *
+ * `check` / `alert` / `x` / `wifi-off` were added for the feedback surfaces
+ * (toast tones, error states, dismiss buttons), drawn to the same recipe:
+ * 18x18, a 24-unit viewBox, `currentColor` at stroke-width 1.8, round joins.
  */
 export type IconName =
     | 'grid'
@@ -21,7 +25,11 @@ export type IconName =
     | 'home'
     | 'eye'
     | 'upload'
-    | 'trash';
+    | 'trash'
+    | 'check'
+    | 'alert'
+    | 'x'
+    | 'wifi-off';
 
 export function Icon({ name }: { name: IconName }) {
     const common = {
@@ -63,6 +71,16 @@ export function Icon({ name }: { name: IconName }) {
             return <svg {...common}><path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>;
         case 'trash':
             return <svg {...common}><path d="M4 7h16" /><path d="M8 7V4h8v3" /><path d="M6 7l1 13h10l1-13" /></svg>;
+        case 'check':
+            return <svg {...common}><path d="m5 12.5 4.5 4.5L19 7" /></svg>;
+        // Circle-exclaim rather than a triangle: `search` and `clock` already
+        // set this set's "round container" aesthetic.
+        case 'alert':
+            return <svg {...common}><circle cx="12" cy="12" r="8" /><path d="M12 8v4.5" /><path d="M12 16h.01" /></svg>;
+        case 'x':
+            return <svg {...common}><path d="m6 6 12 12" /><path d="m18 6-12 12" /></svg>;
+        case 'wifi-off':
+            return <svg {...common}><path d="m3 3 18 18" /><path d="M2 8.8a15 15 0 0 1 5.6-3.2" /><path d="M16.4 5.6A15 15 0 0 1 22 8.8" /><path d="M5 12.4a10 10 0 0 1 3.2-2" /><path d="M15.8 10.4a10 10 0 0 1 3.2 2" /><path d="M8.5 15.9a5 5 0 0 1 7 0" /><path d="M12 19.5h.01" /></svg>;
         default:
             return <svg {...common}><path d="M4 4h7v7H4z" /><path d="M13 4h7v7h-7z" /><path d="M4 13h7v7H4z" /><path d="M13 13h7v7h-7z" /></svg>;
     }
