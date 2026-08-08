@@ -763,16 +763,20 @@
     }
   },
   "upload_page": {
-    "title": "Upload Your Documents",
+    "title": "Upload your documents",
+    "explainer": "An employer needs a few documents before your application can move forward. Add the ones below — this link was made just for you, works once, and expires.",
+    "documents_heading": "Requested documents",
+    "progress": "{done} of {total} uploaded",
     "for_job": "For:",
     "at_employer": "at",
     "uploaded": "Uploaded",
+    "status_missing": "Not uploaded",
     "replace": "Replace",
     "tap_to_upload": "Tap to upload",
     "file_hint": "JPG, PNG or PDF · Max 10 MB",
     "security_notice": "Your documents are encrypted and only shared with the employer you applied to.",
     "submit": "Submit Documents",
-    "submit_hint": "Submit is enabled once all required documents are uploaded",
+    "submit_hint": "You can submit as soon as at least one document is uploaded.",
     "success_title": "Documents submitted!",
     "success_body": "The employer has been notified.",
     "error_size": "File must be under 10 MB",
@@ -781,7 +785,11 @@
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
     "error_upload": "Upload failed. Please try again.",
-    "error_submit": "Submission failed. Please try again."
+    "error_submit": "Submission failed. Please try again.",
+    "error_already_received": "We already received this document through this link.",
+    "error_confirm_required": "Upload at least one document before submitting.",
+    "expired_title": "This link no longer works",
+    "expired_body": "Upload links can only be used once and expire after a while. Ask the employer who contacted you to send you a new one."
   },
   "worker_applications": {
     "title": "My Applications",

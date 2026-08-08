@@ -369,13 +369,13 @@
   },
   "legal": {
     "title": "Antes de continuar",
-    "body": "Por favor, lee y acepta nuestros Términos de Servicio y Política de Privacidad para usar Jale.",
+    "body": "Por favor, lea y acepte nuestros Términos de Servicio y Política de Privacidad para usar Jale.",
     "tos_link": "Términos de Servicio",
     "privacy_link": "Política de Privacidad",
     "checkbox": "He leído y acepto los Términos de Servicio y la Política de Privacidad",
     "accept_cta": "Continuar",
-    "error_fetch": "No se pudieron cargar los documentos. Por favor, intenta de nuevo.",
-    "error_submit": "No se pudo guardar tu aceptación. Por favor, intenta de nuevo."
+    "error_fetch": "No se pudieron cargar los documentos. Intente de nuevo.",
+    "error_submit": "No se pudo guardar su aceptación. Intente de nuevo."
   },
   "worker": {
     "profile": {
@@ -763,25 +763,33 @@
     }
   },
   "upload_page": {
-    "title": "Sube tus documentos",
+    "title": "Suba sus documentos",
+    "explainer": "Un empleador necesita algunos documentos para continuar con su solicitud. Agregue los de abajo: este enlace se creó solo para usted, funciona una vez y luego vence.",
+    "documents_heading": "Documentos solicitados",
+    "progress": "{done} de {total} subidos",
     "for_job": "Para:",
     "at_employer": "en",
     "uploaded": "Subido",
+    "status_missing": "Sin subir",
     "replace": "Reemplazar",
-    "tap_to_upload": "Toca para subir",
+    "tap_to_upload": "Toque para subir",
     "file_hint": "JPG, PNG o PDF · Máx 10 MB",
-    "security_notice": "Tus documentos están encriptados y solo se comparten con el empleador al que postulaste.",
+    "security_notice": "Sus documentos están encriptados y solo se comparten con el empleador al que postuló.",
     "submit": "Enviar documentos",
-    "submit_hint": "El botón se activa cuando todos los documentos requeridos estén subidos",
+    "submit_hint": "Puede enviar en cuanto haya subido al menos un documento.",
     "success_title": "¡Documentos enviados!",
     "success_body": "El empleador ha sido notificado.",
-    "error_size": "El archivo debe ser menor de 10 MB",
+    "error_size": "El archivo debe pesar menos de 10 MB",
     "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
     "doc_resume": "Currículum",
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta SSN / ITIN",
-    "error_upload": "Error al subir el archivo. Inténtalo de nuevo.",
-    "error_submit": "Error al enviar. Inténtalo de nuevo."
+    "error_upload": "No se pudo subir el archivo. Intente de nuevo.",
+    "error_submit": "No se pudo enviar. Intente de nuevo.",
+    "error_already_received": "Ya recibimos este documento con este enlace.",
+    "error_confirm_required": "Suba al menos un documento antes de enviar.",
+    "expired_title": "Este enlace ya no funciona",
+    "expired_body": "Los enlaces de subida se pueden usar una sola vez y vencen después de un tiempo. Pida al empleador que lo contactó que le envíe uno nuevo."
   },
   "worker_applications": {
     "title": "Mis aplicaciones",
