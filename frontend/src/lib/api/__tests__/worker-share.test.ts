@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { shareJob } from '../worker';
+import { ApiError } from '../errors';
 import type { ShareChannel } from '../worker';
 
 // No jsdom/testing-library in this repo (vitest.config.ts runs the 'node'
@@ -63,9 +64,21 @@ describe('shareJob', () => {
 
   it('surfaces share_url_misconfigured as a distinguishable error code', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: 'share_url_misconfigured' }, 500));
-    await expect(shareJob('id-token-abc', 'job-1', 'whatsapp')).rejects.toMatchObject({
+    const err = await shareJob('id-token-abc', 'job-1', 'whatsapp').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    // ShareJobPanel reads `.code`; other call sites read `.message`. Both are
+    // the backend's code -- that equality is the compatibility invariant.
+    expect(err).toMatchObject({
       code: 'share_url_misconfigured',
       status: 500,
+      message: 'share_url_misconfigured',
     });
+  });
+
+  it('falls back to the share_failed code when the body carries none', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}, 502));
+    const err = await shareJob('id-token-abc', 'job-1', 'whatsapp').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: 'share_failed', status: 502, message: 'share_failed' });
   });
 });

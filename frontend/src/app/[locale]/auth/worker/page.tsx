@@ -6,6 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import WorkerAuthForm from '@/components/auth/WorkerAuthForm';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { validateJobId, isAuthFlowCompleting } from '@/lib/referral-return';
+import { sanitizeReturnPath } from '@/lib/login-url';
 import { claimReferral } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -36,7 +37,19 @@ export default function WorkerAuthPage() {
             if (shareCode && idToken) {
                 claimReferral(idToken, shareCode).catch(() => {});
             }
-            router.replace(jobId ? `/worker/jobs/${jobId}` : '/worker/home');
+            if (jobId) {
+                router.replace(`/worker/jobs/${jobId}`);
+                return;
+            }
+            // Where a session-expiry redirect wants us back. Already
+            // locale-prefixed, so assign it directly: router.replace() would
+            // add a second locale segment on top.
+            const returnPath = sanitizeReturnPath(searchParams.get('returnUrl'));
+            if (returnPath) {
+                window.location.assign(returnPath);
+                return;
+            }
+            router.replace('/worker/home');
         }
     }, [isLoading, isAuthenticated, userType, router, searchParams, idToken]);
 
