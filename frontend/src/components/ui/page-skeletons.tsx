@@ -117,14 +117,13 @@ export function DetailPageSkeleton({
 export function DashboardSkeleton() {
     return (
         <SkeletonRegion>
+            {/* Traces the minimal MetricCard: a bare figure over its label, with
+                no box to hold. Keeping the old bordered-tile geometry here would
+                shift the layout the moment real metrics render. */}
             <section className="mb-5 grid gap-3 md:grid-cols-4">
                 {Array.from({ length: 4 }).map((_, i) => (
-                    <div
-                        key={i}
-                        className="min-h-[128px] rounded-2xl border border-[var(--jale-divider)] bg-[var(--jale-card)] p-4"
-                    >
-                        <Skeleton className="mb-4 h-9 w-9 rounded-xl" />
-                        <Skeleton className="h-7 w-16" />
+                    <div key={i} className="min-w-0 py-1">
+                        <Skeleton className="h-8 w-16" />
                         <Skeleton className="mt-2 h-2.5 w-24" />
                     </div>
                 ))}
