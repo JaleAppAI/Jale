@@ -99,7 +99,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
     const resolvedChip: SidebarChip = chip ?? { name: chipFallback, meta: '', initials: initialsFallback };
 
     return (
-        <div className="min-h-screen bg-[#eef2f7] text-[var(--jale-ink)]">
+        <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
             <div className="grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
                 <Sidebar role={role} homeHref={homeHref} chip={resolvedChip} />
 

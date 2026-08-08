@@ -7,6 +7,7 @@ import React from 'react';
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ConversationDrawer } from "@/components/employer/ConversationDrawer";
+import { ToastProvider } from "@/components/ui/toast";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -44,9 +45,11 @@ export default async function RootLayout({
       <body>
         <NextIntlClientProvider locale={locale} messages={messages}>
           <AuthProvider locale={locale}>
-            <Header />
-            {children}
-            <ConversationDrawer />
+            <ToastProvider>
+              <Header />
+              {children}
+              <ConversationDrawer />
+            </ToastProvider>
           </AuthProvider>
         </NextIntlClientProvider>
       </body>

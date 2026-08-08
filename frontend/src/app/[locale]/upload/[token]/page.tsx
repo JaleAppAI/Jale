@@ -5,6 +5,7 @@ import { useParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { getUploadUrl, uploadFileToS3, confirmUpload, submitUpload, DocType } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
+import { Spinner } from '@/components/ui/spinner';
 
 export const dynamic = 'force-dynamic';
 
@@ -119,7 +120,7 @@ export default function WorkerUploadPage() {
                   <div className="flex justify-between items-center">
                     <p className="text-xs text-[var(--jale-success)]">✅ {uploaded.file.name}</p>
                     <label className={`inline-flex items-center gap-1.5 text-xs border px-2 py-1 rounded text-[var(--jale-ink-2)] ${uploading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-                      {uploading && <InlineSpinner />}
+                      {uploading && <Spinner size="sm" />}
                       {uploading ? tCommon('loading') : t('replace')}
                       <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png" disabled={uploading || submitting}
                         onChange={e => e.target.files?.[0] && handleFileSelect(doc_type, e.target.files[0])} />
@@ -128,7 +129,7 @@ export default function WorkerUploadPage() {
                 ) : (
                   <label className={`block border-2 border-dashed border-[var(--jale-divider)] rounded-lg p-4 text-center hover:border-[var(--jale-blue-900)] transition-colors ${uploading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
                     <p className="inline-flex items-center justify-center gap-2 text-sm font-semibold text-[var(--jale-blue-900)]">
-                      {uploading && <InlineSpinner />}
+                      {uploading && <Spinner size="sm" />}
                       {uploading ? tCommon('loading') : t('tap_to_upload')}
                     </p>
                     <p className="text-xs text-[var(--jale-ink-2)] mt-1">{t('file_hint')}</p>
@@ -161,14 +162,5 @@ export default function WorkerUploadPage() {
         <p className="text-center text-xs text-[var(--jale-ink-2)] mt-2">{t('submit_hint')}</p>
       </div>
     </div>
-  );
-}
-
-function InlineSpinner() {
-  return (
-    <span
-      aria-hidden="true"
-      className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
-    />
   );
 }

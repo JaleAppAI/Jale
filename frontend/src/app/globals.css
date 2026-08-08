@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 
 /*
  * Lexend is loaded via next/font/google in src/app/[locale]/layout.tsx (weights
@@ -39,6 +38,8 @@
   --jale-ink:      #181855;
   --jale-ink-2:    #5b6480;
   --jale-placeholder: #a1a9b8;
+  /* App-shell ground behind the sidebar + content column. */
+  --jale-shell:    #eef2f7;
 
   /* Semantic */
   /* AA-contrast on white at small sizes; matches the pill-success text green. */
@@ -48,6 +49,20 @@
   --jale-warning-bg:  #fdebd0;
   --jale-danger:      #d4313c;
   --jale-danger-bg:   #fde2e3;
+
+  /* Semantic TEXT tones: darker pairs meant to sit ON the matching -bg tint
+     (AA at small sizes). The base --jale-success/-warning/-danger tokens are
+     tuned for white backgrounds; these are for tinted banners/toasts. */
+  --jale-success-text: #1f7a44;
+  --jale-warning-text: #8a4400;
+  --jale-danger-text:  #a51e28;
+
+  /* Motion */
+  --motion-duration-fast: 150ms;
+  --motion-duration-base: 200ms;
+  --motion-duration-slow: 300ms;
+  --motion-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* Mapped roles (used by Tailwind theme + components) */
   --background:      var(--jale-paper);
@@ -117,6 +132,13 @@
   --color-jale-ink:        var(--jale-ink);
   --color-jale-ink-2:      var(--jale-ink-2);
   --color-jale-divider:    var(--jale-divider);
+  --color-jale-shell:      var(--jale-shell);
+  --color-jale-success-text: var(--jale-success-text);
+  --color-jale-warning-text: var(--jale-warning-text);
+  --color-jale-danger-text:  var(--jale-danger-text);
+
+  --ease-standard:         var(--motion-ease-standard);
+  --ease-out-soft:         var(--motion-ease-out);
 
   --shadow-card:           var(--shadow-card);
   --shadow-focus:          var(--shadow-focus);
@@ -207,3 +229,37 @@ a { color: inherit; text-decoration: none; }
   flex-shrink: 0;
 }
 .avatar-initials.square { border-radius: 12px; }
+
+/* ===== MOTION ======================================================== */
+/* Single shared entry animation. Anything that appears (modal panels, toasts,
+   freshly-rendered lists) uses this so the app has one motion signature.
+   `both` keeps the from-state applied during the delay, so staggered children
+   do not flash at full opacity before their turn. */
+@keyframes jale-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.anim-fade-in {
+  animation: jale-fade-in var(--motion-duration-base) var(--motion-ease-out) both;
+}
+
+/* Stagger a list's direct children. Delays cap at 240ms so long lists never
+   feel like they are still loading. */
+.anim-stagger > * {
+  animation: jale-fade-in var(--motion-duration-base) var(--motion-ease-out) both;
+}
+.anim-stagger > :nth-child(1) { animation-delay: 0ms; }
+.anim-stagger > :nth-child(2) { animation-delay: 30ms; }
+.anim-stagger > :nth-child(3) { animation-delay: 60ms; }
+.anim-stagger > :nth-child(4) { animation-delay: 90ms; }
+.anim-stagger > :nth-child(5) { animation-delay: 120ms; }
+.anim-stagger > :nth-child(6) { animation-delay: 150ms; }
+.anim-stagger > :nth-child(7) { animation-delay: 180ms; }
+.anim-stagger > :nth-child(8) { animation-delay: 210ms; }
+.anim-stagger > :nth-child(n+9) { animation-delay: 240ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-in,
+  .anim-stagger > * { animation: none; }
+}
