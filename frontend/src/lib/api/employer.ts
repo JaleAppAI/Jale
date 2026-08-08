@@ -1,68 +1,15 @@
 import { apiFetch } from '../api';
+import { ApiError, parseApiError } from './errors';
 import type { ScoreBand } from '../match';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
 export type { ApplicationStatus } from '../status';
 
-// ---------------------------------------------------------------------------
-// Typed API errors
-//
-// Preserves HTTP status, a provider-safe error code (the backend's `error`
-// field — a stable string, never a raw provider/exception message), and an
-// allowlisted set of extra payload fields the backend is known to attach to
-// specific error codes (e.g. job_limit_reached's plan/limit info). Anything
-// outside the allowlist is dropped so we never leak unexpected server detail
-// into the UI.
-// ---------------------------------------------------------------------------
-
-export type ApiErrorPayload = {
-  plan_code?: string;
-  active_job_limit?: number;
-  active_jobs?: number;
-  requiredVersion?: string;
-  currentVersion?: string;
-  required?: string[];
-};
-
-const ALLOWED_PAYLOAD_KEYS = [
-  'plan_code',
-  'active_job_limit',
-  'active_jobs',
-  'requiredVersion',
-  'currentVersion',
-  'required',
-] as const;
-
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly payload: ApiErrorPayload;
-
-  constructor(status: number, code: string, payload: ApiErrorPayload = {}) {
-    super(code);
-    this.name = 'ApiError';
-    this.status = status;
-    this.code = code;
-    this.payload = payload;
-  }
-}
-
-async function parseApiError(res: Response, fallbackCode: string): Promise<ApiError> {
-  let body: Record<string, unknown> = {};
-  try {
-    body = await res.json();
-  } catch {
-    // Non-JSON body — fall back to the generic code below.
-  }
-  const code = typeof body.error === 'string' ? body.error : fallbackCode;
-  const payload: ApiErrorPayload = {};
-  for (const key of ALLOWED_PAYLOAD_KEYS) {
-    const value = body[key];
-    if (value !== undefined) {
-      (payload as Record<string, unknown>)[key] = value;
-    }
-  }
-  return new ApiError(res.status, code, payload);
-}
+// The typed-error layer now lives in `./errors` (it is shared with worker.ts
+// and with apiFetch's transport errors). Re-exported here so existing
+// importers -- the billing page, PostJobModal, EditJobModal, the dashboard,
+// PublicListingCard and their tests -- keep importing it from this module.
+export { ApiError, parseApiError };
+export type { ApiErrorPayload } from './errors';
 
 // ---------------------------------------------------------------------------
 // Idempotency keys
@@ -379,7 +326,7 @@ export type EmployerProfilePatch = Partial<Pick<EmployerProfileData,
 
 export async function getEmployerProfile(token: string): Promise<EmployerProfileData> {
   const res = await apiFetch('/employer/profile', {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'profile_fetch_failed');
   return res.json();
 }
 
@@ -392,13 +339,13 @@ export async function updateEmployerProfile(
     { method: 'PATCH', body: JSON.stringify(patch) },
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_update_failed');
+  if (!res.ok) throw await parseApiError(res, 'profile_update_failed');
   return res.json();
 }
 
 export async function getJobs(token: string): Promise<Job[]> {
   const res = await apiFetch('/employer/jobs', {}, token);
-  if (!res.ok) throw new Error('fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   const data = await res.json();
   return data.jobs;
 }
@@ -449,7 +396,7 @@ export async function createJob(token: string, data: JobWritePayload): Promise<J
 
 export async function getJob(token: string, jobId: string): Promise<EmployerJobDetail> {
   const res = await apiFetch(`/employer/jobs/${jobId}`, {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
@@ -510,7 +457,7 @@ export async function updateJobStatus(
     method: 'PATCH',
     body: JSON.stringify({ status }),
   }, token);
-  if (!res.ok) throw new Error('update_failed');
+  if (!res.ok) throw await parseApiError(res, 'update_failed');
   return res.json();
 }
 
@@ -537,7 +484,7 @@ export async function getJobApplicants(
     {},
     token
   );
-  if (!res.ok) throw new Error('fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
@@ -550,12 +497,9 @@ export async function getJobCandidates(
   const safeLimit = Number.isFinite(limit) ? Math.trunc(limit) : 100;
   params.set('limit', String(Math.max(1, Math.min(safeLimit, 100))));
   const res = await apiFetch(`/employer/jobs/${jobId}/candidates?${params.toString()}`, {}, token);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    const err = new Error(body.error ?? 'fetch_failed') as Error & { status?: number };
-    err.status = res.status;
-    throw err;
-  }
+  // The job page branches on `.status` here (401/403 route into the legal
+  // wall), which ApiError preserves along with the code.
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
@@ -563,13 +507,13 @@ export async function getConversations(
   token: string,
 ): Promise<{ conversations: EmployerConversationSummary[] }> {
   const res = await apiFetch('/employer/conversations', {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'conversations_fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'conversations_fetch_failed');
   return res.json();
 }
 
 export async function getInbox(token: string): Promise<EmployerInboxResponse> {
   const res = await apiFetch('/employer/inbox', {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'inbox_fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'inbox_fetch_failed');
   return res.json();
 }
 
@@ -578,7 +522,7 @@ export async function getConversation(
   conversationId: string,
 ): Promise<EmployerConversationResponse> {
   const res = await apiFetch(`/employer/conversations/${conversationId}`, {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'conversation_fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'conversation_fetch_failed');
   return res.json();
 }
 
@@ -590,7 +534,7 @@ export async function startConversation(
     method: 'POST',
     body: JSON.stringify(data),
   }, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'conversation_create_failed');
+  if (!res.ok) throw await parseApiError(res, 'conversation_create_failed');
   return res.json();
 }
 
@@ -603,7 +547,7 @@ export async function sendConversationMessage(
     method: 'POST',
     body: JSON.stringify({ body }),
   }, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'message_send_failed');
+  if (!res.ok) throw await parseApiError(res, 'message_send_failed');
   return res.json();
 }
 
@@ -615,7 +559,7 @@ export async function closeConversation(
     method: 'PATCH',
     body: JSON.stringify({ status: 'closed' }),
   }, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'conversation_close_failed');
+  if (!res.ok) throw await parseApiError(res, 'conversation_close_failed');
   return res.json();
 }
 
@@ -654,7 +598,7 @@ export async function getWorkerProfile(
     {},
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'profile_fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'profile_fetch_failed');
   return res.json();
 }
 
@@ -672,7 +616,7 @@ export async function updateApplicantStatus(
     },
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'status_update_failed');
+  if (!res.ok) throw await parseApiError(res, 'status_update_failed');
   return res.json();
 }
 
@@ -686,7 +630,7 @@ export async function getWorkerDocuments(
     {},
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'docs_fetch_failed');
+  if (!res.ok) throw await parseApiError(res, 'docs_fetch_failed');
   return res.json();
 }
 
@@ -704,7 +648,7 @@ export async function createUploadToken(
     },
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'token_create_failed');
+  if (!res.ok) throw await parseApiError(res, 'token_create_failed');
   return res.json();
 }
 
