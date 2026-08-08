@@ -1030,7 +1030,9 @@
     "current_plan": {
       "label": "Plan actual",
       "price": "{price} / {interval}",
-      "cancels_at": "Tu plan terminará el {date}.",
+      "price_label": "Precio",
+      "renews_on": "Se renueva el",
+      "ends_on": "Termina el",
       "grace_period": "Tu último pago falló. Actualiza tu método de pago antes del {date} para no perder el acceso."
     },
     "plan_name": {
