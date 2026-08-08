@@ -13,7 +13,7 @@ import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
 export default function Loading() {
     return (
         <AuthShell variant="worker">
-            <CenteredCardSkeleton card={false} />
+            <CenteredCardSkeleton title card={false} />
         </AuthShell>
     );
 }

@@ -10,7 +10,7 @@ import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
 export default function Loading() {
     return (
         <AuthShell variant="employer" brand={<EmployerBrandPanel />}>
-            <CenteredCardSkeleton card={false} />
+            <CenteredCardSkeleton title card={false} />
         </AuthShell>
     );
 }

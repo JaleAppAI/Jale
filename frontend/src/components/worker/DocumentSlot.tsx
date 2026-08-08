@@ -3,6 +3,7 @@ import { useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { getAuthUploadUrl, confirmAuthUpload, deleteVaultDocument, uploadFileToS3 } from '@/lib/api/worker';
 import type { DocType, WorkerVaultDoc } from '@/lib/api/worker';
 
@@ -13,6 +14,7 @@ export function DocumentSlot(props: {
   onChange: () => void;
 }) {
   const t = useTranslations('worker_profile.documents');
+  const errorMessage = useErrorMessage();
   const fileRef = useRef<HTMLInputElement>(null);
   const [busyAction, setBusyAction] = useState<'upload' | 'delete' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,8 +30,9 @@ export function DocumentSlot(props: {
       await confirmAuthUpload(props.token, s3_key, props.doc_type, file);
       props.onChange();
     } catch (e) {
-      const err = e as Record<string, unknown>;
-      setError(typeof err.message === 'string' ? err.message : 'upload_failed');
+      // Was `err.message` falling back to the literal token 'upload_failed',
+      // which reached the user as that raw string in both locales.
+      setError(errorMessage(e));
     } finally {
       setBusyAction(null);
       if (fileRef.current) fileRef.current.value = '';
@@ -42,8 +45,8 @@ export function DocumentSlot(props: {
       await deleteVaultDocument(props.token, props.doc_type);
       props.onChange();
     } catch (e) {
-      const err = e as Record<string, unknown>;
-      setError(typeof err.message === 'string' ? err.message : 'delete_failed');
+      // Same as the upload path: no raw code, no untranslated token.
+      setError(errorMessage(e));
     } finally {
       setBusyAction(null);
     }
