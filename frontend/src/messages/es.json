@@ -220,7 +220,7 @@
   "auth": {
     "worker": {
       "title": "Inicia sesión con tu teléfono",
-      "phone_label": "Número de teléfono",
+      "phone_label": "Enviaremos un código de 6 dígitos por mensaje de texto.",
       "send_otp": "Enviar código",
       "otp_label": "Ingresa el código que te enviamos",
       "verify": "Verificar",

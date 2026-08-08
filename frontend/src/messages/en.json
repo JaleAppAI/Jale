@@ -220,7 +220,7 @@
   "auth": {
     "worker": {
       "title": "Sign in with your phone",
-      "phone_label": "Phone number: +1 3463488162",
+      "phone_label": "We'll text you a 6-digit code to sign in.",
       "signup_title": "Create your worker profile",
       "signup_subtitle": "Answer the same questions we ask on WhatsApp so employers can match with you.",
       "signup_prompt": "New to Jale?",
