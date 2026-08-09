@@ -32,7 +32,12 @@ const sizeClasses: Record<ButtonSize, string> = {
   lg:      "h-12 px-6 text-base",
 };
 
-export function Button({
+/**
+ * Ref-forwarding so a caller can address the button itself -- `Modal`'s
+ * `initialFocusRef` (a destructive dialog opening on Cancel rather than on
+ * Delete) is the motivating case.
+ */
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   variant = "primary",
   size = "default",
   className = "",
@@ -41,11 +46,12 @@ export function Button({
   loadingLabel,
   children,
   ...props
-}: ButtonProps) {
+}, ref) {
   const isDisabled = disabled || loading;
 
   return (
     <button
+      ref={ref}
       className={[
         "inline-flex items-center justify-center gap-2 rounded-full font-semibold",
         "cursor-pointer select-none whitespace-nowrap leading-none",
@@ -72,4 +78,4 @@ export function Button({
       </span>
     </button>
   );
-}
+});

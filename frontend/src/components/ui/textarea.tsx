@@ -1,11 +1,17 @@
 import * as React from "react";
 
-export function Textarea({
-  className = "",
-  ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+/**
+ * Ref-forwarding so a caller can address the control itself -- `Modal`'s
+ * `initialFocusRef` is the motivating case, and it needs the real element, not
+ * a wrapper to search inside.
+ */
+export const Textarea = React.forwardRef<
+  HTMLTextAreaElement,
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>
+>(function Textarea({ className = "", ...props }, ref) {
   return (
     <textarea
+      ref={ref}
       className={[
         "w-full rounded-[var(--radius-input)]",
         "border border-[var(--jale-divider)] bg-[var(--jale-input)]",
@@ -19,4 +25,4 @@ export function Textarea({
       {...props}
     />
   );
-}
+});

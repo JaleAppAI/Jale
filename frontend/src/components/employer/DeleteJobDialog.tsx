@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -38,6 +39,14 @@ export function DeleteJobDialog({
 }) {
   const t = useTranslations('employer_dashboard');
 
+  /*
+   * A destructive dialog opens on its SAFE action. Left to itself, `Modal`
+   * focuses the first focusable descendant, which is the header's dismiss
+   * button -- so a keyboard user's first Tab landed on Delete. Cancel is the
+   * answer someone who opened this by accident wants to give.
+   */
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
   async function handleConfirm() {
     if (deleting) return;
     await onConfirm();
@@ -59,9 +68,10 @@ export function DeleteJobDialog({
       size="sm"
       closeOnOverlay={!deleting}
       closeOnEscape={!deleting}
+      initialFocusRef={cancelRef}
       footer={
         <>
-          <Button variant="ghost" onClick={handleDismiss} disabled={deleting}>
+          <Button ref={cancelRef} variant="ghost" onClick={handleDismiss} disabled={deleting}>
             {t('jobs.delete.cancel')}
           </Button>
           <Button

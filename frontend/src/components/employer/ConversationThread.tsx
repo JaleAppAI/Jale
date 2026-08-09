@@ -84,6 +84,9 @@ export function ConversationThread({
   const [body, setBody] = useState('');
   const [confirmingClose, setConfirmingClose] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
+  // A destructive dialog opens on its SAFE action rather than on the header's
+  // dismiss button, which is what Modal picks by default.
+  const closeCancelRef = useRef<HTMLButtonElement>(null);
 
   // Both surfaces can be mounted at once (the drawer floats over the page), so
   // a hardcoded id would collide and point the textarea at the wrong message.
@@ -252,9 +255,10 @@ export function ConversationThread({
         onClose={() => setConfirmingClose(false)}
         title={t('close_confirm_title')}
         size="sm"
+        initialFocusRef={closeCancelRef}
         footer={
           <>
-            <Button type="button" variant="ghost" onClick={() => setConfirmingClose(false)} disabled={closing}>
+            <Button ref={closeCancelRef} type="button" variant="ghost" onClick={() => setConfirmingClose(false)} disabled={closing}>
               {t('cancel')}
             </Button>
             <Button

@@ -87,6 +87,9 @@ export default function EmployerConversationsPage() {
   const [dismissTarget, setDismissTarget] = useState<InboxItem | null>(null);
   const [dismissing, setDismissing] = useState(false);
   const [dismissError, setDismissError] = useState<string | null>(null);
+  // A destructive dialog opens on its SAFE action rather than on the header's
+  // dismiss button, which is what Modal picks by default.
+  const dismissCancelRef = useRef<HTMLButtonElement>(null);
 
   /**
    * Mutations do their own legal-wall routing: `usePageData` only owns the
@@ -562,9 +565,10 @@ export default function EmployerConversationsPage() {
         onClose={() => setDismissTarget(null)}
         title={t('dismiss_confirm_title')}
         size="sm"
+        initialFocusRef={dismissCancelRef}
         footer={
           <>
-            <Button type="button" variant="ghost" onClick={() => setDismissTarget(null)} disabled={dismissing}>
+            <Button ref={dismissCancelRef} type="button" variant="ghost" onClick={() => setDismissTarget(null)} disabled={dismissing}>
               {t('cancel')}
             </Button>
             <Button

@@ -66,12 +66,11 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
      * which is what `Modal` would otherwise pick as the first focusable
      * descendant, greeting an edit form with its own close button.
      *
-     * The element is resolved from a wrapper rather than a forwarded ref
-     * because `ui/Input` is a plain function component with no `forwardRef`,
-     * and that shared primitive is out of scope to change here. Callback refs
-     * run during commit, so this is populated before Modal's focus effect.
+     * `ui/Input` forwards its ref to the `<input>`, so this points straight at
+     * the control. It used to be resolved by querying a wrapper div, which only
+     * existed because the primitive did not forward refs.
      */
-    const initialFocusRef = useRef<HTMLElement | null>(null);
+    const initialFocusRef = useRef<HTMLInputElement>(null);
 
     /*
      * Re-prefill on OPEN, not on every `job` change.
@@ -214,13 +213,11 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
         >
             <div className="grid gap-4">
                 <Field label={t('modal.job_title')} required>
-                    <div
-                        ref={(node) => {
-                            initialFocusRef.current = node?.querySelector('input') ?? null;
-                        }}
-                    >
-                        <Input value={form.title} onChange={(e) => update('title', e.target.value)} />
-                    </div>
+                    <Input
+                        ref={initialFocusRef}
+                        value={form.title}
+                        onChange={(e) => update('title', e.target.value)}
+                    />
                 </Field>
                 <div className="grid gap-3 md:grid-cols-2">
                     <Field label={t('modal.location')} required>
