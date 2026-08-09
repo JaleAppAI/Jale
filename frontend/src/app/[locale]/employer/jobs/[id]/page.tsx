@@ -46,7 +46,7 @@ import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import type { WritableJobStatus } from '@/lib/status';
-import { formatStartDate } from '@/lib/date';
+import { formatLongDate, formatStartDate } from '@/lib/date';
 
 export const dynamic = 'force-dynamic';
 
@@ -850,10 +850,7 @@ function ApplicantRow({
     const [messageError, setMessageError] = useState<string | null>(null);
 
     const displayName = applicant.full_name?.trim() || t('applicants.unknown_name');
-    const appliedAt = new Date(applicant.applied_at);
-    const appliedLabel = Number.isNaN(appliedAt.getTime())
-        ? applicant.applied_at
-        : appliedAt.toLocaleDateString(locale === 'es' ? 'es-MX' : 'en-US');
+    const appliedLabel = formatLongDate(applicant.applied_at, locale) ?? applicant.applied_at;
     const availabilityKey = applicant.availability
         ? normalizeAvailabilityKey(applicant.availability)
         : null;

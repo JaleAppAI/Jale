@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
@@ -19,12 +19,12 @@ import { ThreadSkeleton } from '@/components/ui/page-skeletons';
 import { useToast } from '@/components/ui/toast';
 import {
   ConversationThread,
-  formatMessageTime,
   initialsFor,
 } from '@/components/employer/ConversationThread';
 import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
+import { formatTimeOfDay } from '@/lib/date';
 import {
   closeConversation,
   getConversation,
@@ -612,6 +612,7 @@ function InboxRow({
   statusLabel: string;
   noMessagesLabel: string;
 }) {
+  const locale = useLocale();
   const name = item.worker_name ?? unknownWorkerLabel;
   const started = Boolean(item.conversation_id);
   const open = item.conversation_status === 'open';
@@ -633,7 +634,7 @@ function InboxRow({
         <span className="flex items-baseline justify-between gap-2">
           <span className="truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
           <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
-            {formatMessageTime(item.last_message_at ?? item.applied_at)}
+            {formatTimeOfDay(item.last_message_at ?? item.applied_at, locale)}
           </span>
         </span>
 

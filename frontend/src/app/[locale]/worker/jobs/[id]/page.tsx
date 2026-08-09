@@ -22,7 +22,7 @@ import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
-import { formatStartDate } from '@/lib/date';
+import { formatLongDate, formatStartDate } from '@/lib/date';
 import { normalizeMatchScore, scoreBandForScore } from '@/lib/match';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
 import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
@@ -318,7 +318,11 @@ export default function WorkerJobDetailPage() {
     }
     facts.push({
       label: t('posted'),
-      value: <span className="tabular-nums">{formatStartDate(job.created_at, locale) ?? job.created_at}</span>,
+      // `created_at` is an INSTANT, not a calendar day, so it goes through the
+      // reader's-timezone formatter. It used to reuse `formatStartDate`, which
+      // pins to UTC -- correct for `start_date` above, a day late here for
+      // anything posted after 18:00 in Mexico.
+      value: <span className="tabular-nums">{formatLongDate(job.created_at, locale) ?? job.created_at}</span>,
     });
   }
 

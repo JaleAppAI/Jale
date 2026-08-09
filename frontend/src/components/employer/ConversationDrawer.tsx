@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
@@ -14,10 +14,10 @@ import { Skeleton, SkeletonCircle, SkeletonLine } from '@/components/ui/skeleton
 import { useToast } from '@/components/ui/toast';
 import {
   ConversationThread,
-  formatMessageTime,
   initialsFor,
 } from '@/components/employer/ConversationThread';
 import { isLegalWallError } from '@/lib/api';
+import { formatTimeOfDay } from '@/lib/date';
 import {
   closeConversation,
   getConversation,
@@ -57,6 +57,7 @@ export function ConversationDrawer() {
   const router = useRouter();
   const t = useTranslations('employer_messages');
   const tCommon = useTranslations('common');
+  const locale = useLocale();
   const translateError = useErrorMessage();
   const toast = useToast();
 
@@ -232,7 +233,7 @@ export function ConversationDrawer() {
                             <span className="flex items-baseline justify-between gap-2">
                               <span className="truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
                               <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
-                                {formatMessageTime(item.last_message_at)}
+                                {formatTimeOfDay(item.last_message_at, locale)}
                               </span>
                             </span>
                             <span className="block truncate text-xs text-[var(--jale-ink-2)]">

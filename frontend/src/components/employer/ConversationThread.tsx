@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/empty-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/modal';
 import { Skeleton, SkeletonCircle, SkeletonLine } from '@/components/ui/skeleton';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { classifyError } from '@/lib/api/errors';
+import { formatTimeOfDay } from '@/lib/date';
 import type {
   EmployerConversationDetail,
   EmployerConversationMessage,
@@ -80,6 +81,7 @@ export function ConversationThread({
 }: Props) {
   const t = useTranslations('employer_messages');
   const tCommon = useTranslations('common');
+  const locale = useLocale();
   const translateError = useErrorMessage();
   const [body, setBody] = useState('');
   const [confirmingClose, setConfirmingClose] = useState(false);
@@ -170,7 +172,7 @@ export function ConversationThread({
               </p>
               {!compact && lastMessage ? (
                 <p className="mt-0.5 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
-                  {formatMessageTime(lastMessage.created_at)}
+                  {formatTimeOfDay(lastMessage.created_at, locale)}
                 </p>
               ) : null}
             </div>
@@ -298,6 +300,7 @@ function MessageBubble({
   initials: string;
   statusLabel: string;
 }) {
+  const locale = useLocale();
   const mine = message.sender_type === 'employer';
 
   return (
@@ -320,7 +323,7 @@ function MessageBubble({
         <p className="mt-1 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
           {statusLabel}
           {' - '}
-          {formatMessageTime(message.created_at)}
+          {formatTimeOfDay(message.created_at, locale)}
         </p>
       </div>
     </div>
@@ -414,15 +417,10 @@ export function initialsFor(name: string): string {
   return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
 }
 
-export function formatMessageTime(value: string | null): string {
-  if (!value) return '';
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return '';
-  return new Intl.DateTimeFormat(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(date);
-}
+// `formatMessageTime` lived here and formatted with `Intl.DateTimeFormat(undefined, …)`,
+// which resolves the RUNTIME's locale rather than the app's -- a Spanish page on
+// an English browser printed English times. It is now `formatTimeOfDay` in
+// `@/lib/date`, which takes the locale explicitly.
 
 /**
  * Keeps the newest message in view without stealing the scroll position from
