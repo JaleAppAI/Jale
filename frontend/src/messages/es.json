@@ -882,20 +882,30 @@
     "required_experience": "Experiencia",
     "work_authorization_required": "Requiere autorización de trabajo",
     "work_authorization_required_yes": "Requerida",
-    "upload_prompt": "Sube los documentos faltantes en tu perfil.",
+    "posted": "Publicado",
+    "upload_prompt": "Suba los documentos faltantes en su perfil.",
     "upload_link": "Ir al perfil",
     "apply": "Postularse",
-    "already_applied": "Ya postulaste",
+    "apply_success": "Postulación enviada. El empleador ya puede verla.",
+    "already_applied": "Ya se postuló",
     "errors": {
       "missing_docs": "Faltan documentos: {docs}",
       "job_closed": "Este trabajo ya no acepta postulaciones.",
-      "profile_invalid": "Algunos datos de tu perfil faltan o no son validos. Revisa tu perfil e intenta de nuevo.",
-      "not_signed_in": "Tu sesion expiro. Inicia sesion de nuevo.",
-      "legal_required": "Acepta los terminos mas recientes antes de postularte.",
-      "account_not_ready": "Tu cuenta todavia se esta preparando. Cierra sesion, vuelve a iniciar sesion e intenta de nuevo.",
-      "already_applied": "Ya postulaste a este trabajo.",
-      "server_error": "No pudimos enviar esta postulacion ahora. Intenta de nuevo en unos minutos.",
-      "apply_failed": "No pudimos enviar esta postulacion. Revisa tu perfil y documentos, e intenta de nuevo."
+      "profile_invalid": "Algunos datos de su perfil faltan o no son válidos. Revise su perfil e intente de nuevo.",
+      "not_signed_in": "Su sesión expiró. Inicie sesión de nuevo.",
+      "legal_required": "Acepte los términos más recientes antes de postularse.",
+      "account_not_ready": "Su cuenta todavía se está preparando. Cierre sesión, vuelva a iniciar sesión e intente de nuevo.",
+      "already_applied": "Ya se postuló a este trabajo.",
+      "server_error": "No pudimos enviar esta postulación ahora. Intente de nuevo en unos minutos.",
+      "apply_failed": "No pudimos enviar esta postulación. Revise su perfil y documentos, e intente de nuevo."
+    },
+    "not_found": {
+      "title": "Trabajo no encontrado",
+      "body": "Este enlace no es válido o la publicación fue retirada. Los trabajos disponibles siguen ahí."
+    },
+    "closed": {
+      "title": "Este trabajo está cerrado",
+      "body": "El empleador dejó de aceptar postulaciones para esta publicación. Hay otros trabajos abiertos."
     },
     "page_title": "Detalle del empleo",
     "doc_ok": "Subido",
@@ -983,17 +993,17 @@
     "fallback_link_untracked": "Este enlace funciona, pero las visitas y registros desde él no se rastrearán ni se acreditarán a tu negocio. Intenta \"Obtener enlace\" de nuevo más tarde para conseguir un enlace rastreable."
   },
   "job_share": {
-    "title": "Comparte este trabajo",
-    "subtitle": "Ayuda a alguien a encontrar trabajo - comparte este empleo.",
+    "title": "Comparta este trabajo",
+    "subtitle": "Ayude a alguien a encontrar trabajo: comparta este empleo.",
     "whatsapp": "WhatsApp",
     "sms": "Mensaje de texto",
     "facebook": "Facebook",
     "copy_link": "Copiar enlace",
-    "copied": "Copiado!",
-    "more": "Mas...",
-    "error_misconfigured": "Compartir no esta disponible en este momento. Intenta mas tarde.",
-    "error_not_public": "Este trabajo todavia no tiene pagina publica, asi que no se puede compartir.",
-    "error_generic": "No pudimos compartir en este momento. Intenta de nuevo."
+    "copied": "¡Copiado!",
+    "more": "Más...",
+    "error_misconfigured": "Compartir no está disponible en este momento. Intente más tarde.",
+    "error_not_public": "Este trabajo todavía no tiene página pública, así que no se puede compartir.",
+    "error_generic": "No pudimos compartir en este momento. Intente de nuevo."
   },
   "worker_profile": {
     "title": "Mi perfil",
