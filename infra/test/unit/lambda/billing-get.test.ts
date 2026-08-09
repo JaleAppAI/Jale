@@ -28,7 +28,7 @@ describe('billing get handler', () => {
     process.env = { ...originalEnv, REQUIRED_TOS_VERSION: 'v1' };
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query, release }) });
     mockCheckCompliance.mockResolvedValue({ userExists: true, compliant: true, currentVersion: 'v1' });
-    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10 });
+    mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_pro', activeJobLimit: 10, templateLimit: 20 });
     query.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'user-1' }] });
       if (sql.includes('count(*)::int AS active_jobs')) return Promise.resolve({ rows: [{ active_jobs: 3 }] });
@@ -49,6 +49,7 @@ describe('billing get handler', () => {
     expect(JSON.parse(res.body)).toEqual({
       planCode: 'employer_pro',
       activeJobLimit: 10,
+      templateLimit: 20,
       activeJobUsage: 3,
       subscription: { plan_code: 'employer_pro', status: 'active' },
       display_price_minor: 2000,

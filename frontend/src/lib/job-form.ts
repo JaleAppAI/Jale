@@ -240,3 +240,29 @@ export function jobFormFromTemplatePayload(
     cityPrefilled: form.city_key !== null,
   };
 }
+
+// Row summary for the Templates page: human-glanceable city/trade/pay pulled
+// from a stored template payload. Pure and defensive -- payloads are
+// forward-compatible JSON, so every field may be missing. The pay string is
+// currency-only; the page appends the localized interval label itself.
+export function templateRowSummary(
+  payload: Partial<JobWritePayload>,
+  /** Localized interval label ("per hour" etc.); joined onto the pay string
+   * here so ALL row derivation stays in this tested helper. */
+  intervalLabel?: string,
+): { city: string; trade: string; pay: string } {
+  const EM_DASH = '—';
+  const locationCity = payload.location?.includes(',')
+    ? payload.location.split(',')[0].trim()
+    : '';
+  const city = payload.city || locationCity || EM_DASH;
+  const trade = payload.trade_category || EM_DASH;
+  const min = payload.pay_min ?? null;
+  const max = payload.pay_max ?? null;
+  let pay = EM_DASH;
+  if (min !== null && max !== null) pay = `$${min}–$${max}`;
+  else if (min !== null) pay = `$${min}+`;
+  else if (max !== null) pay = `Up to $${max}`;
+  if (pay !== EM_DASH && intervalLabel) pay = `${pay} · ${intervalLabel}`;
+  return { city, trade, pay };
+}

@@ -459,6 +459,7 @@
       "dashboard": "Dashboard",
       "jobs": "My Jobs",
       "messages": "Messages",
+      "templates": "Templates",
       "workers": "Workers",
       "interviews": "Interviews",
       "search_workers": "Search Workers",
@@ -729,6 +730,28 @@
       "next": "Next: Document Requirements",
       "back": "Back",
       "submit": "Post Job"
+    },
+    "templates": {
+      "title": "Job templates",
+      "meter": "{count} of {limit} templates",
+      "meter_count": "{count} templates",
+      "new": "New template",
+      "limit_note": "Template limit reached — upgrade for more",
+      "empty": "No templates yet. Create one here, or tick “Save as template” when posting a job.",
+      "edit_title": "Edit template",
+      "new_title": "New template",
+      "save": "Save template",
+      "name_label": "Template name",
+      "name_required": "Give the template a name",
+      "save_error": "Could not save the template",
+      "delete_title": "Delete template",
+      "delete_body": "Delete “{name}”? Jobs already posted from it are not affected.",
+      "delete_confirm": "Delete",
+      "delete_error": "Could not delete the template",
+      "updated": "Updated",
+      "col_name": "Name",
+      "col_details": "Details",
+      "manage_link": "Manage templates"
     }
   },
   "upload_page": {

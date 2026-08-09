@@ -756,6 +756,7 @@ export type BillingSubscription = {
 export type EmployerBilling = {
   planCode: string;
   activeJobLimit: number;
+  templateLimit: number;
   activeJobUsage: number;
   subscription: BillingSubscription;
   display_price_minor: number;

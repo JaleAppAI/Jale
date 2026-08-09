@@ -459,6 +459,7 @@
       "dashboard": "Panel",
       "jobs": "Mis trabajos",
       "messages": "Mensajes",
+      "templates": "Plantillas",
       "workers": "Trabajadores",
       "interviews": "Entrevistas",
       "search_workers": "Buscar workers",
@@ -729,6 +730,28 @@
       "next": "Siguiente: Requisitos de documentos",
       "back": "Atrás",
       "submit": "Publicar trabajo"
+    },
+    "templates": {
+      "title": "Plantillas de empleo",
+      "meter": "{count} de {limit} plantillas",
+      "meter_count": "{count} plantillas",
+      "new": "Nueva plantilla",
+      "limit_note": "Límite de plantillas alcanzado — mejora tu plan para más",
+      "empty": "Aún no hay plantillas. Crea una aquí o marca “Guardar como plantilla” al publicar un empleo.",
+      "edit_title": "Editar plantilla",
+      "new_title": "Nueva plantilla",
+      "save": "Guardar plantilla",
+      "name_label": "Nombre de la plantilla",
+      "name_required": "Ponle un nombre a la plantilla",
+      "save_error": "No se pudo guardar la plantilla",
+      "delete_title": "Eliminar plantilla",
+      "delete_body": "¿Eliminar “{name}”? Los empleos ya publicados con ella no se ven afectados.",
+      "delete_confirm": "Eliminar",
+      "delete_error": "No se pudo eliminar la plantilla",
+      "updated": "Actualizada",
+      "col_name": "Nombre",
+      "col_details": "Detalles",
+      "manage_link": "Administrar plantillas"
     }
   },
   "upload_page": {

@@ -57,6 +57,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     return response(200, {
       planCode: entitlements.planCode,
       activeJobLimit: entitlements.activeJobLimit,
+      templateLimit: entitlements.templateLimit,
       activeJobUsage: Number(usageRes.rows[0]?.active_jobs ?? 0),
       subscription: subRes.rows[0] ?? null,
       display_price_minor: planRes.rows[0].display_price_minor,
