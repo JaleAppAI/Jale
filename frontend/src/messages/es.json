@@ -494,7 +494,7 @@
       "paused_closed": "Pausados / Cerrados",
       "active_hint": "Puestos abiertos listos para candidatos",
       "applicants_hint": "{count} promedio por empleo activo",
-      "hired_hint": "{count} puestos aun disponibles",
+      "hired_hint": "{count} puestos aún disponibles",
       "paused_closed_hint": "{paused} pausados, {filled} llenos, {closed} cerrados"
     },
     "shell": {
@@ -503,7 +503,7 @@
       "company_fallback": "Equipo empleador",
       "plan_label": "Jale Growth",
       "plan_title": "Jale Growth",
-      "plan_body": "Las herramientas de crecimiento del prototipo apareceran aqui cuando el flujo de contratacion crezca.",
+      "plan_body": "Las herramientas de crecimiento del prototipo aparecerán aquí cuando el flujo de contratación crezca.",
       "upgrade": "Mejorar",
       "alerts": "Alertas",
       "search_workers": "Buscar workers"
@@ -527,33 +527,33 @@
     },
     "hero": {
       "eyebrow": "Got Jale?",
-      "title": "Manten cada trabajo, candidato y conversacion de WhatsApp en un solo lugar.",
-      "body": "Este panel usa tus publicaciones reales hoy y reserva espacio para las herramientas futuras de matching, entrevistas y crecimiento del prototipo.",
-      "primary_cta": "Post un trabajo",
+      "title": "Mantenga cada empleo, candidato y conversación de WhatsApp en un solo lugar.",
+      "body": "Este panel usa sus publicaciones reales hoy y reserva espacio para las herramientas futuras de matching, entrevistas y crecimiento del prototipo.",
+      "primary_cta": "Publique un empleo",
       "secondary_cta": "Abrir mensajes"
     },
     "quick_post": {
-      "title": "Post rapido",
-      "body": "Crea un trabajo nuevo con el mismo flujo que ya usan los empleadores.",
-      "hint": "Las plantillas instantaneas del prototipo aun no estan activas, asi que esto abre el modal actual.",
+      "title": "Publicación rápida",
+      "body": "Cree un empleo nuevo con el mismo flujo que ya usan los empleadores.",
+      "hint": "Las plantillas instantáneas del prototipo aún no están activas, así que esto abre el modal actual.",
       "cta": "Publicar empleo"
     },
     "panels": {
       "applicants_title": "Vista de candidatos",
-      "applicants_body": "La vista global de candidatos viene pronto. Abre un empleo para ver candidatos reales.",
+      "applicants_body": "La vista global de candidatos viene pronto. Abra un empleo para ver candidatos reales.",
       "applicant_stub_1": "Candidatos nuevos",
       "applicant_stub_2": "Listos para contactar",
       "applicant_stub_3": "Documentos pendientes",
       "trust_title": "Trust Match",
-      "trust_body": "La calidad del match ya aparece dentro de detalles del trabajo. Las recomendaciones globales dependen del backend proactivo.",
-      "hiring_progress": "Progreso de contratacion",
+      "trust_body": "La calidad del match ya aparece dentro de los detalles del empleo. Las recomendaciones globales dependen del backend proactivo.",
+      "hiring_progress": "Progreso de contratación",
       "open_roles": "Puestos abiertos",
       "applicant_flow": "Flujo de candidatos",
       "whatsapp_title": "Hilo de WhatsApp",
-      "whatsapp_body": "Los mensajes del empleador ya funcionan. Las respuestas del trabajador siguen por WhatsApp y quedan conectadas al trabajo.",
+      "whatsapp_body": "Los mensajes del empleador ya funcionan. Las respuestas del trabajador siguen por WhatsApp y quedan conectadas al empleo.",
       "open_messages": "Abrir mensajes",
-      "no_recent_job": "Aun no hay trabajo reciente",
-      "hiring_status_title": "Estado de contratacion"
+      "no_recent_job": "Aún no hay empleo reciente",
+      "hiring_status_title": "Estado de contratación"
     },
     "disabled": {
       "label": "Preview",
@@ -588,22 +588,31 @@
       "no": "No",
       "posted": "Publicado",
       "details": "Detalles",
-      "posting_details": "Detalles de la publicacion",
+      "posting_details": "Detalles de la publicación",
       "required_documents": "Documentos requeridos",
-      "no_description": "No se agrego descripcion.",
+      "no_description": "No se agregó descripción.",
       "no_required_documents": "No se requieren documentos para este empleo.",
-      "search_placeholder": "Buscar por titulo, ubicacion u oficio...",
+      "search_placeholder": "Buscar por título, ubicación u oficio...",
+      "filter_aria_label": "Filtrar publicaciones por estado",
+      "refresh": "Actualizar",
+      "showing": "Mostrando {shown} de {total}",
+      "post_success": "Empleo publicado",
       "back_to_dashboard": "← Volver al panel",
-      "empty_title": "No se encontraron trabajos",
-      "empty_body": "Publica un empleo o limpia los filtros para volver a ver tu tablero.",
+      "empty_title": "No se encontraron empleos",
+      "empty_body": "Ninguna publicación coincide con esta búsqueda o filtro. Bórrelos para ver su tablero de nuevo.",
+      "empty_first_title": "Aún no hay empleos publicados",
+      "empty_first_body": "Publique su primer empleo y los candidatos llegarán aquí.",
       "delete": {
         "button": "Eliminar",
+        "button_aria": "Eliminar {title}",
         "confirm_title": "¿Eliminar este empleo?",
         "confirm_body": "Esto elimina permanentemente \"{title}\" y sus postulaciones. No se puede deshacer.",
         "confirm_cta": "Eliminar empleo",
+        "pending": "Eliminando…",
+        "success": "Empleo eliminado",
         "cancel": "Cancelar",
-        "error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérralo en su lugar.",
-        "error_generic": "No se pudo eliminar el empleo. Inténtalo de nuevo."
+        "error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
+        "error_generic": "No se pudo eliminar el empleo. Inténtelo de nuevo."
       }
     },
     "filter": {
@@ -641,12 +650,21 @@
     "modal": {
       "title": "Publicar un empleo",
       "step_label": "Paso {current} de {total}",
+      "steps": {
+        "aria_label": "Pasos para publicar un empleo",
+        "completed": "completado",
+        "basics": "Datos del empleo",
+        "basics_hint": "Qué es el empleo y dónde se hace el trabajo.",
+        "details": "Pago y horario",
+        "details_hint": "Pago, fechas y cuántos trabajadores necesita en el sitio.",
+        "documents": "Documentos"
+      },
       "close": "Cerrar",
       "job_title": "Título del puesto",
       "job_title_placeholder": "ej. Operador de montacargas",
       "location": "Ubicación",
       "location_placeholder": "Hayward, CA",
-      "location_pick_required": "Selecciona una ciudad de las sugerencias",
+      "location_pick_required": "Seleccione una ciudad de las sugerencias",
       "city": "Ciudad",
       "city_placeholder": "Hayward",
       "state_region": "Estado",
@@ -658,7 +676,7 @@
       "submit": "Publicar empleo",
       "cancel": "Cancelar",
       "next": "Siguiente",
-      "error": "Error al publicar el empleo. Inténtalo de nuevo.",
+      "error": "Error al publicar el empleo. Inténtelo de nuevo.",
       "job_description": "Descripción del empleo",
       "description_placeholder": "¿Qué incluye el trabajo? ¿Qué experiencia se requiere?",
       "select_placeholder": "Seleccionar...",
@@ -700,15 +718,15 @@
       "work_authorization_required": "Requiere autorización de trabajo",
       "certifications": "Certificaciones",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
-      "validation_required": "Completa los campos requeridos.",
-      "validation_number": "Ingresa números válidos y no negativos.",
+      "validation_required": "Complete los campos requeridos.",
+      "validation_number": "Ingrese números válidos y no negativos.",
       "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
       "validation_headcount": "Trabajadores necesarios debe ser al menos 1.",
       "validation_state_region": "El estado debe ser un código de 2 letras (ej. CA).",
       "edit_title": "Editar trabajo",
       "edit_save": "Guardar cambios",
       "locked_note": "Bloqueado — este trabajo tiene postulantes",
-      "edit_error": "No se pudieron guardar los cambios. Intenta de nuevo."
+      "edit_error": "No se pudieron guardar los cambios. Inténtelo de nuevo."
     },
     "worker_profile": {
       "doc_resume": "Currículum",
@@ -724,7 +742,7 @@
       "required_label": "Requerido",
       "next": "Siguiente: Requisitos de documentos",
       "back": "Atrás",
-      "submit": "Publicar trabajo"
+      "submit": "Publicar empleo"
     }
   },
   "employer_worker_profile": {

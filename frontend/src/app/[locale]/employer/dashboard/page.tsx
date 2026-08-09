@@ -4,57 +4,83 @@ import { useEffect, useMemo, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { usePageData } from '@/hooks/usePageData';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Icon } from '@/components/ui/icon';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
-import { PanelHeader } from '@/components/ui/panel-header';
+import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorState } from '@/components/ui/error-state';
+import { Icon } from '@/components/ui/icon';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
+import { Input } from '@/components/ui/input';
+import { KVList } from '@/components/ui/kv-list';
 import { MetricCard } from '@/components/ui/metric-card';
+import { DashboardSkeleton } from '@/components/ui/page-skeletons';
+import { PanelHeader } from '@/components/ui/panel-header';
 import { ProgressRow } from '@/components/ui/progress-row';
+import { useToast } from '@/components/ui/toast';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
 import { PostJobModal } from '@/components/employer/PostJobModal';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { ApiError, deleteJob, getJobs } from '@/lib/api/employer';
 import type { Job } from '@/lib/api/employer';
+import { errorMessageKey } from '@/lib/api/errors';
 import type { JobStatus } from '@/lib/status';
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
 
+/** Percentage of `total` that `part` represents, safe at total = 0. */
+function share(part: number, total: number): number {
+    return total > 0 ? (part / total) * 100 : 0;
+}
+
 export default function EmployerDashboardPage() {
     const { idToken } = useAuth();
+    // usePageData already arms the sign-in redirect; this call is here for the
+    // legal-wall router, which the MUTATIONS below need (a delete that trips the
+    // wall must go to /legal/accept, not show an error the user cannot act on).
     const { handleLegalWall } = useRequireAuth();
     const t = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
+    const errorMessage = useErrorMessage();
+    const toast = useToast();
     const locale = useLocale();
 
-    const [jobs, setJobs] = useState<Job[]>([]);
     const [jobToDelete, setJobToDelete] = useState<Job | null>(null);
     const [deletingJobId, setDeletingJobId] = useState<string | null>(null);
     const [deleteError, setDeleteError] = useState<string | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
 
-    useEffect(() => {
-        if (!idToken) return;
-        setLoading(true);
-        getJobs(idToken)
-            .then((nextJobs) => {
-                setJobs(nextJobs);
-            })
-            .catch((err) => {
-                try {
-                    handleLegalWall(err, '/employer/dashboard');
-                } catch {
-                    setError(tCommon('error'));
-                }
-            })
-            .finally(() => setLoading(false));
-    }, [handleLegalWall, idToken, tCommon]);
+    /**
+     * One fetch for the whole page.
+     *
+     * `deps` is deliberately EMPTY. Search and the status filter are derived
+     * from the already-loaded list below, never re-fetched: routing a filter
+     * through `deps` would reset the hook and re-request on every keystroke,
+     * and a single flaky response mid-typing would null `data` and wipe the
+     * board the user is reading.
+     */
+    const {
+        phase,
+        data,
+        empty,
+        errorKind,
+        refreshing,
+        refreshError,
+        retry,
+        refresh,
+        setData,
+    } = usePageData<Job[]>({
+        fetcher: ({ token }) => getJobs(token),
+        legalReturnUrl: '/employer/dashboard',
+        isEmpty: (jobs) => jobs.length === 0,
+    });
+
+    const jobs = useMemo(() => data ?? [], [data]);
 
     const filteredJobs = useMemo(() => {
         let result = jobs;
@@ -76,9 +102,8 @@ export default function EmployerDashboardPage() {
     const totalHired = jobs.reduce((sum, job) => sum + (job.hired_count ?? 0), 0);
     const totalOpenings = jobs.reduce((sum, job) => sum + (job.number_of_workers_needed ?? 0), 0);
     const openRoles = jobs.reduce((sum, job) => sum + (job.open_count ?? 0), 0);
-    const hireProgress = totalOpenings > 0 ? Math.round((totalHired / totalOpenings) * 100) : 0;
+    const hireProgress = Math.round(share(totalHired, totalOpenings));
     const applicantDensity = activeCount > 0 ? Math.round(totalApplicants / activeCount) : 0;
-    const featuredJobs = filteredJobs.slice(0, 5);
     const recentJob = jobs[0];
 
     // `new Date()` must NOT be formatted during render: the server (Lambda, UTC) and the
@@ -97,8 +122,16 @@ export default function EmployerDashboardPage() {
     }, [locale]);
 
     function handleJobCreated(job: Job) {
-        setJobs((prev) => [job, ...prev]);
         setModalOpen(false);
+        toast.success(t('jobs.post_success'));
+        // `setData` is a no-op while nothing is rendered (a failed or in-flight
+        // first load), so in that case ask for the list properly instead of
+        // silently dropping the job the employer just posted.
+        if (data === null) {
+            retry();
+            return;
+        }
+        setData((prev) => [job, ...prev]);
     }
 
     function openDeleteDialog(job: Job) {
@@ -121,30 +154,40 @@ export default function EmployerDashboardPage() {
         setDeleteError(null);
         try {
             await deleteJob(idToken, target.id);
-            setJobs((cur) => cur.filter((job) => job.id !== target.id));
+            setData((cur) => cur.filter((job) => job.id !== target.id));
             closeDeleteDialog();
+            toast.success(t('jobs.delete.success'));
         } catch (err) {
-            if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
-                setDeleteError(t('jobs.delete.error_hired'));
-            } else {
-                setDeleteError(t('jobs.delete.error_generic'));
+            try {
+                handleLegalWall(err, '/employer/dashboard');
+                return;
+            } catch {
+                // Not a legal wall — render the failure in the dialog.
             }
+            // `job_has_hired_workers` is a typed CODE, not a message: it keeps
+            // its own sentence because "close it instead" is advice no generic
+            // failure copy can give. Everything else is classified — a rendered
+            // `err.message` would be a backend code, not a sentence.
+            setDeleteError(
+                err instanceof ApiError && err.code === 'job_has_hired_workers'
+                    ? t('jobs.delete.error_hired')
+                    : errorMessage(err, { unknown: t('jobs.delete.error_generic') }),
+            );
         } finally {
             setDeletingJobId(null);
         }
     }
 
-    if (error) {
-        return (
-            <AppShell role="employer" title={t('shell.title')} subtitle={todayLabel}>
-                <main className="flex min-h-screen items-center justify-center bg-[var(--jale-paper)] px-4">
-                    <div className="rounded-2xl border border-[var(--jale-divider)] bg-white p-6 text-center shadow-[var(--shadow-card)]">
-                        <p className="text-sm font-semibold text-error">{error}</p>
-                    </div>
-                </main>
-            </AppShell>
-        );
-    }
+    // 'auth' means the token gate has not opened yet: nothing has been asked for,
+    // so the page owes the reader a skeleton rather than a screen of dashes.
+    const showSkeleton = phase === 'auth' || phase === 'loading';
+
+    const postJobButton = (
+        <Button onClick={() => setModalOpen(true)} className="h-10">
+            <Icon name="plus" />
+            {t('jobs.post_job')}
+        </Button>
+    );
 
     return (
         <>
@@ -152,148 +195,323 @@ export default function EmployerDashboardPage() {
                 role="employer"
                 title={t('shell.title')}
                 subtitle={todayLabel}
-                actions={
-                    <Button onClick={() => setModalOpen(true)} className="h-10">
-                        <Icon name="plus" />
-                        {t('jobs.post_job')}
-                    </Button>
-                }
+                actions={postJobButton}
             >
                 <div className="mx-auto max-w-[1380px] px-4 py-6 pb-24 md:px-6">
-                    <section className="mb-5 overflow-hidden rounded-3xl bg-[#111642] text-white shadow-[var(--shadow-card)]">
-                        <div className="grid gap-5 p-5 md:grid-cols-[minmax(0,1.4fr)_minmax(280px,.9fr)] md:p-7">
-                            <div>
-                                <p className="mb-2 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase text-white/70">{t('hero.eyebrow')}</p>
-                                <h2 className="text-3xl font-extrabold leading-tight md:text-4xl">{t('hero.title')}</h2>
-                                <p className="mt-3 max-w-2xl text-sm leading-6 text-white/70">{t('hero.body')}</p>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.08] p-4">
-                                <div className="flex items-center justify-between gap-2">
-                                    <p className="text-sm font-bold">{t('panels.whatsapp_title')}</p>
-                                    <Link href="/employer/conversations" className="text-xs font-bold text-white/75 hover:text-white hover:underline">{t('panels.open_messages')}</Link>
-                                </div>
-                                <div className="mt-4 rounded-2xl bg-white/10 p-4">
-                                    <p className="text-sm font-bold">{recentJob?.title ?? t('panels.no_recent_job')}</p>
-                                    <p className="mt-2 text-xs leading-5 text-white/70">{t('panels.whatsapp_body')}</p>
-                                </div>
-                                <Link
-                                    href="/employer/conversations"
-                                    className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--jale-blue-500)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-600)]"
-                                >
-                                    <Icon name="message" />
-                                    {t('panels.open_messages')}
-                                </Link>
-                            </div>
-                        </div>
-                    </section>
-
-                    <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                        <MetricCard label={t('stats.active_jobs')} value={loading ? '-' : activeCount} hint={t('stats.active_hint')} />
-                        <MetricCard label={t('stats.total_applicants')} value={loading ? '-' : totalApplicants} hint={t('stats.applicants_hint', { count: applicantDensity })} tone="teal" />
-                        <MetricCard label={t('stats.workers_hired')} value={loading ? '-' : totalHired} hint={t('stats.hired_hint', { count: openRoles })} tone="ink" />
-                        <MetricCard label={t('stats.paused_closed')} value={loading ? '-' : pausedCount + closedCount + filledCount} hint={t('stats.paused_closed_hint', { paused: pausedCount, closed: closedCount, filled: filledCount })} tone="amber" />
-                    </div>
-
-                    <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,.8fr)]">
-                        <div className="space-y-5">
-                            <DashboardPanel>
-                                <PanelHeader
-                                    title={t('jobs.title')}
-                                    action={<Button size="sm" onClick={() => setModalOpen(true)}><Icon name="plus" />{t('jobs.post_job')}</Button>}
-                                />
-                                <div className="p-5">
-                                    <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                                        <Input
-                                            value={search}
-                                            onChange={(e) => setSearch(e.target.value)}
-                                            placeholder={t('jobs.search_placeholder')}
-                                        />
-                                        <div className="flex flex-wrap gap-2">
-                                            {statusFilters.map((status) => (
-                                                <button
-                                                    key={status}
-                                                    type="button"
-                                                    onClick={() => setStatusFilter(status)}
-                                                    className="rounded-full border px-3 py-1.5 text-xs font-bold"
-                                                    style={{
-                                                        borderColor: statusFilter === status ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
-                                                        background: statusFilter === status ? 'var(--jale-blue-50)' : 'white',
-                                                        color: statusFilter === status ? 'var(--jale-blue-700)' : 'var(--jale-ink)',
-                                                    }}
-                                                >
-                                                    {status === 'all' ? t('jobs.status.all') : t(`jobs.status.${status}`)}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    {loading ? (
-                                        <p className="rounded-2xl bg-[var(--jale-paper-2)] p-5 text-sm font-semibold text-[var(--jale-ink-2)]">{tCommon('loading')}</p>
-                                    ) : featuredJobs.length > 0 ? (
-                                        <div className="overflow-hidden rounded-2xl border border-[var(--jale-divider)]">
-                                            {featuredJobs.map((job, index) => (
-                                                <JobPostingCard
-                                                    key={job.id}
-                                                    job={job}
-                                                    href={`/employer/jobs/${job.id}`}
-                                                    isLast={index === featuredJobs.length - 1}
-                                                    onDelete={openDeleteDialog}
-                                                />
-                                            ))}
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-2xl border border-dashed border-[var(--jale-divider)] bg-[var(--jale-paper-2)] p-8 text-center">
-                                            <p className="text-sm font-bold text-[var(--jale-ink)]">{t('jobs.empty_title')}</p>
-                                            <p className="mt-2 text-sm text-[var(--jale-ink-2)]">{t('jobs.empty_body')}</p>
-                                            <Button onClick={() => setModalOpen(true)} className="mt-5">
-                                                <Icon name="plus" />
-                                                {t('jobs.post_job')}
-                                            </Button>
-                                        </div>
-                                    )}
-                                </div>
-                            </DashboardPanel>
-
-                            <DashboardPanel>
-                                <PanelHeader title={t('quick_post.title')} />
-                                <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                                    <div>
-                                        <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
-                                        <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('quick_post.hint')}</p>
-                                    </div>
+                    {showSkeleton ? (
+                        /* Same component the route's `loading.tsx` renders, so the
+                           handover from the server skeleton to this one is invisible.
+                           Critically, the KPI band is SKELETON here — the page used to
+                           print `'-'` in every card, and a dash is a value: four of
+                           them read as "you have nothing" for as long as the request
+                           is in flight. */
+                        <DashboardSkeleton />
+                    ) : phase === 'error' && errorKind ? (
+                        /* Nothing but the failure. Metrics are hidden rather than
+                           zeroed: "0 active jobs" is a claim about the account, and a
+                           request that never answered supports no claim at all. */
+                        <DashboardPanel>
+                            <ErrorState kind={errorKind} onRetry={retry} />
+                        </DashboardPanel>
+                    ) : (
+                        <div className="anim-fade-in">
+                            <section className="mb-5 overflow-hidden rounded-[var(--radius-card)] bg-[var(--jale-blue-900)] p-5 shadow-[var(--shadow-card)] md:p-7">
+                                <p className="mb-3 inline-flex rounded-full bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-[color-mix(in_srgb,var(--primary-fg)_80%,transparent)]">
+                                    {t('hero.eyebrow')}
+                                </p>
+                                <h2 className="max-w-3xl text-3xl font-extrabold leading-tight text-[var(--primary-fg)] md:text-4xl">
+                                    {t('hero.title')}
+                                </h2>
+                                <p className="mt-3 max-w-2xl text-sm leading-6 text-[color-mix(in_srgb,var(--primary-fg)_72%,transparent)]">
+                                    {t('hero.body')}
+                                </p>
+                                <div className="mt-5 flex flex-wrap items-center gap-2">
                                     <Button onClick={() => setModalOpen(true)}>
                                         <Icon name="plus" />
-                                        {t('quick_post.cta')}
+                                        {t('hero.primary_cta')}
                                     </Button>
+                                    <Link
+                                        href="/employer/conversations"
+                                        className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-[color-mix(in_srgb,var(--primary-fg)_25%,transparent)] px-5 text-sm font-semibold text-[var(--primary-fg)] transition-colors hover:bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                                    >
+                                        <Icon name="message" />
+                                        {t('hero.secondary_cta')}
+                                    </Link>
                                 </div>
-                            </DashboardPanel>
+                            </section>
 
+                            <div className="mb-5 grid grid-cols-2 gap-4 md:grid-cols-4">
+                                <MetricCard
+                                    label={t('stats.active_jobs')}
+                                    value={activeCount}
+                                    hint={t('stats.active_hint')}
+                                />
+                                <MetricCard
+                                    label={t('stats.total_applicants')}
+                                    value={totalApplicants}
+                                    hint={t('stats.applicants_hint', { count: applicantDensity })}
+                                />
+                                <MetricCard
+                                    label={t('stats.workers_hired')}
+                                    value={totalHired}
+                                    hint={t('stats.hired_hint', { count: openRoles })}
+                                    tone="green"
+                                />
+                                <MetricCard
+                                    label={t('stats.paused_closed')}
+                                    value={pausedCount + closedCount + filledCount}
+                                    hint={t('stats.paused_closed_hint', {
+                                        paused: pausedCount,
+                                        closed: closedCount,
+                                        filled: filledCount,
+                                    })}
+                                />
+                            </div>
+
+                            {/* `min-w-0` on both columns is load-bearing. A grid item
+                                defaults to `min-width: auto`, so without it the panels'
+                                min-content width (nowrap pill buttons, a long Spanish
+                                panel title) becomes the column's floor and the whole
+                                board grows past a 390px screen. */}
+                            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,.8fr)]">
+                                <div className="min-w-0 space-y-5">
+                                    <DashboardPanel className="overflow-hidden">
+                                        {/* One action only. `PanelHeader` is a
+                                            non-wrapping flex row, so a second button here
+                                            is what pushed the panel past the viewport in
+                                            Spanish at 390px; Refresh lives with the
+                                            filters, next to the count it refreshes. */}
+                                        <PanelHeader
+                                            title={t('jobs.title')}
+                                            action={
+                                                <Button size="sm" onClick={() => setModalOpen(true)}>
+                                                    <Icon name="plus" />
+                                                    {t('jobs.post_job')}
+                                                </Button>
+                                            }
+                                        />
+
+                                        <div className="border-b border-[var(--jale-divider)] p-4 md:p-5">
+                                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                                <Input
+                                                    type="search"
+                                                    value={search}
+                                                    onChange={(e) => setSearch(e.target.value)}
+                                                    placeholder={t('jobs.search_placeholder')}
+                                                    aria-label={t('jobs.search_placeholder')}
+                                                />
+                                                <div
+                                                    role="group"
+                                                    aria-label={t('jobs.filter_aria_label')}
+                                                    className="flex flex-wrap gap-2"
+                                                >
+                                                    {statusFilters.map((status) => {
+                                                        const selected = statusFilter === status;
+                                                        return (
+                                                            <button
+                                                                key={status}
+                                                                type="button"
+                                                                aria-pressed={selected}
+                                                                onClick={() => setStatusFilter(status)}
+                                                                className={[
+                                                                    'rounded-full border px-3.5 py-1.5 text-xs font-bold transition-colors',
+                                                                    'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                                                                    selected
+                                                                        ? 'border-[var(--jale-blue-500)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
+                                                                        : 'border-[var(--jale-divider)] bg-[var(--jale-card)] text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]',
+                                                                ].join(' ')}
+                                                            >
+                                                                {t(`jobs.status.${status}`)}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+
+                                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                                                <p className="text-xs font-semibold tabular-nums text-[var(--jale-ink-2)]">
+                                                    {empty
+                                                        ? t('jobs.empty_first_title')
+                                                        : t('jobs.showing', {
+                                                              shown: filteredJobs.length,
+                                                              total: jobs.length,
+                                                          })}
+                                                </p>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={() => void refresh()}
+                                                    loading={refreshing}
+                                                    loadingLabel={tCommon('loading')}
+                                                    disabled={phase !== 'ready'}
+                                                >
+                                                    {t('jobs.refresh')}
+                                                </Button>
+                                            </div>
+
+                                            {/* A failed background refresh is a FOOTNOTE.
+                                                `usePageData` cannot let it clear `data`, so
+                                                the board below stays exactly as it was. */}
+                                            {refreshError ? (
+                                                <InlineFeedback tone="warning" className="mt-3">
+                                                    {tCommon(errorMessageKey(refreshError))}
+                                                </InlineFeedback>
+                                            ) : null}
+                                        </div>
+
+                                        {empty ? (
+                                            /* The account has no jobs at all. The dashed
+                                               card is the app's best first-run invitation;
+                                               it keeps its shape and its one CTA. */
+                                            <div className="p-4 md:p-5">
+                                                <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-6 py-10 text-center">
+                                                    <span className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]">
+                                                        <Icon name="briefcase" />
+                                                    </span>
+                                                    <p className="text-sm font-bold text-[var(--jale-ink)]">
+                                                        {t('jobs.empty_first_title')}
+                                                    </p>
+                                                    <p className="mx-auto mt-1 max-w-sm text-sm text-[var(--jale-ink-2)]">
+                                                        {t('jobs.empty_first_body')}
+                                                    </p>
+                                                    <Button onClick={() => setModalOpen(true)} className="mt-5">
+                                                        <Icon name="plus" />
+                                                        {t('jobs.post_job')}
+                                                    </Button>
+                                                </div>
+                                            </div>
+                                        ) : filteredJobs.length === 0 ? (
+                                            /* Jobs EXIST — the filters are hiding them.
+                                               Saying "post a job" here would be advice for
+                                               a problem the employer does not have. */
+                                            <EmptyState
+                                                variant="filtered"
+                                                title={t('jobs.empty_title')}
+                                                body={t('jobs.empty_body')}
+                                                action={{
+                                                    label: tCommon('empty_state.clear_filters'),
+                                                    onClick: () => {
+                                                        setSearch('');
+                                                        setStatusFilter('all');
+                                                    },
+                                                }}
+                                            />
+                                        ) : (
+                                            <ul className="anim-stagger divide-y divide-[var(--jale-divider)]">
+                                                {filteredJobs.map((job) => (
+                                                    <JobPostingCard
+                                                        key={job.id}
+                                                        job={job}
+                                                        href={`/employer/jobs/${job.id}`}
+                                                        onDelete={openDeleteDialog}
+                                                    />
+                                                ))}
+                                            </ul>
+                                        )}
+                                    </DashboardPanel>
+
+                                    <DashboardPanel>
+                                        <PanelHeader title={t('quick_post.title')} />
+                                        <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                            <div>
+                                                <p className="text-sm font-semibold text-[var(--jale-ink)]">{t('quick_post.body')}</p>
+                                                <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">{t('quick_post.hint')}</p>
+                                            </div>
+                                            <Button onClick={() => setModalOpen(true)}>
+                                                <Icon name="plus" />
+                                                {t('quick_post.cta')}
+                                            </Button>
+                                        </div>
+                                    </DashboardPanel>
+                                </div>
+
+                                <div className="min-w-0 space-y-5">
+                                    <DashboardPanel>
+                                        <PanelHeader
+                                            title={t('panels.whatsapp_title')}
+                                            action={
+                                                <Link
+                                                    href="/employer/conversations"
+                                                    className="rounded text-xs font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                                                >
+                                                    {t('panels.open_messages')}
+                                                </Link>
+                                            }
+                                        />
+                                        <div className="p-5">
+                                            <p className="text-sm font-bold text-[var(--jale-ink)]">
+                                                {recentJob?.title ?? t('panels.no_recent_job')}
+                                            </p>
+                                            <p className="mt-2 text-xs leading-5 text-[var(--jale-ink-2)]">
+                                                {t('panels.whatsapp_body')}
+                                            </p>
+                                        </div>
+                                    </DashboardPanel>
+
+                                    <DashboardPanel>
+                                        <PanelHeader title={t('panels.trust_title')} />
+                                        <div className="p-5">
+                                            <MetricCard
+                                                label={t('panels.hiring_progress')}
+                                                value={`${hireProgress}%`}
+                                            />
+                                            <div className="mt-5">
+                                                <ProgressRow
+                                                    label={t('panels.open_roles')}
+                                                    value={`${openRoles}/${totalOpenings}`}
+                                                    percent={share(openRoles, totalOpenings)}
+                                                />
+                                            </div>
+                                            <KVList
+                                                className="mt-4"
+                                                items={[
+                                                    {
+                                                        label: t('panels.applicant_flow'),
+                                                        value: (
+                                                            <span className="tabular-nums">{totalApplicants}</span>
+                                                        ),
+                                                    },
+                                                    {
+                                                        label: t('stats.workers_hired'),
+                                                        value: <span className="tabular-nums">{totalHired}</span>,
+                                                    },
+                                                ]}
+                                            />
+                                            <p className="mt-4 text-xs leading-5 text-[var(--jale-ink-2)]">
+                                                {t('panels.trust_body')}
+                                            </p>
+                                        </div>
+                                    </DashboardPanel>
+
+                                    <DashboardPanel>
+                                        <PanelHeader title={t('panels.hiring_status_title')} />
+                                        <div className="space-y-4 p-5">
+                                            <ProgressRow
+                                                label={t('jobs.status.active')}
+                                                value={String(activeCount)}
+                                                percent={share(activeCount, jobs.length)}
+                                            />
+                                            <ProgressRow
+                                                label={t('jobs.status.paused')}
+                                                value={String(pausedCount)}
+                                                percent={share(pausedCount, jobs.length)}
+                                            />
+                                            <ProgressRow
+                                                label={t('jobs.status.filled')}
+                                                value={String(filledCount)}
+                                                percent={share(filledCount, jobs.length)}
+                                            />
+                                            <ProgressRow
+                                                label={t('jobs.status.closed')}
+                                                value={String(closedCount)}
+                                                percent={share(closedCount, jobs.length)}
+                                            />
+                                        </div>
+                                    </DashboardPanel>
+                                </div>
+                            </div>
                         </div>
-
-                        <div className="space-y-5">
-                            <DashboardPanel className="!bg-[#111642] text-white">
-                                <PanelHeader title={t('panels.trust_title')} />
-                                <div className="space-y-4 p-5">
-                                    <div className="rounded-2xl bg-white/10 p-4">
-                                        <p className="text-4xl font-extrabold">{loading ? '-' : `${hireProgress}%`}</p>
-                                        <p className="mt-1 text-xs font-semibold uppercase text-white/55">{t('panels.hiring_progress')}</p>
-                                    </div>
-                                    <ProgressRow label={t('panels.open_roles')} value={String(loading ? '-' : openRoles)} percent={Math.min(100, openRoles * 12)} />
-                                    <ProgressRow label={t('panels.applicant_flow')} value={String(loading ? '-' : totalApplicants)} percent={Math.min(100, totalApplicants * 5)} />
-                                    <p className="text-xs leading-5 text-white/60">{t('panels.trust_body')}</p>
-                                </div>
-                            </DashboardPanel>
-
-                            <DashboardPanel>
-                                <PanelHeader title={t('panels.hiring_status_title')} />
-                                <div className="space-y-4 p-5">
-                                    <ProgressRow label={t('jobs.status.active')} value={String(loading ? '-' : activeCount)} percent={jobs.length ? (activeCount / jobs.length) * 100 : 0} />
-                                    <ProgressRow label={t('jobs.status.paused')} value={String(loading ? '-' : pausedCount)} percent={jobs.length ? (pausedCount / jobs.length) * 100 : 0} />
-                                    <ProgressRow label={t('jobs.status.filled')} value={String(loading ? '-' : filledCount)} percent={jobs.length ? (filledCount / jobs.length) * 100 : 0} />
-                                </div>
-                            </DashboardPanel>
-                        </div>
-                    </div>
+                    )}
                 </div>
             </AppShell>
 
@@ -303,8 +521,19 @@ export default function EmployerDashboardPage() {
                 onJobCreated={handleJobCreated}
             />
 
+            {/* Deliberately NOT keyed by job id.
+                A `key` that changed on open meant the dialog MOUNTED already
+                open, and a modal that mounts open never gets focus: `Modal`
+                renders null on its first commit (it waits for `mounted` before
+                creating its portal), so the focus effect finds no panel and
+                never re-runs. Focus stayed on the row's delete button behind
+                the scrim — trap, Escape and restore all worked, and the reader
+                was still outside the dialog.
+                The key was only ever guarding against one delete's pending or
+                failed state leaking into the next selected job, and
+                `openDeleteDialog` already clears both before switching jobs
+                (and `deleting` is matched by id), so nothing is lost. */}
             <DeleteJobDialog
-                key={jobToDelete?.id ?? 'closed'}
                 open={jobToDelete !== null}
                 jobTitle={jobToDelete?.title ?? ''}
                 deleting={deletingJobId === jobToDelete?.id}
