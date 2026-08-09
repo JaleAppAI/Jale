@@ -971,6 +971,73 @@
     "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
   },
   "employer_job_listing": {
+    "page_title": "Posting details",
+    "back": "Back to dashboard",
+    "not_found_title": "Job not found",
+    "not_found_body": "This posting doesn't exist, or it was deleted. Open it again from your dashboard.",
+    "forbidden_title": "No access to this posting",
+    "forbidden_body": "You can only open jobs posted by your own business.",
+    "job": {
+      "panel_title": "Job details",
+      "pay_range": "Pay range",
+      "hiring_progress": "Hiring progress",
+      "hiring_progress_value": "{hired}/{total} hired, {open} open",
+      "not_specified": "Not specified",
+      "yes": "Yes",
+      "no": "No",
+      "description_title": "Description",
+      "no_description": "No description was added.",
+      "certifications_title": "Certifications",
+      "required_documents_title": "Required documents",
+      "no_required_documents": "No documents are required for this job."
+    },
+    "actions": {
+      "activate": "Mark active",
+      "close": "Mark closed",
+      "edit": "Edit job",
+      "delete": "Delete",
+      "delete_error_hired": "This job has hired workers and can't be deleted. Close it instead."
+    },
+    "metrics": {
+      "applicants": "Applicants",
+      "hired": "Hired",
+      "open": "Still open"
+    },
+    "applicants": {
+      "title": "Applicants",
+      "applied": "Applied",
+      "view_profile": "View profile",
+      "unknown_name": "Unnamed worker",
+      "empty_title": "No applicants yet",
+      "empty_body": "Workers who apply to this posting show up here. Share the public link below to reach more people.",
+      "filtered_title": "No applicants match these filters",
+      "filtered_body": "Change the filters, or clear them to see everyone who applied.",
+      "clear_filters": "Clear filters"
+    },
+    "ranking": {
+      "loading": "Scoring how well each applicant matches this job...",
+      "empty": "Match scores aren't ready for this job yet. The applicants below are all here; only the scores are missing.",
+      "failed": "We couldn't score these applicants. The list below is complete, but without match scores.",
+      "retry": "Try scoring again"
+    },
+    "filters": {
+      "title": "Filter applicants",
+      "status": "Status",
+      "status_all": "All",
+      "skills": "Skills",
+      "skills_placeholder": "e.g. forklift, OSHA",
+      "availability": "Availability",
+      "availability_any": "Any",
+      "availability_immediate": "Immediate",
+      "availability_2weeks": "2 weeks",
+      "availability_1month": "1 month",
+      "availability_full_time": "Full-time",
+      "availability_part_time": "Part-time",
+      "availability_weekends": "Weekends",
+      "availability_flexible": "Flexible",
+      "min_experience": "Min experience (years)",
+      "clear": "Clear filters"
+    },
     "title": "Public job page",
     "benefit": "Making this posting public lets it reach more people - your workers can share it directly, and someone can read it without an account.",
     "shares": "Shared publicly: job title, company, location, pay and description. Never shared: your contact details, your other jobs, or anyone who has applied.",
