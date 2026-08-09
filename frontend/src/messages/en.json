@@ -1016,6 +1016,11 @@
         "ssn": "SSN"
       },
       "not_uploaded": "Not uploaded",
+      "uploaded": "Uploaded",
+      "uploading": "Uploading…",
+      "deleting": "Deleting…",
+      "upload_success": "Document uploaded",
+      "delete_success": "Document deleted",
       "upload": "Upload",
       "replace": "Replace",
       "delete": "Delete",
@@ -1023,7 +1028,9 @@
     },
     "edit": {
       "full_name": "Full name",
+      "skills_label": "Skills",
       "skills_placeholder": "Skills (comma separated)",
+      "certifications_label": "Certifications",
       "availability_label": "Availability",
       "availability": {
         "full_time": "Full-time",
