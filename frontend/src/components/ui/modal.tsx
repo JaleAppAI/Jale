@@ -102,8 +102,15 @@ export function Modal({
     }, [open]);
 
     // Move focus in on open; hand it back to the opener on close.
+    //
+    // `mounted` is a dependency, not just a guard. The portal renders `null` on
+    // the first commit while it waits for a DOM, so for a dialog that mounts
+    // ALREADY open — a caller keying it by record id, so a new id remounts it
+    // open — this effect runs once with no panel to focus and, without
+    // `mounted` here, never runs again. Focus stayed behind the scrim on
+    // whatever opened it.
     useEffect(() => {
-        if (!open) return;
+        if (!open || !mounted) return;
 
         openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
@@ -115,7 +122,7 @@ export function Modal({
             openerRef.current?.focus();
             openerRef.current = null;
         };
-    }, [open, initialFocusRef]);
+    }, [open, mounted, initialFocusRef]);
 
     // Escape to close + Tab containment. Capture phase so the dialog wins over
     // handlers on the content inside it.

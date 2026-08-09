@@ -1,6 +1,6 @@
 'use client';
 
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { DashboardPanel } from './dashboard-panel';
 import { Skeleton, SkeletonCircle, SkeletonLine } from './skeleton';
@@ -139,10 +139,14 @@ export function DetailPageSkeleton({
  * copies of one tracing drift the first time `MetricCard`'s type scale moves.
  */
 export function MetricRowSkeleton({ count = 4 }: { count?: number }) {
+    // Two-up on phones, `count`-up from `md` — the same responsive shape the
+    // metric bands themselves use. A fixed N-column grid drew four cramped
+    // columns on a 390px screen while the real band showed two, so the band
+    // changed height once on every mobile load.
     return (
         <section
-            className="grid gap-3"
-            style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
+            className="grid grid-cols-2 gap-3 md:[grid-template-columns:repeat(var(--metric-cols),minmax(0,1fr))]"
+            style={{ '--metric-cols': count } as CSSProperties}
         >
             {Array.from({ length: count }).map((_, i) => (
                 <div key={i} className="min-w-0 py-1">
