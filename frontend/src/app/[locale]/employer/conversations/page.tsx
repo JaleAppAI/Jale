@@ -104,7 +104,7 @@ export default function EmployerConversationsPage() {
   );
 
   const inbox = usePageData<EmployerInboxResponse>({
-    fetcher: ({ token }) => getInbox(token),
+    fetcher: ({ token, signal }) => getInbox(token, signal),
     legalReturnUrl: RETURN_URL,
     isEmpty: (data) => visibleItemsOf(data.items, tab, jobFilter).length === 0,
   });
@@ -131,8 +131,10 @@ export default function EmployerConversationsPage() {
    * not a swallowed failure. Polling is switched off in that state too.
    */
   const thread = usePageData<EmployerConversationResponse | null>({
-    fetcher: ({ token }) =>
-      selectedConversationId ? getConversation(token, selectedConversationId) : Promise.resolve(null),
+    fetcher: ({ token, signal }) =>
+      selectedConversationId
+        ? getConversation(token, selectedConversationId, signal)
+        : Promise.resolve(null),
     legalReturnUrl: RETURN_URL,
     deps: [selectedConversationId],
     pollMs: selectedConversationId ? THREAD_POLL_MS : undefined,

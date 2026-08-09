@@ -126,7 +126,7 @@ export default function EmployerBillingPage() {
         errorKind,
         retry,
     } = usePageData<EmployerBilling>({
-        fetcher: ({ token }) => getBilling(token),
+        fetcher: ({ token, signal }) => getBilling(token, signal),
         legalReturnUrl: '/employer/billing',
         // Guards the (unlikely) `null` body: a rendered page with no billing
         // object is the empty state, never a crash on `billing.planCode`.

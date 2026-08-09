@@ -75,7 +75,7 @@ export default function EmployerDashboardPage() {
         refresh,
         setData,
     } = usePageData<Job[]>({
-        fetcher: ({ token }) => getJobs(token),
+        fetcher: ({ token, signal }) => getJobs(token, signal),
         legalReturnUrl: '/employer/dashboard',
         isEmpty: (jobs) => jobs.length === 0,
     });

@@ -63,7 +63,7 @@ export default function WorkerJobDetailPage() {
     refresh,
     setData,
   } = usePageData<JobDetail>({
-    fetcher: ({ token }) => getJob(token, id),
+    fetcher: ({ token, signal }) => getJob(token, id, signal),
     legalReturnUrl: `/worker/jobs/${id}`,
     // The job id is the whole identity of this page: navigating between two
     // job details must drop the previous job rather than briefly render it

@@ -81,9 +81,9 @@ export function ConversationDrawer() {
   );
 
   const list = usePageData<EmployerConversationSummary[] | null>({
-    fetcher: async ({ token }) => {
+    fetcher: async ({ token, signal }) => {
       if (!canFetch) return null;
-      const res = await getConversations(token);
+      const res = await getConversations(token, signal);
       return res.conversations.filter((item) => item.status === 'open');
     },
     requireAuth: false,
@@ -96,8 +96,8 @@ export function ConversationDrawer() {
   const conversations = list.data ?? [];
 
   const thread = usePageData<EmployerConversationResponse | null>({
-    fetcher: ({ token }) =>
-      canFetch && selectedId ? getConversation(token, selectedId) : Promise.resolve(null),
+    fetcher: ({ token, signal }) =>
+      canFetch && selectedId ? getConversation(token, selectedId, signal) : Promise.resolve(null),
     requireAuth: false,
     legalReturnUrl: RETURN_URL,
     deps: [canFetch, selectedId],

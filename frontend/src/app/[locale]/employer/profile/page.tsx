@@ -66,9 +66,12 @@ export default function EmployerProfilePage() {
         retry,
         setData,
     } = usePageData<EmployerProfileData>({
-        fetcher: async ({ token }) => {
-            let loaded = await getEmployerProfile(token);
+        fetcher: async ({ token, signal }) => {
+            let loaded = await getEmployerProfile(token, signal);
             const pending = sessionStorage.getItem('pendingEmployerProfile');
+            // The PATCH deliberately gets no signal: it is a write, and a
+            // half-applied profile the app then forgets about is worse than a
+            // request that outlives the page.
             if (pending) {
                 loaded = await updateEmployerProfile(token, JSON.parse(pending));
                 sessionStorage.removeItem('pendingEmployerProfile');

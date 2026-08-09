@@ -56,7 +56,7 @@ export default function WorkerApplicationsPage() {
   } = usePageData<Application[]>({
     legalReturnUrl: '/worker/applications',
     isEmpty: (data) => data.length === 0,
-    fetcher: async ({ token }) => (await getApplications(token)).applications,
+    fetcher: async ({ token, signal }) => (await getApplications(token, signal)).applications,
   });
 
   // 'auth' means the token gate has not opened yet: nothing has been asked for,

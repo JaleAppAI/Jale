@@ -64,7 +64,7 @@ export default function WorkerProfilePage() {
             const res = await apiFetch('/worker/profile', { signal }, token);
             if (!res.ok) throw await parseApiError(res, 'fetch_failed');
             let profile = toWorkerProfile(await res.json());
-            const d = await getVaultDocuments(token);
+            const d = await getVaultDocuments(token, signal);
             const docs = d.documents;
 
             const pending = sessionStorage.getItem('pendingWorkerProfile');
