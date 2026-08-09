@@ -199,7 +199,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
                             {t('modal.cancel')}
                         </Button>
                         <Button
-                            variant="deep"
+                            variant="primary"
                             onClick={handleSubmit}
                             loading={loading}
                             loadingLabel={tCommon('loading')}
