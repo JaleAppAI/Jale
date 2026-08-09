@@ -151,7 +151,7 @@ export default function WorkerHomePage() {
     // Both lists empty is the only honest definition of "nothing to show":
     // in-city can be empty while the out-of-city teaser still has rows.
     isEmpty: (data) => data.jobs.length === 0 && data.otherJobs.length === 0,
-    fetcher: async ({ token }) => {
+    fetcher: async ({ token, signal }) => {
       // Recorded at request start, from the closure the hook is calling RIGHT
       // NOW (it reads `fetcher` through a ref), so it always names the filters
       // this response belongs to.
@@ -159,10 +159,11 @@ export default function WorkerHomePage() {
       const filters: { search?: string; job_type?: string } = {};
       if (debouncedSearch) filters.search = debouncedSearch;
       if (jobType !== 'all') filters.job_type = jobType;
-      // `getJobs` takes no AbortSignal, so the request itself is not cancelled;
-      // `usePageData` still fences the response by request id and drops it if
-      // the signal aborted, so a superseded answer can never land.
-      const res = await getJobs(token, filters);
+      // Forwarding the signal cancels a superseded feed request outright --
+      // typing in the search box no longer leaves a trail of requests running
+      // to completion. `usePageData` still fences responses by request id, so
+      // an answer that races the abort cannot land either.
+      const res = await getJobs(token, filters, signal);
       return { jobs: res.jobs ?? [], otherJobs: res.other_jobs ?? [] };
     },
   });

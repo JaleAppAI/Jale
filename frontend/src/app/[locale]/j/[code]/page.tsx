@@ -6,7 +6,7 @@ import { Badge, JobStatusBadge } from '@/components/ui/badge';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { KVList, type KVItem } from '@/components/ui/kv-list';
 import { Link } from '@/i18n/navigation';
-import { formatStartDate } from '@/lib/date';
+import { formatLongDate, formatStartDate } from '@/lib/date';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
 import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJsonLd';
@@ -239,7 +239,11 @@ export default async function PublicJobPage({ params }: PageProps) {
   const startDate = active.start_date
     ? (formatStartDate(active.start_date, params.locale) ?? active.start_date)
     : null;
-  const postedDate = formatStartDate(active.created_at, params.locale) ?? active.created_at;
+  // `created_at` is an INSTANT, not a calendar day. This page renders on the
+  // server, so it resolves in the server's zone (UTC on Lambda) -- the same
+  // string the UTC-pinned `formatStartDate` produced, but now for the right
+  // reason and consistent with every other "posted" line in the app.
+  const postedDate = formatLongDate(active.created_at, params.locale) ?? active.created_at;
   const showPay = Boolean(active.pay && active.pay !== 'Pay not specified');
 
   // The header location line: company, then whichever of the structured

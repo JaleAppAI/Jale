@@ -248,10 +248,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               {t('post_job_docs.back')}
             </Button>
           )}
-          {/* `primary`, not `deep`. `--jale-blue-900` is one of the few tokens
-              the dark theme does NOT re-tint, so a "deep" button renders navy on
-              the dark card and all but disappears — verified on screen. Blue-500
-              flips to #4585ff in dark and stays legible in both. */}
+          {/* This was the first call site to move off the old `deep` variant,
+              which rendered navy on the dark card and all but disappeared. That
+              variant has since been retired outright (see `ui/button`), so
+              `primary` is now simply the only CTA fill there is. */}
           {step < 3 ? (
             <Button variant="primary" onClick={nextStep} className="flex-1">
               {t('modal.next')}

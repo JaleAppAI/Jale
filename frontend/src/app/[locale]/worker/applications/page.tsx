@@ -13,6 +13,7 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { getApplications } from '@/lib/api/worker';
+import { formatLongDate } from '@/lib/date';
 import type { Application } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
 
@@ -56,7 +57,7 @@ export default function WorkerApplicationsPage() {
   } = usePageData<Application[]>({
     legalReturnUrl: '/worker/applications',
     isEmpty: (data) => data.length === 0,
-    fetcher: async ({ token }) => (await getApplications(token)).applications,
+    fetcher: async ({ token, signal }) => (await getApplications(token, signal)).applications,
   });
 
   // 'auth' means the token gate has not opened yet: nothing has been asked for,
@@ -132,9 +133,7 @@ export default function WorkerApplicationsPage() {
                                 {a.company_name}
                               </p>
                               <p className="mt-1 text-xs font-medium tabular-nums text-[var(--jale-ink-2)]">
-                                {t('applied')}: {new Date(a.applied_at).toLocaleDateString(
-                                  locale === 'es' ? 'es-MX' : 'en-US',
-                                )}
+                                {t('applied')}: {formatLongDate(a.applied_at, locale) ?? a.applied_at}
                               </p>
                             </div>
                           </Link>

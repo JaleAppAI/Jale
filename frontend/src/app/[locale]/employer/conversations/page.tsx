@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from '@/i18n/navigation';
 import { usePageData } from '@/hooks/usePageData';
@@ -19,12 +19,12 @@ import { ThreadSkeleton } from '@/components/ui/page-skeletons';
 import { useToast } from '@/components/ui/toast';
 import {
   ConversationThread,
-  formatMessageTime,
   initialsFor,
 } from '@/components/employer/ConversationThread';
 import { EmptyThreadComposer } from '@/components/employer/EmptyThreadComposer';
 import { isLegalWallError } from '@/lib/api';
 import { ApiError } from '@/lib/api/errors';
+import { formatTimeOfDay } from '@/lib/date';
 import {
   closeConversation,
   getConversation,
@@ -87,6 +87,9 @@ export default function EmployerConversationsPage() {
   const [dismissTarget, setDismissTarget] = useState<InboxItem | null>(null);
   const [dismissing, setDismissing] = useState(false);
   const [dismissError, setDismissError] = useState<string | null>(null);
+  // A destructive dialog opens on its SAFE action rather than on the header's
+  // dismiss button, which is what Modal picks by default.
+  const dismissCancelRef = useRef<HTMLButtonElement>(null);
 
   /**
    * Mutations do their own legal-wall routing: `usePageData` only owns the
@@ -104,7 +107,7 @@ export default function EmployerConversationsPage() {
   );
 
   const inbox = usePageData<EmployerInboxResponse>({
-    fetcher: ({ token }) => getInbox(token),
+    fetcher: ({ token, signal }) => getInbox(token, signal),
     legalReturnUrl: RETURN_URL,
     isEmpty: (data) => visibleItemsOf(data.items, tab, jobFilter).length === 0,
   });
@@ -131,8 +134,10 @@ export default function EmployerConversationsPage() {
    * not a swallowed failure. Polling is switched off in that state too.
    */
   const thread = usePageData<EmployerConversationResponse | null>({
-    fetcher: ({ token }) =>
-      selectedConversationId ? getConversation(token, selectedConversationId) : Promise.resolve(null),
+    fetcher: ({ token, signal }) =>
+      selectedConversationId
+        ? getConversation(token, selectedConversationId, signal)
+        : Promise.resolve(null),
     legalReturnUrl: RETURN_URL,
     deps: [selectedConversationId],
     pollMs: selectedConversationId ? THREAD_POLL_MS : undefined,
@@ -560,9 +565,10 @@ export default function EmployerConversationsPage() {
         onClose={() => setDismissTarget(null)}
         title={t('dismiss_confirm_title')}
         size="sm"
+        initialFocusRef={dismissCancelRef}
         footer={
           <>
-            <Button type="button" variant="ghost" onClick={() => setDismissTarget(null)} disabled={dismissing}>
+            <Button ref={dismissCancelRef} type="button" variant="ghost" onClick={() => setDismissTarget(null)} disabled={dismissing}>
               {t('cancel')}
             </Button>
             <Button
@@ -606,6 +612,7 @@ function InboxRow({
   statusLabel: string;
   noMessagesLabel: string;
 }) {
+  const locale = useLocale();
   const name = item.worker_name ?? unknownWorkerLabel;
   const started = Boolean(item.conversation_id);
   const open = item.conversation_status === 'open';
@@ -627,7 +634,7 @@ function InboxRow({
         <span className="flex items-baseline justify-between gap-2">
           <span className="truncate text-sm font-bold text-[var(--jale-ink)]">{name}</span>
           <span className="shrink-0 text-[10px] tabular-nums text-[var(--jale-ink-2)]">
-            {formatMessageTime(item.last_message_at ?? item.applied_at)}
+            {formatTimeOfDay(item.last_message_at ?? item.applied_at, locale)}
           </span>
         </span>
 

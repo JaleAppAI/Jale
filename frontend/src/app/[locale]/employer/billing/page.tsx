@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
@@ -27,6 +27,7 @@ import {
     startCheckout,
 } from '@/lib/api/employer';
 import type { EmployerBilling } from '@/lib/api/employer';
+import { formatLongDate } from '@/lib/date';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,10 +77,10 @@ function classifyActionError(err: unknown): ActionErrorKind {
     return 'generic';
 }
 
-/** Medium-style date, locale-resolved by the runtime. */
-function formatDate(value: string): string {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(value));
-}
+// The local `formatDate` here resolved its locale from the RUNTIME
+// (`Intl.DateTimeFormat(undefined, …)`), so a Spanish page on an English
+// browser billed in English. Billing dates now go through `formatLongDate`,
+// which is handed the app's locale.
 
 /**
  * One key/value field: label left (uppercase, tracked, muted), value right.
@@ -114,6 +115,7 @@ export default function EmployerBillingPage() {
     const { handleLegalWall } = useRequireAuth();
     const searchParams = useSearchParams();
     const t = useTranslations('billing');
+    const locale = useLocale();
 
     const [checkoutBusy, setCheckoutBusy] = useState(false);
     const [portalBusy, setPortalBusy] = useState(false);
@@ -126,7 +128,7 @@ export default function EmployerBillingPage() {
         errorKind,
         retry,
     } = usePageData<EmployerBilling>({
-        fetcher: ({ token }) => getBilling(token),
+        fetcher: ({ token, signal }) => getBilling(token, signal),
         legalReturnUrl: '/employer/billing',
         // Guards the (unlikely) `null` body: a rendered page with no billing
         // object is the empty state, never a crash on `billing.planCode`.
@@ -326,7 +328,7 @@ export default function EmployerBillingPage() {
                                                 label={endsAtPeriodEnd
                                                     ? t('current_plan.ends_on')
                                                     : t('current_plan.renews_on')}
-                                                value={formatDate(periodEnd)}
+                                                value={formatLongDate(periodEnd, locale) ?? periodEnd}
                                                 numeric
                                             />
                                         )}
@@ -336,7 +338,8 @@ export default function EmployerBillingPage() {
                                         {billing.subscription?.status === 'past_due' && billing.subscription.grace_ends_at && (
                                             <InlineFeedback tone="warning" className="mb-4">
                                                 {t('current_plan.grace_period', {
-                                                    date: formatDate(billing.subscription.grace_ends_at),
+                                                    date: formatLongDate(billing.subscription.grace_ends_at, locale)
+                                                        ?? billing.subscription.grace_ends_at,
                                                 })}
                                             </InlineFeedback>
                                         )}

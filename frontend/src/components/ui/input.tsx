@@ -1,11 +1,17 @@
 import * as React from "react";
 
-export function Input({
+/**
+ * Ref-forwarding so a caller can address the control itself -- `Modal`'s
+ * `initialFocusRef` is the motivating case, and it needs the real element, not
+ * a wrapper to search inside.
+ */
+export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(function Input({
   className = "",
   ...props
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+}, ref) {
   return (
     <input
+      ref={ref}
       className={[
         "w-full min-h-[44px] rounded-[var(--radius-input)]",
         "border border-[var(--jale-divider)] bg-[var(--jale-input)]",
@@ -19,4 +25,4 @@ export function Input({
       {...props}
     />
   );
-}
+});

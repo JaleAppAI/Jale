@@ -324,8 +324,24 @@ export type EmployerProfilePatch = Partial<Pick<EmployerProfileData,
   'hiring_trades' | 'typical_job_types' | 'company_size' | 'company_description'
 >>;
 
-export async function getEmployerProfile(token: string): Promise<EmployerProfileData> {
-  const res = await apiFetch('/employer/profile', {}, token);
+/**
+ * The READ helpers in this module take an optional trailing `AbortSignal`,
+ * forwarded to `apiFetch` (which chains it into the per-attempt controller).
+ * `usePageData` hands its fetcher a signal that aborts on unmount and on a deps
+ * change; passing it here is what actually cancels the in-flight request rather
+ * than merely discarding its answer. The parameter is last and optional, so
+ * every existing call site is unaffected.
+ *
+ * MUTATION helpers deliberately do NOT take one. A POST/PATCH/DELETE that has
+ * reached the server still executes; aborting it only throws away the response,
+ * which would turn "user navigated away" into "the app has no idea whether the
+ * write landed". Those must run to completion and be reported.
+ */
+export async function getEmployerProfile(
+  token: string,
+  signal?: AbortSignal,
+): Promise<EmployerProfileData> {
+  const res = await apiFetch('/employer/profile', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'profile_fetch_failed');
   return res.json();
 }
@@ -343,8 +359,8 @@ export async function updateEmployerProfile(
   return res.json();
 }
 
-export async function getJobs(token: string): Promise<Job[]> {
-  const res = await apiFetch('/employer/jobs', {}, token);
+export async function getJobs(token: string, signal?: AbortSignal): Promise<Job[]> {
+  const res = await apiFetch('/employer/jobs', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   const data = await res.json();
   return data.jobs;
@@ -394,8 +410,12 @@ export async function createJob(token: string, data: JobWritePayload): Promise<J
   return res.json();
 }
 
-export async function getJob(token: string, jobId: string): Promise<EmployerJobDetail> {
-  const res = await apiFetch(`/employer/jobs/${jobId}`, {}, token);
+export async function getJob(
+  token: string,
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<EmployerJobDetail> {
+  const res = await apiFetch(`/employer/jobs/${jobId}`, { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
@@ -469,7 +489,8 @@ export async function deleteJob(token: string, jobId: string): Promise<void> {
 export async function getJobApplicants(
   token: string,
   jobId: string,
-  filters: ApplicantFilters = {}
+  filters: ApplicantFilters = {},
+  signal?: AbortSignal,
 ): Promise<{ applicants: Applicant[]; total: number }> {
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
@@ -481,7 +502,7 @@ export async function getJobApplicants(
   const qs = params.toString();
   const res = await apiFetch(
     `/employer/jobs/${jobId}/applicants${qs ? `?${qs}` : ''}`,
-    {},
+    { signal },
     token
   );
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
@@ -492,11 +513,12 @@ export async function getJobCandidates(
   token: string,
   jobId: string,
   limit = 100,
+  signal?: AbortSignal,
 ): Promise<EmployerCandidatesResponse> {
   const params = new URLSearchParams();
   const safeLimit = Number.isFinite(limit) ? Math.trunc(limit) : 100;
   params.set('limit', String(Math.max(1, Math.min(safeLimit, 100))));
-  const res = await apiFetch(`/employer/jobs/${jobId}/candidates?${params.toString()}`, {}, token);
+  const res = await apiFetch(`/employer/jobs/${jobId}/candidates?${params.toString()}`, { signal }, token);
   // The job page branches on `.status` here (401/403 route into the legal
   // wall), which ApiError preserves along with the code.
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
@@ -505,14 +527,18 @@ export async function getJobCandidates(
 
 export async function getConversations(
   token: string,
+  signal?: AbortSignal,
 ): Promise<{ conversations: EmployerConversationSummary[] }> {
-  const res = await apiFetch('/employer/conversations', {}, token);
+  const res = await apiFetch('/employer/conversations', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'conversations_fetch_failed');
   return res.json();
 }
 
-export async function getInbox(token: string): Promise<EmployerInboxResponse> {
-  const res = await apiFetch('/employer/inbox', {}, token);
+export async function getInbox(
+  token: string,
+  signal?: AbortSignal,
+): Promise<EmployerInboxResponse> {
+  const res = await apiFetch('/employer/inbox', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'inbox_fetch_failed');
   return res.json();
 }
@@ -520,8 +546,9 @@ export async function getInbox(token: string): Promise<EmployerInboxResponse> {
 export async function getConversation(
   token: string,
   conversationId: string,
+  signal?: AbortSignal,
 ): Promise<EmployerConversationResponse> {
-  const res = await apiFetch(`/employer/conversations/${conversationId}`, {}, token);
+  const res = await apiFetch(`/employer/conversations/${conversationId}`, { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'conversation_fetch_failed');
   return res.json();
 }
@@ -592,10 +619,11 @@ export async function getWorkerProfile(
   token: string,
   workerId: string,
   jobId: string,
+  signal?: AbortSignal,
 ): Promise<WorkerProfile> {
   const res = await apiFetch(
     `/employer/workers/${workerId}/profile?job_id=${jobId}`,
-    {},
+    { signal },
     token,
   );
   if (!res.ok) throw await parseApiError(res, 'profile_fetch_failed');
@@ -624,10 +652,11 @@ export async function getWorkerDocuments(
   token: string,
   workerId: string,
   jobId: string,
+  signal?: AbortSignal,
 ): Promise<{ documents: WorkerDocument[] }> {
   const res = await apiFetch(
     `/employer/workers/${workerId}/documents?job_id=${jobId}`,
-    {},
+    { signal },
     token,
   );
   if (!res.ok) throw await parseApiError(res, 'docs_fetch_failed');
@@ -678,8 +707,11 @@ export type EmployerBilling = {
   billing_interval: string;
 };
 
-export async function getBilling(token: string): Promise<EmployerBilling> {
-  const res = await apiFetch('/employer/billing', {}, token);
+export async function getBilling(
+  token: string,
+  signal?: AbortSignal,
+): Promise<EmployerBilling> {
+  const res = await apiFetch('/employer/billing', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'billing_fetch_failed');
   return res.json();
 }

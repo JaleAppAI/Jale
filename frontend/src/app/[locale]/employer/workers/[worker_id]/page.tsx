@@ -110,19 +110,18 @@ export default function WorkerProfilePage() {
     const returnUrl = `/employer/workers/${workerId}?job_id=${jobId}`;
 
     const { phase, data, errorKind, retry, setData } = usePageData<ApplicantView>({
-        // `signal` is deliberately unused: neither `getWorkerProfile` nor
-        // `getWorkerDocuments` takes one, so an abort cannot cancel the
-        // in-flight request -- only usePageData's request fencing keeps a
-        // superseded response from landing. See the contract note in the
-        // handover; forwarding it needs a signature change in `lib/api`.
-        fetcher: async ({ token }) => {
+        // `signal` aborts on unmount and on a deps change, and both reads
+        // forward it, so an abandoned navigation cancels the requests instead
+        // of leaving them to finish unwatched. usePageData's request fencing
+        // still backstops a response that races the abort.
+        fetcher: async ({ token, signal }) => {
             // Unreachable while `linkValid` is false -- the render short-circuits
             // to the invalid-link state -- but the fetcher is the only place that
             // can guarantee no doomed request is ever sent.
             if (!linkValid) throw new Error('invalid_link');
             const [profile, docs] = await Promise.all([
-                getWorkerProfile(token, workerId, jobId),
-                getWorkerDocuments(token, workerId, jobId),
+                getWorkerProfile(token, workerId, jobId, signal),
+                getWorkerDocuments(token, workerId, jobId, signal),
             ]);
             return { profile, documents: docs.documents };
         },

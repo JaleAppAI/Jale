@@ -1,6 +1,6 @@
 'use client';
 import { useRef, useState } from 'react';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
@@ -9,6 +9,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { useToast } from '@/components/ui/toast';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { getAuthUploadUrl, confirmAuthUpload, deleteVaultDocument, uploadFileToS3 } from '@/lib/api/worker';
+import { formatLongDate } from '@/lib/date';
 import type { DocType, WorkerVaultDoc } from '@/lib/api/worker';
 
 /**
@@ -31,6 +32,7 @@ export function DocumentSlot(props: {
   onChange: () => void;
 }) {
   const t = useTranslations('worker_profile.documents');
+  const locale = useLocale();
   const errorMessage = useErrorMessage();
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -95,7 +97,7 @@ export function DocumentSlot(props: {
 
           {props.existing && (
             <p className="mt-1 truncate text-xs text-[var(--jale-ink-2)]">
-              {props.existing.file_name} · {new Date(props.existing.uploaded_at).toLocaleDateString()}
+              {props.existing.file_name} · {formatLongDate(props.existing.uploaded_at, locale)}
             </p>
           )}
         </div>

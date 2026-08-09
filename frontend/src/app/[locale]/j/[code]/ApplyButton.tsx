@@ -52,14 +52,14 @@ export function ApplyButton({ code }: ApplyButtonProps) {
         onClick={handleApply}
         loading={loading}
         loadingLabel={t('apply_loading')}
-        variant="deep"
+        variant="primary"
         size="lg"
-        // `deep` is brand navy in BOTH themes (`--jale-blue-900` does not flip),
-        // which on the dark page ground measures ~1.1:1 fill-vs-ground -- the
-        // white label stays perfectly readable, but the shape stops reading as a
-        // button, under the 3:1 that non-text UI contrast wants. The elevation
-        // token draws its edge back: a blue lift in light, a blue glow in dark.
-        className="w-full shadow-[var(--shadow-btn)]"
+        // Was `deep` (brand navy), which measured ~1.1:1 fill-vs-ground on the
+        // dark page: readable label, invisible button. `primary` measures
+        // 4.5:1 against that same ground -- clear of the 3:1 that WCAG 1.4.11
+        // asks of a non-text boundary -- and already carries `--shadow-btn`,
+        // so the manual elevation that used to draw the edge back is gone.
+        className="w-full"
       >
         {t('apply_button')}
       </Button>

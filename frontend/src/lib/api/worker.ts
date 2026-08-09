@@ -191,21 +191,35 @@ export type WorkerApiError = Error & {
   missing_docs?: string[];
 };
 
+/**
+ * The READ helpers below take an optional trailing `AbortSignal`, forwarded to
+ * `apiFetch` (which chains it into the per-attempt controller). `usePageData`
+ * hands its fetcher a signal that aborts on unmount and on a deps change;
+ * passing it here is what actually cancels the in-flight request rather than
+ * merely discarding its answer. The parameter is last and optional, so every
+ * existing call site is unaffected.
+ *
+ * MUTATION helpers deliberately do NOT take one. A POST/PATCH/DELETE that has
+ * reached the server still executes; aborting it only throws away the response,
+ * which would turn "user navigated away" into "the app has no idea whether the
+ * write landed". Those must run to completion and be reported.
+ */
 export async function getJobs(
   token: string,
   filters?: { search?: string; job_type?: string },
+  signal?: AbortSignal,
 ): Promise<{ jobs: Job[]; other_jobs?: Job[] }> {
   const qs = new URLSearchParams();
   if (filters?.search) qs.set('search', filters.search);
   if (filters?.job_type) qs.set('job_type', filters.job_type);
   const path = `/worker/jobs${qs.toString() ? `?${qs}` : ''}`;
-  const res = await apiFetch(path, {}, token);
+  const res = await apiFetch(path, { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
-export async function getJob(token: string, id: string): Promise<JobDetail> {
-  const res = await apiFetch(`/worker/jobs/${id}`, {}, token);
+export async function getJob(token: string, id: string, signal?: AbortSignal): Promise<JobDetail> {
+  const res = await apiFetch(`/worker/jobs/${id}`, { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
@@ -219,8 +233,11 @@ export async function applyToJob(token: string, id: string): Promise<Application
   return res.json();
 }
 
-export async function getApplications(token: string): Promise<{ applications: Application[] }> {
-  const res = await apiFetch('/worker/applications', {}, token);
+export async function getApplications(
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ applications: Application[] }> {
+  const res = await apiFetch('/worker/applications', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
@@ -234,8 +251,11 @@ export async function updateWorkerProfile(
   return res.json();
 }
 
-export async function getVaultDocuments(token: string): Promise<{ documents: WorkerVaultDoc[] }> {
-  const res = await apiFetch('/worker/vault', {}, token);
+export async function getVaultDocuments(
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ documents: WorkerVaultDoc[] }> {
+  const res = await apiFetch('/worker/vault', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }

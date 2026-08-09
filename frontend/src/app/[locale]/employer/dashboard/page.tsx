@@ -6,6 +6,7 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
+import { formatWeekdayDate } from '@/lib/date';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
@@ -75,7 +76,7 @@ export default function EmployerDashboardPage() {
         refresh,
         setData,
     } = usePageData<Job[]>({
-        fetcher: ({ token }) => getJobs(token),
+        fetcher: ({ token, signal }) => getJobs(token, signal),
         legalReturnUrl: '/employer/dashboard',
         isEmpty: (jobs) => jobs.length === 0,
     });
@@ -112,13 +113,7 @@ export default function EmployerDashboardPage() {
     // mount so the server HTML and the client's first render agree (empty), then fill in.
     const [todayLabel, setTodayLabel] = useState('');
     useEffect(() => {
-        setTodayLabel(
-            new Intl.DateTimeFormat(locale, {
-                weekday: 'long',
-                month: 'short',
-                day: 'numeric',
-            }).format(new Date()),
-        );
+        setTodayLabel(formatWeekdayDate(new Date(), locale) ?? '');
     }, [locale]);
 
     function handleJobCreated(job: Job) {

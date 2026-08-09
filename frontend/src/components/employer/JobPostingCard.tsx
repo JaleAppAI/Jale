@@ -4,6 +4,7 @@ import { useTranslations, useLocale } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { Icon } from '@/components/ui/icon';
+import { formatShortDate } from '@/lib/date';
 import type { Job } from '@/lib/api/employer';
 
 interface Props {
@@ -45,10 +46,7 @@ export function JobPostingCard({ job, href, onDelete }: Props) {
   const openCount =
     job.open_count ?? Math.max(0, (job.number_of_workers_needed ?? 0) - (job.hired_count ?? 0));
 
-  const postedDate = new Date(job.created_at).toLocaleDateString(locale, {
-    month: 'short',
-    day: 'numeric',
-  });
+  const postedDate = formatShortDate(job.created_at, locale) ?? job.created_at;
 
   const pay =
     job.pay ??

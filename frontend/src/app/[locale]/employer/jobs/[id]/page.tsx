@@ -46,7 +46,7 @@ import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import type { WritableJobStatus } from '@/lib/status';
-import { formatStartDate } from '@/lib/date';
+import { formatLongDate, formatStartDate } from '@/lib/date';
 
 export const dynamic = 'force-dynamic';
 
@@ -139,11 +139,11 @@ export default function JobDetailPage() {
 
     const { phase, data, errorKind, refreshing, refreshError, retry, refresh, setData } =
         usePageData<JobPageData>({
-            // `signal` is deliberately unused: none of the employer API helpers
-            // accept one, so an abort cannot cancel the in-flight request --
-            // usePageData's request fencing is what keeps a superseded response
-            // from landing. Forwarding it needs a signature change in `lib/api`.
-            fetcher: async ({ token }) => {
+            // `signal` aborts on unmount and on a deps change, and both reads
+            // forward it, so an abandoned navigation cancels the requests
+            // instead of leaving them to finish unwatched. usePageData's
+            // request fencing still backstops a response that races the abort.
+            fetcher: async ({ token, signal }) => {
                 // A malformed id can only ever 404, and interpolating an
                 // arbitrary path segment into the request URL is worth avoiding.
                 // Throwing the same shape the backend would means the S5 branch
@@ -152,8 +152,8 @@ export default function JobDetailPage() {
 
                 const appliedFilters = filtersRef.current;
                 const [job, page] = await Promise.all([
-                    getJob(token, jobId),
-                    getJobApplicants(token, jobId, appliedFilters),
+                    getJob(token, jobId, signal),
+                    getJobApplicants(token, jobId, appliedFilters, signal),
                 ]);
                 return { job, applicants: page.applicants, appliedFilters };
             },
@@ -210,11 +210,18 @@ export default function JobDetailPage() {
         if (!pageReady || !hasToken || !jobIdValid) return;
 
         let active = true;
+        // The ranking request is the slowest thing this page asks for, so an
+        // employer who leaves mid-scoring is exactly who should not keep paying
+        // for it. `active` still guards the state writes: it is already false
+        // by the time the abort rejection arrives.
+        const controller = new AbortController();
         setRanking({ status: 'loading' });
 
         (async () => {
             try {
-                const ranked = await getJobCandidates(idTokenRef.current!, jobId, 100);
+                const ranked = await getJobCandidates(
+                    idTokenRef.current!, jobId, 100, controller.signal,
+                );
                 if (!active) return;
                 setRanking({ status: 'ready', matches: buildCandidateMatchMap(ranked.candidates) });
             } catch (err) {
@@ -238,6 +245,7 @@ export default function JobDetailPage() {
 
         return () => {
             active = false;
+            controller.abort();
         };
         // `rankingAttempt` is the retry pedal. Filters are absent on purpose:
         // the ranking is per-job and keyed by applicant, so narrowing the list
@@ -842,10 +850,7 @@ function ApplicantRow({
     const [messageError, setMessageError] = useState<string | null>(null);
 
     const displayName = applicant.full_name?.trim() || t('applicants.unknown_name');
-    const appliedAt = new Date(applicant.applied_at);
-    const appliedLabel = Number.isNaN(appliedAt.getTime())
-        ? applicant.applied_at
-        : appliedAt.toLocaleDateString(locale === 'es' ? 'es-MX' : 'en-US');
+    const appliedLabel = formatLongDate(applicant.applied_at, locale) ?? applicant.applied_at;
     const availabilityKey = applicant.availability
         ? normalizeAvailabilityKey(applicant.availability)
         : null;
