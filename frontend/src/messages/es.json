@@ -655,15 +655,12 @@
       "locked_note": "Bloqueado — este trabajo tiene postulantes",
       "edit_error": "No se pudieron guardar los cambios. Intenta de nuevo.",
       "template_select_label": "Empezar desde una plantilla",
+      "template_select_placeholder": "Elige una plantilla…",
       "template_save_toggle": "Guardar como plantilla",
       "template_name_placeholder": "Nombre de la plantilla",
-      "template_saved": "Plantilla guardada",
       "template_check_city": "Revisa la ciudad antes de publicar",
       "template_limit_reached": "Límite de plantillas alcanzado — mejora tu plan para más",
-      "template_name_taken": "Ya tienes una plantilla con ese nombre",
-      "template_delete_label": "Eliminar plantilla {name}",
-      "template_delete_confirm": "¿Eliminar?",
-      "template_save_only": "Guardar solo la plantilla"
+      "template_name_taken": "Ya tienes una plantilla con ese nombre"
     },
     "worker_profile": {
       "back": "Volver a postulantes",
