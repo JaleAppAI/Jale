@@ -72,8 +72,15 @@ export function ListPageSkeleton({
 }
 
 /**
- * Detail archetype: panel header bar + 2-column label/value grid + an action
- * row. Mirrors the profile pages (`Field` in a `grid md:grid-cols-2 gap-4`).
+ * Detail archetype: panel header bar + a stacked label/value list + an action
+ * row.
+ *
+ * Traces `KVList`, which is what every detail surface now renders: one row per
+ * field, label left and value right on a shared baseline, separated by dashed
+ * hairlines with none after the last. It deliberately does NOT trace the old
+ * two-column `Field` grid — that layout is retired, and a skeleton shaped like
+ * the previous design costs exactly the layout shift these archetypes exist to
+ * prevent.
  */
 export function DetailPageSkeleton({
     fields = 6,
@@ -93,15 +100,25 @@ export function DetailPageSkeleton({
                 </div>
 
                 <div className="p-6">
-                    <div className="grid md:grid-cols-2 gap-4">
+                    <dl className="w-full">
                         {Array.from({ length: fields }).map((_, i) => (
-                            <div key={i}>
-                                {/* label line (xs uppercase) then value line (sm) */}
-                                <Skeleton className="mb-2 h-2.5 w-20" />
-                                <SkeletonLine width="w-3/4" />
+                            <div
+                                key={i}
+                                className={[
+                                    'flex items-baseline justify-between gap-4 py-2.5',
+                                    i < fields - 1
+                                        ? 'border-b border-dashed border-[var(--jale-divider)]'
+                                        : '',
+                                ]
+                                    .filter(Boolean)
+                                    .join(' ')}
+                            >
+                                {/* label (xs uppercase, left) and value (sm, right) */}
+                                <Skeleton className="h-2.5 w-24" />
+                                <SkeletonLine width="w-32" />
                             </div>
                         ))}
-                    </div>
+                    </dl>
 
                     <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--jale-divider)] pt-4">
                         <Skeleton className="h-11 w-32 rounded-full" />
@@ -113,21 +130,37 @@ export function DetailPageSkeleton({
     );
 }
 
+/**
+ * A row of minimal KPI figures — the dashboard/applications metric band.
+ *
+ * Exported because a route `loading.tsx` cannot import from a `'use client'`
+ * page module, so without it every surface with a metric band hand-traces the
+ * same geometry twice (once in the page, once in its route skeleton). Three
+ * copies of one tracing drift the first time `MetricCard`'s type scale moves.
+ */
+export function MetricRowSkeleton({ count = 4 }: { count?: number }) {
+    return (
+        <section
+            className="grid gap-3"
+            style={{ gridTemplateColumns: `repeat(${count}, minmax(0, 1fr))` }}
+        >
+            {Array.from({ length: count }).map((_, i) => (
+                <div key={i} className="min-w-0 py-1">
+                    <Skeleton className="h-8 w-16" />
+                    <Skeleton className="mt-2 h-2.5 w-24" />
+                </div>
+            ))}
+        </section>
+    );
+}
+
 /** Dashboard archetype: a 4-up metric row over two content panels. */
 export function DashboardSkeleton() {
     return (
         <SkeletonRegion>
-            {/* Traces the minimal MetricCard: a bare figure over its label, with
-                no box to hold. Keeping the old bordered-tile geometry here would
-                shift the layout the moment real metrics render. */}
-            <section className="mb-5 grid gap-3 md:grid-cols-4">
-                {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="min-w-0 py-1">
-                        <Skeleton className="h-8 w-16" />
-                        <Skeleton className="mt-2 h-2.5 w-24" />
-                    </div>
-                ))}
-            </section>
+            <div className="mb-5">
+                <MetricRowSkeleton count={4} />
+            </div>
 
             <div className="grid gap-4 lg:grid-cols-2">
                 {Array.from({ length: 2 }).map((_, panel) => (
