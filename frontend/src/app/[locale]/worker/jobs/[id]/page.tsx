@@ -21,7 +21,7 @@ import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
 import { apiFetch, isLegalWallError } from '@/lib/api';
-import { ApiError, parseApiError, type ErrorKind } from '@/lib/api/errors';
+import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { formatStartDate } from '@/lib/date';
 import { normalizeMatchScore, scoreBandForScore } from '@/lib/match';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
@@ -218,6 +218,15 @@ export default function WorkerJobDetailPage() {
     }
     if (applyErr.status && applyErr.status >= 500) {
       showApplyError(t('errors.server_error'));
+      return;
+    }
+    // A dead connection is not a profile problem. Without this, both fall
+    // through to `apply_failed` ("check your profile and documents"), which
+    // sends the worker off to fix something that is not broken. The shared
+    // connectivity copy already says the right thing in both locales.
+    const { kind } = classifyError(err);
+    if (kind === 'offline' || kind === 'timeout') {
+      showApplyError(tCommon(`errors.${kind}`));
       return;
     }
     showApplyError(t('errors.apply_failed'));
