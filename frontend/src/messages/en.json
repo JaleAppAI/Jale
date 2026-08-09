@@ -820,6 +820,7 @@
     "title": "My Applications",
     "applied": "Applied",
     "empty": "You haven't applied to any jobs yet.",
+    "empty_body": "Jobs you apply to show up here, with where each one stands.",
     "empty_cta": "Browse jobs",
     "status": {
       "pending": "Applied",
@@ -848,7 +849,16 @@
       "contract": "Contract"
     },
     "openings_count": "{open}/{total} open",
-    "empty": "No active jobs right now.",
+    "empty": {
+      "title": "No jobs posted right now",
+      "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first."
+    },
+    "empty_filtered": {
+      "title": "No jobs match this search",
+      "body": "Try a shorter search term or a different job type."
+    },
+    "no_city_jobs": "Nothing in your cities right now.",
+    "required_docs_label": "Documents needed",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
     "doc_labels": {
       "resume": "Resume",

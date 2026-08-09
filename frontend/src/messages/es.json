@@ -819,7 +819,8 @@
   "worker_applications": {
     "title": "Mis aplicaciones",
     "applied": "Aplicado",
-    "empty": "Aún no has postulado a ningún trabajo.",
+    "empty": "Aún no ha postulado a ningún trabajo.",
+    "empty_body": "Los trabajos a los que postule aparecen aquí, con el estado de cada uno.",
     "empty_cta": "Buscar trabajos",
     "status": {
       "pending": "Aplicado",
@@ -840,7 +841,7 @@
     "cities_all": "Todas las ciudades",
     "cities_edit": "Editar ciudades",
     "cities_done": "Listo",
-    "other_jobs_header": "Otros trabajos fuera de tus ciudades",
+    "other_jobs_header": "Otros trabajos fuera de sus ciudades",
     "filter": {
       "all": "Todos",
       "full_time": "Tiempo completo",
@@ -848,7 +849,16 @@
       "contract": "Contrato"
     },
     "openings_count": "{open}/{total} disponibles",
-    "empty": "No hay trabajos activos en este momento.",
+    "empty": {
+      "title": "No hay trabajos publicados ahora",
+      "body": "Los empleadores publican trabajos nuevos cada semana. Vuelva pronto, o mantenga su perfil y sus ciudades al día para que los mejores le lleguen primero."
+    },
+    "empty_filtered": {
+      "title": "Ningún trabajo coincide con esta búsqueda",
+      "body": "Pruebe con una palabra más corta o con otro tipo de trabajo."
+    },
+    "no_city_jobs": "Nada en sus ciudades en este momento.",
+    "required_docs_label": "Documentos necesarios",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
     "doc_labels": {
       "resume": "Currículum",
