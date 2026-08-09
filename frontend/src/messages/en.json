@@ -862,9 +862,11 @@
     "required_experience": "Experience",
     "work_authorization_required": "Work authorization required",
     "work_authorization_required_yes": "Required",
+    "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
     "upload_link": "Go to profile",
     "apply": "Apply",
+    "apply_success": "Application sent. The employer can see it now.",
     "already_applied": "Already applied",
     "errors": {
       "missing_docs": "Missing documents: {docs}",
@@ -876,6 +878,14 @@
       "already_applied": "You already applied to this job.",
       "server_error": "We could not submit this application right now. Please try again in a few minutes.",
       "apply_failed": "We could not submit this application. Please check your profile and documents, then try again."
+    },
+    "not_found": {
+      "title": "Job not found",
+      "body": "This job link isn't valid, or the posting was taken down. The open jobs are still there."
+    },
+    "closed": {
+      "title": "This job is closed",
+      "body": "The employer stopped accepting applications for this posting. Other jobs are still open."
     },
     "page_title": "Job details",
     "doc_ok": "Uploaded",
