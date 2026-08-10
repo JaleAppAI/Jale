@@ -298,41 +298,41 @@
       "show_password": "Mostrar contraseña",
       "hide_password": "Ocultar contraseña",
       "sign_in": "Iniciar sesión",
-      "hero": "Contrata trabajadores calificados rápido.",
+      "hero": "Contrate trabajadores calificados rápido.",
       "signup_title": "Bienvenido a Jale",
-      "signup_subtitle": "Verifiquemos tu correo para que puedas empezar a contratar.",
+      "signup_subtitle": "Verifiquemos su correo para que pueda empezar a contratar.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
-      "signup_prompt": "Nuevo aqui?",
-      "signup_link": "Crea una cuenta",
-      "signin_prompt": "Ya tienes cuenta?",
-      "signin_link": "Iniciar sesion",
+      "signup_prompt": "¿Nuevo aquí?",
+      "signup_link": "Cree una cuenta",
+      "signin_prompt": "¿Ya tiene cuenta?",
+      "signin_link": "Iniciar sesión",
       "back": "Volver",
-      "password_note": "La contrasena debe tener al menos 8 caracteres e incluir mayusculas, minusculas, un numero y un simbolo.",
+      "password_note": "La contraseña debe tener al menos 8 caracteres e incluir mayúsculas, minúsculas, un número y un símbolo.",
       "panel_title": "Hecho para la contratación por hora.",
-      "panel_body": "Encuentra trabajadores confiables en construcción, hospitalidad, jardinería, almacenes, manufactura y más.",
-      "forgot_link": "¿Olvidaste tu contraseña?",
+      "panel_body": "Encuentre trabajadores confiables en construcción, hospitalidad, jardinería, almacenes, manufactura y más.",
+      "forgot_link": "¿Olvidó su contraseña?",
       "forgot_title": "Restablecer contraseña",
-      "forgot_subtitle": "Ingresa tu correo y te enviaremos un código.",
+      "forgot_subtitle": "Ingrese su correo y le enviaremos un código.",
       "send_code": "Enviar código",
       "forgot_confirm_title": "Crear nueva contraseña",
-      "forgot_confirm_subtitle": "Ingresa el código que enviamos a {email}",
+      "forgot_confirm_subtitle": "Ingrese el código que enviamos a {email}",
       "set_password": "Establecer nueva contraseña",
-      "reset_success": "Contraseña actualizada — inicia sesión abajo.",
+      "reset_success": "Contraseña actualizada — inicie sesión abajo.",
       "fields": {
         "company_name": "Nombre de la empresa",
         "contact_name": "Nombre de contacto",
         "email": "Correo de trabajo",
-        "password": "Contrasena",
-        "password_confirm": "Confirmar contrasena",
-        "phone": "Telefono",
+        "password": "Contraseña",
+        "password_confirm": "Confirmar contraseña",
+        "phone": "Teléfono",
         "city": "Ciudad",
-        "service_area": "Area de servicio",
+        "service_area": "Área de servicio",
         "hiring_trades": "Oficios que contrata",
         "typical_job_types": "Tipos de empleo",
-        "company_size": "Tamano de empresa",
-        "company_description": "Descripcion de la empresa",
-        "confirmation_code": "Codigo de confirmacion",
+        "company_size": "Tamaño de empresa",
+        "company_description": "Descripción de la empresa",
+        "confirmation_code": "Código de confirmación",
         "reset_code": "Código de restablecimiento",
         "new_password": "Nueva contraseña"
       },
@@ -350,25 +350,25 @@
         "contract": "Contrato"
       },
       "errors": {
-        "password_mismatch": "Las contrasenas no coinciden.",
-        "account_exists": "Ya existe una cuenta con este correo. Inicia sesion o usa otro correo.",
+        "password_mismatch": "Las contraseñas no coinciden.",
+        "account_exists": "Ya existe una cuenta con este correo. Inicie sesión o use otro correo.",
         "account_not_found": "No encontramos una cuenta con ese correo.",
-        "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
-        "invalid_email": "Ingresa un correo de trabajo valido.",
-        "password_requirements": "Usa una contrasena mas segura con mayuscula, minuscula, numero y simbolo.",
-        "invalid_code": "Ese codigo de confirmacion no es correcto.",
-        "expired_code": "Ese codigo de confirmacion expiro. Pide uno nuevo e intenta de nuevo.",
-        "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
-        "invalid_credentials": "El correo o la contrasena no son correctos.",
-        "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
-        "signup_failed": "No pudimos crear la cuenta. Revisa los campos e intenta de nuevo.",
+        "invalid_phone": "Ingrese un teléfono válido, incluyendo el código de área.",
+        "invalid_email": "Ingrese un correo de trabajo válido.",
+        "password_requirements": "Use una contraseña más segura con mayúscula, minúscula, número y símbolo.",
+        "invalid_code": "Ese código de confirmación no es correcto.",
+        "expired_code": "Ese código de confirmación expiró. Pida uno nuevo e intente de nuevo.",
+        "too_many_attempts": "Demasiados intentos. Espere unos minutos e intente de nuevo.",
+        "invalid_credentials": "El correo o la contraseña no son correctos.",
+        "invalid_signup": "Revise los datos de la cuenta e intente de nuevo.",
+        "signup_failed": "No pudimos crear la cuenta. Revise los campos e intente de nuevo.",
         "required": "Este campo es obligatorio.",
-        "missing_summary": "Por favor agrega: {fields}"
+        "missing_summary": "Por favor agregue: {fields}"
       },
       "panel_bullet_1": "Fuerza laboral bilingüe",
       "panel_bullet_2": "Perfiles de trabajadores verificados",
       "panel_bullet_3": "Fotos de trabajos anteriores",
-      "panel_bullet_4": "Mensajea a los candidatos directamente",
+      "panel_bullet_4": "Mensajee a los candidatos directamente",
       "panel_bullet_5": "Gratis para empezar"
     },
     "shell": {
@@ -422,7 +422,7 @@
       "cancel": "Cancelar",
       "errors": {
         "required": "Obligatorio.",
-        "missing_summary": "Por favor agrega: {fields}"
+        "missing_summary": "Por favor agregue: {fields}"
       }
     }
   },
@@ -463,7 +463,7 @@
     "starting": "Iniciando...",
     "message_start_failed": "No se pudo iniciar la conversacion.",
     "worker_whatsapp_unavailable": "Este trabajador todavia no tiene numero de WhatsApp.",
-    "default_initial_message": "Hola, te escribo sobre tu aplicacion de {jobTitle}. Responde aqui cuando estes disponible.",
+    "default_initial_message": "Hola, te escribo sobre tu aplicación de {jobTitle}. Responde aquí cuando estés disponible.",
     "tab_active": "Activas",
     "tab_closed": "Cerradas",
     "all_jobs": "Todos los empleos",
@@ -956,7 +956,7 @@
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta de seguro social / ITIN",
     "apply_button": "Postularse por WhatsApp",
-    "apply_web": "Postularme en el sitio web",
+    "apply_web": "Postularse en el sitio web",
     "apply_loading": "Abriendo WhatsApp...",
     "apply_error": "Algo salio mal. Intenta de nuevo.",
     "apply_hint": "Terminaras tu postulacion en WhatsApp - no necesitas descargar ninguna app.",
@@ -1172,14 +1172,14 @@
   "billing": {
     "title": "Facturación",
     "back_to_dashboard": "Volver al panel",
-    "expired_session": "Tu sesión ha expirado. Por favor inicia sesión de nuevo.",
+    "expired_session": "Su sesión ha expirado. Por favor inicie sesión de nuevo.",
     "current_plan": {
       "label": "Plan actual",
       "price": "{price} / {interval}",
       "price_label": "Precio",
       "renews_on": "Se renueva el",
       "ends_on": "Termina el",
-      "grace_period": "Tu último pago falló. Actualiza tu método de pago antes del {date} para no perder el acceso."
+      "grace_period": "Su último pago falló. Actualice su método de pago antes del {date} para no perder el acceso."
     },
     "plan_name": {
       "employer_free": "Gratis",
@@ -1210,27 +1210,27 @@
       "manage_loading": "Abriendo el portal de facturación..."
     },
     "action_error": {
-      "expired_session": "Tu sesión ha expirado. Inicia sesión de nuevo para continuar.",
+      "expired_session": "Su sesión ha expirado. Inicie sesión de nuevo para continuar.",
       "provider_unavailable": "Nuestro proveedor de pagos no está disponible temporalmente.",
-      "provider_error": "No pudimos completar esa solicitud. Inténtalo de nuevo.",
-      "generic": "Algo salió mal. Inténtalo de nuevo.",
-      "retry_safe": "Es seguro intentarlo de nuevo — no se te cobrará dos veces.",
+      "provider_error": "No pudimos completar esa solicitud. Inténtelo de nuevo.",
+      "generic": "Algo salió mal. Inténtelo de nuevo.",
+      "retry_safe": "Es seguro intentarlo de nuevo — no se le cobrará dos veces.",
       "sign_in_again": "Iniciar sesión de nuevo"
     },
     "return_state": {
-      "success": "¡Gracias! Estamos confirmando tu suscripción — esta página se actualizará automáticamente cuando esté activa.",
-      "cancel": "Se canceló el pago. No se hicieron cambios a tu plan."
+      "success": "¡Gracias! Estamos confirmando su suscripción — esta página se actualizará automáticamente cuando esté activa.",
+      "cancel": "Se canceló el pago. No se hicieron cambios a su plan."
     },
     "upgrade_panel": {
-      "title": "Obtén más publicaciones de empleo activas",
-      "body": "Mejora al plan Pro para publicar más empleos al mismo tiempo y hacer crecer tu contratación."
+      "title": "Obtenga más publicaciones de empleo activas",
+      "body": "Mejore al plan Pro para publicar más empleos al mismo tiempo y hacer crecer su contratación."
     },
     "empty": {
       "title": "Información de facturación no disponible",
-      "body": "No pudimos cargar los detalles de tu facturación en este momento."
+      "body": "No pudimos cargar los detalles de su facturación en este momento."
     },
     "limit_reached": {
-      "modal_message": "Has alcanzado el límite de tu plan de {limit} publicación(es) de empleo activa(s). Mejora tu plan para publicar más.",
+      "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",
       "cta": "Mejorar plan"
     }
   },
