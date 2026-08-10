@@ -6,7 +6,6 @@ import { useLocale, useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
-import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { apiFetch } from '@/lib/api';
 import { getEmployerProfile } from '@/lib/api/employer';
@@ -148,18 +147,12 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                                     {tHeader('language_toggle')}
                                 </Link>
                                 <ThemeToggle />
-                                <Link
-                                    href={role === 'worker' ? '/worker/profile' : '/employer/profile'}
-                                    aria-label={tHeader('profile')}
-                                    className="inline-flex rounded-xl focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                                >
-                                    <InitialsAvatar
-                                        name={chip.status === 'loaded' ? (chip.name ?? '') : ''}
-                                        fallback={role === 'employer' ? 'E' : 'W'}
-                                        size={40}
-                                        square
-                                    />
-                                </Link>
+                                {/* No profile avatar here. It was a second,
+                                    redundant route to the same page the sidebar
+                                    chip and the Settings/Profile tab already
+                                    reach, and pre-fetch it rendered a bare role
+                                    letter -- a control whose only content was a
+                                    guess. Profile lives in the nav. */}
                                 <Button
                                     variant="outline"
                                     size="sm"
@@ -174,13 +167,14 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                         </div>
                     </header>
 
-                    {/* Bottom padding on mobile reserves room for the worker tab bar
-                        (5rem bar + safe-area inset on notched devices). */}
-                    <div className={role === 'worker' ? 'pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0' : undefined}>{children}</div>
+                    {/* Bottom padding on mobile reserves room for the tab bar
+                        (5rem bar + safe-area inset on notched devices). Both
+                        roles now have one, so both roles reserve the room. */}
+                    <div className="pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</div>
                 </section>
             </div>
 
-            {role === 'worker' ? <BottomTabBar /> : null}
+            <BottomTabBar role={role} />
         </div>
     );
 }

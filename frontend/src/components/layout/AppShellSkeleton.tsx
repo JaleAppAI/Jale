@@ -68,7 +68,7 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                 </section>
             </div>
 
-            {role === 'worker' ? <BottomTabBar /> : null}
+            {role === 'worker' ? <BottomTabBar role={role} /> : null}
         </div>
     );
 }
