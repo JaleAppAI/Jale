@@ -47,6 +47,15 @@
     "theme": {
       "toggle_to_dark": "Switch to dark theme",
       "toggle_to_light": "Switch to light theme"
+    },
+    "trades": {
+      "electrician": "Electrician",
+      "plumber": "Plumber",
+      "carpenter": "Carpenter",
+      "concrete": "Concrete",
+      "painting": "Painting",
+      "other": "Other",
+      "unspecified": "Trade not specified"
     }
   },
   "match": {
@@ -772,7 +781,6 @@
     "fallback_location": "Location unavailable",
     "fallback_experience": "Experience unavailable",
     "fallback_availability": "Availability unavailable",
-    "fallback_trade": "Trade not specified",
     "fallback_skills": "No skills listed",
     "fallback_applied": "Date unavailable",
     "availability": {
@@ -783,14 +791,6 @@
       "part_time": "Part-time",
       "weekends": "Weekends",
       "flexible": "Flexible"
-    },
-    "trades": {
-      "electrician": "Electrician",
-      "plumber": "Plumber",
-      "carpenter": "Carpenter",
-      "concrete": "Concrete",
-      "painting": "Painting",
-      "other": "Other"
     },
     "invalid_link": {
       "title": "Incomplete link",

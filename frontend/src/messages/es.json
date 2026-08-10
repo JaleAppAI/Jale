@@ -47,6 +47,15 @@
     "theme": {
       "toggle_to_dark": "Cambiar a tema oscuro",
       "toggle_to_light": "Cambiar a tema claro"
+    },
+    "trades": {
+      "electrician": "Electricista",
+      "plumber": "Plomero",
+      "carpenter": "Carpintero",
+      "concrete": "Concreto",
+      "painting": "Pintura",
+      "other": "Otro",
+      "unspecified": "Oficio no especificado"
     }
   },
   "match": {
@@ -772,7 +781,6 @@
     "fallback_location": "Ubicación no disponible",
     "fallback_experience": "Experiencia no disponible",
     "fallback_availability": "Disponibilidad no disponible",
-    "fallback_trade": "Oficio no especificado",
     "fallback_skills": "No hay habilidades registradas",
     "fallback_applied": "Fecha no disponible",
     "availability": {
@@ -783,14 +791,6 @@
       "part_time": "Medio tiempo",
       "weekends": "Fines de semana",
       "flexible": "Flexible"
-    },
-    "trades": {
-      "electrician": "Electricista",
-      "plumber": "Plomero",
-      "carpenter": "Carpintero",
-      "concrete": "Concreto",
-      "painting": "Pintura",
-      "other": "Otro"
     },
     "invalid_link": {
       "title": "Enlace incompleto",

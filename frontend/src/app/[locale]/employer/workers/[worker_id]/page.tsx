@@ -31,6 +31,7 @@ import {
     type WorkerProfile,
 } from '@/lib/api/employer';
 import { normalizeApplicationStatus } from '@/lib/status';
+import { tradeLabel } from '@/lib/trades';
 
 export const dynamic = 'force-dynamic';
 
@@ -235,22 +236,13 @@ export default function WorkerProfilePage() {
         return value;
     };
 
-    const tradeLabel = (
-        trade: WorkerProfile['main_trade'],
-        tradeOther: WorkerProfile['main_trade_other'],
-    ) => {
-        if (!trade) return t('fallback_trade');
-        if (trade === 'other') return tradeOther || t('trades.other');
-        const knownTrades = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting'];
-        if (knownTrades.includes(trade)) return t(`trades.${trade}`);
-        return trade;
-    };
-
     const displayName = profile?.full_name?.trim() || t('fallback_name');
     const skills = profile?.skills ?? [];
     const appliedAt = profile?.applied_at ? profile.applied_at.slice(0, 10) : t('fallback_applied');
     const yearsExperience = profile?.years_experience ?? null;
-    const shellSubtitle = profile ? tradeLabel(profile.main_trade, profile.main_trade_other) : undefined;
+    const shellSubtitle = profile
+        ? tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)
+        : undefined;
 
     const fields: KVItem[] = profile
         ? [
@@ -273,7 +265,7 @@ export default function WorkerProfilePage() {
               { label: t('availability_label'), value: availabilityLabel(profile.availability) },
               {
                   label: t('trade'),
-                  value: tradeLabel(profile.main_trade, profile.main_trade_other),
+                  value: tradeLabel(tCommon, profile.main_trade, profile.main_trade_other),
               },
               // The row is omitted rather than blanked when the worker never
               // answered: an empty value reads as "no transportation".
