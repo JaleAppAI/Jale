@@ -54,21 +54,23 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                                     nav above: the theme switch needs no data and is usable
                                     the instant the shell paints. */}
                                 <ThemeToggle />
-                                {/* Matches `InitialsAvatar size={40} square`: 40px,
-                                    12px radius, blue-50 tint — minus the letters. */}
-                                <div className="h-10 w-10 rounded-xl bg-[var(--jale-blue-50)]" />
+                                {/* Two placeholders, not three: AppShell's header
+                                    row is language toggle / theme / sign out. The
+                                    profile avatar that used to sit between the last
+                                    two is gone from both files. */}
                                 <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
                             </div>
                         </div>
                     </header>
 
-                    {/* Bottom padding on mobile reserves room for the worker tab bar
-                        (5rem bar + safe-area inset on notched devices). */}
-                    <div className={role === 'worker' ? 'pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0' : undefined}>{children}</div>
+                    {/* Bottom padding on mobile reserves room for the tab bar
+                        (5rem bar + safe-area inset on notched devices). Both
+                        roles now have one, so both roles reserve the room. */}
+                    <div className="pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</div>
                 </section>
             </div>
 
-            {role === 'worker' ? <BottomTabBar role={role} /> : null}
+            <BottomTabBar role={role} />
         </div>
     );
 }
