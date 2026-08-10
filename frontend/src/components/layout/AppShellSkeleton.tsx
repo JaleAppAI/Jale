@@ -1,0 +1,76 @@
+'use client';
+
+import type { ReactNode } from 'react';
+import { SkeletonLine } from '@/components/ui/skeleton';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
+import { Sidebar, type SidebarChip } from './Sidebar';
+import { BottomTabBar } from './BottomTabBar';
+import type { ShellRole } from './nav-config';
+
+type AppShellSkeletonProps = {
+    role: ShellRole;
+    children: ReactNode;
+};
+
+/**
+ * Loading twin of `AppShell`.
+ *
+ * The nav chrome here is the REAL `Sidebar` / `BottomTabBar` — not skeletons of
+ * them. Navigation is static, known before any fetch resolves, and immediately
+ * usable, so greying it out would be a lie that also costs a layout shift when
+ * the real shell mounts. Only the header title (which genuinely depends on the
+ * page) is a skeleton line.
+ *
+ * The chip is `loading` here by definition: this component renders before any
+ * profile request has been made, which is exactly the state `AppShell` starts
+ * in, so mounting the real shell over this one changes nothing in the sidebar.
+ *
+ * Every wrapper class is copied from `AppShell` verbatim. If AppShell's frame
+ * changes, this must change with it or the swap will jump.
+ */
+export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
+    const homeHref = role === 'worker' ? '/worker/home' : '/employer/dashboard';
+
+    // Mirrors AppShell's initial chip state.
+    const chip: SidebarChip = { status: 'loading' };
+
+    return (
+        <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
+            <div className="grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
+                <Sidebar role={role} homeHref={homeHref} chip={chip} />
+
+                <section className="min-w-0">
+                    <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
+                        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                            <div className="min-w-0">
+                                {/* Occupies the h1 (text-2xl / md:text-3xl) line box. */}
+                                <div className="flex h-8 items-center md:h-9">
+                                    <SkeletonLine width="w-56" className="h-5" />
+                                </div>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
+                                {/* Real control, not a placeholder — same reasoning as the
+                                    nav above: the theme switch needs no data and is usable
+                                    the instant the shell paints. */}
+                                <ThemeToggle />
+                                {/* Two placeholders, not three: AppShell's header
+                                    row is language toggle / theme / sign out. The
+                                    profile avatar that used to sit between the last
+                                    two is gone from both files. */}
+                                <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Bottom padding on mobile reserves room for the tab bar
+                        (5rem bar + safe-area inset on notched devices). Both
+                        roles now have one, so both roles reserve the room. */}
+                    <div className="pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</div>
+                </section>
+            </div>
+
+            <BottomTabBar role={role} />
+        </div>
+    );
+}

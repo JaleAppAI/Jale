@@ -12,9 +12,11 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  experimental: {
-    optimizePackageImports: ['@hugeicons/react'],
-  },
+  // `experimental.optimizePackageImports` used to list '@hugeicons/react'. That
+  // package (and '@hugeicons/core-free-icons', and 'tw-animate-css') is no
+  // longer imported anywhere in src/, so the entry optimized nothing and the
+  // dependencies were dropped. The icon set in use is `lucide-react`, which
+  // Next.js already optimizes by default.
 };
 
 export default withNextIntl(nextConfig);

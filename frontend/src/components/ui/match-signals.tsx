@@ -1,52 +1,45 @@
 import type { ScoreBand } from '@/lib/match';
+import { Badge, scoreBandBadgeTone } from './badge';
 
-const BAND_STYLES: Record<ScoreBand, { background: string; color: string }> = {
-  strong: { background: 'var(--jale-success-bg)', color: '#1f7a44' },
-  good: { background: 'var(--jale-blue-50)', color: 'var(--jale-blue-700)' },
-  fair: { background: 'var(--jale-warning-bg)', color: '#8a4400' },
-};
+/**
+ * Match signals rendered in the one badge language the app has: a coloured dot
+ * plus muted text. Both components keep their previous props exactly, so every
+ * call site (WorkerJobCard, employer job detail) is untouched — only the paint
+ * changed, from filled pills to dot + text.
+ */
 
 export function MatchScoreBadge({
-  score,
-  band,
-  label,
+    score,
+    band,
+    label,
 }: {
-  score: number;
-  band: ScoreBand;
-  label: string;
+    score: number;
+    band: ScoreBand;
+    label: string;
 }) {
-  const style = BAND_STYLES[band];
-
-  return (
-    <span
-      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap"
-      style={{ background: style.background, color: style.color }}
-    >
-      {label} {score}%
-    </span>
-  );
+    return (
+        <Badge tone={scoreBandBadgeTone(band)} className="whitespace-nowrap">
+            {label} {score}%
+        </Badge>
+    );
 }
 
 export function MatchReasonChips({ reasons }: { reasons: string[] }) {
-  if (reasons.length === 0) return null;
+    if (reasons.length === 0) return null;
 
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {reasons.map((reason) => (
-        <span
-          key={reason}
-          className="pill pill-info max-w-full"
-          title={reason}
-          style={{
-            fontSize: 10,
-            letterSpacing: '.04em',
-            textTransform: 'none',
-            overflowWrap: 'anywhere',
-          }}
-        >
-          {reason}
-        </span>
-      ))}
-    </div>
-  );
+    return (
+        // Wider horizontal gap than the old pills needed: without backgrounds,
+        // whitespace is the only thing separating one reason from the next.
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {reasons.map((reason) => (
+                <Badge key={reason} tone="info" className="max-w-full">
+                    {/* Callers pass pre-truncated text; `title` keeps the full
+                        reason reachable on hover. */}
+                    <span title={reason} className="[overflow-wrap:anywhere]">
+                        {reason}
+                    </span>
+                </Badge>
+            ))}
+        </div>
+    );
 }

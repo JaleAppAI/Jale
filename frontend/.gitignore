@@ -37,3 +37,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# location dataset source (not redistributed; generated JSON is bundled instead)
+scripts/uszips.csv

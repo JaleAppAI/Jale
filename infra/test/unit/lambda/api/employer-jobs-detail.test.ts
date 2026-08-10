@@ -50,7 +50,6 @@ describe('employer-jobs-detail', () => {
       id: JOB_ID,
       title: 'Forklift Driver',
       location: 'Houston',
-      city: 'Houston',
       state_region: 'TX',
       job_type: 'full-time',
       status: 'active',
@@ -58,6 +57,11 @@ describe('employer-jobs-detail', () => {
       required_docs: ['driver_license'],
       created_at: '2026-04-20T00:00:00Z',
       applicant_count: 2,
+      city_key: 'houston-tx',
+      city: 'Houston',
+      state: 'TX',
+      latitude: 29.76,
+      longitude: -95.37,
     };
     mockQuery.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id, title, location')) return Promise.resolve({ rows: [row] });
@@ -71,6 +75,45 @@ describe('employer-jobs-detail', () => {
     expect(JSON.parse(res.body).city).toBe('Houston');
     expect(JSON.parse(res.body).state_region).toBe('TX');
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'employer-sub-1');
+  });
+
+  it('selects the city triple and coordinates so jobToForm prefill has them', async () => {
+    const row = {
+      id: JOB_ID,
+      title: 'Forklift Driver',
+      location: 'Houston',
+      job_type: 'full-time',
+      status: 'active',
+      description: null,
+      required_docs: [],
+      created_at: '2026-04-20T00:00:00Z',
+      applicant_count: 0,
+      city_key: 'houston-tx',
+      city: 'Houston',
+      state: 'TX',
+      latitude: 29.76,
+      longitude: -95.37,
+    };
+    let capturedSql = '';
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, title, location')) {
+        capturedSql = sql;
+        return Promise.resolve({ rows: [row] });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(baseEvent);
+    const body = JSON.parse(res.body);
+
+    expect(capturedSql).toMatch(/city_key,\s*city,\s*state,\s*latitude::float8 AS latitude,\s*longitude::float8 AS longitude/);
+    expect(body).toMatchObject({
+      city_key: 'houston-tx',
+      city: 'Houston',
+      state: 'TX',
+      latitude: 29.76,
+      longitude: -95.37,
+    });
   });
 
   it('selects city and state_region in the job lookup query', async () => {

@@ -1,516 +1,1012 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
-import { useRouter } from '@/i18n/navigation';
-import { LegalWallError } from '@/lib/api';
-import { Link } from '@/i18n/navigation';
+import { usePageData } from '@/hooks/usePageData';
+import { useStaggerOnce } from '@/hooks/useStaggerOnce';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { Link, useRouter } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
-import { Card } from '@/components/ui/card';
+import { AppShellSkeleton } from '@/components/layout/AppShellSkeleton';
+import { ApplicationStatusBadge, Badge, JobStatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
-import { PanelHeader } from '@/components/ui/panel-header';
-import { MetricCard } from '@/components/ui/metric-card';
+import { EmptyState } from '@/components/ui/empty-state';
+import { ErrorState } from '@/components/ui/error-state';
+import { InitialsAvatar } from '@/components/ui/initials-avatar';
+import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedback';
+import { KVList, type KVItem } from '@/components/ui/kv-list';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
-import { ApplicantFilterPanel } from '@/components/employer/ApplicantFilterPanel';
+import { MetricCard } from '@/components/ui/metric-card';
+import { DetailPageSkeleton, ListPageSkeleton, MetricRowSkeleton } from '@/components/ui/page-skeletons';
+import { PanelHeader } from '@/components/ui/panel-header';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Spinner } from '@/components/ui/spinner';
+import {
+    ApplicantFilterPanel,
+    EMPTY_APPLICANT_FILTERS,
+    hasActiveApplicantFilters,
+} from '@/components/employer/ApplicantFilterPanel';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { EditJobModal } from '@/components/employer/EditJobModal';
-import { ApiError, deleteJob, getJob, getJobApplicants, getJobCandidates, startConversation, updateJobStatus } from '@/lib/api/employer';
-import type { EmployerJobDetail, Applicant, ApplicantFilters } from '@/lib/api/employer';
+import { PublicListingCard } from '@/components/employer/PublicListingCard';
+import {
+    ApiError,
+    deleteJob,
+    getJob,
+    getJobApplicants,
+    getJobCandidates,
+    startConversation,
+    updateJobStatus,
+} from '@/lib/api/employer';
+import type { Applicant, ApplicantFilters, EmployerJobDetail } from '@/lib/api/employer';
+import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
-import { applicationStatusTone, jobStatusTone } from '@/lib/status';
 import type { WritableJobStatus } from '@/lib/status';
-import { formatStartDate } from '@/lib/date';
-import { PublicListingCard } from '@/components/employer/PublicListingCard';
+import { formatLongDate, formatStartDate } from '@/lib/date';
 
 export const dynamic = 'force-dynamic';
 
+/** `jobs.id` is a UUID column; anything else can only be a broken link. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const DASHBOARD_HREF = '/employer/dashboard';
+
+/** Quiet period after the last filter edit before the reload is sent. */
+const FILTER_DEBOUNCE_MS = 350;
+
 type ApplicantMatch = {
-  match_score: number;
-  score_band: ScoreBand;
-  match_reasons: string[];
+    match_score: number;
+    score_band: ScoreBand;
+    match_reasons: string[];
 };
 
+/**
+ * One load of this page: the posting and the applicant list that belongs to it.
+ *
+ * `appliedFilters` travels WITH the data rather than living beside it, because
+ * the two must never disagree. The filtered-empty state is decided by "what
+ * produced the rows currently on screen", and a separate state variable would
+ * drift from that the moment a filtered reload was in flight or failed.
+ */
+type JobPageData = {
+    job: EmployerJobDetail;
+    applicants: Applicant[];
+    appliedFilters: ApplicantFilters;
+};
+
+/**
+ * Candidate ranking is a SEPARATE, slower concern from the page's own load.
+ *
+ * The old page folded a ranking failure into an empty match map, so "nobody
+ * scored well" and "the ranking service is down" looked identical -- the
+ * employer had no way to tell that the column of missing scores was a fault.
+ * Modelling it explicitly is what lets the panel say which one happened and
+ * offer a retry for the one that is retryable.
+ */
+type RankingState =
+    | { status: 'loading' }
+    | { status: 'ready'; matches: Map<string, ApplicantMatch> }
+    | { status: 'failed'; kind: ErrorKind };
+
+const NO_MATCHES: Map<string, ApplicantMatch> = new Map();
+
 export default function JobDetailPage() {
-  const { id } = useParams<{ id: string; locale: string }>();
-  const router = useRouter();
-  const { idToken } = useAuth();
-  const { handleLegalWall } = useRequireAuth();
-  const t = useTranslations('employer_dashboard');
-  const tCommon = useTranslations('common');
-  const tMatch = useTranslations('match');
-  const locale = useLocale();
+    const params = useParams<{ id: string; locale: string }>();
+    const jobId = (params?.id ?? '').trim();
+    const jobIdValid = UUID_RE.test(jobId);
 
-  const [job, setJob] = useState<EmployerJobDetail | null>(null);
-  const [applicants, setApplicants] = useState<Applicant[]>([]);
-  const [candidateMatches, setCandidateMatches] = useState<Map<string, ApplicantMatch>>(new Map());
-  const [total, setTotal] = useState(0);
-  const [filters, setFilters] = useState<ApplicantFilters>({});
-  const [loadingJob, setLoadingJob] = useState(true);
-  const [loadingApplicants, setLoadingApplicants] = useState(false);
-  const [togglingStatus, setTogglingStatus] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+    const router = useRouter();
+    const locale = useLocale();
+    const { idToken } = useAuth();
+    const { handleLegalWall } = useRequireAuth();
+    const errorMessage = useErrorMessage();
 
-  useEffect(() => {
-    if (!idToken || !id) return;
-    setLoadingJob(true);
-    getJob(idToken, id)
-      .then(setJob)
-      .catch((err) => {
-        try {
-          handleLegalWall(err, `/employer/jobs/${id}`);
-        } catch {
-          setError(tCommon('error'));
-        }
-      })
-      .finally(() => setLoadingJob(false));
-  }, [idToken, id]);
+    const t = useTranslations('employer_job_listing');
+    // Frozen shared vocabulary, read-only here: `applicants.status.*` must name a
+    // status exactly as every other employer surface does, `worker_profile.*`
+    // likewise for document and experience labels, and `modal.*` is the job-form
+    // vocabulary the edit modal writes against. `jobs.status.*` is the job-status
+    // wording shared with the dashboard's own cards.
+    const tShared = useTranslations('employer_dashboard');
+    const tMessages = useTranslations('employer_messages');
+    const tMatch = useTranslations('match');
+    const tCommon = useTranslations('common');
 
-  useEffect(() => {
-    if (!idToken || !id) return;
-    let active = true;
+    const returnUrl = `/employer/jobs/${jobId}`;
 
-    async function loadApplicantsAndMatches() {
-      setLoadingApplicants(true);
-      setCandidateMatches(new Map());
+    /*
+     * Filters are NOT a `deps` entry.
+     *
+     * A deps change makes usePageData dispatch RESET + LOAD_START, which drops
+     * `data` and drops the page back to a skeleton -- and if that one request
+     * fails, the employer's whole posting disappears because they touched a
+     * dropdown. Filters therefore drive a BACKGROUND `refresh()`, which the
+     * reducer structurally forbids from clearing data or moving the phase: a
+     * failed filter reload leaves the previous rows on screen with a footnote.
+     *
+     * The ref is what makes that safe. `refresh()` is stable and runs
+     * synchronously inside the change handler, BEFORE React re-renders, so the
+     * fetcher closure it invokes is still the previous render's. Reading the
+     * filters from a ref means the request always carries the filters the
+     * employer just chose, not the ones they had a moment ago.
+     */
+    const [filters, setFilters] = useState<ApplicantFilters>(EMPTY_APPLICANT_FILTERS);
+    const filtersRef = useRef<ApplicantFilters>(EMPTY_APPLICANT_FILTERS);
 
-      try {
-        const res = await getJobApplicants(idToken!, id, filters);
-        if (!active) return;
-        setApplicants(res.applicants);
-        setTotal(res.total);
-        setLoadingApplicants(false);
+    const { phase, data, errorKind, refreshing, refreshError, retry, refresh, setData } =
+        usePageData<JobPageData>({
+            // `signal` aborts on unmount and on a deps change, and both reads
+            // forward it, so an abandoned navigation cancels the requests
+            // instead of leaving them to finish unwatched. usePageData's
+            // request fencing still backstops a response that races the abort.
+            fetcher: async ({ token, signal }) => {
+                // A malformed id can only ever 404, and interpolating an
+                // arbitrary path segment into the request URL is worth avoiding.
+                // Throwing the same shape the backend would means the S5 branch
+                // below needs no special case for it.
+                if (!jobIdValid) throw new ApiError(404, 'job_not_found');
 
-        try {
-          const ranked = await getJobCandidates(idToken!, id, 100);
-          if (!active) return;
-          setCandidateMatches(buildCandidateMatchMap(ranked.candidates));
-        } catch (err) {
-          if (!active) return;
-          const status = (err as { status?: number }).status;
-          if (err instanceof LegalWallError || status === 401 || status === 403) {
-            try {
-              handleLegalWall(err, `/employer/jobs/${id}`);
-            } catch {
-              setError(tCommon('error'));
-            }
-          } else {
-            setCandidateMatches(new Map());
-          }
-        }
-      } catch (err) {
-        if (!active) return;
-        try {
-          handleLegalWall(err, `/employer/jobs/${id}`);
-        } catch {
-          setError(tCommon('error'));
-        }
-        setLoadingApplicants(false);
-      }
-    }
+                const appliedFilters = filtersRef.current;
+                const [job, page] = await Promise.all([
+                    getJob(token, jobId, signal),
+                    getJobApplicants(token, jobId, appliedFilters, signal),
+                ]);
+                return { job, applicants: page.applicants, appliedFilters };
+            },
+            legalReturnUrl: returnUrl,
+            // Identity only. The job this page is about is the one thing whose
+            // change genuinely invalidates everything on screen.
+            deps: [jobId, jobIdValid],
+        });
 
-    loadApplicantsAndMatches();
-    return () => { active = false; };
-  }, [idToken, id, filters]);
+    const job = data?.job ?? null;
+    const applicants = data?.applicants ?? [];
+    const appliedFilters = data?.appliedFilters ?? EMPTY_APPLICANT_FILTERS;
 
-  async function handleSetJobStatus(status: WritableJobStatus) {
-    if (!idToken || !job) return;
-    setTogglingStatus(true);
-    try {
-      const updated = await updateJobStatus(idToken, job.id, status);
-      setJob((current) => current ? { ...current, ...updated } : null);
-    } finally {
-      setTogglingStatus(false);
-    }
-  }
-
-  if (error) {
-    return (
-      <AppShell role="employer" title={t('jobs.posting_details')}>
-        <main className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4">
-          <p className="text-sm text-error">{error}</p>
-        </main>
-      </AppShell>
+    /*
+     * The control updates instantly; the REQUEST waits for a pause. Firing on
+     * every keystroke in the skills box would put one request per character on
+     * the wire, and `usePageData` aborts the previous refresh when a new one
+     * starts, so all but the last would be wasted anyway.
+     */
+    const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    useEffect(
+        () => () => {
+            if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+        },
+        [],
     );
-  }
 
-  const pendingCount = applicants.filter((a) => a.status === 'pending').length;
-  const hiredCount = applicants.filter((a) => a.status === 'hired').length;
-  const openCount = job ? job.open_count ?? Math.max(0, job.number_of_workers_needed - job.hired_count) : 0;
-  const docLabels: Record<string, string> = {
-    resume: t('worker_profile.doc_resume'),
-    driver_license: t('worker_profile.doc_driver_license'),
-    // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
-    ssn: t('worker_profile.doc_ssn'),
-  };
-  const jobTypeLabels: Record<string, string> = {
-    'full-time': t('modal.job_type_fulltime'),
-    'part-time': t('modal.job_type_parttime'),
-    contract: t('modal.job_type_contract'),
-  };
-  const jobStatus = job ? jobStatusTone(job.status) : null;
+    const applyFilters = useCallback(
+        (next: ApplicantFilters) => {
+            filtersRef.current = next;
+            setFilters(next);
+            if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+            refreshTimerRef.current = setTimeout(() => {
+                void refresh();
+            }, FILTER_DEBOUNCE_MS);
+        },
+        [refresh],
+    );
 
-  const jobActions = job ? (
-    <div className="flex flex-wrap items-center gap-2">
-      <span
-        className="rounded-full px-2 py-0.5 text-xs font-medium"
-        style={{ background: jobStatus?.bg, color: jobStatus?.color }}
-      >
-        {t(`jobs.status.${job.status}`)}
-      </span>
-      {job.status === 'active' && (
-        // Manual "Pause" action intentionally removed (kept backend/status support
-        // and the paused-state resume UI for billing-auto-paused jobs).
-        <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
-          {t('jobs.toggle.close')}
-        </Button>
-      )}
-      {job.status === 'paused' && (
-        <>
-          <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('active')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
-            {t('jobs.toggle.activate')}
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('closed')} disabled={togglingStatus}>
-            {t('jobs.toggle.close')}
-          </Button>
-        </>
-      )}
-      {job.status === 'closed' && (
-        <Button variant="outline" size="sm" onClick={() => handleSetJobStatus('active')} loading={togglingStatus} loadingLabel={tCommon('loading')}>
-          {t('jobs.toggle.activate')}
-        </Button>
-      )}
-      <Button variant="outline" size="sm" onClick={() => setEditOpen(true)} disabled={togglingStatus}>
-        {t('modal.edit_title')}
-      </Button>
-      <Button variant="error" size="sm" onClick={() => setConfirmDelete(true)} disabled={togglingStatus}>
-        {t('jobs.delete.button')}
-      </Button>
-    </div>
-  ) : undefined;
+    /*
+     * The panel column cascades once, when the posting first arrives.
+     *
+     * Keyed by `jobId` because that is the one change this page treats as a
+     * genuinely fresh load: it is `usePageData`'s only dep, so it drops the
+     * page back to a skeleton, and the next posting to paint has earned its own
+     * cascade. Everything else that redraws these panels -- a debounced filter
+     * reload, its `refreshError` footnote, a status change, the edit modal
+     * closing -- lands after the gate has closed and changes nothing.
+     */
+    const { staggerClass, onCascadeEnd } = useStaggerOnce(jobId);
 
-  return (
-    <>
-    <AppShell
-      role="employer"
-      title={job ? job.title : t('jobs.posting_details')}
-      subtitle={job ? job.location : undefined}
-    >
-    <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <Link href="/employer/dashboard" className="text-sm text-muted-foreground hover:text-foreground inline-block">
-          {t('jobs.back_to_dashboard')}
-        </Link>
-        {jobActions}
-      </div>
+    /* ===== Candidate ranking (secondary, slower) ========================== */
 
-      {loadingJob ? (
-        <p className="text-sm text-muted">{tCommon('loading')}</p>
-      ) : job ? (
-        <>
-          <Card className="p-6 mb-6">
-            <div className="flex flex-col gap-4">
-              <div className="grid gap-4 md:grid-cols-3">
-                <DetailField label={t('modal.job_title')} value={job.title} />
-                <DetailField label={t('modal.location')} value={job.location} />
-                <DetailField label={t('modal.job_type')} value={jobTypeLabels[job.job_type] ?? job.job_type} />
-                <DetailField label={t('modal.trade_category')} value={job.trade_category ? t(`modal.trade.${job.trade_category}`) : t('jobs.not_specified')} />
-                <DetailField label={t('jobs.pay_range')} value={job.pay ?? t('jobs.not_specified')} />
-                <DetailField label={t('modal.start_date')} value={formatStartDate(job.start_date, locale) ?? t('jobs.not_specified')} />
-                <DetailField label={t('modal.expected_duration')} value={job.expected_duration ?? t('jobs.not_specified')} />
-                <DetailField label={t('modal.shift_schedule')} value={job.shift_schedule ?? t('jobs.not_specified')} />
-                <DetailField label={t('modal.transportation_required')} value={job.transportation_required ? t('jobs.yes') : t('jobs.no')} />
-                <DetailField label={t('modal.work_authorization_required')} value={job.work_authorization_required ? t('jobs.yes') : t('jobs.no')} />
-                <DetailField label={t('modal.language_preference')} value={job.language_preference.map((lang) => t(`modal.language.${lang}`)).join(', ')} />
-                <DetailField label={t('modal.number_of_workers_needed')} value={String(job.number_of_workers_needed)} />
-                <DetailField label={t('jobs.hired_progress')} value={t('jobs.hired_progress_value', { hired: job.hired_count, total: job.number_of_workers_needed, open: openCount })} />
-                <DetailField label={t('modal.required_experience_years')} value={job.required_experience_years === null ? t('jobs.not_specified') : String(job.required_experience_years)} />
-              </div>
+    const [ranking, setRanking] = useState<RankingState>({ status: 'loading' });
+    const [rankingAttempt, setRankingAttempt] = useState(0);
 
-              {job.certifications.length > 0 && (
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('modal.certifications')}</p>
-                  <div className="flex flex-wrap gap-2">
-                    {job.certifications.map((cert) => (
-                      <span key={cert} className="rounded-full bg-muted px-3 py-1 text-xs font-medium">{cert}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
+    // Read through a ref so a silent mid-session token refresh does not restart
+    // the ranking fetch and flash "scoring..." over scores already on screen.
+    const idTokenRef = useRef(idToken);
+    idTokenRef.current = idToken;
+    const hasToken = Boolean(idToken);
 
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('modal.job_description')}</p>
-                <p className="text-sm whitespace-pre-wrap text-foreground">
-                  {job.description?.trim() || t('jobs.no_description')}
-                </p>
-              </div>
+    const pageReady = phase === 'ready';
 
-              <div>
-                <p className="text-xs uppercase tracking-wide text-muted mb-2">{t('jobs.required_documents')}</p>
-                {job.required_docs.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {job.required_docs.map((doc) => (
-                      <span key={doc} className="rounded-full bg-muted px-3 py-1 text-xs font-medium">
-                        {docLabels[doc] ?? doc}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">{t('jobs.no_required_documents')}</p>
-                )}
-              </div>
-            </div>
-          </Card>
+    useEffect(() => {
+        if (!pageReady || !hasToken || !jobIdValid) return;
 
-          <div className="mb-6">
-            <PublicListingCard
-              jobId={job.id}
-              initialEnabled={job.public_listing_enabled}
-              jobTitle={job.title}
-              publicCode={job.public_code}
-            />
-          </div>
+        let active = true;
+        // The ranking request is the slowest thing this page asks for, so an
+        // employer who leaves mid-scoring is exactly who should not keep paying
+        // for it. `active` still guards the state writes: it is already false
+        // by the time the abort rejection arrives.
+        const controller = new AbortController();
+        setRanking({ status: 'loading' });
 
-          <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <MetricCard tone="blue" label={t('stats.total_applicants')} value={total} />
-            <MetricCard tone="amber" label={t('applicants.status.pending')} value={pendingCount} />
-            <MetricCard tone="green" label={t('applicants.status.hired')} value={hiredCount} />
-          </div>
+        (async () => {
+            try {
+                const ranked = await getJobCandidates(
+                    idTokenRef.current!, jobId, 100, controller.signal,
+                );
+                if (!active) return;
+                setRanking({ status: 'ready', matches: buildCandidateMatchMap(ranked.candidates) });
+            } catch (err) {
+                if (!active) return;
+                const { kind } = classifyError(err);
+                if (kind === 'legal_wall') {
+                    try {
+                        handleLegalWall(err, returnUrl);
+                    } catch {
+                        // classifyError already said this is a legal wall, so
+                        // handleLegalWall cannot rethrow; swallowing beats an
+                        // unhandled rejection if the two ever disagree.
+                    }
+                    return;
+                }
+                // The one behaviour this whole state machine exists for: a
+                // ranking failure is VISIBLE, not silently an empty map.
+                setRanking({ status: 'failed', kind });
+            }
+        })();
 
-          <DashboardPanel>
-            <PanelHeader title={t('applicants.title')} />
-            <div className="space-y-4 p-5">
-              <ApplicantFilterPanel filters={filters} onChange={setFilters} />
+        return () => {
+            active = false;
+            controller.abort();
+        };
+        // `rankingAttempt` is the retry pedal. Filters are absent on purpose:
+        // the ranking is per-job and keyed by applicant, so narrowing the list
+        // cannot change a score -- refetching it on every keystroke in the
+        // filter bar was pure waste.
+    }, [pageReady, hasToken, jobId, jobIdValid, rankingAttempt, handleLegalWall, returnUrl]);
 
-              {loadingApplicants ? (
-                <p className="text-sm text-muted">{tCommon('loading')}</p>
-              ) : applicants.length === 0 ? (
-                <p className="text-sm text-muted">{t('applicants.empty')}</p>
-              ) : (
-                <div className="space-y-3">
-                  {applicants.map((applicant) => (
-                    <ApplicantCard
-                      key={applicant.application_id}
-                      applicant={applicant}
-                      match={candidateMatches.get(applicant.application_id) ?? candidateMatches.get(applicant.worker_id)}
-                      jobId={job.id}
-                      jobTitle={job.title}
-                      t={t}
-                      tMatch={tMatch}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          </DashboardPanel>
-        </>
-      ) : (
-        <p className="text-sm text-muted">{tCommon('error')}</p>
-      )}
-    </main>
-    </AppShell>
-    <DeleteJobDialog
-      open={confirmDelete}
-      jobTitle={job?.title ?? ''}
-      deleting={deleting}
-      error={deleteError}
-      onCancel={() => {
-        if (deleting) return;
-        setConfirmDelete(false);
-        setDeleteError(null);
-      }}
-      onConfirm={async () => {
+    const matches = ranking.status === 'ready' ? ranking.matches : NO_MATCHES;
+    const retryRanking = useCallback(() => setRankingAttempt((n) => n + 1), []);
+
+    /* ===== Mutations ====================================================== */
+
+    const [actionFeedback, setActionFeedback] = useState<{
+        tone: FeedbackTone;
+        message: string;
+    } | null>(null);
+    const [pendingStatus, setPendingStatus] = useState<WritableJobStatus | null>(null);
+    const [editOpen, setEditOpen] = useState(false);
+    const [confirmDelete, setConfirmDelete] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+    const [deleteError, setDeleteError] = useState<string | null>(null);
+
+    const handleSetJobStatus = useCallback(
+        async (status: WritableJobStatus) => {
+            if (!idToken || !job || pendingStatus) return;
+            setPendingStatus(status);
+            setActionFeedback(null);
+            try {
+                const updated = await updateJobStatus(idToken, job.id, status);
+                setData((prev) => ({ ...prev, job: { ...prev.job, ...updated } }));
+                setActionFeedback({ tone: 'success', message: tCommon('feedback.saved') });
+            } catch (err) {
+                // The old page had NO catch here: a failed status change left the
+                // button spinning back to idle and the employer believing it worked.
+                try {
+                    handleLegalWall(err, returnUrl);
+                } catch {
+                    setActionFeedback({ tone: 'danger', message: errorMessage(err) });
+                }
+            } finally {
+                setPendingStatus(null);
+            }
+        },
+        [errorMessage, handleLegalWall, idToken, job, pendingStatus, returnUrl, setData, tCommon],
+    );
+
+    const handleJobUpdated = useCallback(
+        (updated: EmployerJobDetail) => {
+            setData((prev) => ({ ...prev, job: updated }));
+            setEditOpen(false);
+            setActionFeedback({ tone: 'success', message: tCommon('feedback.saved') });
+        },
+        [setData, tCommon],
+    );
+
+    const handlePublicListingChange = useCallback(
+        (enabled: boolean) => {
+            setData((prev) => ({ ...prev, job: { ...prev.job, public_listing_enabled: enabled } }));
+        },
+        [setData],
+    );
+
+    const handleDelete = useCallback(async () => {
         if (!idToken || !job || deleting) return;
         setDeleting(true);
         setDeleteError(null);
         try {
-          await deleteJob(idToken, job.id);
-          router.push('/employer/dashboard');
+            await deleteJob(idToken, job.id);
+            router.push(DASHBOARD_HREF);
         } catch (err) {
-          if (err instanceof ApiError && err.code === 'job_has_hired_workers') {
-            setDeleteError(t('jobs.delete.error_hired'));
-          } else {
-            setDeleteError(t('jobs.delete.error_generic'));
-          }
-          setDeleting(false);
+            setDeleteError(
+                err instanceof ApiError && err.code === 'job_has_hired_workers'
+                    ? t('actions.delete_error_hired')
+                    : errorMessage(err),
+            );
+            setDeleting(false);
         }
-      }}
-    />
-    {job && (
-      <EditJobModal
-        key={`${job.id}:${editOpen}`}
-        open={editOpen}
-        job={job}
-        onClose={() => setEditOpen(false)}
-        onJobUpdated={(updated) => { setJob(updated); setEditOpen(false); }}
-      />
-    )}
-    </>
-  );
-}
+    }, [deleting, errorMessage, idToken, job, router, t]);
 
-function DetailField({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-muted mb-1">{label}</p>
-      <p className="text-sm font-medium">{value}</p>
-    </div>
-  );
-}
+    /* ===== S0/S1 loading =================================================== */
 
-function ApplicantCard({
-  applicant,
-  match,
-  jobId,
-  jobTitle,
-  t,
-  tMatch,
-}: {
-  applicant: Applicant;
-  match?: ApplicantMatch;
-  jobId: string;
-  jobTitle: string;
-  t: ReturnType<typeof useTranslations>;
-  tMatch: ReturnType<typeof useTranslations>;
-}) {
-  const { idToken } = useAuth();
-  const router = useRouter();
-  const tMessages = useTranslations('employer_messages');
-  const [startingConversation, setStartingConversation] = useState(false);
-  const [messageError, setMessageError] = useState<string | null>(null);
-
-  async function handleMessageWorker() {
-    if (!idToken) return;
-    setStartingConversation(true);
-    setMessageError(null);
-    try {
-      const response = await startConversation(idToken, {
-        job_id: jobId,
-        worker_id: applicant.worker_id,
-        initial_message: tMessages('default_initial_message', { jobTitle }),
-      });
-      router.push(`/employer/conversations?conversation_id=${response.conversation.id}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'message_start_failed';
-      setMessageError(
-        message === 'worker_whatsapp_unavailable'
-          ? tMessages('worker_whatsapp_unavailable')
-          : tMessages('message_start_failed'),
-      );
-    } finally {
-      setStartingConversation(false);
+    // Same shell and the same three skeleton bands as this route's `loading.tsx`,
+    // so the handover from the server-rendered skeleton to this one is invisible.
+    if (phase === 'auth' || phase === 'loading') {
+        return (
+            <AppShellSkeleton role="employer">
+                <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+                    <JobPageSkeleton />
+                </main>
+            </AppShellSkeleton>
+        );
     }
-  }
 
-  return (
-    <Card className="p-4 flex flex-col gap-2">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0">
-          <p className="text-base font-semibold">{applicant.full_name}</p>
-          {match && (
-            <div className="mt-1">
-              <MatchScoreBadge
-                score={match.match_score}
-                band={match.score_band}
-                label={tMatch(`score_bands.${match.score_band}`)}
-              />
-            </div>
-          )}
-        </div>
-        <span
-          className="rounded-full px-2 py-0.5 text-xs font-medium shrink-0 self-start"
-          style={{
-            background: applicationStatusTone(applicant.status).bg,
-            color: applicationStatusTone(applicant.status).color,
-          }}
-        >
-          {t(`applicants.status.${applicant.status}`)}
-        </span>
-      </div>
-
-      {match && match.match_reasons.length > 0 && (
-        <MatchReasonChips reasons={match.match_reasons} />
-      )}
-
-      <p className="text-xs text-muted-foreground">{t('applicants.phone')}: {applicant.phone}</p>
-
-      {applicant.skills.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {applicant.skills.map((skill) => (
-            <span key={skill} className="rounded-full bg-muted px-2 py-0.5 text-xs">
-              {skill}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        {applicant.availability && (
-          <span>{t(`filter.availability_${applicant.availability.replace('-', '')}`)}</span>
-        )}
-        {applicant.years_experience !== null && (
-          <span>{t('worker_profile.years_experience', { years: applicant.years_experience })}</span>
-        )}
-        <span>{t('applicants.applied')}: {new Date(applicant.applied_at).toLocaleDateString()}</span>
-      </div>
-
-      {messageError && <p className="text-xs text-error">{messageError}</p>}
-
-      <div className="mt-1 flex flex-wrap gap-2">
+    const backLink = (
         <Link
-          href={`/employer/workers/${applicant.worker_id}?job_id=${jobId}`}
-          className="self-start rounded-lg bg-blue-900 px-3 py-1.5 text-xs text-white"
+            href={DASHBOARD_HREF}
+            className="mb-4 inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)] hover:underline"
         >
-          {t('applicants.view_profile')}
+            <span aria-hidden>&larr;</span>
+            {t('back')}
         </Link>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={handleMessageWorker}
-          loading={startingConversation}
-          loadingLabel={tMessages('starting')}
-        >
-          {tMessages('message_worker')}
-        </Button>
-      </div>
-    </Card>
-  );
-}
+    );
 
-function buildCandidateMatchMap(candidates: Array<{
-  application_id?: string | null;
-  worker_id: string;
-  match_score: number;
-  score_band: ScoreBand;
-  match_reasons?: string[];
-}>): Map<string, ApplicantMatch> {
-  const matches = new Map<string, ApplicantMatch>();
+    /* ===== S5 failed load, split by kind =================================== */
 
-  for (const candidate of candidates) {
-    const score = normalizeMatchScore(candidate.match_score);
-    if (score === null) continue;
+    if (phase === 'error' && errorKind) {
+        // Three outcomes the old page collapsed into one grey "Something went
+        // wrong" line. `not_found` (a dead or mistyped link) and `forbidden`
+        // (someone else's posting) are dead ends with their own copy and a way
+        // back; everything else keeps the app-wide sentence and offers a retry.
+        // ErrorState decides which of the two controls a kind may actually show,
+        // so the kind stays honest instead of being bent to force a button.
+        const isNotFound = errorKind === 'not_found' || errorKind === 'gone';
+        const title = isNotFound
+            ? t('not_found_title')
+            : errorKind === 'forbidden'
+              ? t('forbidden_title')
+              : undefined;
+        const body = isNotFound
+            ? t('not_found_body')
+            : errorKind === 'forbidden'
+              ? t('forbidden_body')
+              : undefined;
 
-    const match: ApplicantMatch = {
-      match_score: score,
-      score_band: normalizeScoreBand(candidate.score_band, score),
-      match_reasons: (candidate.match_reasons ?? [])
-        .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
-        .slice(0, 3)
-        .map((reason) => truncateMatchReason(reason)),
+        return (
+            // Chrome is preserved deliberately: `notFound()` from this client page
+            // would swap the whole document for the 404 route and take the
+            // employer's navigation with it, for what is one bad link.
+            <AppShell role="employer" title={t('page_title')}>
+                <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+                    <div className="anim-fade-in">
+                        {backLink}
+                        <DashboardPanel>
+                            <ErrorState
+                                kind={errorKind}
+                                onRetry={retry}
+                                backHref={DASHBOARD_HREF}
+                                title={title}
+                                body={body}
+                            />
+                        </DashboardPanel>
+                    </div>
+                </main>
+            </AppShell>
+        );
+    }
+
+    /* ===== S2 loaded ======================================================= */
+
+    if (!job) return null;
+
+    const openCount = job.open_count ?? Math.max(0, job.number_of_workers_needed - job.hired_count);
+    const notSpecified = t('job.not_specified');
+
+    const jobTypeLabels: Record<string, string> = {
+        'full-time': tShared('modal.job_type_fulltime'),
+        'part-time': tShared('modal.job_type_parttime'),
+        contract: tShared('modal.job_type_contract'),
+    };
+    const docLabels: Record<string, string> = {
+        resume: tShared('worker_profile.doc_resume'),
+        driver_license: tShared('worker_profile.doc_driver_license'),
+        // SSN is no longer offered for new jobs, but legacy jobs may still require it.
+        ssn: tShared('worker_profile.doc_ssn'),
     };
 
-    if (candidate.application_id) matches.set(candidate.application_id, match);
-    matches.set(candidate.worker_id, match);
-  }
+    const num = (value: string) => <span className="tabular-nums">{value}</span>;
 
-  return matches;
+    const fields: KVItem[] = [
+        { label: tShared('modal.location'), value: job.location },
+        {
+            label: tShared('modal.job_type'),
+            value: jobTypeLabels[job.job_type] ?? job.job_type,
+        },
+        {
+            label: tShared('modal.trade_category'),
+            value: job.trade_category ? tShared(`modal.trade.${job.trade_category}`) : notSpecified,
+        },
+        { label: t('job.pay_range'), value: job.pay ? num(job.pay) : notSpecified },
+        {
+            label: tShared('modal.start_date'),
+            value: (() => {
+                const formatted = formatStartDate(job.start_date, locale);
+                return formatted ? num(formatted) : notSpecified;
+            })(),
+        },
+        { label: tShared('modal.expected_duration'), value: job.expected_duration ?? notSpecified },
+        { label: tShared('modal.shift_schedule'), value: job.shift_schedule ?? notSpecified },
+        {
+            label: tShared('modal.transportation_required'),
+            value: job.transportation_required ? t('job.yes') : t('job.no'),
+        },
+        {
+            label: tShared('modal.work_authorization_required'),
+            value: job.work_authorization_required ? t('job.yes') : t('job.no'),
+        },
+        {
+            label: tShared('modal.language_preference'),
+            value: job.language_preference.map((lang) => tShared(`modal.language.${lang}`)).join(', '),
+        },
+        {
+            label: tShared('modal.number_of_workers_needed'),
+            value: num(String(job.number_of_workers_needed)),
+        },
+        {
+            label: t('job.hiring_progress'),
+            value: num(
+                t('job.hiring_progress_value', {
+                    hired: job.hired_count,
+                    total: job.number_of_workers_needed,
+                    open: openCount,
+                }),
+            ),
+        },
+        {
+            label: tShared('modal.required_experience_years'),
+            value:
+                job.required_experience_years === null
+                    ? notSpecified
+                    : num(String(job.required_experience_years)),
+        },
+    ];
+
+    const filtersActive = hasActiveApplicantFilters(appliedFilters);
+    const statusBusy = pendingStatus !== null;
+
+    return (
+        <>
+            <AppShell role="employer" title={job.title} subtitle={job.location}>
+                <main className="mx-auto max-w-5xl px-4 py-6 md:px-6">
+                    <div className="anim-fade-in">
+                        {backLink}
+
+                        {/* S6: a failed background reload is a footnote over data the
+                            employer can still read, never a replacement for it. */}
+                        {refreshError ? (
+                            <InlineFeedback tone="warning" className="mb-4">
+                                <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                                    <span>{tCommon('feedback.refresh_failed')}</span>
+                                    <Button variant="ghost" size="sm" onClick={() => void refresh()}>
+                                        {tCommon('retry')}
+                                    </Button>
+                                </span>
+                            </InlineFeedback>
+                        ) : null}
+
+                        {actionFeedback ? (
+                            <InlineFeedback
+                                tone={actionFeedback.tone}
+                                className="mb-4"
+                                onDismiss={() => setActionFeedback(null)}
+                            >
+                                {actionFeedback.message}
+                            </InlineFeedback>
+                        ) : null}
+
+                        <div
+                            className={['space-y-5', staggerClass].filter(Boolean).join(' ')}
+                            onAnimationEnd={onCascadeEnd}
+                        >
+                            <section className="grid grid-cols-3 gap-3">
+                                <MetricCard label={t('metrics.applicants')} value={job.applicant_count} />
+                                <MetricCard label={t('metrics.hired')} value={job.hired_count} tone="green" />
+                                <MetricCard label={t('metrics.open')} value={openCount} />
+                            </section>
+
+                            <DashboardPanel>
+                                <PanelHeader
+                                    title={t('job.panel_title')}
+                                    action={
+                                        <JobStatusBadge status={job.status}>
+                                            {tShared(`jobs.status.${job.status}`)}
+                                        </JobStatusBadge>
+                                    }
+                                />
+
+                                <div className="px-5 py-2">
+                                    <KVList items={fields} />
+                                </div>
+
+                                <div className="space-y-4 border-t border-[var(--jale-divider)] px-5 py-4">
+                                    <FactBlock title={t('job.description_title')}>
+                                        <p className="whitespace-pre-wrap text-sm text-[var(--jale-ink)]">
+                                            {job.description?.trim() || t('job.no_description')}
+                                        </p>
+                                    </FactBlock>
+
+                                    {job.certifications.length > 0 ? (
+                                        <FactBlock title={t('job.certifications_title')}>
+                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                                                {job.certifications.map((cert) => (
+                                                    <Badge key={cert} tone="info">
+                                                        {cert}
+                                                    </Badge>
+                                                ))}
+                                            </div>
+                                        </FactBlock>
+                                    ) : null}
+
+                                    <FactBlock title={t('job.required_documents_title')}>
+                                        {job.required_docs.length > 0 ? (
+                                            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                                                {job.required_docs.map((doc) => (
+                                                    <Badge key={doc} tone="info">
+                                                        {docLabels[doc] ?? doc}
+                                                    </Badge>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="text-sm text-[var(--jale-ink-2)]">
+                                                {t('job.no_required_documents')}
+                                            </p>
+                                        )}
+                                    </FactBlock>
+                                </div>
+
+                                <div className="flex flex-wrap gap-2 border-t border-[var(--jale-divider)] px-5 py-4">
+                                    {/* The manual "Pause" action is intentionally absent
+                                        (backend status support and the paused-state resume
+                                        UI stay, for billing-auto-paused jobs). */}
+                                    {job.status !== 'active' ? (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => void handleSetJobStatus('active')}
+                                            disabled={statusBusy}
+                                            loading={pendingStatus === 'active'}
+                                            loadingLabel={tCommon('loading')}
+                                        >
+                                            {t('actions.activate')}
+                                        </Button>
+                                    ) : null}
+                                    {job.status !== 'closed' ? (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => void handleSetJobStatus('closed')}
+                                            disabled={statusBusy}
+                                            loading={pendingStatus === 'closed'}
+                                            loadingLabel={tCommon('loading')}
+                                        >
+                                            {t('actions.close')}
+                                        </Button>
+                                    ) : null}
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setEditOpen(true)}
+                                        disabled={statusBusy}
+                                    >
+                                        {t('actions.edit')}
+                                    </Button>
+                                    <Button
+                                        variant="error"
+                                        size="sm"
+                                        onClick={() => setConfirmDelete(true)}
+                                        disabled={statusBusy}
+                                    >
+                                        {t('actions.delete')}
+                                    </Button>
+                                </div>
+                            </DashboardPanel>
+
+                            <PublicListingCard
+                                key={job.id}
+                                jobId={job.id}
+                                initialEnabled={job.public_listing_enabled}
+                                jobTitle={job.title}
+                                publicCode={job.public_code}
+                                onEnabledChange={handlePublicListingChange}
+                            />
+
+                            <DashboardPanel>
+                                <PanelHeader
+                                    title={t('applicants.title')}
+                                    action={
+                                        refreshing ? (
+                                            <Spinner size="sm" label={tCommon('loading')} />
+                                        ) : undefined
+                                    }
+                                />
+
+                                <ApplicantFilterPanel filters={filters} onChange={applyFilters} />
+
+                                {applicants.length > 0 ? (
+                                    <RankingNotice
+                                        ranking={ranking}
+                                        onRetry={retryRanking}
+                                        labels={{
+                                            loading: t('ranking.loading'),
+                                            empty: t('ranking.empty'),
+                                            failed: t('ranking.failed'),
+                                            retry: t('ranking.retry'),
+                                        }}
+                                    />
+                                ) : null}
+
+                                {applicants.length === 0 ? (
+                                    filtersActive ? (
+                                        // Reads differently on purpose: rows exist, the
+                                        // filters are hiding them, and the only useful
+                                        // action is undoing the filters.
+                                        <EmptyState
+                                            variant="filtered"
+                                            title={t('applicants.filtered_title')}
+                                            body={t('applicants.filtered_body')}
+                                            action={{
+                                                label: t('applicants.clear_filters'),
+                                                onClick: () => applyFilters(EMPTY_APPLICANT_FILTERS),
+                                            }}
+                                        />
+                                    ) : (
+                                        <EmptyState
+                                            icon="user"
+                                            title={t('applicants.empty_title')}
+                                            body={t('applicants.empty_body')}
+                                        />
+                                    )
+                                ) : (
+                                    <ul className="divide-y divide-[var(--jale-divider)]">
+                                        {applicants.map((applicant) => (
+                                            <ApplicantRow
+                                                key={applicant.application_id}
+                                                applicant={applicant}
+                                                match={
+                                                    matches.get(applicant.application_id) ??
+                                                    matches.get(applicant.worker_id)
+                                                }
+                                                jobId={job.id}
+                                                jobTitle={job.title}
+                                                locale={locale}
+                                                t={t}
+                                                tShared={tShared}
+                                                tMessages={tMessages}
+                                                tMatch={tMatch}
+                                            />
+                                        ))}
+                                    </ul>
+                                )}
+                            </DashboardPanel>
+                        </div>
+                    </div>
+                </main>
+            </AppShell>
+
+            <DeleteJobDialog
+                open={confirmDelete}
+                jobTitle={job.title}
+                deleting={deleting}
+                error={deleteError}
+                onCancel={() => {
+                    if (deleting) return;
+                    setConfirmDelete(false);
+                    setDeleteError(null);
+                }}
+                onConfirm={handleDelete}
+            />
+
+            {/* Mounted, not conditionally rendered: `Modal` drives focus-in and
+                focus-restore off the `open` transition, and a Modal that mounts
+                already-open never moves focus into itself. */}
+            <EditJobModal
+                open={editOpen}
+                job={job}
+                onClose={() => setEditOpen(false)}
+                onJobUpdated={handleJobUpdated}
+            />
+        </>
+    );
+}
+
+/* ===== Pieces ============================================================ */
+
+/**
+ * The page's one skeleton: back link, metric band, detail panel, applicant
+ * list -- in that order, because that is the order the loaded page paints them.
+ * `DetailPageSkeleton`'s own `withBackLink` line sits inside its region, which
+ * would put the link BELOW the metrics and cost a jump at handover.
+ */
+function JobPageSkeleton() {
+    return (
+        <>
+            <Skeleton className="mb-4 h-3.5 w-24" />
+            <div className="mb-5">
+                <MetricRowSkeleton count={3} />
+            </div>
+            <DetailPageSkeleton fields={8} />
+            <div className="mt-5">
+                <ListPageSkeleton rows={4} />
+            </div>
+        </>
+    );
+}
+
+function FactBlock({ title, children }: { title: string; children: ReactNode }) {
+    return (
+        <div>
+            <p className="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+                {title}
+            </p>
+            {children}
+        </div>
+    );
+}
+
+/**
+ * The ranking section's own visible state, scoped to the applicants panel.
+ *
+ * `ready` with scores renders nothing here -- the scores themselves are the
+ * feedback, on the rows. The other three all say something, because all three
+ * mean the scores are missing for a reason the employer deserves to know.
+ */
+function RankingNotice({
+    ranking,
+    onRetry,
+    labels,
+}: {
+    ranking: RankingState;
+    onRetry: () => void;
+    labels: { loading: string; empty: string; failed: string; retry: string };
+}) {
+    if (ranking.status === 'loading') {
+        return (
+            <div
+                role="status"
+                className="flex items-center gap-2 border-b border-[var(--jale-divider)] px-5 py-3 text-xs font-medium text-[var(--jale-ink-2)]"
+            >
+                <Spinner size="sm" />
+                <span>{labels.loading}</span>
+            </div>
+        );
+    }
+
+    if (ranking.status === 'failed') {
+        return (
+            <div className="border-b border-[var(--jale-divider)] px-5 py-3">
+                <InlineFeedback tone="warning">
+                    <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        <span>{labels.failed}</span>
+                        <Button variant="ghost" size="sm" onClick={onRetry}>
+                            {labels.retry}
+                        </Button>
+                    </span>
+                </InlineFeedback>
+            </div>
+        );
+    }
+
+    if (ranking.matches.size === 0) {
+        return (
+            <p
+                role="status"
+                className="border-b border-[var(--jale-divider)] px-5 py-3 text-xs font-medium text-[var(--jale-ink-2)]"
+            >
+                {labels.empty}
+            </p>
+        );
+    }
+
+    return null;
+}
+
+/** Availability values the API returns, mapped onto `filters.availability_*`. */
+const AVAILABILITY_KEYS = new Set([
+    'immediate',
+    '2weeks',
+    '1month',
+    'full_time',
+    'part_time',
+    'weekends',
+    'flexible',
+]);
+
+function normalizeAvailabilityKey(value: string): string | null {
+    const key = value.trim().toLowerCase().replace(/-/g, '_');
+    const collapsed = key === '2_weeks' ? '2weeks' : key === '1_month' ? '1month' : key;
+    return AVAILABILITY_KEYS.has(collapsed) ? collapsed : null;
+}
+
+function ApplicantRow({
+    applicant,
+    match,
+    jobId,
+    jobTitle,
+    locale,
+    t,
+    tShared,
+    tMessages,
+    tMatch,
+}: {
+    applicant: Applicant;
+    match?: ApplicantMatch;
+    jobId: string;
+    jobTitle: string;
+    locale: string;
+    t: ReturnType<typeof useTranslations>;
+    tShared: ReturnType<typeof useTranslations>;
+    tMessages: ReturnType<typeof useTranslations>;
+    tMatch: ReturnType<typeof useTranslations>;
+}) {
+    const { idToken } = useAuth();
+    const router = useRouter();
+    const errorMessage = useErrorMessage();
+    const [starting, setStarting] = useState(false);
+    const [messageError, setMessageError] = useState<string | null>(null);
+
+    const displayName = applicant.full_name?.trim() || t('applicants.unknown_name');
+    const appliedLabel = formatLongDate(applicant.applied_at, locale) ?? applicant.applied_at;
+    const availabilityKey = applicant.availability
+        ? normalizeAvailabilityKey(applicant.availability)
+        : null;
+
+    async function handleMessageWorker() {
+        if (!idToken || starting) return;
+        setStarting(true);
+        setMessageError(null);
+        try {
+            const response = await startConversation(idToken, {
+                job_id: jobId,
+                worker_id: applicant.worker_id,
+                initial_message: tMessages('default_initial_message', { jobTitle }),
+            });
+            router.push(`/employer/conversations?conversation_id=${response.conversation.id}`);
+        } catch (err) {
+            // `worker_whatsapp_unavailable` is a domain answer with a better
+            // sentence than any generic one; everything else is classified so a
+            // raw backend code never reaches the screen.
+            const code = err instanceof ApiError ? err.code : null;
+            setMessageError(
+                code === 'worker_whatsapp_unavailable'
+                    ? tMessages('worker_whatsapp_unavailable')
+                    : errorMessage(err, { unknown: tMessages('message_start_failed') }),
+            );
+        } finally {
+            setStarting(false);
+        }
+    }
+
+    return (
+        <li className="flex flex-col gap-3 px-5 py-4">
+            <div className="flex items-start gap-3">
+                <InitialsAvatar name={displayName} size={36} />
+
+                <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                        <p className="min-w-0 truncate text-sm font-bold text-[var(--jale-ink)]">
+                            {displayName}
+                        </p>
+                        <ApplicationStatusBadge status={applicant.status}>
+                            {tShared(`applicants.status.${applicant.status}`)}
+                        </ApplicationStatusBadge>
+                    </div>
+
+                    <p className="mt-1 text-xs text-[var(--jale-ink-2)]">
+                        {t('applicants.applied')}{' '}
+                        <span className="tabular-nums">{appliedLabel}</span>
+                    </p>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                        {match ? (
+                            <MatchScoreBadge
+                                score={match.match_score}
+                                band={match.score_band}
+                                label={tMatch(`score_bands.${match.score_band}`)}
+                            />
+                        ) : null}
+                        {availabilityKey ? (
+                            <Badge tone="neutral">{t(`filters.availability_${availabilityKey}`)}</Badge>
+                        ) : null}
+                        {applicant.years_experience !== null ? (
+                            <Badge tone="neutral">
+                                <span className="tabular-nums">
+                                    {tShared('worker_profile.years_experience', {
+                                        years: applicant.years_experience,
+                                    })}
+                                </span>
+                            </Badge>
+                        ) : null}
+                        {applicant.skills.map((skill) => (
+                            <Badge key={skill} tone="info">
+                                {skill}
+                            </Badge>
+                        ))}
+                    </div>
+
+                    {match && match.match_reasons.length > 0 ? (
+                        <div className="mt-2">
+                            <MatchReasonChips reasons={match.match_reasons} />
+                        </div>
+                    ) : null}
+                </div>
+            </div>
+
+            {messageError ? (
+                <InlineFeedback tone="danger" onDismiss={() => setMessageError(null)}>
+                    {messageError}
+                </InlineFeedback>
+            ) : null}
+
+            <div className="flex flex-wrap gap-2 sm:pl-[3rem]">
+                <Link
+                    href={`/employer/workers/${applicant.worker_id}?job_id=${jobId}`}
+                    className="inline-flex h-9 items-center justify-center rounded-full border border-[var(--jale-divider)] px-4 text-xs font-semibold leading-none text-[var(--jale-ink)] transition-colors duration-150 hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                >
+                    {t('applicants.view_profile')}
+                </Link>
+                <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleMessageWorker()}
+                    loading={starting}
+                    loadingLabel={tMessages('starting')}
+                >
+                    {tMessages('message_worker')}
+                </Button>
+            </div>
+        </li>
+    );
+}
+
+function buildCandidateMatchMap(
+    candidates: Array<{
+        application_id?: string | null;
+        worker_id: string;
+        match_score: number;
+        score_band: ScoreBand;
+        match_reasons?: string[];
+    }>,
+): Map<string, ApplicantMatch> {
+    const matches = new Map<string, ApplicantMatch>();
+
+    for (const candidate of candidates) {
+        const score = normalizeMatchScore(candidate.match_score);
+        if (score === null) continue;
+
+        const match: ApplicantMatch = {
+            match_score: score,
+            score_band: normalizeScoreBand(candidate.score_band, score),
+            match_reasons: (candidate.match_reasons ?? [])
+                .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+                .slice(0, 3)
+                .map((reason) => truncateMatchReason(reason)),
+        };
+
+        if (candidate.application_id) matches.set(candidate.application_id, match);
+        matches.set(candidate.worker_id, match);
+    }
+
+    return matches;
 }

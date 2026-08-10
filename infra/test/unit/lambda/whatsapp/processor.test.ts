@@ -70,8 +70,15 @@ jest.mock('../../../../lambda/lib/db', () => ({
 }));
 
 const mockListMatchedJobsForWorker = jest.fn();
+const mockLoadWorkerPreferredCities = jest.fn();
 jest.mock('../../../../lambda/lib/job-matching', () => ({
   listMatchedJobsForWorker: mockListMatchedJobsForWorker,
+  loadWorkerPreferredCities: mockLoadWorkerPreferredCities,
+  // Real implementation: pure, trivially safe to use unmocked semantics here.
+  cityAnchorsFrom: (rows: Array<{ latitude: unknown; longitude: unknown }>) =>
+    rows
+      .filter((r) => r.latitude !== null && r.longitude !== null)
+      .map((r) => ({ latitude: Number(r.latitude), longitude: Number(r.longitude) })),
 }));
 
 // ── v2 routing branch mocks ──────────────────────────────────────────────
@@ -241,6 +248,8 @@ describe('Processor Lambda', () => {
     mockConnect.mockReset();
     mockRelease.mockReset();
     mockListMatchedJobsForWorker.mockReset();
+    mockLoadWorkerPreferredCities.mockReset();
+    mockLoadWorkerPreferredCities.mockResolvedValue([]);
     process.env = {
       ...originalEnv,
       WORKER_POOL_ID: 'pool-abc',
@@ -1209,6 +1218,133 @@ describe('Processor Lambda', () => {
       });
     });
 
+    it('filters the jobs list to the worker preferred cities', async () => {
+      mockLoadWorkerPreferredCities.mockResolvedValue([
+        { city_key: 'el-paso-tx', latitude: 31.7619, longitude: -106.485 },
+        { city_key: 'las-cruces-nm', latitude: null, longitude: null },
+      ]);
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso, TX', pay: '$25/hr' },
+        { id: 'job-2', title: 'Plumber', company: 'XYZ', location: 'El Paso, TX', pay: '$22/hr' },
+        { id: 'job-3', title: 'Framer', company: 'FrameCo', location: 'El Paso, TX', pay: '$24/hr' },
+        { id: 'job-4', title: 'Painter', company: 'PaintCo', location: 'Las Cruces, NM', pay: '$21/hr' },
+        { id: 'job-5', title: 'Roofer', company: 'RoofCo', location: 'El Paso, TX', pay: '$27/hr' },
+      ]);
+
+      // Dispatch on SQL substrings instead of positional chaining: this test
+      // only cares about the matcher's inputs, not the exact query count.
+      mockQuery.mockImplementation((sql: string) => {
+        if (/INSERT INTO whatsapp_processed_messages/i.test(sql)) {
+          return Promise.resolve({ rowCount: 1, rows: [{ message_sid: 'SM-city-jobs' }] });
+        }
+        if (/FROM whatsapp_conversations/i.test(sql) && /SELECT/i.test(sql)) {
+          return Promise.resolve({
+            rowCount: 1,
+            rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })],
+          });
+        }
+        return Promise.resolve({ rowCount: 0, rows: [] });
+      });
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-city-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockLoadWorkerPreferredCities).toHaveBeenCalledWith(expect.any(Object), 'user-1');
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledTimes(1);
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledWith(expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+        cityKeys: ['el-paso-tx', 'las-cruces-nm'],
+        cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
+      });
+    });
+
+    it('tops up with out-of-city jobs when the preferred cities run short, deduped and capped at 5', async () => {
+      mockLoadWorkerPreferredCities.mockResolvedValue([
+        { city_key: 'el-paso-tx', latitude: 31.7619, longitude: -106.485 },
+      ]);
+      mockListMatchedJobsForWorker.mockImplementation(
+        async (_client: unknown, _workerId: string, options: { cityKeys?: string[]; excludeCityKeys?: string[] }) => {
+          if (options.cityKeys) {
+            return [
+              { id: 'job-city-1', title: 'Electrician', company: 'ABC', location: 'El Paso, TX', pay: '$25/hr' },
+              // Referral pin: fetched by id with no city filter, so it can also
+              // surface from the exclude-cities fallback below.
+              { id: 'job-referral', title: 'Welder', company: 'WeldCo', location: 'Austin, TX', pay: '$30/hr' },
+            ];
+          }
+          return [
+            { id: 'job-referral', title: 'Welder', company: 'WeldCo', location: 'Austin, TX', pay: '$30/hr' },
+            { id: 'job-out-1', title: 'Plumber', company: 'XYZ', location: 'Austin, TX', pay: '$22/hr' },
+            { id: 'job-out-2', title: 'Framer', company: 'FrameCo', location: 'Dallas, TX', pay: '$24/hr' },
+            { id: 'job-out-3', title: 'Painter', company: 'PaintCo', location: 'Houston, TX', pay: '$21/hr' },
+            { id: 'job-out-4', title: 'Roofer', company: 'RoofCo', location: 'Austin, TX', pay: '$27/hr' },
+          ];
+        },
+      );
+
+      mockQuery.mockImplementation((sql: string) => {
+        if (/INSERT INTO whatsapp_processed_messages/i.test(sql)) {
+          return Promise.resolve({ rowCount: 1, rows: [{ message_sid: 'SM-topup-jobs' }] });
+        }
+        if (/FROM whatsapp_conversations/i.test(sql) && /SELECT/i.test(sql)) {
+          return Promise.resolve({
+            rowCount: 1,
+            rows: [convRow({ conversation_state: 'idle', user_id: 'user-1' })],
+          });
+        }
+        return Promise.resolve({ rowCount: 0, rows: [] });
+      });
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-topup-jobs',
+          From: 'whatsapp:+15125551234',
+          Body: 'Jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalledTimes(2);
+      expect(mockListMatchedJobsForWorker).toHaveBeenNthCalledWith(1, expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+        cityKeys: ['el-paso-tx'],
+        cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
+      });
+      expect(mockListMatchedJobsForWorker).toHaveBeenNthCalledWith(2, expect.any(Object), 'user-1', {
+        limit: 5,
+        channel: 'whatsapp',
+        excludeCityKeys: ['el-paso-tx'],
+        cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
+      });
+
+      // City jobs first, then out-of-city fill: deduped (job-referral appears
+      // once) and capped at the WhatsApp limit of 5.
+      const update = mockQuery.mock.calls.find(([sql, params]) =>
+        /UPDATE whatsapp_conversations SET/i.test(sql as string)
+        && Array.isArray(params)
+        && typeof params[1] === 'string'
+        && (params[1] as string).includes('recent_jobs'),
+      );
+      expect(update).toBeDefined();
+      expect(JSON.parse((update![1] as unknown[])[1] as string).recent_jobs).toEqual([
+        'job-city-1',
+        'job-referral',
+        'job-out-1',
+        'job-out-2',
+        'job-out-3',
+      ]);
+    });
+
     it('queues one job alert template per matched job from the shared matcher', async () => {
       mockListMatchedJobsForWorker.mockResolvedValue([
         { id: 'job-drywall', title: 'Drywall finisher', company: 'FinishPro', location: 'El Paso, TX 79928', pay: '$30/hr' },
@@ -1956,6 +2092,8 @@ describe('v2 routing branch', () => {
     mockConnect.mockReset();
     mockRelease.mockReset();
     mockListMatchedJobsForWorker.mockReset();
+    mockLoadWorkerPreferredCities.mockReset();
+    mockLoadWorkerPreferredCities.mockResolvedValue([]);
     process.env = {
       ...originalEnv,
       WORKER_POOL_ID: 'pool-abc',

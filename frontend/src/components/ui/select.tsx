@@ -1,20 +1,26 @@
 import * as React from "react";
 
-export function Select({
-  className = "",
-  children,
-  ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+/**
+ * Ref-forwarding to the `<select>` itself, NOT to the positioning wrapper --
+ * the wrapper exists only to place the chevron, and a caller asking for this
+ * component's ref means the control (`Modal`'s `initialFocusRef`, `.focus()`
+ * after a validation failure).
+ */
+export const Select = React.forwardRef<
+  HTMLSelectElement,
+  React.SelectHTMLAttributes<HTMLSelectElement>
+>(function Select({ className = "", children, ...props }, ref) {
   return (
     <div className="relative">
       <select
+        ref={ref}
         className={[
           "w-full min-h-[44px] rounded-[var(--radius-input)] appearance-none",
           "border border-[var(--jale-divider)] bg-[var(--jale-input)]",
           "pl-3.5 pr-9 py-2.5 text-sm font-medium",
           "text-[var(--jale-ink)]",
           "transition-[background-color,border-color,box-shadow] duration-150",
-          "focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]",
+          "focus:outline-none focus:bg-[var(--input-focus)] focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]",
           "disabled:opacity-50 disabled:cursor-not-allowed",
           className,
         ].join(" ")}
@@ -32,4 +38,4 @@ export function Select({
       </svg>
     </div>
   );
-}
+});

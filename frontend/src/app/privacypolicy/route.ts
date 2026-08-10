@@ -9,7 +9,7 @@ const html = `<!doctype html>
     <style>
       :root {
         --jale-blue-50: #eaf2ff;
-        --jale-blue-500: #0179ff;
+        --jale-blue-500: #0064d6;
         --jale-blue-600: #0064d6;
         --jale-blue-900: #181855;
         --jale-teal-50: #e3faf4;

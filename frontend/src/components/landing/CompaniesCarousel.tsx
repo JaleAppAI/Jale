@@ -25,18 +25,27 @@ const COMPANIES = [
  * is identical to the first, the -50% point lands exactly where the loop
  * started, so the repeat is seamless (no snap). Cards are a fixed, comfortable
  * width so the quotes never crowd the edges.
+ *
+ * The logo cards are a BRAND/ASSET surface: they stay a light plate in BOTH
+ * themes. These are other companies' logos, supplied as light-background PNGs
+ * (one is force-darkened with `brightness(0)` precisely because it ships white),
+ * and a partner's mark is not ours to re-tint. Their text therefore rides
+ * `--jale-blue-900`, one of the brand-ramp tokens the dark theme leaves fixed,
+ * rather than `--jale-ink`, which would flip to near-white and vanish. The
+ * surrounding plate IS themed, so the wall reads as a deliberate light panel
+ * inside a dark section.
  */
 export function CompaniesCarousel() {
     const t = useTranslations('landing.employers');
     const loop = [...COMPANIES, ...COMPANIES];
 
     const blue = (chunks: React.ReactNode) => (
-        <span className="font-bold text-[#0179FF]">{chunks}</span>
+        <span className="font-bold text-[var(--jale-blue-500)]">{chunks}</span>
     );
 
     return (
-        <div className="overflow-hidden rounded-[20px] border border-[#e5e7eb] bg-[#f9fafb] p-6 md:p-12">
-            <h3 className="mb-8 text-center text-2xl font-bold text-[#181855]">
+        <div className="overflow-hidden rounded-[20px] border border-[var(--jale-divider)] bg-[var(--jale-card)] p-6 md:p-12">
+            <h3 className="mb-8 text-center text-2xl font-extrabold text-[var(--jale-ink)]">
                 {t('companies_title')}
             </h3>
             {/* Edge fades so cards entering/leaving the marquee don't look clipped. */}
@@ -46,8 +55,9 @@ export function CompaniesCarousel() {
                         <figure
                             key={`${c.key}-${i}`}
                             aria-hidden={i >= COMPANIES.length}
-                            className="m-0 w-[300px] shrink-0 grow-0 rounded-2xl bg-white p-6 md:w-[360px]"
-                            style={{ boxShadow: '0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.06)' }}
+                            // `bg-white`: see the asset note above — the plate a
+                            // partner logo sits on is fixed, in both themes.
+                            className="m-0 w-[300px] shrink-0 grow-0 rounded-2xl bg-white p-6 shadow-[0_1px_2px_rgba(0,0,0,.04),0_4px_16px_rgba(0,0,0,.06)] md:w-[360px]"
                         >
                             <div className="mb-4 flex items-center gap-3">
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -59,15 +69,15 @@ export function CompaniesCarousel() {
                                     style={c.darken ? { filter: 'brightness(0)' } : undefined}
                                 />
                                 <figcaption className="min-w-0 flex-1">
-                                    <div className="truncate text-sm font-bold text-[#181855]">
+                                    <div className="truncate text-sm font-bold text-[var(--jale-blue-900)]">
                                         {t(`${c.key}_name`)}
                                     </div>
-                                    <div className="truncate text-xs text-[#5b6480]">
+                                    <div className="truncate text-xs text-[var(--jale-blue-900)]/60">
                                         {t(`${c.key}_industry`)}
                                     </div>
                                 </figcaption>
                             </div>
-                            <p className="text-[15px] leading-[1.5] text-[#181855]">
+                            <p className="text-[15px] leading-[1.5] text-[var(--jale-blue-900)]">
                                 {t.rich(`${c.key}_quote`, { blue })}
                             </p>
                         </figure>

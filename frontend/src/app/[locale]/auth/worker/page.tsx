@@ -5,7 +5,9 @@ import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import WorkerAuthForm from '@/components/auth/WorkerAuthForm';
 import { AuthShell } from '@/components/auth/AuthShell';
+import { CenteredCardSkeleton } from '@/components/ui/page-skeletons';
 import { validateJobId, isAuthFlowCompleting } from '@/lib/referral-return';
+import { sanitizeReturnPath } from '@/lib/login-url';
 import { claimReferral } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -36,11 +38,34 @@ export default function WorkerAuthPage() {
             if (shareCode && idToken) {
                 claimReferral(idToken, shareCode).catch(() => {});
             }
-            router.replace(jobId ? `/worker/jobs/${jobId}` : '/worker/home');
+            if (jobId) {
+                router.replace(`/worker/jobs/${jobId}`);
+                return;
+            }
+            // Where a session-expiry redirect wants us back. Already
+            // locale-prefixed, so assign it directly: router.replace() would
+            // add a second locale segment on top.
+            const returnPath = sanitizeReturnPath(searchParams.get('returnUrl'));
+            if (returnPath) {
+                window.location.assign(returnPath);
+                return;
+            }
+            router.replace('/worker/home');
         }
     }, [isLoading, isAuthenticated, userType, router, searchParams, idToken]);
 
-    if (isLoading || isAuthenticated) return null;
+    // Not `return null`: that blanked the whole viewport between the route's
+    // loading.tsx unmounting and the form mounting -- a navy-to-white-to-navy
+    // flash on every visit, and a dead screen for as long as the redirect above
+    // takes for an already-signed-in user. This markup is byte-identical to
+    // ./loading.tsx, so the shell simply stays put and only the card fills in.
+    if (isLoading || isAuthenticated) {
+        return (
+            <AuthShell variant="worker">
+                <CenteredCardSkeleton title card={false} />
+            </AuthShell>
+        );
+    }
 
     return (
         <AuthShell variant="worker">

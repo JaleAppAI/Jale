@@ -2,7 +2,61 @@
   "common": {
     "loading": "Loading...",
     "error": "Something went wrong",
-    "retry": "Try again"
+    "retry": "Try again",
+    "location_no_matches": "No matches",
+    "city_multi_placeholder": "Add a city or ZIP…",
+    "city_multi_max": "You can add up to {max} cities",
+    "city_multi_remove": "Remove {city}, {state}",
+    "errors": {
+      "offline": "You appear to be offline. Check your connection and try again.",
+      "timeout": "This is taking longer than expected. Please try again.",
+      "unauthorized": "Your session expired. Please sign in again.",
+      "forbidden": "You don't have access to this.",
+      "not_found": "We couldn't find what you're looking for.",
+      "gone": "This is no longer available.",
+      "conflict": "That didn't go through because something changed. Refresh and try again.",
+      "validation": "Some information is missing or invalid. Please review and try again.",
+      "rate_limited": "Too many attempts. Please wait a moment and try again.",
+      "server": "Something went wrong on our side. Please try again in a few minutes.",
+      "unknown": "Something went wrong. Please try again."
+    },
+    "error_state": {
+      "title": "Something went wrong",
+      "not_found_title": "Not found",
+      "offline_title": "No connection",
+      "go_back": "Go back",
+      "go_home": "Go to home"
+    },
+    "empty_state": {
+      "no_results_title": "No results",
+      "no_results_body": "Try different filters or search terms.",
+      "clear_filters": "Clear filters"
+    },
+    "not_found_page": {
+      "title": "Page not found",
+      "body": "The page you're looking for doesn't exist or was moved.",
+      "cta": "Go to home"
+    },
+    "feedback": {
+      "dismiss": "Dismiss",
+      "saved": "Saved",
+      "sent": "Sent",
+      "copied": "Link copied",
+      "refresh_failed": "Connection lost. Retrying…"
+    },
+    "theme": {
+      "toggle_to_dark": "Switch to dark theme",
+      "toggle_to_light": "Switch to light theme"
+    },
+    "trades": {
+      "electrician": "Electrician",
+      "plumber": "Plumber",
+      "carpenter": "Carpenter",
+      "concrete": "Concrete",
+      "painting": "Painting",
+      "other": "Other",
+      "unspecified": "Trade not specified"
+    }
   },
   "match": {
     "score_bands": {
@@ -175,7 +229,7 @@
   "auth": {
     "worker": {
       "title": "Sign in with your phone",
-      "phone_label": "Phone number: +1 3463488162",
+      "phone_label": "We'll text you a 6-digit code to sign in.",
       "signup_title": "Create your worker profile",
       "signup_subtitle": "Answer the same questions we ask on WhatsApp so employers can match with you.",
       "signup_prompt": "New to Jale?",
@@ -353,6 +407,15 @@
       "field_company_size": "Company size",
       "field_description": "Description",
       "fallback_company": "Employer profile",
+      "empty_company": "Company not added",
+      "empty_contact": "Contact not added",
+      "empty_phone": "Phone not added",
+      "empty_city": "City not added",
+      "empty_service_area": "Service area not set",
+      "empty_hiring_trades": "No trades selected",
+      "empty_job_types": "No job types selected",
+      "empty_company_size": "Company size not set",
+      "empty_description": "No description added",
       "edit_button": "Edit",
       "save": "Save",
       "saving": "Saving...",
@@ -411,10 +474,25 @@
     "applied_on": "Applied {date}",
     "first_message_hint": "Sending will message this candidate on WhatsApp.",
     "not_interested": "Not interested",
-    "not_interested_confirm": "Remove this candidate from your list?",
+    "not_interested_confirm": "They are removed from your list and will not get further messages about this job.",
     "candidate_unavailable": "This candidate is no longer available.",
     "empty_tab_active": "No active candidates yet. They will appear here when workers apply to your jobs.",
     "empty_tab_closed": "No closed conversations yet.",
+    "cancel": "Cancel",
+    "back_to_list": "Back to conversations",
+    "empty_select_body": "Pick a candidate from the list to see the WhatsApp thread.",
+    "empty_tab_active_title": "No active candidates",
+    "empty_tab_closed_title": "No closed conversations",
+    "empty_filtered_title": "Nothing for this job",
+    "empty_filtered_body": "No candidates match the job filter you selected.",
+    "clear_job_filter": "Show all jobs",
+    "empty_drawer_body": "Conversations you start with candidates show up here.",
+    "close_confirm_title": "Close this conversation?",
+    "close_confirm_body": "The WhatsApp thread ends and neither of you can send new messages. The history stays on this page.",
+    "close_confirm_cta": "Close conversation",
+    "conversation_closed": "Conversation closed",
+    "dismiss_confirm_title": "Remove this candidate?",
+    "candidate_removed": "Candidate removed",
     "message_status": {
       "queued": "Queued",
       "waiting_worker_reply": "Waiting for worker reply",
@@ -439,31 +517,14 @@
     },
     "shell": {
       "title": "Dashboard",
-      "employer_workspace": "Employer workspace",
-      "company_fallback": "Employer team",
-      "plan_label": "Jale Growth",
-      "plan_title": "Jale Growth",
-      "plan_body": "Prototype-only growth tools will unlock here as the hiring workflow expands.",
-      "upgrade": "Upgrade",
-      "alerts": "Alerts",
-      "search_workers": "Search workers"
+      "employer_workspace": "Employer workspace"
     },
     "nav": {
       "main": "Main",
-      "hiring": "Hiring",
-      "account": "Account",
       "dashboard": "Dashboard",
-      "jobs": "My Jobs",
       "messages": "Messages",
-      "workers": "Workers",
-      "interviews": "Interviews",
-      "search_workers": "Search Workers",
-      "boost_job": "Boost a Job",
-      "jale_direct": "Jale Direct",
-      "analytics": "Analytics",
       "billing": "Billing",
-      "settings": "Settings",
-      "soon": "Soon"
+      "settings": "Settings"
     },
     "hero": {
       "eyebrow": "Got Jale?",
@@ -533,14 +594,23 @@
       "no_description": "No description was added.",
       "no_required_documents": "No documents are required for this job.",
       "search_placeholder": "Search by title, location, or trade...",
+      "filter_aria_label": "Filter postings by status",
+      "refresh": "Refresh",
+      "showing": "Showing {shown} of {total}",
+      "post_success": "Job posted",
       "back_to_dashboard": "← Back to Dashboard",
       "empty_title": "No jobs found",
-      "empty_body": "Post a job or clear the filters to bring your hiring board back.",
+      "empty_body": "No posting matches this search or filter. Clear them to see your board again.",
+      "empty_first_title": "No jobs posted yet",
+      "empty_first_body": "Post your first job and applicants will land right here.",
       "delete": {
         "button": "Delete",
+        "button_aria": "Delete {title}",
         "confirm_title": "Delete this job?",
         "confirm_body": "This permanently removes \"{title}\" and its applications. This can’t be undone.",
         "confirm_cta": "Delete job",
+        "pending": "Deleting…",
+        "success": "Job deleted",
         "cancel": "Cancel",
         "error_hired": "This job has hired workers and can’t be deleted. Close it instead.",
         "error_generic": "Couldn’t delete this job. Please try again."
@@ -581,11 +651,21 @@
     "modal": {
       "title": "Post a Job",
       "step_label": "Step {current} of {total}",
+      "steps": {
+        "aria_label": "Post a job steps",
+        "completed": "completed",
+        "basics": "Job basics",
+        "basics_hint": "What the job is, and where the work happens.",
+        "details": "Pay and schedule",
+        "details_hint": "Pay, dates, and how many workers you need on site.",
+        "documents": "Documents"
+      },
       "close": "Close",
       "job_title": "Job Title",
       "job_title_placeholder": "e.g. Forklift operator",
       "location": "Location",
       "location_placeholder": "Hayward, CA",
+      "location_pick_required": "Select a city from the suggestions",
       "city": "City",
       "city_placeholder": "Hayward",
       "state_region": "State",
@@ -650,60 +730,10 @@
       "edit_error": "Could not save changes. Please try again."
     },
     "worker_profile": {
-      "back": "Back to applicants",
-      "share_upload_link": "Share Upload Link",
-      "link_copied": "Link copied to clipboard!",
-      "documents": "Documents",
-      "required": "Required",
-      "optional": "Optional",
-      "not_uploaded": "Not uploaded yet",
-      "request": "Request",
-      "view": "View",
-      "download": "Download",
-      "status_label": "Application Status",
-      "save_status": "Save",
       "doc_resume": "Resume",
       "doc_driver_license": "Driver's License",
       "doc_ssn": "SSN Card",
-      "phone": "Phone",
-      "location": "Location",
-      "skills": "Skills",
-      "availability_label": "Availability",
-      "applied": "Applied",
-      "saving_status": "Saving...",
-      "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}",
-      "fallback_name": "Unknown worker",
-      "fallback_phone": "Phone unavailable",
-      "fallback_location": "Location unavailable",
-      "fallback_experience": "Experience unavailable",
-      "fallback_availability": "Availability unavailable",
-      "fallback_skills": "No skills listed",
-      "fallback_applied": "Date unavailable",
-      "error_missing_job": "This worker profile needs a job id. Return to applicants and open it again.",
-      "error_load_profile": "Failed to load profile. Please try again.",
-      "error_create_link": "Failed to create upload link. Please try again.",
-      "error_save_status": "Failed to save status. Please try again.",
-      "availability": {
-        "immediate": "Immediate",
-        "2_weeks": "2 weeks",
-        "1_month": "1 month",
-        "full_time": "Full-time",
-        "part_time": "Part-time",
-        "weekends": "Weekends",
-        "flexible": "Flexible"
-      },
-      "trade": "Trade",
-      "fallback_trade": "Trade not specified",
-      "transportation_yes": "Has own transportation",
-      "transportation_no": "No own transportation",
-      "trades": {
-        "electrician": "Electrician",
-        "plumber": "Plumber",
-        "carpenter": "Carpenter",
-        "concrete": "Concrete",
-        "painting": "Painting",
-        "other": "Other"
-      }
+      "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
     },
     "post_job_docs": {
       "step_label": "Step 2 of 2",
@@ -716,17 +746,72 @@
       "submit": "Post Job"
     }
   },
+  "employer_worker_profile": {
+    "back": "Back to applicants",
+    "phone": "Phone",
+    "location": "Location",
+    "experience": "Experience",
+    "availability_label": "Availability",
+    "trade": "Trade",
+    "transportation": "Transportation",
+    "transportation_yes": "Has own transportation",
+    "transportation_no": "No own transportation",
+    "skills": "Skills",
+    "documents": "Documents",
+    "share_upload_link": "Share Upload Link",
+    "link_copied": "Link copied to clipboard!",
+    "not_uploaded": "Not uploaded yet",
+    "request": "Request",
+    "view": "View",
+    "download": "Download",
+    "status_label": "Application Status",
+    "save_status": "Save",
+    "saving_status": "Saving...",
+    "applied": "Applied",
+    "fallback_name": "Unknown worker",
+    "fallback_phone": "Phone unavailable",
+    "fallback_location": "Location unavailable",
+    "fallback_experience": "Experience unavailable",
+    "fallback_availability": "Availability unavailable",
+    "fallback_skills": "No skills listed",
+    "fallback_applied": "Date unavailable",
+    "availability": {
+      "immediate": "Immediate",
+      "2_weeks": "2 weeks",
+      "1_month": "1 month",
+      "full_time": "Full-time",
+      "part_time": "Part-time",
+      "weekends": "Weekends",
+      "flexible": "Flexible"
+    },
+    "invalid_link": {
+      "title": "Incomplete link",
+      "body": "This applicant link is missing the job it belongs to. Open the applicant again from that job's applicant list."
+    },
+    "not_found": {
+      "title": "Applicant not found",
+      "body": "This worker is not an applicant on this job, or the link is out of date."
+    },
+    "forbidden": {
+      "title": "No access to this applicant",
+      "body": "You can only open workers who applied to one of your own jobs."
+    }
+  },
   "upload_page": {
-    "title": "Upload Your Documents",
+    "title": "Upload your documents",
+    "explainer": "An employer needs a few documents before your application can move forward. Add the ones below — this link was made just for you, works once, and expires.",
+    "documents_heading": "Requested documents",
+    "progress": "{done} of {total} uploaded",
     "for_job": "For:",
     "at_employer": "at",
     "uploaded": "Uploaded",
+    "status_missing": "Not uploaded",
     "replace": "Replace",
     "tap_to_upload": "Tap to upload",
     "file_hint": "JPG, PNG or PDF · Max 10 MB",
     "security_notice": "Your documents are encrypted and only shared with the employer you applied to.",
     "submit": "Submit Documents",
-    "submit_hint": "Submit is enabled once all required documents are uploaded",
+    "submit_hint": "You can submit as soon as at least one document is uploaded.",
     "success_title": "Documents submitted!",
     "success_body": "The employer has been notified.",
     "error_size": "File must be under 10 MB",
@@ -735,12 +820,17 @@
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
     "error_upload": "Upload failed. Please try again.",
-    "error_submit": "Submission failed. Please try again."
+    "error_submit": "Submission failed. Please try again.",
+    "error_already_received": "We already received this document through this link.",
+    "error_confirm_required": "Upload at least one document before submitting.",
+    "expired_title": "This link no longer works",
+    "expired_body": "Upload links can only be used once and expire after a while. Ask the employer who contacted you to send you a new one."
   },
   "worker_applications": {
     "title": "My Applications",
     "applied": "Applied",
     "empty": "You haven't applied to any jobs yet.",
+    "empty_body": "Jobs you apply to show up here, with where each one stands.",
     "empty_cta": "Browse jobs",
     "status": {
       "pending": "Applied",
@@ -758,6 +848,10 @@
   "worker_home": {
     "title": "Find jobs",
     "search_placeholder": "Search by title or location",
+    "cities_all": "All cities",
+    "cities_edit": "Edit cities",
+    "cities_done": "Done",
+    "other_jobs_header": "Other jobs outside your cities",
     "filter": {
       "all": "All",
       "full_time": "Full-time",
@@ -765,7 +859,16 @@
       "contract": "Contract"
     },
     "openings_count": "{open}/{total} open",
-    "empty": "No active jobs right now.",
+    "empty": {
+      "title": "No jobs posted right now",
+      "body": "Employers post new jobs every week. Check back soon, or keep your profile and cities up to date so the right ones reach you first."
+    },
+    "empty_filtered": {
+      "title": "No jobs match this search",
+      "body": "Try a shorter search term or a different job type."
+    },
+    "no_city_jobs": "Nothing in your cities right now.",
+    "required_docs_label": "Documents needed",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
     "doc_labels": {
       "resume": "Resume",
@@ -789,9 +892,11 @@
     "required_experience": "Experience",
     "work_authorization_required": "Work authorization required",
     "work_authorization_required_yes": "Required",
+    "posted": "Posted",
     "upload_prompt": "Upload missing documents in your profile.",
     "upload_link": "Go to profile",
     "apply": "Apply",
+    "apply_success": "Application sent. The employer can see it now.",
     "already_applied": "Already applied",
     "errors": {
       "missing_docs": "Missing documents: {docs}",
@@ -803,6 +908,14 @@
       "already_applied": "You already applied to this job.",
       "server_error": "We could not submit this application right now. Please try again in a few minutes.",
       "apply_failed": "We could not submit this application. Please check your profile and documents, then try again."
+    },
+    "not_found": {
+      "title": "Job not found",
+      "body": "This job link isn't valid, or the posting was taken down. The open jobs are still there."
+    },
+    "closed": {
+      "title": "This job is closed",
+      "body": "The employer stopped accepting applications for this posting. Other jobs are still open."
     },
     "page_title": "Job details",
     "doc_ok": "Uploaded",
@@ -835,8 +948,8 @@
     "language_any": "Any",
     "language_en": "English",
     "language_es": "Spanish",
-    "transportation_required": "Transportation required",
-    "work_authorization_required": "Work authorization required",
+    "transportation": "Transportation",
+    "work_authorization": "Work authorization",
     "yes": "Required",
     "required_docs": "Documents needed to apply",
     "doc_resume": "Resume",
@@ -847,6 +960,7 @@
     "apply_loading": "Opening WhatsApp...",
     "apply_error": "Something went wrong. Please try again.",
     "apply_hint": "You'll finish applying on WhatsApp - no app download needed.",
+    "closed_badge": "Closed",
     "closed_title": "This job is no longer accepting applications",
     "closed_body": "But there's more work waiting for you on Jale.",
     "browse_jobs": "See other jobs on Jale",
@@ -867,6 +981,73 @@
     "about_jale": "Jale connects workers and employers over WhatsApp - no resume, no downloads. Always free for workers."
   },
   "employer_job_listing": {
+    "page_title": "Posting details",
+    "back": "Back to dashboard",
+    "not_found_title": "Job not found",
+    "not_found_body": "This posting doesn't exist, or it was deleted. Open it again from your dashboard.",
+    "forbidden_title": "No access to this posting",
+    "forbidden_body": "You can only open jobs posted by your own business.",
+    "job": {
+      "panel_title": "Job details",
+      "pay_range": "Pay range",
+      "hiring_progress": "Hiring progress",
+      "hiring_progress_value": "{hired}/{total} hired, {open} open",
+      "not_specified": "Not specified",
+      "yes": "Yes",
+      "no": "No",
+      "description_title": "Description",
+      "no_description": "No description was added.",
+      "certifications_title": "Certifications",
+      "required_documents_title": "Required documents",
+      "no_required_documents": "No documents are required for this job."
+    },
+    "actions": {
+      "activate": "Mark active",
+      "close": "Mark closed",
+      "edit": "Edit job",
+      "delete": "Delete",
+      "delete_error_hired": "This job has hired workers and can't be deleted. Close it instead."
+    },
+    "metrics": {
+      "applicants": "Applicants",
+      "hired": "Hired",
+      "open": "Still open"
+    },
+    "applicants": {
+      "title": "Applicants",
+      "applied": "Applied",
+      "view_profile": "View profile",
+      "unknown_name": "Unnamed worker",
+      "empty_title": "No applicants yet",
+      "empty_body": "Workers who apply to this posting show up here. Share the public link below to reach more people.",
+      "filtered_title": "No applicants match these filters",
+      "filtered_body": "Change the filters, or clear them to see everyone who applied.",
+      "clear_filters": "Clear filters"
+    },
+    "ranking": {
+      "loading": "Scoring how well each applicant matches this job...",
+      "empty": "Match scores aren't ready for this job yet. The applicants below are all here; only the scores are missing.",
+      "failed": "We couldn't score these applicants. The list below is complete, but without match scores.",
+      "retry": "Try scoring again"
+    },
+    "filters": {
+      "title": "Filter applicants",
+      "status": "Status",
+      "status_all": "All",
+      "skills": "Skills",
+      "skills_placeholder": "e.g. forklift, OSHA",
+      "availability": "Availability",
+      "availability_any": "Any",
+      "availability_immediate": "Immediate",
+      "availability_2weeks": "2 weeks",
+      "availability_1month": "1 month",
+      "availability_full_time": "Full-time",
+      "availability_part_time": "Part-time",
+      "availability_weekends": "Weekends",
+      "availability_flexible": "Flexible",
+      "min_experience": "Min experience (years)",
+      "clear": "Clear filters"
+    },
     "title": "Public job page",
     "benefit": "Making this posting public lets it reach more people - your workers can share it directly, and someone can read it without an account.",
     "shares": "Shared publicly: job title, company, location, pay and description. Never shared: your contact details, your other jobs, or anyone who has applied.",
@@ -913,6 +1094,14 @@
     "field_years_experience": "Years of experience",
     "field_location": "Location",
     "field_bio": "About",
+    "empty_name": "Name not added",
+    "empty_skills": "No skills added",
+    "empty_certifications": "No certifications added",
+    "empty_availability": "Availability not set",
+    "empty_experience": "Experience not added",
+    "empty_location": "Location not added",
+    "empty_preferred_cities": "No cities added",
+    "empty_bio": "No description added",
     "documents_title": "Documents",
     "documents_subtitle": "Uploaded documents are reused automatically when you apply to jobs.",
     "documents": {
@@ -922,6 +1111,11 @@
         "ssn": "SSN"
       },
       "not_uploaded": "Not uploaded",
+      "uploaded": "Uploaded",
+      "uploading": "Uploading…",
+      "deleting": "Deleting…",
+      "upload_success": "Document uploaded",
+      "delete_success": "Document deleted",
       "upload": "Upload",
       "replace": "Replace",
       "delete": "Delete",
@@ -929,7 +1123,10 @@
     },
     "edit": {
       "full_name": "Full name",
+      "skills_label": "Skills",
       "skills_placeholder": "Skills (comma separated)",
+      "certifications_label": "Certifications",
+      "availability_label": "Availability",
       "availability": {
         "full_time": "Full-time",
         "part_time": "Part-time",
@@ -938,6 +1135,7 @@
       },
       "years_experience": "Years of experience",
       "location": "Location",
+      "preferred_cities_label": "Cities where you want to find work",
       "bio": "About you",
       "certifications_placeholder": "OSHA 10, forklift, CDL",
       "save": "Save",
@@ -978,7 +1176,9 @@
     "current_plan": {
       "label": "Current plan",
       "price": "{price} / {interval}",
-      "cancels_at": "Your plan will end on {date}.",
+      "price_label": "Price",
+      "renews_on": "Renews on",
+      "ends_on": "Ends on",
       "grace_period": "Your last payment failed. Update your payment method by {date} to avoid losing access."
     },
     "plan_name": {
@@ -1037,7 +1237,9 @@
   "app_shell": {
     "worker_workspace": "Worker workspace",
     "worker_role": "Worker",
-    "worker_fallback": "Your profile",
-    "worker_nav_main": "Menu"
+    "employer_role": "Employer",
+    "worker_nav_main": "Menu",
+    "primary_nav": "Main navigation",
+    "mobile_nav": "Mobile navigation"
   }
 }

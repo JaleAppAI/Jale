@@ -10,7 +10,9 @@ import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
 import { claimReferral, type WorkerAvailability, type WorkerExperience, type WorkerProfilePatch, type WorkerTrade } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
+import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 import {
@@ -200,8 +202,12 @@ export default function WorkerAuthForm() {
 
     return (
         <div className="flex w-full flex-col">
+            {/* Each step is its own subtree, so switching steps mounts a fresh
+                node and `.anim-fade-in` replays for the ENTERING step only. The
+                keyframe moves opacity and a 4px transform — neither is a
+                layout property, so nothing reflows around it. */}
             {step === 'login' && (
-                <div className="flex flex-col gap-5">
+                <div className="anim-fade-in flex flex-col gap-5">
                     <AuthHeading title={t('title')} subtitle={t('phone_label')} />
                     <Field label={t('fields.phone')}>
                         <PhoneNumberField
@@ -211,7 +217,7 @@ export default function WorkerAuthForm() {
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
                     </Field>
-                    {error && <ErrorText error={error} />}
+                    {error && <FormError>{error}</FormError>}
                     <Button className="w-full" size="lg" onClick={handleSendOtp} disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
                         {t('send_otp')}
                     </Button>
@@ -220,10 +226,10 @@ export default function WorkerAuthForm() {
             )}
 
             {step === 'signup' && (
-                <div className="flex flex-col gap-4">
+                <div className="anim-fade-in flex flex-col gap-4">
                     <BackButton onClick={() => { setError(null); setStep('login'); }} label={t('back')} />
                     <AuthHeading title={t('signup_title')} subtitle={t('signup_subtitle')} />
-                    <p className="text-xs leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('password_note')}</p>
+                    <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('password_note')}</p>
                     <Field label={t('fields.full_name')}><Input value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" /></Field>
                     <Field label={t('fields.phone')}>
                         <PhoneNumberField
@@ -233,7 +239,7 @@ export default function WorkerAuthForm() {
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
                     </Field>
-                    <Field label={t('fields.city')}><Input value={city} onChange={(e) => setCity(e.target.value)} /></Field>
+                    <Field label={t('fields.city')}><LocationPicker value={city} onChange={(v) => setCity(v.label)} /></Field>
                     <Field label={t('fields.main_trade')}>
                         <Select value={mainTrade} onChange={(e) => setMainTrade(e.target.value as WorkerTrade)}>
                             {TRADES.map((trade) => <option key={trade} value={trade}>{t(`trades.${trade}`)}</option>)}
@@ -258,7 +264,7 @@ export default function WorkerAuthForm() {
                             {AVAILABILITY.map((item) => <option key={item} value={item}>{t(`availability.${item}`)}</option>)}
                         </Select>
                     </Field>
-                    {error && <ErrorText error={error} />}
+                    {error && <FormError>{error}</FormError>}
                     <Button className="w-full" size="lg" onClick={handleCreateAccount} disabled={!canCreate} loading={isLoading} loadingLabel={tCommon('loading')}>
                         {t('create_account')}
                     </Button>
@@ -291,30 +297,45 @@ export default function WorkerAuthForm() {
 function AuthHeading({ title, subtitle }: { title: string; subtitle: string }) {
     return (
         <div>
-            <h1 className="font-bold leading-tight mb-2" style={{ fontSize: '1.4rem', letterSpacing: '-0.03em', color: 'var(--jale-ink)' }}>{title}</h1>
-            <p className="text-sm leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{subtitle}</p>
+            <h1 className="mb-2 text-[1.4rem] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">{title}</h1>
+            <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{subtitle}</p>
         </div>
     );
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
     return (
-        <div className="flex flex-col gap-1">
-            <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</label>
+        <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">{label}</label>
             {children}
         </div>
     );
 }
 
-function ErrorText({ error }: { error: string }) {
-    return <p className="text-sm" style={{ color: 'var(--jale-danger)' }}>{error}</p>;
+/**
+ * Form-level failures — the ones that came back from Cognito, already mapped to
+ * a translated sentence by `authErrorKey`. `InlineFeedback` carries the tinted
+ * danger surface and `role="alert"`, so the message is announced instead of
+ * just appearing as a slightly red line.
+ */
+function FormError({ children }: { children: ReactNode }) {
+    return <InlineFeedback tone="danger">{children}</InlineFeedback>;
 }
+
+/**
+ * `--jale-blue-700`, not `-600`: only 700 flips in the dark theme. Blue-600
+ * stays #0064d6 under `.dark` and lands at ~2.98:1 on the dark card — below AA.
+ * Same reasoning as the `.stat-icon` note in globals.css.
+ */
+const LINK_BUTTON =
+    'cursor-pointer rounded border-0 bg-transparent p-0 font-semibold text-[var(--jale-blue-700)] ' +
+    'underline-offset-2 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]';
 
 function SwitchPrompt({ text, action, onClick }: { text: string; action: string; onClick: () => void }) {
     return (
-        <p className="text-center text-sm" style={{ color: 'var(--jale-ink-2)' }}>
+        <p className="text-center text-sm text-[var(--jale-ink-2)]">
             {text}{' '}
-            <button onClick={onClick} style={{ background: 'none', border: 0, color: 'var(--jale-blue-600)', fontWeight: 600, cursor: 'pointer', fontSize: 'inherit', padding: 0 }}>
+            <button type="button" onClick={onClick} className={`text-[length:inherit] ${LINK_BUTTON}`}>
                 {action}
             </button>
         </p>
@@ -323,8 +344,12 @@ function SwitchPrompt({ text, action, onClick }: { text: string; action: string;
 
 function BackButton({ label, onClick }: { label: string; onClick: () => void }) {
     return (
-        <button onClick={onClick} className="self-start text-sm font-medium flex items-center gap-1" style={{ background: 'none', border: 0, color: 'var(--jale-ink-2)', cursor: 'pointer', padding: 0 }}>
-            &larr; {label}
+        <button
+            type="button"
+            onClick={onClick}
+            className="flex cursor-pointer items-center gap-1 self-start rounded border-0 bg-transparent p-0 text-sm font-medium text-[var(--jale-ink-2)] transition-colors hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+        >
+            <span aria-hidden="true">&larr;</span> {label}
         </button>
     );
 }
@@ -347,12 +372,9 @@ function OtpStep(props: {
     onSubmit: () => void;
 }) {
     return (
-        <div className="flex flex-col gap-5">
+        <div className="anim-fade-in flex flex-col gap-5">
             <BackButton onClick={props.onBack} label={props.backLabel} />
-            <div>
-                <h1 className="font-semibold leading-snug mb-1" style={{ fontSize: '1.15rem', letterSpacing: '-0.02em', color: 'var(--jale-ink)' }}>{props.title}</h1>
-                <p className="text-sm" style={{ color: 'var(--jale-ink-2)' }}>{props.subtitle}</p>
-            </div>
+            <AuthHeading title={props.title} subtitle={props.subtitle} />
             <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${OTP_LENGTH}, 1fr)` }}>
                 {props.digits.map((d, i) => (
                     <input
@@ -366,12 +388,15 @@ function OtpStep(props: {
                         onChange={(e) => props.onChange(i, e.target.value)}
                         onKeyDown={(e) => props.onKeyDown(i, e)}
                         onPaste={i === 0 ? props.onPaste : undefined}
-                        className="text-center font-bold rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] focus:outline-none focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)] focus:bg-white transition-all duration-150"
-                        style={{ height: 56, width: '100%', minWidth: 0, color: 'var(--jale-ink)' }}
+                        /* Same recipe as `ui/input`, including `--input-focus`
+                           for the focused fill: `bg-white` would stay white in
+                           the dark theme and blow out the card. */
+                        className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-input)] text-center font-bold text-[var(--jale-ink)] transition-[background-color,border-color,box-shadow] duration-150 focus:border-[var(--jale-blue-500)] focus:bg-[var(--input-focus)] focus:shadow-[var(--shadow-focus)] focus:outline-none"
+                        style={{ height: 56, width: '100%', minWidth: 0 }}
                     />
                 ))}
             </div>
-            {props.error && <ErrorText error={props.error} />}
+            {props.error && <FormError>{props.error}</FormError>}
             <Button className="w-full" size="lg" onClick={props.onSubmit} disabled={props.disabled} loading={props.isLoading} loadingLabel={props.loadingLabel}>
                 {props.buttonLabel}
             </Button>

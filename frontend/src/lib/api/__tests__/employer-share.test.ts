@@ -40,16 +40,26 @@ describe('shareEmployerJob', () => {
 
   it('surfaces job_not_found as a typed ApiError', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: 'job_not_found' }, 404));
-    await expect(shareEmployerJob('id-token-abc', 'job-1')).rejects.toMatchObject({
-      code: 'job_not_found',
-      status: 404,
-    });
+    const err = await shareEmployerJob('id-token-abc', 'job-1').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: 'job_not_found', status: 404, message: 'job_not_found' });
   });
 
   it('surfaces share_url_misconfigured as a typed ApiError', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: 'share_url_misconfigured' }, 500));
     const err = await shareEmployerJob('id-token-abc', 'job-1').catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
-    expect(err).toMatchObject({ code: 'share_url_misconfigured', status: 500 });
+    expect(err).toMatchObject({
+      code: 'share_url_misconfigured',
+      status: 500,
+      message: 'share_url_misconfigured',
+    });
+  });
+
+  it('falls back to the share_failed code when the body carries none', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}, 500));
+    const err = await shareEmployerJob('id-token-abc', 'job-1').catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: 'share_failed', status: 500 });
   });
 });

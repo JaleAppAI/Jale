@@ -17,6 +17,14 @@ const BUBBLES = [
  * `landing.chat` namespace ("Jale"/"J" wordmark exempt). Decorative — exposed
  * to AT as a single labeled image. Animation classes (`jale-float`,
  * `jale-slide-in`) are defined by the landing page's style block.
+ *
+ * ILLUSTRATION, not an app surface. Everything inside the bezel is a drawing of
+ * a real WhatsApp screen, so its colours are WhatsApp's, not Jale's: they are
+ * literal on purpose and do NOT follow the theme. Re-tinting them for dark mode
+ * would make the picture stop reading as WhatsApp, which is the entire point of
+ * the mockup. The bezel itself is brand navy (`--jale-blue-950`, one of the
+ * brand-ramp tokens the dark theme leaves fixed) because it frames the picture
+ * inside the navy hero.
  */
 export function PhoneMockup() {
     const t = useTranslations('landing.chat');
@@ -31,7 +39,7 @@ export function PhoneMockup() {
             <div
                 role="img"
                 aria-label={t('aria')}
-                className="jale-float w-[280px] rounded-[42px] border-[9px] border-[#0e0e3d] bg-[#0e0e3d] shadow-[0_30px_60px_-18px_rgba(0,0,0,.55)] sm:w-[300px]"
+                className="jale-float w-[280px] rounded-[42px] border-[9px] border-[var(--jale-blue-950)] bg-[var(--jale-blue-950)] shadow-[0_30px_60px_-18px_rgba(0,0,0,.55)] sm:w-[300px]"
             >
                 <div className="flex h-[580px] flex-col overflow-hidden rounded-[34px] bg-white">
                     {/* Status bar */}

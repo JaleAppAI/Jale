@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ApiError, clearIdempotencyKey, getIdempotencyKey, isDefinitiveError } from '../employer';
+import { ApiError as SharedApiError } from '../errors';
 
 // vitest.config.ts runs this suite in the 'node' environment, which has no
 // sessionStorage global. getIdempotencyKey only touches window/sessionStorage
@@ -92,6 +93,22 @@ describe('getIdempotencyKey', () => {
     clearIdempotencyKey(action);
     expect(fakeSessionStorage.getItem(storageKey)).toBeNull();
     expect(getIdempotencyKey(action, body)).not.toBe(first);
+  });
+});
+
+describe('ApiError re-export', () => {
+  // Components and pages import ApiError from '@/lib/api/employer' and check
+  // `err instanceof ApiError`. That only holds while the re-export is the very
+  // same class the throwers construct.
+  it('is the same class as the shared one in lib/api/errors', () => {
+    expect(ApiError).toBe(SharedApiError);
+    expect(new SharedApiError(409, 'job_limit_reached')).toBeInstanceOf(ApiError);
+  });
+
+  it('keeps message === code and exposes the allowlisted payload PostJobModal reads', () => {
+    const err = new ApiError(409, 'job_limit_reached', { active_job_limit: 1, active_jobs: 1 });
+    expect(err.message).toBe('job_limit_reached');
+    expect(err.payload.active_job_limit).toBe(1);
   });
 });
 

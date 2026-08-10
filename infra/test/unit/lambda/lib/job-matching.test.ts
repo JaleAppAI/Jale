@@ -1,7 +1,9 @@
 import {
   buildWorkerProfessionContext,
+  cityAnchorsFrom,
   extractZip,
   listMatchedJobsForWorker,
+  loadWorkerPreferredCities,
   normalizeProfessionText,
   scoreJobCandidate,
   type MatchableJobRow,
@@ -35,11 +37,11 @@ function buildQuery(routes: QueryRoute[]): jest.Mock {
  * `jobs`, distinguished only by the table-name param. Defaults to "no
  * lat/lon columns" (NULL::numeric fallback) for every table unless
  * overridden. */
-function coordinateColumnsRoute(hasCoords: Partial<Record<'worker_profiles' | 'jobs', boolean>> = {}): QueryRoute {
+function coordinateColumnsRoute(hasCoords: Partial<Record<'worker_profiles' | 'jobs' | 'worker_preferred_cities', boolean>> = {}): QueryRoute {
   return {
     test: (sql) => /FROM information_schema\.columns/.test(sql),
     handler: (_sql, params) => {
-      const table = params[0] as 'worker_profiles' | 'jobs';
+      const table = params[0] as 'worker_profiles' | 'jobs' | 'worker_preferred_cities';
       return { rows: hasCoords[table] ? [{ column_name: 'latitude' }, { column_name: 'longitude' }] : [] };
     },
   };
@@ -312,6 +314,84 @@ describe('job-matching pure scoring', () => {
     const context = buildWorkerProfessionContext(w, []);
     expect(context.strongTerms).toEqual([]);
     expect(context.terms).toContain('roofer');
+  });
+
+  describe('cityAnchors distance scoring', () => {
+    const elPaso = { latitude: 31.7619, longitude: -106.485 };
+    const lasCruces = { latitude: 32.3199, longitude: -106.7637 };
+
+    it('scores a job near a second-city anchor even when the worker coordinate is far', () => {
+      const scored = scoreJobCandidate(
+        worker({ latitude: 31.7619, longitude: -106.485, city: null, profile_location: null }) as never,
+        job({ latitude: 32.3199, longitude: -106.7637, location: 'Las Cruces, NM' }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [lasCruces],
+      );
+      expect(scored.match_components.location).toBe(30);
+      expect(scored.match_reasons).toContain('distance_under_5_miles');
+    });
+
+    it('takes the nearest anchor (min), not the first', () => {
+      const scored = scoreJobCandidate(
+        worker({ latitude: null, longitude: null, city: null, profile_location: null }) as never,
+        job({ latitude: 31.7619, longitude: -106.485 }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [lasCruces, elPaso],
+      );
+      expect(scored.match_components.location).toBe(30);
+    });
+
+    it('a coordinate-less worker keeps ZIP points when every anchor is far (max rule)', () => {
+      // Job text says El Paso 79928 (matching the worker's ZIP) but its
+      // coordinates are Dallas -- ~570mi from the single El Paso anchor, so
+      // the distance tier is null and the legacy zip_exact must win the max.
+      const scored = scoreJobCandidate(
+        worker({ latitude: null, longitude: null, profile_location: '79928', city: '79928' }) as never,
+        job({ latitude: 32.7767, longitude: -96.797, location: 'El Paso, TX 79928' }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [elPaso],
+      );
+      expect(scored.match_components.location).toBe(30);
+      expect(scored.match_reasons).toContain('zip_exact');
+    });
+
+    it('scores the referral-pinned job with the city anchors', async () => {
+      const query = buildQuery([
+        coordinateColumnsRoute({ jobs: true }),
+        workerRoute(worker({
+          latitude: null, longitude: null, city: null, profile_location: null,
+          attributed_job_id: 'job-ref',
+        })),
+        tradeAliasesRoute([]),
+        jobsListRoute([]),
+        pinFetchRoute([job({ id: 'job-ref', latitude: 32.3199, longitude: -106.7637, location: 'Las Cruces, NM' })]),
+      ]);
+
+      const jobs = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+        limit: 5,
+        channel: 'api',
+        cityAnchors: [lasCruces],
+      });
+
+      expect(jobs[0].id).toBe('job-ref');
+      expect(jobs[0].match_components.location).toBe(30);
+      expect(jobs[0].match_reasons).toContain('distance_under_5_miles');
+    });
+
+    it('no anchors and no coordinates degrades to exactly the legacy text path', () => {
+      const scored = scoreJobCandidate(
+        worker({ latitude: null, longitude: null, profile_location: 'El Paso', city: null }) as never,
+        job({ latitude: null, longitude: null, location: 'El Paso, TX' }) as never,
+        new Date('2026-05-15T12:00:00Z'),
+        buildWorkerProfessionContext(worker() as never),
+        [],
+      );
+      expect(scored.match_components.location).toBe(18);
+      expect(scored.match_reasons).toContain('location_text_match');
+    });
   });
 });
 
@@ -601,5 +681,188 @@ describe('listMatchedJobsForWorker', () => {
 
     const aliasCall = findCall(query, /FROM trade_aliases/);
     expect(aliasCall?.[1]).toEqual([expect.arrayContaining(['electrician', 'soldador'])]);
+  });
+
+  it('filters by preferred city keys in SQL', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      cityKeys: ['el-paso-tx', 'austin-tx'],
+    });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).toContain('j.city_key = ANY(');
+    expect(jobsCall?.[1]).toEqual(expect.arrayContaining([['el-paso-tx', 'austin-tx']]));
+  });
+
+  it('excludes city keys for the fallback query', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      excludeCityKeys: ['el-paso-tx'],
+    });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).toContain('j.city_key IS NULL OR NOT (j.city_key = ANY(');
+    expect(jobsCall?.[1]).toEqual(expect.arrayContaining([['el-paso-tx']]));
+  });
+
+  it('still pins the referred job when a city filter is applied', async () => {
+    // Load-bearing: the `cityKeys` branch must NOT set `isFiltered`. A worker
+    // referred to a job OUTSIDE their preferred cities must still see it
+    // pinned -- the referral is a stronger signal than the city preference.
+    // The handler tests can't catch a regression here (they mock this lib).
+    const outOfCityJob = job({
+      id: 'job-referred-elsewhere',
+      title: 'Drywall Crew',
+      description: 'Sheetrock hanging, taping, mud, and texture.',
+      location: 'Austin, TX',
+    });
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred-elsewhere' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+      pinFetchRoute([outOfCityJob]),
+    ]);
+
+    const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      cityKeys: ['el-paso-tx'],
+    });
+
+    expect(result[0]?.id).toBe('job-referred-elsewhere');
+    expect(result[0]?.match_reasons[0]).toBe('referred_job');
+  });
+
+  it('skips the referral pin on the excludeCityKeys fallback query', async () => {
+    // The fallback runs alongside a primary query that already pinned the
+    // referral; re-pinning here would surface the same job in both lists.
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ attributed_job_id: 'job-referred-elsewhere' })),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+      pinFetchRoute([job({ id: 'job-referred-elsewhere' })]),
+    ]);
+
+    const result = await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      excludeCityKeys: ['el-paso-tx'],
+    });
+
+    expect(query.mock.calls.some(([sql]) => /j\.id = \$2/.test(sql as string))).toBe(false);
+    expect(result).toHaveLength(0);
+  });
+
+  it('applies no city clause when no keys are given', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).not.toContain('city_key');
+  });
+
+  it('keeps the LIMIT placeholder index correct when city filters are applied', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', {
+      limit: 5,
+      channel: 'api',
+      search: 'drywall',
+      jobType: 'contract',
+      cityKeys: ['el-paso-tx'],
+      excludeCityKeys: ['austin-tx'],
+    });
+
+    const [sql, params] = findCall(query, /FROM jobs j/)!;
+    // Every `$n` in the WHERE/LIMIT clauses must resolve to a real param, and
+    // the LIMIT must still be the last one (city filters push before it).
+    const limitIndex = Number(/LIMIT \$(\d+)/.exec(sql)?.[1]);
+    expect(limitIndex).toBe(params.length);
+    expect(params[limitIndex - 1]).toBe(50);
+
+    const includeIndex = params.findIndex((p) => Array.isArray(p) && p[0] === 'el-paso-tx') + 1;
+    const excludeIndex = params.findIndex((p) => Array.isArray(p) && p[0] === 'austin-tx') + 1;
+    expect(sql).toContain(`j.city_key = ANY($${includeIndex}::text[])`);
+    expect(sql).toContain(`NOT (j.city_key = ANY($${excludeIndex}::text[]))`);
+  });
+});
+
+describe('loadWorkerPreferredCities', () => {
+  it('returns city keys with centroids in created_at order, guarded by the column probe', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute({ worker_preferred_cities: true }),
+      {
+        test: (sql) => /FROM worker_preferred_cities/.test(sql),
+        handler: () => ({ rows: [
+          { city_key: 'el-paso-tx', latitude: '31.7619', longitude: '-106.4850' },
+          { city_key: 'las-cruces-nm', latitude: null, longitude: null },
+        ] }),
+      },
+    ]);
+
+    const rows = await loadWorkerPreferredCities({ query } as never, 'worker-1');
+
+    expect(rows).toEqual([
+      { city_key: 'el-paso-tx', latitude: '31.7619', longitude: '-106.4850' },
+      { city_key: 'las-cruces-nm', latitude: null, longitude: null },
+    ]);
+    const [sql, params] = findCall(query, /FROM worker_preferred_cities/)!;
+    expect(sql).toContain('ORDER BY wpc.created_at');
+    expect(params).toEqual(['worker-1']);
+  });
+
+  it('selects NULL coordinates before migration 064 is applied', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),  // no coordinate columns anywhere
+      {
+        test: (sql) => /FROM worker_preferred_cities/.test(sql),
+        handler: () => ({ rows: [{ city_key: 'el-paso-tx', latitude: null, longitude: null }] }),
+      },
+    ]);
+
+    await loadWorkerPreferredCities({ query } as never, 'worker-1');
+
+    const [sql] = findCall(query, /FROM worker_preferred_cities/)!;
+    expect(sql).toContain('NULL::numeric AS latitude');
+  });
+});
+
+describe('cityAnchorsFrom', () => {
+  it('keeps only rows with a complete numeric pair', () => {
+    expect(cityAnchorsFrom([
+      { city_key: 'a-tx', latitude: '31.5', longitude: '-106.1' },
+      { city_key: 'b-tx', latitude: null, longitude: null },
+      { city_key: 'c-tx', latitude: 'not-a-number', longitude: '-106.1' },
+    ])).toEqual([{ latitude: 31.5, longitude: -106.1 }]);
   });
 });

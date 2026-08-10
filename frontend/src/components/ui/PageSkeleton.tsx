@@ -1,4 +1,5 @@
 import { DashboardPanel } from './dashboard-panel';
+import { Skeleton, SkeletonLine } from './skeleton';
 
 /**
  * Loading placeholder for the profile-style pages (a `DashboardPanel` with a
@@ -7,6 +8,9 @@ import { DashboardPanel } from './dashboard-panel';
  * flashes during the brief post-signup window where the backend is still
  * provisioning the user's row (see the retry loop in `src/lib/api.ts`) or
  * while a legal-wall redirect is in flight.
+ *
+ * Rendered output is unchanged from the original hand-rolled version; only the
+ * internals now come from the shared skeleton atoms.
  */
 export function PageSkeleton({ label }: { label: string }) {
     return (
@@ -14,8 +18,8 @@ export function PageSkeleton({ label }: { label: string }) {
             <span className="sr-only">{label}</span>
             <DashboardPanel>
                 <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
-                    <div className="h-4 w-40 rounded bg-[var(--jale-paper-2)] animate-pulse motion-reduce:animate-none" />
-                    <div className="h-8 w-20 rounded-full bg-[var(--jale-paper-2)] animate-pulse motion-reduce:animate-none" />
+                    <Skeleton className="h-4 w-40" />
+                    <Skeleton className="h-8 w-20 rounded-full" />
                 </div>
                 <div className="p-6">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -32,8 +36,8 @@ export function PageSkeleton({ label }: { label: string }) {
 function SkeletonField() {
     return (
         <div>
-            <div className="mb-2 h-2.5 w-20 rounded bg-[var(--jale-paper-2)] animate-pulse motion-reduce:animate-none" />
-            <div className="h-3.5 w-3/4 rounded bg-[var(--jale-divider)] animate-pulse motion-reduce:animate-none" />
+            <Skeleton className="mb-2 h-2.5 w-20" />
+            <SkeletonLine width="w-3/4" />
         </div>
     );
 }

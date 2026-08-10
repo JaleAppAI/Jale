@@ -3,15 +3,18 @@ import { handler } from '../../../../lambda/api/employer-jobs-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { setJobCoordinates } from '../../../../lambda/lib/location';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
 jest.mock('../../../../lambda/lib/entitlements');
+jest.mock('../../../../lambda/lib/location');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockResolveEntitlements = resolveEntitlements as jest.Mock;
+const mockSetJobCoordinates = setJobCoordinates as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -34,6 +37,7 @@ describe('employer-jobs-update', () => {
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockSetRlsContext.mockResolvedValue(undefined);
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockSetJobCoordinates.mockResolvedValue(undefined);
     // Default: employer_free plan with 1 slot, 0 active jobs — won't affect non-active transitions
     mockResolveEntitlements.mockResolvedValue({ planCode: 'employer_free', activeJobLimit: 1 });
   });
@@ -110,6 +114,8 @@ describe('employer-jobs-update', () => {
             trade_category: 'concrete',
             required_experience_years: 2,
             certifications: [],
+            public_code: 'PUB123',
+            public_listing_enabled: true,
             applicant_count: 4,
           }],
         });
@@ -125,7 +131,12 @@ describe('employer-jobs-update', () => {
       hired_count: 1,
       open_count: 2,
       number_of_workers_needed: 3,
+      public_code: 'PUB123',
+      public_listing_enabled: true,
     });
+    const statusUpdateCall = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('UPDATE jobs SET status'));
+    expect(statusUpdateCall[0]).toContain('public_code');
+    expect(statusUpdateCall[0]).toContain('public_listing_enabled');
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.anything(), 'e-sub');
     expect(mockCheckCompliance).toHaveBeenCalledWith(expect.anything(), 'e-sub', 'v1.0');
     expect(mockQuery).toHaveBeenCalledWith(
@@ -490,32 +501,163 @@ describe('employer-jobs-update', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Field-edit path -- city/state_region recompute
+  // Field-edit path — city triple + coordinates
   // ---------------------------------------------------------------------------
+  //
+  // EDITABLE_COLUMNS positional layout (0-based param array index):
+  //   20 city_key, 21 city, 22 state, 23 state_region; WHERE id is bind $25
+  //   (i.e. params[24] once the trailing jobId is appended).
 
   function findUpdateCall() {
     return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('UPDATE jobs SET'));
   }
+
+  it('returns the public listing fields on a field edit so the detail page can setJob(updated)', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = findUpdateCall()!;
+    expect(updateCall[0]).toContain('public_code');
+    expect(updateCall[0]).toContain('public_listing_enabled');
+  });
+
+  it('updates the city triple on a field edit', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, city_key: 'austin-tx', city: 'Austin', state: 'TX',
+    }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = findUpdateCall()!;
+    expect(updateCall[0]).toContain('city_key');
+    expect(updateCall[1]).toEqual(expect.arrayContaining(['austin-tx', 'Austin', 'TX']));
+  });
+
+  it('clears the matching-identity triple when a field edit omits it and the location is unparseable, but preserves the shared city column', async () => {
+    // mockCurrentJob() defaults city/state_region to null, so "preserve cur.city"
+    // and "null" are the same value here -- see the dedicated preserve-on-update
+    // test below (in the city/state_region recompute section) for a case where
+    // cur.city is non-null and the preserve behavior is actually observable.
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Near the old stadium' }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = findUpdateCall()!;
+    expect(updateCall[0]).toContain('city_key');
+    // params for city_key/city/state/state_region must be null — pinned positionally:
+    expect(updateCall[1].slice(20, 24)).toEqual([null, null, null, null]);
+  });
+
+  it('derives the matching-identity triple from parseable location text when a field edit omits the triple', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'El Paso, TX 79912' }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = findUpdateCall()!;
+    // The city-triple parser (city-fields.ts parseCityFromLocation) accepts a
+    // ZIP suffix and derives the full triple. The separate SEO parser
+    // (job-location-parse.ts) does NOT accept a ZIP suffix on "City, ST" and
+    // returns null for this same string, so state_region falls back to the
+    // (here, null) stored value -- an intentional asymmetry between the two
+    // location parsers under the merged doctrine.
+    expect(updateCall[1].slice(20, 24)).toEqual(['el-paso-tx', 'El Paso', 'TX', null]);
+  });
+
+  it('a picker triple wins over the location text parse on edit', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, location: 'El Paso, TX',
+      city_key: 'austin-tx', city: 'Austin', state: 'TX',
+    }) }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = findUpdateCall()!;
+    // state_region still derives from the SEO parser's read of `location`
+    // ("El Paso, TX" -> TX), independently of the picker triple overriding
+    // city_key/city/state to Austin.
+    expect(updateCall[1].slice(20, 24)).toEqual(['austin-tx', 'Austin', 'TX', 'TX']);
+  });
+
+  it('rejects a mismatched city_key on edit (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, city_key: 'austin-tx', city: 'El Paso', state: 'TX',
+    }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_city_key');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('stores coordinates on a field edit when both are provided', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27, longitude: -97.74 }) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockSetJobCoordinates).toHaveBeenCalledWith(expect.anything(), JOB_ID, 30.27, -97.74, 'manual');
+  });
+
+  it('does not set coordinates when none are provided', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockSetJobCoordinates).not.toHaveBeenCalled();
+  });
+
+  it('rejects a field edit with only one coordinate (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27 }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_coordinates');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an out-of-range latitude on a field edit (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 91, longitude: -97.74 }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_latitude');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an out-of-range longitude on a field edit (400)', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27, longitude: 181 }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_longitude');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rolls back the whole edit when storing coordinates fails', async () => {
+    mockCurrentJob();
+    mockSetJobCoordinates.mockRejectedValueOnce(new Error('invalid_latitude'));
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, latitude: 30.27, longitude: -97.74 }) }));
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body).error).toBe('internal_error');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Field-edit path -- city/state_region recompute (SEO channel)
+  // ---------------------------------------------------------------------------
 
   it('recomputes city/state_region from location on every field edit', async () => {
     mockCurrentJob();
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'El Paso, TX' }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    // city, state_region are the last two SET params, followed by the WHERE id param.
-    expect(params[params.length - 3]).toBe('El Paso');
-    expect(params[params.length - 2]).toBe('TX');
+    expect(params[21]).toBe('El Paso');
+    expect(params[23]).toBe('TX');
   });
 
-  it('explicit city/state_region body fields win over the parsed location', async () => {
+  it('explicit city/state_region body fields win over the parsed location when no triple or derivable location-city is present', async () => {
     mockCurrentJob();
+    // `location: 'Austin'` (no comma/state) is unparseable by the city-triple
+    // parser (parseCityFromLocation requires "City, ST"), so cityTriple is
+    // null here and the shared `city` column falls through to the SEO
+    // resolver's explicit-override value below, rather than being derived
+    // from the location text (see the picker-triple-wins test above for the
+    // case where a derivable triple DOES take priority over an explicit `city`).
     const res = await handler(makeEvent({
-      body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: 'North Austin', state_region: 'ok' }),
+      body: JSON.stringify({ ...VALID_EDIT, location: 'Austin', city: 'North Austin', state_region: 'ok' }),
     }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    expect(params[params.length - 3]).toBe('North Austin');
-    expect(params[params.length - 2]).toBe('OK');
+    expect(params[20]).toBeNull();
+    expect(params[21]).toBe('North Austin');
+    expect(params[22]).toBeNull();
+    expect(params[23]).toBe('OK');
   });
 
   it('preserves the existing city/state_region when the new location is unparseable and no explicit override is given', async () => {
@@ -523,10 +665,15 @@ describe('employer-jobs-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: '79928' }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    // A bare ZIP never parses -- the pre-existing city/state_region must survive
-    // this edit rather than being nulled out just because location changed.
-    expect(params[params.length - 3]).toBe('El Paso');
-    expect(params[params.length - 2]).toBe('TX');
+    // A bare ZIP never parses -- the pre-existing shared `city`/state_region
+    // must survive this edit rather than being nulled out just because
+    // location changed. The matching-identity fields (city_key/state) DO
+    // reset to null regardless -- that asymmetry is deliberate (see the
+    // handler's inline comment) so a stale key never keeps matching feeds.
+    expect(params[20]).toBeNull();
+    expect(params[21]).toBe('El Paso');
+    expect(params[22]).toBeNull();
+    expect(params[23]).toBe('TX');
   });
 
   it('rejects an invalid explicit city on field edit, before opening a DB connection', async () => {
@@ -550,16 +697,21 @@ describe('employer-jobs-update', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
-  it('an explicit null city clears it to NULL, even though the job already has a stored city', async () => {
+  it('an explicit null city clears it to NULL -- and also suppresses the city_key/state derive -- even though the job already has a stored city', async () => {
     mockCurrentJob({ city: 'El Paso', state_region: 'TX' });
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: null }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
+    // city_key/state are also null: cityCleared suppresses the derive
+    // entirely, so a deliberately cleared city can never resurrect as a
+    // matching city_key (merged doctrine).
+    expect(params[20]).toBeNull();
     // city is NULL (cleared) despite both a parseable location ("Austin") and
     // a pre-existing stored value ("El Paso") that the old fallback-to-cur
     // behavior would otherwise have preserved.
-    expect(params[params.length - 3]).toBeNull();
-    expect(params[params.length - 2]).toBe('TX');
+    expect(params[21]).toBeNull();
+    expect(params[22]).toBeNull();
+    expect(params[23]).toBe('TX');
   });
 
   it('an explicit null state_region clears it to NULL, even though the job already has a stored state_region', async () => {
@@ -567,8 +719,13 @@ describe('employer-jobs-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', state_region: null }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    expect(params[params.length - 3]).toBe('Austin');
-    expect(params[params.length - 2]).toBeNull();
+    // Unlike an explicit `city: null`, a cleared state_region does not affect
+    // the separate matching-identity triple: "Austin, TX" still derives a
+    // full city_key/city/state via parseCityFromLocation.
+    expect(params[20]).toBe('austin-tx');
+    expect(params[21]).toBe('Austin');
+    expect(params[22]).toBe('TX');
+    expect(params[23]).toBeNull();
   });
 
   it('both city and state_region explicitly null clears both, ignoring both the parse and the stored values', async () => {
@@ -576,8 +733,10 @@ describe('employer-jobs-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: null, state_region: null }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    expect(params[params.length - 3]).toBeNull();
-    expect(params[params.length - 2]).toBeNull();
+    expect(params[20]).toBeNull();
+    expect(params[21]).toBeNull();
+    expect(params[22]).toBeNull();
+    expect(params[23]).toBeNull();
   });
 
   it('an explicit empty-string city still 400s -- null clears, but empty string is never valid', async () => {

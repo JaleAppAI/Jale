@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { shareJob } from '@/lib/api/worker';
 import type { ShareChannel, WorkerApiError } from '@/lib/api/worker';
 
@@ -18,6 +19,17 @@ interface ShareJobPanelProps {
 // only thing that makes the resulting attribution data meaningful.
 const BUTTON_CHANNELS: ShareChannel[] = ['whatsapp', 'sms', 'facebook', 'copy_link'];
 
+/**
+ * How long "Copied!" stays on the button. Long enough to be read on a phone
+ * mid-scroll, short enough that the button does not look stuck in a state.
+ */
+const COPIED_RESET_MS = 3000;
+
+/**
+ * Deliberately NOT teal. Teal is the mark of a CONFIRMED referral (the ribbon
+ * on /j/[code]); this panel only mints the link, so painting it teal would
+ * promise attribution that has not happened yet.
+ */
 export function ShareJobPanel({ jobId }: ShareJobPanelProps) {
   const t = useTranslations('job_share');
   const { idToken } = useAuth();
@@ -33,6 +45,22 @@ export function ShareJobPanel({ jobId }: ShareJobPanelProps) {
   useEffect(() => {
     setCanNativeShare(typeof navigator !== 'undefined' && typeof navigator.share === 'function');
   }, []);
+
+  // Held in a ref so a second copy restarts the countdown instead of stacking
+  // timers, and so an unmount mid-countdown cannot setState on a dead component.
+  const copiedTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+  }, []);
+
+  function flashCopied() {
+    setCopied(true);
+    if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      copiedTimerRef.current = null;
+    }, COPIED_RESET_MS);
+  }
 
   async function handleShare(channel: ShareChannel) {
     if (!idToken || loadingChannel) return;
@@ -60,8 +88,7 @@ export function ShareJobPanel({ jobId }: ShareJobPanelProps) {
           break;
         case 'copy_link':
           await navigator.clipboard.writeText(share_url);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 2000);
+          flashCopied();
           break;
         case 'device_share':
           if (navigator.share) {
@@ -99,41 +126,53 @@ export function ShareJobPanel({ jobId }: ShareJobPanelProps) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <div>
-        <p className="text-sm font-semibold">{t('title')}</p>
-        <p className="text-xs text-[var(--jale-ink-2)]">{t('subtitle')}</p>
+        <p className="text-sm font-bold text-[var(--jale-ink)]">{t('title')}</p>
+        <p className="mt-0.5 text-xs text-[var(--jale-ink-2)]">{t('subtitle')}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {BUTTON_CHANNELS.map((channel) => (
-          <Button
-            key={channel}
-            type="button"
-            variant="outline"
-            size="sm"
-            className="rounded-full"
-            loading={loadingChannel === channel}
-            loadingLabel={channelLabel[channel]}
-            onClick={() => handleShare(channel)}
-          >
-            {channelLabel[channel]}
-          </Button>
-        ))}
+        {BUTTON_CHANNELS.map((channel) => {
+          const confirmed = channel === 'copy_link' && copied;
+          return (
+            <Button
+              key={channel}
+              type="button"
+              // The confirmed copy tints itself rather than swapping in a
+              // separate banner: the state belongs to the button that caused it.
+              variant={confirmed ? 'secondary' : 'outline'}
+              size="sm"
+              loading={loadingChannel === channel}
+              loadingLabel={channelLabel[channel]}
+              onClick={() => handleShare(channel)}
+            >
+              {channelLabel[channel]}
+            </Button>
+          );
+        })}
       </div>
 
+      {/* The copy confirmation is a label swap, which assistive tech would not
+          otherwise announce. */}
+      <span role="status" aria-live="polite" className="sr-only">
+        {copied ? t('copied') : ''}
+      </span>
+
       {canNativeShare && (
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="sm"
+          loading={loadingChannel === 'device_share'}
+          loadingLabel={channelLabel.device_share}
           onClick={() => handleShare('device_share')}
-          disabled={loadingChannel === 'device_share'}
-          className="text-sm font-semibold text-[var(--jale-blue-700)] underline disabled:opacity-50"
         >
           {channelLabel.device_share}
-        </button>
+        </Button>
       )}
 
-      {errorMsg && <p className="text-error text-sm">{errorMsg}</p>}
+      {errorMsg && <InlineFeedback tone="danger">{errorMsg}</InlineFeedback>}
     </div>
   );
 }

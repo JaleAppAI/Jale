@@ -1,4 +1,4 @@
-import { normalizeApplicationStatus, parseJobFields } from '../../../../lambda/lib/job-fields';
+import { normalizeApplicationStatus, parseJobFields, parseOptionalCoordinates } from '../../../../lambda/lib/job-fields';
 
 const validBody = {
   pay_min: 25,
@@ -113,5 +113,53 @@ describe('job-fields parser', () => {
     expect(normalizeApplicationStatus('rejected')).toBe('not_interested');
     expect(normalizeApplicationStatus('hired')).toBe('hired');
     expect(normalizeApplicationStatus('bogus')).toBeNull();
+  });
+});
+
+describe('parseOptionalCoordinates', () => {
+  it('returns null when neither coordinate is present', () => {
+    expect(parseOptionalCoordinates({ title: 'Framer' })).toEqual({ ok: true, value: null });
+  });
+
+  it('accepts a complete, in-range pair', () => {
+    expect(parseOptionalCoordinates({ latitude: 30.27, longitude: -97.74 }))
+      .toEqual({ ok: true, value: { latitude: 30.27, longitude: -97.74 } });
+  });
+
+  it('accepts the exact bounds', () => {
+    expect(parseOptionalCoordinates({ latitude: -90, longitude: 180 }))
+      .toEqual({ ok: true, value: { latitude: -90, longitude: 180 } });
+  });
+
+  it.each([
+    ['only latitude', { latitude: 30.27 }],
+    ['only longitude', { longitude: -97.74 }],
+  ])('rejects %s with invalid_coordinates', (_caseName, body) => {
+    expect(parseOptionalCoordinates(body)).toEqual({ ok: false, error: 'invalid_coordinates' });
+  });
+
+  it.each([
+    ['out-of-range high latitude', { latitude: 91, longitude: -97.74 }],
+    ['out-of-range low latitude', { latitude: -91, longitude: -97.74 }],
+    ['non-numeric latitude', { latitude: '30.27', longitude: -97.74 }],
+    ['non-finite latitude', { latitude: Number.POSITIVE_INFINITY, longitude: -97.74 }],
+  ])('rejects %s with invalid_latitude', (_caseName, body) => {
+    expect(parseOptionalCoordinates(body)).toEqual({ ok: false, error: 'invalid_latitude' });
+  });
+
+  it.each([
+    ['out-of-range high longitude', { latitude: 30.27, longitude: 181 }],
+    ['out-of-range low longitude', { latitude: 30.27, longitude: -181 }],
+    ['non-numeric longitude', { latitude: 30.27, longitude: '-97.74' }],
+    ['non-finite longitude', { latitude: 30.27, longitude: Number.NaN }],
+  ])('rejects %s with invalid_longitude', (_caseName, body) => {
+    expect(parseOptionalCoordinates(body)).toEqual({ ok: false, error: 'invalid_longitude' });
+  });
+
+  it('treats an explicitly null coordinate as present, not absent', () => {
+    // hasOwnProperty semantics: { latitude: null, longitude: null } is a malformed
+    // pair, not an omission — it must not silently parse as "no coordinates".
+    expect(parseOptionalCoordinates({ latitude: null, longitude: null }))
+      .toEqual({ ok: false, error: 'invalid_latitude' });
   });
 });

@@ -28,7 +28,7 @@ export function CheckboxCard({
         style={{
           width: 18,
           height: 18,
-          background: checked ? "var(--jale-blue-500)" : "#fff",
+          background: checked ? "var(--jale-blue-500)" : "var(--jale-card)",
           border: `1.5px solid ${checked ? "var(--jale-blue-500)" : "var(--jale-divider)"}`,
           flexShrink: 0,
         }}

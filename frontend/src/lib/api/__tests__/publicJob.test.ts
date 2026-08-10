@@ -141,7 +141,7 @@ describe('getReferrerContext', () => {
       json: async () => {
         throw new Error('bad json');
       },
-    } as Response);
+    } as unknown as Response);
     await expect(getReferrerContext('ABC123', 'SHARE001')).resolves.toBeNull();
   });
 });
