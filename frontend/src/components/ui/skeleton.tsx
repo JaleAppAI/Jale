@@ -4,16 +4,25 @@
  * `PageSkeleton`, which is the pattern already proven in production on the
  * worker/employer profile pages.
  *
- * Two tones exist because a skeleton needs internal contrast to read as
- * structure rather than a grey slab: `paper` for labels/chrome and `divider`
- * for the "content" line it labels.
+ * Two light-surface tones exist because a skeleton needs internal contrast to
+ * read as structure rather than a grey slab: `paper` for labels/chrome and
+ * `divider` for the "content" line it labels. `rail` is the third, for the one
+ * dark surface in the app.
  */
 
-export type SkeletonTone = 'paper' | 'divider';
+export type SkeletonTone = 'paper' | 'divider' | 'rail';
 
 const toneClasses: Record<SkeletonTone, string> = {
     paper: 'bg-[var(--jale-paper-2)]',
     divider: 'bg-[var(--jale-divider)]',
+    // The navy sidebar (`--jale-sidebar`). Both paper tones are invisible
+    // there, and a `className` override cannot beat a tone class reliably --
+    // Tailwind resolves duplicate properties by stylesheet order, not by the
+    // order they appear in the attribute. So the rail gets a real tone.
+    // White-at-15% is the same white-on-navy family the rail's own dividers
+    // and muted text already use, and it holds in both themes because the
+    // surface under it is navy in both.
+    rail: 'bg-white/15',
 };
 
 /** Shared pulse; `motion-reduce:animate-none` honours the OS setting. */

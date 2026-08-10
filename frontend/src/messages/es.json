@@ -47,6 +47,15 @@
     "theme": {
       "toggle_to_dark": "Cambiar a tema oscuro",
       "toggle_to_light": "Cambiar a tema claro"
+    },
+    "trades": {
+      "electrician": "Electricista",
+      "plumber": "Plomero",
+      "carpenter": "Carpintero",
+      "concrete": "Concreto",
+      "painting": "Pintura",
+      "other": "Otro",
+      "unspecified": "Oficio no especificado"
     }
   },
   "match": {
@@ -398,6 +407,15 @@
       "field_company_size": "Tamaño de empresa",
       "field_description": "Descripción",
       "fallback_company": "Perfil de empleador",
+      "empty_company": "Empresa sin especificar",
+      "empty_contact": "Contacto sin especificar",
+      "empty_phone": "Teléfono sin especificar",
+      "empty_city": "Ciudad sin especificar",
+      "empty_service_area": "Área de servicio sin especificar",
+      "empty_hiring_trades": "Sin oficios seleccionados",
+      "empty_job_types": "Sin tipos de empleo seleccionados",
+      "empty_company_size": "Tamaño sin especificar",
+      "empty_description": "Sin descripción",
       "edit_button": "Editar",
       "save": "Guardar",
       "saving": "Guardando...",
@@ -499,31 +517,14 @@
     },
     "shell": {
       "title": "Panel",
-      "employer_workspace": "Espacio de empleador",
-      "company_fallback": "Equipo empleador",
-      "plan_label": "Jale Growth",
-      "plan_title": "Jale Growth",
-      "plan_body": "Las herramientas de crecimiento del prototipo aparecerán aquí cuando el flujo de contratación crezca.",
-      "upgrade": "Mejorar",
-      "alerts": "Alertas",
-      "search_workers": "Buscar workers"
+      "employer_workspace": "Espacio de empleador"
     },
     "nav": {
       "main": "Principal",
-      "hiring": "Contratar",
-      "account": "Cuenta",
       "dashboard": "Panel",
-      "jobs": "Mis trabajos",
       "messages": "Mensajes",
-      "workers": "Trabajadores",
-      "interviews": "Entrevistas",
-      "search_workers": "Buscar workers",
-      "boost_job": "Boost un trabajo",
-      "jale_direct": "Jale Directo",
-      "analytics": "Analíticas",
       "billing": "Facturación",
-      "settings": "Configuración",
-      "soon": "Pronto"
+      "settings": "Configuración"
     },
     "hero": {
       "eyebrow": "Got Jale?",
@@ -772,7 +773,6 @@
     "fallback_location": "Ubicación no disponible",
     "fallback_experience": "Experiencia no disponible",
     "fallback_availability": "Disponibilidad no disponible",
-    "fallback_trade": "Oficio no especificado",
     "fallback_skills": "No hay habilidades registradas",
     "fallback_applied": "Fecha no disponible",
     "availability": {
@@ -783,14 +783,6 @@
       "part_time": "Medio tiempo",
       "weekends": "Fines de semana",
       "flexible": "Flexible"
-    },
-    "trades": {
-      "electrician": "Electricista",
-      "plumber": "Plomero",
-      "carpenter": "Carpintero",
-      "concrete": "Concreto",
-      "painting": "Pintura",
-      "other": "Otro"
     },
     "invalid_link": {
       "title": "Enlace incompleto",
@@ -1102,6 +1094,14 @@
     "field_years_experience": "Años de experiencia",
     "field_location": "Ubicación",
     "field_bio": "Acerca de usted",
+    "empty_name": "Nombre sin especificar",
+    "empty_skills": "Sin habilidades registradas",
+    "empty_certifications": "Sin certificaciones registradas",
+    "empty_availability": "Disponibilidad sin especificar",
+    "empty_experience": "Experiencia sin especificar",
+    "empty_location": "Ubicación sin especificar",
+    "empty_preferred_cities": "Sin ciudades seleccionadas",
+    "empty_bio": "Sin descripción",
     "documents_title": "Documentos",
     "documents_subtitle": "Los documentos cargados se reutilizan automáticamente cuando postula a un trabajo.",
     "documents": {
@@ -1237,7 +1237,7 @@
   "app_shell": {
     "worker_workspace": "Espacio del trabajador",
     "worker_role": "Trabajador",
-    "worker_fallback": "Tu perfil",
+    "employer_role": "Empleador",
     "worker_nav_main": "Menú",
     "primary_nav": "Navegación principal",
     "mobile_nav": "Navegación móvil"

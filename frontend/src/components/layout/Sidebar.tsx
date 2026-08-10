@@ -3,6 +3,7 @@
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import { Icon } from '@/components/ui/icon';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
     employerPrimaryNav,
     employerBillingNav,
@@ -13,12 +14,28 @@ import {
     type ShellRole,
 } from './nav-config';
 
-/** Chip data resolved by the AppShell (company/worker name + initials). */
-export type SidebarChip = {
-    name: string;
-    meta?: string;
-    initials: string;
-};
+/**
+ * What the chip knows about the signed-in account, as resolved by `AppShell`.
+ *
+ * The three states are explicit because the chip previously had no way to tell
+ * them apart: a pending fetch and a failed one both rendered a localized
+ * placeholder name ("Your profile" / "Employer team") over a role word dressed
+ * up as a subtitle ("Worker" / "Jale Growth"), which is indistinguishable from
+ * a real profile that happens to be called that. Now "we don't know yet" is a
+ * skeleton and "we couldn't find out" is the role, stated as the role.
+ */
+export type SidebarChip =
+    | { status: 'loading' }
+    | { status: 'failed' }
+    | {
+          status: 'loaded';
+          /** Real `full_name` / `company_name`; `null` when the profile has none. */
+          name: string | null;
+          /** Real, already-joined second line; `null` when there is nothing to say. */
+          meta: string | null;
+          /** Initials of `name`, or the role letter when there is no name. */
+          initials: string;
+      };
 
 type SidebarProps = {
     role: ShellRole;
@@ -49,20 +66,7 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
             </div>
 
             <div className="border-b border-white/10 px-6 py-5">
-                <div className="flex items-center gap-3">
-                    {/* Not `InitialsAvatar`: that is the blue-50/blue-700 tint for
-                        light surfaces. This tile sits ON the navy rail, where the
-                        readable pairing is solid brand blue with white. */}
-                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
-                        {chip.initials}
-                    </div>
-                    <div className="min-w-0">
-                        <p className="truncate text-sm font-bold">{chip.name}</p>
-                        <p className="truncate text-xs font-medium text-white/55">
-                            {chip.meta || (role === 'employer' ? t('shell.plan_label') : tShell('worker_role'))}
-                        </p>
-                    </div>
-                </div>
+                <SidebarProfileChip role={role} chip={chip} />
             </div>
 
             <nav aria-label={tShell('primary_nav')} className="flex-1 overflow-y-auto px-4 py-6">
@@ -73,6 +77,78 @@ export function Sidebar({ role, homeHref, chip }: SidebarProps) {
                 )}
             </nav>
         </aside>
+    );
+}
+
+/** Role letter shown on the tile until (or instead of) real initials. */
+function roleLetter(role: ShellRole): string {
+    return role === 'employer' ? 'E' : 'W';
+}
+
+/**
+ * The account chip. Says only what it knows, in slots that never trade places.
+ *
+ * The two text slots are FIXED — neither is filled from a list, and nothing is
+ * ever promoted from one into the other:
+ *
+ *  - the NAME slot (bold, `text-sm`) renders the account's real name and
+ *    nothing else. When the profile loaded without one, it renders the same
+ *    honest role word the failed state uses, because that is the truthful thing
+ *    to put where a name goes when there is no name.
+ *  - the META slot (muted, `text-xs`) renders the real second line, or is
+ *    omitted entirely.
+ *
+ * The promotion this forbids is not hypothetical: filling the slots from
+ * `[name, meta]` compacted, a nameless-but-loaded profile put "Carpenter ·
+ * Charlotte" in bold in the name slot, where it reads as the person's name —
+ * the same lie about resolved data that the three states exist to stop telling.
+ *
+ * The skeleton's boxes match the line heights they stand in for (`h-5` for the
+ * `text-sm` name, `h-4` for the `text-xs` meta) so the skeleton→name swap does
+ * not move the nav below it. The chip does shrink by one line when the loaded
+ * profile has no second line to show — that is the honest outcome, and
+ * inventing a filler sentence to hold the space open is precisely the behaviour
+ * this replaces.
+ */
+function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip }) {
+    const tShell = useTranslations('app_shell');
+    const roleWord = role === 'employer' ? tShell('employer_role') : tShell('worker_role');
+
+    // A loaded profile with no name is not a failure -- we reached the server,
+    // the account simply has not been named yet -- but it renders the same way,
+    // because "we know your role and nothing else" is the same sentence.
+    const name: string = (chip.status === 'loaded' ? chip.name : null) || roleWord;
+    // Only ever the real meta line. `null` means the meta slot is not rendered.
+    const meta: string | null = chip.status === 'loaded' ? chip.meta : null;
+
+    return (
+        <div className="flex items-center gap-3">
+            {/* Not `InitialsAvatar`: that is the blue-50/blue-700 tint for
+                light surfaces. This tile sits ON the navy rail, where the
+                readable pairing is solid brand blue with white. It keeps its
+                footprint in every state; only the letters inside it change. */}
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--jale-blue-500)] text-sm font-extrabold">
+                {chip.status === 'loaded' ? chip.initials : roleLetter(role)}
+            </div>
+
+            {chip.status === 'loading' ? (
+                <div className="min-w-0 flex-1">
+                    <div className="flex h-5 items-center">
+                        <Skeleton tone="rail" className="h-3 w-28" />
+                    </div>
+                    <div className="flex h-4 items-center">
+                        <Skeleton tone="rail" className="h-2.5 w-20" />
+                    </div>
+                </div>
+            ) : (
+                <div className="min-w-0">
+                    <p className="truncate text-sm font-bold">{name}</p>
+                    {meta ? (
+                        <p className="truncate text-xs font-medium text-white/55">{meta}</p>
+                    ) : null}
+                </div>
+            )}
+        </div>
     );
 }
 

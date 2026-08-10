@@ -1,7 +1,6 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { useTranslations } from 'next-intl';
 import { SkeletonLine } from '@/components/ui/skeleton';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { Sidebar, type SidebarChip } from './Sidebar';
@@ -22,25 +21,18 @@ type AppShellSkeletonProps = {
  * the real shell mounts. Only the header title (which genuinely depends on the
  * page) is a skeleton line.
  *
- * The chip is byte-identical to the one `AppShell` shows pre-fetch (same
- * fallback strings, empty meta, same fallback initial), so mounting the real
- * shell over this one changes nothing in the sidebar.
+ * The chip is `loading` here by definition: this component renders before any
+ * profile request has been made, which is exactly the state `AppShell` starts
+ * in, so mounting the real shell over this one changes nothing in the sidebar.
  *
  * Every wrapper class is copied from `AppShell` verbatim. If AppShell's frame
  * changes, this must change with it or the swap will jump.
  */
 export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
-    const tShell = useTranslations('app_shell');
-    const tDash = useTranslations('employer_dashboard');
-
     const homeHref = role === 'worker' ? '/worker/home' : '/employer/dashboard';
 
-    // Mirrors AppShell's `resolvedChip` in its pre-fetch state.
-    const chip: SidebarChip = {
-        name: role === 'employer' ? tDash('shell.company_fallback') : tShell('worker_fallback'),
-        meta: '',
-        initials: role === 'employer' ? 'E' : 'W',
-    };
+    // Mirrors AppShell's initial chip state.
+    const chip: SidebarChip = { status: 'loading' };
 
     return (
         <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
@@ -62,21 +54,23 @@ export function AppShellSkeleton({ role, children }: AppShellSkeletonProps) {
                                     nav above: the theme switch needs no data and is usable
                                     the instant the shell paints. */}
                                 <ThemeToggle />
-                                {/* Matches `InitialsAvatar size={40} square`: 40px,
-                                    12px radius, blue-50 tint — minus the letters. */}
-                                <div className="h-10 w-10 rounded-xl bg-[var(--jale-blue-50)]" />
+                                {/* Two placeholders, not three: AppShell's header
+                                    row is language toggle / theme / sign out. The
+                                    profile avatar that used to sit between the last
+                                    two is gone from both files. */}
                                 <div className="h-10 w-24 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)]" />
                             </div>
                         </div>
                     </header>
 
-                    {/* Bottom padding on mobile reserves room for the worker tab bar
-                        (5rem bar + safe-area inset on notched devices). */}
-                    <div className={role === 'worker' ? 'pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0' : undefined}>{children}</div>
+                    {/* Bottom padding on mobile reserves room for the tab bar
+                        (5rem bar + safe-area inset on notched devices). Both
+                        roles now have one, so both roles reserve the room. */}
+                    <div className="pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0">{children}</div>
                 </section>
             </div>
 
-            {role === 'worker' ? <BottomTabBar /> : null}
+            <BottomTabBar role={role} />
         </div>
     );
 }

@@ -176,19 +176,35 @@ export function ConversationDrawer() {
 
   return (
     <>
+      {/*
+       * Below `lg` the employer shell now has a bottom tab bar (5rem + the
+       * safe-area inset). This launcher is `z-30` against the bar's `z-20`, so
+       * left at `bottom-5` it would sit on top of the bar and swallow the
+       * rightmost tabs. Both fixed pieces clear the bar's height at mobile
+       * widths and keep their original offsets from `lg` up, where the bar is
+       * hidden and the sidebar takes over.
+       */}
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="fixed bottom-5 right-5 z-30 inline-flex cursor-pointer items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-[var(--shadow-modal)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+        className="fixed bottom-[calc(6.25rem+env(safe-area-inset-bottom))] right-5 z-30 inline-flex cursor-pointer items-center gap-2 rounded-full bg-[var(--jale-blue-900)] px-4 py-3 text-sm font-bold text-white shadow-[var(--shadow-modal)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] lg:bottom-5"
       >
         {/* WhatsApp brand green -- the one sanctioned literal, same in both themes. */}
         <span className="h-2 w-2 rounded-full bg-[#25D366]" />
         {open ? t('drawer_close') : t('drawer_button')}
       </button>
 
+      {/*
+       * The panel grows upward from its `bottom` offset, so the safe-area inset
+       * that pushed that offset up has to come out of the height budget too --
+       * otherwise the top edge runs off the viewport by exactly the inset on a
+       * notched phone. Mobile: a 10rem + inset offset, with 2rem of breathing
+       * room left above. From `lg` the tab bar is gone and both revert to the
+       * original 5rem/2rem pair.
+       */}
       {open ? (
-        <div className="anim-fade-in fixed bottom-20 right-5 z-30 flex h-[620px] max-h-[calc(100vh-7rem)] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)]">
+        <div className="anim-fade-in fixed bottom-[calc(10rem+env(safe-area-inset-bottom))] right-5 z-30 flex h-[620px] max-h-[calc(100vh-12rem-env(safe-area-inset-bottom))] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)] lg:bottom-20 lg:max-h-[calc(100vh-7rem)]">
           {/* List pane. Below sm it owns the whole drawer until a thread is
               picked -- a 240px list and a transcript will not share 358px. */}
           <aside

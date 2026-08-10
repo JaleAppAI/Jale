@@ -163,19 +163,31 @@ export default function EmployerProfilePage() {
                                     <KVList
                                         items={[
                                             { label: t('field_email'), value: profile.email },
-                                            { label: t('field_company'), value: profile.company_name ?? profile.full_name ?? '-' },
-                                            { label: t('field_contact'), value: profile.contact_name ?? '-' },
+                                            {
+                                                label: t('field_company'),
+                                                value: profile.company_name || profile.full_name || t('empty_company'),
+                                            },
+                                            { label: t('field_contact'), value: profile.contact_name || t('empty_contact') },
                                             {
                                                 label: t('field_phone'),
-                                                value: <span className="tabular-nums">{profile.phone ?? '-'}</span>,
+                                                // `tabular-nums` only wraps an actual number.
+                                                value: profile.phone ? (
+                                                    <span className="tabular-nums">{profile.phone}</span>
+                                                ) : (
+                                                    t('empty_phone')
+                                                ),
                                             },
-                                            { label: t('field_city'), value: profile.city ?? '-' },
-                                            { label: t('field_service_area'), value: profile.service_area ?? '-' },
+                                            { label: t('field_city'), value: profile.city || t('empty_city') },
+                                            {
+                                                label: t('field_service_area'),
+                                                value: profile.service_area || t('empty_service_area'),
+                                            },
                                             {
                                                 label: t('field_hiring_trades'),
                                                 value: (
                                                     <BadgeList
                                                         items={profile.hiring_trades.map((trade) => tAuth(`trades.${trade}`))}
+                                                        emptyLabel={t('empty_hiring_trades')}
                                                         tone="info"
                                                     />
                                                 ),
@@ -187,14 +199,24 @@ export default function EmployerProfilePage() {
                                                         items={profile.typical_job_types.map((jobType) =>
                                                             tAuth(`job_types.${jobType.replace('-', '_')}`),
                                                         )}
+                                                        emptyLabel={t('empty_job_types')}
                                                     />
                                                 ),
                                             },
                                             {
                                                 label: t('field_company_size'),
-                                                value: <span className="tabular-nums">{profile.company_size ?? '-'}</span>,
+                                                // The sizes are ranges ("11-50"), so the tabular
+                                                // figures earn their place -- but only on a range.
+                                                value: profile.company_size ? (
+                                                    <span className="tabular-nums">{profile.company_size}</span>
+                                                ) : (
+                                                    t('empty_company_size')
+                                                ),
                                             },
-                                            { label: t('field_description'), value: profile.company_description || '-' },
+                                            {
+                                                label: t('field_description'),
+                                                value: profile.company_description || t('empty_description'),
+                                            },
                                         ]}
                                     />
                                 </div>
@@ -405,8 +427,24 @@ function CheckboxGroup({ label, error, children }: { label: string; error?: stri
  * column the dashed rows establish, wrapping onto more lines at 390px rather
  * than squeezing the label.
  */
-function BadgeList({ items, tone = 'neutral' }: { items: string[]; tone?: 'neutral' | 'info' }) {
-    if (items.length === 0) return <>-</>;
+/**
+ * `emptyLabel` is required, not defaulted: an empty list is a real answer
+ * ("no trades selected"), and every caller knows which field it is talking
+ * about. A shared default would be a bare dash again, one indirection further
+ * away.
+ */
+function BadgeList({
+    items,
+    emptyLabel,
+    tone = 'neutral',
+}: {
+    items: string[];
+    emptyLabel: string;
+    tone?: 'neutral' | 'info';
+}) {
+    // Plain text, so an empty list reads in the same ink as every other "not
+    // set" value in the list rather than as a differently-styled special case.
+    if (items.length === 0) return <>{emptyLabel}</>;
 
     return (
         <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">

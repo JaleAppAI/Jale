@@ -47,6 +47,15 @@
     "theme": {
       "toggle_to_dark": "Switch to dark theme",
       "toggle_to_light": "Switch to light theme"
+    },
+    "trades": {
+      "electrician": "Electrician",
+      "plumber": "Plumber",
+      "carpenter": "Carpenter",
+      "concrete": "Concrete",
+      "painting": "Painting",
+      "other": "Other",
+      "unspecified": "Trade not specified"
     }
   },
   "match": {
@@ -398,6 +407,15 @@
       "field_company_size": "Company size",
       "field_description": "Description",
       "fallback_company": "Employer profile",
+      "empty_company": "Company not added",
+      "empty_contact": "Contact not added",
+      "empty_phone": "Phone not added",
+      "empty_city": "City not added",
+      "empty_service_area": "Service area not set",
+      "empty_hiring_trades": "No trades selected",
+      "empty_job_types": "No job types selected",
+      "empty_company_size": "Company size not set",
+      "empty_description": "No description added",
       "edit_button": "Edit",
       "save": "Save",
       "saving": "Saving...",
@@ -499,31 +517,14 @@
     },
     "shell": {
       "title": "Dashboard",
-      "employer_workspace": "Employer workspace",
-      "company_fallback": "Employer team",
-      "plan_label": "Jale Growth",
-      "plan_title": "Jale Growth",
-      "plan_body": "Prototype-only growth tools will unlock here as the hiring workflow expands.",
-      "upgrade": "Upgrade",
-      "alerts": "Alerts",
-      "search_workers": "Search workers"
+      "employer_workspace": "Employer workspace"
     },
     "nav": {
       "main": "Main",
-      "hiring": "Hiring",
-      "account": "Account",
       "dashboard": "Dashboard",
-      "jobs": "My Jobs",
       "messages": "Messages",
-      "workers": "Workers",
-      "interviews": "Interviews",
-      "search_workers": "Search Workers",
-      "boost_job": "Boost a Job",
-      "jale_direct": "Jale Direct",
-      "analytics": "Analytics",
       "billing": "Billing",
-      "settings": "Settings",
-      "soon": "Soon"
+      "settings": "Settings"
     },
     "hero": {
       "eyebrow": "Got Jale?",
@@ -772,7 +773,6 @@
     "fallback_location": "Location unavailable",
     "fallback_experience": "Experience unavailable",
     "fallback_availability": "Availability unavailable",
-    "fallback_trade": "Trade not specified",
     "fallback_skills": "No skills listed",
     "fallback_applied": "Date unavailable",
     "availability": {
@@ -783,14 +783,6 @@
       "part_time": "Part-time",
       "weekends": "Weekends",
       "flexible": "Flexible"
-    },
-    "trades": {
-      "electrician": "Electrician",
-      "plumber": "Plumber",
-      "carpenter": "Carpenter",
-      "concrete": "Concrete",
-      "painting": "Painting",
-      "other": "Other"
     },
     "invalid_link": {
       "title": "Incomplete link",
@@ -1102,6 +1094,14 @@
     "field_years_experience": "Years of experience",
     "field_location": "Location",
     "field_bio": "About",
+    "empty_name": "Name not added",
+    "empty_skills": "No skills added",
+    "empty_certifications": "No certifications added",
+    "empty_availability": "Availability not set",
+    "empty_experience": "Experience not added",
+    "empty_location": "Location not added",
+    "empty_preferred_cities": "No cities added",
+    "empty_bio": "No description added",
     "documents_title": "Documents",
     "documents_subtitle": "Uploaded documents are reused automatically when you apply to jobs.",
     "documents": {
@@ -1237,7 +1237,7 @@
   "app_shell": {
     "worker_workspace": "Worker workspace",
     "worker_role": "Worker",
-    "worker_fallback": "Your profile",
+    "employer_role": "Employer",
     "worker_nav_main": "Menu",
     "primary_nav": "Main navigation",
     "mobile_nav": "Mobile navigation"

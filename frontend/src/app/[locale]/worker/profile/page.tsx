@@ -177,33 +177,51 @@ export default function WorkerProfilePage() {
                                     <KVList
                                         items={[
                                             { label: t('field_phone'), value: <span className="tabular-nums">{profile.phone}</span> },
-                                            { label: t('field_name'), value: profile.full_name ?? '-' },
-                                            { label: t('field_skills'), value: <BadgeList items={profile.skills} /> },
+                                            { label: t('field_name'), value: profile.full_name || t('empty_name') },
+                                            {
+                                                label: t('field_skills'),
+                                                value: <BadgeList items={profile.skills} emptyLabel={t('empty_skills')} />,
+                                            },
                                             {
                                                 label: t('field_certifications'),
-                                                value: <BadgeList items={profile.certifications ?? []} tone="info" />,
+                                                value: (
+                                                    <BadgeList
+                                                        items={profile.certifications ?? []}
+                                                        emptyLabel={t('empty_certifications')}
+                                                        tone="info"
+                                                    />
+                                                ),
                                             },
                                             {
                                                 label: t('field_availability'),
                                                 value:
                                                     profile.availability && AVAILABILITY_KEYS.includes(profile.availability)
                                                         ? t(`availability.${profile.availability}`)
-                                                        : '-',
+                                                        : t('empty_availability'),
                                             },
                                             {
                                                 label: t('field_years_experience'),
-                                                value: <span className="tabular-nums">{profile.years_experience?.toString() ?? '-'}</span>,
+                                                // `tabular-nums` only wraps an actual number; a
+                                                // sentence has no columns to align.
+                                                value:
+                                                    profile.years_experience === null ||
+                                                    profile.years_experience === undefined ? (
+                                                        t('empty_experience')
+                                                    ) : (
+                                                        <span className="tabular-nums">{profile.years_experience}</span>
+                                                    ),
                                             },
-                                            { label: t('field_location'), value: profile.location ?? '-' },
+                                            { label: t('field_location'), value: profile.location || t('empty_location') },
                                             {
                                                 label: t('edit.preferred_cities_label'),
                                                 value: (
                                                     <BadgeList
                                                         items={(profile.preferred_cities ?? []).map((c) => `${c.city}, ${c.state}`)}
+                                                        emptyLabel={t('empty_preferred_cities')}
                                                     />
                                                 ),
                                             },
-                                            { label: t('field_bio'), value: profile.bio ?? '-' },
+                                            { label: t('field_bio'), value: profile.bio || t('empty_bio') },
                                         ]}
                                     />
                                 </div>
@@ -245,8 +263,24 @@ export default function WorkerProfilePage() {
  * column the dashed rows establish, wrapping onto more lines at 390px rather
  * than squeezing the label.
  */
-function BadgeList({ items, tone = 'neutral' }: { items: string[]; tone?: 'neutral' | 'info' }) {
-    if (items.length === 0) return <>-</>;
+/**
+ * `emptyLabel` is required, not defaulted: an empty list is a real answer
+ * ("no certifications"), and every caller knows which field it is talking
+ * about. A shared default would be a bare dash again, one indirection further
+ * away.
+ */
+function BadgeList({
+    items,
+    emptyLabel,
+    tone = 'neutral',
+}: {
+    items: string[];
+    emptyLabel: string;
+    tone?: 'neutral' | 'info';
+}) {
+    // Plain text, so an empty list reads in the same ink as every other "not
+    // set" value in the list rather than as a differently-styled special case.
+    if (items.length === 0) return <>{emptyLabel}</>;
 
     return (
         <span className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1.5">

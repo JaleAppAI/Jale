@@ -50,6 +50,18 @@ export const employerSettingsNav: NavItem = {
     labelKey: 'nav.settings',
 };
 
+/**
+ * Employer mobile tab bar. Composed from the very same `NavItem`s the sidebar
+ * renders — never a parallel list — so the two surfaces cannot drift apart on a
+ * target, an icon or a label key. Four tabs is the practical ceiling for a
+ * bottom bar at 360px; these are the four the sidebar leads with.
+ */
+export const employerMobileNav: NavItem[] = [
+    ...employerPrimaryNav,
+    employerBillingNav,
+    employerSettingsNav,
+];
+
 /** Worker primary nav — mirrors the worker bottom tab bar. */
 export const workerPrimaryNav: NavItem[] = [
     { key: 'find_jobs', href: '/worker/home', icon: 'search', labelKey: 'worker_home', activePrefixes: ['/worker/home', '/worker/jobs'] },
