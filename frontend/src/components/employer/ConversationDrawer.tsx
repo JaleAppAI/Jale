@@ -195,8 +195,16 @@ export function ConversationDrawer() {
         {open ? t('drawer_close') : t('drawer_button')}
       </button>
 
+      {/*
+       * The panel grows upward from its `bottom` offset, so the safe-area inset
+       * that pushed that offset up has to come out of the height budget too --
+       * otherwise the top edge runs off the viewport by exactly the inset on a
+       * notched phone. Mobile: a 10rem + inset offset, with 2rem of breathing
+       * room left above. From `lg` the tab bar is gone and both revert to the
+       * original 5rem/2rem pair.
+       */}
       {open ? (
-        <div className="anim-fade-in fixed bottom-[calc(10rem+env(safe-area-inset-bottom))] right-5 z-30 flex h-[620px] max-h-[calc(100vh-12rem)] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)] lg:bottom-20 lg:max-h-[calc(100vh-7rem)]">
+        <div className="anim-fade-in fixed bottom-[calc(10rem+env(safe-area-inset-bottom))] right-5 z-30 flex h-[620px] max-h-[calc(100vh-12rem-env(safe-area-inset-bottom))] w-[min(760px,calc(100vw-2rem))] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)] bg-[var(--jale-card)] shadow-[var(--shadow-modal)] lg:bottom-20 lg:max-h-[calc(100vh-7rem)]">
           {/* List pane. Below sm it owns the whole drawer until a thread is
               picked -- a 240px list and a transcript will not share 358px. */}
           <aside
