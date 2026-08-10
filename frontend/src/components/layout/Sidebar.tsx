@@ -86,13 +86,29 @@ function roleLetter(role: ShellRole): string {
 }
 
 /**
- * The account chip. Says only what it knows.
+ * The account chip. Says only what it knows, in slots that never trade places.
  *
- * Line boxes are fixed (`h-5` for the `text-sm` name, `h-4` for the `text-xs`
- * meta) so the skeleton→name swap does not move the nav below it. The chip does
- * shrink by one line when the loaded profile has no second line to show — that
- * is the honest outcome, and inventing a filler sentence to hold the space open
- * is precisely the behaviour this replaces.
+ * The two text slots are FIXED — neither is filled from a list, and nothing is
+ * ever promoted from one into the other:
+ *
+ *  - the NAME slot (bold, `text-sm`) renders the account's real name and
+ *    nothing else. When the profile loaded without one, it renders the same
+ *    honest role word the failed state uses, because that is the truthful thing
+ *    to put where a name goes when there is no name.
+ *  - the META slot (muted, `text-xs`) renders the real second line, or is
+ *    omitted entirely.
+ *
+ * The promotion this forbids is not hypothetical: filling the slots from
+ * `[name, meta]` compacted, a nameless-but-loaded profile put "Carpenter ·
+ * Charlotte" in bold in the name slot, where it reads as the person's name —
+ * the same lie about resolved data that the three states exist to stop telling.
+ *
+ * The skeleton's boxes match the line heights they stand in for (`h-5` for the
+ * `text-sm` name, `h-4` for the `text-xs` meta) so the skeleton→name swap does
+ * not move the nav below it. The chip does shrink by one line when the loaded
+ * profile has no second line to show — that is the honest outcome, and
+ * inventing a filler sentence to hold the space open is precisely the behaviour
+ * this replaces.
  */
 function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip }) {
     const tShell = useTranslations('app_shell');
@@ -101,14 +117,9 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
     // A loaded profile with no name is not a failure -- we reached the server,
     // the account simply has not been named yet -- but it renders the same way,
     // because "we know your role and nothing else" is the same sentence.
-    const lines =
-        chip.status === 'loaded'
-            ? [chip.name, chip.meta].filter((line): line is string => Boolean(line))
-            : [];
-    const primary: string = lines[0] ?? roleWord;
-    // Annotated, because index access is not `| undefined` under this tsconfig
-    // and the second line genuinely may not exist.
-    const secondary: string | undefined = lines[1];
+    const name: string = (chip.status === 'loaded' ? chip.name : null) || roleWord;
+    // Only ever the real meta line. `null` means the meta slot is not rendered.
+    const meta: string | null = chip.status === 'loaded' ? chip.meta : null;
 
     return (
         <div className="flex items-center gap-3">
@@ -131,9 +142,9 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
                 </div>
             ) : (
                 <div className="min-w-0">
-                    <p className="truncate text-sm font-bold">{primary}</p>
-                    {secondary ? (
-                        <p className="truncate text-xs font-medium text-white/55">{secondary}</p>
+                    <p className="truncate text-sm font-bold">{name}</p>
+                    {meta ? (
+                        <p className="truncate text-xs font-medium text-white/55">{meta}</p>
                     ) : null}
                 </div>
             )}
