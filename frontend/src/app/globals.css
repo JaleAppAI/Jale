@@ -18,8 +18,18 @@
   --jale-blue-200: #a8c5ff;
   --jale-blue-300: #78a4ff;
   --jale-blue-400: #4585ff;
-  --jale-blue-500: #0179FF;
-  --jale-blue-600: #0064d6;
+  /* The CTA blue. #0179FF only reached 4.05:1 under white, so every filled
+     button, wordmark and bubble label sat under AA; #0064d6 carries the same
+     hue at 5.54:1. */
+  --jale-blue-500: #0064d6;
+  /* Re-ramped: 500 moved down onto this stop's old value, which would have made
+     every `hover:bg-[var(--jale-blue-600)]` a no-op (blue-600's ONLY job in the
+     app is being 500's hover partner -- the three legal routes carry their own
+     private copies of these tokens). #005ac2 is the hue/saturation-preserving
+     midpoint of 500 and 700, so 500/600/700 stay monotonic and evenly stepped
+     (delta 0,10,21 per stop) with no duplicated hex, hover reads 1.17:1 darker
+     than rest, and white on it is 6.48:1. */
+  --jale-blue-600: #005ac2;
   --jale-blue-700: #0050ad;
   --jale-blue-800: #003d85;
   --jale-blue-900: #181855;
@@ -88,8 +98,11 @@
 
   /* Elevation */
   --shadow-card:  0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.06);
-  --shadow-focus: 0 0 0 3px rgba(1,121,255,.10);
-  --shadow-btn:   0 4px 12px rgba(1,121,255,.30);
+  /* rgba components of --jale-blue-500 (#0064d6). CSS cannot take an alpha of a
+     hex var without color-mix, so these track the token by hand -- change both
+     if blue-500 ever moves again. */
+  --shadow-focus: 0 0 0 3px rgba(0,100,214,.10);
+  --shadow-btn:   0 4px 12px rgba(0,100,214,.30);
   --shadow-modal: 0 20px 50px -10px rgba(10,23,54,.25);
 
   /* Radii */
