@@ -13,6 +13,7 @@ import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJson
 import { buildJobPageUrls } from '@/lib/seo/siteUrl';
 import { ApplyButton, ApplyButtonSkeleton } from './ApplyButton';
 import { WebApplyButton, WebApplyButtonSkeleton } from './WebApplyButton';
+import { LocaleToggle, LocaleToggleFallback } from './LocaleToggle';
 import { ReferralContext, ReferralRibbonSkeleton } from './ReferralContext';
 
 export const revalidate = 60;
@@ -49,11 +50,23 @@ interface PageProps {
 // -- doing so forces this route into dynamic (force-dynamic-equivalent)
 // rendering, defeating the `revalidate = 60` ISR config above. The `?r=`
 // share tag is read entirely client-side, by `ReferralContext`,
-// `ApplyButton`, and `WebApplyButton` via `useSearchParams()`. That is also
-// why each of those three sits behind its own Suspense boundary: reading
-// searchParams opts an island out of the static render, and the boundary's
-// fallback is what the ISR HTML actually ships. Each fallback traces its
-// island's final geometry so nothing pops in or shifts on hydration.
+// `ApplyButton`, `WebApplyButton`, and `LocaleToggle` via
+// `useSearchParams()`. That is also why each of those four sits behind its own
+// Suspense boundary: Next requires one above any `useSearchParams()` caller,
+// and on a static render that fallback is what the HTML ships. Each fallback
+// traces its island's final geometry so nothing pops in or shifts on
+// hydration.
+//
+// (Measured on a production build: this route currently renders per request --
+// `Cache-Control: no-store`, and the islands resolve their real content during
+// SSR -- so the fallbacks are mostly a safety net rather than the common path.
+// That predates the toggle and is not what this file assumes; the rule above
+// still holds, because reading searchParams here would make the dynamic
+// rendering unconditional and permanent.)
+//
+// `LocaleToggle`'s fallback goes further than the other three: it is a working
+// link rather than a skeleton, so the language switch keeps working in the
+// static-render case and for a visitor whose JavaScript never runs.
 
 const OG_IMAGE_PATH = '/brand/wordmark-navy.png';
 
@@ -138,6 +151,13 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   }
 }
 
+interface BrandBandProps {
+  /** Locale-less path of this very page, e.g. `/j/ABC123`, for the toggle. */
+  path: string;
+  otherLocale: string;
+  languageLabel: string;
+}
+
 /** Navy brand band. The card below overlaps it, echoing the chat-app header
  * the visitor just came from.
  *
@@ -146,13 +166,27 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
  * `--jale-blue-50/700`), so naming it here keeps the page token-only while the
  * band stays the fixed brand navy a visitor recognises from WhatsApp. The white
  * wordmark asset only works on that navy, which is the other half of the
- * reason. */
-function BrandBand() {
+ * reason.
+ *
+ * This band is also the page's ONLY chrome -- the global `Header` suppresses
+ * itself on `/j` so a referred stranger does not meet two stacked wordmarks --
+ * which makes it the only place a language toggle can live. It has to be here:
+ * a shared job link is a single URL handed to both audiences, so a Spanish
+ * speaker who is sent an `/en/j/...` link has no other way out of English. */
+function BrandBand({ path, otherLocale, languageLabel }: BrandBandProps) {
   return (
     <header className="bg-[var(--jale-blue-900)] pt-7 pb-16 px-4">
-      <div className="max-w-md md:max-w-2xl mx-auto">
+      <div className="max-w-md md:max-w-2xl mx-auto flex items-center justify-between gap-3">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/brand/wordmark-white.png" alt="Jale" className="h-7 w-auto" />
+        {/* The fallback is a working link, not a skeleton -- see LocaleToggle. */}
+        <Suspense
+          fallback={
+            <LocaleToggleFallback path={path} otherLocale={otherLocale} label={languageLabel} />
+          }
+        >
+          <LocaleToggle path={path} otherLocale={otherLocale} label={languageLabel} />
+        </Suspense>
       </div>
     </header>
   );
@@ -174,14 +208,42 @@ export default async function PublicJobPage({ params }: PageProps) {
   try {
     job = await getPublicJob(params.code);
   } catch (err) {
+    // This route deliberately has NO `loading.tsx`, and must not grow one. A
+    // route-level skeleton opens a Suspense boundary at the segment, which
+    // makes Next flush the response head -- status 200 -- before this
+    // component ever runs. `notFound()` below then only swaps the body, so a
+    // dead job link answers 200 with 404 content: a soft-404 that leaves
+    // Google Jobs indexing expired postings. Rendering this segment to
+    // completion before anything is sent is what lets `notFound()` set a real
+    // 404 status. The unbranded wait on this ISR-cached page is the accepted
+    // cost.
     if (err instanceof PublicJobNotFoundError) notFound();
     throw err;
   }
 
+  // Language toggle inputs, shared by both branches below.
+  //
+  // `header.language_toggle` is reused rather than duplicated into
+  // `public_job`: that key already resolves to the OTHER language's own name
+  // in each catalogue (en -> "Español", es -> "English"), which is exactly
+  // what this pill needs, and it is the same string the global Header and
+  // AuthShell show, so the app says one thing everywhere.
+  //
+  // The path is built from `params.code`, not from the fetched job's `code`:
+  // the toggle's job is to re-open THIS url in the other locale, so it has to
+  // preserve the code exactly as the visitor's link spelled it.
+  const tHeader = await getTranslations({ locale: params.locale, namespace: 'header' });
+  const otherLocale = params.locale === 'es' ? 'en' : 'es';
+  const localePath = `/j/${encodeURIComponent(params.code)}`;
+
   if (isClosedJob(job)) {
     return (
       <div className="min-h-screen bg-[var(--jale-paper)]">
-        <BrandBand />
+        <BrandBand
+          path={localePath}
+          otherLocale={otherLocale}
+          languageLabel={tHeader('language_toggle')}
+        />
         <main className="px-4 -mt-10">
           <div className="anim-fade-in max-w-md md:max-w-2xl mx-auto">
             <article className={ARTICLE_CARD}>
@@ -329,7 +391,11 @@ export default async function PublicJobPage({ params }: PageProps) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: serializeJsonLd(jobPostingJsonLd) }}
       />
-      <BrandBand />
+      <BrandBand
+        path={localePath}
+        otherLocale={otherLocale}
+        languageLabel={tHeader('language_toggle')}
+      />
 
       <main className="px-4 -mt-10">
         <div className="anim-fade-in max-w-md md:max-w-2xl mx-auto space-y-4">

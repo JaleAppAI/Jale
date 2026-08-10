@@ -7,9 +7,12 @@ import { Button } from '@/components/ui/button';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 
-// Routes that render their own chrome (AppShell for /employer|/worker,
-// AuthShell for /auth). `/legal` and `/upload` keep the global Header.
-const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth'];
+// Routes that render their own chrome: AppShell for /employer|/worker,
+// AuthShell for /auth, and the public job page's own navy brand band for /j.
+// Without /j here the global bar stacked a second wordmark directly above
+// that band -- two headers on the one page a referred stranger sees first.
+// `/legal` and `/upload` keep the global Header.
+const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth', '/j'];
 
 export function Header() {
     const locale = useLocale();
