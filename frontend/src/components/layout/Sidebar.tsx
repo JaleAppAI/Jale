@@ -105,7 +105,10 @@ function SidebarProfileChip({ role, chip }: { role: ShellRole; chip: SidebarChip
         chip.status === 'loaded'
             ? [chip.name, chip.meta].filter((line): line is string => Boolean(line))
             : [];
-    const [primary, secondary] = lines.length > 0 ? lines : [roleWord];
+    const primary: string = lines[0] ?? roleWord;
+    // Annotated, because index access is not `| undefined` under this tsconfig
+    // and the second line genuinely may not exist.
+    const secondary: string | undefined = lines[1];
 
     return (
         <div className="flex items-center gap-3">
