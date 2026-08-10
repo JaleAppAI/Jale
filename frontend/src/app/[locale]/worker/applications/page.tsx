@@ -1,6 +1,7 @@
 'use client';
 import { useLocale, useTranslations } from 'next-intl';
 import { usePageData } from '@/hooks/usePageData';
+import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { Link } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
@@ -60,6 +61,15 @@ export default function WorkerApplicationsPage() {
     fetcher: async ({ token, signal }) => (await getApplications(token, signal)).applications,
   });
 
+  /*
+   * The list cascades once, when it first arrives, and never again -- the same
+   * gate the other list pages use. This page has no filters and no poll, so
+   * today the only thing that could replay the cascade is `retry()` rebuilding
+   * the rows after a failure; it is gated for the same reason as everywhere
+   * else, and the page stays uniform with the rest if a filter is ever added.
+   */
+  const { staggerClass, onCascadeEnd } = useStaggerOnce();
+
   // 'auth' means the token gate has not opened yet: nothing has been asked for,
   // so the page owes the reader a skeleton rather than a screen of zeroes.
   const showSkeleton = phase === 'auth' || phase === 'loading';
@@ -106,7 +116,12 @@ export default function WorkerApplicationsPage() {
                       action={{ label: t('empty_cta'), href: '/worker/home' }}
                     />
                   ) : (
-                    <ul className="anim-stagger divide-y divide-[var(--jale-divider)]">
+                    <ul
+                      className={['divide-y divide-[var(--jale-divider)]', staggerClass]
+                        .filter(Boolean)
+                        .join(' ')}
+                      onAnimationEnd={onCascadeEnd}
+                    >
                       {list.map((a) => (
                         <li key={a.application_id}>
                           <Link
