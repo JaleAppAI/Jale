@@ -174,6 +174,15 @@ export default async function PublicJobPage({ params }: PageProps) {
   try {
     job = await getPublicJob(params.code);
   } catch (err) {
+    // This route deliberately has NO `loading.tsx`, and must not grow one. A
+    // route-level skeleton opens a Suspense boundary at the segment, which
+    // makes Next flush the response head -- status 200 -- before this
+    // component ever runs. `notFound()` below then only swaps the body, so a
+    // dead job link answers 200 with 404 content: a soft-404 that leaves
+    // Google Jobs indexing expired postings. Rendering this segment to
+    // completion before anything is sent is what lets `notFound()` set a real
+    // 404 status. The unbranded wait on this ISR-cached page is the accepted
+    // cost.
     if (err instanceof PublicJobNotFoundError) notFound();
     throw err;
   }
