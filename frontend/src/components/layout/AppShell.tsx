@@ -11,6 +11,7 @@ import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { apiFetch } from '@/lib/api';
 import { getEmployerProfile } from '@/lib/api/employer';
 import type { WorkerProfileData } from '@/lib/api/worker';
+import { tradeLabel } from '@/lib/trades';
 import { Sidebar, type SidebarChip } from './Sidebar';
 import { BottomTabBar } from './BottomTabBar';
 import { getInitials, type ShellRole } from './nav-config';
@@ -27,30 +28,44 @@ type AppShellProps = {
 };
 
 /**
+ * Joins the parts of the chip's second line, dropping the ones the profile does
+ * not have. Returns `null` — not `''` — when nothing survives, so the caller
+ * cannot accidentally treat "no second line" as "a second line to fill in".
+ */
+function joinMeta(parts: Array<string | null | undefined>): string | null {
+    const kept = parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part));
+    return kept.length > 0 ? kept.join(' · ') : null;
+}
+
+/**
  * Role-aware application shell: navy desktop sidebar + sticky white top header +
- * (worker only) mobile bottom tab bar. Fetches the minimal profile needed for
- * the sidebar/header chip; tolerates it being briefly empty (never blocks
- * children on the fetch).
+ * role-aware mobile bottom tab bar. Fetches the minimal profile needed for the
+ * sidebar chip; the fetch never gates the page, and the chip reports which of
+ * its three states it is actually in rather than papering over two of them.
  */
 export function AppShell({ role, title, subtitle, actions, children }: AppShellProps) {
     const { idToken, logout } = useAuth();
     const tHeader = useTranslations('header');
-    const tShell = useTranslations('app_shell');
     const tCommon = useTranslations('common');
-    const tDash = useTranslations('employer_dashboard');
     const locale = useLocale();
     const pathname = usePathname();
     const otherLocale = locale === 'en' ? 'es' : 'en';
 
-    const [chip, setChip] = useState<SidebarChip | null>(null);
+    const [chip, setChip] = useState<SidebarChip>({ status: 'loading' });
     const [signingOut, setSigningOut] = useState(false);
 
     const homeHref = role === 'worker' ? '/worker/home' : '/employer/dashboard';
-    const profileHref = role === 'worker' ? '/worker/profile' : '/employer/profile';
-    const chipFallback = role === 'employer' ? tDash('shell.company_fallback') : tShell('worker_fallback');
-    const initialsFallback = role === 'employer' ? 'E' : 'W';
 
-    // Best-effort chip fetch. Never throws into render; empty state is tolerated.
+    /*
+     * Best-effort chip fetch: non-blocking, and it never throws into render.
+     * What changed is the failure path -- a rejected request, or a non-OK
+     * worker-profile response, now lands the chip in `failed` instead of
+     * leaving a placeholder that looked exactly like real data.
+     *
+     * `tCommon` is a dependency because the worker meta line is translated
+     * here. next-intl memoises the translator on (messages, locale, namespace),
+     * so its identity is stable and this does not re-fetch on every render.
+     */
     useEffect(() => {
         if (!idToken) return;
         let active = true;
@@ -60,25 +75,37 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                 if (role === 'employer') {
                     const profile = await getEmployerProfile(idToken!);
                     if (!active) return;
-                    const name = profile.company_name?.trim() || profile.full_name?.trim() || chipFallback;
-                    const meta = [profile.city, profile.service_area]
-                        .map((item) => item?.trim())
-                        .filter(Boolean)
-                        .join(' · ');
-                    setChip({ name, meta, initials: getInitials(name, initialsFallback) });
+                    const name = profile.company_name?.trim() || profile.full_name?.trim() || null;
+                    setChip({
+                        status: 'loaded',
+                        name,
+                        meta: joinMeta([profile.city, profile.service_area]),
+                        initials: getInitials(name ?? '', 'E'),
+                    });
                 } else {
                     const res = await apiFetch('/worker/profile', {}, idToken!);
-                    if (!res.ok || !active) return;
+                    // A non-OK response is a failed load, not an empty profile.
+                    if (!res.ok) throw new Error('worker_profile_unavailable');
                     const profile = (await res.json()) as WorkerProfileData;
-                    const name = profile.full_name?.trim() || chipFallback;
-                    const meta = [profile.city, profile.location]
-                        .map((item) => item?.trim())
-                        .filter(Boolean)
-                        .join(' · ');
-                    setChip({ name, meta, initials: getInitials(name, initialsFallback) });
+                    if (!active) return;
+                    const name = profile.full_name?.trim() || null;
+                    setChip({
+                        status: 'loaded',
+                        name,
+                        // `city` is the precise field; `location` is the older
+                        // free-text one kept as a fallback for profiles that
+                        // predate it.
+                        meta: joinMeta([
+                            profile.main_trade
+                                ? tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)
+                                : null,
+                            profile.city ?? profile.location,
+                        ]),
+                        initials: getInitials(name ?? '', 'W'),
+                    });
                 }
             } catch {
-                // Ignore — the chip renders its loading/empty placeholder.
+                if (active) setChip({ status: 'failed' });
             }
         }
 
@@ -86,7 +113,7 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
         return () => {
             active = false;
         };
-    }, [idToken, role, chipFallback, initialsFallback]);
+    }, [idToken, role, tCommon]);
 
     async function handleSignOut() {
         setSigningOut(true);
@@ -97,13 +124,10 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
         }
     }
 
-    // Placeholder chip while loading / when the fetch fails.
-    const resolvedChip: SidebarChip = chip ?? { name: chipFallback, meta: '', initials: initialsFallback };
-
     return (
         <div className="min-h-screen bg-[var(--jale-shell)] text-[var(--jale-ink)]">
             <div className="grid min-h-screen lg:grid-cols-[280px_minmax(0,1fr)]">
-                <Sidebar role={role} homeHref={homeHref} chip={resolvedChip} />
+                <Sidebar role={role} homeHref={homeHref} chip={chip} />
 
                 <section className="min-w-0">
                     <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_92%,transparent)] px-4 py-4 backdrop-blur md:px-6 lg:px-8">
@@ -125,17 +149,13 @@ export function AppShell({ role, title, subtitle, actions, children }: AppShellP
                                 </Link>
                                 <ThemeToggle />
                                 <Link
-                                    href={profileHref}
+                                    href={role === 'worker' ? '/worker/profile' : '/employer/profile'}
                                     aria-label={tHeader('profile')}
                                     className="inline-flex rounded-xl focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                                 >
-                                    {/* Fed the raw name, not `resolvedChip.name`: pre-fetch
-                                        that is a localized placeholder ("Your profile"),
-                                        and initialising it would show "YP"/"TP" instead of
-                                        the role letter. */}
                                     <InitialsAvatar
-                                        name={chip?.name ?? ''}
-                                        fallback={initialsFallback}
+                                        name={chip.status === 'loaded' ? (chip.name ?? '') : ''}
+                                        fallback={role === 'employer' ? 'E' : 'W'}
                                         size={40}
                                         square
                                     />

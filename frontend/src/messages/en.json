@@ -509,8 +509,6 @@
     "shell": {
       "title": "Dashboard",
       "employer_workspace": "Employer workspace",
-      "company_fallback": "Employer team",
-      "plan_label": "Jale Growth",
       "plan_title": "Jale Growth",
       "plan_body": "Prototype-only growth tools will unlock here as the hiring workflow expands.",
       "upgrade": "Upgrade",
@@ -1237,7 +1235,7 @@
   "app_shell": {
     "worker_workspace": "Worker workspace",
     "worker_role": "Worker",
-    "worker_fallback": "Your profile",
+    "employer_role": "Employer",
     "worker_nav_main": "Menu",
     "primary_nav": "Main navigation",
     "mobile_nav": "Mobile navigation"

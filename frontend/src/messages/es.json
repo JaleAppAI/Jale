@@ -509,8 +509,6 @@
     "shell": {
       "title": "Panel",
       "employer_workspace": "Espacio de empleador",
-      "company_fallback": "Equipo empleador",
-      "plan_label": "Jale Growth",
       "plan_title": "Jale Growth",
       "plan_body": "Las herramientas de crecimiento del prototipo aparecerán aquí cuando el flujo de contratación crezca.",
       "upgrade": "Mejorar",
@@ -1237,7 +1235,7 @@
   "app_shell": {
     "worker_workspace": "Espacio del trabajador",
     "worker_role": "Trabajador",
-    "worker_fallback": "Tu perfil",
+    "employer_role": "Empleador",
     "worker_nav_main": "Menú",
     "primary_nav": "Navegación principal",
     "mobile_nav": "Navegación móvil"
