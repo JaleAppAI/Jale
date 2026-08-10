@@ -517,12 +517,7 @@
     },
     "shell": {
       "title": "Panel",
-      "employer_workspace": "Espacio de empleador",
-      "plan_title": "Jale Growth",
-      "plan_body": "Las herramientas de crecimiento del prototipo aparecerán aquí cuando el flujo de contratación crezca.",
-      "upgrade": "Mejorar",
-      "alerts": "Alertas",
-      "search_workers": "Buscar workers"
+      "employer_workspace": "Espacio de empleador"
     },
     "nav": {
       "main": "Principal",
