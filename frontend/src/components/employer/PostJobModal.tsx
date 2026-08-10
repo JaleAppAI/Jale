@@ -241,7 +241,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Field>
               <div className="grid gap-3 md:grid-cols-2">
                 <Field label={t('modal.location')} required>
-                  <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-blue-500)]' : undefined}>
+                  <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
                     <LocationPicker
                       value={form.location}
                       placeholder={t('modal.location_placeholder')}
@@ -257,7 +257,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                     />
                   </div>
                   {checkCity && (
-                    <p className="mt-1 text-xs font-medium text-[var(--jale-blue-700)]">{t('modal.template_check_city')}</p>
+                    <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
                   )}
                 </Field>
                 <Field label={t('modal.job_type')}>
@@ -268,14 +268,6 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                   </Select>
                 </Field>
               </div>
-              <Field label={t('modal.state_region')}>
-                <Input
-                  value={form.state_region}
-                  onChange={(e) => update('state_region', e.target.value.toUpperCase())}
-                  placeholder={t('modal.state_region_placeholder')}
-                  maxLength={2}
-                />
-              </Field>
               <Field label={t('modal.trade_category')} required>
                 <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
                   <option value="">{t('modal.select_placeholder')}</option>

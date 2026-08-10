@@ -65,6 +65,9 @@ export type JobFormLocation = {
 
 // Fold a LocationPicker selection into a JobForm. A free-typed value arrives
 // with null ids/coordinates, which clears any previously picked city.
+// state_region (the SEO display state) has no input of its own -- it derives
+// from the picked city's USPS state; free-typed locations leave it blank and
+// the backend parses it from the location text instead.
 export function applyLocationToJobForm(form: JobForm, v: JobFormLocation): JobForm {
   return {
     ...form,
@@ -74,6 +77,7 @@ export function applyLocationToJobForm(form: JobForm, v: JobFormLocation): JobFo
     state: v.state,
     latitude: v.latitude,
     longitude: v.longitude,
+    state_region: v.state ?? '',
   };
 }
 

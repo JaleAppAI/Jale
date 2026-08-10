@@ -67,14 +67,6 @@ export function JobFormFields({
           </Select>
         </Field>
       </div>
-      <Field label={t('modal.state_region')}>
-        <Input
-          value={form.state_region}
-          onChange={(e) => onUpdate('state_region', e.target.value.toUpperCase())}
-          placeholder={t('modal.state_region_placeholder')}
-          maxLength={2}
-        />
-      </Field>
       <Field label={t('modal.trade_category')} required>
         <Select value={form.trade_category} onChange={(e) => onUpdate('trade_category', e.target.value as JobForm['trade_category'])}>
           <option value="">{t('modal.select_placeholder')}</option>
