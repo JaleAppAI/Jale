@@ -6,6 +6,7 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
+import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { formatWeekdayDate } from '@/lib/date';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
@@ -172,6 +173,19 @@ export default function EmployerDashboardPage() {
             setDeletingJobId(null);
         }
     }
+
+    /*
+     * The job list cascades once, when it first arrives, and never again.
+     *
+     * This page's search box and status chips filter `jobs` CLIENT-SIDE, so
+     * they never reach the fetch layer -- but they do re-insert rows (clearing
+     * a search remounts every row it had hidden), and `.anim-stagger` animates
+     * whatever children exist when they are inserted. Gating on a refetch would
+     * miss the two controls that replay the cascade most often. `useStaggerOnce`
+     * gates on the cascade finishing instead, which covers every source: the
+     * filters above, Refresh, and a `retry()` reload alike.
+     */
+    const { staggerClass, onCascadeEnd } = useStaggerOnce();
 
     // 'auth' means the token gate has not opened yet: nothing has been asked for,
     // so the page owes the reader a skeleton rather than a screen of dashes.
@@ -392,7 +406,12 @@ export default function EmployerDashboardPage() {
                                                 }}
                                             />
                                         ) : (
-                                            <ul className="anim-stagger divide-y divide-[var(--jale-divider)]">
+                                            <ul
+                                                className={['divide-y divide-[var(--jale-divider)]', staggerClass]
+                                                    .filter(Boolean)
+                                                    .join(' ')}
+                                                onAnimationEnd={onCascadeEnd}
+                                            >
                                                 {filteredJobs.map((job) => (
                                                     <JobPostingCard
                                                         key={job.id}

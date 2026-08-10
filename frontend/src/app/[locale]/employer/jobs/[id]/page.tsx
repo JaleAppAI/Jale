@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
+import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Link, useRouter } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
@@ -192,6 +193,18 @@ export default function JobDetailPage() {
         },
         [refresh],
     );
+
+    /*
+     * The panel column cascades once, when the posting first arrives.
+     *
+     * Keyed by `jobId` because that is the one change this page treats as a
+     * genuinely fresh load: it is `usePageData`'s only dep, so it drops the
+     * page back to a skeleton, and the next posting to paint has earned its own
+     * cascade. Everything else that redraws these panels -- a debounced filter
+     * reload, its `refreshError` footnote, a status change, the edit modal
+     * closing -- lands after the gate has closed and changes nothing.
+     */
+    const { staggerClass, onCascadeEnd } = useStaggerOnce(jobId);
 
     /* ===== Candidate ranking (secondary, slower) ========================== */
 
@@ -502,7 +515,10 @@ export default function JobDetailPage() {
                             </InlineFeedback>
                         ) : null}
 
-                        <div className="anim-stagger space-y-5">
+                        <div
+                            className={['space-y-5', staggerClass].filter(Boolean).join(' ')}
+                            onAnimationEnd={onCascadeEnd}
+                        >
                             <section className="grid grid-cols-3 gap-3">
                                 <MetricCard label={t('metrics.applicants')} value={job.applicant_count} />
                                 <MetricCard label={t('metrics.hired')} value={job.hired_count} tone="green" />

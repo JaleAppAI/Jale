@@ -5,6 +5,7 @@ import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
+import { useStaggerOnce } from '@/hooks/useStaggerOnce';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
 import { CityMultiSelect } from '@/components/ui/CityMultiSelect';
@@ -69,10 +70,23 @@ function SectionHeader({
   );
 }
 
-/** One divided-row list. `stagger` is first-load only — see `hasRefetched`. */
-function JobRows({ jobs, stagger }: { jobs: Job[]; stagger: boolean }) {
+/**
+ * One divided-row list, cascading on its first arrival only.
+ *
+ * The gate lives HERE rather than on the page because this page renders two of
+ * these lists side by side, and they arrive with independent cascades: a single
+ * page-level flag closes both the moment either one is done, which pulls the
+ * class off whichever list is still mid-cascade and snaps its remaining rows to
+ * fully visible. Per-list state is also what makes a filtered refetch cheap to
+ * reason about — new rows drop straight in, no matter which list they land in.
+ */
+function JobRows({ jobs }: { jobs: Job[] }) {
+  const { staggerClass, onCascadeEnd } = useStaggerOnce();
   return (
-    <ul className={`divide-y divide-[var(--jale-divider)] ${stagger ? 'anim-stagger' : ''}`}>
+    <ul
+      className={['divide-y divide-[var(--jale-divider)]', staggerClass].filter(Boolean).join(' ')}
+      onAnimationEnd={onCascadeEnd}
+    >
       {jobs.map((job) => (
         <li key={job.id}>
           <WorkerJobCard job={job} href={`/worker/jobs/${job.id}`} />
@@ -190,17 +204,6 @@ export default function WorkerHomePage() {
   // A new attempt earns a new chance to complain: un-dismiss whenever one starts.
   useEffect(() => {
     if (refreshing) setRefreshNoticeDismissed(false);
-  }, [refreshing]);
-
-  /**
-   * `anim-stagger` is a first-impression effect. Once anything has been
-   * refetched, new rows fade in as a block instead of re-cascading on every
-   * keystroke. This is state, not a ref, so the class is stable across
-   * unrelated re-renders and never gets pulled mid-animation.
-   */
-  const [hasRefetched, setHasRefetched] = useState(false);
-  useEffect(() => {
-    if (refreshing) setHasRefetched(true);
   }, [refreshing]);
 
   async function saveCities() {
@@ -404,7 +407,7 @@ export default function WorkerHomePage() {
                     <SectionHeader label={t('results_count', { count: jobs.length })}>
                       {refreshing ? <Spinner size="sm" className="text-[var(--jale-ink-2)]" /> : null}
                     </SectionHeader>
-                    <JobRows jobs={jobs} stagger={!hasRefetched} />
+                    <JobRows jobs={jobs} />
                   </>
                 ) : (
                   /* In-city list is empty but the out-of-city teaser is not:
@@ -415,7 +418,7 @@ export default function WorkerHomePage() {
                 {otherJobs.length > 0 && (
                   <>
                     <SectionHeader label={t('other_jobs_header')} topRule={jobs.length > 0} />
-                    <JobRows jobs={otherJobs} stagger={!hasRefetched} />
+                    <JobRows jobs={otherJobs} />
                   </>
                 )}
               </DashboardPanel>
