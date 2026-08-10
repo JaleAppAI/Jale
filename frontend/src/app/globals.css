@@ -304,10 +304,15 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
 
 /* ===== DARK THEME ==================================================== */
 /* Overrides the token layer only — nothing here targets a component. Role
-   tokens (`--primary`, `--input-focus`, shadows) are re-pointed directly
-   rather than via the brand ramp, because `@theme inline` resolves
-   `--color-*` to these vars at use time, so a runtime override cascades
-   through every Tailwind utility built on them.
+   tokens (`--input-focus`, shadows) are re-pointed directly rather than via
+   the brand ramp, because `@theme inline` resolves `--color-*` to these vars
+   at use time, so a runtime override cascades through every Tailwind utility
+   built on them.
+   `--primary`/`--primary-hover` are deliberately NOT re-pointed here. They
+   used to become #4585ff/#78a4ff in dark, which put white bubble text at
+   3.47:1 and split the app across two CTA blues, since the `primary` Button
+   paints `--jale-blue-500` directly and never saw that re-tint. Letting both
+   fall through to the ramp gives one blue in both themes at 5.54:1.
    Must stay AFTER :root: `.dark` and `:root` have equal specificity, so
    source order is what makes these win. */
 .dark {
@@ -315,7 +320,6 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   --jale-input:   #12163a;  --input-focus:  #1b2150;  --jale-divider: #2a3164;
   --jale-shell:   #101438;  --jale-sidebar: #0a0d26;
   --jale-ink:     #e9edfb;  --jale-ink-2:   #9aa4cb;  --jale-placeholder: #6d7699;
-  --primary:      #4585ff;  --primary-hover:#78a4ff;
   --jale-blue-50: #24305c;  --jale-blue-700:#a8c5ff;
   --jale-success: #7fd6a4;  --jale-success-bg: rgba(31,122,68,.28);  --jale-success-text: #7fd6a4;
   --jale-warning: #ffc07d;  --jale-warning-bg: rgba(182,90,0,.26);   --jale-warning-text: #ffc07d;

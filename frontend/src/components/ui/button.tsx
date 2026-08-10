@@ -22,14 +22,21 @@ import { Spinner } from "./spinner";
  * over it, and folds those buttons into the one CTA colour the rest of the app
  * already uses, so the outstanding `primary` contrast decision covers them too.
  *
- * NOTE for whoever takes that decision: `primary` below paints with
- * `--jale-blue-500` DIRECTLY, not with the `--primary` role token. `.dark`
- * re-points `--primary` to #4585ff but leaves `--jale-blue-500` at #0179FF, so
- * the dark re-tint never reaches this button -- it is #0179FF in both themes
- * (fill-vs-ground 4.07:1 on the dark card, so the shape is fine). Surfaces that
- * DO use `var(--primary)`, such as the outbound message bubble in
- * `ConversationThread`, therefore render a different blue in dark than this
- * button does. Reconciling the two is part of the same sign-off.
+ * That `primary` contrast decision has since been taken, and this is its
+ * outcome: `--jale-blue-500` is #0064d6 and `.dark` no longer re-points
+ * `--primary`, so the one CTA blue is 5.54:1 under white in BOTH themes (it was
+ * 4.05:1 here and 3.47:1 on the `var(--primary)` bubble in `ConversationThread`
+ * -- two different blues, both under AA). `primary` below still paints
+ * `--jale-blue-500` directly rather than the `--primary` role token, which is
+ * now harmless because the two resolve to the same colour; prefer `--primary`
+ * for anything new.
+ *
+ * Residual, accepted with the decision: a darker CTA separates less from the
+ * dark grounds than the old light-blue re-tint did (fill-vs-ground 2.98:1 on
+ * `--jale-card`, 3.33:1 on the page, vs 4.06/4.54 before). Label legibility --
+ * the thing WCAG 1.4.3 governs -- went up, and `--shadow-btn` still lifts the
+ * shape off the card. If the dark card boundary needs more, that is a
+ * `--jale-card`/outline decision, not another CTA blue.
  */
 type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "error";
 type ButtonSize = "default" | "sm" | "lg";
