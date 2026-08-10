@@ -680,8 +680,16 @@ function FilterChip({
       className={[
         'max-w-[160px] shrink-0 cursor-pointer truncate rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors',
         'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+        // Active edge is `--jale-blue-700`, NOT `--primary`. The fill is
+        // `--jale-blue-50` and both of those tokens flip together under `.dark`
+        // (#eaf2ff/#0050ad -> #24305c/#a8c5ff), so the edge tracks its own fill
+        // in either theme: 6.78:1 light, 7.32:1 dark. `--primary` does not flip
+        // -- it is the one action blue now -- so against a fill that DOES flip it
+        // read 4.91:1 light but 2.30:1 dark, below the 3:1 that 1.4.11 wants of
+        // the boundary carrying "selected". This edge is the same token as the
+        // label inside it, which is the point: the chip is one tinted object.
         active
-          ? 'border-[var(--primary)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
+          ? 'border-[var(--jale-blue-700)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
           : 'border-[var(--jale-divider)] text-[var(--jale-ink-2)] hover:bg-[var(--jale-paper-2)]',
       ].join(' ')}
     >

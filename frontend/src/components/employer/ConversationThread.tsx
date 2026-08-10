@@ -243,7 +243,13 @@ export function ConversationThread({
               placeholder={t('composer_placeholder')}
               aria-describedby={errorMessage ? errorId : undefined}
               aria-invalid={errorMessage ? true : undefined}
-              className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)]"
+              /* `focus:shadow-[var(--shadow-focus)]` is the load-bearing half of
+                 this, not decoration -- same treatment `ui/input.tsx` uses. With
+                 `outline-none` and only a border swap, the entire focus indicator
+                 was `--jale-divider` -> `--primary`, which is 3.62:1 in light but
+                 2.20:1 in dark: under the 3:1 that 1.4.11 asks of a focus
+                 indicator. The ring carries it in both themes. */
+              className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
             />
             <Button type="submit" loading={sending} loadingLabel={tCommon('loading')} disabled={!body.trim()}>
               {t('send')}

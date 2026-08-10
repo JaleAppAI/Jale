@@ -18,8 +18,21 @@
   --jale-blue-200: #a8c5ff;
   --jale-blue-300: #78a4ff;
   --jale-blue-400: #4585ff;
-  --jale-blue-500: #0179FF;
-  --jale-blue-600: #0064d6;
+  /* The CTA blue. #0179FF only reached 4.05:1 under white, so every filled
+     button, wordmark and bubble label sat under AA; #0064d6 carries the same
+     hue at 5.54:1. */
+  --jale-blue-500: #0064d6;
+  /* Re-ramped: 500 moved down onto this stop's old value, which would have made
+     every `hover:bg-[var(--jale-blue-600)]` a no-op (blue-600's ONLY job in the
+     app is being 500's hover partner -- the three legal routes carry their own
+     private copies of these tokens). #005ac2 is the hue/saturation-preserving
+     midpoint of 500 and 700, so 500/600/700 stay monotonic with no duplicated
+     hex. The steps are near-even, not exactly even: 500 (0,100,214) -> 600
+     (0,90,194) is a per-channel delta of (0,10,20), and 600 -> 700 (0,80,173) is
+     (0,10,21) -- R pinned at 0, G exactly -10 twice, B -20 then -21 (the odd one
+     out is rounding, since the true midpoint of B is 193.5). Hover reads 1.17:1
+     darker than rest, and white on it is 6.48:1. */
+  --jale-blue-600: #005ac2;
   --jale-blue-700: #0050ad;
   --jale-blue-800: #003d85;
   --jale-blue-900: #181855;
@@ -88,8 +101,11 @@
 
   /* Elevation */
   --shadow-card:  0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.06);
-  --shadow-focus: 0 0 0 3px rgba(1,121,255,.10);
-  --shadow-btn:   0 4px 12px rgba(1,121,255,.30);
+  /* rgba components of --jale-blue-500 (#0064d6). CSS cannot take an alpha of a
+     hex var without color-mix, so these track the token by hand -- change both
+     if blue-500 ever moves again. */
+  --shadow-focus: 0 0 0 3px rgba(0,100,214,.10);
+  --shadow-btn:   0 4px 12px rgba(0,100,214,.30);
   --shadow-modal: 0 20px 50px -10px rgba(10,23,54,.25);
 
   /* Radii */
@@ -291,10 +307,15 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
 
 /* ===== DARK THEME ==================================================== */
 /* Overrides the token layer only — nothing here targets a component. Role
-   tokens (`--primary`, `--input-focus`, shadows) are re-pointed directly
-   rather than via the brand ramp, because `@theme inline` resolves
-   `--color-*` to these vars at use time, so a runtime override cascades
-   through every Tailwind utility built on them.
+   tokens (`--input-focus`, shadows) are re-pointed directly rather than via
+   the brand ramp, because `@theme inline` resolves `--color-*` to these vars
+   at use time, so a runtime override cascades through every Tailwind utility
+   built on them.
+   `--primary`/`--primary-hover` are deliberately NOT re-pointed here. They
+   used to become #4585ff/#78a4ff in dark, which put white bubble text at
+   3.47:1 and split the app across two CTA blues, since the `primary` Button
+   paints `--jale-blue-500` directly and never saw that re-tint. Letting both
+   fall through to the ramp gives one blue in both themes at 5.54:1.
    Must stay AFTER :root: `.dark` and `:root` have equal specificity, so
    source order is what makes these win. */
 .dark {
@@ -302,7 +323,6 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   --jale-input:   #12163a;  --input-focus:  #1b2150;  --jale-divider: #2a3164;
   --jale-shell:   #101438;  --jale-sidebar: #0a0d26;
   --jale-ink:     #e9edfb;  --jale-ink-2:   #9aa4cb;  --jale-placeholder: #6d7699;
-  --primary:      #4585ff;  --primary-hover:#78a4ff;
   --jale-blue-50: #24305c;  --jale-blue-700:#a8c5ff;
   --jale-success: #7fd6a4;  --jale-success-bg: rgba(31,122,68,.28);  --jale-success-text: #7fd6a4;
   --jale-warning: #ffc07d;  --jale-warning-bg: rgba(182,90,0,.26);   --jale-warning-text: #ffc07d;
@@ -310,7 +330,35 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   --jale-teal-50: rgba(33,195,164,.18); --jale-teal-500: #4fd8bd;
   --dot-color: rgba(120,164,255,.14);
   --shadow-card:  0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.35);
-  --shadow-focus: 0 0 0 3px rgba(69,133,255,.25);
+  /* ONE ACTION BLUE, AND THE TWO SHADOWS THAT ARE ALLOWED TO DIVERGE FROM IT
+     -------------------------------------------------------------------------
+     The rule this theme now runs on: `--primary`/`--jale-blue-500` is one blue
+     (#0064d6) in BOTH themes, and it governs every FILL and every LABEL. The
+     two tokens below are not a second action colour -- they are lighter here on
+     purpose, and each for its own reason.
+
+     `--shadow-focus` is a FUNCTIONAL INDICATOR, the thing WCAG 2.2 1.4.11 and
+     2.4.11 actually measure, so it is required to be visible where a fill is
+     only required to be attractive. The old rgba(69,133,255,.25) composited to
+     #223673 over `--jale-card` (#161b44) -- 1.45:1, effectively invisible, which
+     mattered the moment the composers started relying on it. Raised to
+     `--jale-blue-300` (#78a4ff) at .65, which composites to #5674be over
+     `--jale-card` = 3.64:1, and clears 3:1 on EVERY dark ground it can land on:
+     card 3.64, page 3.87, paper-2 3.42, input 3.74, shell 3.80, sidebar 3.90,
+     navy 3.57, input-focus 3.46, and the worst case -- the blue-50 filter-chip
+     fill (#24305c) -- 3.08. Keeping it rgba rather than solid is what lets one
+     token do that across nine grounds. Deriving it from #0064d6 instead cannot
+     reach 3:1 at any alpha: the CTA blue is darker than several of these
+     grounds, so more alpha makes the ring vanish, not appear.
+
+     `--shadow-btn` is decoration -- a 12px-blurred lift under a filled button --
+     and it stays light blue after re-deriving it was considered and rejected on
+     the numbers: at .35 alpha the blue-400 glow separates from the dark grounds
+     by 1.68-1.71:1, a #0064d6 glow by only 1.40-1.41:1. Since a #0064d6 glow is
+     barely visible against grounds that are themselves dark navy, re-deriving it
+     would have quietly deleted the lift rather than aligned it. It carries no
+     information, so it owes nothing to 1.4.11; it just has to be seen. */
+  --shadow-focus: 0 0 0 3px rgba(120,164,255,.65);
   --shadow-btn:   0 4px 12px rgba(69,133,255,.35);
   --shadow-modal: 0 20px 50px -10px rgba(0,0,0,.5);
   /* Not in the light block's ink tint: over a dark page a 45% navy scrim is

@@ -22,14 +22,50 @@ import { Spinner } from "./spinner";
  * over it, and folds those buttons into the one CTA colour the rest of the app
  * already uses, so the outstanding `primary` contrast decision covers them too.
  *
- * NOTE for whoever takes that decision: `primary` below paints with
- * `--jale-blue-500` DIRECTLY, not with the `--primary` role token. `.dark`
- * re-points `--primary` to #4585ff but leaves `--jale-blue-500` at #0179FF, so
- * the dark re-tint never reaches this button -- it is #0179FF in both themes
- * (fill-vs-ground 4.07:1 on the dark card, so the shape is fine). Surfaces that
- * DO use `var(--primary)`, such as the outbound message bubble in
- * `ConversationThread`, therefore render a different blue in dark than this
- * button does. Reconciling the two is part of the same sign-off.
+ * That `primary` contrast decision has since been taken, and this is its
+ * outcome: `--jale-blue-500` is #0064d6 and `.dark` no longer re-points
+ * `--primary`, so the one CTA blue is 5.54:1 under white in BOTH themes (it was
+ * 4.05:1 here and 3.47:1 on the `var(--primary)` bubble in `ConversationThread`
+ * -- two different blues, both under AA). `primary` below still paints
+ * `--jale-blue-500` directly rather than the `--primary` role token, which is
+ * now harmless because the two resolve to the same colour; prefer `--primary`
+ * for anything new.
+ *
+ * Residual, accepted with the decision: a darker CTA separates less from the
+ * dark grounds than the old light-blue re-tint did (fill-vs-ground 2.98:1 on
+ * `--jale-card`, 3.33:1 on the page, vs 4.06/4.54 before). Label legibility --
+ * the thing WCAG 1.4.3 governs -- went up, and `--shadow-btn` still lifts the
+ * shape off the card. If the dark card boundary needs more, that is a
+ * `--jale-card`/outline decision, not another CTA blue.
+ *
+ * FILL-VS-GROUND, MEASURED, ON THE FIXED-NAVY SURFACES THIS BUTTON ACTUALLY
+ * LANDS ON. These are the brand bands that stay navy in BOTH themes, so unlike
+ * the themed-card numbers above they are not a dark-mode-only story:
+ *
+ *   employer dashboard navy hero  `--jale-blue-900` #181855   2.92:1
+ *   landing hero CTA              `--jale-blue-900` #181855   2.92:1
+ *   landing nav CTA               `--jale-blue-900` #181855   2.92:1
+ *   landing "worker" card         `--jale-blue-900` #181855   2.92:1
+ *   landing employer CTA          `--jale-blue-950` #0e0e3d   3.30:1
+ *   auth navy panel               -- no primary fill: every auth button renders
+ *                                    on the themed `--jale-card` column, 4.64:1
+ *   j/[code] navy band            -- no primary fill: the band holds only the
+ *                                    wordmark; its CTA sits on the white card
+ *
+ * Nothing here is egregious (the floor is 2.92:1, roughly twice the ~1.5:1 where
+ * a fill genuinely dissolves into its ground), so no per-surface compensation is
+ * added. The standard reading of WCAG 1.4.11 is that it applies to visual
+ * information "required to identify" a control, and the boundary is not the sole
+ * identifier for a filled button: the white label is 5.54:1 on the fill, and the
+ * pill shape, padding and hover/focus states all carry the affordance. A filled
+ * control whose LABEL passes 1.4.3 at 4.5:1 is commonly accepted on that basis.
+ * The nav's login pills are a different shape entirely -- `--jale-blue-500` at
+ * 20% over the navy (#13276f, 1.19:1 vs the band) -- and are identified by a
+ * white label at 13.57:1 plus their border, not by the tint.
+ *
+ * The inverse rule matters more and is the one that keeps getting broken: this
+ * blue is tuned to carry white ON it, never to be READ against navy. Any TEXT or
+ * icon on a fixed-navy ground uses `--jale-blue-300`; see the landing page.
  */
 type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "error";
 type ButtonSize = "default" | "sm" | "lg";

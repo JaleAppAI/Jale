@@ -133,7 +133,9 @@ export function EmptyThreadComposer({
             placeholder={t('composer_placeholder')}
             aria-describedby={errorMessage ? errorId : undefined}
             aria-invalid={errorMessage ? true : undefined}
-            className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)]"
+            /* Ring, not just the border swap -- see the identical composer in
+               `ConversationThread.tsx`. Border-only was 2.20:1 in dark. */
+            className="min-h-[42px] flex-1 resize-none rounded-[var(--radius-input)] border border-[var(--jale-divider)] bg-[var(--jale-paper-2)] px-3 py-2 text-sm text-[var(--jale-ink)] outline-none placeholder:text-[var(--jale-ink-2)] focus:border-[var(--primary)] focus:bg-[var(--jale-card)] focus:shadow-[var(--shadow-focus)]"
           />
           <Button type="submit" loading={sending} loadingLabel={tCommon('loading')} disabled={!body.trim()}>
             {t('send')}
