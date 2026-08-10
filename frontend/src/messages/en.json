@@ -521,20 +521,10 @@
     },
     "nav": {
       "main": "Main",
-      "hiring": "Hiring",
-      "account": "Account",
       "dashboard": "Dashboard",
-      "jobs": "My Jobs",
       "messages": "Messages",
-      "workers": "Workers",
-      "interviews": "Interviews",
-      "search_workers": "Search Workers",
-      "boost_job": "Boost a Job",
-      "jale_direct": "Jale Direct",
-      "analytics": "Analytics",
       "billing": "Billing",
-      "settings": "Settings",
-      "soon": "Soon"
+      "settings": "Settings"
     },
     "hero": {
       "eyebrow": "Got Jale?",
