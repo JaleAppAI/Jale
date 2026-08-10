@@ -467,7 +467,8 @@
       "analytics": "Analíticas",
       "billing": "Facturación",
       "settings": "Configuración",
-      "soon": "Pronto"
+      "soon": "Pronto",
+      "templates": "Plantillas"
     },
     "hero": {
       "eyebrow": "Got Jale?",
@@ -654,15 +655,12 @@
       "locked_note": "Bloqueado — este trabajo tiene postulantes",
       "edit_error": "No se pudieron guardar los cambios. Intenta de nuevo.",
       "template_select_label": "Empezar desde una plantilla",
+      "template_select_placeholder": "Elige una plantilla…",
       "template_save_toggle": "Guardar como plantilla",
       "template_name_placeholder": "Nombre de la plantilla",
-      "template_saved": "Plantilla guardada",
       "template_check_city": "Revisa la ciudad antes de publicar",
       "template_limit_reached": "Límite de plantillas alcanzado — mejora tu plan para más",
-      "template_name_taken": "Ya tienes una plantilla con ese nombre",
-      "template_delete_label": "Eliminar plantilla {name}",
-      "template_delete_confirm": "¿Eliminar?",
-      "template_save_only": "Guardar solo la plantilla"
+      "template_name_taken": "Ya tienes una plantilla con ese nombre"
     },
     "worker_profile": {
       "back": "Volver a postulantes",
@@ -729,6 +727,29 @@
       "next": "Siguiente: Requisitos de documentos",
       "back": "Atrás",
       "submit": "Publicar trabajo"
+    },
+    "templates": {
+      "title": "Plantillas de empleo",
+      "meter": "{count} de {limit} plantillas",
+      "meter_count": "{count} plantillas",
+      "new": "Nueva plantilla",
+      "limit_note": "Límite de plantillas alcanzado — mejora tu plan para más",
+      "empty": "Aún no hay plantillas. Crea una aquí o marca “Guardar como plantilla” al publicar un empleo.",
+      "edit": "Editar",
+      "edit_title": "Editar plantilla",
+      "new_title": "Nueva plantilla",
+      "save": "Guardar plantilla",
+      "name_label": "Nombre de la plantilla",
+      "name_required": "Ponle un nombre a la plantilla",
+      "save_error": "No se pudo guardar la plantilla",
+      "delete_title": "Eliminar plantilla",
+      "delete_body": "¿Eliminar “{name}”? Los empleos ya publicados con ella no se ven afectados.",
+      "delete_confirm": "Eliminar",
+      "delete_error": "No se pudo eliminar la plantilla",
+      "updated": "Actualizada",
+      "col_name": "Nombre",
+      "col_details": "Detalles",
+      "manage_link": "Administrar plantillas"
     }
   },
   "upload_page": {

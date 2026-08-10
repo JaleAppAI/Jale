@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, type JobForm,
+  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, type JobForm,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
@@ -313,5 +313,35 @@ describe('jobFormFromTemplatePayload', () => {
   it('drops unknown keys instead of leaking them into the form', () => {
     const { form } = jobFormFromTemplatePayload({ ...payload, bogus_future_field: 'x' } as never);
     expect('bogus_future_field' in form).toBe(false);
+  });
+});
+
+describe('templateRowSummary', () => {
+  it('summarizes a full payload', () => {
+    expect(templateRowSummary({
+      city: 'El Paso', trade_category: 'concrete',
+      pay_min: 20, pay_max: 28, pay_interval: 'hourly',
+      location: 'El Paso, TX 79901',
+    })).toEqual({ city: 'El Paso', trade: 'concrete', pay: '$20–$28' });
+  });
+
+  it('falls back to the location text before the first comma when city is absent', () => {
+    expect(templateRowSummary({ location: 'Las Cruces, NM' }).city).toBe('Las Cruces');
+  });
+
+  it('uses em dashes for missing values and a commaless location', () => {
+    expect(templateRowSummary({ location: 'near the yard' }))
+      .toEqual({ city: '—', trade: '—', pay: '—' });
+    expect(templateRowSummary({})).toEqual({ city: '—', trade: '—', pay: '—' });
+  });
+
+  it('formats one-sided pay ranges', () => {
+    expect(templateRowSummary({ pay_min: 20 }).pay).toBe('$20+');
+    expect(templateRowSummary({ pay_max: 30 }).pay).toBe('Up to $30');
+  });
+
+  it('joins a provided interval label onto real pay, never onto the em dash', () => {
+    expect(templateRowSummary({ pay_min: 20, pay_max: 28 }, 'per hour').pay).toBe('$20–$28 · per hour');
+    expect(templateRowSummary({}, 'per hour').pay).toBe('—');
   });
 });

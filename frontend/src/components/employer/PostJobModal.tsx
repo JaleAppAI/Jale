@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  ApiError, createJob, deleteJobTemplate, listJobTemplates, saveJobTemplate,
+  ApiError, createJob, listJobTemplates, saveJobTemplate,
   Job, JobTemplate,
 } from '@/lib/api/employer';
 import {
@@ -45,10 +45,8 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [checkCity, setCheckCity] = useState(false);
   const [saveAsTemplate, setSaveAsTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
-  const [templateNotice, setTemplateNotice] = useState<'' | 'saved' | 'limit' | 'name_taken'>('');
+  const [templateNotice, setTemplateNotice] = useState<'' | 'limit' | 'name_taken'>('');
   const [templateLimit, setTemplateLimit] = useState<number | null>(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const [savingTemplateOnly, setSavingTemplateOnly] = useState(false);
 
   // Silent background load whenever the modal opens -- the wizard must work
   // exactly the same with zero templates, so any failure here is swallowed.
@@ -83,8 +81,6 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateName('');
     setTemplateNotice('');
     setTemplateLimit(null);
-    setConfirmDeleteId(null);
-    setSavingTemplateOnly(false);
     onClose();
   };
 
@@ -92,38 +88,6 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const { form: prefilled, cityPrefilled } = jobFormFromTemplatePayload(template.payload);
     setForm(prefilled);
     setCheckCity(cityPrefilled);
-    setConfirmDeleteId(null);
-  };
-
-  const handleDeleteTemplate = async (templateId: string) => {
-    setConfirmDeleteId(null);
-    try {
-      await deleteJobTemplate(idToken!, templateId);
-      setTemplates((current) => current.filter((tpl) => tpl.id !== templateId));
-    } catch {
-      // Deletion is best-effort; leave the template in the list on failure.
-    }
-  };
-
-  const handleSaveTemplateOnly = async () => {
-    const name = templateName.trim();
-    if (!name) return;
-    setSavingTemplateOnly(true);
-    setTemplateNotice('');
-    try {
-      const saved = await saveJobTemplate(idToken!, { name, payload: jobFormToCreatePayload(form) });
-      setTemplates((current) => [saved, ...current.filter((tpl) => tpl.id !== saved.id)]);
-      setTemplateNotice('saved');
-    } catch (err) {
-      if (err instanceof ApiError && err.code === 'template_limit_reached') {
-        setTemplateNotice('limit');
-        setTemplateLimit(err.payload.template_limit ?? null);
-      } else if (err instanceof ApiError && err.code === 'template_name_taken') {
-        setTemplateNotice('name_taken');
-      }
-    } finally {
-      setSavingTemplateOnly(false);
-    }
   };
 
   const toggleDoc = (doc: DocType) => {
@@ -255,39 +219,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             <div className="grid gap-4">
               {templates.length > 0 && (
                 <Field label={t('modal.template_select_label')}>
-                  <div className="flex flex-col gap-1 rounded-[10px] border border-[var(--jale-divider)] p-2">
-                    {templates.map((template) => (
-                      <div
-                        key={template.id}
-                        className="flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 hover:bg-[var(--jale-paper-2)]"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => applyTemplate(template)}
-                          className="flex-1 truncate text-left text-sm font-medium text-[var(--jale-ink)]"
-                        >
-                          {template.name}
-                        </button>
-                        {confirmDeleteId === template.id ? (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteTemplate(template.id)}
-                            className="shrink-0 text-xs font-bold text-[var(--jale-danger)]"
-                          >
-                            {t('modal.template_delete_confirm')}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(template.id)}
-                            aria-label={t('modal.template_delete_label', { name: template.name })}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs text-[var(--jale-ink-2)] hover:bg-[var(--jale-danger-bg)]"
-                          >
-                            x
-                          </button>
-                        )}
-                      </div>
-                    ))}
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value=""
+                      onChange={(e) => {
+                        const picked = templates.find((tpl) => tpl.id === e.target.value);
+                        if (picked) applyTemplate(picked);
+                      }}
+                    >
+                      <option value="">{t('modal.template_select_placeholder')}</option>
+                      {templates.map((tpl) => (<option key={tpl.id} value={tpl.id}>{tpl.name}</option>))}
+                    </Select>
+                    <Link href="/employer/templates" className="shrink-0 text-xs font-semibold text-[var(--jale-blue-700)] hover:underline">
+                      {t('templates.manage_link')}
+                    </Link>
                   </div>
                 </Field>
               )}
@@ -462,20 +407,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                       placeholder={t('modal.template_name_placeholder')}
                       className="flex-1"
                     />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      onClick={handleSaveTemplateOnly}
-                      loading={savingTemplateOnly}
-                      loadingLabel={tCommon('loading')}
-                      disabled={!templateName.trim()}
-                    >
-                      {t('modal.template_save_only')}
-                    </Button>
                   </div>
-                )}
-                {templateNotice === 'saved' && (
-                  <p className="mt-2 text-xs font-semibold text-[var(--jale-blue-700)]">{t('modal.template_saved')}</p>
                 )}
                 {templateNotice === 'name_taken' && (
                   <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
