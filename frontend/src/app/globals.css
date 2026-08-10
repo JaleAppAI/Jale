@@ -26,9 +26,12 @@
      every `hover:bg-[var(--jale-blue-600)]` a no-op (blue-600's ONLY job in the
      app is being 500's hover partner -- the three legal routes carry their own
      private copies of these tokens). #005ac2 is the hue/saturation-preserving
-     midpoint of 500 and 700, so 500/600/700 stay monotonic and evenly stepped
-     (delta 0,10,21 per stop) with no duplicated hex, hover reads 1.17:1 darker
-     than rest, and white on it is 6.48:1. */
+     midpoint of 500 and 700, so 500/600/700 stay monotonic with no duplicated
+     hex. The steps are near-even, not exactly even: 500 (0,100,214) -> 600
+     (0,90,194) is a per-channel delta of (0,10,20), and 600 -> 700 (0,80,173) is
+     (0,10,21) -- R pinned at 0, G exactly -10 twice, B -20 then -21 (the odd one
+     out is rounding, since the true midpoint of B is 193.5). Hover reads 1.17:1
+     darker than rest, and white on it is 6.48:1. */
   --jale-blue-600: #005ac2;
   --jale-blue-700: #0050ad;
   --jale-blue-800: #003d85;
@@ -327,7 +330,35 @@ input[type="password"]::-webkit-credentials-auto-fill-button { display: none; }
   --jale-teal-50: rgba(33,195,164,.18); --jale-teal-500: #4fd8bd;
   --dot-color: rgba(120,164,255,.14);
   --shadow-card:  0 1px 2px rgba(0,0,0,.35), 0 4px 16px rgba(0,0,0,.35);
-  --shadow-focus: 0 0 0 3px rgba(69,133,255,.25);
+  /* ONE ACTION BLUE, AND THE TWO SHADOWS THAT ARE ALLOWED TO DIVERGE FROM IT
+     -------------------------------------------------------------------------
+     The rule this theme now runs on: `--primary`/`--jale-blue-500` is one blue
+     (#0064d6) in BOTH themes, and it governs every FILL and every LABEL. The
+     two tokens below are not a second action colour -- they are lighter here on
+     purpose, and each for its own reason.
+
+     `--shadow-focus` is a FUNCTIONAL INDICATOR, the thing WCAG 2.2 1.4.11 and
+     2.4.11 actually measure, so it is required to be visible where a fill is
+     only required to be attractive. The old rgba(69,133,255,.25) composited to
+     #223673 over `--jale-card` (#161b44) -- 1.45:1, effectively invisible, which
+     mattered the moment the composers started relying on it. Raised to
+     `--jale-blue-300` (#78a4ff) at .65, which composites to #5674be over
+     `--jale-card` = 3.64:1, and clears 3:1 on EVERY dark ground it can land on:
+     card 3.64, page 3.87, paper-2 3.42, input 3.74, shell 3.80, sidebar 3.90,
+     navy 3.57, input-focus 3.46, and the worst case -- the blue-50 filter-chip
+     fill (#24305c) -- 3.08. Keeping it rgba rather than solid is what lets one
+     token do that across nine grounds. Deriving it from #0064d6 instead cannot
+     reach 3:1 at any alpha: the CTA blue is darker than several of these
+     grounds, so more alpha makes the ring vanish, not appear.
+
+     `--shadow-btn` is decoration -- a 12px-blurred lift under a filled button --
+     and it stays light blue after re-deriving it was considered and rejected on
+     the numbers: at .35 alpha the blue-400 glow separates from the dark grounds
+     by 1.68-1.71:1, a #0064d6 glow by only 1.40-1.41:1. Since a #0064d6 glow is
+     barely visible against grounds that are themselves dark navy, re-deriving it
+     would have quietly deleted the lift rather than aligned it. It carries no
+     information, so it owes nothing to 1.4.11; it just has to be seen. */
+  --shadow-focus: 0 0 0 3px rgba(120,164,255,.65);
   --shadow-btn:   0 4px 12px rgba(69,133,255,.35);
   --shadow-modal: 0 20px 50px -10px rgba(0,0,0,.5);
   /* Not in the light block's ink tint: over a dark page a 45% navy scrim is

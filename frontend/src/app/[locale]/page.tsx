@@ -70,10 +70,17 @@ const DOT_PATTERN_WHITE: React.CSSProperties = {
 };
 
 // Rich-text renderers for spans in the i18n copy (styles from the design).
-const blueStrong = (chunks: React.ReactNode) => (
-    <span className="font-semibold text-[var(--jale-blue-500)]">{chunks}</span>
+// TWO blues on purpose, and the names carry the constraint: the accent stop has
+// to match the ground it lands on, because `--jale-blue-500` is tuned to carry
+// white ON it, not to be read against a dark surface.
+//   - ...OnNavy -> `--jale-blue-300` (#78a4ff), 6.58:1 on the fixed brand navy
+//     `--jale-blue-900`. blue-500 there is 2.92:1, a straight 1.4.3 fail.
+//   - ...OnSurface -> `--jale-blue-500`, on themed app surfaces only.
+// Do not swap one for the other without re-measuring against the new ground.
+const blueStrongOnNavy = (chunks: React.ReactNode) => (
+    <span className="font-semibold text-[var(--jale-blue-300)]">{chunks}</span>
 );
-const blueBold = (chunks: React.ReactNode) => (
+const blueBoldOnSurface = (chunks: React.ReactNode) => (
     <span className="font-bold text-[var(--jale-blue-500)]">{chunks}</span>
 );
 const semibold = (chunks: React.ReactNode) => <span className="font-semibold">{chunks}</span>;
@@ -151,14 +158,14 @@ export default function Home() {
 
     const testimonials = [
         {
-            quote: t.rich('testimonials.q1', { blue: blueBold }),
+            quote: t.rich('testimonials.q1', { blue: blueBoldOnSurface }),
             name: t('testimonials.q1_name'),
             role: t('testimonials.q1_role'),
             initials: t('testimonials.q1_initials'),
             square: false,
         },
         {
-            quote: t.rich('testimonials.q2', { blue: blueBold }),
+            quote: t.rich('testimonials.q2', { blue: blueBoldOnSurface }),
             name: t('testimonials.q2_name'),
             role: t('testimonials.q2_role'),
             initials: t('testimonials.q2_initials'),
@@ -199,10 +206,12 @@ html { scroll-behavior: smooth; }
                             `--jale-ink-2` for its label, which is unreadable on
                             brand navy, so the label colour comes in through
                             `labelClassName`.
-                            The label rides `--jale-blue-300` rather than the
-                            brand `-500`: at 11px, blue-500 on this navy measures
-                            3.7:1, under AA, while blue-300 clears it at ~6.5:1.
-                            The dot keeps brand blue -- it carries no text. */}
+                            The label rides `--jale-blue-300` (#78a4ff) rather than
+                            the brand `-500`: on this navy blue-500 measures 2.92:1,
+                            under AA at any size, while blue-300 clears it at 6.58:1.
+                            The dot keeps brand blue: it is decorative -- it carries
+                            no text and duplicates no information -- so 1.4.11 does
+                            not bite even at 2.92:1. */}
                         <Badge
                             dotClassName="bg-[var(--jale-blue-500)]"
                             labelClassName="text-[var(--jale-blue-300)]"
@@ -210,14 +219,23 @@ html { scroll-behavior: smooth; }
                         >
                             {t('hero.eyebrow')}
                         </Badge>
+                        {/* Accent word on the FIXED brand navy, so it rides
+                            `--jale-blue-300` for the same reason the eyebrow above
+                            does: `--jale-blue-900` never re-tints, and the CTA blue
+                            `--jale-blue-500` (#0064d6) is only 2.92:1 on it -- under
+                            even the 3:1 large-text floor. blue-300 is 6.58:1, so this
+                            clears AA outright rather than leaning on the display size.
+                            Do NOT "fix" this back to blue-500 for brand consistency:
+                            blue-500 is tuned to carry white ON it, not to be read
+                            against navy. */}
                         <h1
                             className="mt-[18px] font-extrabold text-white"
                             style={{ fontSize: 'clamp(2.75rem, 8vw, 5.25rem)', lineHeight: 0.98, letterSpacing: '-0.04em' }}
                         >
-                            {t('hero.h1_start')} <span className="text-[var(--jale-blue-500)]">{t('hero.h1_accent')}</span>
+                            {t('hero.h1_start')} <span className="text-[var(--jale-blue-300)]">{t('hero.h1_accent')}</span>
                         </h1>
                         <p className="mt-5 max-w-[490px] text-[19px] leading-[1.6] text-white/[.78]">
-                            {t.rich('hero.sub', { blue: blueStrong, b: semibold })}
+                            {t.rich('hero.sub', { blue: blueStrongOnNavy, b: semibold })}
                         </p>
                         <a
                             href="#cta"
@@ -228,7 +246,10 @@ html { scroll-behavior: smooth; }
                             {t('hero.cta')}
                         </a>
                         <div className="mt-[18px] flex items-center gap-2 text-[13px] text-white/60">
-                            <Check size={16} className="text-[var(--jale-blue-500)]" />
+                            {/* blue-300, not blue-500: same fixed navy as the h1
+                                above. blue-500 is 2.92:1 here, below the 3:1
+                                non-text floor in 1.4.11; blue-300 is 6.58:1. */}
+                            <Check size={16} className="text-[var(--jale-blue-300)]" />
                             {t('hero.free_line')}
                         </div>
                     </div>
@@ -320,7 +341,12 @@ html { scroll-behavior: smooth; }
                         id="for-employers"
                         className="rounded-[20px] border border-white/10 bg-[var(--jale-blue-950)] p-7 text-white md:p-10"
                     >
-                        <span className="flex h-[52px] w-[52px] items-center justify-center rounded-[14px] bg-[var(--jale-blue-500)]/10 text-[var(--jale-blue-500)]">
+                        {/* Tile FILL stays brand blue at 10% (decorative tint);
+                            the glyph rides blue-300 like every other mark on a
+                            fixed-navy ground here. Over this tile (blue-500 @10%
+                            on blue-950 = #0d174c) blue-500 was a hairline 3.05:1;
+                            blue-300 is 6.88:1. */}
+                        <span className="flex h-[52px] w-[52px] items-center justify-center rounded-[14px] bg-[var(--jale-blue-500)]/10 text-[var(--jale-blue-300)]">
                             <Building2 />
                         </span>
                         <h3 className="mb-[18px] mt-[22px] text-3xl font-extrabold">
@@ -329,7 +355,10 @@ html { scroll-behavior: smooth; }
                         <ul className="mb-7 flex flex-col gap-[13px]">
                             {(['employer_b1', 'employer_b2', 'employer_b3', 'employer_b4'] as const).map((key) => (
                                 <li key={key} className="flex items-start gap-2.5 text-base text-white/[.86]">
-                                    <Check size={20} className="mt-[1px] shrink-0 text-[var(--jale-blue-500)]" />
+                                    {/* blue-300 (7.44:1 on blue-950), not blue-500
+                                        (3.30:1 -- a hairline pass that drops to a
+                                        fail the moment this card's navy shifts). */}
+                                    <Check size={20} className="mt-[1px] shrink-0 text-[var(--jale-blue-300)]" />
                                     <span>{t.rich(`audience.${key}`, { b: semibold })}</span>
                                 </li>
                             ))}

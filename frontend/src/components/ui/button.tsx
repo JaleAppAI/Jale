@@ -37,6 +37,35 @@ import { Spinner } from "./spinner";
  * the thing WCAG 1.4.3 governs -- went up, and `--shadow-btn` still lifts the
  * shape off the card. If the dark card boundary needs more, that is a
  * `--jale-card`/outline decision, not another CTA blue.
+ *
+ * FILL-VS-GROUND, MEASURED, ON THE FIXED-NAVY SURFACES THIS BUTTON ACTUALLY
+ * LANDS ON. These are the brand bands that stay navy in BOTH themes, so unlike
+ * the themed-card numbers above they are not a dark-mode-only story:
+ *
+ *   employer dashboard navy hero  `--jale-blue-900` #181855   2.92:1
+ *   landing hero CTA              `--jale-blue-900` #181855   2.92:1
+ *   landing nav CTA               `--jale-blue-900` #181855   2.92:1
+ *   landing "worker" card         `--jale-blue-900` #181855   2.92:1
+ *   landing employer CTA          `--jale-blue-950` #0e0e3d   3.30:1
+ *   auth navy panel               -- no primary fill: every auth button renders
+ *                                    on the themed `--jale-card` column, 4.64:1
+ *   j/[code] navy band            -- no primary fill: the band holds only the
+ *                                    wordmark; its CTA sits on the white card
+ *
+ * Nothing here is egregious (the floor is 2.92:1, roughly twice the ~1.5:1 where
+ * a fill genuinely dissolves into its ground), so no per-surface compensation is
+ * added. The standard reading of WCAG 1.4.11 is that it applies to visual
+ * information "required to identify" a control, and the boundary is not the sole
+ * identifier for a filled button: the white label is 5.54:1 on the fill, and the
+ * pill shape, padding and hover/focus states all carry the affordance. A filled
+ * control whose LABEL passes 1.4.3 at 4.5:1 is commonly accepted on that basis.
+ * The nav's login pills are a different shape entirely -- `--jale-blue-500` at
+ * 20% over the navy (#13276f, 1.19:1 vs the band) -- and are identified by a
+ * white label at 13.57:1 plus their border, not by the tint.
+ *
+ * The inverse rule matters more and is the one that keeps getting broken: this
+ * blue is tuned to carry white ON it, never to be READ against navy. Any TEXT or
+ * icon on a fixed-navy ground uses `--jale-blue-300`; see the landing page.
  */
 type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "error";
 type ButtonSize = "default" | "sm" | "lg";
