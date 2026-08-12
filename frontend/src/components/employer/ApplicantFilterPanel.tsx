@@ -1,102 +1,185 @@
 'use client';
+
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
 import type { ApplicantFilters } from '@/lib/api/employer';
+import type { ApplicationStatus } from '@/lib/status';
 
-const SELECT_CLASS = [
-  'min-h-[40px] w-full rounded-[var(--radius-input)]',
-  'border border-[var(--jale-divider)] bg-[var(--jale-input)]',
-  'px-3 text-sm font-medium text-[var(--jale-ink)]',
-  'focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]',
-  'transition-all duration-150',
-].join(' ');
+/**
+ * Applicant filter strip for the employer job page.
+ *
+ * It renders inside the applicants panel (above the divided rows), so it draws
+ * no box of its own beyond a hairline separator -- the panel is the ONE bordered
+ * container the list lives in, and a second border here would read as two
+ * stacked cards.
+ *
+ * The panel is a controlled, stateless view: it never fetches. `onChange` hands
+ * the next filter set to the page, which drives a BACKGROUND refresh with it.
+ * That is deliberate and load-bearing -- see the note on `applyFilters` in the
+ * page. Filtering must not be able to blank a page the employer is reading.
+ */
 
-const INPUT_CLASS = [
-  'min-h-[40px] w-full rounded-[var(--radius-input)]',
-  'border border-[var(--jale-divider)] bg-[var(--jale-input)]',
-  'px-3 text-sm font-medium text-[var(--jale-ink)] placeholder:text-[var(--jale-placeholder)]',
-  'focus:outline-none focus:bg-white focus:border-[var(--jale-blue-500)] focus:shadow-[var(--shadow-focus)]',
-  'transition-all duration-150',
-].join(' ');
+/** Statuses offered in the dropdown, in lifecycle order. */
+const FILTER_STATUSES: ApplicationStatus[] = [
+    'pending',
+    'contacted',
+    'talking',
+    'hired',
+    'not_interested',
+];
+
+/** Availability values the API accepts, matching `filters.availability_*` keys. */
+const FILTER_AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
+
+export const EMPTY_APPLICANT_FILTERS: ApplicantFilters = {};
+
+/**
+ * Whether anything is actually narrowing the list.
+ *
+ * This is what tells "nobody has applied yet" apart from "your filters hide
+ * everyone", so it must treat a blank string and a `NaN` min-experience as
+ * *not* filtering -- otherwise clearing a field by hand would leave the page
+ * insisting filters are still on.
+ */
+export function hasActiveApplicantFilters(filters: ApplicantFilters): boolean {
+    if (filters.status) return true;
+    if (filters.skills && filters.skills.trim().length > 0) return true;
+    if (filters.availability) return true;
+    if (filters.min_experience !== undefined && Number.isFinite(filters.min_experience)) return true;
+    return false;
+}
+
+/*
+ * NOTE ON `disabled`: none of these controls is ever disabled while the
+ * filtered reload runs. Disabling a focused input blurs it, so the employer
+ * would lose the caret after the first character they typed into "Skills" and
+ * be unable to type a second. The busy affordance lives in the panel header
+ * (a spinner) instead, where it cannot touch focus.
+ */
 
 interface Props {
-  filters: ApplicantFilters;
-  onChange: (filters: ApplicantFilters) => void;
+    filters: ApplicantFilters;
+    onChange: (filters: ApplicantFilters) => void;
 }
 
 export function ApplicantFilterPanel({ filters, onChange }: Props) {
-  const t = useTranslations('employer_dashboard');
+    const t = useTranslations('employer_job_listing');
+    // `employer_dashboard.applicants.status.*` is frozen shared vocabulary: the
+    // dropdown must name a status exactly as the badge on the row below does.
+    const tShared = useTranslations('employer_dashboard');
 
-  return (
-    <div
-      className="flex flex-wrap gap-3 items-end rounded-[var(--radius-input)] p-4 mb-4"
-      style={{ background: 'var(--jale-paper-2)', border: '1px solid var(--jale-divider)' }}
-    >
-      <div className="flex flex-col gap-1 min-w-[140px]">
-        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-          {t('filter.status')}
-        </label>
-        <select
-          value={filters.status ?? ''}
-          onChange={(e) => onChange({ ...filters, status: e.target.value || undefined })}
-          className={SELECT_CLASS}
-        >
-          <option value="">{t('filter.status_all')}</option>
-          <option value="pending">{t('applicants.status.pending')}</option>
-          <option value="contacted">{t('applicants.status.contacted')}</option>
-          <option value="talking">{t('applicants.status.talking')}</option>
-          <option value="hired">{t('applicants.status.hired')}</option>
-          <option value="not_interested">{t('applicants.status.not_interested')}</option>
-        </select>
-      </div>
+    const active = hasActiveApplicantFilters(filters);
 
-      <div className="flex flex-col gap-1 min-w-[180px]">
-        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-          {t('filter.skills')}
-        </label>
-        <input
-          value={filters.skills ?? ''}
-          onChange={(e) => onChange({ ...filters, skills: e.target.value || undefined })}
-          placeholder={t('filter.skills_placeholder')}
-          className={INPUT_CLASS}
-        />
-      </div>
+    return (
+        <div className="border-b border-[var(--jale-divider)] px-5 py-4">
+            <div className="flex flex-wrap items-end gap-3">
+                <div className="flex min-w-[9rem] flex-1 flex-col gap-1.5 sm:flex-none">
+                    <label
+                        htmlFor="applicant-filter-status"
+                        className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]"
+                    >
+                        {t('filters.status')}
+                    </label>
+                    <Select
+                        id="applicant-filter-status"
+                        value={filters.status ?? ''}
+                        onChange={(event) =>
+                            onChange({ ...filters, status: event.target.value || undefined })
+                        }
+                    >
+                        <option value="">{t('filters.status_all')}</option>
+                        {FILTER_STATUSES.map((status) => (
+                            <option key={status} value={status}>
+                                {tShared(`applicants.status.${status}`)}
+                            </option>
+                        ))}
+                    </Select>
+                </div>
 
-      <div className="flex flex-col gap-1 min-w-[140px]">
-        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-          {t('filter.availability')}
-        </label>
-        <select
-          value={filters.availability ?? ''}
-          onChange={(e) => onChange({ ...filters, availability: e.target.value || undefined })}
-          className={SELECT_CLASS}
-        >
-          <option value="">{t('filter.availability_any')}</option>
-          <option value="full_time">{t('filter.availability_full_time')}</option>
-          <option value="part_time">{t('filter.availability_part_time')}</option>
-          <option value="weekends">{t('filter.availability_weekends')}</option>
-          <option value="flexible">{t('filter.availability_flexible')}</option>
-        </select>
-      </div>
+                <div className="flex min-w-[11rem] flex-1 flex-col gap-1.5">
+                    <label
+                        htmlFor="applicant-filter-skills"
+                        className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]"
+                    >
+                        {t('filters.skills')}
+                    </label>
+                    <Input
+                        id="applicant-filter-skills"
+                        value={filters.skills ?? ''}
+                        placeholder={t('filters.skills_placeholder')}
+                        onChange={(event) =>
+                            onChange({ ...filters, skills: event.target.value || undefined })
+                        }
+                    />
+                </div>
 
-      <div className="flex flex-col gap-1 w-[110px]">
-        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>
-          {t('filter.min_experience')}
-        </label>
-        <input
-          type="number"
-          min={0}
-          value={filters.min_experience ?? ''}
-          onChange={(e) =>
-            onChange({ ...filters, min_experience: e.target.value ? Number(e.target.value) : undefined })
-          }
-          className={INPUT_CLASS}
-        />
-      </div>
+                <div className="flex min-w-[9rem] flex-1 flex-col gap-1.5 sm:flex-none">
+                    <label
+                        htmlFor="applicant-filter-availability"
+                        className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]"
+                    >
+                        {t('filters.availability')}
+                    </label>
+                    <Select
+                        id="applicant-filter-availability"
+                        value={filters.availability ?? ''}
+                        onChange={(event) =>
+                            onChange({ ...filters, availability: event.target.value || undefined })
+                        }
+                    >
+                        <option value="">{t('filters.availability_any')}</option>
+                        {FILTER_AVAILABILITY.map((value) => (
+                            <option key={value} value={value}>
+                                {t(`filters.availability_${value}`)}
+                            </option>
+                        ))}
+                    </Select>
+                </div>
 
-      <Button variant="ghost" size="sm" onClick={() => onChange({})}>
-        {t('filter.clear')}
-      </Button>
-    </div>
-  );
+                <div className="flex w-[7.5rem] flex-col gap-1.5">
+                    <label
+                        htmlFor="applicant-filter-experience"
+                        className="text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]"
+                    >
+                        {t('filters.min_experience')}
+                    </label>
+                    <Input
+                        id="applicant-filter-experience"
+                        type="number"
+                        min={0}
+                        inputMode="numeric"
+                        className="tabular-nums"
+                        value={filters.min_experience ?? ''}
+                        onChange={(event) =>
+                            onChange({
+                                ...filters,
+                                // A blank box is "no minimum", never `NaN`: Number('')
+                                // is 0, which would silently filter out everyone who
+                                // never stated their experience.
+                                min_experience: event.target.value
+                                    ? Number(event.target.value)
+                                    : undefined,
+                            })
+                        }
+                    />
+                </div>
+
+                {/* Only offered once something is actually filtering. A permanently
+                    visible "Clear" on an unfiltered list is a button that does
+                    nothing, and it dilutes the same control in the filtered-empty
+                    state where it is the only way forward. */}
+                {active ? (
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => onChange(EMPTY_APPLICANT_FILTERS)}
+                    >
+                        {t('filters.clear')}
+                    </Button>
+                ) : null}
+            </div>
+        </div>
+    );
 }

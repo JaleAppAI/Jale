@@ -168,7 +168,7 @@ export function LocationPicker({
           className={[
             'absolute z-10 mt-1 max-h-64 w-full overflow-y-auto',
             'rounded-[var(--radius-input)] border border-[var(--jale-divider)]',
-            'bg-white py-1 shadow-[var(--shadow-modal)]',
+            'bg-[var(--jale-card)] py-1 shadow-[var(--shadow-modal)]',
           ].join(' ')}
         >
           {results.length === 0 && searched ? (

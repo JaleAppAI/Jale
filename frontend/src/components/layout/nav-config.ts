@@ -51,6 +51,20 @@ export const employerSettingsNav: NavItem = {
     labelKey: 'nav.settings',
 };
 
+/**
+ * Employer mobile tab bar. Composed from the very same `NavItem`s the sidebar
+ * renders — never a parallel list — so the two surfaces cannot drift apart on a
+ * target, an icon or a label key. Four tabs is the practical ceiling for a
+ * bottom bar at 360px; these are the four the sidebar leads with.
+ */
+export const employerMobileNav: NavItem[] = [
+    // Templates is a management surface, not a daily destination — it stays
+    // sidebar-only so the bar keeps to its four-tab ceiling.
+    ...employerPrimaryNav.filter((item) => item.key !== 'templates'),
+    employerBillingNav,
+    employerSettingsNav,
+];
+
 /** Worker primary nav — mirrors the worker bottom tab bar. */
 export const workerPrimaryNav: NavItem[] = [
     { key: 'find_jobs', href: '/worker/home', icon: 'search', labelKey: 'worker_home', activePrefixes: ['/worker/home', '/worker/jobs'] },
@@ -58,8 +72,9 @@ export const workerPrimaryNav: NavItem[] = [
     { key: 'profile', href: '/worker/profile', icon: 'user', labelKey: 'profile' },
 ];
 
-export function getInitials(value: string, fallback: string): string {
-    const parts = value.trim().split(/\s+/).filter(Boolean);
-    if (parts.length === 0) return fallback;
-    return parts.slice(0, 2).map((part) => part[0]?.toUpperCase()).join('');
-}
+/**
+ * Re-export only. The canonical implementation lives with the component that
+ * renders initials (`ui/initials-avatar`); this module used to carry a second
+ * copy of it, which is exactly how the two drift apart.
+ */
+export { getInitials } from '@/components/ui/initials-avatar';
