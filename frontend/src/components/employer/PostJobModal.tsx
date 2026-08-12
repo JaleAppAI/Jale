@@ -1,21 +1,25 @@
 'use client';
 import type React from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-  ApiError, createJob, listJobTemplates, saveJobTemplate,
-  Job, JobTemplate,
-} from '@/lib/api/employer';
+import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { ApiError, createJob, listJobTemplates, saveJobTemplate, Job, JobTemplate } from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
   initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { CheckboxCard } from '@/components/ui/checkbox-card';
+import { Icon } from '@/components/ui/icon';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
+import { Modal } from '@/components/ui/modal';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { locationDatasetFailed } from '@/lib/location-search';
@@ -26,27 +30,73 @@ interface Props {
   onJobCreated: (job: Job) => void;
 }
 
+type Step = 1 | 2 | 3;
+
+/** The wizard's shape, in one place, so the indicator and the panels agree. */
+const STEPS: readonly Step[] = [1, 2, 3];
+const STEP_KEYS: Record<Step, 'basics' | 'details' | 'documents'> = {
+  1: 'basics',
+  2: 'details',
+  3: 'documents',
+};
+
+/**
+ * Three-step "post a job" wizard.
+ *
+ * The FLOW is unchanged — same three steps, same fields, same
+ * `lib/job-form.ts` validation, same payload. What changed is everything
+ * around it:
+ *
+ *  - It sits in the foundation `Modal`, so focus trapping, Escape, the ink
+ *    backdrop, the scroll lock and returning focus to the "Post job" button are
+ *    handled once, centrally, instead of being missing (the old overlay had a
+ *    literal `rgba()` scrim, a bare `x` glyph for a close button, no focus
+ *    management at all, and a backdrop that closed the dialog even when a drag
+ *    merely ENDED outside the panel).
+ *  - "Step 1 of 3" became a real indicator: three named stops, the completed
+ *    ones walkable backwards, the current one marked `aria-current="step"`.
+ *    A user could previously see a step counter but never the shape of what
+ *    they had signed up for.
+ *  - Entering a step moves focus to that step's heading, so keyboard and screen
+ *    reader users land at the top of the new panel instead of being left on a
+ *    "Next" button while the content silently changes behind them.
+ *  - Failures render as one `InlineFeedback` immediately above the footer — as
+ *    close to the control that caused them as the layout allows — and the copy
+ *    is CLASSIFIED (`useErrorMessage`), never `err.message`, which is a backend
+ *    error code and not a sentence.
+ *
+ * The `job_limit_reached` path keeps its own message and its billing link:
+ * that failure is not "something went wrong", it is a plan decision with one
+ * specific way out.
+ */
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const tBilling = useTranslations('billing');
   const { idToken } = useAuth();
+  // `enabled: false` — the DASHBOARD owns the sign-in redirect for this route.
+  // All this call wants is the legal-wall router, so a create that trips the
+  // wall goes to /legal/accept instead of showing an error nobody can act on.
+  const { handleLegalWall } = useRequireAuth({ enabled: false });
+  const errorMessage = useErrorMessage();
 
-  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [step, setStep] = useState<Step>(1);
   const [form, setForm] = useState<JobForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [limitReached, setLimitReached] = useState(false);
 
   // Template state. Templates are a convenience layer on top of job
-  // creation: a failure to load, save, or delete one must never block
-  // posting a job.
+  // creation: a failure to load or save one must never block posting a job.
   const [templates, setTemplates] = useState<JobTemplate[]>([]);
   const [checkCity, setCheckCity] = useState(false);
   const [saveAsTemplate, setSaveAsTemplate] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [templateNotice, setTemplateNotice] = useState<'' | 'limit' | 'name_taken'>('');
   const [templateLimit, setTemplateLimit] = useState<number | null>(null);
+
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
 
   // Silent background load whenever the modal opens -- the wizard must work
   // exactly the same with zero templates, so any failure here is swallowed.
@@ -65,7 +115,20 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     };
   }, [open, idToken]);
 
-  if (!open) return null;
+  // Entering a step hands focus to its heading. The heading is `tabIndex={-1}`
+  // (focusable programmatically, not in the tab order), which is the standard
+  // way to move a reader to a newly revealed region without inventing a stop.
+  useEffect(() => {
+    if (!open) return;
+    headingRef.current?.focus();
+  }, [open, step]);
+
+  // A failure below the fold is a failure the user does not know about. The
+  // banner has `role="alert"` for screen readers; this is the visual half.
+  useEffect(() => {
+    if (!error) return;
+    feedbackRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [error]);
 
   const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -131,7 +194,26 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       return;
     }
     setError('');
-    setStep((current) => current === 1 ? 2 : 3);
+    setLimitReached(false);
+    setStep((current) => (current === 1 ? 2 : 3));
+  };
+
+  const previousStep = () => {
+    setError('');
+    setLimitReached(false);
+    setStep((current) => (current === 3 ? 2 : 1));
+  };
+
+  /**
+   * The indicator's only navigation: back to a step already completed. Forward
+   * jumps stay closed, because each forward transition is what runs that step's
+   * validation — skipping one would let an invalid step through.
+   */
+  const goBackToStep = (target: Step) => {
+    if (target >= step) return;
+    setError('');
+    setLimitReached(false);
+    setStep(target);
   };
 
   const handleSubmit = async () => {
@@ -166,15 +248,25 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       onJobCreated(job);
       handleClose();
     } catch (err) {
-      // Preserve every other validation error message as-is; only the typed
-      // job_limit_reached code gets the upgrade CTA treatment.
+      try {
+        handleLegalWall(err, '/employer/dashboard');
+        // Redirected to the legal wall; there is no error to render here.
+        return;
+      } catch {
+        // Not a legal wall — fall through to the normal failure paths.
+      }
+
+      // The typed `job_limit_reached` code is the one failure with its own
+      // story: the plan's ceiling, and the page that lifts it. Everything else
+      // is classified into the app's shared, bilingual failure sentences —
+      // `modal.error` stays as the override for the genuinely unclassifiable.
       if (err instanceof ApiError && err.code === 'job_limit_reached') {
         setLimitReached(true);
         setError(tBilling('limit_reached.modal_message', {
           limit: err.payload.active_job_limit ?? 0,
         }));
       } else {
-        setError(t('modal.error'));
+        setError(errorMessage(err, { unknown: t('modal.error') }));
       }
     } finally {
       setLoading(false);
@@ -186,279 +278,353 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     driver_license: t('worker_profile.doc_driver_license'),
   };
 
+  const stepHint =
+    step === 1
+      ? t('modal.steps.basics_hint')
+      : step === 2
+        ? t('modal.steps.details_hint')
+        // Step 3's sentence already lives with the rest of the docs-step copy.
+        : t('post_job_docs.subtitle');
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center px-3 py-4"
-      style={{ background: 'rgba(24,24,85,.45)' }}
-      onClick={handleClose}
-    >
-      <div
-        className="flex max-h-[92vh] w-full max-w-2xl flex-col rounded-[var(--radius-card)] bg-white"
-        style={{ boxShadow: 'var(--shadow-modal)' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
-          <div>
-            <h2 className="text-base font-semibold text-[var(--jale-ink)]">{t('modal.title')}</h2>
-            <p className="mt-1 text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">
-              {t('modal.step_label', { current: step, total: 3 })}
-            </p>
-          </div>
-          <button
-            onClick={handleClose}
-            className="flex h-8 w-8 items-center justify-center rounded-full hover:bg-[var(--jale-paper-2)]"
-            style={{ border: 0, background: 'transparent', cursor: 'pointer', color: 'var(--jale-ink-2)' }}
-            aria-label={t('modal.close')}
-          >
-            x
-          </button>
-        </div>
-
-        <div className="overflow-y-auto px-5 py-5">
-          {step === 1 && (
-            <div className="grid gap-4">
-              {templates.length > 0 && (
-                <Field label={t('modal.template_select_label')}>
-                  <div className="flex items-center gap-2">
-                    <Select
-                      value=""
-                      onChange={(e) => {
-                        const picked = templates.find((tpl) => tpl.id === e.target.value);
-                        if (picked) applyTemplate(picked);
-                      }}
-                    >
-                      <option value="">{t('modal.template_select_placeholder')}</option>
-                      {templates.map((tpl) => (<option key={tpl.id} value={tpl.id}>{tpl.name}</option>))}
-                    </Select>
-                    <Link href="/employer/templates" className="shrink-0 text-xs font-semibold text-[var(--jale-blue-700)] hover:underline">
-                      {t('templates.manage_link')}
-                    </Link>
-                  </div>
-                </Field>
-              )}
-              <Field label={t('modal.job_title')} required>
-                <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
-              </Field>
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label={t('modal.location')} required>
-                  <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
-                    <LocationPicker
-                      value={form.location}
-                      placeholder={t('modal.location_placeholder')}
-                      onChange={(v) => {
-                        setForm((c) => applyLocationToJobForm(c, v));
-                        // Any location edit resolves the "verify the
-                        // prefilled city" nudge, same as clearing the error.
-                        setCheckCity(false);
-                        // A real pick resolves the "pick a city" error; drop it
-                        // immediately instead of waiting for the next step.
-                        if (v.cityKey) setError('');
-                      }}
-                    />
-                  </div>
-                  {checkCity && (
-                    <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
-                  )}
-                </Field>
-                <Field label={t('modal.job_type')}>
-                  <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
-                    <option value="full-time">{t('modal.job_type_fulltime')}</option>
-                    <option value="part-time">{t('modal.job_type_parttime')}</option>
-                    <option value="contract">{t('modal.job_type_contract')}</option>
-                  </Select>
-                </Field>
-              </div>
-              <Field label={t('modal.trade_category')} required>
-                <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
-                  <option value="">{t('modal.select_placeholder')}</option>
-                  {TRADE_CATEGORIES.map((trade) => (
-                    <option key={trade} value={trade}>{t(`modal.trade.${trade}`)}</option>
-                  ))}
-                </Select>
-              </Field>
-              <Field label={t('modal.job_description')}>
-                <Textarea rows={4} value={form.description} onChange={(e) => update('description', e.target.value)} placeholder={t('modal.description_placeholder')} />
-              </Field>
-            </div>
-          )}
-
-          {step === 2 && (
-            <div className="grid gap-4">
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label={t('modal.pay_min')}>
-                  <Input type="number" min={0} value={form.pay_min} onChange={(e) => update('pay_min', e.target.value)} />
-                </Field>
-                <Field label={t('modal.pay_max')}>
-                  <Input type="number" min={0} value={form.pay_max} onChange={(e) => update('pay_max', e.target.value)} />
-                </Field>
-              </div>
-              <Field label={t('modal.pay_interval')}>
-                <Select value={form.pay_interval} onChange={(e) => update('pay_interval', e.target.value as PayInterval)}>
-                  {PAY_INTERVALS.map((interval) => (
-                    <option key={interval} value={interval}>{t(`modal.pay_interval_option.${interval}`)}</option>
-                  ))}
-                </Select>
-              </Field>
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label={t('modal.start_date')}>
-                  <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
-                </Field>
-                <Field label={t('modal.expected_duration')}>
-                  <Input value={form.expected_duration} onChange={(e) => update('expected_duration', e.target.value)} placeholder={t('modal.duration_placeholder')} />
-                </Field>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                <Field label={t('modal.shift_schedule')}>
-                  <Input value={form.shift_schedule} onChange={(e) => update('shift_schedule', e.target.value)} placeholder={t('modal.shift_placeholder')} />
-                </Field>
-                <Field label={t('modal.number_of_workers_needed')} required>
-                  <Input type="number" min={1} value={form.number_of_workers_needed} onChange={(e) => update('number_of_workers_needed', e.target.value)} />
-                </Field>
-              </div>
-              <Field label={t('modal.required_experience_years')}>
-                <Input type="number" min={0} value={form.required_experience_years} onChange={(e) => update('required_experience_years', e.target.value)} />
-              </Field>
-              <Field label={t('modal.language_preference')}>
-                <div className="flex flex-wrap gap-2">
-                  {LANGUAGE_OPTIONS.map((lang) => (
-                    <button
-                      key={lang}
-                      type="button"
-                      onClick={() => toggleLanguage(lang)}
-                      className="rounded-full border px-3 py-2 text-xs font-semibold"
-                      style={{
-                        borderColor: form.language_preference.includes(lang) ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
-                        background: form.language_preference.includes(lang) ? 'var(--jale-blue-50)' : 'white',
-                        color: form.language_preference.includes(lang) ? 'var(--jale-blue-700)' : 'var(--jale-ink)',
-                      }}
-                    >
-                      {t(`modal.language.${lang}`)}
-                    </button>
-                  ))}
-                </div>
-              </Field>
-              <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
-                <input
-                  type="checkbox"
-                  checked={form.transportation_required}
-                  onChange={(e) => update('transportation_required', e.target.checked)}
-                />
-                {t('modal.transportation_required')}
-              </label>
-              <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
-                <input
-                  type="checkbox"
-                  checked={form.work_authorization_required}
-                  onChange={(e) => update('work_authorization_required', e.target.checked)}
-                />
-                {t('modal.work_authorization_required')}
-              </label>
-              <Field label={t('modal.certifications')}>
-                <Input value={form.certifications} onChange={(e) => update('certifications', e.target.value)} placeholder={t('modal.certifications_placeholder')} />
-              </Field>
-            </div>
-          )}
-
-          {step === 3 && (
-            <div>
-              <p className="mb-4 text-sm text-[var(--jale-ink-2)]">{t('post_job_docs.subtitle')}</p>
-              <div className="flex flex-col gap-2.5">
-                {DOC_TYPES.map((doc) => (
-                  <button
-                    key={doc}
-                    type="button"
-                    onClick={() => toggleDoc(doc)}
-                    className="flex items-center justify-between rounded-[10px] border px-4 py-3 text-left transition-all"
-                    style={{
-                      background: form.required_docs[doc] ? 'var(--jale-blue-50)' : 'var(--jale-paper-2)',
-                      borderColor: form.required_docs[doc] ? 'var(--jale-blue-500)' : 'var(--jale-divider)',
-                    }}
-                  >
-                    <span className="text-sm font-medium text-[var(--jale-ink)]">{docLabel[doc]}</span>
-                    <span className="text-xs font-semibold text-[var(--jale-blue-700)]">
-                      {form.required_docs[doc] ? t('post_job_docs.required_label') : t('post_job_docs.optional_label')}
-                    </span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-5 rounded-[10px] border border-[var(--jale-divider)] p-4">
-                <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
-                  <input
-                    type="checkbox"
-                    checked={saveAsTemplate}
-                    onChange={(e) => setSaveAsTemplate(e.target.checked)}
-                  />
-                  {t('modal.template_save_toggle')}
-                </label>
-                {saveAsTemplate && (
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <Input
-                      value={templateName}
-                      onChange={(e) => setTemplateName(e.target.value)}
-                      placeholder={t('modal.template_name_placeholder')}
-                      className="flex-1"
-                    />
-                  </div>
-                )}
-                {templateNotice === 'name_taken' && (
-                  <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
-                )}
-                {templateNotice === 'limit' && (
-                  <div className="mt-2 rounded-2xl border border-[var(--jale-danger)]/30 bg-[var(--jale-danger-bg)] p-3">
-                    <p
-                      className="text-xs font-semibold text-[var(--jale-danger)]"
-                      title={templateLimit != null ? String(templateLimit) : undefined}
-                    >
-                      {t('modal.template_limit_reached')}
-                    </p>
-                    <Link
-                      href="/employer/billing"
-                      onClick={handleClose}
-                      className="mt-2 inline-flex h-8 items-center justify-center rounded-full bg-[var(--jale-blue-900)] px-4 text-xs font-bold text-white hover:bg-[var(--jale-blue-950,#0e0e3d)]"
-                    >
-                      {tBilling('limit_reached.cta')}
-                    </Link>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {error && (
-            <div className="mt-4 rounded-2xl border border-[var(--jale-danger)]/30 bg-[var(--jale-danger-bg)] p-4">
-              <p className="text-sm font-semibold text-[var(--jale-danger)]">{error}</p>
-              {limitReached && (
-                <Link
-                  href="/employer/billing"
-                  onClick={handleClose}
-                  className="mt-3 inline-flex h-10 items-center justify-center rounded-full bg-[var(--jale-blue-900)] px-5 text-sm font-bold text-white hover:bg-[var(--jale-blue-950,#0e0e3d)]"
-                >
-                  {tBilling('limit_reached.cta')}
-                </Link>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="flex gap-2 border-t border-[var(--jale-divider)] px-5 py-4">
+    <Modal
+      open={open}
+      onClose={handleClose}
+      title={t('modal.title')}
+      size="md"
+      footer={
+        <div className="flex w-full items-center gap-2">
           {step === 1 ? (
-            <Button variant="ghost" onClick={handleClose} className="flex-1">{t('modal.cancel')}</Button>
+            <Button variant="ghost" onClick={handleClose} className="flex-1">
+              {t('modal.cancel')}
+            </Button>
           ) : (
-            <Button variant="ghost" onClick={() => setStep((current) => current === 3 ? 2 : 1)} disabled={loading} className="flex-1">
+            <Button variant="ghost" onClick={previousStep} disabled={loading} className="flex-1">
               {t('post_job_docs.back')}
             </Button>
           )}
+          {/* This was the first call site to move off the old `deep` variant,
+              which rendered navy on the dark card and all but disappeared. That
+              variant has since been retired outright (see `ui/button`), so
+              `primary` is now simply the only CTA fill there is. */}
           {step < 3 ? (
-            <Button variant="deep" onClick={nextStep} className="flex-1">{t('modal.next')}</Button>
+            <Button variant="primary" onClick={nextStep} className="flex-1">
+              {t('modal.next')}
+            </Button>
           ) : (
-            <Button variant="deep" onClick={handleSubmit} loading={loading} loadingLabel={tCommon('loading')} className="flex-1">
+            <Button
+              variant="primary"
+              onClick={handleSubmit}
+              loading={loading}
+              loadingLabel={tCommon('loading')}
+              className="flex-1"
+            >
               {t('post_job_docs.submit')}
             </Button>
           )}
         </div>
+      }
+    >
+      <nav aria-label={t('modal.steps.aria_label')} className="mb-5">
+        <p className="sr-only">{t('modal.step_label', { current: step, total: STEPS.length })}</p>
+        <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          {STEPS.map((n) => {
+            const label = t(`modal.steps.${STEP_KEYS[n]}`);
+            const done = n < step;
+            const current = n === step;
+
+            return (
+              <li key={n} className="flex min-w-0 items-center gap-2">
+                {done ? (
+                  <button
+                    type="button"
+                    onClick={() => goBackToStep(n)}
+                    className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 py-0.5 text-xs font-bold text-[var(--jale-ink)] transition-colors hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                  >
+                    <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-[var(--jale-success)]" />
+                    <span className="truncate">{label}</span>
+                    <span className="sr-only"> — {t('modal.steps.completed')}</span>
+                  </button>
+                ) : (
+                  <span
+                    aria-current={current ? 'step' : undefined}
+                    className={[
+                      'inline-flex min-w-0 items-center gap-1.5 px-1 py-0.5 text-xs',
+                      current
+                        ? 'font-extrabold text-[var(--jale-ink)]'
+                        : 'font-semibold text-[var(--jale-ink-2)]',
+                    ].join(' ')}
+                  >
+                    <span
+                      aria-hidden
+                      className={`size-[7px] shrink-0 rounded-full ${
+                        current ? 'bg-[var(--jale-blue-500)]' : 'bg-[var(--jale-divider)]'
+                      }`}
+                    />
+                    <span className="truncate">{label}</span>
+                  </span>
+                )}
+
+                {n < STEPS.length ? (
+                  <span aria-hidden className="h-px w-4 shrink-0 bg-[var(--jale-divider)]" />
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      </nav>
+
+      <div className="mb-4">
+        <h3
+          ref={headingRef}
+          tabIndex={-1}
+          className="text-base font-extrabold text-[var(--jale-ink)] outline-none"
+        >
+          {t(`modal.steps.${STEP_KEYS[step]}`)}
+        </h3>
+        <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{stepHint}</p>
       </div>
-    </div>
+
+      {step === 1 && (
+        <div className="grid gap-4">
+          {templates.length > 0 && (
+            <Field label={t('modal.template_select_label')}>
+              <div className="flex items-center gap-2">
+                <Select
+                  value=""
+                  onChange={(e) => {
+                    const picked = templates.find((tpl) => tpl.id === e.target.value);
+                    if (picked) applyTemplate(picked);
+                  }}
+                >
+                  <option value="">{t('modal.template_select_placeholder')}</option>
+                  {templates.map((tpl) => (<option key={tpl.id} value={tpl.id}>{tpl.name}</option>))}
+                </Select>
+                <Link href="/employer/templates" className="shrink-0 text-xs font-semibold text-[var(--jale-blue-700)] hover:underline">
+                  {t('templates.manage_link')}
+                </Link>
+              </div>
+            </Field>
+          )}
+          <Field label={t('modal.job_title')} required>
+            <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
+          </Field>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label={t('modal.location')} required>
+              <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
+                <LocationPicker
+                  value={form.location}
+                  placeholder={t('modal.location_placeholder')}
+                  onChange={(v) => {
+                    setForm((c) => applyLocationToJobForm(c, v));
+                    // Any location edit resolves the "verify the
+                    // prefilled city" nudge, same as clearing the error.
+                    setCheckCity(false);
+                    // A real pick resolves the "pick a city" error; drop it
+                    // immediately instead of waiting for the next step.
+                    if (v.cityKey) setError('');
+                  }}
+                />
+              </div>
+              {checkCity && (
+                <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
+              )}
+            </Field>
+            <Field label={t('modal.job_type')}>
+              <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
+                <option value="full-time">{t('modal.job_type_fulltime')}</option>
+                <option value="part-time">{t('modal.job_type_parttime')}</option>
+                <option value="contract">{t('modal.job_type_contract')}</option>
+              </Select>
+            </Field>
+          </div>
+          <Field label={t('modal.trade_category')} required>
+            <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
+              <option value="">{t('modal.select_placeholder')}</option>
+              {TRADE_CATEGORIES.map((trade) => (
+                <option key={trade} value={trade}>{t(`modal.trade.${trade}`)}</option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t('modal.job_description')}>
+            <Textarea rows={4} value={form.description} onChange={(e) => update('description', e.target.value)} placeholder={t('modal.description_placeholder')} />
+          </Field>
+        </div>
+      )}
+
+      {step === 2 && (
+        <div className="grid gap-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label={t('modal.pay_min')}>
+              <Input type="number" min={0} value={form.pay_min} onChange={(e) => update('pay_min', e.target.value)} />
+            </Field>
+            <Field label={t('modal.pay_max')}>
+              <Input type="number" min={0} value={form.pay_max} onChange={(e) => update('pay_max', e.target.value)} />
+            </Field>
+          </div>
+          <Field label={t('modal.pay_interval')}>
+            <Select value={form.pay_interval} onChange={(e) => update('pay_interval', e.target.value as PayInterval)}>
+              {PAY_INTERVALS.map((interval) => (
+                <option key={interval} value={interval}>{t(`modal.pay_interval_option.${interval}`)}</option>
+              ))}
+            </Select>
+          </Field>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label={t('modal.start_date')}>
+              <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
+            </Field>
+            <Field label={t('modal.expected_duration')}>
+              <Input value={form.expected_duration} onChange={(e) => update('expected_duration', e.target.value)} placeholder={t('modal.duration_placeholder')} />
+            </Field>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label={t('modal.shift_schedule')}>
+              <Input value={form.shift_schedule} onChange={(e) => update('shift_schedule', e.target.value)} placeholder={t('modal.shift_placeholder')} />
+            </Field>
+            <Field label={t('modal.number_of_workers_needed')} required>
+              <Input type="number" min={1} value={form.number_of_workers_needed} onChange={(e) => update('number_of_workers_needed', e.target.value)} />
+            </Field>
+          </div>
+          <Field label={t('modal.required_experience_years')}>
+            <Input type="number" min={0} value={form.required_experience_years} onChange={(e) => update('required_experience_years', e.target.value)} />
+          </Field>
+          <Field label={t('modal.language_preference')}>
+            <div className="flex flex-wrap gap-2">
+              {LANGUAGE_OPTIONS.map((lang) => {
+                const selected = form.language_preference.includes(lang);
+                return (
+                  <button
+                    key={lang}
+                    type="button"
+                    aria-pressed={selected}
+                    onClick={() => toggleLanguage(lang)}
+                    className={[
+                      'rounded-full border px-3.5 py-2 text-xs font-bold transition-colors',
+                      'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                      selected
+                        ? 'border-[var(--jale-blue-500)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
+                        : 'border-[var(--jale-divider)] bg-[var(--jale-card)] text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]',
+                    ].join(' ')}
+                  >
+                    {t(`modal.language.${lang}`)}
+                  </button>
+                );
+              })}
+            </div>
+          </Field>
+          {/* `CheckboxCard` is the app's boolean toggle (employer signup and
+              the employer profile both use it). These two were raw, unstyled
+              browser checkboxes — the only ones left in an employer form. */}
+          <div className="grid gap-2">
+            <CheckboxCard
+              checked={form.transportation_required}
+              label={t('modal.transportation_required')}
+              onChange={() => update('transportation_required', !form.transportation_required)}
+            />
+            <CheckboxCard
+              checked={form.work_authorization_required}
+              label={t('modal.work_authorization_required')}
+              onChange={() => update('work_authorization_required', !form.work_authorization_required)}
+            />
+          </div>
+          <Field label={t('modal.certifications')}>
+            <Input value={form.certifications} onChange={(e) => update('certifications', e.target.value)} placeholder={t('modal.certifications_placeholder')} />
+          </Field>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="grid gap-5">
+        {/* Divided rows in ONE bordered container, like every other list in the
+            app — not two floating tinted cards. The Required/Optional state is a
+            `Badge` (dot + text), which is the app's one status chip. */}
+        <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)]">
+          {DOC_TYPES.map((doc) => {
+            const required = form.required_docs[doc];
+            return (
+              <li key={doc}>
+                <button
+                  type="button"
+                  aria-pressed={required}
+                  onClick={() => toggleDoc(doc)}
+                  className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+                >
+                  <span className="min-w-0 text-sm font-semibold text-[var(--jale-ink)]">
+                    {docLabel[doc]}
+                  </span>
+                  <Badge tone={required ? 'info' : 'neutral'}>
+                    {required ? t('post_job_docs.required_label') : t('post_job_docs.optional_label')}
+                  </Badge>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+
+        <div className="rounded-[10px] border border-[var(--jale-divider)] p-4">
+          <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
+            <input
+              type="checkbox"
+              checked={saveAsTemplate}
+              onChange={(e) => setSaveAsTemplate(e.target.checked)}
+            />
+            {t('modal.template_save_toggle')}
+          </label>
+          {saveAsTemplate && (
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Input
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder={t('modal.template_name_placeholder')}
+                className="flex-1"
+              />
+            </div>
+          )}
+          {templateNotice === 'name_taken' && (
+            <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
+          )}
+          {templateNotice === 'limit' && (
+            <div className="mt-2">
+              <InlineFeedback tone="danger">
+                <span
+                  className="block"
+                  title={templateLimit != null ? String(templateLimit) : undefined}
+                >
+                  {t('modal.template_limit_reached')}
+                </span>
+                <Link
+                  href="/employer/billing"
+                  onClick={handleClose}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+                >
+                  <Icon name="spark" />
+                  {tBilling('limit_reached.cta')}
+                </Link>
+              </InlineFeedback>
+            </div>
+          )}
+        </div>
+        </div>
+      )}
+
+      {error ? (
+        <div ref={feedbackRef} className="mt-5">
+          <InlineFeedback tone="danger">
+            <span className="block">{error}</span>
+            {limitReached ? (
+              <Link
+                href="/employer/billing"
+                onClick={handleClose}
+                className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+              >
+                <Icon name="spark" />
+                {tBilling('limit_reached.cta')}
+              </Link>
+            ) : null}
+          </InlineFeedback>
+        </div>
+      ) : null}
+    </Modal>
   );
 }
 

@@ -9,6 +9,7 @@ import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
 import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
 import { Button } from '@/components/ui/button';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
@@ -97,7 +98,11 @@ export default function EmployerAuthForm() {
             setTokens(tokens, 'employer');
             router.push('/employer/profile');
         } catch (err) {
-            console.error('[EmployerAuth] sign-in error:', err);
+            // Never console.error the raw exception: a Cognito error object
+            // carries the submitted email and the request context, and the
+            // browser console is shared with anything else on the page.
+            // `authErrorKey` already turns the code into a translated sentence,
+            // which is the only thing anyone needs from it.
             setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
@@ -127,7 +132,6 @@ export default function EmployerAuthForm() {
             setConfirmationCode('');
             setStep('confirm');
         } catch (err) {
-            console.error('[EmployerAuth] sign-up error:', err);
             setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
@@ -144,7 +148,6 @@ export default function EmployerAuthForm() {
             setTokens(tokens, 'employer');
             router.push('/employer/profile');
         } catch (err) {
-            console.error('[EmployerAuth] confirm error:', err);
             setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
@@ -158,7 +161,6 @@ export default function EmployerAuthForm() {
             await employerForgotPassword(forgotEmail);
             setStep('forgot_confirm');
         } catch (err) {
-            console.error('[EmployerAuth] forgot-password error:', err);
             setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
@@ -177,7 +179,6 @@ export default function EmployerAuthForm() {
             setResetSuccess(true);
             setStep('login');
         } catch (err) {
-            console.error('[EmployerAuth] forgot-confirm error:', err);
             setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
@@ -191,17 +192,48 @@ export default function EmployerAuthForm() {
         setTypicalJobTypes((current) => current.includes(jobType) ? current.filter((item) => item !== jobType) : [...current, jobType]);
     };
 
+    /**
+     * Leaving a step drops that step's transient feedback. Without this, the
+     * red "this field is required" marks from an abandoned signup attempt are
+     * still lit when the user comes back to it, describing a submit that no
+     * longer happened. Purely display state — nothing here touches Cognito.
+     */
+    const goToStep = (next: Step) => {
+        setError(null);
+        setMissingFields([]);
+        setStep(next);
+    };
+
+    const heading =
+        step === 'login' ? t('hero')
+            : step === 'forgot_request' ? t('forgot_title')
+                : step === 'forgot_confirm' ? t('forgot_confirm_title')
+                    : t('signup_title');
+    // The forgot steps carry their instruction inline, next to the field it is
+    // about, so they deliberately have no subtitle here. Rendering an empty <p>
+    // for them (the old shape) left a paragraph that existed only as a margin.
+    const subheading =
+        step === 'login' ? t('title')
+            : step === 'forgot_request' || step === 'forgot_confirm' ? ''
+                : t('signup_subtitle');
+
     return (
         <div className="flex w-full flex-col">
-                <h1 className="font-bold leading-tight mb-2" style={{ fontSize: 'clamp(1.6rem, 3vw, 1.9rem)', letterSpacing: '-0.03em', color: 'var(--jale-ink)' }}>
-                    {step === 'login' ? t('hero') : step === 'forgot_request' ? t('forgot_title') : step === 'forgot_confirm' ? t('forgot_confirm_title') : t('signup_title')}
-                </h1>
-                <p className="text-sm leading-relaxed mb-8" style={{ color: 'var(--jale-ink-2)' }}>
-                    {step === 'login' ? t('title') : step === 'forgot_request' || step === 'forgot_confirm' ? '' : t('signup_subtitle')}
-                </p>
+                {/* `key={step}` remounts the header so `.anim-fade-in` replays
+                    with the step body underneath it — the title and the fields
+                    it introduces arrive together instead of the title snapping
+                    while the body fades. */}
+                <div key={step} className="anim-fade-in mb-8 flex flex-col gap-2">
+                    <h1 className="text-[clamp(1.6rem,3vw,1.9rem)] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">
+                        {heading}
+                    </h1>
+                    {subheading ? (
+                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{subheading}</p>
+                    ) : null}
+                </div>
 
                 {step === 'login' && (
-                    <div className="flex flex-col gap-4">
+                    <div className="anim-fade-in flex flex-col gap-4">
                         <Field label={t('fields.email')}>
                             <Input type="email" placeholder={t('email_label')} value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
                         </Field>
@@ -220,28 +252,25 @@ export default function EmployerAuthForm() {
                         <div className="flex justify-end">
                             <button
                                 type="button"
-                                onClick={() => { setError(null); setResetSuccess(false); setForgotEmail(email); setStep('forgot_request'); }}
-                                className="text-xs font-medium"
-                                style={{ background: 'none', border: 0, color: 'var(--jale-blue-600)', cursor: 'pointer', padding: 0 }}
+                                onClick={() => { setResetSuccess(false); setForgotEmail(email); goToStep('forgot_request'); }}
+                                className={`text-xs ${LINK_BUTTON}`}
                             >
                                 {t('forgot_link')}
                             </button>
                         </div>
-                        {error && <ErrorText error={error} />}
+                        {error && <FormError>{error}</FormError>}
                         {resetSuccess && (
-                            <p className="text-sm font-medium rounded-lg px-4 py-3" style={{ background: 'var(--jale-success-bg)', color: 'var(--jale-success)' }}>
-                                {t('reset_success')}
-                            </p>
+                            <InlineFeedback tone="success">{t('reset_success')}</InlineFeedback>
                         )}
                         <Button className="w-full mt-1" size="lg" onClick={handleSignIn} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('sign_in')}
                         </Button>
-                        <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setError(null); setResetSuccess(false); setStep('signup'); }} />
+                        <SwitchPrompt text={t('signup_prompt')} action={t('signup_link')} onClick={() => { setResetSuccess(false); goToStep('signup'); }} />
                     </div>
                 )}
 
                 {step === 'signup' && (
-                    <div className="flex flex-col gap-4">
+                    <div className="anim-fade-in flex flex-col gap-4">
                         <Field label={t('fields.company_name')} error={missingFields.includes('company_name') ? t('errors.required') : undefined}>
                             <Input value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
                         </Field>
@@ -273,7 +302,7 @@ export default function EmployerAuthForm() {
                                 hideLabel={t('hide_password')}
                             />
                         </Field>
-                        <p className="text-xs leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('password_note')}</p>
+                        <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('password_note')}</p>
                         <Field label={t('fields.phone')} error={missingFields.includes('phone') ? t('errors.required') : undefined}>
                             <PhoneNumberField
                                 countryCode={phoneCountryCode}
@@ -302,21 +331,19 @@ export default function EmployerAuthForm() {
                         <Field label={t('fields.company_description')}>
                             <Textarea rows={3} value={companyDescription} onChange={(e) => setCompanyDescription(e.target.value)} />
                         </Field>
-                        {error && <ErrorText error={error} />}
+                        {error && <FormError>{error}</FormError>}
                         <Button className="w-full mt-1" size="lg" onClick={handleCreateAccount} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('create_account')}
                         </Button>
-                        <SwitchPrompt text={t('signin_prompt')} action={t('signin_link')} onClick={() => { setError(null); setStep('login'); }} />
+                        <SwitchPrompt text={t('signin_prompt')} action={t('signin_link')} onClick={() => goToStep('login')} />
                     </div>
                 )}
 
                 {step === 'confirm' && (
-                    <div className="flex flex-col gap-4">
-                        <button onClick={() => { setError(null); setStep('signup'); }} className="self-start text-sm font-medium" style={{ background: 'none', border: 0, color: 'var(--jale-ink-2)', cursor: 'pointer', padding: 0 }}>
-                            &larr; {t('back')}
-                        </button>
-                        <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" /></Field>
-                        {error && <ErrorText error={error} />}
+                    <div className="anim-fade-in flex flex-col gap-4">
+                        <BackButton label={t('back')} onClick={() => goToStep('signup')} />
+                        <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
+                        {error && <FormError>{error}</FormError>}
                         <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('confirm_account')}
                         </Button>
@@ -324,11 +351,9 @@ export default function EmployerAuthForm() {
                 )}
 
                 {step === 'forgot_request' && (
-                    <div className="flex flex-col gap-4">
-                        <button onClick={() => { setError(null); setStep('login'); }} className="self-start text-sm font-medium" style={{ background: 'none', border: 0, color: 'var(--jale-ink-2)', cursor: 'pointer', padding: 0 }}>
-                            &larr; {t('back')}
-                        </button>
-                        <p className="text-sm leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>{t('forgot_subtitle')}</p>
+                    <div className="anim-fade-in flex flex-col gap-4">
+                        <BackButton label={t('back')} onClick={() => goToStep('login')} />
+                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('forgot_subtitle')}</p>
                         <Field label={t('fields.email')}>
                             <Input
                                 type="email"
@@ -337,7 +362,7 @@ export default function EmployerAuthForm() {
                                 autoComplete="email"
                             />
                         </Field>
-                        {error && <ErrorText error={error} />}
+                        {error && <FormError>{error}</FormError>}
                         <Button className="w-full mt-1" size="lg" onClick={handleForgotRequest} disabled={!forgotEmail.trim()} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('send_code')}
                         </Button>
@@ -345,11 +370,12 @@ export default function EmployerAuthForm() {
                 )}
 
                 {step === 'forgot_confirm' && (
-                    <div className="flex flex-col gap-4">
-                        <button onClick={() => { setError(null); setResetCode(''); setNewPassword(''); setNewPasswordConfirm(''); setStep('forgot_request'); }} className="self-start text-sm font-medium" style={{ background: 'none', border: 0, color: 'var(--jale-ink-2)', cursor: 'pointer', padding: 0 }}>
-                            &larr; {t('back')}
-                        </button>
-                        <p className="text-sm leading-relaxed" style={{ color: 'var(--jale-ink-2)' }}>
+                    <div className="anim-fade-in flex flex-col gap-4">
+                        <BackButton
+                            label={t('back')}
+                            onClick={() => { setResetCode(''); setNewPassword(''); setNewPasswordConfirm(''); goToStep('forgot_request'); }}
+                        />
+                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">
                             {t('forgot_confirm_subtitle', { email: forgotEmail })}
                         </p>
                         <Field label={t('fields.reset_code')}>
@@ -382,7 +408,7 @@ export default function EmployerAuthForm() {
                                 hideLabel={t('hide_password')}
                             />
                         </Field>
-                        {error && <ErrorText error={error} />}
+                        {error && <FormError>{error}</FormError>}
                         <Button
                             className="w-full mt-1"
                             size="lg"
@@ -399,7 +425,18 @@ export default function EmployerAuthForm() {
     );
 }
 
-// Employer proof panel — rendered in the AuthShell navy brand slot (lg+ only).
+/**
+ * Employer proof panel — rendered in the AuthShell navy brand slot (lg+ only).
+ *
+ * This is BRAND SURFACE, so it follows AuthShell's rule rather than the token
+ * rule: it sits on the fixed navy ground that renders identically in light and
+ * dark, so its own colours are fixed too. Tokenising them would look identical
+ * today and re-tint the brand the day the blue ramp gains a `.dark` override —
+ * on a panel whose whole job is to be the same mark for every visitor.
+ *
+ * Contrast against #181855: white 17.8:1, white/90 ~14:1, white/70 ~8.4:1 —
+ * AA or better at every size here, in both themes, because the ground is fixed.
+ */
 export function EmployerBrandPanel() {
     const t = useTranslations('auth.employer');
     const bullets = [
@@ -420,6 +457,7 @@ export function EmployerBrandPanel() {
                     <li key={bullet} className="flex items-center gap-3 text-sm text-white/90">
                         <span
                             aria-hidden
+                            /* Brand-surface literals, per the note above. */
                             className="flex h-6 w-6 flex-none items-center justify-center rounded-full"
                             style={{ background: 'rgba(1,121,255,.2)', color: '#5ea8ff' }}
                         >
@@ -435,12 +473,27 @@ export function EmployerBrandPanel() {
     );
 }
 
+/**
+ * Field-level validation stays where it belongs — under its own field — so the
+ * user can see WHICH input is unhappy. The banner above the submit button says
+ * how many; this says which.
+ *
+ * `--jale-danger-text`, not `--jale-danger`: the base danger token is tuned for
+ * a white ground and only reaches ~4.1:1 on `--jale-card` (#ebebeb), which
+ * fails AA at this 12px size. The -text pair is the one that holds (~6.3:1
+ * light, ~8.2:1 dark). No `role="alert"` here on purpose — a failed submit can
+ * light ten of these at once, and the summary banner already announces.
+ */
+function FieldError({ children }: { children: ReactNode }) {
+    return <p className="text-xs font-medium text-[var(--jale-danger-text)]">{children}</p>;
+}
+
 function Field({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
     return (
         <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</label>
+            <label className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">{label}</label>
             {children}
-            {error && <p className="text-xs text-error">{error}</p>}
+            {error && <FieldError>{error}</FieldError>}
         </div>
     );
 }
@@ -448,15 +501,41 @@ function Field({ label, error, children }: { label: string; error?: string; chil
 function CheckboxGroup({ label, error, children }: { label: string; error?: string; children: ReactNode }) {
     return (
         <div className="flex flex-col gap-2">
-            <p className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--jale-ink-2)' }}>{label}</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]">{label}</p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">{children}</div>
-            {error && <p className="text-xs text-error">{error}</p>}
+            {error && <FieldError>{error}</FieldError>}
         </div>
     );
 }
 
-function ErrorText({ error }: { error: string }) {
-    return <p className="text-sm" style={{ color: 'var(--jale-danger)' }}>{error}</p>;
+/**
+ * Form-level failures: the Cognito outcome (already a translated sentence via
+ * `authErrorKey`) and the missing-field summary. `InlineFeedback` gives them
+ * the tinted danger surface and `role="alert"`.
+ */
+function FormError({ children }: { children: ReactNode }) {
+    return <InlineFeedback tone="danger">{children}</InlineFeedback>;
+}
+
+/**
+ * `--jale-blue-700`, not `-600`: only 700 flips in the dark theme. Blue-600
+ * stays #0064d6 under `.dark` and lands at ~2.98:1 on the dark card — below AA.
+ * Same reasoning as the `.stat-icon` note in globals.css.
+ */
+const LINK_BUTTON =
+    'cursor-pointer rounded border-0 bg-transparent p-0 font-semibold text-[var(--jale-blue-700)] ' +
+    'underline-offset-2 hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]';
+
+function BackButton({ label, onClick }: { label: string; onClick: () => void }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className="flex cursor-pointer items-center gap-1 self-start rounded border-0 bg-transparent p-0 text-sm font-medium text-[var(--jale-ink-2)] transition-colors hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+        >
+            <span aria-hidden="true">&larr;</span> {label}
+        </button>
+    );
 }
 
 function PasswordInput({
@@ -479,12 +558,22 @@ function PasswordInput({
                 type={visible ? 'text' : 'password'}
                 className={`pr-12 ${className}`}
             />
+            {/* The `after:` overlay grows the POINTER target to the 44px
+                minimum without changing the 32px box's layout — same trick as
+                `ui/theme-toggle`. Focus uses the app-wide `--shadow-focus`
+                recipe instead of a bespoke ring. */}
             <button
                 type="button"
                 onClick={onToggle}
                 aria-label={visible ? hideLabel : showLabel}
                 title={visible ? hideLabel : showLabel}
-                className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)] focus:outline-none focus:ring-2 focus:ring-[var(--jale-blue-500)]"
+                className={[
+                    'absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center',
+                    'cursor-pointer rounded-md text-[var(--jale-ink-2)] transition-colors',
+                    'hover:bg-[var(--jale-blue-50)] hover:text-[var(--jale-blue-700)]',
+                    'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                    "after:absolute after:left-1/2 after:top-1/2 after:h-11 after:w-11 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']",
+                ].join(' ')}
             >
                 {visible ? <EyeOffIcon /> : <EyeIcon />}
             </button>
@@ -514,9 +603,9 @@ function EyeOffIcon() {
 
 function SwitchPrompt({ text, action, onClick }: { text: string; action: string; onClick: () => void }) {
     return (
-        <p className="text-center text-sm" style={{ color: 'var(--jale-ink-2)' }}>
+        <p className="text-center text-sm text-[var(--jale-ink-2)]">
             {text}{' '}
-            <button onClick={onClick} style={{ background: 'none', border: 0, color: 'var(--jale-blue-600)', fontWeight: 600, cursor: 'pointer', fontSize: 'inherit', padding: 0 }}>
+            <button type="button" onClick={onClick} className={`text-[length:inherit] ${LINK_BUTTON}`}>
                 {action}
             </button>
         </p>

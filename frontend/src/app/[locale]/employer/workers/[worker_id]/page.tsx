@@ -1,311 +1,605 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import { useParams, useSearchParams, useRouter } from 'next/navigation';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
+import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
+import { usePageData } from '@/hooks/usePageData';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { AppShell } from '@/components/layout/AppShell';
+import { AppShellSkeleton } from '@/components/layout/AppShellSkeleton';
+import { ApplicationStatusBadge, Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { DashboardPanel } from '@/components/ui/dashboard-panel';
+import { ErrorState } from '@/components/ui/error-state';
+import { Icon } from '@/components/ui/icon';
+import { InitialsAvatar } from '@/components/ui/initials-avatar';
+import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedback';
+import { KVList, type KVItem } from '@/components/ui/kv-list';
+import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
+import { PanelHeader } from '@/components/ui/panel-header';
+import { Select } from '@/components/ui/select';
 import {
-  getWorkerProfile, getWorkerDocuments, createUploadToken, updateApplicantStatus,
-  WorkerProfile, WorkerDocument, ApplicationStatus,
+    createUploadToken,
+    getWorkerDocuments,
+    getWorkerProfile,
+    updateApplicantStatus,
+    type ApplicationStatus,
+    type WorkerDocument,
+    type WorkerProfile,
 } from '@/lib/api/employer';
-import { applicationStatusTone, normalizeApplicationStatus } from '@/lib/status';
+import { normalizeApplicationStatus } from '@/lib/status';
+import { tradeLabel } from '@/lib/trades';
 
 export const dynamic = 'force-dynamic';
 
 type DocType = 'resume' | 'driver_license' | 'ssn';
 const ALL_DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
-const APPLICATION_STATUSES: ApplicationStatus[] = ['pending', 'contacted', 'talking', 'hired', 'not_interested'];
+const APPLICATION_STATUSES: ApplicationStatus[] = [
+    'pending',
+    'contacted',
+    'talking',
+    'hired',
+    'not_interested',
+];
+
+/** Both ids are `UUID` columns (`jobs.id`, `users.id`). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** How long "Link copied" stays on the share button before reverting. */
+const COPIED_RESET_MS = 3000;
+
+/** What one load of this page consists of: the applicant, and their documents. */
+type ApplicantView = {
+    profile: WorkerProfile;
+    documents: WorkerDocument[];
+};
+
+/**
+ * Anchors styled as buttons.
+ *
+ * `Button` renders a `<button>`, and the document actions are real navigations
+ * to a presigned S3 URL (open in a tab / download), so they must be anchors.
+ * These two recipes mirror `button.tsx`'s primary/ghost output at `size="sm"`.
+ * Same escape hatch, and same TODO, as `StateAction` in `ui/empty-state`.
+ */
+const DOC_ACTION_BASE = [
+    'inline-flex h-9 items-center justify-center gap-2 rounded-full px-4',
+    'text-xs font-semibold leading-none whitespace-nowrap select-none',
+    'transition-all duration-150 active:scale-[0.98]',
+    'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+].join(' ');
+
+const DOC_ACTION_PRIMARY =
+    'bg-[var(--jale-blue-500)] text-white hover:bg-[var(--jale-blue-600)] shadow-[var(--shadow-btn)]';
+
+const DOC_ACTION_GHOST =
+    'border border-[var(--jale-divider)] bg-transparent text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]';
 
 export default function WorkerProfilePage() {
-  const t = useTranslations('employer_dashboard');
-  const tCommon = useTranslations('common');
-  const { idToken, isLoading: authLoading } = useAuth();
-  const { handleLegalWall } = useRequireAuth();
-  const params = useParams();
-  const searchParams = useSearchParams();
-  const router = useRouter();
+    const t = useTranslations('employer_worker_profile');
+    // `employer_dashboard` is read-only here. It owns two pieces of shared
+    // vocabulary this page must speak in the same words as the applicant list
+    // and the job modals: `applicants.status.*` and the four
+    // `worker_profile.*` keys those surfaces also read.
+    const tShared = useTranslations('employer_dashboard');
+    const tCommon = useTranslations('common');
+    const errorMessage = useErrorMessage();
 
-  const workerId = params.worker_id as string;
-  const jobId = searchParams.get('job_id') ?? '';
+    const { idToken } = useAuth();
+    const { handleLegalWall } = useRequireAuth();
+    const params = useParams();
+    const searchParams = useSearchParams();
 
-  const [profile, setProfile] = useState<WorkerProfile | null>(null);
-  const [documents, setDocuments] = useState<WorkerDocument[]>([]);
-  const [status, setStatus] = useState<ApplicationStatus>('pending');
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [sharingLink, setSharingLink] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState('');
-  const handleLegalWallRef = useRef(handleLegalWall);
+    const workerId = (params.worker_id as string | undefined)?.trim() ?? '';
+    const jobId = (searchParams.get('job_id') ?? '').trim();
 
-  const missingJobError = t('worker_profile.error_missing_job');
-  const loadProfileError = t('worker_profile.error_load_profile');
+    /*
+     * S9: this page is only meaningful inside a job. Without a well-formed
+     * `job_id` there is nothing to scope the applicant to, no back destination
+     * that makes sense, and no request worth sending -- so the link itself is
+     * the failure, and it gets its own state rather than a red line over a
+     * blank page. Validating the shape (not just presence) also keeps an
+     * arbitrary query value out of the request URL these ids are interpolated
+     * into.
+     */
+    const linkValid = UUID_RE.test(workerId) && UUID_RE.test(jobId);
 
-  useEffect(() => {
-    handleLegalWallRef.current = handleLegalWall;
-  }, [handleLegalWall]);
+    const jobHref = `/employer/jobs/${jobId}`;
+    const returnUrl = `/employer/workers/${workerId}?job_id=${jobId}`;
 
-  useEffect(() => {
-    if (!workerId || !jobId) {
-      setError(missingJobError);
-      setLoading(false);
-      return;
-    }
+    const { phase, data, errorKind, retry, setData } = usePageData<ApplicantView>({
+        // `signal` aborts on unmount and on a deps change, and both reads
+        // forward it, so an abandoned navigation cancels the requests instead
+        // of leaving them to finish unwatched. usePageData's request fencing
+        // still backstops a response that races the abort.
+        fetcher: async ({ token, signal }) => {
+            // Unreachable while `linkValid` is false -- the render short-circuits
+            // to the invalid-link state -- but the fetcher is the only place that
+            // can guarantee no doomed request is ever sent.
+            if (!linkValid) throw new Error('invalid_link');
+            const [profile, docs] = await Promise.all([
+                getWorkerProfile(token, workerId, jobId, signal),
+                getWorkerDocuments(token, workerId, jobId, signal),
+            ]);
+            return { profile, documents: docs.documents };
+        },
+        legalReturnUrl: returnUrl,
+        deps: [workerId, jobId, linkValid],
+    });
 
-    if (authLoading) return;
-    if (!idToken) {
-      setLoading(false);
-      return;
-    }
+    const profile = data?.profile ?? null;
+    const documents = data?.documents ?? [];
 
-    setError('');
-    setLoading(true);
-    Promise.all([
-      getWorkerProfile(idToken, workerId, jobId),
-      getWorkerDocuments(idToken, workerId, jobId),
-    ])
-      .then(([p, { documents: docs }]) => {
-        setProfile(p);
-        setDocuments(docs);
-        setStatus(normalizeApplicationStatus(p.application_status));
-      })
-      .catch((err) => {
-        try {
-          handleLegalWallRef.current(err, `/employer/workers/${workerId}?job_id=${jobId}`);
-        } catch {
-          setError(loadProfileError);
-        }
-      })
-      .finally(() => setLoading(false));
-  }, [authLoading, idToken, workerId, jobId, loadProfileError, missingJobError]);
-
-  const handleShareLink = async () => {
-    if (!idToken || !workerId || !jobId) return;
-    setSharingLink(true);
-    try {
-      const { upload_url } = await createUploadToken(idToken, jobId, workerId);
-      await navigator.clipboard.writeText(upload_url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 3000);
-    } catch (err) {
-      try {
-        handleLegalWall(err, `/employer/workers/${workerId}?job_id=${jobId}`);
-      } catch {
-        setError(t('worker_profile.error_create_link'));
-      }
-    } finally {
-      setSharingLink(false);
-    }
-  };
-
-  const handleSaveStatus = async () => {
-    if (!idToken || !workerId || !jobId || !profile || status === profile.application_status) return;
-
-    setSaving(true);
-    setError('');
-    try {
-      const updated = await updateApplicantStatus(idToken, jobId, workerId, status);
-      const nextStatus = updated.status ?? status;
-      setStatus(nextStatus);
-      setProfile({ ...profile, application_status: nextStatus });
-    } catch (err) {
-      try {
-        handleLegalWall(err, `/employer/workers/${workerId}?job_id=${jobId}`);
-      } catch {
-        setError(t('worker_profile.error_save_status'));
-      }
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const docByType = (type: DocType) => documents.find(d => d.doc_type === type);
-
-  const docLabel: Record<DocType, string> = {
-    resume: t('worker_profile.doc_resume'),
-    driver_license: t('worker_profile.doc_driver_license'),
-    ssn: t('worker_profile.doc_ssn'),
-  };
-
-  const saveDisabled = saving || !idToken || !workerId || !jobId || !profile || status === profile.application_status;
-
-  const availabilityLabel = (value: WorkerProfile['availability']) => {
-    if (!value) return t('worker_profile.fallback_availability');
-    const key = value.replaceAll('-', '_');
-    if (['immediate', '2_weeks', '1_month', 'full_time', 'part_time', 'weekends', 'flexible'].includes(key)) {
-      return t(`worker_profile.availability.${key}`);
-    }
-    return value;
-  };
-
-  const tradeLabel = (trade: WorkerProfile['main_trade'], tradeOther: WorkerProfile['main_trade_other']) => {
-    if (!trade) return t('worker_profile.fallback_trade');
-    if (trade === 'other') return tradeOther || t('worker_profile.trades.other');
-    const knownTrades = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting'];
-    if (knownTrades.includes(trade)) return t(`worker_profile.trades.${trade}`);
-    return trade;
-  };
-
-  const displayName = profile?.full_name?.trim() || t('worker_profile.fallback_name');
-  const initials = displayName.split(/\s+/).map(name => name[0]).join('').slice(0, 2).toUpperCase() || '?';
-  const skills = profile?.skills ?? [];
-  const appliedAt = profile?.applied_at ? profile.applied_at.slice(0, 10) : t('worker_profile.fallback_applied');
-  const yearsExperience = profile?.years_experience ?? null;
-
-  const shellSubtitle = profile ? tradeLabel(profile.main_trade, profile.main_trade_other) : undefined;
-
-  if (loading) {
-    return (
-      <AppShell role="employer" title={t('worker_profile.fallback_name')}>
-        <div className="p-8 text-center text-gray-500">{tCommon('loading')}</div>
-      </AppShell>
+    /*
+     * The select is a draft over the loaded status rather than a second copy of
+     * it: `null` means "showing what the server last told us". A save clears the
+     * draft, so the control follows the data instead of drifting from it.
+     */
+    const [statusDraft, setStatusDraft] = useState<ApplicationStatus | null>(null);
+    const [saving, setSaving] = useState(false);
+    const [saveFeedback, setSaveFeedback] = useState<{ tone: FeedbackTone; message: string } | null>(
+        null,
     );
-  }
 
-  return (
-    <AppShell role="employer" title={displayName} subtitle={shellSubtitle}>
-    <div className="max-w-4xl mx-auto px-4 py-6 md:px-6">
-      <button onClick={() => router.back()} className="text-blue-900 text-sm mb-4 flex items-center gap-1">
-        &larr; {t('worker_profile.back')}
-      </button>
+    const [sharingLink, setSharingLink] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const [shareError, setShareError] = useState<string | null>(null);
+    const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-      {error && <p className="text-red-600 text-sm mb-4">{error}</p>}
+    useEffect(
+        () => () => {
+            if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+        },
+        [],
+    );
 
-      {profile && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div className="bg-white border rounded-xl p-4">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center font-bold text-blue-900 text-lg">
-                  {initials}
-                </div>
-                <div>
-                  <p className="font-bold text-base">{displayName}</p>
-                  <span
-                    className="text-xs px-2 py-0.5 rounded-full font-medium"
-                    style={{
-                      background: applicationStatusTone(normalizeApplicationStatus(profile.application_status)).bg,
-                      color: applicationStatusTone(normalizeApplicationStatus(profile.application_status)).color,
-                    }}
-                  >
-                    {t(`applicants.status.${normalizeApplicationStatus(profile.application_status)}`)}
-                  </span>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-sm text-gray-600">
-                <span>{t('worker_profile.phone')}: {profile.phone || t('worker_profile.fallback_phone')}</span>
-                <span>{t('worker_profile.location')}: {profile.city || profile.location || t('worker_profile.fallback_location')}</span>
-                <span>
-                  {yearsExperience === null
-                    ? t('worker_profile.fallback_experience')
-                    : t('worker_profile.years_experience', { years: yearsExperience })}
-                </span>
-                <span>{t('worker_profile.availability_label')}: {availabilityLabel(profile.availability)}</span>
-                <span>{t('worker_profile.trade')}: {tradeLabel(profile.main_trade, profile.main_trade_other)}</span>
-                <span>
-                  {profile.has_transportation === null || profile.has_transportation === undefined
-                    ? null
-                    : profile.has_transportation
-                    ? t('worker_profile.transportation_yes')
-                    : t('worker_profile.transportation_no')}
-                </span>
-              </div>
-            </div>
+    const savedStatus = profile ? normalizeApplicationStatus(profile.application_status) : 'pending';
+    const selectedStatus = statusDraft ?? savedStatus;
 
-            <div className="bg-white border rounded-xl p-4">
-              <p className="font-semibold mb-2 text-sm">{t('worker_profile.skills')}</p>
-              <div className="flex flex-wrap gap-2">
-                {skills.length > 0 ? (
-                  skills.map(skill => (
-                    <span key={skill} className="bg-blue-50 text-blue-800 px-3 py-1 rounded-full text-xs">{skill}</span>
-                  ))
-                ) : (
-                  <p className="text-xs text-gray-500">{t('worker_profile.fallback_skills')}</p>
-                )}
-              </div>
-            </div>
-          </div>
+    const handleShareLink = useCallback(async () => {
+        if (!idToken || !linkValid) return;
+        setSharingLink(true);
+        setShareError(null);
+        try {
+            const { upload_url } = await createUploadToken(idToken, jobId, workerId);
+            await navigator.clipboard.writeText(upload_url);
+            setCopied(true);
+            if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+            copiedTimerRef.current = setTimeout(() => setCopied(false), COPIED_RESET_MS);
+        } catch (err) {
+            try {
+                handleLegalWall(err, returnUrl);
+            } catch {
+                // Never `err.message`: that is a backend code, untranslated.
+                setShareError(errorMessage(err));
+            }
+        } finally {
+            setSharingLink(false);
+        }
+    }, [errorMessage, handleLegalWall, idToken, jobId, linkValid, returnUrl, workerId]);
 
-          <div className="bg-white border rounded-xl p-4">
-            <div className="flex justify-between items-center mb-4">
-              <p className="font-semibold text-sm">{t('worker_profile.documents')}</p>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleShareLink}
-                disabled={!idToken || !workerId || !jobId}
-                loading={sharingLink}
-                loadingLabel={tCommon('loading')}
-                className="h-8 border-blue-900 text-blue-900"
-              >
-                {copied ? t('worker_profile.link_copied') : t('worker_profile.share_upload_link')}
-              </Button>
-            </div>
-            <div className="space-y-3">
-              {ALL_DOC_TYPES.map(type => {
-                const doc = docByType(type);
-                return (
-                  <div key={type} className={`border rounded-lg p-3 ${doc ? 'border-green-200 bg-green-50' : 'border-dashed border-red-300 bg-red-50'}`}>
-                    <div className="flex justify-between items-center">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold">{docLabel[type]}</p>
-                        {doc
-                          ? <p className="truncate text-xs text-gray-500">{doc.file_name} - {Math.round(doc.file_size / 1024)} KB</p>
-                          : <p className="text-xs text-red-500">{t('worker_profile.not_uploaded')}</p>
-                        }
-                      </div>
-                      {doc ? (
-                        <div className="flex shrink-0 gap-2">
-                          <a href={doc.url} target="_blank" rel="noreferrer" className="bg-blue-900 text-white text-xs px-3 py-1.5 rounded-lg">
-                            {t('worker_profile.view')}
-                          </a>
-                          <a href={doc.url} download={doc.file_name} className="border border-blue-900 text-blue-900 text-xs px-2 py-1.5 rounded-lg">
-                            {t('worker_profile.download')}
-                          </a>
-                        </div>
+    const handleSaveStatus = useCallback(async () => {
+        if (!idToken || !linkValid || !profile) return;
+        if (statusDraft === null || statusDraft === savedStatus) return;
+
+        setSaving(true);
+        setSaveFeedback(null);
+        try {
+            const updated = await updateApplicantStatus(idToken, jobId, workerId, statusDraft);
+            const applied = updated.status ?? statusDraft;
+            setData((prev) => ({ ...prev, profile: { ...prev.profile, application_status: applied } }));
+            setStatusDraft(null);
+            setSaveFeedback({ tone: 'success', message: tCommon('feedback.saved') });
+        } catch (err) {
+            try {
+                handleLegalWall(err, returnUrl);
+            } catch {
+                setSaveFeedback({ tone: 'danger', message: errorMessage(err) });
+            }
+        } finally {
+            setSaving(false);
+        }
+    }, [
+        errorMessage,
+        handleLegalWall,
+        idToken,
+        jobId,
+        linkValid,
+        profile,
+        returnUrl,
+        savedStatus,
+        setData,
+        statusDraft,
+        tCommon,
+        workerId,
+    ]);
+
+    const docLabel: Record<DocType, string> = {
+        resume: tShared('worker_profile.doc_resume'),
+        driver_license: tShared('worker_profile.doc_driver_license'),
+        ssn: tShared('worker_profile.doc_ssn'),
+    };
+
+    const availabilityLabel = (value: WorkerProfile['availability']) => {
+        if (!value) return t('fallback_availability');
+        const key = value.replaceAll('-', '_');
+        if (
+            ['immediate', '2_weeks', '1_month', 'full_time', 'part_time', 'weekends', 'flexible'].includes(
+                key,
+            )
+        ) {
+            return t(`availability.${key}`);
+        }
+        return value;
+    };
+
+    const displayName = profile?.full_name?.trim() || t('fallback_name');
+    const skills = profile?.skills ?? [];
+    const appliedAt = profile?.applied_at ? profile.applied_at.slice(0, 10) : t('fallback_applied');
+    const yearsExperience = profile?.years_experience ?? null;
+    const shellSubtitle = profile
+        ? tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)
+        : undefined;
+
+    const fields: KVItem[] = profile
+        ? [
+              { label: t('phone'), value: profile.phone || t('fallback_phone') },
+              {
+                  label: t('location'),
+                  value: profile.city || profile.location || t('fallback_location'),
+              },
+              {
+                  label: t('experience'),
+                  value:
+                      yearsExperience === null ? (
+                          t('fallback_experience')
                       ) : (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleShareLink}
-                          disabled={!idToken || !workerId || !jobId}
-                          loading={sharingLink}
-                          loadingLabel={tCommon('loading')}
-                          className="h-8 border-red-400 text-red-500 hover:bg-red-50"
-                        >
-                          {t('worker_profile.request')}
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
+                          <span className="tabular-nums">
+                              {tShared('worker_profile.years_experience', { years: yearsExperience })}
+                          </span>
+                      ),
+              },
+              { label: t('availability_label'), value: availabilityLabel(profile.availability) },
+              {
+                  label: t('trade'),
+                  value: tradeLabel(tCommon, profile.main_trade, profile.main_trade_other),
+              },
+              // The row is omitted rather than blanked when the worker never
+              // answered: an empty value reads as "no transportation".
+              ...(profile.has_transportation === null || profile.has_transportation === undefined
+                  ? []
+                  : [
+                        {
+                            label: t('transportation'),
+                            value: profile.has_transportation
+                                ? t('transportation_yes')
+                                : t('transportation_no'),
+                        },
+                    ]),
+          ]
+        : [];
 
-      <div className="mt-6 bg-white border rounded-xl p-4 flex justify-between items-center">
-        <p className="text-sm text-gray-500">{t('worker_profile.applied')} {appliedAt}</p>
-        <div className="flex gap-2 items-center">
-          <select
-            value={status}
-            onChange={e => setStatus(e.target.value as ApplicationStatus)}
-            className="border rounded-lg px-3 py-1.5 text-sm"
-          >
-            {APPLICATION_STATUSES.map(s => (
-              <option key={s} value={s}>{t(`applicants.status.${s}`)}</option>
-            ))}
-          </select>
-          <Button onClick={handleSaveStatus} disabled={saveDisabled} loading={saving} loadingLabel={t('worker_profile.saving_status')} className="h-9 rounded-lg bg-blue-900 px-4 text-sm text-white shadow-none hover:bg-blue-950">
-            {t('worker_profile.save_status')}
-          </Button>
-        </div>
-      </div>
-    </div>
-    </AppShell>
-  );
+    const shareDisabled = !idToken || !linkValid;
+    const saveDisabled = saving || !idToken || !linkValid || !profile || statusDraft === null
+        || statusDraft === savedStatus;
+
+    /* ===== S9 invalid link ================================================= */
+
+    if (!linkValid) {
+        return (
+            // The header names the real problem. `fallback_name` ("Unknown
+            // worker") would blame the applicant for a broken URL.
+            <AppShell role="employer" title={t('invalid_link.title')}>
+                <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
+                    <DashboardPanel className="anim-fade-in">
+                        <ErrorState
+                            // `not_found` is the kind whose copy this overrides AND
+                            // whose shape offers a back action with no retry --
+                            // exactly right for a link no retry can repair.
+                            kind="not_found"
+                            title={t('invalid_link.title')}
+                            body={t('invalid_link.body')}
+                            backHref="/employer/dashboard"
+                        />
+                    </DashboardPanel>
+                </div>
+            </AppShell>
+        );
+    }
+
+    /* ===== S0/S1 loading =================================================== */
+
+    // Same shell and same archetype as this route's `loading.tsx`, so the
+    // handover from the server-rendered skeleton to this one is invisible.
+    if (phase === 'auth' || phase === 'loading') {
+        return (
+            <AppShellSkeleton role="employer">
+                <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
+                    <DetailPageSkeleton withBackLink />
+                </div>
+            </AppShellSkeleton>
+        );
+    }
+
+    const backLink = (
+        <Link
+            href={jobHref}
+            className="mb-4 inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)] hover:underline"
+        >
+            <span aria-hidden>&larr;</span>
+            {t('back')}
+        </Link>
+    );
+
+    /* ===== S5 failed load ================================================== */
+
+    if (phase === 'error' && errorKind) {
+        // Three outcomes the old page collapsed into one sentence. `not_found`
+        // and `forbidden` get their own copy and a back action; everything else
+        // keeps the app-wide sentence and offers a retry. ErrorState decides
+        // which of the two controls a kind is actually allowed to show.
+        const title =
+            errorKind === 'not_found'
+                ? t('not_found.title')
+                : errorKind === 'forbidden'
+                  ? t('forbidden.title')
+                  : undefined;
+        const body =
+            errorKind === 'not_found'
+                ? t('not_found.body')
+                : errorKind === 'forbidden'
+                  ? t('forbidden.body')
+                  : undefined;
+
+        return (
+            <AppShell role="employer" title={t('fallback_name')}>
+                <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
+                    <div className="anim-fade-in">
+                        {backLink}
+                        <DashboardPanel>
+                            <ErrorState
+                                kind={errorKind}
+                                onRetry={retry}
+                                backHref={jobHref}
+                                title={title}
+                                body={body}
+                            />
+                        </DashboardPanel>
+                    </div>
+                </div>
+            </AppShell>
+        );
+    }
+
+    /* ===== S2 loaded ======================================================= */
+
+    return (
+        <AppShell role="employer" title={displayName} subtitle={shellSubtitle}>
+            <div className="mx-auto max-w-4xl px-4 py-6 md:px-6">
+                <div className="anim-fade-in">
+                    {backLink}
+
+                    {profile && (
+                        <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                            <div className="space-y-5">
+                                <DashboardPanel>
+                                    <div className="flex items-center gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+                                        <InitialsAvatar name={displayName} size={44} />
+                                        <div className="min-w-0">
+                                            <h2 className="truncate text-base font-extrabold tracking-[-0.01em] text-[var(--jale-ink)]">
+                                                {displayName}
+                                            </h2>
+                                            <div className="mt-1">
+                                                <ApplicationStatusBadge status={savedStatus}>
+                                                    {tShared(`applicants.status.${savedStatus}`)}
+                                                </ApplicationStatusBadge>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="px-5 py-2">
+                                        <KVList items={fields} />
+                                    </div>
+                                </DashboardPanel>
+
+                                <DashboardPanel>
+                                    <PanelHeader title={t('skills')} />
+                                    <div className="px-5 py-4">
+                                        {skills.length > 0 ? (
+                                            <div className="flex flex-wrap gap-x-4 gap-y-2">
+                                                {skills.map((skill) => (
+                                                    <Badge key={skill} tone="info">
+                                                        {skill}
+                                                    </Badge>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="text-sm text-[var(--jale-ink-2)]">
+                                                {t('fallback_skills')}
+                                            </p>
+                                        )}
+                                    </div>
+                                </DashboardPanel>
+                            </div>
+
+                            <DashboardPanel className="self-start">
+                                <PanelHeader
+                                    title={t('documents')}
+                                    action={
+                                        <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={handleShareLink}
+                                            disabled={shareDisabled}
+                                            loading={sharingLink}
+                                            loadingLabel={tCommon('loading')}
+                                        >
+                                            {copied ? t('link_copied') : t('share_upload_link')}
+                                        </Button>
+                                    }
+                                />
+
+                                {shareError && (
+                                    <div className="px-5 pt-4">
+                                        <InlineFeedback tone="danger" onDismiss={() => setShareError(null)}>
+                                            {shareError}
+                                        </InlineFeedback>
+                                    </div>
+                                )}
+
+                                <ul className="divide-y divide-[var(--jale-divider)]">
+                                    {ALL_DOC_TYPES.map((type) => {
+                                        const doc = documents.find((entry) => entry.doc_type === type);
+                                        return (
+                                            <li
+                                                key={type}
+                                                className="flex items-start justify-between gap-3 px-5 py-4"
+                                            >
+                                                <div className="flex min-w-0 items-start gap-3">
+                                                    {/* The slot's whole state in one tile: the
+                                                        semantic -bg/-text pairs are the only two
+                                                        tints that stay legible in both themes. */}
+                                                    <span
+                                                        aria-hidden
+                                                        className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                                                            doc
+                                                                ? 'bg-[var(--jale-success-bg)] text-[var(--jale-success-text)]'
+                                                                : 'bg-[var(--jale-danger-bg)] text-[var(--jale-danger-text)]'
+                                                        }`}
+                                                    >
+                                                        <Icon name={doc ? 'check' : 'alert'} />
+                                                    </span>
+
+                                                    <div className="min-w-0">
+                                                        <p className="text-sm font-semibold text-[var(--jale-ink)]">
+                                                            {docLabel[type]}
+                                                        </p>
+                                                        {doc ? (
+                                                            // The size never gets truncated away: it is
+                                                            // the one part of this line a reader scans
+                                                            // for, and a long filename would otherwise
+                                                            // eat it whole in the narrow column.
+                                                            <p className="mt-0.5 flex items-baseline gap-1 text-xs text-[var(--jale-ink-2)]">
+                                                                <span className="truncate">{doc.file_name}</span>
+                                                                <span className="shrink-0 tabular-nums">
+                                                                    {' - '}
+                                                                    {Math.round(doc.file_size / 1024)} KB
+                                                                </span>
+                                                            </p>
+                                                        ) : (
+                                                            <p className="mt-0.5 text-xs font-semibold text-[var(--jale-danger-text)]">
+                                                                {t('not_uploaded')}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {doc ? (
+                                                    <div className="flex shrink-0 gap-2">
+                                                        <a
+                                                            href={doc.url}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className={`${DOC_ACTION_BASE} ${DOC_ACTION_PRIMARY}`}
+                                                        >
+                                                            {t('view')}
+                                                        </a>
+                                                        <a
+                                                            href={doc.url}
+                                                            download={doc.file_name}
+                                                            className={`${DOC_ACTION_BASE} ${DOC_ACTION_GHOST}`}
+                                                        >
+                                                            {t('download')}
+                                                        </a>
+                                                    </div>
+                                                ) : (
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="sm"
+                                                        className="shrink-0"
+                                                        onClick={handleShareLink}
+                                                        disabled={shareDisabled}
+                                                        loading={sharingLink}
+                                                        loadingLabel={tCommon('loading')}
+                                                    >
+                                                        {t('request')}
+                                                    </Button>
+                                                )}
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </DashboardPanel>
+                        </div>
+                    )}
+
+                    <DashboardPanel className="mt-5">
+                        {/* `items-start` rather than `items-end`: the feedback below
+                            the control grows downward, and an end-aligned row would
+                            drag the applied date down with it on every save. */}
+                        <div className="flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                                <p className="text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)]">
+                                    {t('applied')}
+                                </p>
+                                <p className="mt-1 text-sm font-medium tabular-nums text-[var(--jale-ink)]">
+                                    {appliedAt}
+                                </p>
+                            </div>
+
+                            <div className="flex min-w-0 flex-col gap-2 sm:items-end">
+                                <div className="flex flex-wrap items-end gap-2">
+                                    <div className="w-full sm:w-56">
+                                        <label
+                                            htmlFor="applicant-status"
+                                            className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)]"
+                                        >
+                                            {t('status_label')}
+                                        </label>
+                                        <Select
+                                            id="applicant-status"
+                                            value={selectedStatus}
+                                            disabled={saving}
+                                            onChange={(event) =>
+                                                setStatusDraft(event.target.value as ApplicationStatus)
+                                            }
+                                        >
+                                            {APPLICATION_STATUSES.map((status) => (
+                                                <option key={status} value={status}>
+                                                    {tShared(`applicants.status.${status}`)}
+                                                </option>
+                                            ))}
+                                        </Select>
+                                    </div>
+                                    <Button
+                                        onClick={handleSaveStatus}
+                                        disabled={saveDisabled}
+                                        loading={saving}
+                                        loadingLabel={t('saving_status')}
+                                    >
+                                        {t('save_status')}
+                                    </Button>
+                                </div>
+
+                                {/* Scoped to the control that produced it: the old
+                                    page put every failure in one line at the top of
+                                    the page, far from the thing that failed. */}
+                                {saveFeedback && (
+                                    <InlineFeedback
+                                        tone={saveFeedback.tone}
+                                        onDismiss={() => setSaveFeedback(null)}
+                                    >
+                                        {saveFeedback.message}
+                                    </InlineFeedback>
+                                )}
+                            </div>
+                        </div>
+                    </DashboardPanel>
+                </div>
+            </div>
+        </AppShell>
+    );
 }

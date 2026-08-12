@@ -262,7 +262,9 @@ export function templateRowSummary(
   let pay = EM_DASH;
   if (min !== null && max !== null) pay = `$${min}–$${max}`;
   else if (min !== null) pay = `$${min}+`;
-  else if (max !== null) pay = `Up to $${max}`;
+  // "≤" rather than words: every pay variant must read correctly in both
+  // locales without threading another label through here.
+  else if (max !== null) pay = `≤ $${max}`;
   if (pay !== EM_DASH && intervalLabel) pay = `${pay} · ${intervalLabel}`;
   return { city, trade, pay };
 }

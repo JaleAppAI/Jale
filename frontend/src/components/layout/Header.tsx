@@ -4,10 +4,15 @@ import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
+import { InitialsAvatar } from '@/components/ui/initials-avatar';
+import { ThemeToggle } from '@/components/ui/theme-toggle';
 
-// Routes that render their own chrome (AppShell for /employer|/worker,
-// AuthShell for /auth). `/legal` and `/upload` keep the global Header.
-const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth'];
+// Routes that render their own chrome: AppShell for /employer|/worker,
+// AuthShell for /auth, and the public job page's own navy brand band for /j.
+// Without /j here the global bar stacked a second wordmark directly above
+// that band -- two headers on the one page a referred stranger sees first.
+// `/legal` and `/upload` keep the global Header.
+const SHELL_ROUTE_PREFIXES = ['/employer', '/worker', '/auth', '/j'];
 
 export function Header() {
     const locale = useLocale();
@@ -47,7 +52,7 @@ export function Header() {
     };
 
     return (
-        <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-white/90 backdrop-blur-md">
+        <header className="sticky top-0 z-10 border-b border-[var(--jale-divider)] bg-[color-mix(in_srgb,var(--jale-card)_90%,transparent)] backdrop-blur-md">
             <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
                 {/* Wordmark */}
                 <Link href="/" className="jale-wordmark">
@@ -75,16 +80,24 @@ export function Header() {
                         {t('language_toggle')}
                     </Link>
 
+                    <ThemeToggle />
+
                     {isAuthenticated && (
                         <>
-                            {/* Profile avatar link */}
+                            {/* Profile avatar link. This header has no profile fetch,
+                                so the role letter IS the content — passed as the
+                                fallback rather than faked into a name. */}
                             <Link
                                 href={userType === 'worker' ? '/worker/profile' : '/employer/profile'}
                                 aria-label={t('profile')}
-                                className="avatar-initials square"
-                                style={{ width: 34, height: 34 }}
+                                className="inline-flex rounded-xl focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
                             >
-                                {userType === 'worker' ? 'W' : 'E'}
+                                <InitialsAvatar
+                                    name=""
+                                    fallback={userType === 'worker' ? 'W' : 'E'}
+                                    size={34}
+                                    square
+                                />
                             </Link>
                             <Button variant="outline" size="sm" onClick={handleSignOut} loading={signingOut} loadingLabel={tCommon('loading')}>
                                 {t('sign_out')}

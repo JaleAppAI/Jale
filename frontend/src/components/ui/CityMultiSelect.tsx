@@ -94,7 +94,7 @@ export function CityMultiSelect({
         <ul role="list" className="flex flex-wrap gap-2">
           {value.map((c) => (
             <li key={c.city_key}>
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--jale-divider)] bg-white px-3 py-1 text-xs font-semibold text-[var(--jale-ink)]">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--jale-divider)] bg-[var(--jale-card)] px-3 py-1 text-xs font-semibold text-[var(--jale-ink)]">
                 {c.city}, {c.state}
                 <button
                   ref={setButtonRef(c.city_key)}

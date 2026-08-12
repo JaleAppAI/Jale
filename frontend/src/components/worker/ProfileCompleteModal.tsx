@@ -1,9 +1,13 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useId, useState, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select } from '@/components/ui/select';
+import { Modal } from '@/components/ui/modal';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { validateWorkerProfileFields, type WorkerProfileField } from '@/lib/worker-profile-form';
+import { useErrorMessage } from '@/hooks/useErrorMessage';
 
 const AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 type Availability = (typeof AVAILABILITY)[number];
@@ -23,6 +27,56 @@ export interface ProfileCompleteValues {
   years_experience: number;
 }
 
+/**
+ * Labelled form row.
+ *
+ * The fields used to be placeholder-only, which vanishes the moment the worker
+ * types and leaves a screen reader with nothing to announce. The label strings
+ * already existed in the namespace, so this costs no new copy.
+ */
+function Field({
+  id,
+  label,
+  error,
+  children,
+}: {
+  id: string;
+  label: string;
+  error?: string | null;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <label
+        htmlFor={id}
+        className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-[var(--jale-ink-2)]"
+      >
+        {label}
+      </label>
+      {children}
+      {error ? (
+        <p id={`${id}-error`} className="mt-1 text-xs font-medium text-[var(--jale-danger-text)]">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The pre-apply completion gate.
+ *
+ * Shown when a worker taps Apply with an incomplete profile: they fill in the
+ * missing pieces here and the application continues automatically once the save
+ * lands (the page's `onSubmit` closes this and resumes the apply).
+ *
+ * Two failure modes, deliberately owned by different surfaces:
+ *  - the profile SAVE failing is this dialog's problem, so `onSubmit` rejecting
+ *    renders inline below — the page's own feedback would sit behind the
+ *    backdrop where nobody can read it;
+ *  - the APPLY failing afterwards belongs to the page, which anchors the apply
+ *    taxonomy's message to the apply button.
+ */
 export function ProfileCompleteModal(props: {
   open: boolean;
   initial?: Partial<ProfileCompleteValues>;
@@ -32,6 +86,8 @@ export function ProfileCompleteModal(props: {
   const t = useTranslations('worker_profile.complete_modal');
   const tFields = useTranslations('worker_profile');
   const tCommon = useTranslations('common');
+  const errorMessage = useErrorMessage();
+  const fieldId = useId();
   const [fullName, setFullName] = useState('');
   const [skills, setSkills] = useState('');
   const [availability, setAvailability] = useState<Availability>('full_time');
@@ -44,7 +100,7 @@ export function ProfileCompleteModal(props: {
   // Prefill from the worker's existing profile each time the modal opens,
   // so they only fill in what's actually missing (e.g. WhatsApp-onboarded
   // workers already have name/availability/location).
-  const { open, initial } = props;
+  const { open, initial, onClose, onSubmit } = props;
   useEffect(() => {
     if (!open || !initial) return;
     setFullName(initial.full_name ?? '');
@@ -58,7 +114,21 @@ export function ProfileCompleteModal(props: {
     }
   }, [open, initial]);
 
-  if (!props.open) return null;
+  // Clear the last attempt's complaints when the gate closes, so reopening it
+  // never greets the worker with an error about a submit they already left.
+  useEffect(() => {
+    if (open) return;
+    setError(null);
+    setMissingFields([]);
+  }, [open]);
+
+  // One guard for every dismissal route the foundation Modal offers (Escape,
+  // backdrop, the header close button): a save is in flight and cancelling it
+  // client-side would leave the worker unsure whether it landed.
+  const handleClose = useCallback(() => {
+    if (submitting) return;
+    onClose();
+  }, [submitting, onClose]);
 
   async function submit() {
     setError(null);
@@ -78,52 +148,119 @@ export function ProfileCompleteModal(props: {
     }
     setSubmitting(true);
     try {
-      await props.onSubmit({
+      await onSubmit({
         ...values,
         // Clamp to [0, 80] to mirror the backend cap (max= on the input is not a
         // complete guard when submit goes through a custom handler).
         years_experience: Math.min(Math.max(Number(yearsExp) || 0, 0), 80),
       });
     } catch (e) {
-      const err = e as Record<string, unknown>;
-      setError(typeof err.message === 'string' ? err.message : 'error');
+      // Never `err.message`: that is a backend error CODE, untranslated and
+      // sometimes server detail. `useErrorMessage` turns anything thrown into a
+      // reviewed sentence in both locales.
+      setError(errorMessage(e));
     } finally {
       setSubmitting(false);
     }
   }
 
+  const nameId = `${fieldId}-full-name`;
+  const skillsId = `${fieldId}-skills`;
+  const availabilityId = `${fieldId}-availability`;
+  const locationId = `${fieldId}-location`;
+  const yearsId = `${fieldId}-years`;
+
+  const requiredError = tFields('errors.required');
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-lg bg-card p-6 shadow-lg space-y-4">
-        <h2 className="text-lg font-semibold">{t('title')}</h2>
-        <p className="text-sm text-muted-foreground">{t('subtitle')}</p>
+    <Modal
+      open={open}
+      onClose={handleClose}
+      title={t('title')}
+      size="sm"
+      footer={
+        <>
+          <Button variant="outline" onClick={handleClose} disabled={submitting}>
+            {t('cancel')}
+          </Button>
+          <Button onClick={submit} loading={submitting} loadingLabel={tCommon('loading')}>
+            {t('submit')}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-[var(--jale-ink-2)]">{t('subtitle')}</p>
 
-        <div>
-          <Input placeholder={t('full_name')} value={fullName} onChange={(e) => setFullName(e.target.value)} />
-          {missingFields.includes('full_name') && <p className="text-xs text-error mt-1">{tFields('errors.required')}</p>}
-        </div>
-        <div>
-          <Input placeholder={t('skills_placeholder')} value={skills} onChange={(e) => setSkills(e.target.value)} />
-          {missingFields.includes('skills') && <p className="text-xs text-error mt-1">{tFields('errors.required')}</p>}
-        </div>
-        <div>
-          <select className="w-full rounded border px-3 py-2 text-sm" value={availability} onChange={(e) => setAvailability(e.target.value as Availability)}>
-            {AVAILABILITY.map(a => <option key={a} value={a}>{t(`availability.${a}`)}</option>)}
-          </select>
-        </div>
-        <div>
-          <Input placeholder={t('location')} value={location} onChange={(e) => setLocation(e.target.value)} />
-          {missingFields.includes('location') && <p className="text-xs text-error mt-1">{tFields('errors.required')}</p>}
-        </div>
-        <Input type="number" min={0} max={80} placeholder={t('years_experience')} value={yearsExp} onChange={(e) => setYearsExp(e.target.value)} />
+        <Field
+          id={nameId}
+          label={t('full_name')}
+          error={missingFields.includes('full_name') ? requiredError : null}
+        >
+          <Input
+            id={nameId}
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            aria-invalid={missingFields.includes('full_name') || undefined}
+            aria-describedby={missingFields.includes('full_name') ? `${nameId}-error` : undefined}
+          />
+        </Field>
 
-        {error && <p className="text-sm text-error">{error}</p>}
+        <Field
+          id={skillsId}
+          label={t('skills_placeholder')}
+          error={missingFields.includes('skills') ? requiredError : null}
+        >
+          <Input
+            id={skillsId}
+            value={skills}
+            onChange={(e) => setSkills(e.target.value)}
+            aria-invalid={missingFields.includes('skills') || undefined}
+            aria-describedby={missingFields.includes('skills') ? `${skillsId}-error` : undefined}
+          />
+        </Field>
 
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={props.onClose} disabled={submitting}>{t('cancel')}</Button>
-          <Button onClick={submit} loading={submitting} loadingLabel={tCommon('loading')}>{t('submit')}</Button>
-        </div>
+        <Field id={availabilityId} label={t('availability_label')}>
+          <Select
+            id={availabilityId}
+            value={availability}
+            onChange={(e) => setAvailability(e.target.value as Availability)}
+          >
+            {AVAILABILITY.map((a) => (
+              <option key={a} value={a}>{t(`availability.${a}`)}</option>
+            ))}
+          </Select>
+        </Field>
+
+        <Field
+          id={locationId}
+          label={t('location')}
+          error={missingFields.includes('location') ? requiredError : null}
+        >
+          <Input
+            id={locationId}
+            value={location}
+            onChange={(e) => setLocation(e.target.value)}
+            aria-invalid={missingFields.includes('location') || undefined}
+            aria-describedby={missingFields.includes('location') ? `${locationId}-error` : undefined}
+          />
+        </Field>
+
+        <Field id={yearsId} label={t('years_experience')}>
+          <Input
+            id={yearsId}
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={80}
+            className="tabular-nums"
+            value={yearsExp}
+            onChange={(e) => setYearsExp(e.target.value)}
+          />
+        </Field>
+
+        {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
       </div>
-    </div>
+    </Modal>
   );
 }

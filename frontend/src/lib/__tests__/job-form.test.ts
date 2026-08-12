@@ -358,9 +358,9 @@ describe('templateRowSummary', () => {
     expect(templateRowSummary({})).toEqual({ city: '—', trade: '—', pay: '—' });
   });
 
-  it('formats one-sided pay ranges', () => {
+  it('formats one-sided pay ranges without locale-bound words', () => {
     expect(templateRowSummary({ pay_min: 20 }).pay).toBe('$20+');
-    expect(templateRowSummary({ pay_max: 30 }).pay).toBe('Up to $30');
+    expect(templateRowSummary({ pay_max: 30 }).pay).toBe('≤ $30');
   });
 
   it('joins a provided interval label onto real pay, never onto the em dash', () => {

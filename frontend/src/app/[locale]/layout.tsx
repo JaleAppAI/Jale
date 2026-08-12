@@ -7,6 +7,7 @@ import React from 'react';
 import { Header } from "@/components/layout/Header";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { ConversationDrawer } from "@/components/employer/ConversationDrawer";
+import { ToastProvider } from "@/components/ui/toast";
 
 const lexend = Lexend({
   subsets: ["latin"],
@@ -14,6 +15,26 @@ const lexend = Lexend({
   display: "swap",
   weight: ["300", "400", "500", "600", "700", "800"],
 });
+
+/**
+ * Applies the dark class BEFORE the browser paints, so a dark-theme user never
+ * sees a white flash on first load. It runs where it is written -- as the first
+ * thing in <body>, parser-blocking -- which is earlier than any React code can
+ * possibly run, including a layout effect.
+ *
+ * Contract with `components/ui/theme-toggle.tsx`:
+ *   'dark'   -> force dark
+ *   'light'  -> force light (do nothing; light is the :root default)
+ *   absent   -> follow the OS
+ * Anything else is treated as light rather than throwing.
+ *
+ * Everything is wrapped: localStorage throws outright in some privacy modes,
+ * and a failure here must not stop the page from rendering.
+ */
+const THEME_INIT_SCRIPT =
+  "try{var t=localStorage.getItem('jale-theme');" +
+  "if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))" +
+  "document.documentElement.classList.add('dark')}catch(e){}";
 
 export const metadata: Metadata = {
   // Needed so relative openGraph/twitter `images` paths (e.g. the public job
@@ -40,13 +61,18 @@ export default async function RootLayout({
 }>) {
   const messages = await getMessages();
   return (
-    <html lang={locale} className={lexend.variable}>
+    // The init script below mutates <html>'s class list before hydration, so
+    // the server markup and the live DOM legitimately differ here.
+    <html lang={locale} className={lexend.variable} suppressHydrationWarning>
       <body>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <NextIntlClientProvider locale={locale} messages={messages}>
           <AuthProvider locale={locale}>
-            <Header />
-            {children}
-            <ConversationDrawer />
+            <ToastProvider>
+              <Header />
+              {children}
+              <ConversationDrawer />
+            </ToastProvider>
           </AuthProvider>
         </NextIntlClientProvider>
       </body>

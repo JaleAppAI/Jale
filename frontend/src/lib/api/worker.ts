@@ -1,4 +1,5 @@
 import { apiFetch } from '../api';
+import { ApiError, parseApiError } from './errors';
 import type { ApplicationStatus, JobStatus } from '../status';
 
 export interface UploadUrlResponse {
@@ -8,6 +9,10 @@ export interface UploadUrlResponse {
 
 export type DocType = 'resume' | 'driver_license' | 'ssn';
 export type JobDocType = 'resume' | 'driver_license';
+
+// The upload trio below (and uploadFileToS3) deliberately use raw `fetch`, not
+// `apiFetch`: they run the unauthenticated one-time-token flow on /upload/[token],
+// where there is no session and no Authorization header to attach.
 
 export async function getUploadUrl(
   token: string,
@@ -22,7 +27,7 @@ export async function getUploadUrl(
       body: JSON.stringify({ token, doc_type, mime_type }),
     },
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'upload_url_failed');
+  if (!res.ok) throw await parseApiError(res, 'upload_url_failed');
   return res.json();
 }
 
@@ -32,7 +37,9 @@ export async function uploadFileToS3(presignedUrl: string, file: File): Promise<
     body: file,
     headers: { 'Content-Type': file.type },
   });
-  if (!res.ok) throw new Error('s3_upload_failed');
+  // S3 answers with an XML error document, never our JSON error envelope, so
+  // there is no code to read out of the body -- only the status is meaningful.
+  if (!res.ok) throw new ApiError(res.status, 's3_upload_failed');
 }
 
 export async function confirmUpload(
@@ -56,7 +63,7 @@ export async function confirmUpload(
       }),
     },
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'confirm_failed');
+  if (!res.ok) throw await parseApiError(res, 'confirm_failed');
 }
 
 export async function submitUpload(token: string): Promise<void> {
@@ -68,7 +75,7 @@ export async function submitUpload(token: string): Promise<void> {
       body: JSON.stringify({ token }),
     },
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'submit_failed');
+  if (!res.ok) throw await parseApiError(res, 'submit_failed');
 }
 
 // Authenticated marketplace helpers
@@ -171,55 +178,67 @@ export type WorkerProfilePatch = Partial<Omit<WorkerProfileData, 'id' | 'phone' 
   location_source: 'geocoded_zip' | 'geocoded_address';
 }>;
 
+/**
+ * @deprecated Use `ApiError` from `@/lib/api/errors` -- every thrower in this
+ * module now raises that class. Kept as a structural (not `= ApiError`) alias
+ * because page-local fetches still build this shape by hand and assign to
+ * `status`/`code`, which `ApiError` declares readonly. An `ApiError` satisfies
+ * it, so `err as WorkerApiError` reads keep working unchanged.
+ */
 export type WorkerApiError = Error & {
   status?: number;
   code?: string;
   missing_docs?: string[];
 };
 
-async function readErrorBody(res: Response): Promise<{ error?: string; missing_docs?: string[] }> {
-  try {
-    return await res.json();
-  } catch {
-    return {};
-  }
-}
-
+/**
+ * The READ helpers below take an optional trailing `AbortSignal`, forwarded to
+ * `apiFetch` (which chains it into the per-attempt controller). `usePageData`
+ * hands its fetcher a signal that aborts on unmount and on a deps change;
+ * passing it here is what actually cancels the in-flight request rather than
+ * merely discarding its answer. The parameter is last and optional, so every
+ * existing call site is unaffected.
+ *
+ * MUTATION helpers deliberately do NOT take one. A POST/PATCH/DELETE that has
+ * reached the server still executes; aborting it only throws away the response,
+ * which would turn "user navigated away" into "the app has no idea whether the
+ * write landed". Those must run to completion and be reported.
+ */
 export async function getJobs(
   token: string,
   filters?: { search?: string; job_type?: string },
+  signal?: AbortSignal,
 ): Promise<{ jobs: Job[]; other_jobs?: Job[] }> {
   const qs = new URLSearchParams();
   if (filters?.search) qs.set('search', filters.search);
   if (filters?.job_type) qs.set('job_type', filters.job_type);
   const path = `/worker/jobs${qs.toString() ? `?${qs}` : ''}`;
-  const res = await apiFetch(path, {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
+  const res = await apiFetch(path, { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
-export async function getJob(token: string, id: string): Promise<JobDetail> {
-  const res = await apiFetch(`/worker/jobs/${id}`, {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
+export async function getJob(token: string, id: string, signal?: AbortSignal): Promise<JobDetail> {
+  const res = await apiFetch(`/worker/jobs/${id}`, { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
 export async function applyToJob(token: string, id: string): Promise<Application> {
   const res = await apiFetch(`/worker/jobs/${id}/apply`, { method: 'POST' }, token);
-  if (!res.ok) {
-    const body = await readErrorBody(res);
-    const err = new Error(body.error ?? 'apply_failed') as WorkerApiError;
-    err.status = res.status;
-    err.code = body.error;
-    err.missing_docs = body.missing_docs;
-    throw err;
-  }
+  // A 400 from the required-docs guard carries `missing_docs`; the job page
+  // renders one label per entry. parseApiError allowlists that field onto both
+  // `err.payload.missing_docs` and `err.missing_docs`.
+  if (!res.ok) throw await parseApiError(res, 'apply_failed');
   return res.json();
 }
 
-export async function getApplications(token: string): Promise<{ applications: Application[] }> {
-  const res = await apiFetch('/worker/applications', {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
+export async function getApplications(
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ applications: Application[] }> {
+  const res = await apiFetch('/worker/applications', { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
@@ -228,13 +247,16 @@ export async function updateWorkerProfile(
   patch: WorkerProfilePatch,
 ): Promise<WorkerProfileData> {
   const res = await apiFetch('/worker/profile', { method: 'PATCH', body: JSON.stringify(patch) }, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'update_failed');
+  if (!res.ok) throw await parseApiError(res, 'update_failed');
   return res.json();
 }
 
-export async function getVaultDocuments(token: string): Promise<{ documents: WorkerVaultDoc[] }> {
-  const res = await apiFetch('/worker/vault', {}, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'fetch_failed');
+export async function getVaultDocuments(
+  token: string,
+  signal?: AbortSignal,
+): Promise<{ documents: WorkerVaultDoc[] }> {
+  const res = await apiFetch('/worker/vault', { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 
@@ -248,7 +270,7 @@ export async function getAuthUploadUrl(
     { method: 'POST', body: JSON.stringify({ doc_type, mime_type }) },
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'upload_url_failed');
+  if (!res.ok) throw await parseApiError(res, 'upload_url_failed');
   return res.json();
 }
 
@@ -269,12 +291,12 @@ export async function confirmAuthUpload(
     },
     token,
   );
-  if (!res.ok) throw new Error((await res.json()).error ?? 'confirm_failed');
+  if (!res.ok) throw await parseApiError(res, 'confirm_failed');
 }
 
 export async function deleteVaultDocument(token: string, doc_type: DocType): Promise<void> {
   const res = await apiFetch(`/worker/vault/${doc_type}`, { method: 'DELETE' }, token);
-  if (!res.ok) throw new Error((await res.json()).error ?? 'delete_failed');
+  if (!res.ok) throw await parseApiError(res, 'delete_failed');
 }
 
 // Job-referral sharing (ShareJobPanel)
@@ -299,13 +321,7 @@ export async function shareJob(
   channel: ShareChannel,
 ): Promise<ShareJobResponse> {
   const res = await apiFetch(`/worker/jobs/${jobId}/share`, { method: 'POST', body: JSON.stringify({ channel }) }, token);
-  if (!res.ok) {
-    const body = await readErrorBody(res);
-    const err = new Error(body.error ?? 'share_failed') as WorkerApiError;
-    err.status = res.status;
-    err.code = body.error;
-    throw err;
-  }
+  if (!res.ok) throw await parseApiError(res, 'share_failed');
   return res.json();
 }
 
@@ -321,12 +337,6 @@ export interface ClaimReferralResponse {
  */
 export async function claimReferral(token: string, shareCode: string): Promise<ClaimReferralResponse> {
   const res = await apiFetch('/worker/referrals/claim', { method: 'POST', body: JSON.stringify({ shareCode }) }, token);
-  if (!res.ok) {
-    const body = await readErrorBody(res);
-    const err = new Error(body.error ?? 'claim_failed') as WorkerApiError;
-    err.status = res.status;
-    err.code = body.error;
-    throw err;
-  }
+  if (!res.ok) throw await parseApiError(res, 'claim_failed');
   return res.json();
 }

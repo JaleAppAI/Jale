@@ -1,6 +1,9 @@
 'use client';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '@/lib/api';
+import { getAuthBridge, registerAuthBridge } from '@/lib/auth-bridge';
+import { buildLoginUrl } from '@/lib/login-url';
+import { locales } from '@/i18n/locales';
 
 interface AuthState {
     accessToken: string | null;
@@ -11,7 +14,13 @@ interface AuthState {
     isLoading: boolean;
     setTokens: (tokens: { accessToken: string; idToken: string; refreshToken: string }, userType: 'worker' | 'employer') => void;
     logout: () => Promise<void>;
-    refreshTokens: () => Promise<void>;
+    /**
+     * Exchanges the stored refresh token for a fresh id token, which it
+     * resolves. Resolves null (and clears the session) when the refresh token
+     * is gone or rejected. Single-flight: concurrent callers share one
+     * in-flight /auth/refresh POST.
+     */
+    refreshIdToken: () => Promise<string | null>;
 }
 
 type UserType = 'worker' | 'employer';
@@ -30,12 +39,20 @@ function inferUserTypeFromPath(): UserType | null {
     return null;
 }
 
+// Every app route is locale-prefixed by the middleware, so the first path
+// segment is the locale. Anything unrecognised falls back to the default.
+function localeFromPathname(pathname: string): string {
+    const first = pathname.split('/')[1];
+    return (locales as readonly string[]).includes(first) ? first : 'en';
+}
+
 export function AuthProvider({ children, locale }: { children: React.ReactNode; locale: string }) {
     const [accessToken, setAccessToken] = useState<string | null>(null);
     const [refreshToken, setRefreshToken] = useState<string | null>(null);
     const [idToken, setIdToken] = useState<string | null>(null);
     const [userType, setUserType] = useState<'worker' | 'employer' | null>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const refreshInFlight = useRef<Promise<string | null> | null>(null);
 
     useEffect(() => {
         const rt = sessionStorage.getItem('refreshToken');
@@ -78,43 +95,107 @@ export function AuthProvider({ children, locale }: { children: React.ReactNode; 
         sessionStorage.setItem('userType', ut);
     };
 
-    const logout = async () => {
-        await apiFetch('/auth/logout', {
-            method: 'POST',
-            body: JSON.stringify({ accessToken, refreshToken, userType }),
-        }).catch(() => {});
+    // Drops every trace of the session, locally. Stable identity (only setters
+    // and sessionStorage), so the bridge below registers exactly once.
+    const clearSession = useCallback(() => {
         sessionStorage.removeItem('refreshToken');
         sessionStorage.removeItem('userType');
         setAccessToken(null);
         setIdToken(null);
         setRefreshToken(null);
         setUserType(null);
+    }, []);
+
+    const logout = async () => {
+        await apiFetch('/auth/logout', {
+            method: 'POST',
+            body: JSON.stringify({ accessToken, refreshToken, userType }),
+        }).catch(() => {});
+        clearSession();
         window.location.href = `/${locale}/`;
     };
 
-    const refreshTokens = async () => {
-        if (!refreshToken) return;
-        const res = await apiFetch('/auth/refresh', { method: 'POST', body: JSON.stringify({ refreshToken, userType }) });
-        if (!res.ok) {
-            sessionStorage.removeItem('refreshToken');
-            sessionStorage.removeItem('userType');
-            setAccessToken(null);
-            setIdToken(null);
-            setRefreshToken(null);
-            setUserType(null);
-            return;
+    const refreshIdToken = useCallback(async (): Promise<string | null> => {
+        // Single-flight: a burst of 401s (a page that fires five requests on
+        // mount) must produce ONE /auth/refresh POST, not five -- Cognito
+        // rotates on refresh, so parallel refreshes race each other's tokens.
+        if (refreshInFlight.current) return refreshInFlight.current;
+
+        const run = (async (): Promise<string | null> => {
+            // sessionStorage, not component state, is the source of truth here:
+            // the bridge is registered once and must never close over a stale
+            // token.
+            const rt = sessionStorage.getItem('refreshToken');
+            const ut = parseUserType(sessionStorage.getItem('userType'));
+            if (!rt) {
+                clearSession();
+                return null;
+            }
+            try {
+                // Deliberately token-less, so apiFetch's own 401 refresh path
+                // never intercepts it (that would recurse).
+                const res = await apiFetch('/auth/refresh', {
+                    method: 'POST',
+                    body: JSON.stringify({ refreshToken: rt, userType: ut }),
+                });
+                if (!res.ok) {
+                    clearSession();
+                    return null;
+                }
+                const data = await res.json();
+                const nextIdToken = typeof data?.idToken === 'string' && data.idToken.length > 0
+                    ? data.idToken
+                    : null;
+                if (!nextIdToken) {
+                    clearSession();
+                    return null;
+                }
+                setAccessToken(typeof data.accessToken === 'string' ? data.accessToken : null);
+                setIdToken(nextIdToken);
+                return nextIdToken;
+            } catch {
+                clearSession();
+                return null;
+            }
+        })();
+
+        refreshInFlight.current = run;
+        try {
+            return await run;
+        } finally {
+            refreshInFlight.current = null;
         }
-        const data = await res.json();
-        setAccessToken(data.accessToken);
-        setIdToken(data.idToken);
-    };
+    }, [clearSession]);
+
+    // Hand the transport layer a way back into React auth state. Both deps are
+    // stable, so this registers once per provider instance.
+    useEffect(() => {
+        const bridge = {
+            refreshIdToken,
+            onSessionExpired: () => {
+                // Read the identity BEFORE clearing it -- the login URL needs it.
+                const ut = parseUserType(sessionStorage.getItem('userType')) ?? inferUserTypeFromPath();
+                const { pathname, search } = window.location;
+                clearSession();
+                window.location.assign(
+                    buildLoginUrl(localeFromPathname(pathname), ut, `${pathname}${search}`),
+                );
+            },
+        };
+        registerAuthBridge(bridge);
+        return () => {
+            // Only clear our own registration: never clobber a provider that
+            // already replaced us.
+            if (getAuthBridge() === bridge) registerAuthBridge(null);
+        };
+    }, [refreshIdToken, clearSession]);
 
     return (
         <AuthContext.Provider value={{
             accessToken, refreshToken, idToken, userType,
             isAuthenticated: !!idToken,
             isLoading,
-            setTokens, logout, refreshTokens,
+            setTokens, logout, refreshIdToken,
         }}>
             {children}
         </AuthContext.Provider>
