@@ -232,7 +232,7 @@ export type PayLocale = 'en' | 'es';
  * so it gets a leading space instead of the `/unit` slash the other
  * intervals use. ASCII-only Spanish (no accents), matching the convention
  * already used for outbound WhatsApp copy (see onboarding-renderers.ts /
- * templates.ts) — so "dia" not "dia" with an accent.
+ * templates.ts) — so "dia" not "día".
  */
 const PAY_INTERVAL_SUFFIX: Record<PayInterval, Record<PayLocale, string>> = {
   hourly: { en: '/hour', es: '/hora' },
