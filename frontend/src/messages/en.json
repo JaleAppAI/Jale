@@ -733,6 +733,7 @@
       "template_name_placeholder": "Template name",
       "template_check_city": "Check the city before posting",
       "template_limit_reached": "Template limit reached — upgrade for more",
+      "template_limit_reached_n": "You've reached your plan's limit of {limit} templates — upgrade for more",
       "template_name_taken": "You already have a template with that name"
     },
     "worker_profile": {

@@ -45,7 +45,6 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   const [error, setError] = useState('');
   const [nameError, setNameError] = useState('');
   const [limitReached, setLimitReached] = useState(false);
-  const [templateLimit, setTemplateLimit] = useState<number | null>(null);
 
   // The name is this form's one field the job form does not have; it is also
   // where editing starts, so the Modal lands initial focus on it.
@@ -66,7 +65,6 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
     setNameError('');
     setError('');
     setLimitReached(false);
-    setTemplateLimit(null);
     if (!name.trim()) return setNameError(t('templates.name_required'));
     if (!form.title.trim() || !form.location.trim() || !form.trade_category) {
       return setError(t('modal.validation_required'));
@@ -92,8 +90,10 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
       if (err instanceof ApiError && err.code === 'template_name_taken') {
         setNameError(t('modal.template_name_taken'));
       } else if (err instanceof ApiError && err.code === 'template_limit_reached') {
-        setError(t('modal.template_limit_reached'));
-        setTemplateLimit(err.payload.template_limit ?? null);
+        const limit = err.payload.template_limit ?? null;
+        setError(limit != null
+          ? t('modal.template_limit_reached_n', { limit })
+          : t('modal.template_limit_reached'));
         setLimitReached(true);
       } else {
         setError(t('templates.save_error'));
@@ -116,12 +116,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
         <div className="flex w-full flex-col gap-3">
           {error ? (
             <InlineFeedback tone="danger" onDismiss={limitReached ? undefined : () => setError('')}>
-              <span
-                className="block"
-                title={templateLimit != null ? String(templateLimit) : undefined}
-              >
-                {error}
-              </span>
+              <span className="block">{error}</span>
               {limitReached ? (
                 <Link
                   href="/employer/billing"

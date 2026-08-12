@@ -97,6 +97,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
+  // Once the template save succeeds, later submits of the SAME wizard run
+  // (e.g. after a failed job post) carry this id so the backend overwrites
+  // that template instead of 409ing against our own first save.
+  const savedTemplateIdRef = useRef<string | null>(null);
 
   // Silent background load whenever the modal opens -- the wizard must work
   // exactly the same with zero templates, so any failure here is swallowed.
@@ -144,6 +148,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateName('');
     setTemplateNotice('');
     setTemplateLimit(null);
+    savedTemplateIdRef.current = null;
     onClose();
   };
 
@@ -222,15 +227,33 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       setError(validationError);
       return;
     }
+
+    const name = templateName.trim();
+    // Pre-check the template name against the loaded list BEFORE any network
+    // call: once the job posts, the modal closes and a failed template save
+    // has nowhere left to surface. Catching the collision here keeps it
+    // fixable; the server 409 below remains the backstop for stale lists.
+    if (
+      saveAsTemplate && name &&
+      templates.some((tpl) => tpl.name === name && tpl.id !== savedTemplateIdRef.current)
+    ) {
+      setTemplateNotice('name_taken');
+      return;
+    }
     setLoading(true);
     setError('');
     setLimitReached(false);
     setTemplateNotice('');
 
-    const name = templateName.trim();
     if (saveAsTemplate && name) {
       try {
-        await saveJobTemplate(idToken!, { name, payload: jobFormToCreatePayload(form) });
+        const saved = await saveJobTemplate(idToken!, {
+          ...(savedTemplateIdRef.current ? { id: savedTemplateIdRef.current } : {}),
+          name,
+          payload: jobFormToCreatePayload(form),
+        });
+        savedTemplateIdRef.current = saved.id;
+        setTemplates((current) => [saved, ...current.filter((tpl) => tpl.id !== saved.id)]);
       } catch (err) {
         // Template failures never block the job post -- surface the notice
         // and keep going.
@@ -387,7 +410,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 1 && (
         <div className="grid gap-4">
-          {templates.length > 0 && (
+          {templates.length > 0 ? (
             <Field label={t('modal.template_select_label')}>
               <div className="flex items-center gap-2">
                 <Select
@@ -405,6 +428,14 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
                 </Link>
               </div>
             </Field>
+          ) : (
+            // No templates yet: the picker would be empty, but the page link
+            // stays discoverable from the wizard, not just the sidebar.
+            <div className="flex justify-end">
+              <Link href="/employer/templates" className="text-xs font-semibold text-[var(--jale-blue-700)] hover:underline">
+                {t('templates.manage_link')}
+              </Link>
+            </div>
           )}
           <Field label={t('modal.job_title')} required>
             <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
@@ -586,11 +617,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           {templateNotice === 'limit' && (
             <div className="mt-2">
               <InlineFeedback tone="danger">
-                <span
-                  className="block"
-                  title={templateLimit != null ? String(templateLimit) : undefined}
-                >
-                  {t('modal.template_limit_reached')}
+                <span className="block">
+                  {templateLimit != null
+                    ? t('modal.template_limit_reached_n', { limit: templateLimit })
+                    : t('modal.template_limit_reached')}
                 </span>
                 <Link
                   href="/employer/billing"

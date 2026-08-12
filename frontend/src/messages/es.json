@@ -733,6 +733,7 @@
       "template_name_placeholder": "Nombre de la plantilla",
       "template_check_city": "Revise la ciudad antes de publicar",
       "template_limit_reached": "Límite de plantillas alcanzado — mejore su plan para más",
+      "template_limit_reached_n": "Alcanzó el límite de {limit} plantillas — mejore su plan para más",
       "template_name_taken": "Ya tiene una plantilla con ese nombre"
     },
     "worker_profile": {

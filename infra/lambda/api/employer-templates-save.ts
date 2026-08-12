@@ -8,6 +8,9 @@ import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
 const MAX_NAME_LENGTH = 80;
+// Shape-checked up front so a hand-crafted non-UUID id fails as a clean 400
+// instead of a Postgres cast error surfacing as internal_error.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Validates a template payload with the SAME helpers employer-jobs-create
  * uses, so a template is always a storable create request. Returns the
@@ -60,6 +63,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_json' }) };
     }
 
+    if (body.id !== undefined && (typeof body.id !== 'string' || !UUID_PATTERN.test(body.id))) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_template_id' }) };
+    }
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     if (!name || name.length > MAX_NAME_LENGTH) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_template_name' }) };

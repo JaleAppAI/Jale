@@ -31,7 +31,7 @@ const makeEvent = (bodyOverrides: Record<string, unknown> = {}) => ({
   }),
 } as unknown as APIGatewayProxyEvent);
 
-const TEMPLATE_ROW = { id: 'tpl-1', name: 'Concrete crew', payload: {}, updated_at: 'now' };
+const TEMPLATE_ROW = { id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90', name: 'Concrete crew', payload: {}, updated_at: 'now' };
 
 describe('employer-templates-save', () => {
   beforeEach(() => {
@@ -110,7 +110,7 @@ describe('employer-templates-save', () => {
       return Promise.resolve({});
     });
 
-    const res = await handler(makeEvent({ id: 'tpl-1' }));
+    const res = await handler(makeEvent({ id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90' }));
 
     expect(res.statusCode).toBe(200);
     expect(mockResolveEntitlements).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe('employer-templates-save', () => {
       return Promise.resolve({});
     });
 
-    const res = await handler(makeEvent({ id: 'tpl-1' }));
+    const res = await handler(makeEvent({ id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90' }));
 
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('template_name_taken');
@@ -138,7 +138,7 @@ describe('employer-templates-save', () => {
       return Promise.resolve({});
     });
 
-    const res = await handler(makeEvent({ id: 'tpl-1' }));
+    const res = await handler(makeEvent({ id: '3f6d3a2e-8c4b-4a1e-9d2f-1b5e6c7a8d90' }));
 
     expect(res.statusCode).toBe(200);
   });
@@ -151,10 +151,18 @@ describe('employer-templates-save', () => {
       return Promise.resolve({});
     });
 
-    const res = await handler(makeEvent({ id: 'tpl-unknown' }));
+    const res = await handler(makeEvent({ id: '9a1b2c3d-4e5f-4a6b-8c7d-0e1f2a3b4c5d' }));
 
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('forbidden');
+  });
+
+  it('rejects a malformed template id before touching the database (400)', async () => {
+    const res = await handler(makeEvent({ id: 'not-a-uuid' }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_template_id');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
   it.each([
