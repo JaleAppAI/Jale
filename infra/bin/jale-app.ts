@@ -163,6 +163,10 @@ new ReferralsStack(app, 'JaleReferralsStack', {
   workerJobResource: api.workerJobResource,
   employerAuthorizer: api.employerAuthorizer,
   employerJobResource: api.employerJobResource,
+  // Same shared alarm topic as AiStack/WhatsAppStack -- see ReferralsStack's
+  // alarmTopicArn prop doc for why this stack does NOT fail closed like
+  // those two when the context/env var is absent.
+  alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
 });
 
 new LegalStack(app, 'JaleLegalStack', {

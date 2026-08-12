@@ -26,6 +26,42 @@ const INDEXING_ENDPOINT = 'https://indexing.googleapis.com/v3/urlNotifications:p
 const INDEXING_SCOPE = 'https://www.googleapis.com/auth/indexing';
 const TOKEN_TTL_SECONDS = 5 * 60;
 
+/**
+ * CloudWatch EMF metric, emitted the same way `emitOtpMetric()` in
+ * `auth/lib/otp-twilio.ts` emits `Jale/OTP` metrics -- a raw `console.log`
+ * with an `_aws` CloudWatch Logs embedded-metric block, no MetricFilter
+ * needed. Kept local to this file rather than promoted to a shared lib:
+ * nothing else in `infra/lambda/` needs it yet.
+ *
+ * Fired once per row that transitions to `status = 'failed'` at
+ * MAX_ATTEMPTS, so ReferralsStack's `VisibilityOutboxDrainPermanentFailures`
+ * alarm has a real signal for "this row will never be retried again"
+ * instead of relying on someone noticing `status='failed'` rows by hand.
+ */
+function emitPermanentFailureMetric(): void {
+  console.log(JSON.stringify({
+    _aws: {
+      Timestamp: Date.now(),
+      CloudWatchMetrics: [{
+        Namespace: 'Jale/Referrals',
+        Dimensions: [[]],
+        Metrics: [{ Name: 'VisibilityOutboxDrainPermanentFailure', Unit: 'Count' }],
+      }],
+    },
+    VisibilityOutboxDrainPermanentFailure: 1,
+  }));
+}
+
+/** Tallies a row's outcome onto the batch result and emits the permanent-failure metric when terminal. */
+function tallyOutcome(result: DrainResult, status: 'pending' | 'failed'): void {
+  if (status === 'failed') {
+    result.failed += 1;
+    emitPermanentFailureMetric();
+  } else {
+    result.pendingRetry += 1;
+  }
+}
+
 interface ClaimedRow {
   id: string;
   job_id: string;
@@ -244,8 +280,7 @@ export async function handler(): Promise<DrainResult> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = await markAttemptOrFail(pool, row.id, row.attempt_count, message);
-      if (status === 'failed') result.failed += 1;
-      else result.pendingRetry += 1;
+      tallyOutcome(result, status);
       continue;
     }
 
@@ -265,21 +300,18 @@ export async function handler(): Promise<DrainResult> {
 
     if (res.status === 429) {
       const retryStatus = await markRetryPending(pool, row.id, row.attempt_count, message);
-      if (retryStatus === 'failed') result.failed += 1;
-      else result.pendingRetry += 1;
+      tallyOutcome(result, retryStatus);
       result.haltedOnQuota = true;
       break; // quota exhausted -- stop the batch rather than burn through it on 429s
     }
     if (res.status >= 500) {
       const retryStatus = await markRetryPending(pool, row.id, row.attempt_count, message);
-      if (retryStatus === 'failed') result.failed += 1;
-      else result.pendingRetry += 1;
+      tallyOutcome(result, retryStatus);
       continue;
     }
 
     const status = await markAttemptOrFail(pool, row.id, row.attempt_count, message);
-    if (status === 'failed') result.failed += 1;
-    else result.pendingRetry += 1;
+    tallyOutcome(result, status);
   }
 
   return result;

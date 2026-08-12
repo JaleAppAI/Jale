@@ -74,4 +74,17 @@ describe('referral retention sweeper', () => {
     await expect(handler()).rejects.toThrow('db down');
     expect(mockRelease).toHaveBeenCalled();
   });
+
+  // job_visibility_events (062) grants jale_admin only SELECT/UPDATE under
+  // FORCE RLS -- no DELETE grant, no FOR DELETE policy. A DELETE from this
+  // sweeper would hard-fail with "permission denied for table
+  // job_visibility_events" every run, not silently no-op. This pins the
+  // decision to skip it until a migration adds the grant + policy.
+  it('never issues a DELETE against job_visibility_events (no DELETE grant/policy exists — migration 062)', async () => {
+    mockQuery.mockResolvedValue({ rowCount: 0 });
+    await handler();
+    for (const call of mockQuery.mock.calls) {
+      expect(String(call[0])).not.toContain('job_visibility_events');
+    }
+  });
 });
