@@ -29,7 +29,14 @@ interface JobRow {
   title: string;
   company: string;
   location: string;
-  pay: string;
+  /** Legacy free-text `jobs.pay`, RAW (no `COALESCE` fallback applied here) --
+   * the renderer (`onboarding-renderers.ts`) is responsible for the
+   * structured-first, legacy-string-second, localized "not specified" last
+   * fallback chain (Task 4, WhatsApp pay localization). */
+  pay: string | null;
+  pay_min: number | null;
+  pay_max: number | null;
+  pay_interval: string | null;
 }
 
 interface WorkerRow {
@@ -62,7 +69,7 @@ export const handler = async (
   try {
     // 1. Look up the job
     const jobResult = await client.query<JobRow>(
-      `SELECT id, title, company, location, pay FROM jobs WHERE id = $1`,
+      `SELECT id, title, company, location, pay, pay_min, pay_max, pay_interval FROM jobs WHERE id = $1`,
       [event.jobId],
     );
     if (jobResult.rowCount === 0) {
@@ -138,7 +145,13 @@ export const handler = async (
               // parity-audit fix) — without a template, alerts to workers
               // outside the 24h window were silently undeliverable.
               location: job.location,
+              // Structured fields (Task 4, WhatsApp pay localization) let the
+              // renderer show localized pay text; `pay` is the RAW legacy
+              // string, used only when payMin/payMax are both null.
               pay: job.pay,
+              payMin: job.pay_min,
+              payMax: job.pay_max,
+              payInterval: job.pay_interval,
             }],
           },
         });

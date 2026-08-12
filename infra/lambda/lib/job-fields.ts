@@ -222,3 +222,66 @@ export function formatPayRange(payMin: number | null, payMax: number | null): st
   if (payMin !== null) return `From $${payMin}`;
   return `Up to $${payMax}`;
 }
+
+/** Locale supported by the worker-facing WhatsApp/localized pay renderers. */
+export type PayLocale = 'en' | 'es';
+
+/**
+ * Per-interval suffix appended to the numeric pay range. `fixed` reads as a
+ * parenthetical qualifier ("(fixed)"/"(fijo)") rather than a per-unit rate,
+ * so it gets a leading space instead of the `/unit` slash the other
+ * intervals use. ASCII-only Spanish (no accents), matching the convention
+ * already used for outbound WhatsApp copy (see onboarding-renderers.ts /
+ * templates.ts) — so "dia" not "dia" with an accent.
+ */
+const PAY_INTERVAL_SUFFIX: Record<PayInterval, Record<PayLocale, string>> = {
+  hourly: { en: '/hour', es: '/hora' },
+  daily: { en: '/day', es: '/dia' },
+  weekly: { en: '/week', es: '/semana' },
+  monthly: { en: '/month', es: '/mes' },
+  fixed: { en: ' (fixed)', es: ' (fijo)' },
+};
+
+/**
+ * Locale-aware counterpart to `formatPayRange()`. The stored `jobs.pay`
+ * column (built by `formatPayRange()` at job create/update time) stays
+ * English-only and untouched by this function — this is additive, for
+ * worker-facing renders that have the structured `pay_min`/`pay_max`/
+ * `pay_interval` fields available and want localized text instead of the
+ * legacy server-persisted string.
+ *
+ * Mirrors `formatPayRange()`'s null/range/one-sided shape and appends an
+ * interval suffix when known. Returns null when both bounds are null —
+ * callers are responsible for their own localized "not specified" fallback
+ * (see `payNotSpecifiedLabel`), same contract as `formatPayRange()`.
+ */
+export function formatPayRangeLocalized(
+  payMin: number | null,
+  payMax: number | null,
+  payInterval: PayInterval | string | null,
+  locale: PayLocale,
+): string | null {
+  if (payMin === null && payMax === null) return null;
+
+  let base: string;
+  if (payMin !== null && payMax !== null) {
+    base = payMin === payMax ? `$${payMin}` : `$${payMin}-$${payMax}`;
+  } else if (payMin !== null) {
+    base = locale === 'es' ? `Desde $${payMin}` : `From $${payMin}`;
+  } else {
+    base = locale === 'es' ? `Hasta $${payMax}` : `Up to $${payMax}`;
+  }
+
+  const suffix =
+    payInterval && Object.prototype.hasOwnProperty.call(PAY_INTERVAL_SUFFIX, payInterval)
+      ? PAY_INTERVAL_SUFFIX[payInterval as PayInterval][locale]
+      : '';
+  return `${base}${suffix}`;
+}
+
+/** Localized "pay not specified" fallback — used when neither the
+ * structured fields nor the legacy `jobs.pay` string have anything to
+ * render. Kept ASCII-only to match the rest of the outbound Spanish copy. */
+export function payNotSpecifiedLabel(locale: PayLocale): string {
+  return locale === 'es' ? 'Pago no especificado' : 'Pay not specified';
+}

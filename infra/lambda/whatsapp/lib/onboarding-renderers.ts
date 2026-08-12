@@ -28,6 +28,39 @@ import type {
 } from './onboarding-types';
 import { registerCategoryRenderer } from './worker-delivery-gateway';
 import { t, type Lang } from './templates';
+import { formatPayRangeLocalized, payNotSpecifiedLabel } from '../../lib/job-fields';
+
+/** Shared numeric coercion for `pay_min`/`pay_max`, which arrive from
+ * different producers as either `number` (a direct SQL query) or `string`
+ * (some `pg` driver paths for numeric columns) — see job-alert.ts /
+ * worker-ready-release.ts. */
+function toPayNumber(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const num = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+/**
+ * Renders a worker-facing pay string from the structured fields when
+ * available, falling back to the legacy free-text `payRaw` (pre-023 jobs
+ * predating `pay_min`/`pay_max`, or jobs whose employer typed pay before the
+ * structured fields existed), and finally to a localized "not specified"
+ * placeholder. Never falls back to an already-English-coalesced sentinel —
+ * callers must pass the RAW `jobs.pay` value, not one a shared query has
+ * already defaulted to an English placeholder string.
+ */
+function localizedPay(
+  lang: Lang,
+  payMin: string | number | null | undefined,
+  payMax: string | number | null | undefined,
+  payInterval: string | null | undefined,
+  payRaw: string | null | undefined,
+): string {
+  const structured = formatPayRangeLocalized(toPayNumber(payMin), toPayNumber(payMax), payInterval ?? null, lang);
+  if (structured !== null) return structured;
+  if (payRaw) return payRaw;
+  return payNotSpecifiedLabel(lang);
+}
 
 /**
  * Single exported source of truth for the canonical `MessageCategory`
@@ -120,9 +153,18 @@ interface DigestJob {
   score: number;
   /** Optional because pre-existing deferred intents (enqueued before the
    * producer started sending them) lack these; the renderer degrades to
-   * the plain-text digest for those. */
-  location?: string;
-  pay?: string;
+   * the plain-text digest for those. Nullable because the DB columns are
+   * (migration 003) and the shared release type carries null through. */
+  location?: string | null;
+  /** Legacy free-text `jobs.pay`, RAW (never pre-coalesced to an English
+   * placeholder by the caller) — used only when the structured fields below
+   * are both absent. */
+  pay?: string | null;
+  /** Structured pay (Task 4, WhatsApp pay localization) — preferred over
+   * `pay` when present; rendered locale-aware via `formatPayRangeLocalized`. */
+  payMin?: string | number | null;
+  payMax?: string | number | null;
+  payInterval?: string | null;
 }
 
 function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): string {
@@ -154,7 +196,10 @@ function buildJobAlertDigestText(lang: Lang, jobs: ReadonlyArray<DigestJob>): st
  */
 function buildReferredJobMessage(
   lang: Lang,
-  job: { jobId: string; title: string; companyName: string; location: string | null; pay: string | null } | null,
+  job: {
+    jobId: string; title: string; companyName: string; location: string | null; pay: string | null;
+    payMin?: number | null; payMax?: number | null; payInterval?: string | null;
+  } | null,
   referred: boolean,
 ): ReleaseRenderedMessage {
   // A visitor can reach the public page with no share tag and tap Apply on their
@@ -174,9 +219,14 @@ function buildReferredJobMessage(
 
   // title/companyName/location are employer free text — rendered as stored,
   // never translated. pay and location are both nullable (migration 003), so
-  // each is omitted rather than rendered as a dangling separator.
+  // each is omitted rather than rendered as a dangling separator. Unlike the
+  // digest branch below, there is no "not specified" filler here by design —
+  // pay simply drops out of the line when there is nothing to show.
+  const localizedJobPay = formatPayRangeLocalized(
+    toPayNumber(job.payMin), toPayNumber(job.payMax), job.payInterval ?? null, lang,
+  ) ?? job.pay ?? null;
   const headline = [job.title, job.companyName].filter((p) => p && p.length > 0).join(' - ');
-  const detail = [job.location, job.pay].filter((p) => p && p.length > 0).join(' - ');
+  const detail = [job.location, localizedJobPay].filter((p) => p && p.length > 0).join(' - ');
   const intro = referred
     ? (lang === 'es' ? 'Un amigo te recomendo este trabajo:' : 'A friend referred you to this job:')
     : (lang === 'es' ? 'Este es el trabajo que te interesaba:' : 'Here is the job you were interested in:');
@@ -221,9 +271,7 @@ function buildJobAlertDigestMessage(
     const location = typeof single.location === 'string' && single.location.length > 0
       ? single.location
       : (lang === 'en' ? 'Location not specified' : 'Ubicacion no especificada');
-    const pay = typeof single.pay === 'string' && single.pay.length > 0
-      ? single.pay
-      : (lang === 'en' ? 'Pay not specified' : 'Pago no especificado');
+    const pay = localizedPay(lang, single.payMin, single.payMax, single.payInterval, single.pay);
     return {
       body: null,
       contentTemplate: lang === 'en' ? 'job_alert_en' : 'job_alert_es',
