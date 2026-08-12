@@ -24,6 +24,7 @@ import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { normalizeMatchScore, scoreBandForScore } from '@/lib/match';
+import { formatPay } from '@/lib/pay';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
 import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
@@ -35,9 +36,6 @@ const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 /** Where "back to jobs" goes, and the destination the S5 states offer. */
 const JOBS_HREF = '/worker/home';
 
-/** The API's sentinel for "the employer did not state a rate". Not a figure. */
-const PAY_UNSPECIFIED = 'Pay not specified';
-
 type ApplyFeedback = { tone: 'danger' | 'success'; message: string };
 
 export default function WorkerJobDetailPage() {
@@ -47,6 +45,7 @@ export default function WorkerJobDetailPage() {
   const t = useTranslations('worker_job_detail');
   const tCommon = useTranslations('common');
   const tMatch = useTranslations('match');
+  const tPay = useTranslations('pay');
   const locale = useLocale();
 
   const [applying, setApplying] = useState(false);
@@ -279,7 +278,7 @@ export default function WorkerJobDetailPage() {
   const jobTypeLabel = job
     ? (KNOWN_JOB_TYPES.includes(job.job_type) ? t(`job_type.${job.job_type}`) : job.job_type)
     : null;
-  const pay = job?.pay && job.pay !== PAY_UNSPECIFIED ? job.pay : null;
+  const pay = job ? formatPay(job, tPay) : null;
   const matchScore = normalizeMatchScore(job?.match_score);
   const matchBand = matchScore === null ? null : scoreBandForScore(matchScore);
   const canApply = job ? !job.already_applied && job.missing_docs.length === 0 : false;
@@ -434,11 +433,13 @@ export default function WorkerJobDetailPage() {
                   </div>
                 </DashboardPanel>
 
-                <DashboardPanel>
-                  <div className="p-5 md:p-6">
-                    <ShareJobPanel jobId={id} />
-                  </div>
-                </DashboardPanel>
+                {job.public_listing_enabled && job.status === 'active' ? (
+                  <DashboardPanel>
+                    <div className="p-5 md:p-6">
+                      <ShareJobPanel jobId={id} />
+                    </div>
+                  </DashboardPanel>
+                ) : null}
 
                 <DashboardPanel>
                   <div className="flex flex-col gap-3 px-5 py-4 md:px-6">

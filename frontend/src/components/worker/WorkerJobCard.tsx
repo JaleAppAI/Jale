@@ -8,6 +8,7 @@ import { Link } from '@/i18n/navigation';
 import { formatStartDate } from '@/lib/date';
 import type { Job } from '@/lib/api/worker';
 import { humanizeReasonCode, normalizeMatchScore, scoreBandForScore, truncateMatchReason } from '@/lib/match';
+import { formatPay } from '@/lib/pay';
 
 /**
  * One job in the worker feed — a ROW, not a card.
@@ -72,9 +73,10 @@ function MetaLine({ items }: { items: string[] }) {
 export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
   const t = useTranslations('worker_home');
   const tMatch = useTranslations('match');
+  const tPay = useTranslations('pay');
   const locale = useLocale();
 
-  const pay = job.pay && job.pay !== 'Pay not specified' ? job.pay : null;
+  const pay = formatPay(job, tPay);
   const matchScore = normalizeMatchScore(job.match_score);
   const scoreBand = matchScore === null ? null : scoreBandForScore(matchScore);
   const matchReasons = (job.match_reasons ?? [])
