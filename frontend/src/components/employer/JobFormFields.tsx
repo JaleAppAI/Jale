@@ -1,10 +1,16 @@
 'use client';
 import type React from 'react';
-import { useTranslations } from 'next-intl';
+import { useState } from 'react';
+import { useLocale, useTranslations } from 'next-intl';
+import { useAuth } from '@/contexts/AuthContext';
 import {
-  DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
+  DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS, parseOptionalNumber,
   type DocType, type PayInterval, type JobForm, type JobFormLocation,
 } from '@/lib/job-form';
+import { ApiError, generateJobDescription, type GenerateJobDescriptionPayload } from '@/lib/api/employer';
+import { getTradeSample, hasTradeSample } from '@/lib/trade-samples';
+import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
@@ -38,6 +44,67 @@ export function JobFormFields({
   showStartDate = true, locked = false, minWorkers = 1, titleRef,
 }: JobFormFieldsProps) {
   const t = useTranslations('employer_dashboard');
+  const locale = useLocale();
+  const { idToken } = useAuth();
+
+  // AI/sample description affordances. `other` and unset both read as "no
+  // trade picked" for both actions -- `other` has no O*NET sample to ground
+  // against, and the backend rejects it outright for generation (400
+  // `unsupported_trade_category`), so there is no point round-tripping into
+  // the generic failure message for it.
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<'limit' | 'generic' | null>(null);
+  const canUseSample = hasTradeSample(form.trade_category);
+  const canGenerate = form.trade_category !== '' && form.trade_category !== 'other';
+
+  const insertSample = () => {
+    const sample = getTradeSample(form.trade_category, locale);
+    if (!sample) return;
+    onUpdate('description', sample);
+    // A prior Generate failure is no longer relevant to what's now in the
+    // field -- the sample just replaced it.
+    setGenerateError(null);
+  };
+
+  // `parseOptionalNumber` can return `NaN` for unparseable text; JSON would
+  // otherwise serialize that as `null`, which is not "the field is unset" as
+  // far as the backend's optional-number fields are concerned.
+  const optionalPayNumber = (value: string): number | undefined => {
+    const parsed = parseOptionalNumber(value);
+    return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  const handleGenerate = async () => {
+    if (!canGenerate || !idToken || generating) return;
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      // Whatever the form currently holds -- every field but trade_category
+      // is optional. Strings are capped at 200 chars (the backend's own
+      // limit) so a long value 400s the request rather than the AI call.
+      const payMin = optionalPayNumber(form.pay_min);
+      const payMax = optionalPayNumber(form.pay_max);
+      const payload: GenerateJobDescriptionPayload = {
+        trade_category: form.trade_category,
+        ...(form.title.trim() ? { title: form.title.trim().slice(0, 200) } : {}),
+        ...(form.city ? { city: form.city.slice(0, 200) } : {}),
+        ...(form.state ? { state: form.state.slice(0, 200) } : {}),
+        ...(payMin !== undefined ? { pay_min: payMin } : {}),
+        ...(payMax !== undefined ? { pay_max: payMax } : {}),
+        ...(form.pay_interval ? { pay_interval: form.pay_interval } : {}),
+        ...(form.expected_duration.trim() ? { expected_duration: form.expected_duration.trim().slice(0, 200) } : {}),
+        ...(form.shift_schedule.trim() ? { shift_schedule: form.shift_schedule.trim().slice(0, 200) } : {}),
+      };
+      const result = await generateJobDescription(idToken, payload);
+      // Only touch the form on SUCCESS -- a failure below must never clobber
+      // whatever the employer already typed.
+      onUpdate('description', locale === 'es' ? result.description_es : result.description_en);
+    } catch (err) {
+      setGenerateError(err instanceof ApiError && err.code === 'generation_limit_reached' ? 'limit' : 'generic');
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const toggleDoc = (doc: DocType) => {
     if (locked) return;
@@ -109,6 +176,41 @@ export function JobFormFields({
       </Field>
       <Field label={t('modal.job_description')}>
         <Textarea rows={4} value={form.description} onChange={(e) => onUpdate('description', e.target.value)} />
+        <div className="flex flex-wrap items-center gap-3">
+          {canUseSample && (
+            <button
+              type="button"
+              onClick={insertSample}
+              className="text-xs font-bold text-[var(--jale-blue-700)] hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+            >
+              {t('modal.description_helper.use_sample')}
+            </button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            loading={generating}
+            loadingLabel={t('modal.description_helper.generating')}
+          >
+            <Icon name="spark" />
+            {t('modal.description_helper.generate')}
+          </Button>
+        </div>
+        {canUseSample && (
+          <p className="text-xs text-[var(--jale-ink-2)]">{t('modal.description_helper.source_credit')}</p>
+        )}
+        {canUseSample && form.description.trim() ? (
+          <p className="text-xs text-[var(--jale-ink-2)]">{t('modal.description_helper.replace_hint')}</p>
+        ) : null}
+        {generateError && (
+          <p className="text-xs font-semibold text-[var(--jale-danger)]">
+            {generateError === 'limit'
+              ? t('modal.description_helper.limit_reached')
+              : t('modal.description_helper.generate_error')}
+          </p>
+        )}
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
         <Field label={t('modal.pay_min')}><Input type="number" min={0} className="tabular-nums" value={form.pay_min} onChange={(e) => onUpdate('pay_min', e.target.value)} /></Field>

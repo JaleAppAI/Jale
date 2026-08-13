@@ -689,6 +689,15 @@
       "error": "Error al publicar el empleo. Inténtelo de nuevo.",
       "job_description": "Descripción del empleo",
       "description_placeholder": "¿Qué incluye el trabajo? ¿Qué experiencia se requiere?",
+      "description_helper": {
+        "use_sample": "Usar un ejemplo",
+        "source_credit": "Fuente: O*NET",
+        "generate": "Generar con IA",
+        "generating": "Generando…",
+        "replace_hint": "Esto reemplazará la descripción actual.",
+        "limit_reached": "Alcanzó el límite diario de descripciones generadas con IA. Inténtelo de nuevo mañana.",
+        "generate_error": "No pudimos generar una descripción en este momento. Inténtelo de nuevo o escriba la suya."
+      },
       "select_placeholder": "Seleccionar...",
       "trade_category": "Oficio",
       "trade": {
