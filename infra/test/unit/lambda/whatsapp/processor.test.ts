@@ -1416,6 +1416,90 @@ describe('Processor Lambda', () => {
       ]));
     });
 
+    // Task 4 (WhatsApp pay localization): the '4' template variable is built
+    // from the structured pay_min/pay_max/pay_interval fields when present,
+    // falling back to the raw legacy `pay_raw` string, then to a localized
+    // "not specified" placeholder -- never the English-only stored `pay`.
+    async function runJobsKeywordWithSingleJob(
+      language: 'en' | 'es',
+      job: Record<string, unknown>,
+    ): Promise<string> {
+      mockListMatchedJobsForWorker.mockResolvedValue([job]);
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-pay-localized' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({ conversation_state: 'idle', user_id: 'worker-1', language })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT template outbox
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-pay-localized',
+          From: 'whatsapp:+15125551234',
+          Body: language === 'es' ? 'Trabajos' : 'Jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const templateInsert = mockQuery.mock.calls.find(([sql]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && /content_template/i.test(sql as string),
+      );
+      expect(templateInsert).toBeDefined();
+      const variables = (templateInsert![1] as unknown[])[3] as Record<string, string>;
+      return variables['4'];
+    }
+
+    it('renders Spanish structured pay text in the job template for an ES worker', async () => {
+      const pay = await runJobsKeywordWithSingleJob('es', {
+        id: 'job-drywall', title: 'Drywall finisher', company: 'FinishPro', location: 'El Paso, TX',
+        pay: '$30/hr', pay_min: 15, pay_max: 20, pay_interval: 'hourly',
+      });
+      expect(pay).toBe('$15-$20/hora');
+    });
+
+    it('renders English structured pay text in the job template for an EN worker', async () => {
+      const pay = await runJobsKeywordWithSingleJob('en', {
+        id: 'job-drywall', title: 'Drywall finisher', company: 'FinishPro', location: 'El Paso, TX',
+        pay: '$30/hr', pay_min: 15, pay_max: 20, pay_interval: 'hourly',
+      });
+      expect(pay).toBe('$15-$20/hour');
+    });
+
+    it('falls back to the raw legacy pay string when structured fields are all null', async () => {
+      const pay = await runJobsKeywordWithSingleJob('es', {
+        id: 'job-legacy', title: 'Legacy job', company: 'OldCo', location: 'El Paso, TX',
+        pay_min: null, pay_max: null, pay_interval: null, pay_raw: 'Negotiable',
+      });
+      expect(pay).toBe('Negotiable');
+    });
+
+    it('falls back to a localized "not specified" placeholder when everything is null', async () => {
+      const esPay = await runJobsKeywordWithSingleJob('es', {
+        id: 'job-blank', title: 'Blank job', company: 'NoCo', location: 'El Paso, TX',
+        pay_min: null, pay_max: null, pay_interval: null, pay_raw: null,
+      });
+      expect(esPay).toBe('Pago no especificado');
+    });
+
+    it('falls back to the English "not specified" placeholder for an EN worker with no pay data', async () => {
+      const enPay = await runJobsKeywordWithSingleJob('en', {
+        id: 'job-blank', title: 'Blank job', company: 'NoCo', location: 'El Paso, TX',
+        pay_min: null, pay_max: null, pay_interval: null, pay_raw: null,
+      });
+      expect(enPay).toBe('Pay not specified');
+    });
+
     it('typed accept uses the stored recent job id', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -1454,6 +1538,93 @@ describe('Processor Lambda', () => {
 
       const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
       expect(applicationInsert).toEqual(['job-1', 'user-1']);
+    });
+
+    // Task 4 (WhatsApp pay localization): the "<n> info"/"<n> informacion"
+    // job-details text block used to COALESCE(pay, 'Pay not specified') in
+    // SQL -- an English fallback even for a Spanish conversation. It now
+    // renders via the same structured-first/legacy-second/localized-third
+    // fallback chain as the job template.
+    async function runTypedInfoAction(
+      language: 'en' | 'es',
+      jobRow: Record<string, unknown>,
+    ): Promise<string> {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-info' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            language,
+            state_context: { recent_jobs: ['job-1'] },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+        .mockResolvedValueOnce({ rowCount: 1, rows: [jobRow] }) // job lookup
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox job-details text
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      // `parseTypedJobAction` (flows.ts) only recognizes the literal verb
+      // "info" -- there is no separate Spanish verb for it -- so both
+      // locales are exercised through the same typed command text; the
+      // conversation's stored language is what drives the localized reply.
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-info',
+          From: 'whatsapp:+15125551234',
+          Body: '1 info',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const textInsert = mockQuery.mock.calls.find(([sql, params]) =>
+        /INSERT INTO whatsapp_outbox/i.test(sql as string)
+        && Array.isArray(params)
+        && typeof params[2] === 'string'
+        && (params[2] as string).includes(jobRow.title as string),
+      );
+      expect(textInsert).toBeDefined();
+      return (textInsert![1] as unknown[])[2] as string;
+    }
+
+    it('renders Spanish structured pay text in the job-details block for an ES worker', async () => {
+      const body = await runTypedInfoAction('es', {
+        id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso',
+        pay_min: 15, pay_max: 20, pay_interval: 'hourly', pay_raw: '$25/hr',
+      });
+      expect(body).toContain('$15-$20/hora');
+      expect(body).toContain('Detalles del trabajo');
+    });
+
+    it('renders English structured pay text in the job-details block for an EN worker', async () => {
+      const body = await runTypedInfoAction('en', {
+        id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso',
+        pay_min: 15, pay_max: 20, pay_interval: 'hourly', pay_raw: '$25/hr',
+      });
+      expect(body).toContain('$15-$20/hour');
+      expect(body).toContain('Job details');
+    });
+
+    it('falls back to the raw legacy pay string in the job-details block when structured fields are null', async () => {
+      const body = await runTypedInfoAction('es', {
+        id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso',
+        pay_min: null, pay_max: null, pay_interval: null, pay_raw: 'Negociable',
+      });
+      expect(body).toContain('Negociable');
+    });
+
+    it('falls back to a localized "not specified" placeholder in the job-details block when everything is null', async () => {
+      const esBody = await runTypedInfoAction('es', {
+        id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso',
+        pay_min: null, pay_max: null, pay_interval: null, pay_raw: null,
+      });
+      expect(esBody).toContain('Pago no especificado');
     });
 
     // §4.2a: relaying a non-OTP reply while awaiting_otp is CONVERSATION-SCOPED.

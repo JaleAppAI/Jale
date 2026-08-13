@@ -124,7 +124,13 @@ export type ReleaseRenderRequest =
         title: string;
         companyName: string;
         location: string | null;
+        /** Legacy free-text `jobs.pay`, RAW -- not pre-coalesced to an
+         * English placeholder. Used only when payMin/payMax are both null
+         * (Task 4, WhatsApp pay localization). */
         pay: string | null;
+        payMin?: number | null;
+        payMax?: number | null;
+        payInterval?: string | null;
       } | null;
     }
   | {
@@ -136,6 +142,12 @@ export type ReleaseRenderRequest =
         title: string;
         companyName: string;
         score: number;
+        /** Additive (Task 4, WhatsApp pay localization). */
+        location?: string | null;
+        pay?: string | null;
+        payMin?: number | null;
+        payMax?: number | null;
+        payInterval?: string | null;
       }>;
     }
   | {
