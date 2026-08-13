@@ -183,6 +183,60 @@ describe('ApiStack', () => {
     });
   });
 
+  // ── T-B2: GET /pay-reference (recommended-pay lookup) ──────────────────
+
+  test('Pay reference Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Recommended-pay reference lookup endpoint',
+    });
+  });
+
+  test('pay-reference path-part resource exists directly off the RestApi root', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'pay-reference' });
+  });
+
+  test('GET /pay-reference is protected by the DualAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('DualAuthorizer'),
+      }),
+    });
+  });
+
+  test('at least two methods use the DualAuthorizer: POST /legal/accept and GET /pay-reference', () => {
+    // LegalStack's POST /legal/accept was the only DualAuthorizer consumer
+    // before T-B2, which adds a second. Deliberately >= 2, not an exact
+    // count: a concurrent task may add its own dual-auth route later, and
+    // that isn't this test's invariant to police -- the per-method
+    // DualAuthorizer assertion above already covers "my route is dual-auth".
+    const methods = template.findResources('AWS::ApiGateway::Method', {
+      Properties: {
+        AuthorizationType: 'COGNITO_USER_POOLS',
+        AuthorizerId: Match.objectLike({
+          Ref: Match.stringLikeRegexp('DualAuthorizer'),
+        }),
+      },
+    });
+    expect(Object.keys(methods).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test('centralized MethodSettings includes exactly one GET /pay-reference throttle entry', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/pay-reference' && s.HttpMethod === 'GET',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 10,
+      ThrottlingRateLimit: 5,
+    }));
+  });
+
   test('Employer jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Employer jobs list endpoint',

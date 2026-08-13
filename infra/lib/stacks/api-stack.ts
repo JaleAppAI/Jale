@@ -170,6 +170,23 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
+    // Pay reference lookup — dual auth (worker + employer), DB access (T-B2).
+    // Reads migration 070's wage_references / city_cbsa_crosswalk tables
+    // (T-B1); no REQUIRED_TOS_VERSION env var, since the handler mirrors
+    // legal/accept-tos.ts's convention of not calling checkCompliance() for
+    // this dual-auth route.
+    const payReferenceLambda = new JaleLambdaFunction(this, 'PayReferenceLambda', {
+      entry: path.join(__dirname, '../../lambda/api/pay-reference.ts'),
+      description: 'Recommended-pay reference lookup endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(payReferenceLambda.function);
+
     // Worker profile — worker auth, DB access
     const workerProfileLambda = new JaleLambdaFunction(this, 'WorkerProfileLambda', {
       entry: path.join(__dirname, '../../lambda/api/worker-profile.ts'),
@@ -627,6 +644,18 @@ export class ApiStack extends cdk.Stack {
     const healthResource = this.api.root.addResource('health');
     healthResource.addMethod('GET', new apigateway.LambdaIntegration(healthLambda.function));
 
+    // GET /pay-reference — recommended-pay lookup (T-B2). Dual-authenticated:
+    // both workers and employers call this (the only other dualAuthorizer
+    // consumer is LegalStack's POST /legal/accept). Public BLS statistics
+    // only, no per-user data, so RLS context is set for standard transaction
+    // hygiene but is not load-bearing here (wage_references /
+    // city_cbsa_crosswalk grant jale_admin a flat read-all policy).
+    const payReferenceResource = this.api.root.addResource('pay-reference');
+    payReferenceResource.addMethod('GET', new apigateway.LambdaIntegration(payReferenceLambda.function), {
+      authorizer: this.dualAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
     // GET /worker/profile
     // PATCH /worker/profile
     // Exported as public readonly so ReferralsStack (and other downstream
@@ -970,6 +999,16 @@ export class ApiStack extends cdk.Stack {
         {
           ResourcePath: '/public/jobs/{code}/apply-intent',
           HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
+        // T-B2: GET /pay-reference — dual-authenticated (worker+employer)
+        // recommended-pay lookup. Modest throttle: read-only against a
+        // small reference table, but reachable by any authenticated worker
+        // or employer, so still worth capping rather than leaving unbounded.
+        {
+          ResourcePath: '/pay-reference',
+          HttpMethod: 'GET',
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,
         },
