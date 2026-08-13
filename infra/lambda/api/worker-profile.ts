@@ -53,6 +53,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     const result = await client.query(
       `SELECT u.id, u.user_type, u.email, u.phone, u.full_name, u.tenant_id, u.created_at,
+          u.main_trade, u.main_trade_other,
           ARRAY(
             SELECT ws.skill
             FROM worker_skills ws
