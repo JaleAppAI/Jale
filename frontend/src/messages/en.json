@@ -89,7 +89,13 @@
     "interval_daily": "day",
     "interval_weekly": "wk",
     "interval_monthly": "mo",
-    "interval_fixed": "fixed"
+    "interval_fixed": "fixed",
+    "reference_employer_intro": "Starting point:",
+    "reference_worker_profile_intro": "Typical pay for your trade:",
+    "reference_worker_job_intro": "For comparison:",
+    "reference_headline": "Typical pay for {trade} in {area}: {min}–{max}/hr",
+    "reference_median": "(median {amount})",
+    "reference_source": "Source: U.S. Bureau of Labor Statistics, OEWS, {vintage}"
   },
   "header": {
     "language_toggle": "Español",

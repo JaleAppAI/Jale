@@ -89,7 +89,13 @@
     "interval_daily": "día",
     "interval_weekly": "semana",
     "interval_monthly": "mes",
-    "interval_fixed": "fijo"
+    "interval_fixed": "fijo",
+    "reference_employer_intro": "Punto de partida:",
+    "reference_worker_profile_intro": "Pago típico para tu oficio:",
+    "reference_worker_job_intro": "Para comparar:",
+    "reference_headline": "Pago típico para {trade} en {area}: {min}–{max}/hora",
+    "reference_median": "(mediana {amount})",
+    "reference_source": "Fuente: Oficina de Estadísticas Laborales de EE. UU. (BLS), OEWS, {vintage}"
   },
   "header": {
     "language_toggle": "English",

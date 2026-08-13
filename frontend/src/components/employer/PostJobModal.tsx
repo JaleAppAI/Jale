@@ -21,6 +21,7 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
+import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { locationDatasetFailed } from '@/lib/location-search';
@@ -517,6 +518,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               ))}
             </Select>
           </Field>
+          <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
               <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />

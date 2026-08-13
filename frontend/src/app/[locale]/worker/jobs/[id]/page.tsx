@@ -18,6 +18,7 @@ import { MatchScoreBadge } from '@/components/ui/match-signals';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
 import { apiFetch, isLegalWallError } from '@/lib/api';
@@ -378,6 +379,19 @@ export default function WorkerJobDetailPage() {
                         <p className="mt-1 text-2xl font-extrabold tabular-nums tracking-tight text-[var(--jale-ink)] md:text-3xl">
                           {pay}
                         </p>
+                        {/* Comparison against the job's own trade + city
+                            (migration 065's city_key, now in
+                            worker-jobs-detail's SELECT). Nullable-safe: an
+                            older job / free-typed location with no city_key,
+                            or no reference for the trade, and
+                            PayReferenceHint's own guard renders nothing. */}
+                        <div className="mt-2">
+                          <PayReferenceHint
+                            trade={job.trade_category ?? ''}
+                            cityKey={job.city_key}
+                            variant="worker-job"
+                          />
+                        </div>
                       </div>
                     ) : null}
 

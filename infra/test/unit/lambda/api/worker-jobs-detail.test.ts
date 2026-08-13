@@ -91,6 +91,23 @@ describe('worker-jobs-detail', () => {
     expect(jobsSql).toContain('public_listing_enabled');
   });
 
+  it('exposes city_key on the job detail response', async () => {
+    const job = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+                  required_docs: [], created_at: 'ts', company_name: 'Acme', city_key: 'austin-tx' };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+    const res = await handler(baseEvent);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.city_key).toBe('austin-tx');
+    const jobsSql = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))?.[0];
+    expect(jobsSql).toContain('j.city_key');
+  });
+
   it('normalizes nullable required_docs for the frontend contract', async () => {
     const job = {
       id: 'job-1',
