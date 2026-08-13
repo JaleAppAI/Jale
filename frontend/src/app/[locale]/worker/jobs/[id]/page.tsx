@@ -18,6 +18,7 @@ import { MatchScoreBadge } from '@/components/ui/match-signals';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { PayReferenceHint } from '@/components/employer/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
 import { apiFetch, isLegalWallError } from '@/lib/api';
@@ -378,6 +379,21 @@ export default function WorkerJobDetailPage() {
                         <p className="mt-1 text-2xl font-extrabold tabular-nums tracking-tight text-[var(--jale-ink)] md:text-3xl">
                           {pay}
                         </p>
+                        {/* `JobDetail` (worker-jobs-detail's SELECT list) does not
+                            carry `city_key` -- only the free-text `location` --
+                            so this can never actually fetch today. Wired here
+                            anyway (job's own trade_category, no city yet) so it
+                            starts working the moment the backend adds the
+                            column to that SELECT; PayReferenceHint's own guard
+                            keeps it silent (no city -> no fetch, no render)
+                            until then. */}
+                        <div className="mt-2">
+                          <PayReferenceHint
+                            trade={job.trade_category ?? ''}
+                            cityKey={undefined}
+                            variant="worker-job"
+                          />
+                        </div>
                       </div>
                     ) : null}
 

@@ -18,6 +18,7 @@ import { KVList } from '@/components/ui/kv-list';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
+import { PayReferenceHint } from '@/components/employer/PayReferenceHint';
 import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType } from '@/lib/api/worker';
 import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/referral-return';
@@ -47,6 +48,8 @@ function toWorkerProfile(p: Record<string, unknown>): WorkerProfileData {
         years_experience: raw.years_experience, location: raw.location, bio: raw.bio,
         certifications: raw.certifications ?? [],
         preferred_cities: raw.preferred_cities ?? [],
+        main_trade: raw.main_trade ?? null,
+        main_trade_other: raw.main_trade_other ?? null,
     };
 }
 
@@ -215,10 +218,20 @@ export default function WorkerProfilePage() {
                                             {
                                                 label: t('edit.preferred_cities_label'),
                                                 value: (
-                                                    <BadgeList
-                                                        items={(profile.preferred_cities ?? []).map((c) => `${c.city}, ${c.state}`)}
-                                                        emptyLabel={t('empty_preferred_cities')}
-                                                    />
+                                                    <div className="flex flex-col items-end gap-1.5">
+                                                        <BadgeList
+                                                            items={(profile.preferred_cities ?? []).map((c) => `${c.city}, ${c.state}`)}
+                                                            emptyLabel={t('empty_preferred_cities')}
+                                                        />
+                                                        {/* Nullable-safe: no main_trade, or no preferred city yet,
+                                                            and PayReferenceHint's own guard (blank/'other' trade,
+                                                            no city_key) renders nothing. */}
+                                                        <PayReferenceHint
+                                                            trade={profile.main_trade ?? ''}
+                                                            cityKey={profile.preferred_cities?.[0]?.city_key}
+                                                            variant="worker-profile"
+                                                        />
+                                                    </div>
                                                 ),
                                             },
                                             { label: t('field_bio'), value: profile.bio || t('empty_bio') },

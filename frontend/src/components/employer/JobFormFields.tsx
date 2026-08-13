@@ -7,6 +7,7 @@ import {
   type DocType, type PayInterval, type JobForm, type JobFormLocation,
 } from '@/lib/job-form';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
+import { PayReferenceHint } from '@/components/employer/PayReferenceHint';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
@@ -136,6 +137,7 @@ export function JobFormFields({
           {PAY_INTERVALS.map((interval) => (<option key={interval} value={interval}>{t(`modal.pay_interval_option.${interval}`)}</option>))}
         </Select>
       </Field>
+      <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
       <div className="grid gap-3 md:grid-cols-2">
         {showStartDate && (
           <Field label={t('modal.start_date')}><Input type="date" className="tabular-nums" value={form.start_date} onChange={(e) => onUpdate('start_date', e.target.value)} /></Field>

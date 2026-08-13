@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
+import { PayReferenceHint } from '@/components/employer/PayReferenceHint';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
@@ -517,6 +518,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               ))}
             </Select>
           </Field>
+          <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
               <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
