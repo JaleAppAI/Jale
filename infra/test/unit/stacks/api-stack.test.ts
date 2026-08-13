@@ -716,6 +716,89 @@ describe('ApiStack', () => {
   test('referrals path-part resource exists: referrals', () => {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'referrals' });
   });
+
+  // ── T-A1 (A-5): employer AI job-description generation endpoint ──────────
+
+  test('Employer generate-description Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer generate description endpoint',
+    });
+  });
+
+  test('POST /employer/jobs/generate-description exists with EmployerAuthorizer', () => {
+    const rootId = restApiRootLogicalId();
+    const [employerLogicalId] = childrenOf(rootId, 'employer')[0];
+    const [employerJobsLogicalId] = childrenOf(employerLogicalId, 'jobs')[0];
+    const [generateDescLogicalId] = childrenOf(employerJobsLogicalId, 'generate-description')[0];
+    expect(generateDescLogicalId).toBeDefined();
+
+    const methods = template.findResources('AWS::ApiGateway::Method', {
+      Properties: { HttpMethod: 'POST' },
+    });
+    const postOnGenerateDesc = Object.values(methods).filter((m: any) => {
+      const parentRef = m.Properties?.ResourceId?.['Fn::GetAtt']?.[0] ?? m.Properties?.ResourceId?.Ref;
+      return parentRef === generateDescLogicalId;
+    });
+    expect(postOnGenerateDesc).toHaveLength(1);
+    expect((postOnGenerateDesc[0] as any).Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+    // Match.objectLike is a CDK assertion-library matcher, only meaningful
+    // inside template.hasResourceProperties -- against a plain extracted
+    // value, a direct Ref-string check is what's actually needed here.
+    expect((postOnGenerateDesc[0] as any).Properties.AuthorizerId.Ref).toMatch(/EmployerAuthorizer/);
+  });
+
+  test('the generate-description Lambda is granted a scoped bedrock:InvokeModel policy', () => {
+    const policies = template.findResources('AWS::IAM::Policy');
+    const bedrockStatements = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => statement.Action === 'bedrock:InvokeModel');
+    expect(bedrockStatements.length).toBeGreaterThanOrEqual(1);
+    for (const statement of bedrockStatements) {
+      expect(statement.Effect).toBe('Allow');
+    }
+  });
+
+  test('centralized MethodSettings includes exactly one POST /employer/jobs/generate-description throttle entry (burst 5, rate 2)', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/employer/jobs/generate-description' && s.HttpMethod === 'POST',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 5,
+      ThrottlingRateLimit: 2,
+    }));
+  });
+
+  test('the generation-cap DynamoDB table is a TTL-enabled on-demand table keyed by pk', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'pk', KeyType: 'HASH' },
+      ],
+      TimeToLiveSpecification: {
+        AttributeName: 'expiresAt',
+        Enabled: true,
+      },
+    });
+  });
+
+  test('the generate-description Lambda has GENERATION_CAP_TABLE, GENERATION_DAILY_LIMIT, and BEDROCK_MODEL_ID env vars', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer generate description endpoint',
+      Environment: {
+        Variables: Match.objectLike({
+          GENERATION_CAP_TABLE: Match.anyValue(),
+          GENERATION_DAILY_LIMIT: Match.anyValue(),
+          BEDROCK_MODEL_ID: Match.anyValue(),
+          ALLOWED_ORIGIN: Match.anyValue(),
+        }),
+      },
+    });
+  });
 });
 
 describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () => {

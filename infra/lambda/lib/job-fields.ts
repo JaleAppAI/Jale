@@ -60,6 +60,14 @@ const MAX_REQUIRED_EXPERIENCE_YEARS = 80;
 const MAX_REQUIRED_EXPERIENCE_MONTHS = MAX_REQUIRED_EXPERIENCE_YEARS * 12;
 const MAX_CERTIFICATIONS = 20;
 const MAX_CERTIFICATION_LENGTH = 200;
+// A-7 / T-A1 ride-along: shared by employer-jobs-create, employer-jobs-update,
+// and employer-templates-save (all three call parseJobFields with the full
+// request body), so this one check caps `description` on every write path
+// without touching any of those three handlers. Measures the TRIMMED length
+// to match the AI generation endpoint's own <=4000-trimmed-chars contract --
+// a generated description that just clears that check must not then fail
+// here on trailing whitespace alone.
+const MAX_DESCRIPTION_LENGTH = 4000;
 
 function optionalInteger(value: unknown, fieldName: string, maxValue?: number): { ok: true; value: number | null } | { ok: false; error: string } {
   if (value === undefined || value === null || value === '') return { ok: true, value: null };
@@ -99,6 +107,10 @@ export function parseRequiredDocs(value: unknown): { ok: true; value: string[] }
 }
 
 export function parseJobFields(body: Record<string, unknown>): ParseJobFieldsResult {
+  if (typeof body.description === 'string' && body.description.trim().length > MAX_DESCRIPTION_LENGTH) {
+    return { ok: false, error: 'invalid_description' };
+  }
+
   const payMin = optionalInteger(body.pay_min, 'pay_min', MAX_PAY_DOLLARS);
   if (!payMin.ok) return payMin;
   const payMax = optionalInteger(body.pay_max, 'pay_max', MAX_PAY_DOLLARS);
