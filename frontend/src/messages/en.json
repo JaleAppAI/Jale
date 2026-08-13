@@ -556,11 +556,14 @@
       "applicant_stub_1": "New applicants",
       "applicant_stub_2": "Ready to contact",
       "applicant_stub_3": "Documents pending",
-      "trust_title": "Trust Match",
-      "trust_body": "Match quality is available inside job details today. Dashboard-wide recommendations are reserved for the proactive matching backend.",
-      "hiring_progress": "Hiring progress",
-      "open_roles": "Open roles",
-      "applicant_flow": "Applicant flow",
+      "job_progress_title": "Job Progress",
+      "positions_filled": "Positions filled",
+      "positions_open_hint": "{count, plural, one {# role open} other {# roles open}}",
+      "time_to_fill_title": "Time to Fill",
+      "days_posted": "Days posted",
+      "time_to_fill_hint": "{title}",
+      "no_open_jobs": "No open jobs right now",
+      "posted_on": "Posted {date}",
       "whatsapp_title": "WhatsApp thread",
       "whatsapp_body": "Employer messages are live. Worker replies continue through WhatsApp and stay tied to the job conversation.",
       "open_messages": "Open messages",
@@ -883,6 +886,10 @@
       "total": "Total applications",
       "active": "Active",
       "hired": "Hired"
+    },
+    "job_status": {
+      "closed": "Closed",
+      "filled": "Filled"
     }
   },
   "worker_home": {
@@ -1046,8 +1053,14 @@
       "close": "Mark closed",
       "edit": "Edit job",
       "delete": "Delete",
-      "delete_error_hired": "This job has hired workers and can't be deleted. Close it instead."
+      "delete_error_hired": "This job has hired workers and can't be deleted. Close it instead.",
+      "close_confirm_title": "Close this job?",
+      "close_confirm_body": "\"{title}\" will stop accepting applications and leave workers' job feeds. Workers who already applied will still see the posting, marked as closed. You can reopen it later, subject to your plan's active-job limit.",
+      "close_confirm_cta": "Close job",
+      "close_cancel": "Cancel",
+      "close_pending": "Closing…"
     },
+    "closed_notice": "This job is not active. The public link now shows a \"no longer accepting applications\" notice instead of the posting.",
     "metrics": {
       "applicants": "Applicants",
       "hired": "Hired",

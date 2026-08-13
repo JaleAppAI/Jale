@@ -13,10 +13,12 @@ import { ListPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
+import { JobStatusBadge } from '@/components/ui/badge';
 import { getApplications } from '@/lib/api/worker';
 import { formatLongDate } from '@/lib/date';
 import type { Application } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
+import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
 export const dynamic = 'force-dynamic';
 
@@ -122,38 +124,48 @@ export default function WorkerApplicationsPage() {
                         .join(' ')}
                       onAnimationEnd={onCascadeEnd}
                     >
-                      {list.map((a) => (
-                        <li key={a.application_id}>
-                          <Link
-                            href={`/worker/jobs/${a.job_id}`}
-                            className="flex items-start gap-3 px-4 py-4 transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] md:px-5"
-                          >
-                            <InitialsAvatar
-                              name={a.company_name ?? ''}
-                              size={36}
-                              square
-                              fallback="JB"
-                              className="mt-0.5"
-                            />
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-start justify-between gap-3">
-                                <p className="min-w-0 text-sm font-bold leading-snug text-[var(--jale-ink)]">
-                                  {a.job_title}
+                      {list.map((a) => {
+                        const jobStatusBadge = visibleJobStatusBadge(a.job_status);
+                        return (
+                          <li key={a.application_id}>
+                            <Link
+                              href={`/worker/jobs/${a.job_id}`}
+                              className="flex items-start gap-3 px-4 py-4 transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)] md:px-5"
+                            >
+                              <InitialsAvatar
+                                name={a.company_name ?? ''}
+                                size={36}
+                                square
+                                fallback="JB"
+                                className="mt-0.5"
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-start justify-between gap-3">
+                                  <p className="min-w-0 text-sm font-bold leading-snug text-[var(--jale-ink)]">
+                                    {a.job_title}
+                                  </p>
+                                  <span className="mt-0.5 shrink-0">
+                                    <ApplicationStatusChip status={a.status} />
+                                  </span>
+                                </div>
+                                <p className="mt-0.5 text-xs font-medium text-[var(--jale-ink-2)]">
+                                  {a.company_name}
                                 </p>
-                                <span className="mt-0.5 shrink-0">
-                                  <ApplicationStatusChip status={a.status} />
-                                </span>
+                                {jobStatusBadge ? (
+                                  <p className="mt-1">
+                                    <JobStatusBadge status={jobStatusBadge}>
+                                      {t(`job_status.${jobStatusBadge}`)}
+                                    </JobStatusBadge>
+                                  </p>
+                                ) : null}
+                                <p className="mt-1 text-xs font-medium tabular-nums text-[var(--jale-ink-2)]">
+                                  {t('applied')}: {formatLongDate(a.applied_at, locale) ?? a.applied_at}
+                                </p>
                               </div>
-                              <p className="mt-0.5 text-xs font-medium text-[var(--jale-ink-2)]">
-                                {a.company_name}
-                              </p>
-                              <p className="mt-1 text-xs font-medium tabular-nums text-[var(--jale-ink-2)]">
-                                {t('applied')}: {formatLongDate(a.applied_at, locale) ?? a.applied_at}
-                              </p>
-                            </div>
-                          </Link>
-                        </li>
-                      ))}
+                            </Link>
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </DashboardPanel>

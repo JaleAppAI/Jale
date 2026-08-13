@@ -69,7 +69,7 @@ export const handler = async (
   try {
     // 1. Look up the job
     const jobResult = await client.query<JobRow>(
-      `SELECT id, title, company, location, pay, pay_min, pay_max, pay_interval FROM jobs WHERE id = $1`,
+      `SELECT id, title, company, location, pay, pay_min, pay_max, pay_interval FROM jobs WHERE id = $1 AND status = 'active'`,
       [event.jobId],
     );
     if (jobResult.rowCount === 0) {

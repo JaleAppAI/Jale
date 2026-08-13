@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import type { JobStatus } from '@/lib/status';
 import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +17,13 @@ interface PublicListingCardProps {
     jobId: string;
     /** The job's current opt-in state, from the detail fetch. */
     initialEnabled: boolean;
+    /**
+     * The job's status from the detail fetch. When not 'active', the public
+     * page serves a "no longer accepting applications" notice regardless of
+     * the listing toggle (public-job.ts flattens every non-active status),
+     * and this card must say so instead of implying the posting is live.
+     */
+    jobStatus: JobStatus;
     jobTitle: string;
     /**
      * The job's short public code (/j/{publicCode}). Optional so callers that
@@ -62,6 +70,7 @@ const COPIED_RESET_MS = 2000;
 export function PublicListingCard({
     jobId,
     initialEnabled,
+    jobStatus,
     jobTitle,
     publicCode,
     onEnabledChange,
@@ -263,6 +272,10 @@ export function PublicListingCard({
                 <Badge tone={enabled ? 'success' : 'neutral'}>
                     {enabled ? t('enabled') : t('disabled')}
                 </Badge>
+
+                {jobStatus !== 'active' ? (
+                    <InlineFeedback tone="info">{t('closed_notice')}</InlineFeedback>
+                ) : null}
 
                 {toggleError ? (
                     <InlineFeedback tone="danger" onDismiss={() => setToggleError(null)}>
