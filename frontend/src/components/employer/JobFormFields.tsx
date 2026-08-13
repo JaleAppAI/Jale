@@ -1,10 +1,12 @@
 'use client';
 import type React from 'react';
+import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm, type JobFormLocation,
 } from '@/lib/job-form';
+import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
@@ -38,6 +40,11 @@ export function JobFormFields({
   showStartDate = true, locked = false, minWorkers = 1, titleRef,
 }: JobFormFieldsProps) {
   const t = useTranslations('employer_dashboard');
+
+  // Freezes the description Textarea while `DescriptionHelper`'s Generate
+  // call is in flight -- otherwise a manual edit made mid-flight would be
+  // silently overwritten seconds later by the eventual success response.
+  const [descriptionGenerating, setDescriptionGenerating] = useState(false);
 
   const toggleDoc = (doc: DocType) => {
     if (locked) return;
@@ -108,7 +115,17 @@ export function JobFormFields({
         </Select>
       </Field>
       <Field label={t('modal.job_description')}>
-        <Textarea rows={4} value={form.description} onChange={(e) => onUpdate('description', e.target.value)} />
+        <Textarea
+          rows={4}
+          value={form.description}
+          onChange={(e) => onUpdate('description', e.target.value)}
+          disabled={descriptionGenerating}
+        />
+        <DescriptionHelper
+          form={form}
+          onDescriptionChange={(value) => onUpdate('description', value)}
+          onGeneratingChange={setDescriptionGenerating}
+        />
       </Field>
       <div className="grid gap-3 md:grid-cols-2">
         <Field label={t('modal.pay_min')}><Input type="number" min={0} className="tabular-nums" value={form.pay_min} onChange={(e) => onUpdate('pay_min', e.target.value)} /></Field>
