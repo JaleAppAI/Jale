@@ -247,7 +247,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     } catch {
       // Never log the prompt, job specifics, or model response -- a
       // metric-tagged reason code only (mirrors trust-scorer.ts's redaction).
-      console.error(JSON.stringify({ metric: 'GenerateDescriptionParseFailure', reason: 'non_json_model_output' }));
+      // stopReason is Bedrock-provided model metadata (e.g. 'max_tokens' vs
+      // 'end_turn'), never response content, so it's safe to include here --
+      // it distinguishes "the model got cut off" from "the model produced
+      // malformed JSON on its own."
+      console.error(JSON.stringify({
+        metric: 'GenerateDescriptionParseFailure',
+        reason: 'non_json_model_output',
+        stopReason: response.stopReason,
+      }));
       return { statusCode: 502, headers: CORS_HEADERS, body: JSON.stringify({ error: 'generation_failed' }) };
     }
 

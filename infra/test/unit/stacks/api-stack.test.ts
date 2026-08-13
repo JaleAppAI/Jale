@@ -9,9 +9,11 @@ import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { BillingStack } from '../../../lib/stacks/billing-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
+import { bedrockArns } from '../../../lib/bedrock-arns';
 
 describe('ApiStack', () => {
   let template: Template;
+  let apiStack: ApiStack;
 
   beforeAll(() => {
     const app = new cdk.App({
@@ -87,6 +89,7 @@ describe('ApiStack', () => {
       employerAuthorizer: api.employerAuthorizer,
       employerJobResource: api.employerJobResource,
     });
+    apiStack = api;
     template = Template.fromStack(api);
   });
 
@@ -747,15 +750,28 @@ describe('ApiStack', () => {
     expect((postOnGenerateDesc[0] as any).Properties.AuthorizerId.Ref).toMatch(/EmployerAuthorizer/);
   });
 
-  test('the generate-description Lambda is granted a scoped bedrock:InvokeModel policy', () => {
+  test('the generate-description Lambda role (specifically) is granted bedrock:InvokeModel scoped to the exact bedrockArns() list, not a wildcard', () => {
+    // Tied to the SPECIFIC Lambda's role -- not just "some bedrock statement
+    // exists somewhere in the stack" (which `resources: ['*']` would also
+    // satisfy). JaleLambdaFunction names the underlying NodejsFunction
+    // construct 'Function', so this Lambda's default policy logical id is
+    // prefixed EmployerGenerateDescriptionLambdaFunctionServiceRoleDefaultPolicy.
     const policies = template.findResources('AWS::IAM::Policy');
-    const bedrockStatements = Object.values(policies)
-      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
-      .filter((statement: any) => statement.Action === 'bedrock:InvokeModel');
-    expect(bedrockStatements.length).toBeGreaterThanOrEqual(1);
-    for (const statement of bedrockStatements) {
-      expect(statement.Effect).toBe('Allow');
-    }
+    const matchingKeys = Object.keys(policies).filter((key) =>
+      key.startsWith('EmployerGenerateDescriptionLambdaFunctionServiceRoleDefaultPolicy'));
+    expect(matchingKeys).toHaveLength(1);
+
+    const statements = (policies[matchingKeys[0]] as any).Properties.PolicyDocument.Statement as any[];
+    const bedrockStatement = statements.find((s) => s.Action === 'bedrock:InvokeModel');
+    expect(bedrockStatement).toBeDefined();
+    expect(bedrockStatement.Effect).toBe('Allow');
+
+    // Pin the exact ARN list bedrockArns() produces for this stack's actual
+    // (unresolved, token-bearing) region/account -- mirrors ai-stack.test.ts's
+    // pinned-ARN assertion, resolved through the real Stack so Fn::Join/Ref
+    // token shapes match the synthesized template exactly.
+    const expectedResources = cdk.Stack.of(apiStack).resolve(bedrockArns(apiStack.region, apiStack.account));
+    expect(bedrockStatement.Resource).toEqual(expectedResources);
   });
 
   test('centralized MethodSettings includes exactly one POST /employer/jobs/generate-description throttle entry (burst 5, rate 2)', () => {

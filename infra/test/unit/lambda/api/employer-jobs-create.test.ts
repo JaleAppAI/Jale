@@ -130,6 +130,26 @@ describe('employer-jobs-create', () => {
     expect(res.statusCode).toBe(201);
   });
 
+  it('persists a TRIMMED description, so surrounding whitespace cannot smuggle extra characters past the 4000-char cap into storage', async () => {
+    // parseJobFields validates the TRIMMED length (4000, passes), but a raw
+    // pass-through would previously store this ~1MB whitespace-padded value
+    // verbatim. Assert on the actual INSERT bind param, not just the status
+    // code -- a 201 alone would not have caught the bug.
+    const padded = `  ${'A'.repeat(4000)}  `;
+    const res = await handler(makeEvent({ description: padded }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO jobs'),
+    );
+    expect(insertCall).toBeDefined();
+    const params = insertCall![1] as unknown[];
+    // Column order in the INSERT: employer_id, title, location, pay,
+    // job_type, description, ... -- description is bind param index 5.
+    expect(params[5]).toBe('A'.repeat(4000));
+    expect((params[5] as string).length).toBe(4000);
+  });
+
   // ---------------------------------------------------------------------------
   // Entitlement gate — A7 tests
   // ---------------------------------------------------------------------------
