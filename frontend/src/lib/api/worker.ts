@@ -120,6 +120,10 @@ export type JobDetail = Job & {
    * treat absence as false (fail-closed): the share panel must not render
    * for a job the employer never opted into public listing for. */
   public_listing_enabled?: boolean;
+  /** City-picker identity (migration 065), added to `worker-jobs-detail`'s
+   * SELECT alongside `public_listing_enabled`. Null for a free-typed
+   * location that was never resolved to a picked city. */
+  city_key?: string | null;
 };
 
 export type Application = {

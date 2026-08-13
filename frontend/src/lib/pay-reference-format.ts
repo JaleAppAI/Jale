@@ -4,7 +4,21 @@
 // discipline as `lib/pay.ts`: a pure function over the API payload plus a
 // translator, unit-testable without a React/next-intl runtime.
 
+import { TRADE_CATEGORIES } from '@/lib/job-form';
 import type { PayTranslator } from '@/lib/pay';
+
+/**
+ * `trade_category` values `/pay-reference` can plausibly answer for.
+ * `'other'` IS a valid `trade_category` (it's in `TRADE_CATEGORIES`), but the
+ * backend has no reference row for it -- every request for it 404s
+ * `no_reference` -- so it is excluded here rather than round-tripped to a
+ * guaranteed failure. An empty string (no trade picked yet) is excluded too.
+ */
+const FETCHABLE_TRADES = new Set<string>(TRADE_CATEGORIES.filter((c) => c !== 'other'));
+
+export function isFetchableTradeCategory(trade: string): boolean {
+  return trade !== '' && FETCHABLE_TRADES.has(trade);
+}
 
 /** The `GET /pay-reference` 200 response shape. */
 export interface PayReferencePayload {

@@ -3,8 +3,7 @@ import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { getPayReference, type PayReferenceResponse } from '@/lib/api/payReference';
-import { TRADE_CATEGORIES } from '@/lib/job-form';
-import { formatPayReference, type PayReferenceVariant } from '@/lib/pay-reference-format';
+import { formatPayReference, isFetchableTradeCategory, type PayReferenceVariant } from '@/lib/pay-reference-format';
 
 interface PayReferenceHintProps {
   trade: string;
@@ -14,18 +13,17 @@ interface PayReferenceHintProps {
   variant?: PayReferenceVariant;
 }
 
-/** Every value the `trade` prop can validly ask `/pay-reference` about.
- *  `'other'` is excluded separately below -- it is a valid trade_category,
- *  but the backend has no reference row for it (404 `no_reference`), so
- *  there is no point round-tripping a request that can only ever fail. */
-const VALID_TRADES = new Set<string>(TRADE_CATEGORIES);
-
 /**
- * A small, quiet "typically earn $X–$Y/hr" reference, sourced from BLS OEWS
- * data via `GET /pay-reference`. Mounted on every surface that has both a
- * trade and a city to ask about: the employer job-creation forms
+ * A small, quiet "typical pay for {trade} in {area}" reference, sourced from
+ * BLS OEWS data via `GET /pay-reference`. Mounted on every surface that has
+ * both a trade and a city to ask about: the employer job-creation forms
  * (`JobFormFields`, `PostJobModal`), the worker profile page (near preferred
  * cities), and the worker job detail page (under the pay headline).
+ *
+ * DELIBERATELY lives at the top of `components/`, not under `employer/` or
+ * `worker/`: `/pay-reference` is a dual-audience endpoint (see
+ * `lib/api/payReference.ts`) and this is mounted from both surfaces, so
+ * neither audience-scoped directory is a non-arbitrary home for it.
  *
  * Host-agnostic like `DescriptionHelper`: it takes the trade/city it needs
  * and renders itself, nothing more. UX RULE, non-negotiable: a missing
@@ -41,7 +39,7 @@ export function PayReferenceHint({ trade, cityKey, variant = 'employer' }: PayRe
 
   const [reference, setReference] = useState<PayReferenceResponse | null>(null);
 
-  const canFetch = Boolean(idToken) && Boolean(cityKey) && trade !== '' && VALID_TRADES.has(trade);
+  const canFetch = Boolean(idToken) && Boolean(cityKey) && isFetchableTradeCategory(trade);
 
   useEffect(() => {
     // A prop change while a previous answer is showing (e.g. the employer

@@ -7,9 +7,9 @@ import {
   type DocType, type PayInterval, type JobForm, type JobFormLocation,
 } from '@/lib/job-form';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
-import { PayReferenceHint } from '@/components/employer/PayReferenceHint';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
+import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 

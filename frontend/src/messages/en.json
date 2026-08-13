@@ -93,7 +93,7 @@
     "reference_employer_intro": "Starting point:",
     "reference_worker_profile_intro": "Typical pay for your trade:",
     "reference_worker_job_intro": "For comparison:",
-    "reference_headline": "{trade} in {area} typically earn {min}–{max}/hr",
+    "reference_headline": "Typical pay for {trade} in {area}: {min}–{max}/hr",
     "reference_median": "(median {amount})",
     "reference_source": "Source: U.S. Bureau of Labor Statistics, OEWS, {vintage}"
   },

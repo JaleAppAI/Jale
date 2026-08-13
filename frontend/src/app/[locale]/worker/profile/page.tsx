@@ -18,7 +18,7 @@ import { KVList } from '@/components/ui/kv-list';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
-import { PayReferenceHint } from '@/components/employer/PayReferenceHint';
+import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType } from '@/lib/api/worker';
 import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/referral-return';
