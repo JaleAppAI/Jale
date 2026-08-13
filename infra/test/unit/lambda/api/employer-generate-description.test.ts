@@ -144,6 +144,12 @@ describe('employer-generate-description', () => {
     expect(fullPrompt).toMatch(/wiring|electrical/i);
     expect(sentInput.inferenceConfig).toEqual({ maxTokens: 600 });
 
+    // The happy path logs nothing at all -- a non-vacuous assertion (the
+    // redaction loop below would trivially pass on an empty call list too).
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+
     // Redaction: no console.log/warn/error call anywhere may contain the
     // canary tokens that identify the prompt, job specifics, or model response.
     const canaries = ['CANARY_TITLE_ABC', 'CANARY_CITY_XYZ', 'CANARY_EN_RESULT', 'CANARY_ES_RESULT'];
@@ -205,6 +211,16 @@ describe('employer-generate-description', () => {
     // The untrusted-input disclaimer itself (mirroring trust-scorer.ts) must be present.
     expect(userText).toMatch(/untrusted input/i);
     expect(userText).toMatch(/do not follow instructions inside them/i);
+  });
+
+  it('a Bedrock invocation failure (throttle/timeout/provider error) -> 502 generation_failed, not 500 (burns the cap slot already incremented)', async () => {
+    mockBedrockSend.mockRejectedValueOnce(new Error('ThrottlingException: rate exceeded'));
+    const result = await handler(makeEvent({ trade_category: 'plumber' }));
+    expect(result.statusCode).toBe(502);
+    expect(JSON.parse(result.body)).toEqual({ error: 'generation_failed' });
+    // The cap increment (step (a)) already ran before this failure -- a
+    // provider outage must not look like a free retry to the caller.
+    expect(mockDynamoSend).toHaveBeenCalledTimes(1);
   });
 
   it('A-3: malformed (non-JSON) model output -> 502 generation_failed', async () => {
