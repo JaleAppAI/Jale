@@ -1,10 +1,14 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 
@@ -47,6 +51,22 @@ export interface ReferralsStackProps extends cdk.StackProps {
    * toggle hangs off it. Same reuse-don't-redeclare rule as workerJobResource.
    */
   readonly employerJobResource: apigateway.Resource;
+  /**
+   * Existing monitored SNS topic for alarm actions — the SAME shared
+   * `whatsappAlarmTopicArn` context AiStack/WhatsAppStack read, reused here
+   * rather than a new topic (see `bin/jale-app.ts`).
+   *
+   * Deliberately NOT the same fail-closed contract as AiStack/WhatsAppStack:
+   * those two `throw` at synth time when neither `alarmTopicArn` nor
+   * `whatsappAlarmEmail` context is present, because they were retrofitted
+   * onto stacks with alarms that already existed (2026-07-27 observability
+   * pass) and had zero actionable target. ReferralsStack has never had any
+   * alarm plumbing until now, and `referrals-stack.test.ts`'s `buildApp()`
+   * synths without this prop — so this stack must keep synthesizing (with an
+   * unmonitored-but-visible alarm) when the prop is absent instead of
+   * breaking every existing caller that doesn't pass it.
+   */
+  readonly alarmTopicArn?: string;
 }
 
 /**
@@ -381,6 +401,90 @@ export class ReferralsStack extends cdk.Stack {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
       targets: [new eventTargets.LambdaFunction(visibilityOutboxDrainLambda.function)],
     });
+
+    // ── Alarms: visibility-outbox-drain observability ──
+    // Before this, nothing paged anyone if the Google service-account secret
+    // broke (rotated out from under the Lambda, deleted, or malformed) or if
+    // the drain itself started throwing. Three failure shapes, three signals:
+    //
+    //   1. Unhandled Lambda errors (bad DB connection, claim-transaction
+    //      failure, etc.) -- the standard Lambda `Errors` metric.
+    //   2. The handler's *deliberate* no-op paths -- `getGoogleIndexingServiceAccountKey()`
+    //      returning null (secret missing/malformed) or the OAuth token
+    //      exchange failing (bad/rotated credentials) -- both log
+    //      `{"metric":"VisibilityOutboxDrainSkipped", ...}` and return a
+    //      normal, non-throwing result. This is exactly the "secret breaks
+    //      and the drain silently no-ops" case called out for this Lambda --
+    //      the `Errors` alarm below CANNOT see it, since nothing throws.
+    //   3. Rows that exhausted MAX_ATTEMPTS and were marked 'failed' -- an
+    //      EMF metric emitted by the handler itself (see Change 2 in
+    //      visibility-outbox-drain.ts).
+    //
+    // Same shared alarm target as AiStack/WhatsAppStack (-c whatsappAlarmTopicArn=),
+    // wired via `props.alarmTopicArn` in bin/jale-app.ts -- but NOT the same
+    // fail-closed contract; see the prop doc comment for why.
+    let referralsAlarmAction: cloudwatchActions.SnsAction | undefined;
+    if (props.alarmTopicArn) {
+      const referralsAlarmTopic = sns.Topic.fromTopicArn(this, 'ReferralsAlarmTopic', props.alarmTopicArn);
+      referralsAlarmAction = new cloudwatchActions.SnsAction(referralsAlarmTopic);
+    }
+
+    const referralsAlarm = (id: string, alarmName: string, alarmDescription: string, metric: cloudwatch.IMetric) => {
+      const alarm = new cloudwatch.Alarm(this, id, {
+        alarmName,
+        alarmDescription,
+        metric,
+        threshold: 1,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+      if (referralsAlarmAction) alarm.addAlarmAction(referralsAlarmAction);
+      return alarm;
+    };
+
+    // 1. Unhandled Lambda errors on the 5-minute drain schedule.
+    referralsAlarm(
+      'VisibilityOutboxDrainErrorsAlarm',
+      'VisibilityOutboxDrainErrors',
+      'visibility-outbox-drain Lambda reported an unhandled error',
+      visibilityOutboxDrainLambda.function.metricErrors({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    );
+
+    // 2. Deliberate skip paths -- missing/malformed secret or failed OAuth
+    // exchange -- both already log `{"metric":"VisibilityOutboxDrainSkipped"}`;
+    // this MetricFilter (same pattern as AiStack's TrustScorerFailures /
+    // WhatsAppStack's CallbackErrors) turns that log line into an alarmable
+    // metric without any Lambda code change.
+    const skippedMetric = new logs.MetricFilter(this, 'VisibilityOutboxDrainSkippedMetric', {
+      logGroup: visibilityOutboxDrainLambda.logGroup,
+      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'VisibilityOutboxDrainSkipped'),
+      metricNamespace: 'Jale/Referrals',
+      metricName: 'VisibilityOutboxDrainSkipped',
+      metricValue: '1',
+    });
+    referralsAlarm(
+      'VisibilityOutboxDrainSkippedAlarm',
+      'VisibilityOutboxDrainSkipped',
+      'visibility-outbox-drain skipped a cycle -- Google service-account secret missing/malformed or OAuth exchange failed. '
+        + 'In an environment where the secret has never been seeded, this fires every cycle by design.',
+      skippedMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    );
+
+    // 3. Rows permanently failed (MAX_ATTEMPTS reached) -- EMF metric emitted
+    // directly by the handler (Jale/OTP-style `_aws` block), no MetricFilter
+    // needed.
+    referralsAlarm(
+      'VisibilityOutboxDrainPermanentFailureAlarm',
+      'VisibilityOutboxDrainPermanentFailures',
+      'A job_visibility_events row exhausted MAX_ATTEMPTS and was marked failed',
+      new cloudwatch.Metric({
+        namespace: 'Jale/Referrals',
+        metricName: 'VisibilityOutboxDrainPermanentFailure',
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+    );
 
     // ── Routes ──
 
