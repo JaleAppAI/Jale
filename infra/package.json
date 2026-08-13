@@ -15,6 +15,9 @@
     "test:integration": "jest --config jest.integration.config.js",
     "test:whatsapp-v2": "jest test/unit/lambda/whatsapp/onboarding-v2.test.ts test/unit/lambda/whatsapp/onboarding-v2-profile.test.ts test/unit/lambda/whatsapp/onboarding-v2-conversation.test.ts test/unit/lambda/whatsapp/processor.test.ts test/unit/lambda/whatsapp/lib/onboarding-language.test.ts test/unit/lambda/whatsapp/lib/onboarding-renderers.test.ts test/unit/lambda/whatsapp/lib/onboarding-adapters.test.ts --runInBand",
     "test:whatsapp-v2-db": "bash scripts/run-whatsapp-v2-db-tests.sh",
+    "test:wage-reference-db": "bash scripts/run-wage-reference-db-tests.sh",
+    "generate:oews-seed": "ts-node scripts/generate-oews-seed.ts",
+    "seed:oews-wages": "ts-node scripts/seed-oews-wages.ts",
     "reset:whatsapp-v2": "ts-node scripts/reset-whatsapp-onboarding-v2.ts",
     "whatsapp:controls": "ts-node scripts/whatsapp-runtime-controls.ts",
     "replay:whatsapp-domain-event": "ts-node scripts/replay-domain-event.ts",
@@ -42,7 +45,8 @@
     "jest": "^30",
     "ts-jest": "^29",
     "ts-node": "^10.9.2",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "xlsx": "^0.18.5"
   },
   "dependencies": {
     "@aws-sdk/client-ses": "3.1040.0",
