@@ -285,6 +285,56 @@ describe('ApiStack', () => {
       Description: 'Employer inbox endpoint',
     });
   });
+
+  // Task 6 — employer job templates route assertions
+  test('Employer templates list Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer templates list endpoint',
+    });
+  });
+
+  test('Employer templates save Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer templates save endpoint',
+    });
+  });
+
+  test('Employer templates delete Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer templates delete endpoint',
+    });
+  });
+
+  test('GET /employer/templates exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
+  test('POST /employer/templates exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'POST',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
+  test('DELETE /employer/templates/{templateId} exists with EmployerAuthorizer', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'DELETE',
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+      }),
+    });
+  });
+
   // Task 12 — new worker marketplace route assertions
   test('Worker jobs list Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {

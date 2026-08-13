@@ -17,6 +17,7 @@ export type ApiErrorPayload = {
   plan_code?: string;
   active_job_limit?: number;
   active_jobs?: number;
+  template_limit?: number;
   requiredVersion?: string;
   currentVersion?: string;
   required?: string[];
@@ -28,6 +29,7 @@ const ALLOWED_PAYLOAD_KEYS = [
   'plan_code',
   'active_job_limit',
   'active_jobs',
+  'template_limit',
   'requiredVersion',
   'currentVersion',
   'required',

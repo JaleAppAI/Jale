@@ -77,6 +77,7 @@ const expectedBaselineMigrations = [
   '066_preferred_cities_whatsapp_read.sql',
   '067_city_key_backfill_repair.sql',
   '068_preferred_city_centroids.sql',
+  '069_employer_job_templates.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -600,6 +601,20 @@ describe('migration apply order baseline', () => {
     expect(sql).toContain('ADD COLUMN IF NOT EXISTS longitude NUMERIC(9,6)');
     expect(sql).toContain('worker_preferred_cities_coords_complete');
     expect(sql).toContain('(latitude IS NULL) = (longitude IS NULL)');
+  });
+
+  it('adds the employer job templates table with entitlement seeds in migration 069', () => {
+    const sql = readMigration('069_employer_job_templates.sql');
+    expect(sql).toContain('CREATE TABLE employer_job_templates');
+    expect(sql).toContain('UNIQUE (employer_id, name)');
+    expect(sql).toContain('ALTER TABLE employer_job_templates FORCE ROW LEVEL SECURITY;');
+    expect(sql).toContain('employer_job_templates_self');
+    expect(sql).toContain(`'{"template_limit": 2}'`);
+    expect(sql).toContain(`'{"template_limit": 20}'`);
+    // The seed must run under a temporary write policy (billing_plans is
+    // FORCE RLS, SELECT-only) and must fail loudly if it touched 0 rows.
+    expect(sql).toContain('billing_plans_template_seed');
+    expect(sql).toContain('template_limit seed failed');
   });
 
   maybeIt('applies migrations 001-034 against a local Postgres database', async () => {

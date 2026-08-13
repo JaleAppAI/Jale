@@ -63,9 +63,11 @@ describe('nav label keys', () => {
 });
 
 describe('employerMobileNav', () => {
-    it('is the sidebar items, reused rather than re-declared', () => {
+    it('is the sidebar items minus sidebar-only entries, reused rather than re-declared', () => {
+        // Templates is a management surface, not a daily destination -- it
+        // stays sidebar-only so the bar keeps to its four-tab ceiling.
         expect(employerMobileNav).toEqual([
-            ...employerPrimaryNav,
+            ...employerPrimaryNav.filter((item) => item.key !== 'templates'),
             employerBillingNav,
             employerSettingsNav,
         ]);

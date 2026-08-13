@@ -534,7 +534,8 @@
       "dashboard": "Dashboard",
       "messages": "Messages",
       "billing": "Billing",
-      "settings": "Settings"
+      "settings": "Settings",
+      "templates": "Templates"
     },
     "hero": {
       "eyebrow": "Got Jale?",
@@ -678,8 +679,6 @@
       "location_pick_required": "Select a city from the suggestions",
       "city": "City",
       "city_placeholder": "Hayward",
-      "state_region": "State",
-      "state_region_placeholder": "CA",
       "job_type": "Job Type",
       "job_type_fulltime": "Full-time",
       "job_type_parttime": "Part-time",
@@ -737,7 +736,15 @@
       "edit_title": "Edit job",
       "edit_save": "Save changes",
       "locked_note": "Locked — this job has applicants",
-      "edit_error": "Could not save changes. Please try again."
+      "edit_error": "Could not save changes. Please try again.",
+      "template_select_label": "Start from a template",
+      "template_select_placeholder": "Choose a template…",
+      "template_save_toggle": "Save as template",
+      "template_name_placeholder": "Template name",
+      "template_check_city": "Check the city before posting",
+      "template_limit_reached": "Template limit reached — upgrade for more",
+      "template_limit_reached_n": "You've reached your plan's limit of {limit} templates — upgrade for more",
+      "template_name_taken": "You already have a template with that name"
     },
     "worker_profile": {
       "doc_resume": "Resume",
@@ -754,6 +761,29 @@
       "next": "Next: Document Requirements",
       "back": "Back",
       "submit": "Post Job"
+    },
+    "templates": {
+      "title": "Job templates",
+      "meter": "{count} of {limit} templates",
+      "meter_count": "{count} templates",
+      "new": "New template",
+      "limit_note": "Template limit reached — upgrade for more",
+      "empty": "No templates yet. Create one here, or tick “Save as template” when posting a job.",
+      "edit": "Edit",
+      "edit_title": "Edit template",
+      "new_title": "New template",
+      "save": "Save template",
+      "name_label": "Template name",
+      "name_required": "Give the template a name",
+      "save_error": "Could not save the template",
+      "delete_title": "Delete template",
+      "delete_body": "Delete “{name}”? Jobs already posted from it are not affected.",
+      "delete_confirm": "Delete",
+      "delete_error": "Could not delete the template",
+      "updated": "Updated",
+      "col_name": "Name",
+      "col_details": "Details",
+      "manage_link": "Manage templates"
     }
   },
   "employer_worker_profile": {

@@ -486,6 +486,33 @@ export async function deleteJob(token: string, jobId: string): Promise<void> {
   if (!res.ok) throw await parseApiError(res, 'delete_failed');
 }
 
+export type JobTemplate = {
+  id: string;
+  name: string;
+  payload: JobWritePayload;
+  updated_at: string;
+};
+
+export async function listJobTemplates(token: string): Promise<JobTemplate[]> {
+  const res = await apiFetch('/employer/templates', {}, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return (await res.json()).templates;
+}
+
+export async function saveJobTemplate(
+  token: string,
+  data: { id?: string; name: string; payload: JobWritePayload },
+): Promise<JobTemplate> {
+  const res = await apiFetch('/employer/templates', { method: 'POST', body: JSON.stringify(data) }, token);
+  if (!res.ok) throw await parseApiError(res, 'save_failed');
+  return res.json();
+}
+
+export async function deleteJobTemplate(token: string, templateId: string): Promise<void> {
+  const res = await apiFetch(`/employer/templates/${templateId}`, { method: 'DELETE' }, token);
+  if (!res.ok) throw await parseApiError(res, 'delete_failed');
+}
+
 export async function getJobApplicants(
   token: string,
   jobId: string,
@@ -700,6 +727,7 @@ export type BillingSubscription = {
 export type EmployerBilling = {
   planCode: string;
   activeJobLimit: number;
+  templateLimit: number;
   activeJobUsage: number;
   subscription: BillingSubscription;
   display_price_minor: number;

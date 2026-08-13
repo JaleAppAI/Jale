@@ -237,7 +237,7 @@ maybeDescribe('billing RLS integration (migration 034)', () => {
         );
         expect(result.rows).toHaveLength(1);
         expect(result.rows[0].display_price_minor).toBe(2000);
-        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 10 });
+        expect(result.rows[0].entitlements).toEqual({ active_job_limit: 10, template_limit: 20 });
       } finally {
         await client.end();
       }

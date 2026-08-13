@@ -65,6 +65,9 @@ export type JobFormLocation = {
 
 // Fold a LocationPicker selection into a JobForm. A free-typed value arrives
 // with null ids/coordinates, which clears any previously picked city.
+// state_region (the SEO display state) has no input of its own -- it derives
+// from the picked city's USPS state; free-typed locations leave it blank and
+// the backend parses it from the location text instead.
 export function applyLocationToJobForm(form: JobForm, v: JobFormLocation): JobForm {
   return {
     ...form,
@@ -74,6 +77,7 @@ export function applyLocationToJobForm(form: JobForm, v: JobFormLocation): JobFo
     state: v.state,
     latitude: v.latitude,
     longitude: v.longitude,
+    state_region: v.state ?? '',
   };
 }
 
@@ -221,4 +225,46 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
       driver_license: (job.required_docs ?? []).includes('driver_license'),
     },
   };
+}
+
+// Prefill a JobForm from a saved template payload. Delegates to jobToForm
+// (the payload is the create-request shape, a subset-compatible cousin of
+// EmployerJobDetail) and then blanks start_date -- templates never carry a
+// date. cityPrefilled drives the "check the city" highlight in the modal.
+export function jobFormFromTemplatePayload(
+  payload: Partial<JobWritePayload>,
+): { form: JobForm; cityPrefilled: boolean } {
+  const form = jobToForm(payload as unknown as EmployerJobDetail);
+  return {
+    form: { ...form, start_date: '' },
+    cityPrefilled: form.city_key !== null,
+  };
+}
+
+// Row summary for the Templates page: human-glanceable city/trade/pay pulled
+// from a stored template payload. Pure and defensive -- payloads are
+// forward-compatible JSON, so every field may be missing. The pay string is
+// currency-only; the page appends the localized interval label itself.
+export function templateRowSummary(
+  payload: Partial<JobWritePayload>,
+  /** Localized interval label ("per hour" etc.); joined onto the pay string
+   * here so ALL row derivation stays in this tested helper. */
+  intervalLabel?: string,
+): { city: string; trade: string; pay: string } {
+  const EM_DASH = '—';
+  const locationCity = payload.location?.includes(',')
+    ? payload.location.split(',')[0].trim()
+    : '';
+  const city = payload.city || locationCity || EM_DASH;
+  const trade = payload.trade_category || EM_DASH;
+  const min = payload.pay_min ?? null;
+  const max = payload.pay_max ?? null;
+  let pay = EM_DASH;
+  if (min !== null && max !== null) pay = `$${min}–$${max}`;
+  else if (min !== null) pay = `$${min}+`;
+  // "≤" rather than words: every pay variant must read correctly in both
+  // locales without threading another label through here.
+  else if (max !== null) pay = `≤ $${max}`;
+  if (pay !== EM_DASH && intervalLabel) pay = `${pay} · ${intervalLabel}`;
+  return { city, trade, pay };
 }

@@ -376,6 +376,48 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(employerInboxLambda.function);
 
+    // Employer templates list — employer auth, DB access
+    const employerTemplatesListLambda = new JaleLambdaFunction(this, 'EmployerTemplatesListLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-templates-list.ts'),
+      description: 'Employer templates list endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerTemplatesListLambda.function);
+
+    // Employer templates save — employer auth, DB access
+    const employerTemplatesSaveLambda = new JaleLambdaFunction(this, 'EmployerTemplatesSaveLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-templates-save.ts'),
+      description: 'Employer templates save endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerTemplatesSaveLambda.function);
+
+    // Employer templates delete — employer auth, DB access
+    const employerTemplatesDeleteLambda = new JaleLambdaFunction(this, 'EmployerTemplatesDeleteLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-templates-delete.ts'),
+      description: 'Employer templates delete endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerTemplatesDeleteLambda.function);
+
     // Token refresh — no auth (refresh token is the credential), no DB
     const tokenRefreshLambda = new JaleLambdaFunction(this, 'TokenRefreshLambda', {
       entry: path.join(__dirname, '../../lambda/auth/token-refresh.ts'),
@@ -730,6 +772,25 @@ export class ApiStack extends cdk.Stack {
 
     const employerInboxResource = this.employerResource.addResource('inbox');
     employerInboxResource.addMethod('GET', new apigateway.LambdaIntegration(employerInboxLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET /employer/templates — list saved job templates for this employer
+    // POST /employer/templates — save a new job template
+    const employerTemplatesResource = this.employerResource.addResource('templates');
+    employerTemplatesResource.addMethod('GET', new apigateway.LambdaIntegration(employerTemplatesListLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerTemplatesResource.addMethod('POST', new apigateway.LambdaIntegration(employerTemplatesSaveLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // DELETE /employer/templates/{templateId} — delete a job template the employer owns
+    const employerTemplateResource = employerTemplatesResource.addResource('{templateId}');
+    employerTemplateResource.addMethod('DELETE', new apigateway.LambdaIntegration(employerTemplatesDeleteLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

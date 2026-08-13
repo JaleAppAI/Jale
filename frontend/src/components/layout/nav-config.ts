@@ -32,6 +32,7 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
 export const employerPrimaryNav: NavItem[] = [
     { key: 'dashboard', href: '/employer/dashboard', icon: 'grid', labelKey: 'nav.dashboard', exact: true },
     { key: 'messages', href: '/employer/conversations', icon: 'message', labelKey: 'nav.messages' },
+    { key: 'templates', href: '/employer/templates', icon: 'briefcase', labelKey: 'nav.templates' },
 ];
 
 /** Employer Billing link (live). */
@@ -57,7 +58,9 @@ export const employerSettingsNav: NavItem = {
  * bottom bar at 360px; these are the four the sidebar leads with.
  */
 export const employerMobileNav: NavItem[] = [
-    ...employerPrimaryNav,
+    // Templates is a management surface, not a daily destination — it stays
+    // sidebar-only so the bar keeps to its four-tab ceiling.
+    ...employerPrimaryNav.filter((item) => item.key !== 'templates'),
     employerBillingNav,
     employerSettingsNav,
 ];

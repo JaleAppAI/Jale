@@ -123,8 +123,8 @@ maybeDescribe('entitlement concurrency (A7 race-safe gate)', () => {
       // Ensure employer_free catalog row exists (migration 034 seeds it, but be safe)
       await setup.query(
         `INSERT INTO billing_plans (code, audience, display_name, active, entitlements, created_at, updated_at)
-         VALUES ('employer_free', 'employer', 'Free', true, '{"active_job_limit": 1}', now(), now())
-         ON CONFLICT (code) DO UPDATE SET active = true, entitlements = '{"active_job_limit": 1}'`,
+         VALUES ('employer_free', 'employer', 'Free', true, '{"active_job_limit": 1, "template_limit": 2}', now(), now())
+         ON CONFLICT (code) DO UPDATE SET active = true, entitlements = '{"active_job_limit": 1, "template_limit": 2}'`,
       );
 
       // Delete any leftover test jobs for this employer from prior runs

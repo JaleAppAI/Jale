@@ -6,11 +6,11 @@ import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
-import { ApiError, createJob, Job } from '@/lib/api/employer';
+import { ApiError, createJob, listJobTemplates, saveJobTemplate, Job, JobTemplate } from '@/lib/api/employer';
 import {
   DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
   type DocType, type PayInterval, type JobForm,
-  initialForm, jobFormToCreatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
+  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -86,8 +86,38 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [error, setError] = useState('');
   const [limitReached, setLimitReached] = useState(false);
 
+  // Template state. Templates are a convenience layer on top of job
+  // creation: a failure to load or save one must never block posting a job.
+  const [templates, setTemplates] = useState<JobTemplate[]>([]);
+  const [checkCity, setCheckCity] = useState(false);
+  const [saveAsTemplate, setSaveAsTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState('');
+  const [templateNotice, setTemplateNotice] = useState<'' | 'limit' | 'name_taken'>('');
+  const [templateLimit, setTemplateLimit] = useState<number | null>(null);
+
   const headingRef = useRef<HTMLHeadingElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
+  // Once the template save succeeds, later submits of the SAME wizard run
+  // (e.g. after a failed job post) carry this id so the backend overwrites
+  // that template instead of 409ing against our own first save.
+  const savedTemplateIdRef = useRef<string | null>(null);
+
+  // Silent background load whenever the modal opens -- the wizard must work
+  // exactly the same with zero templates, so any failure here is swallowed.
+  useEffect(() => {
+    if (!open || !idToken) return;
+    let cancelled = false;
+    listJobTemplates(idToken)
+      .then((list) => {
+        if (!cancelled) setTemplates(list);
+      })
+      .catch(() => {
+        // Templates are an enhancement; the modal must work without them.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, idToken]);
 
   // Entering a step hands focus to its heading. The heading is `tabIndex={-1}`
   // (focusable programmatically, not in the tab order), which is the standard
@@ -113,7 +143,19 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setForm(initialForm);
     setError('');
     setLimitReached(false);
+    setCheckCity(false);
+    setSaveAsTemplate(false);
+    setTemplateName('');
+    setTemplateNotice('');
+    setTemplateLimit(null);
+    savedTemplateIdRef.current = null;
     onClose();
+  };
+
+  const applyTemplate = (template: JobTemplate) => {
+    const { form: prefilled, cityPrefilled } = jobFormFromTemplatePayload(template.payload);
+    setForm(prefilled);
+    setCheckCity(cityPrefilled);
   };
 
   const toggleDoc = (doc: DocType) => {
@@ -185,9 +227,45 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       setError(validationError);
       return;
     }
+
+    const name = templateName.trim();
+    // Pre-check the template name against the loaded list BEFORE any network
+    // call: once the job posts, the modal closes and a failed template save
+    // has nowhere left to surface. Catching the collision here keeps it
+    // fixable; the server 409 below remains the backstop for stale lists.
+    if (
+      saveAsTemplate && name &&
+      templates.some((tpl) => tpl.name === name && tpl.id !== savedTemplateIdRef.current)
+    ) {
+      setTemplateNotice('name_taken');
+      return;
+    }
     setLoading(true);
     setError('');
     setLimitReached(false);
+    setTemplateNotice('');
+
+    if (saveAsTemplate && name) {
+      try {
+        const saved = await saveJobTemplate(idToken!, {
+          ...(savedTemplateIdRef.current ? { id: savedTemplateIdRef.current } : {}),
+          name,
+          payload: jobFormToCreatePayload(form),
+        });
+        savedTemplateIdRef.current = saved.id;
+        setTemplates((current) => [saved, ...current.filter((tpl) => tpl.id !== saved.id)]);
+      } catch (err) {
+        // Template failures never block the job post -- surface the notice
+        // and keep going.
+        if (err instanceof ApiError && err.code === 'template_limit_reached') {
+          setTemplateNotice('limit');
+          setTemplateLimit(err.payload.template_limit ?? null);
+        } else if (err instanceof ApiError && err.code === 'template_name_taken') {
+          setTemplateNotice('name_taken');
+        }
+      }
+    }
+
     try {
       const job = await createJob(idToken!, jobFormToCreatePayload(form));
       onJobCreated(job);
@@ -332,21 +410,56 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 1 && (
         <div className="grid gap-4">
+          {templates.length > 0 ? (
+            <Field label={t('modal.template_select_label')}>
+              <div className="flex items-center gap-2">
+                <Select
+                  value=""
+                  onChange={(e) => {
+                    const picked = templates.find((tpl) => tpl.id === e.target.value);
+                    if (picked) applyTemplate(picked);
+                  }}
+                >
+                  <option value="">{t('modal.template_select_placeholder')}</option>
+                  {templates.map((tpl) => (<option key={tpl.id} value={tpl.id}>{tpl.name}</option>))}
+                </Select>
+                <Link href="/employer/templates" className="shrink-0 text-xs font-semibold text-[var(--jale-blue-700)] hover:underline">
+                  {t('templates.manage_link')}
+                </Link>
+              </div>
+            </Field>
+          ) : (
+            // No templates yet: the picker would be empty, but the page link
+            // stays discoverable from the wizard, not just the sidebar.
+            <div className="flex justify-end">
+              <Link href="/employer/templates" className="text-xs font-semibold text-[var(--jale-blue-700)] hover:underline">
+                {t('templates.manage_link')}
+              </Link>
+            </div>
+          )}
           <Field label={t('modal.job_title')} required>
             <Input value={form.title} onChange={(e) => update('title', e.target.value)} placeholder={t('modal.job_title_placeholder')} />
           </Field>
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.location')} required>
-              <LocationPicker
-                value={form.location}
-                placeholder={t('modal.location_placeholder')}
-                onChange={(v) => {
-                  setForm((c) => applyLocationToJobForm(c, v));
-                  // A real pick resolves the "pick a city" error; drop it
-                  // immediately instead of waiting for the next step.
-                  if (v.cityKey) setError('');
-                }}
-              />
+              <div className={checkCity ? 'rounded-[10px] ring-2 ring-[var(--jale-warning)]' : undefined}>
+                <LocationPicker
+                  value={form.location}
+                  placeholder={t('modal.location_placeholder')}
+                  onChange={(v) => {
+                    setForm((c) => applyLocationToJobForm(c, v));
+                    // Any location edit resolves the "verify the
+                    // prefilled city" nudge, same as clearing the error.
+                    setCheckCity(false);
+                    // A real pick resolves the "pick a city" error; drop it
+                    // immediately instead of waiting for the next step.
+                    if (v.cityKey) setError('');
+                  }}
+                />
+              </div>
+              {checkCity && (
+                <p className="mt-1 rounded-md bg-[var(--jale-warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--jale-warning)]">{t('modal.template_check_city')}</p>
+              )}
             </Field>
             <Field label={t('modal.job_type')}>
               <Select value={form.job_type} onChange={(e) => update('job_type', e.target.value as JobForm['job_type'])}>
@@ -356,14 +469,6 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Select>
             </Field>
           </div>
-          <Field label={t('modal.state_region')}>
-            <Input
-              value={form.state_region}
-              onChange={(e) => update('state_region', e.target.value.toUpperCase())}
-              placeholder={t('modal.state_region_placeholder')}
-              maxLength={2}
-            />
-          </Field>
           <Field label={t('modal.trade_category')} required>
             <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
               <option value="">{t('modal.select_placeholder')}</option>
@@ -460,9 +565,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       )}
 
       {step === 3 && (
-        // Divided rows in ONE bordered container, like every other list in the
-        // app — not two floating tinted cards. The Required/Optional state is a
-        // `Badge` (dot + text), which is the app's one status chip.
+        <div className="grid gap-5">
+        {/* Divided rows in ONE bordered container, like every other list in the
+            app — not two floating tinted cards. The Required/Optional state is a
+            `Badge` (dot + text), which is the app's one status chip. */}
         <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)]">
           {DOC_TYPES.map((doc) => {
             const required = form.required_docs[doc];
@@ -485,6 +591,50 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             );
           })}
         </ul>
+
+        <div className="rounded-[10px] border border-[var(--jale-divider)] p-4">
+          <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
+            <input
+              type="checkbox"
+              checked={saveAsTemplate}
+              onChange={(e) => setSaveAsTemplate(e.target.checked)}
+            />
+            {t('modal.template_save_toggle')}
+          </label>
+          {saveAsTemplate && (
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <Input
+                value={templateName}
+                onChange={(e) => setTemplateName(e.target.value)}
+                placeholder={t('modal.template_name_placeholder')}
+                className="flex-1"
+              />
+            </div>
+          )}
+          {templateNotice === 'name_taken' && (
+            <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
+          )}
+          {templateNotice === 'limit' && (
+            <div className="mt-2">
+              <InlineFeedback tone="danger">
+                <span className="block">
+                  {templateLimit != null
+                    ? t('modal.template_limit_reached_n', { limit: templateLimit })
+                    : t('modal.template_limit_reached')}
+                </span>
+                <Link
+                  href="/employer/billing"
+                  onClick={handleClose}
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+                >
+                  <Icon name="spark" />
+                  {tBilling('limit_reached.cta')}
+                </Link>
+              </InlineFeedback>
+            </div>
+          )}
+        </div>
+        </div>
       )}
 
       {error ? (

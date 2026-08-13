@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, type JobForm,
+  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, type JobForm,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
@@ -114,6 +114,29 @@ describe('applyLocationToJobForm', () => {
     // Untouched fields survive the spread.
     expect(next.title).toBe('Roofer');
     expect(next.trade_category).toBe('other');
+  });
+
+  it('derives state_region from the picked state (no input of its own) and blanks it on free text', () => {
+    const picked = applyLocationToJobForm(base, {
+      label: 'El Paso, TX 79901',
+      cityKey: 'el-paso-tx',
+      city: 'El Paso',
+      state: 'TX',
+      latitude: 31.76,
+      longitude: -106.49,
+    });
+    expect(picked.state_region).toBe('TX');
+
+    const freeTyped = applyLocationToJobForm(picked, {
+      label: 'somewhere near the border',
+      cityKey: null,
+      city: null,
+      state: null,
+      latitude: null,
+      longitude: null,
+    });
+    // Blank -> the payload omits it and the backend parses the location text.
+    expect(freeTyped.state_region).toBe('');
   });
 
   it('nulls a previously picked city when the user free-types over it', () => {
@@ -275,5 +298,73 @@ describe('validateJobLocationFields', () => {
   it('rejects a state_region with the wrong length', () => {
     expect(validateJobLocationFields({ ...initialForm, state_region: 'CAL' })).toBe('state_region');
     expect(validateJobLocationFields({ ...initialForm, state_region: 'C' })).toBe('state_region');
+  });
+});
+
+describe('jobFormFromTemplatePayload', () => {
+  const payload = {
+    title: 'Concrete Finisher', location: 'El Paso, TX', job_type: 'contract' as const,
+    trade_category: 'concrete', pay_min: 20, pay_max: 28, pay_interval: 'hourly' as const,
+    required_docs: ['resume'], city_key: 'el-paso-tx', city: 'El Paso', state: 'TX',
+    latitude: 31.7619, longitude: -106.485,
+  };
+
+  it('maps a full payload onto the form and reports the prefilled city', () => {
+    const { form, cityPrefilled } = jobFormFromTemplatePayload(payload);
+    expect(form.title).toBe('Concrete Finisher');
+    expect(form.pay_min).toBe('20');
+    expect(form.required_docs).toEqual({ resume: true, driver_license: false });
+    expect(form.city_key).toBe('el-paso-tx');
+    expect(cityPrefilled).toBe(true);
+  });
+
+  it('never applies a start_date, even if an old template stored one', () => {
+    const { form } = jobFormFromTemplatePayload({ ...payload, start_date: '2026-01-01' } as never);
+    expect(form.start_date).toBe('');
+  });
+
+  it('defaults missing keys and reports no city for cityless payloads', () => {
+    const { form, cityPrefilled } = jobFormFromTemplatePayload({
+      title: 'x', location: 'somewhere', job_type: 'contract' as const,
+    });
+    expect(form.number_of_workers_needed).toBe('1');
+    expect(form.language_preference).toEqual(['any']);
+    expect(form.city_key).toBeNull();
+    expect(cityPrefilled).toBe(false);
+  });
+
+  it('drops unknown keys instead of leaking them into the form', () => {
+    const { form } = jobFormFromTemplatePayload({ ...payload, bogus_future_field: 'x' } as never);
+    expect('bogus_future_field' in form).toBe(false);
+  });
+});
+
+describe('templateRowSummary', () => {
+  it('summarizes a full payload', () => {
+    expect(templateRowSummary({
+      city: 'El Paso', trade_category: 'concrete',
+      pay_min: 20, pay_max: 28, pay_interval: 'hourly',
+      location: 'El Paso, TX 79901',
+    })).toEqual({ city: 'El Paso', trade: 'concrete', pay: '$20–$28' });
+  });
+
+  it('falls back to the location text before the first comma when city is absent', () => {
+    expect(templateRowSummary({ location: 'Las Cruces, NM' }).city).toBe('Las Cruces');
+  });
+
+  it('uses em dashes for missing values and a commaless location', () => {
+    expect(templateRowSummary({ location: 'near the yard' }))
+      .toEqual({ city: '—', trade: '—', pay: '—' });
+    expect(templateRowSummary({})).toEqual({ city: '—', trade: '—', pay: '—' });
+  });
+
+  it('formats one-sided pay ranges without locale-bound words', () => {
+    expect(templateRowSummary({ pay_min: 20 }).pay).toBe('$20+');
+    expect(templateRowSummary({ pay_max: 30 }).pay).toBe('≤ $30');
+  });
+
+  it('joins a provided interval label onto real pay, never onto the em dash', () => {
+    expect(templateRowSummary({ pay_min: 20, pay_max: 28 }, 'per hour').pay).toBe('$20–$28 · per hour');
+    expect(templateRowSummary({}, 'per hour').pay).toBe('—');
   });
 });
