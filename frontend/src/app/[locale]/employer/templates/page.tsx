@@ -11,6 +11,8 @@ import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Modal } from '@/components/ui/modal';
 import { PanelHeader } from '@/components/ui/panel-header';
+import { TemplateTableSkeleton } from '@/components/ui/page-skeletons';
+import { Skeleton } from '@/components/ui/skeleton';
 import { TemplateEditModal } from '@/components/employer/TemplateEditModal';
 import { deleteJobTemplate, getBilling, listJobTemplates, type JobTemplate } from '@/lib/api/employer';
 import { templateRowSummary, TRADE_CATEGORIES } from '@/lib/job-form';
@@ -97,7 +99,14 @@ export default function EmployerTemplatesPage() {
     <AppShell role="employer" title={t('templates.title')}>
       <main className="mx-auto max-w-4xl px-4 py-6 md:px-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-sm font-semibold text-[var(--jale-ink-2)]">{meter}</p>
+          {/* While the list is in flight the meter would claim "0 templates" —
+              a dash-is-a-VALUE false statement (see the applications page's
+              metric row). Skeleton until real numbers exist. */}
+          {loading ? (
+            <Skeleton className="h-3.5 w-36" />
+          ) : (
+            <p className="text-sm font-semibold text-[var(--jale-ink-2)]">{meter}</p>
+          )}
           <Button onClick={() => setCreating(true)} disabled={atLimit}>{t('templates.new')}</Button>
         </div>
 
@@ -114,7 +123,9 @@ export default function EmployerTemplatesPage() {
         )}
 
         {loading ? (
-          <p className="text-sm text-muted">{tCommon('loading')}</p>
+          /* Same archetype the route-level loading.tsx paints, so the
+             server-skeleton → client-skeleton handover costs no visible swap. */
+          <TemplateTableSkeleton />
         ) : loadError ? (
           <div className="flex flex-col items-start gap-3">
             <InlineFeedback tone="danger">{loadError}</InlineFeedback>
