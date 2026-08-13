@@ -7,6 +7,7 @@ import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { KVList, type KVItem } from '@/components/ui/kv-list';
 import { Link } from '@/i18n/navigation';
 import { formatLongDate, formatStartDate } from '@/lib/date';
+import { formatPay } from '@/lib/pay';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
 import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJsonLd';
@@ -203,6 +204,7 @@ function TrustFooter({ text }: { text: string }) {
 
 export default async function PublicJobPage({ params }: PageProps) {
   const t = await getTranslations({ locale: params.locale, namespace: 'public_job' });
+  const tPay = await getTranslations({ locale: params.locale, namespace: 'pay' });
 
   let job;
   try {
@@ -295,6 +297,9 @@ export default async function PublicJobPage({ params }: PageProps) {
   // schema.org JobPosting.url points at regardless of which locale is
   // being rendered.
   const { en: canonicalUrl } = buildJobPageUrls(active.code);
+  // `null` when the job has no description -- an incomplete JobPosting
+  // (missing a required property) is worse for search than no structured
+  // data at all, so the <script> tag below is skipped entirely in that case.
   const jobPostingJsonLd = buildJobPostingJsonLd(active, canonicalUrl);
   const jobTypeLabel = active.job_type ? active.job_type.replace('-', ' ') : '';
   const languageLabel = (code: 'any' | 'en' | 'es') => t(`language_${code}`);
@@ -306,7 +311,7 @@ export default async function PublicJobPage({ params }: PageProps) {
   // string the UTC-pinned `formatStartDate` produced, but now for the right
   // reason and consistent with every other "posted" line in the app.
   const postedDate = formatLongDate(active.created_at, params.locale) ?? active.created_at;
-  const showPay = Boolean(active.pay && active.pay !== 'Pay not specified');
+  const pay = formatPay(active, tPay);
 
   // The header location line: company, then whichever of the structured
   // city/state_region pair and the free-text location field actually exist.
@@ -384,13 +389,16 @@ export default async function PublicJobPage({ params }: PageProps) {
   return (
     <div className="min-h-screen bg-[var(--jale-paper)]">
       {/* Structured data for search engines -- active jobs only, never for
-          the closed/error branches above. Escaping the employer-authored
+          the closed/error branches above, and never when the builder
+          returned null (no description). Escaping the employer-authored
           description against script-breakout XSS happens inside
           serializeJsonLd, not here. */}
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: serializeJsonLd(jobPostingJsonLd) }}
-      />
+      {jobPostingJsonLd && (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: serializeJsonLd(jobPostingJsonLd) }}
+        />
+      )}
       <BrandBand
         path={localePath}
         otherLocale={otherLocale}
@@ -416,12 +424,12 @@ export default async function PublicJobPage({ params }: PageProps) {
 
               {/* Pay is THE deciding fact for this reader; it gets a headline,
                   not a row. Everything else is a KVList row further down. */}
-              {showPay && (
+              {pay && (
                 <div className="mt-4 rounded-xl bg-[var(--jale-paper-2)] px-4 py-3.5">
                   <p className="text-[11px] uppercase tracking-wide text-[var(--jale-ink-2)]">
                     {t('pay_range')}
                   </p>
-                  <p className="text-lg font-bold text-[var(--jale-success)]">{active.pay}</p>
+                  <p className="text-lg font-bold text-[var(--jale-success)]">{pay}</p>
                 </div>
               )}
 

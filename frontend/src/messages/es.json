@@ -81,6 +81,16 @@
       "fresh_posting": "Publicacion nueva"
     }
   },
+  "pay": {
+    "from": "Desde {amount}",
+    "up_to": "Hasta {amount}",
+    "range": "{min}–{max}",
+    "interval_hourly": "hora",
+    "interval_daily": "día",
+    "interval_weekly": "semana",
+    "interval_monthly": "mes",
+    "interval_fixed": "fijo"
+  },
   "header": {
     "language_toggle": "English",
     "sign_out": "Cerrar sesión",

@@ -217,9 +217,26 @@ function defaultDelay(ms: number): Promise<void> {
   });
 }
 
+export interface GetPublicJobsListOptions {
+  /**
+   * Stop pagination once at least this many items have been accumulated,
+   * and trim the returned array to exactly this length. The backend list
+   * is already ordered `created_at DESC`, so the first `maxItems` results
+   * across pages are the newest -- exactly what a "most recent N" feed
+   * wants.
+   *
+   * `sitemap.ts` must keep listing EVERY job, so it must never pass this;
+   * leaving it `undefined` preserves the unlimited walk-until-null-cursor
+   * behavior exactly as before this option existed.
+   */
+  maxItems?: number;
+}
+
 /**
- * Fetches every active public job by following `next_cursor` until it goes
- * null. Used to build the sitemap and RSS feed at request time.
+ * Fetches active public jobs, following `next_cursor` until it goes null
+ * (or, when `options.maxItems` is set, until enough items have been
+ * accumulated). Used to build the sitemap (unlimited) and RSS feed (capped)
+ * at request time.
  *
  * A 429 on any single page is retried in place (same cursor, same page) up
  * to MAX_PAGE_RETRIES times with a fixed delay, before that page is treated
@@ -235,15 +252,21 @@ function defaultDelay(ms: number): Promise<void> {
  */
 export async function getPublicJobsList(
   delayFn: (ms: number) => Promise<void> = defaultDelay,
+  options?: GetPublicJobsListOptions,
 ): Promise<PublicJobListItem[]> {
   const results: PublicJobListItem[] = [];
   const base = process.env.NEXT_PUBLIC_API_BASE_URL;
   if (!base) return results;
 
+  const maxItems = options?.maxItems;
+  // No point asking the API for more per page than we'll ever keep -- but
+  // never exceeds 500, the same page size used when maxItems is unset.
+  const pageLimit = maxItems ? Math.min(maxItems, 500) : 500;
+
   let cursor: string | null = null;
   try {
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const qs = new URLSearchParams({ limit: '500' });
+      const qs = new URLSearchParams({ limit: String(pageLimit) });
       if (cursor) qs.set('cursor', cursor);
       const url = `${base}/public/jobs?${qs.toString()}`;
 
@@ -261,10 +284,11 @@ export async function getPublicJobsList(
       const body: PublicJobsListResponse = await res.json();
       if (Array.isArray(body?.jobs)) results.push(...body.jobs);
       cursor = body?.next_cursor ?? null;
+      if (maxItems && results.length >= maxItems) break;
       if (!cursor) break;
     }
   } catch {
     // Tolerate any fetch/parse failure -- return whatever was accumulated.
   }
-  return results;
+  return maxItems ? results.slice(0, maxItems) : results;
 }
