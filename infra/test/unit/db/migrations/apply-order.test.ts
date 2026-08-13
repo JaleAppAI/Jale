@@ -78,6 +78,7 @@ const expectedBaselineMigrations = [
   '067_city_key_backfill_repair.sql',
   '068_preferred_city_centroids.sql',
   '069_employer_job_templates.sql',
+  '070_wage_references.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -615,6 +616,57 @@ describe('migration apply order baseline', () => {
     // FORCE RLS, SELECT-only) and must fail loudly if it touched 0 rows.
     expect(sql).toContain('billing_plans_template_seed');
     expect(sql).toContain('template_limit seed failed');
+  });
+
+  it('adds wage_references and city_cbsa_crosswalk as FORCE-RLS, read-only-to-jale_admin reference tables in migration 070', () => {
+    const sql = readMigration('070_wage_references.sql');
+
+    // wage_references shape
+    expect(sql).toContain('CREATE TABLE wage_references');
+    expect(sql).toContain('PRIMARY KEY (trade_category, area_code)');
+    expect(sql).toContain("CHECK (trade_category IN (");
+    for (const trade of [
+      'electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'drywall', 'general_labor', 'other',
+    ]) {
+      expect(sql).toContain(`'${trade}'`);
+    }
+    expect(sql).toContain("CHECK (area_kind IN ('metro', 'nonmetro', 'state'))");
+    expect(sql).toContain("CHECK (source_tier IN ('metro', 'nonmetro', 'state'))");
+    expect(sql).toContain('CHECK (p25_hourly > 0 AND p25_hourly <= p50_hourly AND p50_hourly <= p75_hourly)');
+
+    // city_cbsa_crosswalk shape
+    expect(sql).toContain('CREATE TABLE city_cbsa_crosswalk');
+    expect(sql).toContain('city_key    TEXT PRIMARY KEY');
+    expect(sql).toContain("CHECK (area_kind IN ('metro', 'nonmetro'))");
+
+    // RLS: ENABLE + FORCE on both, read-all SELECT-only for jale_admin, no write policy at all
+    expect(sql).toContain('ALTER TABLE wage_references ENABLE ROW LEVEL SECURITY');
+    expect(sql).toContain('ALTER TABLE wage_references FORCE ROW LEVEL SECURITY');
+    expect(sql).toContain('ALTER TABLE city_cbsa_crosswalk ENABLE ROW LEVEL SECURITY');
+    expect(sql).toContain('ALTER TABLE city_cbsa_crosswalk FORCE ROW LEVEL SECURITY');
+    expect(sql).toContain('CREATE POLICY wage_references_read_all');
+    expect(sql).toContain('CREATE POLICY city_cbsa_crosswalk_read_all');
+    expect(sql).toContain('GRANT SELECT ON wage_references TO jale_admin');
+    expect(sql).toContain('GRANT SELECT ON city_cbsa_crosswalk TO jale_admin');
+
+    // No write policy or write grant of any kind for anyone -- the seed
+    // script opens its own temporary policy at runtime (069's pattern).
+    expect(sql).not.toMatch(/CREATE POLICY[^;]*FOR\s+(INSERT|UPDATE|DELETE|ALL)/i);
+    expect(sql).not.toMatch(/GRANT\s+(INSERT|UPDATE|DELETE)/i);
+
+    // Explicitly no grant or policy naming jale_public_jobs or jale_whatsapp
+    // (the migration's header comment mentions both by name to explain the
+    // exclusion, so strip SQL line-comments before searching for actual
+    // GRANT/POLICY statements rather than doing a blanket string search).
+    const sqlNoComments = sql.replace(/--.*$/gm, '');
+    expect(sqlNoComments).not.toMatch(/GRANT[^;]*jale_public_jobs/i);
+    expect(sqlNoComments).not.toMatch(/GRANT[^;]*jale_whatsapp/i);
+    expect(sqlNoComments).not.toMatch(/CREATE POLICY[^;]*TO jale_public_jobs/i);
+    expect(sqlNoComments).not.toMatch(/CREATE POLICY[^;]*TO jale_whatsapp/i);
+
+    // No rows seeded by the migration itself -- population is the loader's job.
+    expect(sql).not.toMatch(/INSERT INTO wage_references/i);
+    expect(sql).not.toMatch(/INSERT INTO city_cbsa_crosswalk/i);
   });
 
   maybeIt('applies migrations 001-034 against a local Postgres database', async () => {
