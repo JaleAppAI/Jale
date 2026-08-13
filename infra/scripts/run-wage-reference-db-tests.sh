@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused wage_references / city_cbsa_crosswalk
-# PostgreSQL suite (migration 070).
+# PostgreSQL suite (migration 070) AND T-B2's pay-reference lookup suite,
+# which reads the same tables (lambda/lib/pay-reference.ts).
 #
 # An unset or empty JALE_TEST_DATABASE_URL is a hard, non-zero failure
-# instead of a false green. The integration suite SKIPs (registering only a
+# instead of a false green. Both integration suites SKIP (registering only a
 # placeholder CONCERN assertion) when the URL is absent, so invoking jest
 # directly would exit 0 without ever touching Postgres. This guard refuses
 # to run in that case -- mirrors scripts/run-whatsapp-v2-db-tests.sh.
@@ -36,5 +37,11 @@ fi
 # parser/loader (wage-seed-lib, oews-bulk-parser, census-crosswalk-parser,
 # oews-tx-seed-data, seed-oews-wages) run under the normal capped `npm
 # test`; they need no database and don't belong in this fail-closed gate.
+#
+# test/unit/db/pay-reference-lookup.integration.test.ts (T-B2) is named here
+# explicitly for the same reason: a bare `npx jest` run would let it
+# self-skip silently without this gate ever noticing JALE_TEST_DATABASE_URL
+# was unset.
 exec npx jest --runInBand \
-  test/unit/db/wage-references.integration.test.ts
+  test/unit/db/wage-references.integration.test.ts \
+  test/unit/db/pay-reference-lookup.integration.test.ts
