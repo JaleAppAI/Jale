@@ -116,6 +116,10 @@ export type JobDetail = Job & {
   already_applied: boolean;
   application_status: ApplicationStatus | null;
   missing_docs: JobDocType[];
+  /** Public listing opt-in (migration 057). Absent on older payloads --
+   * treat absence as false (fail-closed): the share panel must not render
+   * for a job the employer never opted into public listing for. */
+  public_listing_enabled?: boolean;
 };
 
 export type Application = {

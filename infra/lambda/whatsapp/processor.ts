@@ -15,6 +15,7 @@ import {
 import { applyWorkerToJob } from '../lib/applications';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { cityAnchorsFrom, listMatchedJobsForWorker, loadWorkerPreferredCities } from '../lib/job-matching';
+import { formatPayRangeLocalized, payNotSpecifiedLabel } from '../lib/job-fields';
 import {
   declineLatestWorkerConversationFromButtonText,
   declineWorkerConversationFromButton,
@@ -158,12 +159,48 @@ async function queueReply(
   await queueText(client, inboundMessageSid, to, t(key, lang, vars));
 }
 
+/** Worker-facing pay fields shared by every WhatsApp render site that shows
+ * a job's pay: the structured `pay_min`/`pay_max`/`pay_interval` (source of
+ * truth when present, rendered via `formatPayRangeLocalized`), the raw
+ * legacy `jobs.pay` free-text string (pre-023 jobs predating pay_min/max --
+ * preserved verbatim, never translated, since it is employer free text), and
+ * a localized "not specified" fallback when neither exists. */
+interface LocalizablePay {
+  pay_min?: string | number | null;
+  pay_max?: string | number | null;
+  pay_interval?: string | null;
+  /** Raw (undecorated) legacy pay string. Prefer this over a
+   * pre-`COALESCE`'d `pay` field so the "not specified" placeholder a shared
+   * query already baked in doesn't get mistaken for a real legacy value. */
+  pay_raw?: string | null;
+}
+
+function toPayNumber(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const num = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function localizedJobPay(job: LocalizablePay, lang: Lang): string {
+  const structured = formatPayRangeLocalized(
+    toPayNumber(job.pay_min),
+    toPayNumber(job.pay_max),
+    job.pay_interval ?? null,
+    lang,
+  );
+  if (structured !== null) return structured;
+  if (job.pay_raw) return job.pay_raw;
+  return payNotSpecifiedLabel(lang);
+}
+
 async function queueJobTemplate(
   client: PoolClient,
   inboundMessageSid: string,
   to: string,
   lang: Lang,
-  job: { id: string; title: string; company: string; location: string; pay: string },
+  job: {
+    id: string; title: string; company: string; location: string; pay: string;
+  } & LocalizablePay,
 ): Promise<void> {
   const whatsappNumber = to.replace(/^whatsapp:/, '');
   const templateName = lang === 'en' ? 'job_alert_en' : 'job_alert_es';
@@ -171,7 +208,7 @@ async function queueJobTemplate(
     '1': job.title,
     '2': job.company,
     '3': job.location,
-    '4': job.pay,
+    '4': localizedJobPay(job, lang),
     '5': `job-${job.id}`,
   };
   await client.query(
@@ -1841,13 +1878,18 @@ async function handleJobAction(
 ): Promise<void> {
   const job = await client.query<{
     id: string; title: string; company: string;
-    location: string; pay: string;
+    location: string;
+    pay_min: number | null; pay_max: number | null; pay_interval: string | null;
+    pay_raw: string | null;
   }>(
     `SELECT id,
             title,
             COALESCE(company, 'Jale') AS company,
             location,
-            COALESCE(pay, 'Pay not specified') AS pay
+            pay_min,
+            pay_max,
+            pay_interval,
+            pay AS pay_raw
        FROM jobs
       WHERE id = $1
         AND status = 'active'`,
@@ -1886,13 +1928,14 @@ async function handleJobAction(
     const r = job.rows[0];
     const recentIndex = conv.state_context?.recent_jobs?.indexOf(jobId) ?? -1;
     const commandIndex = recentIndex >= 0 ? recentIndex + 1 : 1;
+    const pay = localizedJobPay(r, conv.language);
     await queueText(
       client,
       inboundMessageSid,
       from,
       conv.language === 'es'
-        ? `Detalles del trabajo\n\n${r.title}\n${r.company}\n${r.location}\n${r.pay}\n\nResponde "${commandIndex} aceptar" para aplicar.`
-        : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${r.pay}\n\nReply "${commandIndex} accept" to apply.`,
+        ? `Detalles del trabajo\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nResponde "${commandIndex} aceptar" para aplicar.`
+        : `Job details\n\n${r.title}\n${r.company}\n${r.location}\n${pay}\n\nReply "${commandIndex} accept" to apply.`,
     );
   }
 }

@@ -14,7 +14,7 @@ describe('ReferralsStack', () => {
   let apiTemplate: Template;
   let networkTemplate: Template;
 
-  function buildApp() {
+  function buildApp(alarmTopicArn?: string) {
     const app = new cdk.App({
       context: {
         otpSmsFromNumber: '+13252210992',
@@ -71,6 +71,7 @@ describe('ReferralsStack', () => {
       workerJobResource: api.workerJobResource,
       employerAuthorizer: api.employerAuthorizer,
       employerJobResource: api.employerJobResource,
+      alarmTopicArn,
     });
     return { app, network, database, auth, api, referrals };
   }
@@ -716,5 +717,87 @@ describe('ReferralsStack', () => {
       const isAllTraffic = rule.IpProtocol === '-1' && rule.CidrIp === '0.0.0.0/0';
       expect(isAllTraffic).toBe(false);
     }
+  });
+
+  // ── Observability: visibility-outbox-drain alarms ──────────────────────
+  // The main `template` (from `buildApp()` with no `alarmTopicArn`) already
+  // proves the "must still synth cleanly when the prop is absent" contract
+  // for every test above; these assert the alarm resources/shape directly.
+
+  test('creates the drain Errors alarm following the AiStack GTE/NOT_BREACHING convention', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'VisibilityOutboxDrainErrors',
+      Namespace: 'AWS/Lambda',
+      MetricName: 'Errors',
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('creates a MetricFilter + alarm for the deliberate VisibilityOutboxDrainSkipped no-op path', () => {
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '{ $.metric = "VisibilityOutboxDrainSkipped" }',
+      MetricTransformations: [
+        { MetricNamespace: 'Jale/Referrals', MetricName: 'VisibilityOutboxDrainSkipped', MetricValue: '1' },
+      ],
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'VisibilityOutboxDrainSkipped',
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      Threshold: 1,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('creates the permanent-failure alarm on the Jale/Referrals EMF metric', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'VisibilityOutboxDrainPermanentFailures',
+      Namespace: 'Jale/Referrals',
+      MetricName: 'VisibilityOutboxDrainPermanentFailure',
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      Threshold: 1,
+      TreatMissingData: 'notBreaching',
+    });
+  });
+
+  test('none of the three drain alarms carry an SNS action when alarmTopicArn is absent (synths cleanly)', () => {
+    for (const alarmName of [
+      'VisibilityOutboxDrainErrors',
+      'VisibilityOutboxDrainSkipped',
+      'VisibilityOutboxDrainPermanentFailures',
+    ]) {
+      const alarms = template.findResources('AWS::CloudWatch::Alarm', { Properties: { AlarmName: alarmName } });
+      const [alarm] = Object.values(alarms) as any[];
+      expect(alarm.Properties.AlarmActions).toBeUndefined();
+    }
+  });
+
+  describe('with alarmTopicArn supplied', () => {
+    let alarmedTemplate: Template;
+    const topicArn = 'arn:aws:sns:us-east-2:123456789012:jale-referrals-alarms-test';
+
+    beforeAll(() => {
+      const { referrals } = buildApp(topicArn);
+      alarmedTemplate = Template.fromStack(referrals);
+    });
+
+    test('all three drain alarms fire into the shared alarm topic', () => {
+      for (const alarmName of [
+        'VisibilityOutboxDrainErrors',
+        'VisibilityOutboxDrainSkipped',
+        'VisibilityOutboxDrainPermanentFailures',
+      ]) {
+        const alarms = alarmedTemplate.findResources('AWS::CloudWatch::Alarm', { Properties: { AlarmName: alarmName } });
+        const [alarm] = Object.values(alarms) as any[];
+        expect(alarm.Properties.AlarmActions).toEqual([topicArn]);
+      }
+    });
+
+    test('does not create a new SNS topic — reuses the shared topic ARN by reference', () => {
+      const topics = alarmedTemplate.findResources('AWS::SNS::Topic');
+      expect(Object.keys(topics)).toHaveLength(0);
+    });
   });
 });

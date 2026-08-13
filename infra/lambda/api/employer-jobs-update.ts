@@ -6,7 +6,7 @@ import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, pa
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
-import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
+import { enqueueVisibilityPing, enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -348,6 +348,27 @@ async function handleFieldEdit(
     // stored city keys, but omitted coordinates PRESERVE the existing pin.
     if (coordinates.value) {
       await setJobCoordinates(client, jobId, coordinates.value.latitude, coordinates.value.longitude, 'manual');
+    }
+
+    // Content-edit visibility ping: a field edit never changes status or
+    // public_listing_enabled, so enqueueVisibilityTransition (which only
+    // fires on an actual before/after flip) would silently no-op here. When
+    // the edited job is effectively visible, ping Google's Indexing API via
+    // enqueueVisibilityPing so it re-crawls the updated content -- guarded by
+    // a dedupe check (direct SELECT is RLS-permitted for jale_admin on this
+    // table per migration 062's drain policy) so rapid successive edits don't
+    // flood the quota-limited drain with redundant pending rows.
+    const updatedJob = result.rows[0];
+    if (isEffectivelyVisible(updatedJob.status, updatedJob.public_listing_enabled) && updatedJob.public_code) {
+      const pending = await client.query(
+        `SELECT 1 FROM job_visibility_events
+          WHERE job_id = $1 AND event_kind = 'published' AND status = 'pending'
+          LIMIT 1`,
+        [jobId],
+      );
+      if (pending.rowCount === 0) {
+        await enqueueVisibilityPing(client, jobId, updatedJob.public_code);
+      }
     }
 
     await client.query('COMMIT');

@@ -1,4 +1,10 @@
-import { normalizeApplicationStatus, parseJobFields, parseOptionalCoordinates } from '../../../../lambda/lib/job-fields';
+import {
+  formatPayRangeLocalized,
+  normalizeApplicationStatus,
+  parseJobFields,
+  parseOptionalCoordinates,
+  payNotSpecifiedLabel,
+} from '../../../../lambda/lib/job-fields';
 
 const validBody = {
   pay_min: 25,
@@ -161,5 +167,60 @@ describe('parseOptionalCoordinates', () => {
     // pair, not an omission — it must not silently parse as "no coordinates".
     expect(parseOptionalCoordinates({ latitude: null, longitude: null }))
       .toEqual({ ok: false, error: 'invalid_latitude' });
+  });
+});
+
+describe('formatPayRangeLocalized', () => {
+  it('returns null when both bounds are null, for either locale', () => {
+    expect(formatPayRangeLocalized(null, null, null, 'en')).toBeNull();
+    expect(formatPayRangeLocalized(null, null, null, 'es')).toBeNull();
+    expect(formatPayRangeLocalized(null, null, 'hourly', 'es')).toBeNull();
+  });
+
+  it('renders a "From"/"Desde" one-sided range when only pay_min is set', () => {
+    expect(formatPayRangeLocalized(15, null, null, 'en')).toBe('From $15');
+    expect(formatPayRangeLocalized(15, null, null, 'es')).toBe('Desde $15');
+  });
+
+  it('renders an "Up to"/"Hasta" one-sided range when only pay_max is set', () => {
+    expect(formatPayRangeLocalized(null, 20, null, 'en')).toBe('Up to $20');
+    expect(formatPayRangeLocalized(null, 20, null, 'es')).toBe('Hasta $20');
+  });
+
+  it('collapses to a single figure when pay_min equals pay_max', () => {
+    expect(formatPayRangeLocalized(15, 15, null, 'en')).toBe('$15');
+    expect(formatPayRangeLocalized(15, 15, null, 'es')).toBe('$15');
+  });
+
+  it('renders a full range when pay_min and pay_max differ', () => {
+    expect(formatPayRangeLocalized(15, 20, null, 'en')).toBe('$15-$20');
+    expect(formatPayRangeLocalized(15, 20, null, 'es')).toBe('$15-$20');
+  });
+
+  it.each([
+    ['hourly', '/hour', '/hora'],
+    ['daily', '/day', '/dia'],
+    ['weekly', '/week', '/semana'],
+    ['monthly', '/month', '/mes'],
+  ] as const)('appends the %s interval as a per-unit suffix in both locales', (interval, enSuffix, esSuffix) => {
+    expect(formatPayRangeLocalized(15, 20, interval, 'en')).toBe(`$15-$20${enSuffix}`);
+    expect(formatPayRangeLocalized(15, 20, interval, 'es')).toBe(`$15-$20${esSuffix}`);
+  });
+
+  it('renders the fixed interval as a parenthetical qualifier, not a per-unit suffix', () => {
+    expect(formatPayRangeLocalized(500, 500, 'fixed', 'en')).toBe('$500 (fixed)');
+    expect(formatPayRangeLocalized(500, 500, 'fixed', 'es')).toBe('$500 (fijo)');
+  });
+
+  it('ignores an unknown/unrecognized interval rather than appending a suffix', () => {
+    expect(formatPayRangeLocalized(15, 20, 'biweekly', 'en')).toBe('$15-$20');
+    expect(formatPayRangeLocalized(15, 20, 'biweekly', 'es')).toBe('$15-$20');
+  });
+});
+
+describe('payNotSpecifiedLabel', () => {
+  it('returns the localized "not specified" placeholder for each locale', () => {
+    expect(payNotSpecifiedLabel('en')).toBe('Pay not specified');
+    expect(payNotSpecifiedLabel('es')).toBe('Pago no especificado');
   });
 });

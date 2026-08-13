@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
+import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -60,8 +61,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // status/public_listing_enabled/public_code are read here -- BEFORE the
+    // application UPDATE below -- so the visibility-event decision has a
+    // clean "before" snapshot. sync_job_hired_counts() (029, SECURITY
+    // DEFINER) flips jobs.status between 'active' and 'filled' as an AFTER
+    // trigger on job_applications, in this same transaction, whenever the
+    // UPDATE below pushes workers_hired past/below number_of_workers_needed
+    // -- entirely bypassing the visibility outbox (062) unless this handler
+    // explicitly re-reads status afterward and enqueues the transition.
     const jobCheck = await client.query(
-      `SELECT jobs.id, jobs.number_of_workers_needed, jobs.workers_hired
+      `SELECT jobs.id, jobs.number_of_workers_needed, jobs.workers_hired,
+              jobs.status, jobs.public_listing_enabled, jobs.public_code
        FROM jobs
        JOIN users u ON u.id = jobs.employer_id
        WHERE jobs.id = $1 AND u.cognito_sub = $2
@@ -103,6 +113,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (result.rowCount === 0) {
       await client.query('ROLLBACK');
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'concurrent_modification' }) };
+    }
+
+    // Re-read status AFTER the application UPDATE: sync_job_hired_counts()
+    // runs as an AFTER trigger on job_applications within this same
+    // transaction, so by this point jobs.status already reflects any
+    // active<->filled flip the hire/un-hire just caused.
+    // public_listing_enabled is untouched by that trigger, so job.public_listing_enabled
+    // (read above, before the update) holds for both sides of the comparison.
+    if (job.public_listing_enabled === true && job.public_code) {
+      const jobAfter = await client.query(`SELECT status FROM jobs WHERE id = $1`, [jobId]);
+      const statusAfter: string = jobAfter.rows[0]?.status ?? job.status;
+      const wasVisible = isEffectivelyVisible(job.status, job.public_listing_enabled);
+      const isVisible = isEffectivelyVisible(statusAfter, job.public_listing_enabled);
+      await enqueueVisibilityTransition(client, jobId, job.public_code, wasVisible, isVisible);
     }
 
     await client.query('COMMIT');

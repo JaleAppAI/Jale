@@ -32,6 +32,17 @@ export interface MatchableJobRow {
   created_at: string | Date;
   pay_min?: string | number | null;
   pay_max?: string | number | null;
+  /** Additive (Task 4, WhatsApp pay localization): not derived from
+   * `formatPayRange()`/the stored `pay` column, read directly off `jobs`. */
+  pay_interval?: string | null;
+  /** Additive (Task 4): the raw `jobs.pay` value, BEFORE the
+   * `COALESCE(pay, 'Pay not specified')` this query applies to `pay` above.
+   * Pre-023 jobs can carry a genuine free-text `pay` with null pay_min/max
+   * (pay was a plain TEXT column from migration 003 until pay_min/pay_max
+   * were added in 023) -- callers that want to distinguish "no legacy pay at
+   * all" from "the English placeholder the SQL already baked in" need this
+   * undecorated value instead of the `pay` column. */
+  pay_raw?: string | null;
   start_date?: string | Date | null;
   expected_duration?: string | null;
   shift_schedule?: string | null;
@@ -65,6 +76,10 @@ export interface MatchedJob {
   created_at: string | Date;
   pay_min?: string | number | null;
   pay_max?: string | number | null;
+  /** Additive (Task 4, WhatsApp pay localization). */
+  pay_interval?: string | null;
+  /** Additive (Task 4) -- see `MatchableJobRow.pay_raw`. */
+  pay_raw?: string | null;
   start_date?: string | Date | null;
   expected_duration?: string | null;
   shift_schedule?: string | null;
@@ -484,6 +499,8 @@ export function scoreJobCandidate(
     created_at: job.created_at,
     pay_min: job.pay_min,
     pay_max: job.pay_max,
+    pay_interval: job.pay_interval,
+    pay_raw: job.pay_raw,
     start_date: job.start_date,
     expected_duration: job.expected_duration,
     shift_schedule: job.shift_schedule,
@@ -745,12 +762,14 @@ function matchableJobColumns(jobCoordinates: { latitude: string; longitude: stri
             COALESCE(j.company, 'Jale') AS company,
             j.location,
             COALESCE(j.pay, 'Pay not specified') AS pay,
+            j.pay AS pay_raw,
             j.job_type,
             j.description,
             j.required_docs,
             j.created_at,
             j.pay_min,
             j.pay_max,
+            j.pay_interval,
             j.start_date,
             j.expected_duration,
             j.shift_schedule,

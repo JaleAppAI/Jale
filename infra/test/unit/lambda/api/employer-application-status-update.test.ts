@@ -228,4 +228,114 @@ describe('employer-application-status-update', () => {
     expect(res.statusCode).toBe(500);
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
   });
+
+  // ---------------------------------------------------------------------------
+  // Visibility-event hook -- hiring fills/unfills a job via sync_job_hired_counts()
+  // ---------------------------------------------------------------------------
+  //
+  // sync_job_hired_counts() (029, SECURITY DEFINER, AFTER trigger on
+  // job_applications) flips jobs.status between 'active' and 'filled' within
+  // this same transaction whenever the application UPDATE below pushes
+  // workers_hired past/below number_of_workers_needed. The handler must
+  // re-read jobs.status after the UPDATE and enqueue a visibility transition
+  // when the job was publicly listed.
+
+  function makeVisibilityQueryMock(opts: {
+    statusBefore: string;
+    statusAfter: string;
+    publicListingEnabled: boolean;
+    publicCode?: string;
+    appStatusBefore?: string;
+    appStatusRequested?: string;
+  }) {
+    const {
+      statusBefore, statusAfter, publicListingEnabled, publicCode = 'PUBCODE',
+      appStatusBefore = 'talking', appStatusRequested = 'hired',
+    } = opts;
+    return (q: string) => {
+      // Pre-update job snapshot (ownership check + before-status read).
+      if (q.includes('JOIN users u ON u.id = jobs.employer_id')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, number_of_workers_needed: 3, workers_hired: 2,
+            status: statusBefore, public_listing_enabled: publicListingEnabled, public_code: publicCode,
+          }],
+        });
+      }
+      // Post-update re-read of jobs.status (after the trigger has run).
+      if (/^SELECT status FROM jobs WHERE id/.test(q.trim())) {
+        return Promise.resolve({ rows: [{ status: statusAfter }] });
+      }
+      if (q.includes('UPDATE job_applications')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{ application_id: 'app-1', job_id: JOB_ID, worker_id: WORKER_ID, status: appStatusRequested, applied_at: 'ts', updated_at: 'ts2' }],
+        });
+      }
+      if (q.includes('FROM job_applications')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ id: 'app-1', status: appStatusBefore }] });
+      }
+      return Promise.resolve({});
+    };
+  }
+
+  function findVisibilityEnqueueCall() {
+    return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
+  }
+
+  it("enqueues a 'removed' visibility event when hiring fills a listed job (active->filled)", async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({
+      statusBefore: 'active', statusAfter: 'filled', publicListingEnabled: true,
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(200);
+    const enqueueCall = findVisibilityEnqueueCall();
+    expect(enqueueCall).toBeDefined();
+    expect(enqueueCall![1]).toEqual([JOB_ID, 'PUBCODE', 'removed']);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it("enqueues a 'published' visibility event when un-hiring reopens a listed job (filled->active)", async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({
+      statusBefore: 'filled', statusAfter: 'active', publicListingEnabled: true,
+      appStatusBefore: 'hired', appStatusRequested: 'talking',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'talking' }) }));
+
+    expect(res.statusCode).toBe(200);
+    const enqueueCall = findVisibilityEnqueueCall();
+    expect(enqueueCall).toBeDefined();
+    expect(enqueueCall![1]).toEqual([JOB_ID, 'PUBCODE', 'published']);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('does NOT enqueue a visibility event when the status change does not flip effective visibility', async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({
+      statusBefore: 'active', statusAfter: 'active', publicListingEnabled: true,
+      appStatusBefore: 'pending', appStatusRequested: 'contacted',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'contacted' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(findVisibilityEnqueueCall()).toBeUndefined();
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('does NOT enqueue a visibility event (and skips the post-update re-read) when the job is not publicly listed', async () => {
+    mockQuery.mockImplementation(makeVisibilityQueryMock({
+      statusBefore: 'active', statusAfter: 'filled', publicListingEnabled: false,
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(findVisibilityEnqueueCall()).toBeUndefined();
+    const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
+    expect(calls.some((s: string) => typeof s === 'string' && /^SELECT status FROM jobs WHERE id/.test(s.trim()))).toBe(false);
+  });
 });

@@ -154,6 +154,45 @@ describe('Worker Profile API Lambda', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
+  it('exposes main_trade and main_trade_other in the profile query and response', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    const mockUser = {
+      id: 'usr-456',
+      user_type: 'worker',
+      email: 'worker@example.com',
+      phone: '0987654321',
+      full_name: 'Test Worker',
+      tenant_id: null,
+      created_at: new Date().toISOString(),
+      main_trade: 'electrician',
+      main_trade_other: null,
+      skills: [],
+      availability: null,
+      years_experience: null,
+      experience_months: null,
+      location: null,
+      bio: null,
+      certifications: [],
+    };
+
+    mockQuery.mockImplementation((queryText) => {
+      if (queryText.includes('LEFT JOIN worker_profiles')) {
+        return Promise.resolve({ rows: [mockUser] });
+      }
+      return Promise.resolve({});
+    });
+
+    const response = await handler(mockEvent);
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.main_trade).toBe('electrician');
+    expect(body.main_trade_other).toBeNull();
+    const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('LEFT JOIN worker_profiles'))?.[0];
+    expect(profileQuery).toContain('u.main_trade');
+    expect(profileQuery).toContain('u.main_trade_other');
+  });
+
   it('selects preferred-city coordinates in the profile query', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const mockUser = {

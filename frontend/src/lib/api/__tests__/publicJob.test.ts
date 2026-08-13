@@ -353,4 +353,50 @@ describe('getPublicJobsList', () => {
     expect(jobs.map((j) => j.code)).toEqual(['A']);
     expect(errorSpy).not.toHaveBeenCalled();
   });
+
+  describe('maxItems option (used by the RSS feed, never by the sitemap)', () => {
+    it('requests a page limit capped to maxItems instead of the default 500', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ jobs: [item('A'), item('B')], next_cursor: null }));
+      await getPublicJobsList(undefined, { maxItems: 50 });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.example.test/public/jobs?limit=50',
+        expect.objectContaining({ cache: 'no-store' }),
+      );
+    });
+
+    it('stops paginating and trims to maxItems once enough items have accumulated', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ jobs: [item('A'), item('B'), item('C')], next_cursor: 'page2' }));
+      const jobs = await getPublicJobsList(undefined, { maxItems: 2 });
+      expect(jobs.map((j) => j.code)).toEqual(['A', 'B']);
+      // A second page must never be fetched: the first page already had enough.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('still follows next_cursor across pages when the first page has fewer than maxItems', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: 'page2' }))
+        .mockResolvedValueOnce(jsonResponse({ jobs: [item('B'), item('C')], next_cursor: 'page3' }));
+      const jobs = await getPublicJobsList(undefined, { maxItems: 3 });
+      expect(jobs.map((j) => j.code)).toEqual(['A', 'B', 'C']);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns fewer than maxItems when the list itself has fewer active jobs, without hanging', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ jobs: [item('A')], next_cursor: null }));
+      const jobs = await getPublicJobsList(undefined, { maxItems: 50 });
+      expect(jobs.map((j) => j.code)).toEqual(['A']);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the default (sitemap) call path completely unaffected', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ jobs: [item('A'), item('B')], next_cursor: null }));
+      const jobs = await getPublicJobsList();
+      expect(jobs.map((j) => j.code)).toEqual(['A', 'B']);
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://api.example.test/public/jobs?limit=500',
+        expect.objectContaining({ cache: 'no-store' }),
+      );
+    });
+  });
 });

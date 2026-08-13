@@ -98,12 +98,31 @@ function buildJobLocation(job: PublicJobActive): object | undefined {
  * Pure builder: PublicJobActive + the page's canonical URL -> a schema.org
  * JobPosting object. Caller is responsible for JSON-serializing the result
  * (via `serializeJsonLd`) before injecting it into a `<script>` tag.
+ *
+ * Returns `null` when the job has no non-empty `description`: `description`
+ * is a required property for Google's JobPosting rich result, and an
+ * incomplete JobPosting is worse for search than no structured data at all
+ * (Google may reject/ignore it, or -- worse -- show a broken rich result).
+ * The page must skip the `<script type="application/ld+json">` tag
+ * entirely in that case rather than emit a JobPosting missing the field.
+ *
+ * `directApply` is deliberately NOT emitted. Per Google's JobPosting
+ * structured-data guidance, `directApply: true` requires that "the user
+ * completes the application process on your site" without having to
+ * provide their information more than once. This page's primary CTA hands
+ * off to WhatsApp and the secondary CTA goes through a signup flow -- both
+ * leave the site / require re-entering information elsewhere, so this flow
+ * does not qualify as direct-apply. Revisit only if the apply flow itself
+ * changes to complete entirely on jaleapp.ai.
  */
-export function buildJobPostingJsonLd(job: PublicJobActive, canonicalUrl: string): object {
+export function buildJobPostingJsonLd(job: PublicJobActive, canonicalUrl: string): object | null {
+  if (!job.description || job.description.trim() === '') return null;
+
   const jsonLd: Record<string, unknown> = {
     '@context': 'https://schema.org',
     '@type': 'JobPosting',
     title: job.title,
+    description: formatDescription(job.description),
     datePosted: toDateOnly(job.created_at),
     validThrough: computeValidThrough(job.created_at),
     identifier: {
@@ -122,10 +141,6 @@ export function buildJobPostingJsonLd(job: PublicJobActive, canonicalUrl: string
       '@type': 'Organization',
       name: job.company,
     };
-  }
-
-  if (job.description) {
-    jsonLd.description = formatDescription(job.description);
   }
 
   const employmentType = buildEmploymentType(job.job_type);

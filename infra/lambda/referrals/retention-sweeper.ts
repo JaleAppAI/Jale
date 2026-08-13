@@ -24,6 +24,23 @@ const CLAIM_GRACE_DAYS = 30;
 // deliberately long — over a year, to keep year-on-year comparisons possible.
 const OPEN_RETENTION_DAYS = 400;
 
+// job_visibility_events (migration 062) was evaluated for pruning here and
+// deliberately excluded — do not add a DELETE for it without a new
+// migration. 062 puts the table under FORCE RLS and grants jale_admin only
+// `SELECT, UPDATE` (`job_visibility_events_drain` / `_drain_update`); there
+// is no `FOR DELETE` policy and no table-level DELETE grant at all. That is
+// NOT the silent-zero-rows hazard 056/062 warn about for UPDATE/DELETE with
+// an unmatched USING clause — with zero grant, `DELETE FROM
+// job_visibility_events` raises a hard `permission denied for table
+// job_visibility_events` error, so adding one here would make this sweeper
+// fail every run, not just no-op. A future migration would need to add
+// `GRANT DELETE ON job_visibility_events TO jale_admin`, a
+// `FOR DELETE TO jale_admin USING (status IN ('sent', 'failed'))` policy, and
+// an index to serve that predicate (`job_visibility_events_drain_idx` is
+// partial on `status IN ('pending', 'failed')`, which does not cover a
+// sent/failed sweep). Out of scope here — migrations are operator-run and
+// forward-only.
+
 // Deletes are batched so one run can never hold a long lock on a table the
 // public page is actively inserting into.
 const BATCH_SIZE = 5000;

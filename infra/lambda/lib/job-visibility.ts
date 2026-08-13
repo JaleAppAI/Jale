@@ -48,3 +48,24 @@ export async function enqueueVisibilityTransition(
     await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, publicCode, 'removed']);
   }
 }
+
+/**
+ * Enqueues a 'published' ping for a job whose effective visibility did NOT
+ * change -- unlike enqueueVisibilityTransition above, which only fires on an
+ * actual wasVisible/isVisible flip. Used by employer-jobs-update.ts's
+ * content-edit path: a title/description/etc edit never changes status or
+ * public_listing_enabled, so enqueueVisibilityTransition would silently no-op
+ * there, yet Google's Indexing API still needs to know the content behind an
+ * already-published URL changed.
+ *
+ * Callers MUST dedupe before calling this (e.g. skip when a pending
+ * 'published' row already exists for this job_id) -- rapid successive edits
+ * must not flood the quota-limited Indexing API drain with redundant pings.
+ */
+export async function enqueueVisibilityPing(
+  client: Client | PoolClient,
+  jobId: string,
+  publicCode: string,
+): Promise<void> {
+  await client.query(`SELECT enqueue_job_visibility_event($1, $2, $3)`, [jobId, publicCode, 'published']);
+}

@@ -243,6 +243,69 @@ describe('visibility-outbox-drain', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1); // only the token exchange attempt
   });
 
+  // ── Change 2: EMF metric on permanent failure ──
+
+  it('emits a Jale/Referrals EMF metric when a row is marked failed at MAX_ATTEMPTS (5xx)', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const pool = makePool([makeRow({ id: 'evt-1', attempt_count: 7 })]);
+    mockGetDbPool.mockResolvedValue(pool);
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(indexingResponse(503));
+
+    const res = await handler();
+    expect(res.failed).toBe(1);
+
+    const emfLine = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes('VisibilityOutboxDrainPermanentFailure'));
+    expect(emfLine).toBeDefined();
+    const parsed = JSON.parse(emfLine as string);
+    expect(parsed._aws.CloudWatchMetrics[0]).toEqual({
+      Namespace: 'Jale/Referrals',
+      Dimensions: [[]],
+      Metrics: [{ Name: 'VisibilityOutboxDrainPermanentFailure', Unit: 'Count' }],
+    });
+    expect(parsed.VisibilityOutboxDrainPermanentFailure).toBe(1);
+    logSpy.mockRestore();
+  });
+
+  it('emits the permanent-failure metric for a 429 that lands on failed too', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const rows = [makeRow({ id: 'evt-1', attempt_count: 7 }), makeRow({ id: 'evt-2' })];
+    const pool = makePool(rows);
+    mockGetDbPool.mockResolvedValue(pool);
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(indexingResponse(429));
+
+    const res = await handler();
+    expect(res.failed).toBe(1);
+    const emfLines = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('VisibilityOutboxDrainPermanentFailure'));
+    expect(emfLines).toHaveLength(1);
+    logSpy.mockRestore();
+  });
+
+  it('does NOT emit the permanent-failure metric when a row merely stays pending', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const pool = makePool([makeRow({ id: 'evt-1', attempt_count: 3 })]);
+    mockGetDbPool.mockResolvedValue(pool);
+    mockFetch
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(indexingResponse(400));
+
+    const res = await handler();
+    expect(res.failed).toBe(0);
+    expect(res.pendingRetry).toBe(1);
+    const emfLines = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((line) => line.includes('VisibilityOutboxDrainPermanentFailure'));
+    expect(emfLines).toHaveLength(0);
+    logSpy.mockRestore();
+  });
+
   it('never logs the access token or the private key', async () => {
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});

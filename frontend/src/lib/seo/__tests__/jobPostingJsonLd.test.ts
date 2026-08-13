@@ -35,10 +35,24 @@ describe('buildJobPostingJsonLd', () => {
     expect(result.description).toBe('Line one<br>Line two<br>Line three');
   });
 
-  it('omits description when null', () => {
+  it('returns null (no JobPosting at all) when description is null', () => {
     const job: PublicJobActive = { ...BASE_JOB, description: null };
-    const result = buildJobPostingJsonLd(job, CANONICAL_URL) as Record<string, unknown>;
-    expect(result).not.toHaveProperty('description');
+    expect(buildJobPostingJsonLd(job, CANONICAL_URL)).toBeNull();
+  });
+
+  it('returns null when description is an empty string', () => {
+    const job: PublicJobActive = { ...BASE_JOB, description: '' };
+    expect(buildJobPostingJsonLd(job, CANONICAL_URL)).toBeNull();
+  });
+
+  it('returns null when description is only whitespace', () => {
+    const job: PublicJobActive = { ...BASE_JOB, description: '   \n  ' };
+    expect(buildJobPostingJsonLd(job, CANONICAL_URL)).toBeNull();
+  });
+
+  it('never emits directApply -- the apply flow leaves the site (WhatsApp / signup), so it does not qualify', () => {
+    const result = buildJobPostingJsonLd(BASE_JOB, CANONICAL_URL) as Record<string, unknown>;
+    expect(result).not.toHaveProperty('directApply');
   });
 
   describe('validThrough', () => {
@@ -165,7 +179,8 @@ describe('serializeJsonLd', () => {
       description: 'Great job</script><script>alert(1)</script>',
     };
     const jsonLd = buildJobPostingJsonLd(job, CANONICAL_URL);
-    const serialized = serializeJsonLd(jsonLd);
+    expect(jsonLd).not.toBeNull();
+    const serialized = serializeJsonLd(jsonLd!);
 
     expect(serialized).not.toContain('</');
     expect(serialized).not.toContain('<script>alert(1)</script>');
@@ -180,7 +195,8 @@ describe('serializeJsonLd', () => {
   it('escapes every literal "<", including the one from the \\n -> <br> conversion', () => {
     const job: PublicJobActive = { ...BASE_JOB, description: 'Line one\nLine two' };
     const jsonLd = buildJobPostingJsonLd(job, CANONICAL_URL);
-    const serialized = serializeJsonLd(jsonLd);
+    expect(jsonLd).not.toBeNull();
+    const serialized = serializeJsonLd(jsonLd!);
     // Only `<` is escaped per the mandated regex -- the closing `>` is left
     // as a literal character, which is safe (it cannot open a new tag).
     expect(serialized).not.toContain('<');

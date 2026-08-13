@@ -754,6 +754,100 @@ describe('employer-jobs-update', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // Field-edit path -- visibility PING (not transition) on content edits
+  // ---------------------------------------------------------------------------
+  //
+  // A field edit never touches status or public_listing_enabled, so
+  // enqueueVisibilityTransition (the status-branch / public-listing-toggle
+  // mechanism) never fires here. Instead, editing an effectively-visible job's
+  // content pings Google's Indexing API directly via enqueueVisibilityPing,
+  // deduped against any already-pending 'published' row for the job.
+
+  function mockFieldEditVisibility(opts: {
+    status?: string;
+    publicListingEnabled?: boolean;
+    publicCode?: string | null;
+    pendingRowCount?: number;
+  } = {}) {
+    const { status = 'active', publicListingEnabled = true, publicCode = 'PUB1', pendingRowCount = 0 } = opts;
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{ job_type: 'full-time', required_docs: ['resume'], applicant_count: 0, hired_count: 0, city: null, state_region: null }],
+        });
+      }
+      if (q.includes('UPDATE jobs')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, ...VALID_EDIT, status, hired_count: 0, open_count: 1, applicant_count: 0,
+            public_listing_enabled: publicListingEnabled, public_code: publicCode,
+          }],
+        });
+      }
+      if (q.includes('FROM job_visibility_events')) {
+        return Promise.resolve({ rowCount: pendingRowCount, rows: pendingRowCount > 0 ? [{ '1': 1 }] : [] });
+      }
+      return Promise.resolve({});
+    });
+  }
+
+  function findVisibilityPingCall() {
+    return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('enqueue_job_visibility_event'));
+  }
+
+  function findDedupeSelectCall() {
+    return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('FROM job_visibility_events'));
+  }
+
+  it('pings visibility exactly once when editing a visible (active, publicly-listed) job with no pending event', async () => {
+    mockFieldEditVisibility({ status: 'active', publicListingEnabled: true, pendingRowCount: 0 });
+
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(findDedupeSelectCall()).toBeDefined();
+    expect(findDedupeSelectCall()![0]).toContain("event_kind = 'published'");
+    expect(findDedupeSelectCall()![0]).toContain("status = 'pending'");
+    const pingCall = findVisibilityPingCall();
+    expect(pingCall).toBeDefined();
+    expect(pingCall![1]).toEqual([JOB_ID, 'PUB1', 'published']);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('does NOT ping visibility again when a published event is already pending for the job', async () => {
+    mockFieldEditVisibility({ status: 'active', publicListingEnabled: true, pendingRowCount: 1 });
+
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(findDedupeSelectCall()).toBeDefined();
+    expect(findVisibilityPingCall()).toBeUndefined();
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('does NOT ping visibility (and skips the dedupe check) when editing a paused (non-active) job', async () => {
+    mockFieldEditVisibility({ status: 'paused', publicListingEnabled: true });
+
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(findDedupeSelectCall()).toBeUndefined();
+    expect(findVisibilityPingCall()).toBeUndefined();
+  });
+
+  it('does NOT ping visibility (and skips the dedupe check) when editing an active job that is not publicly listed', async () => {
+    mockFieldEditVisibility({ status: 'active', publicListingEnabled: false });
+
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(findDedupeSelectCall()).toBeUndefined();
+    expect(findVisibilityPingCall()).toBeUndefined();
+  });
+
+  // ---------------------------------------------------------------------------
   // Visibility-event hook -- status-branch transition matrix
   // ---------------------------------------------------------------------------
 

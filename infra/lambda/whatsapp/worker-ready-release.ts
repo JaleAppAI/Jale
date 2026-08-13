@@ -24,6 +24,15 @@ export interface ReleaseJobSummary {
   title: string;
   companyName: string;
   score: number;
+  /** Additive (Task 4, WhatsApp pay localization) -- mirrors the optional
+   * location/pay fields on onboarding-types.ts's `job_alert_digest.jobs`
+   * entries, sourced from the same `jobById` row already loaded above for
+   * the referred-job renderer. */
+  location?: string | null;
+  pay?: string | null;
+  payMin?: number | null;
+  payMax?: number | null;
+  payInterval?: string | null;
 }
 
 export interface ReleaseDeps {
@@ -314,8 +323,13 @@ export async function releaseWorkerReady(
         await client.query<{
           id: string; status: string; title: string; company: string;
           location: string | null; pay: string | null;
+          // Additive (Task 4, WhatsApp pay localization): structured fields
+          // let the renderer show localized pay text instead of the
+          // English-only `pay` string; `pay` stays the raw legacy fallback.
+          pay_min: number | null; pay_max: number | null; pay_interval: string | null;
         }>(
-          `SELECT id, status, title, company, location, pay FROM jobs WHERE id = ANY($1::uuid[])`,
+          `SELECT id, status, title, company, location, pay, pay_min, pay_max, pay_interval
+             FROM jobs WHERE id = ANY($1::uuid[])`,
           [jobIdsToLoad],
         )
       ).rows
@@ -572,6 +586,9 @@ export async function releaseWorkerReady(
               companyName: referredJob.company ?? '',
               location: referredJob.location,
               pay: referredJob.pay,
+              payMin: referredJob.pay_min,
+              payMax: referredJob.pay_max,
+              payInterval: referredJob.pay_interval,
             }
           : null,
       },
@@ -600,7 +617,17 @@ export async function releaseWorkerReady(
     const jobs: ReleaseJobSummary[] = jobAlertKept.map((intent) => {
       const job = jobById.get(intent.sourceId)!;
       const score = readJobAlertScore(intent);
-      return { jobId: intent.sourceId, title: job.title, companyName: job.company, score };
+      return {
+        jobId: intent.sourceId,
+        title: job.title,
+        companyName: job.company,
+        score,
+        location: job.location,
+        pay: job.pay,
+        payMin: job.pay_min,
+        payMax: job.pay_max,
+        payInterval: job.pay_interval,
+      };
     });
     renderPlan.push({
       request: { kind: 'job_alert_digest', workerId, language, jobs },
