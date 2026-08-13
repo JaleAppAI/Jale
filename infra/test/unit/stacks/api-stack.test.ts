@@ -9,9 +9,11 @@ import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { BillingStack } from '../../../lib/stacks/billing-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
+import { bedrockArns } from '../../../lib/bedrock-arns';
 
 describe('ApiStack', () => {
   let template: Template;
+  let apiStack: ApiStack;
 
   beforeAll(() => {
     const app = new cdk.App({
@@ -87,6 +89,7 @@ describe('ApiStack', () => {
       employerAuthorizer: api.employerAuthorizer,
       employerJobResource: api.employerJobResource,
     });
+    apiStack = api;
     template = Template.fromStack(api);
   });
 
@@ -715,6 +718,102 @@ describe('ApiStack', () => {
 
   test('referrals path-part resource exists: referrals', () => {
     template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'referrals' });
+  });
+
+  // ── T-A1 (A-5): employer AI job-description generation endpoint ──────────
+
+  test('Employer generate-description Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer generate description endpoint',
+    });
+  });
+
+  test('POST /employer/jobs/generate-description exists with EmployerAuthorizer', () => {
+    const rootId = restApiRootLogicalId();
+    const [employerLogicalId] = childrenOf(rootId, 'employer')[0];
+    const [employerJobsLogicalId] = childrenOf(employerLogicalId, 'jobs')[0];
+    const [generateDescLogicalId] = childrenOf(employerJobsLogicalId, 'generate-description')[0];
+    expect(generateDescLogicalId).toBeDefined();
+
+    const methods = template.findResources('AWS::ApiGateway::Method', {
+      Properties: { HttpMethod: 'POST' },
+    });
+    const postOnGenerateDesc = Object.values(methods).filter((m: any) => {
+      const parentRef = m.Properties?.ResourceId?.['Fn::GetAtt']?.[0] ?? m.Properties?.ResourceId?.Ref;
+      return parentRef === generateDescLogicalId;
+    });
+    expect(postOnGenerateDesc).toHaveLength(1);
+    expect((postOnGenerateDesc[0] as any).Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+    // Match.objectLike is a CDK assertion-library matcher, only meaningful
+    // inside template.hasResourceProperties -- against a plain extracted
+    // value, a direct Ref-string check is what's actually needed here.
+    expect((postOnGenerateDesc[0] as any).Properties.AuthorizerId.Ref).toMatch(/EmployerAuthorizer/);
+  });
+
+  test('the generate-description Lambda role (specifically) is granted bedrock:InvokeModel scoped to the exact bedrockArns() list, not a wildcard', () => {
+    // Tied to the SPECIFIC Lambda's role -- not just "some bedrock statement
+    // exists somewhere in the stack" (which `resources: ['*']` would also
+    // satisfy). JaleLambdaFunction names the underlying NodejsFunction
+    // construct 'Function', so this Lambda's default policy logical id is
+    // prefixed EmployerGenerateDescriptionLambdaFunctionServiceRoleDefaultPolicy.
+    const policies = template.findResources('AWS::IAM::Policy');
+    const matchingKeys = Object.keys(policies).filter((key) =>
+      key.startsWith('EmployerGenerateDescriptionLambdaFunctionServiceRoleDefaultPolicy'));
+    expect(matchingKeys).toHaveLength(1);
+
+    const statements = (policies[matchingKeys[0]] as any).Properties.PolicyDocument.Statement as any[];
+    const bedrockStatement = statements.find((s) => s.Action === 'bedrock:InvokeModel');
+    expect(bedrockStatement).toBeDefined();
+    expect(bedrockStatement.Effect).toBe('Allow');
+
+    // Pin the exact ARN list bedrockArns() produces for this stack's actual
+    // (unresolved, token-bearing) region/account -- mirrors ai-stack.test.ts's
+    // pinned-ARN assertion, resolved through the real Stack so Fn::Join/Ref
+    // token shapes match the synthesized template exactly.
+    const expectedResources = cdk.Stack.of(apiStack).resolve(bedrockArns(apiStack.region, apiStack.account));
+    expect(bedrockStatement.Resource).toEqual(expectedResources);
+  });
+
+  test('centralized MethodSettings includes exactly one POST /employer/jobs/generate-description throttle entry (burst 5, rate 2)', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/employer/jobs/generate-description' && s.HttpMethod === 'POST',
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 5,
+      ThrottlingRateLimit: 2,
+    }));
+  });
+
+  test('the generation-cap DynamoDB table is a TTL-enabled on-demand table keyed by pk', () => {
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      BillingMode: 'PAY_PER_REQUEST',
+      KeySchema: [
+        { AttributeName: 'pk', KeyType: 'HASH' },
+      ],
+      TimeToLiveSpecification: {
+        AttributeName: 'expiresAt',
+        Enabled: true,
+      },
+    });
+  });
+
+  test('the generate-description Lambda has GENERATION_CAP_TABLE, GENERATION_DAILY_LIMIT, and BEDROCK_MODEL_ID env vars', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer generate description endpoint',
+      Environment: {
+        Variables: Match.objectLike({
+          GENERATION_CAP_TABLE: Match.anyValue(),
+          GENERATION_DAILY_LIMIT: Match.anyValue(),
+          BEDROCK_MODEL_ID: Match.anyValue(),
+          ALLOWED_ORIGIN: Match.anyValue(),
+        }),
+      },
+    });
   });
 });
 
