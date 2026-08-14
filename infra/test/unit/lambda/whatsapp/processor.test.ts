@@ -50,11 +50,15 @@ jest.mock('@aws-sdk/client-lambda', () => ({
   InvokeCommand: jest.fn((args) => ({ input: args, __type: 'Invoke' })),
 }));
 
+const mockDetectMediaCategory = jest.fn();
+const mockBuildS3Key = jest.fn((userId: string, mediaId: string, type: string) => `${userId}/${type}/${mediaId}`);
+const mockDownloadTwilioMedia = jest.fn();
+const mockUploadMediaToS3 = jest.fn();
 jest.mock('../../../../lambda/whatsapp/lib/media', () => ({
-  detectMediaCategory: jest.fn(),
-  buildS3Key: jest.fn((userId: string, mediaId: string, type: string) => `${userId}/${type}/${mediaId}`),
-  downloadTwilioMedia: jest.fn(),
-  uploadMediaToS3: jest.fn(),
+  detectMediaCategory: (contentType: unknown) => mockDetectMediaCategory(contentType),
+  buildS3Key: (userId: string, mediaId: string, type: string) => mockBuildS3Key(userId, mediaId, type),
+  downloadTwilioMedia: (...args: unknown[]) => mockDownloadTwilioMedia(...args),
+  uploadMediaToS3: (...args: unknown[]) => mockUploadMediaToS3(...args),
   ALLOWED_PHOTO_TYPES: ['image/jpeg', 'image/png', 'image/webp'],
   ALLOWED_VOICE_TYPES: ['audio/ogg', 'audio/mpeg', 'audio/mp4'],
 }));
@@ -3113,5 +3117,165 @@ describe('error fallback', () => {
 
     expect(countQueryByPattern(/#err/)).toBe(0);
     expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
+  });
+});
+
+// ── Voice-note transcription kickoff (T-transcription-language-id) ────────
+//
+// startTrustTranscription/ingestProfileVoiceNote are not exported — the only
+// way to reach the real production code is to have routeOnboardingV2's mock
+// implementation call through `deps.voiceIntake.*` directly, mirroring the
+// `deps.repo.completeOnboarding`/`deps.enqueueWorkerMessage` pattern used
+// elsewhere in this file. These tests assert the Step Functions execution
+// input the pipeline construct now receives no longer carries a
+// `languageCode` field (language identification moved into the Transcribe
+// job itself — see voice-transcription-pipeline.ts) while every other
+// pipeline-required field is still present.
+describe('voice-note transcription kickoff (languageCode removed)', () => {
+  const originalEnv = process.env;
+  const PHONE = '+15125551234';
+  const FROM = `whatsapp:${PHONE}`;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockQuery.mockReset();
+    mockConnect.mockReset();
+    mockRelease.mockReset();
+    process.env = {
+      ...originalEnv,
+      WORKER_POOL_ID: 'pool-abc',
+      WORKER_CLIENT_ID: 'client-abc',
+      TWILIO_SECRET_ARN: 'arn:twilio',
+      TWILIO_STATUS_CALLBACK_URL: 'https://callbacks.example.test/prod/whatsapp/status-callback',
+      DB_SECRET_ARN: 'arn:db',
+      REQUIRED_TOS_VERSION: '1.0',
+      MEDIA_BUCKET_NAME: 'jale-worker-media-test',
+      TRUST_PIPELINE_STATE_MACHINE_ARN: 'arn:aws:states:us-east-2:000000000000:stateMachine:fake-trust-voice-pipeline',
+      AI_PIPELINE_STATE_MACHINE_ARN: 'arn:aws:states:us-east-2:000000000000:stateMachine:fake-profile-voice-pipeline',
+    };
+
+    mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
+    mockSecretsSend.mockResolvedValue({
+      SecretString: JSON.stringify({
+        accountSid: 'AC_test',
+        authToken: 'tok_test',
+        messagingServiceSid: 'MGtest_svc',
+        templates: {},
+      }),
+    });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ sid: 'SM11111111111111111111111111111111' }),
+    });
+
+    mockDetectMediaCategory.mockReturnValue('voice');
+    mockDownloadTwilioMedia.mockResolvedValue(Buffer.from('fake-voice-audio'));
+    mockUploadMediaToS3.mockResolvedValue(undefined);
+
+    mockLoadRuntimeControls.mockResolvedValue({ disabled: true });
+    mockHashNormalizedPhone.mockImplementation((phone: string) => `hash:${phone}`);
+    mockRouteOnboardingV2.mockReset();
+    mockCreateOnboardingV2Adapters.mockReset();
+    mockCreateOnboardingV2Adapters.mockReturnValue({});
+    mockEnqueueWorkerMessage.mockReset();
+    mockPublishOutboxWakes.mockReset();
+    mockPublishOutboxWakes.mockResolvedValue({ sent: 0, failed: 0 });
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+  });
+
+  it('trust-answer voice note: StartExecutionCommand input has no languageCode key', async () => {
+    mockRouteOnboardingV2.mockImplementation(async (_client: unknown, _session: unknown, _msg: unknown, deps: any) => {
+      await deps.voiceIntake.startTrustTranscription({
+        workerId: 'worker-1',
+        phone: PHONE,
+        runId: 'run-1',
+        stepKey: 'trust.question.1',
+        questionIndex: 0,
+        language: 'es',
+        mediaUrl: 'https://api.twilio.com/media/ME00000000000000000000000000000001',
+        mediaContentType: 'audio/ogg',
+        inboundMessageSid: 'SM-trust-voice-note-1',
+      });
+      return { handled: true, workerId: null, stepKey: 'trust.question.1' };
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-trust-voice-note-1' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'onboarding_v2', user_id: 'worker-1' })],
+      }) // conv row — user_id SET to skip the web-worker bypass query
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'sub-worker-1' }] }) // setWorkerRlsContextByUserId: cognito_sub lookup
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_profile_media
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // flip claim to db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: nothing pending
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-trust-voice-note-1', From: FROM, Body: '' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockSfnSend).toHaveBeenCalledTimes(1);
+    const sentInput = JSON.parse((mockSfnSend.mock.calls[0][0] as any).input.input);
+    expect(sentInput).not.toHaveProperty('languageCode');
+    expect(sentInput.transcriptionJobName).toEqual(expect.stringContaining('jale-vt-'));
+    expect(sentInput.mediaS3Uri).toEqual(expect.stringContaining('s3://jale-worker-media-test/'));
+    expect(sentInput.mediaBucketName).toBe('jale-worker-media-test');
+    expect(sentInput.transcriptOutputKey).toEqual(expect.stringContaining('/transcripts/'));
+    expect(sentInput.v2.language).toBe('es');
+  });
+
+  it('profile voice intake: StartExecutionCommand input has no languageCode key', async () => {
+    mockRouteOnboardingV2.mockImplementation(async (_client: unknown, _session: unknown, _msg: unknown, deps: any) => {
+      await deps.voiceIntake.ingestProfileVoiceNote({
+        workerId: 'worker-2',
+        phone: PHONE,
+        runId: 'run-2',
+        stepKey: 'profile.voice_processing',
+        language: 'en',
+        mediaUrl: 'https://api.twilio.com/media/ME00000000000000000000000000000002',
+        mediaContentType: 'audio/ogg',
+        inboundMessageSid: 'SM-profile-voice-note-1',
+      });
+      return { handled: true, workerId: null, stepKey: 'profile.voice_processing' };
+    });
+
+    mockQuery
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-profile-voice-note-1' }] }) // claim
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [convRow({ conversation_state: 'onboarding_v2', user_id: 'worker-2', language: 'en' })],
+      }) // conv row — user_id SET to skip the web-worker bypass query
+      .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'sub-worker-2' }] }) // setWorkerRlsContextByUserId: cognito_sub lookup
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker_profile_media
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context)
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // flip claim to db_committed
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: nothing pending
+      .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+    await handler(
+      makeSqsEvent({ MessageSid: 'SM-profile-voice-note-1', From: FROM, Body: '' }),
+      {} as any,
+      {} as any,
+    );
+
+    expect(mockSfnSend).toHaveBeenCalledTimes(1);
+    const sentInput = JSON.parse((mockSfnSend.mock.calls[0][0] as any).input.input);
+    expect(sentInput).not.toHaveProperty('languageCode');
+    expect(sentInput.transcriptionJobName).toEqual(expect.stringContaining('jale-vp-'));
+    expect(sentInput.mediaS3Uri).toEqual(expect.stringContaining('s3://jale-worker-media-test/'));
+    expect(sentInput.mediaBucketName).toBe('jale-worker-media-test');
+    expect(sentInput.transcriptOutputKey).toEqual(expect.stringContaining('/transcripts/'));
+    expect(sentInput.language).toBe('en');
   });
 });

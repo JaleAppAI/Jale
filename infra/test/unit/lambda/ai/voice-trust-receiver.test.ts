@@ -200,6 +200,33 @@ describe('handleVoiceTrustCompletion — v2 branch', () => {
     expect(evt.executionArn).toBe(V2_EXECUTION_ARN);
   });
 
+  // Regression (T-transcription-language-id): jobs run with
+  // IdentifyMultipleLanguages add a `results.language_codes` array to the
+  // Transcribe output JSON alongside the same `transcripts[0].transcript`
+  // shape. readTranscript only ever reads the latter, so this extra field
+  // must be inert — the parsed transcript text is unaffected.
+  it('a transcript with results.language_codes (multi-language job output) parses the transcript unchanged', async () => {
+    mockS3Send.mockResolvedValueOnce({
+      Body: {
+        transformToString: () => Promise.resolve(JSON.stringify({
+          results: {
+            transcripts: [{ transcript: 'five years experience' }],
+            language_codes: [
+              { language_code: 'es-US', duration_in_seconds: 3.2 },
+              { language_code: 'en-US', duration_in_seconds: 1.1 },
+            ],
+          },
+        })),
+      },
+    });
+
+    await handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: v2Context, executionArn: V2_EXECUTION_ARN });
+
+    const { evt } = parseSentEvent();
+    expect(evt.status).toBe('COMPLETED');
+    expect(evt.transcript).toBe('five years experience');
+  });
+
   it('throws when executionArn is missing on a v2 completion (never silently omits the staleness anchor)', async () => {
     await expect(
       handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: v2Context }),

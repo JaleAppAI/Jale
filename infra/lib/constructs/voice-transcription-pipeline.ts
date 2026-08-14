@@ -14,6 +14,15 @@ export interface VoiceTranscriptionPipelineProps {
   /** Lambda invoked with { status, executionContext } on COMPLETED or FAILED. */
   readonly completionHandler: lambda.IFunction;
   readonly pollIntervalSec?: number;
+  /**
+   * Name of an operator-created es-US custom vocabulary (see
+   * infra/scripts/transcribe/create-vocabulary.sh). Optional so stacks can
+   * deploy before the vocabulary exists in the target account/region — when
+   * unset, LanguageIdSettings is omitted entirely rather than referencing a
+   * vocabulary name that doesn't exist yet (which would fail every job at
+   * StartTranscriptionJob time).
+   */
+  readonly esVocabularyName?: string;
 }
 
 export class VoiceTranscriptionPipeline extends Construct {
@@ -29,7 +38,20 @@ export class VoiceTranscriptionPipeline extends Construct {
       action: 'startTranscriptionJob',
       parameters: {
         TranscriptionJobName: sfn.JsonPath.stringAt('$.transcriptionJobName'),
-        LanguageCode: sfn.JsonPath.stringAt('$.languageCode'),
+        // Language is now identified per-job rather than hardcoded from the
+        // chat's language setting (which produced garbage transcripts for
+        // Spanish audio in an English-set conversation and never handled
+        // code-switching). es-US (not es-MX) is deliberate: es-MX is not on
+        // AWS's documented multi-language-identification support list and
+        // silently falls back to a different Spanish dialect, dropping any
+        // es-MX vocabulary with no error. All values here are deploy-time
+        // static (baked into the ASL at synth) — they never vary per
+        // message, so no execution-input field carries them.
+        IdentifyMultipleLanguages: true,
+        LanguageOptions: ['es-US', 'en-US'],
+        ...(props.esVocabularyName
+          ? { LanguageIdSettings: { 'es-US': { VocabularyName: props.esVocabularyName } } }
+          : {}),
         Media: { MediaFileUri: sfn.JsonPath.stringAt('$.mediaS3Uri') },
         OutputBucketName: sfn.JsonPath.stringAt('$.mediaBucketName'),
         OutputKey: sfn.JsonPath.stringAt('$.transcriptOutputKey'),
