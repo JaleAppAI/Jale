@@ -116,4 +116,28 @@ describe('worker-jobs-detail', () => {
     expect(body.required_docs).toEqual([]);
     expect(body.missing_docs).toEqual([]);
   });
+
+  it('passes a non-active status through the 200 body and coalesces paused in SQL', async () => {
+    const job = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+                  required_docs: [], created_at: 'ts', company_name: 'Acme', status: 'closed' };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [{ status: 'pending' }] });
+      return Promise.resolve({});
+    });
+    const res = await handler(baseEvent);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.status).toBe('closed');
+    expect(body.already_applied).toBe(true);
+
+    const jobsSql = mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))?.[0] as string;
+    // paused is billing-private: the API must never emit it to a worker.
+    expect(jobsSql).toContain("CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS status");
+    // Company name via the 031 definer function; the users join is dead under
+    // worker RLS (no policy grants employer-row reads) and must be gone.
+    expect(jobsSql).toContain('employer_display_name(j.employer_id) AS company_name');
+    expect(jobsSql).not.toContain('JOIN users');
+  });
 });

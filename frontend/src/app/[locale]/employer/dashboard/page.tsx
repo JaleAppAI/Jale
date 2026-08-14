@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { usePageData } from '@/hooks/usePageData';
 import { useStaggerOnce } from '@/hooks/useStaggerOnce';
-import { formatWeekdayDate } from '@/lib/date';
+import { formatShortDate, formatWeekdayDate } from '@/lib/date';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { AppShell } from '@/components/layout/AppShell';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,6 @@ import { ErrorState } from '@/components/ui/error-state';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
-import { KVList } from '@/components/ui/kv-list';
 import { MetricCard } from '@/components/ui/metric-card';
 import { DashboardSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
@@ -32,10 +31,17 @@ import { errorMessageKey } from '@/lib/api/errors';
 import type { JobStatus } from '@/lib/status';
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Percentage of `total` that `part` represents, safe at total = 0. */
 function share(part: number, total: number): number {
     return total > 0 ? (part / total) * 100 : 0;
+}
+
+function daysSince(value: string, now: Date): number | null {
+    const postedAt = new Date(value);
+    if (Number.isNaN(postedAt.getTime())) return null;
+    return Math.max(0, Math.floor((now.getTime() - postedAt.getTime()) / MS_PER_DAY));
 }
 
 export default function EmployerDashboardPage() {
@@ -102,20 +108,33 @@ export default function EmployerDashboardPage() {
     const closedCount = jobs.filter((job) => job.status === 'closed').length;
     const totalApplicants = jobs.reduce((sum, job) => sum + job.applicant_count, 0);
     const totalHired = jobs.reduce((sum, job) => sum + (job.hired_count ?? 0), 0);
-    const totalOpenings = jobs.reduce((sum, job) => sum + (job.number_of_workers_needed ?? 0), 0);
+    const totalPositionsNeeded = jobs.reduce((sum, job) => sum + (job.number_of_workers_needed ?? 0), 0);
     const openRoles = jobs.reduce((sum, job) => sum + (job.open_count ?? 0), 0);
-    const hireProgress = Math.round(share(totalHired, totalOpenings));
+    const jobProgressPercent = share(totalHired, totalPositionsNeeded);
     const applicantDensity = activeCount > 0 ? Math.round(totalApplicants / activeCount) : 0;
     const recentJob = jobs[0];
+    const timeToFillJob = jobs.find((job) =>
+        (job.status === 'active' || job.status === 'paused') && (job.open_count ?? 0) > 0
+    );
 
     // `new Date()` must NOT be formatted during render: the server (Lambda, UTC) and the
     // browser (user's local timezone) can land on different calendar days, producing
     // different strings and a hydration mismatch (React #418/#423/#425). Compute it after
     // mount so the server HTML and the client's first render agree (empty), then fill in.
     const [todayLabel, setTodayLabel] = useState('');
+    const [currentDate, setCurrentDate] = useState<Date | null>(null);
     useEffect(() => {
-        setTodayLabel(formatWeekdayDate(new Date(), locale) ?? '');
+        const now = new Date();
+        setTodayLabel(formatWeekdayDate(now, locale) ?? '');
+        setCurrentDate(now);
     }, [locale]);
+
+    const timeToFillDays = currentDate && timeToFillJob
+        ? daysSince(timeToFillJob.created_at, currentDate)
+        : null;
+    const timeToFillPostedLabel = timeToFillJob
+        ? formatShortDate(timeToFillJob.created_at, locale)
+        : null;
 
     function handleJobCreated(job: Job) {
         setModalOpen(false);
@@ -463,37 +482,57 @@ export default function EmployerDashboardPage() {
                                     </DashboardPanel>
 
                                     <DashboardPanel>
-                                        <PanelHeader title={t('panels.trust_title')} />
+                                        <PanelHeader title={t('panels.job_progress_title')} />
+                                        <div className="p-5">
+                                            <div className="flex min-w-0 items-end justify-between gap-4">
+                                                <div className="min-w-0">
+                                                    <p className="text-[11px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+                                                        {t('panels.positions_filled')}
+                                                    </p>
+                                                    <p className="mt-2 text-3xl font-extrabold leading-none tabular-nums text-[var(--jale-ink)]">
+                                                        {totalHired} / {totalPositionsNeeded}
+                                                    </p>
+                                                </div>
+                                                <p className="shrink-0 rounded-full bg-[var(--jale-blue-50)] px-3 py-1 text-xs font-bold tabular-nums text-[var(--jale-blue-700)]">
+                                                    {t('panels.positions_open_hint', { count: openRoles })}
+                                                </p>
+                                            </div>
+                                            <div
+                                                role="progressbar"
+                                                aria-label={t('panels.positions_filled')}
+                                                aria-valuemin={0}
+                                                aria-valuemax={100}
+                                                aria-valuenow={Math.round(jobProgressPercent)}
+                                                aria-valuetext={`${totalHired} / ${totalPositionsNeeded}`}
+                                                className="mt-4"
+                                            >
+                                                <div className="h-2 overflow-hidden rounded-full bg-[var(--jale-paper-2)]">
+                                                    <div
+                                                        className="h-full rounded-full bg-[var(--jale-blue-500)]"
+                                                        style={{ width: `${Math.min(100, Math.max(0, jobProgressPercent))}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </DashboardPanel>
+
+                                    <DashboardPanel>
+                                        <PanelHeader title={t('panels.time_to_fill_title')} />
                                         <div className="p-5">
                                             <MetricCard
-                                                label={t('panels.hiring_progress')}
-                                                value={`${hireProgress}%`}
+                                                label={t('panels.days_posted')}
+                                                value={timeToFillDays ?? '-'}
+                                                hint={
+                                                    timeToFillJob
+                                                        ? t('panels.time_to_fill_hint', { title: timeToFillJob.title })
+                                                        : t('panels.no_open_jobs')
+                                                }
                                             />
-                                            <div className="mt-5">
-                                                <ProgressRow
-                                                    label={t('panels.open_roles')}
-                                                    value={`${openRoles}/${totalOpenings}`}
-                                                    percent={share(openRoles, totalOpenings)}
-                                                />
-                                            </div>
-                                            <KVList
-                                                className="mt-4"
-                                                items={[
-                                                    {
-                                                        label: t('panels.applicant_flow'),
-                                                        value: (
-                                                            <span className="tabular-nums">{totalApplicants}</span>
-                                                        ),
-                                                    },
-                                                    {
-                                                        label: t('stats.workers_hired'),
-                                                        value: <span className="tabular-nums">{totalHired}</span>,
-                                                    },
-                                                ]}
-                                            />
-                                            <p className="mt-4 text-xs leading-5 text-[var(--jale-ink-2)]">
-                                                {t('panels.trust_body')}
-                                            </p>
+                                            {timeToFillJob && timeToFillPostedLabel ? (
+                                                <p className="mt-4 text-xs font-semibold text-[var(--jale-ink-2)]">
+                                                    {t('panels.posted_on', { date: timeToFillPostedLabel })}
+                                                </p>
+                                            ) : null}
                                         </div>
                                     </DashboardPanel>
 

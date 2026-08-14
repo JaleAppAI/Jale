@@ -129,6 +129,10 @@ export type Application = {
   company_name: string;
   status: ApplicationStatus;
   applied_at: string;
+  /** Job (not application) status. Optional: the frontend may deploy before
+   * the backend adds the field. Never 'paused' — the API coalesces it to
+   * 'closed' (billing privacy). */
+  job_status?: JobStatus;
 };
 
 export type WorkerTrade = 'electrician' | 'plumber' | 'carpenter' | 'concrete' | 'painting' | 'other';

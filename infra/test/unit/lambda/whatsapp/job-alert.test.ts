@@ -77,6 +77,19 @@ describe('Job Alert Sender Lambda (producer — queues only, never sends)', () =
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it('filters non-active jobs in the producer job load (closed/paused/filled queue nothing)', async () => {
+    // The SQL-level status guard makes a closed job indistinguishable from a
+    // missing one: zero rows, zero queued, no Twilio traffic.
+    mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] });
+
+    const result = await handler({ jobId: 'closed-job-uuid' });
+    expect(result).toEqual({ queued: 0, skipped: 0 });
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    const jobLookupSql = mockQuery.mock.calls[0][0] as string;
+    expect(jobLookupSql).toContain("AND status = 'active'");
+  });
+
   it('queues an intent for a matched worker (never sends)', async () => {
     mockQuery
       .mockResolvedValueOnce({
@@ -213,7 +226,7 @@ describe('Job Alert Sender Lambda — intent fanout', () => {
     const calls: Array<{ sql: string; params: unknown[] }> = [];
     const query = jest.fn(async (sql: string, params: unknown[] = []) => {
       calls.push({ sql, params });
-      if (/FROM jobs WHERE id = \$1/.test(sql)) {
+      if (/FROM jobs WHERE id = \$1 AND status = 'active'/.test(sql)) {
         return {
           rowCount: 1,
           rows: [{

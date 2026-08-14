@@ -40,16 +40,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const workerId: string = workerRes.rows[0].id;
     await setInternalUserRlsContext(client, workerId);
 
+    // employer_display_name() flips a transaction-local employer_profiles read
+    // flag until COMMIT (migration 031). The queries after this one touch only
+    // worker_documents and job_applications — keep it that way.
     const jobRes = await client.query(
-      `SELECT j.id, j.title, j.location, j.pay, j.job_type, j.status, j.description, j.required_docs, j.created_at,
+      `SELECT j.id, j.title, j.location, j.pay, j.job_type, CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS status, j.description, j.required_docs, j.created_at,
               j.pay_min, j.pay_max, j.pay_interval, j.start_date, j.expected_duration, j.shift_schedule,
               j.transportation_required, j.work_authorization_required, j.language_preference, j.number_of_workers_needed,
               j.workers_hired AS hired_count,
               GREATEST(j.number_of_workers_needed - j.workers_hired, 0) AS open_count,
               j.trade_category, j.required_experience_years, j.required_experience_months, j.certifications,
               j.public_listing_enabled,
-              u.full_name AS company_name
-       FROM jobs j JOIN users u ON u.id = j.employer_id
+              employer_display_name(j.employer_id) AS company_name
+       FROM jobs j
        WHERE j.id = $1
          AND (
            j.status = 'active'
