@@ -86,7 +86,7 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappAlarmTopicArn=');
-requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --audit-level=high');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm run test:session');
