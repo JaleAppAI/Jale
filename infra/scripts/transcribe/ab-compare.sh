@@ -45,6 +45,15 @@
 #   JALE_AB_COMPARE_ES_VOCABULARY_NAME  default jale-es-us-trades
 #   JALE_AB_COMPARE_REGION              default us-east-2
 #   JALE_AB_COMPARE_OUTPUT_DIR          default ./ab-compare-out
+#   JALE_AB_COMPARE_RUN_TS              run timestamp used in every S3 key /
+#                                       job name (default: current epoch).
+#                                       The staging guard below stops the run
+#                                       until media is uploaded to the exact
+#                                       key it prints; re-run with the SAME
+#                                       JALE_AB_COMPARE_RUN_TS (echoed at
+#                                       startup and in the guard message) so
+#                                       the re-run checks the key you staged
+#                                       instead of minting a fresh one.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -61,7 +70,16 @@ OUTPUT_DIR="${JALE_AB_COMPARE_OUTPUT_DIR:-./ab-compare-out}"
 OLD_MODEL_ID="us.amazon.nova-lite-v1:0"
 NEW_MODEL_ID="us.anthropic.claude-haiku-4-5-20251001-v1:0"
 
+# One timestamp for the whole run, overridable so a re-run after manual media
+# staging targets the same S3 keys/job names the guard told the operator to
+# stage to (a per-invocation timestamp would mint new keys on every re-run,
+# making the fail-closed staging guard impossible to ever satisfy).
+RUN_TS="${JALE_AB_COMPARE_RUN_TS:-$(date +%s)}"
+
 mkdir -p "$OUTPUT_DIR"
+
+echo "ab-compare: run timestamp is ${RUN_TS} — to re-run against the same"
+echo "  staged S3 keys, export JALE_AB_COMPARE_RUN_TS=${RUN_TS}"
 
 echo "ab-compare: this touches REAL customer audio via Twilio media URLs read"
 echo "  from $JALE_AB_COMPARE_MEDIA_URLS_FILE and starts REAL Transcribe/Bedrock"
@@ -77,7 +95,7 @@ n=0
 while IFS= read -r MEDIA_URL; do
   [ -z "$MEDIA_URL" ] && continue
   n=$((n + 1))
-  RUN_ID="ab-${n}-$(date +%s)"
+  RUN_ID="ab-${n}-${RUN_TS}"
   echo "ab-compare: [$n] processing recording ($RUN_ID)"
 
   # 1. Download the recording once via Twilio (authenticated with the
@@ -106,33 +124,52 @@ while IFS= read -r MEDIA_URL; do
     --region "$REGION" >/dev/null 2>&1; then
     echo "ab-compare: [$n] MEDIA NOT STAGED — $MEDIA_S3_URI does not exist." >&2
     echo "  Complete the download+stage step above (fetch $MEDIA_URL with" >&2
-    echo "  Twilio creds, upload to $MEDIA_S3_URI) before re-running this" >&2
-    echo "  script. Refusing to start any Transcribe job against a missing" >&2
+    echo "  Twilio creds, upload to $MEDIA_S3_URI), then re-run with" >&2
+    echo "  JALE_AB_COMPARE_RUN_TS=${RUN_TS} so the re-run checks this exact" >&2
+    echo "  key. Refusing to start any Transcribe job against a missing" >&2
     echo "  object." >&2
     exit 1
   fi
 
+  # A fixed RUN_TS means a re-run (after staging more media) revisits job
+  # names it already created; Transcribe rejects duplicate job names, so
+  # skip any job that already exists instead of dying mid-batch. Never
+  # re-bill a recording that was already submitted.
+  job_exists() {
+    aws transcribe get-transcription-job \
+      --transcription-job-name "$1" \
+      --region "$REGION" >/dev/null 2>&1
+  }
+
   # 2a. OLD config: hardcoded LanguageCode, no vocabulary.
   OLD_JOB_NAME="jale-ab-old-${RUN_ID}"
-  aws transcribe start-transcription-job \
-    --transcription-job-name "$OLD_JOB_NAME" \
-    --language-code "$OLD_LANGUAGE_CODE" \
-    --media "MediaFileUri=${MEDIA_S3_URI}" \
-    --output-bucket-name "$JALE_AB_COMPARE_S3_BUCKET" \
-    --output-key "ab-compare/${RUN_ID}/old-transcript.json" \
-    --region "$REGION"
+  if job_exists "$OLD_JOB_NAME"; then
+    echo "  $OLD_JOB_NAME already exists — skipping (already submitted on a prior run)"
+  else
+    aws transcribe start-transcription-job \
+      --transcription-job-name "$OLD_JOB_NAME" \
+      --language-code "$OLD_LANGUAGE_CODE" \
+      --media "MediaFileUri=${MEDIA_S3_URI}" \
+      --output-bucket-name "$JALE_AB_COMPARE_S3_BUCKET" \
+      --output-key "ab-compare/${RUN_ID}/old-transcript.json" \
+      --region "$REGION"
+  fi
 
   # 2b. NEW config: multi-language identification + custom vocabulary.
   NEW_JOB_NAME="jale-ab-new-${RUN_ID}"
-  aws transcribe start-transcription-job \
-    --transcription-job-name "$NEW_JOB_NAME" \
-    --identify-multiple-languages \
-    --language-options "es-US" "en-US" \
-    --language-id-settings "{\"es-US\":{\"VocabularyName\":\"${ES_VOCABULARY_NAME}\"}}" \
-    --media "MediaFileUri=${MEDIA_S3_URI}" \
-    --output-bucket-name "$JALE_AB_COMPARE_S3_BUCKET" \
-    --output-key "ab-compare/${RUN_ID}/new-transcript.json" \
-    --region "$REGION"
+  if job_exists "$NEW_JOB_NAME"; then
+    echo "  $NEW_JOB_NAME already exists — skipping (already submitted on a prior run)"
+  else
+    aws transcribe start-transcription-job \
+      --transcription-job-name "$NEW_JOB_NAME" \
+      --identify-multiple-languages \
+      --language-options "es-US" "en-US" \
+      --language-id-settings "{\"es-US\":{\"VocabularyName\":\"${ES_VOCABULARY_NAME}\"}}" \
+      --media "MediaFileUri=${MEDIA_S3_URI}" \
+      --output-bucket-name "$JALE_AB_COMPARE_S3_BUCKET" \
+      --output-key "ab-compare/${RUN_ID}/new-transcript.json" \
+      --region "$REGION"
+  fi
 
   echo "  started $OLD_JOB_NAME and $NEW_JOB_NAME — poll both for COMPLETED," \
        "then run each transcript through both $OLD_MODEL_ID and" \
