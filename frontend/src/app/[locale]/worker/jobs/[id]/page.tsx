@@ -8,7 +8,7 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { usePageData } from '@/hooks/usePageData';
 import { Link } from '@/i18n/navigation';
 import { AppShell } from '@/components/layout/AppShell';
-import { Badge } from '@/components/ui/badge';
+import { Badge, JobStatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
@@ -27,6 +27,7 @@ import { formatLongDate, formatStartDate } from '@/lib/date';
 import { normalizeMatchScore, scoreBandForScore } from '@/lib/match';
 import { formatPay } from '@/lib/pay';
 import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
+import { canApplyToJob, visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
 
 export const dynamic = 'force-dynamic';
@@ -47,6 +48,10 @@ export default function WorkerJobDetailPage() {
   const tCommon = useTranslations('common');
   const tMatch = useTranslations('match');
   const tPay = useTranslations('pay');
+  // Badge labels live in the worker_applications namespace (Task 6 keys) —
+  // NEVER employer_dashboard.jobs.status.*, whose es "Lleno" is employer
+  // vocabulary kept off worker surfaces.
+  const tApps = useTranslations('worker_applications');
   const locale = useLocale();
 
   const [applying, setApplying] = useState(false);
@@ -282,7 +287,8 @@ export default function WorkerJobDetailPage() {
   const pay = job ? formatPay(job, tPay) : null;
   const matchScore = normalizeMatchScore(job?.match_score);
   const matchBand = matchScore === null ? null : scoreBandForScore(matchScore);
-  const canApply = job ? !job.already_applied && job.missing_docs.length === 0 : false;
+  const canApply = job ? canApplyToJob(job) : false;
+  const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
 
   const facts: KVItem[] = [];
   if (job) {
@@ -361,10 +367,28 @@ export default function WorkerJobDetailPage() {
                   <InlineFeedback tone="warning">{tCommon('feedback.refresh_failed')}</InlineFeedback>
                 ) : null}
 
+                {jobStatusBadge ? (
+                  /* tone="info" → role="status": permanent page state, not an
+                     event — role="alert" would announce assertively on every
+                     load. Status-agnostic sentence, correct for filled too. */
+                  <InlineFeedback tone="info">{t('errors.job_closed')}</InlineFeedback>
+                ) : null}
+
                 <DashboardPanel>
                   <PanelHeader
                     title={t('page_title')}
-                    action={jobTypeLabel ? <Badge tone="info">{jobTypeLabel}</Badge> : undefined}
+                    action={
+                      jobTypeLabel || jobStatusBadge ? (
+                        <span className="flex items-center gap-2">
+                          {jobStatusBadge ? (
+                            <JobStatusBadge status={jobStatusBadge}>
+                              {tApps(`job_status.${jobStatusBadge}`)}
+                            </JobStatusBadge>
+                          ) : null}
+                          {jobTypeLabel ? <Badge tone="info">{jobTypeLabel}</Badge> : null}
+                        </span>
+                      ) : undefined
+                    }
                   />
 
                   <div className="space-y-5 p-5 md:p-6">

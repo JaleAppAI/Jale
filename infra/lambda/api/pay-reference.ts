@@ -8,7 +8,7 @@ const CORS_HEADERS = corsHeaders();
 /**
  * GET /pay-reference?trade=<trade_category>&city_key=<slug>
  *
- * Recommended-pay lookup (Feature B / T-B2) against migration 070's
+ * Recommended-pay lookup (Feature B / T-B2) against migration 071's
  * wage_references / city_cbsa_crosswalk tables (T-B1). Dual-authenticated --
  * both workers and employers call this endpoint (ApiStack's dualAuthorizer,
  * same authorizer legal/accept-tos.ts uses via LegalStack).
@@ -44,7 +44,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // 'other' is a valid trade_category but carries no wage benchmark by
-    // design (see migration 070's header / wage-seed-lib.ts
+    // design (see migration 071's header / wage-seed-lib.ts
     // TRADED_CATEGORIES_WITH_WAGES) -- short-circuit before touching the DB.
     if (trade === 'other') {
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'no_reference' }) };

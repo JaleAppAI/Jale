@@ -12,11 +12,12 @@ import { Skeleton, SkeletonCircle, SkeletonLine } from './skeleton';
  * generic grey boxes: the whole point is that the skeleton→content swap costs
  * no layout shift. Each archetype's geometry is traced from a specific source:
  *
- *  - ListPageSkeleton     <- WorkerJobCard rows inside a DashboardPanel
- *  - DetailPageSkeleton   <- the `Field` grid on worker/employer profile pages
- *  - DashboardSkeleton    <- MetricCard row + DashboardPanel sections
- *  - ThreadSkeleton       <- the employer conversations 3-pane board
- *  - CenteredCardSkeleton <- the narrow auth/legal single-card pages
+ *  - ListPageSkeleton      <- WorkerJobCard rows inside a DashboardPanel
+ *  - DetailPageSkeleton    <- the `Field` grid on worker/employer profile pages
+ *  - DashboardSkeleton     <- MetricCard row + DashboardPanel sections
+ *  - ThreadSkeleton        <- the employer conversations 3-pane board
+ *  - CenteredCardSkeleton  <- the narrow auth/legal single-card pages
+ *  - TemplateTableSkeleton <- the employer templates table rows
  *
  * All of them are `role="status"` with an sr-only label, so a screen reader
  * hears "Loading..." once per region instead of nothing at all.
@@ -187,6 +188,47 @@ export function DashboardSkeleton() {
                     </DashboardPanel>
                 ))}
             </div>
+        </SkeletonRegion>
+    );
+}
+
+/**
+ * Template-table archetype: the employer templates manager. A panel with a
+ * header bar, the `md`-only column-header row, and name/details/date/actions
+ * rows on the same `[1.4fr_2fr_1fr_auto]` grid the real table renders —
+ * stacking on phones exactly as the real rows do. Action pills trace
+ * `Button size="sm"` (h-9).
+ */
+export function TemplateTableSkeleton({ rows = 4 }: { rows?: number }) {
+    return (
+        <SkeletonRegion>
+            <DashboardPanel>
+                <div className="border-b border-[var(--jale-divider)] px-5 py-4">
+                    <Skeleton className="h-4 w-40" />
+                </div>
+                <div className="hidden grid-cols-[1.4fr_2fr_1fr_auto] gap-3 border-b border-[var(--jale-divider)] px-5 py-3 md:grid">
+                    <Skeleton className="h-2.5 w-16" />
+                    <Skeleton className="h-2.5 w-20" />
+                    <Skeleton className="h-2.5 w-16" />
+                    <span />
+                </div>
+                <div className="divide-y divide-[var(--jale-divider)]">
+                    {Array.from({ length: rows }).map((_, i) => (
+                        <div
+                            key={i}
+                            className="grid gap-2 px-5 py-4 md:grid-cols-[1.4fr_2fr_1fr_auto] md:items-center md:gap-3"
+                        >
+                            <SkeletonLine width="w-1/2" />
+                            <SkeletonLine width="w-3/4" tone="paper" />
+                            <SkeletonLine width="w-1/2" tone="paper" />
+                            <div className="flex gap-2">
+                                <Skeleton className="h-9 w-16 rounded-full" />
+                                <Skeleton className="h-9 w-20 rounded-full" />
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </DashboardPanel>
         </SkeletonRegion>
     );
 }

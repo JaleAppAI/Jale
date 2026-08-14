@@ -171,7 +171,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     // Pay reference lookup — dual auth (worker + employer), DB access (T-B2).
-    // Reads migration 070's wage_references / city_cbsa_crosswalk tables
+    // Reads migration 071's wage_references / city_cbsa_crosswalk tables
     // (T-B1); no REQUIRED_TOS_VERSION env var, since the handler mirrors
     // legal/accept-tos.ts's convention of not calling checkCompliance() for
     // this dual-auth route.

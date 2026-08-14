@@ -562,11 +562,14 @@
       "applicant_stub_1": "Candidatos nuevos",
       "applicant_stub_2": "Listos para contactar",
       "applicant_stub_3": "Documentos pendientes",
-      "trust_title": "Trust Match",
-      "trust_body": "La calidad del match ya aparece dentro de los detalles del empleo. Las recomendaciones globales dependen del backend proactivo.",
-      "hiring_progress": "Progreso de contratación",
-      "open_roles": "Puestos abiertos",
-      "applicant_flow": "Flujo de candidatos",
+      "job_progress_title": "Job Progress",
+      "positions_filled": "Puestos llenos",
+      "positions_open_hint": "{count, plural, one {# puesto abierto} other {# puestos abiertos}}",
+      "time_to_fill_title": "Time to Fill",
+      "days_posted": "Días publicado",
+      "time_to_fill_hint": "{title}",
+      "no_open_jobs": "No hay empleos abiertos ahora",
+      "posted_on": "Publicado {date}",
       "whatsapp_title": "Hilo de WhatsApp",
       "whatsapp_body": "Los mensajes del empleador ya funcionan. Las respuestas del trabajador siguen por WhatsApp y quedan conectadas al empleo.",
       "open_messages": "Abrir mensajes",
@@ -898,6 +901,10 @@
       "total": "Postulaciones totales",
       "active": "Activas",
       "hired": "Contratado"
+    },
+    "job_status": {
+      "closed": "Cerrado",
+      "filled": "Cubierto"
     }
   },
   "worker_home": {
@@ -1061,8 +1068,14 @@
       "close": "Marcar cerrada",
       "edit": "Editar empleo",
       "delete": "Eliminar",
-      "delete_error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar."
+      "delete_error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
+      "close_confirm_title": "¿Cerrar este trabajo?",
+      "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puedes reactivarlo después, según el límite de trabajos activos de tu plan.",
+      "close_confirm_cta": "Cerrar trabajo",
+      "close_cancel": "Cancelar",
+      "close_pending": "Cerrando…"
     },
+    "closed_notice": "Este trabajo no está activo. El enlace público ahora muestra un aviso de \"ya no acepta postulaciones\" en lugar de la publicación.",
     "metrics": {
       "applicants": "Postulantes",
       "hired": "Contratados",

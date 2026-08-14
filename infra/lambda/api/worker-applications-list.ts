@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -28,6 +28,21 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'legal_required', requiredVersion: process.env.REQUIRED_TOS_VERSION, currentVersion: compliance.currentVersion }) };
     }
 
+    // The jobs_worker_read_applied policy (migration 070) is keyed on
+    // app.current_internal_user_id; without it the join below drops every
+    // non-active job the worker applied to. Same idiom as worker-jobs-detail.
+    const workerRes = await client.query(`SELECT id FROM users WHERE cognito_sub = $1`, [cognitoSub]);
+    if (workerRes.rows.length === 0) {
+      await client.query('COMMIT');
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'user_not_provisioned' }) };
+    }
+    await setInternalUserRlsContext(client, workerRes.rows[0].id);
+
+    // employer_display_name() flips a transaction-local GUC that makes ALL
+    // employer_profiles rows readable until COMMIT (migration 031) — no query
+    // touching employer_profiles may be added after this one in this
+    // transaction. paused is coalesced to closed: billing auto-pause is the
+    // employer's private state (spec: workers never see 'paused').
     const result = await client.query(
       `SELECT a.id AS application_id, a.job_id,
               CASE a.status
@@ -36,10 +51,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 ELSE a.status
               END AS status,
               a.applied_at,
-              j.title AS job_title, u.full_name AS company_name
+              j.title AS job_title,
+              employer_display_name(j.employer_id) AS company_name,
+              CASE WHEN j.status = 'paused' THEN 'closed' ELSE j.status END AS job_status
        FROM job_applications a
        JOIN jobs j ON j.id = a.job_id
-       JOIN users u ON u.id = j.employer_id
        ORDER BY a.applied_at DESC
        LIMIT 200`,
     );

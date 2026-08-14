@@ -2,7 +2,7 @@
  * pay-reference-lookup.integration.test.ts
  *
  * PostgreSQL-backed suite for T-B2's lookupPayReference() (lambda/lib/pay-reference.ts)
- * against migration 070's real tables (wage_references, city_cbsa_crosswalk),
+ * against migration 071's real tables (wage_references, city_cbsa_crosswalk),
  * seeded from the real checked-in infra/scripts/data/oews-tx-seed.json via
  * T-B1's real loader functions (scripts/seed-oews-wages.ts) -- same harness
  * shape as infra/test/unit/db/wage-references.integration.test.ts, which this
@@ -95,7 +95,7 @@ let superuserUrl: string;
 let adminUrl: string;
 let adminClient: Client;
 
-maybeDescribe('lookupPayReference against real Postgres (migration 070, T-B1 seed)', () => {
+maybeDescribe('lookupPayReference against real Postgres (migration 071, T-B1 seed)', () => {
   beforeAll(async () => {
     if (!databaseUrl) return;
     superuserUrl = databaseUrl;
@@ -207,7 +207,7 @@ maybeDescribe('lookupPayReference against real Postgres (migration 070, T-B1 see
     // area_code with genuinely zero wage_references rows (not a real metro
     // OR nonmetro code -- using a real nonmetro code like '4800001' would NOT
     // exercise this branch, since wage_references does have rows there; see
-    // the migration 070 header, "unreachable by city_key" describes the
+    // the migration 071 header, "unreachable by city_key" describes the
     // crosswalk never POINTING there in production, not the lookup skipping
     // nonmetro rows it finds).
     const throwawayCityKey = 'throwaway-crosswalk-hit-no-wage-row-tx';

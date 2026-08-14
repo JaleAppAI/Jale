@@ -119,7 +119,8 @@ $MigrationFiles = @(
     '067_city_key_backfill_repair.sql',
     '068_preferred_city_centroids.sql',
     '069_employer_job_templates.sql',
-    '070_wage_references.sql'
+    '070_worker_applied_job_visibility.sql',
+    '071_wage_references.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

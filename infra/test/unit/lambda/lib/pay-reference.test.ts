@@ -64,7 +64,7 @@ describe('pay-reference lib', () => {
   describe('state area_code stays in sync with T-B1 wage-seed-lib.ts', () => {
     it('STATE_AREA_CODE matches wage-seed-lib.ts TX_STATE_AREA.area_code exactly', () => {
       // Guards against silent drift between the two independently-maintained
-      // constants -- see migration 070's header: the state tier's area_code
+      // constants -- see migration 071's header: the state tier's area_code
       // is the literal string 'TX', not BLS's raw '48' FIPS code.
       expect(STATE_AREA_CODE).toBe(TX_STATE_AREA.area_code);
       expect(STATE_AREA_CODE).toBe('TX');

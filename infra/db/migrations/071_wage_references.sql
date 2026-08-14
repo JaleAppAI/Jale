@@ -1,4 +1,4 @@
--- 070_wage_references.sql
+-- 071_wage_references.sql
 -- Recommended-pay reference data: BLS OEWS wage percentiles per trade x
 -- Texas area, and a TX city -> CBSA crosswalk so a job/worker city_key
 -- resolves to the right area. Read-only reference tables for Feature B
@@ -113,7 +113,7 @@
 -- 'state' is a single, statically-known tier per state, so nothing is
 -- lost by using a readable label there instead.
 --
--- Run AFTER 069_employer_job_templates.sql, connected as jale_admin (NOT the
+-- Run AFTER 070_worker_applied_job_visibility.sql, connected as jale_admin (NOT the
 -- RDS master user). Forward-only (ADR-005). Schema only -- no rows are
 -- seeded by this migration; infra/scripts/seed-oews-wages.ts populates both
 -- tables from the checked-in infra/scripts/data/oews-tx-seed.json, which

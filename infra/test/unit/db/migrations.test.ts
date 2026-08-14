@@ -102,6 +102,7 @@ describe('database migrations', () => {
       '068',
       '069',
       '070',
+      '071',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -670,7 +671,7 @@ describe('database migrations', () => {
   });
 
   it('adds read-only wage reference tables with no write policy in migration 070', () => {
-    const migration = fs.readFileSync(path.join(migrationsDir, '070_wage_references.sql'), 'utf8');
+    const migration = fs.readFileSync(path.join(migrationsDir, '071_wage_references.sql'), 'utf8');
 
     expect(migration).toContain('CREATE TABLE wage_references');
     expect(migration).toContain('CREATE TABLE city_cbsa_crosswalk');

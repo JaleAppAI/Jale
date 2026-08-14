@@ -2,7 +2,7 @@
  * seed-oews-wages.ts
  *
  * Operator loader: idempotently upserts infra/scripts/data/oews-tx-seed.json
- * into wage_references / city_cbsa_crosswalk (migration 070). Re-run this
+ * into wage_references / city_cbsa_crosswalk (migration 071). Re-run this
  * roughly annually after regenerating the seed file (see
  * generate-oews-seed.ts) with the new OEWS release.
  *
@@ -11,8 +11,8 @@
  *   npx ts-node scripts/seed-oews-wages.ts [--file <path>] [--dry-run]
  *
  * Both tables are ENABLE + FORCE RLS with only a SELECT policy for
- * jale_admin (migration 070) -- no INSERT/UPDATE/DELETE policy exists
- * anywhere else. This script is "the seed path" migration 070's header
+ * jale_admin (migration 071) -- no INSERT/UPDATE/DELETE policy exists
+ * anywhere else. This script is "the seed path" migration 071's header
  * refers to: it opens a temporary write policy scoped to jale_admin inside
  * its own transaction, performs the upserts, verifies the row count
  * matches what was expected, drops the policy, and commits -- exactly the
@@ -93,7 +93,7 @@ async function upsertWithTemporaryPolicy(
 
   // Scoped strictly to jale_admin and dropped before COMMIT -- the window
   // where a raw write is possible on this table exists only inside this
-  // function, inside one transaction. See migration 070's header and
+  // function, inside one transaction. See migration 071's header and
   // migration 069's precedent for why this is the correct shape under
   // FORCE RLS with no persistent write policy.
   await client.query(`CREATE POLICY ${insertPolicy} ON ${table} FOR INSERT TO jale_admin WITH CHECK (true)`);

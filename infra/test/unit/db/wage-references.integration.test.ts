@@ -1,7 +1,7 @@
 /**
  * wage-references.integration.test.ts
  *
- * PostgreSQL-backed suite for migration 070 (wage_references,
+ * PostgreSQL-backed suite for migration 071 (wage_references,
  * city_cbsa_crosswalk) -- schema, RLS, and the real seed loader
  * (scripts/seed-oews-wages.ts), run against real Postgres rather than
  * mocked.
@@ -88,7 +88,7 @@ let adminUrl: string;
 let whatsappUrl: string;
 let publicJobsUrl: string;
 
-maybeDescribe('wage_references / city_cbsa_crosswalk integration (migration 070)', () => {
+maybeDescribe('wage_references / city_cbsa_crosswalk integration (migration 071)', () => {
   beforeAll(async () => {
     if (!databaseUrl) return;
     superuserUrl = databaseUrl;
@@ -478,7 +478,7 @@ if (!databaseUrl) {
   test('CONCERN: wage-references-integration PostgreSQL gate was not run -- JALE_TEST_DATABASE_URL not set', () => {
     // eslint-disable-next-line no-console
     console.warn(
-      '[wage-references.integration] DONE_WITH_CONCERNS: The PostgreSQL gate for migration 070 was skipped ' +
+      '[wage-references.integration] DONE_WITH_CONCERNS: The PostgreSQL gate for migration 071 was skipped ' +
         'because JALE_TEST_DATABASE_URL is not set in this environment. Run with a local Postgres 16 ' +
         'container (via infra/db/local/bootstrap-testbed.sh) to validate all wage-reference assertions.',
     );

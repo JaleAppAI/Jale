@@ -3,7 +3,7 @@
  *
  * Dev-time generator for infra/scripts/data/oews-tx-seed.json -- the
  * checked-in seed data infra/scripts/seed-oews-wages.ts loads into the
- * wage_references / city_cbsa_crosswalk tables (migration 070).
+ * wage_references / city_cbsa_crosswalk tables (migration 071).
  *
  * Usage:
  *   cd infra && npx ts-node scripts/generate-oews-seed.ts [--out <path>] [--cache-dir <dir>]
@@ -67,7 +67,7 @@
  * template, not real area-definition content). The 6 nonmetro
  * wage_references rows are real data and reachable directly by area_code,
  * but unreachable via city_key lookup until that mapping is found -- see
- * migration 070's header for the full account, including why every
+ * migration 071's header for the full account, including why every
  * non-MSA Texas city correctly falls through to the statewide row instead.
  *
  * XLSX parsing: this host has no working `python3 -c "import openpyxl"`
@@ -274,7 +274,7 @@ function extractOewsXlsx(zipPath: string, extractDir: string): string | null {
  * delineation files. county_fips is left null for every row: list2 gives a
  * CBSA code per principal city but not a county, and every one of our 5
  * target CBSAs spans multiple counties (checked via singleCountyCbsaCodes
- * against the real list1 data) -- see migration 070's header for the full
+ * against the real list1 data) -- see migration 071's header for the full
  * rationale.
  */
 function buildCrosswalk(list1Buf: Buffer, list2Buf: Buffer): CrosswalkRow[] {
@@ -303,7 +303,7 @@ function buildCrosswalk(list1Buf: Buffer, list2Buf: Buffer): CrosswalkRow[] {
       county_fips: countyFips,
       area_code: row.cbsaCode,
       // All 5 target CBSAs are metro (TX_METRO_AREAS) -- this crosswalk
-      // never maps a city to a nonmetro region (see migration 070's header).
+      // never maps a city to a nonmetro region (see migration 071's header).
       area_kind: 'metro',
     });
   }
@@ -438,7 +438,7 @@ async function main(): Promise<void> {
     censusNote =
       'Real data -- city_cbsa_crosswalk rows are derived from these files. Covers only the 5 metro ' +
       'CBSAs, not the 6 nonmetro regions (no public county->nonmetro-region mapping found); see ' +
-      'migration 070\'s header.';
+      'migration 071\'s header.';
     console.log(`  built ${crosswalk.length} crosswalk rows from real Census data.`);
   } else {
     censusNote =

@@ -119,7 +119,7 @@ export interface WageCell {
 }
 
 /**
- * Structural validation of one wage cell (schema mirrors the migration 070
+ * Structural validation of one wage cell (schema mirrors the migration 071
  * CHECK constraint exactly: p25 > 0 AND p25 <= p50 AND p50 <= p75). Returns
  * null when valid, or a human-readable reason string when not -- never
  * throws, so callers can batch-validate and report every bad row at once.

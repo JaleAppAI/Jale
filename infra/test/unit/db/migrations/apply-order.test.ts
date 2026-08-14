@@ -78,7 +78,8 @@ const expectedBaselineMigrations = [
   '067_city_key_backfill_repair.sql',
   '068_preferred_city_centroids.sql',
   '069_employer_job_templates.sql',
-  '070_wage_references.sql',
+  '070_worker_applied_job_visibility.sql',
+  '071_wage_references.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -618,8 +619,24 @@ describe('migration apply order baseline', () => {
     expect(sql).toContain('template_limit seed failed');
   });
 
-  it('adds wage_references and city_cbsa_crosswalk as FORCE-RLS, read-only-to-jale_admin reference tables in migration 070', () => {
-    const sql = readMigration('070_wage_references.sql');
+  it('adds worker applied-job visibility in migration 070', () => {
+    const sql = readMigration('070_worker_applied_job_visibility.sql');
+    expect(sql).toContain('jale_internal.worker_has_application');
+    expect(sql).toContain('jobs_worker_read_applied');
+    expect(sql).toContain('FOR SELECT TO jale_admin');
+    expect(sql).toContain('SECURITY DEFINER');
+    expect(sql).toContain('SET search_path = pg_catalog, pg_temp');
+    // TEXT param compared as ::TEXT — a UUID param would 22P02 on the
+    // empty-string GUC left behind on warm pooled connections.
+    expect(sql).toContain('p_worker_internal_id TEXT');
+    expect(sql).toContain('ja.worker_id::TEXT = p_worker_internal_id');
+    // The SET TRUE / SET FALSE + revoke choreography must restore the
+    // exactly-one-membership invariant that 020b/038 assert on rerun.
+    expect(sql).toContain('REVOKE jale_rls_relationship_reader FROM jale_admin GRANTED BY jale_admin');
+  });
+
+  it('adds wage_references and city_cbsa_crosswalk as FORCE-RLS, read-only-to-jale_admin reference tables in migration 071', () => {
+    const sql = readMigration('071_wage_references.sql');
 
     // wage_references shape
     expect(sql).toContain('CREATE TABLE wage_references');

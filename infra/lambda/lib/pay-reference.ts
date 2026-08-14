@@ -3,15 +3,15 @@ import { TRADE_CATEGORIES } from './job-fields';
 
 /**
  * Recommended-pay lookup (Feature B / T-B2) against the OEWS wage reference
- * tables added by migration 070 (wage_references, city_cbsa_crosswalk) and
+ * tables added by migration 071 (wage_references, city_cbsa_crosswalk) and
  * populated by T-B1's infra/scripts/seed-oews-wages.ts from
  * infra/scripts/data/oews-tx-seed.json.
  *
- * Lookup order, per migration 070's header and the recommended-pay design:
+ * Lookup order, per migration 071's header and the recommended-pay design:
  *   1. Resolve city_key -> area_code via city_cbsa_crosswalk. Today the
  *      crosswalk only maps principal cities of the 5 target Texas MSAs to
  *      metro area_codes -- nonmetro area_codes exist in wage_references but
- *      are never the target of a crosswalk row (see migration 070's header),
+ *      are never the target of a crosswalk row (see migration 071's header),
  *      so in practice this step either resolves to a metro area_code or
  *      finds nothing.
  *   2. If the crosswalk resolved an area_code AND wage_references has a row
@@ -33,7 +33,7 @@ import { TRADE_CATEGORIES } from './job-fields';
 
 // Mirrors T-B1's infra/scripts/lib/wage-seed-lib.ts TX_STATE_AREA.area_code
 // exactly -- the literal string 'TX', NOT BLS's raw '48' FIPS code (see
-// migration 070's header for why). Kept as its own constant here rather than
+// migration 071's header for why). Kept as its own constant here rather than
 // importing infra/scripts/lib/wage-seed-lib.ts into lambda code, since lambda
 // code does not otherwise depend on the infra/scripts tree (scripts import
 // from lambda/lib, never the reverse). The lib test file cross-checks this

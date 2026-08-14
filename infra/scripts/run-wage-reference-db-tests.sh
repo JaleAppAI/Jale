@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused wage_references / city_cbsa_crosswalk
-# PostgreSQL suite (migration 070) AND T-B2's pay-reference lookup suite,
+# PostgreSQL suite (migration 071) AND T-B2's pay-reference lookup suite,
 # which reads the same tables (lambda/lib/pay-reference.ts).
 #
 # An unset or empty JALE_TEST_DATABASE_URL is a hard, non-zero failure

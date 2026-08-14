@@ -30,6 +30,7 @@ import {
     EMPTY_APPLICANT_FILTERS,
     hasActiveApplicantFilters,
 } from '@/components/employer/ApplicantFilterPanel';
+import { CloseJobDialog } from '@/components/employer/CloseJobDialog';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { EditJobModal } from '@/components/employer/EditJobModal';
 import { PublicListingCard } from '@/components/employer/PublicListingCard';
@@ -280,6 +281,8 @@ export default function JobDetailPage() {
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [deleteError, setDeleteError] = useState<string | null>(null);
+    const [confirmClose, setConfirmClose] = useState(false);
+    const [closeError, setCloseError] = useState<string | null>(null);
 
     const handleSetJobStatus = useCallback(
         async (status: WritableJobStatus) => {
@@ -337,6 +340,29 @@ export default function JobDetailPage() {
             setDeleting(false);
         }
     }, [deleting, errorMessage, idToken, job, router, t]);
+
+    const handleConfirmClose = useCallback(async () => {
+        if (!idToken || !job || pendingStatus) return;
+        setCloseError(null);
+        setActionFeedback(null);
+        setPendingStatus('closed');
+        try {
+            const updated = await updateJobStatus(idToken, job.id, 'closed');
+            setData((prev) => ({ ...prev, job: { ...prev.job, ...updated } }));
+            setActionFeedback({ tone: 'success', message: tCommon('feedback.saved') });
+            setConfirmClose(false);
+        } catch (err) {
+            try {
+                handleLegalWall(err, returnUrl);
+            } catch {
+                // Failed close keeps the dialog open with the reason inline
+                // (DeleteJobDialog contract).
+                setCloseError(errorMessage(err));
+            }
+        } finally {
+            setPendingStatus(null);
+        }
+    }, [errorMessage, handleLegalWall, idToken, job, pendingStatus, returnUrl, setData, tCommon]);
 
     /* ===== S0/S1 loading =================================================== */
 
@@ -595,7 +621,10 @@ export default function JobDetailPage() {
                                         <Button
                                             variant="outline"
                                             size="sm"
-                                            onClick={() => void handleSetJobStatus('closed')}
+                                            onClick={() => {
+                                                setCloseError(null);
+                                                setConfirmClose(true);
+                                            }}
                                             disabled={statusBusy}
                                             loading={pendingStatus === 'closed'}
                                             loadingLabel={tCommon('loading')}
@@ -626,6 +655,7 @@ export default function JobDetailPage() {
                                 key={job.id}
                                 jobId={job.id}
                                 initialEnabled={job.public_listing_enabled}
+                                jobStatus={job.status}
                                 jobTitle={job.title}
                                 publicCode={job.public_code}
                                 onEnabledChange={handlePublicListingChange}
@@ -715,6 +745,19 @@ export default function JobDetailPage() {
                     setDeleteError(null);
                 }}
                 onConfirm={handleDelete}
+            />
+
+            <CloseJobDialog
+                open={confirmClose}
+                jobTitle={job.title}
+                closing={pendingStatus === 'closed'}
+                error={closeError}
+                onCancel={() => {
+                    if (pendingStatus === 'closed') return;
+                    setConfirmClose(false);
+                    setCloseError(null);
+                }}
+                onConfirm={handleConfirmClose}
             />
 
             {/* Mounted, not conditionally rendered: `Modal` drives focus-in and
