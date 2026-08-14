@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -11,6 +12,7 @@ import { Construct } from 'constructs';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
+import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 
 export interface ApiStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
@@ -168,6 +170,23 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
+    // Pay reference lookup — dual auth (worker + employer), DB access (T-B2).
+    // Reads migration 071's wage_references / city_cbsa_crosswalk tables
+    // (T-B1); no REQUIRED_TOS_VERSION env var, since the handler mirrors
+    // legal/accept-tos.ts's convention of not calling checkCompliance() for
+    // this dual-auth route.
+    const payReferenceLambda = new JaleLambdaFunction(this, 'PayReferenceLambda', {
+      entry: path.join(__dirname, '../../lambda/api/pay-reference.ts'),
+      description: 'Recommended-pay reference lookup endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(payReferenceLambda.function);
+
     // Worker profile — worker auth, DB access
     const workerProfileLambda = new JaleLambdaFunction(this, 'WorkerProfileLambda', {
       entry: path.join(__dirname, '../../lambda/api/worker-profile.ts'),
@@ -263,6 +282,43 @@ export class ApiStack extends cdk.Stack {
       },
     });
     props.dbSecret.grantRead(employerJobsDeleteLambda.function);
+
+    // T-A1: AI job-description generation — employer auth, NO DB access (the
+    // construct still places it in the VPC like every sibling Lambda; that's
+    // expected, not a leftover). Daily-cap table modeled on AuthStack's
+    // OtpRateLimitTable precedent (PAY_PER_REQUEST + AWS-managed encryption +
+    // TTL + RemovalPolicy.RETAIN) but with a single partition key `pk` --
+    // this table's key is already the composite "<sub>#<YYYY-MM-DD>" string,
+    // so it needs no separate sort key the way OtpRateLimitTable's
+    // subject/window pair does.
+    const generationCapTable = new dynamodb.Table(this, 'GenerationCapTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.AWS_MANAGED,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const employerGenerateDescriptionLambda = new JaleLambdaFunction(this, 'EmployerGenerateDescriptionLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-generate-description.ts'),
+      description: 'Employer generate description endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        GENERATION_CAP_TABLE: generationCapTable.tableName,
+        GENERATION_DAILY_LIMIT: '10',
+        BEDROCK_MODEL_ID,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
+    });
+    generationCapTable.grantReadWriteData(employerGenerateDescriptionLambda.function);
+    employerGenerateDescriptionLambda.function.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: bedrockArns(this.region, this.account),
+      }),
+    );
 
     // Employer job applicants — employer auth, DB access
     const employerJobApplicantsLambda = new JaleLambdaFunction(this, 'EmployerJobApplicantsLambda', {
@@ -588,6 +644,18 @@ export class ApiStack extends cdk.Stack {
     const healthResource = this.api.root.addResource('health');
     healthResource.addMethod('GET', new apigateway.LambdaIntegration(healthLambda.function));
 
+    // GET /pay-reference — recommended-pay lookup (T-B2). Dual-authenticated:
+    // both workers and employers call this (the only other dualAuthorizer
+    // consumer is LegalStack's POST /legal/accept). Public BLS statistics
+    // only, no per-user data, so RLS context is set for standard transaction
+    // hygiene but is not load-bearing here (wage_references /
+    // city_cbsa_crosswalk grant jale_admin a flat read-all policy).
+    const payReferenceResource = this.api.root.addResource('pay-reference');
+    payReferenceResource.addMethod('GET', new apigateway.LambdaIntegration(payReferenceLambda.function), {
+      authorizer: this.dualAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
     // GET /worker/profile
     // PATCH /worker/profile
     // Exported as public readonly so ReferralsStack (and other downstream
@@ -708,6 +776,17 @@ export class ApiStack extends cdk.Stack {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
+
+    // POST /employer/jobs/generate-description — T-A1 AI job-description draft
+    const employerJobsGenerateDescriptionResource = employerJobsResource.addResource('generate-description');
+    employerJobsGenerateDescriptionResource.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(employerGenerateDescriptionLambda.function),
+      {
+        authorizer: employerAuthorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      },
+    );
 
     // GET /employer/jobs/{jobId} — job posting detail
     // PATCH /employer/jobs/{jobId} — toggle active/closed status
@@ -847,6 +926,17 @@ export class ApiStack extends cdk.Stack {
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,
         },
+        // POST /employer/jobs/generate-description — T-A1: each call invokes
+        // Bedrock (real cost) on top of the per-employer daily cap enforced
+        // inside the Lambda itself; this stage-wide throttle is the outer
+        // brake shared by every caller, same shape precedent as the billing
+        // routes above.
+        {
+          ResourcePath: '/employer/jobs/generate-description',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 5,
+          ThrottlingRateLimit: 2,
+        },
         // POST /billing/webhook — inbound from Stripe; verification is cheap but
         // we defend against accidental firehoses
         {
@@ -909,6 +999,16 @@ export class ApiStack extends cdk.Stack {
         {
           ResourcePath: '/public/jobs/{code}/apply-intent',
           HttpMethod: 'POST',
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
+        },
+        // T-B2: GET /pay-reference — dual-authenticated (worker+employer)
+        // recommended-pay lookup. Modest throttle: read-only against a
+        // small reference table, but reachable by any authenticated worker
+        // or employer, so still worth capping rather than leaving unbounded.
+        {
+          ResourcePath: '/pay-reference',
+          HttpMethod: 'GET',
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,
         },

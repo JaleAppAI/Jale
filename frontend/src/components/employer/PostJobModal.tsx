@@ -15,11 +15,13 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
+import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
+import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { locationDatasetFailed } from '@/lib/location-search';
@@ -85,6 +87,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [limitReached, setLimitReached] = useState(false);
+  // Freezes the description Textarea while `DescriptionHelper`'s Generate
+  // call is in flight -- otherwise a manual edit made mid-flight would be
+  // silently overwritten seconds later by the eventual success response.
+  const [descriptionGenerating, setDescriptionGenerating] = useState(false);
 
   // Template state. Templates are a convenience layer on top of job
   // creation: a failure to load or save one must never block posting a job.
@@ -148,6 +154,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setTemplateName('');
     setTemplateNotice('');
     setTemplateLimit(null);
+    setDescriptionGenerating(false);
     savedTemplateIdRef.current = null;
     onClose();
   };
@@ -478,7 +485,18 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </Select>
           </Field>
           <Field label={t('modal.job_description')}>
-            <Textarea rows={4} value={form.description} onChange={(e) => update('description', e.target.value)} placeholder={t('modal.description_placeholder')} />
+            <Textarea
+              rows={4}
+              value={form.description}
+              onChange={(e) => update('description', e.target.value)}
+              placeholder={t('modal.description_placeholder')}
+              disabled={descriptionGenerating}
+            />
+            <DescriptionHelper
+              form={form}
+              onDescriptionChange={(value) => update('description', value)}
+              onGeneratingChange={setDescriptionGenerating}
+            />
           </Field>
         </div>
       )}
@@ -500,6 +518,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               ))}
             </Select>
           </Field>
+          <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
               <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />

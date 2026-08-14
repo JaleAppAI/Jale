@@ -1,0 +1,112 @@
+{
+  "_meta": {
+    "source": "O*NET OnLine (onetonline.org) occupation summaries, sponsored by the U.S. Department of Labor, Employment and Training Administration",
+    "retrieved": "2026-08-12",
+    "note": "Each entry's description and tasks are paraphrased/condensed from the corresponding O*NET-SOC occupation's public 'Summary' and 'Tasks' sections (not verbatim reproduction). Keys are the TRADE_CATEGORIES values from infra/lambda/lib/job-fields.ts. 'other' is deliberately absent -- it has no single mapped SOC code, so generation for that category is unsupported rather than ungrounded."
+  },
+  "electrician": {
+    "soc_code": "47-2111.00",
+    "title": "Electricians",
+    "description": "Electricians install, maintain, and repair electrical wiring, equipment, and fixtures in homes, businesses, and industrial sites, making sure all work meets relevant electrical codes. They read blueprints or sketches to plan layouts, then run conduit and wiring, and troubleshoot and repair faults in existing systems.",
+    "tasks": [
+      "Read blueprints or sketches to plan wiring layout and meet code requirements",
+      "Install conduit, wiring, and cable, and pull wire through walls, ceilings, and floors",
+      "Connect wiring to circuit breakers, panels, outlets, switches, and fixtures",
+      "Test circuits and components with meters and testing equipment to confirm proper operation",
+      "Diagnose electrical malfunctions and repair or replace faulty wiring, switches, or fixtures",
+      "Inspect electrical systems for code violations, safety hazards, or worn components",
+      "Work from ladders, scaffolds, or lifts to install or service wiring and fixtures",
+      "Maintain required electrician licensing and follow local and national electrical codes"
+    ]
+  },
+  "plumber": {
+    "soc_code": "47-2152.00",
+    "title": "Plumbers, Pipefitters, and Steamfitters",
+    "description": "Plumbers assemble, install, and repair pipe systems that carry water, gas, steam, and other liquids in homes and businesses. They read blueprints and codes to plan pipe layout, cut and join pipe and fittings, install fixtures, and test finished systems for leaks.",
+    "tasks": [
+      "Review blueprints and codes to plan pipe layout, routing, and material needs",
+      "Measure, cut, thread, or bend pipe to the required lengths and angles",
+      "Join pipes and fittings using couplings, solvent, soldering, or welding",
+      "Install fixtures and appliances such as sinks, toilets, and water heaters",
+      "Test installed piping and fixtures for leaks using pressure or water tests",
+      "Locate and repair leaks, clogs, and other plumbing problems",
+      "Install shutoff valves and connect piping to supply and drain lines",
+      "Maintain and replace worn washers, pipes, and fittings during repairs"
+    ]
+  },
+  "carpenter": {
+    "soc_code": "47-2031.00",
+    "title": "Carpenters",
+    "description": "Carpenters build, install, and repair structures and fixtures made of wood and similar materials, including framing, stairways, doors, windows, and concrete forms. They read blueprints to plan layouts, cut and shape materials, and assemble finished work with hand and power tools.",
+    "tasks": [
+      "Study blueprints or plans to determine layout, dimensions, and materials needed",
+      "Measure and mark cutting lines on lumber and other materials",
+      "Cut and shape materials to size using saws and other hand or power tools",
+      "Assemble and fasten framing, walls, and structures with nails, screws, or adhesive",
+      "Install doors, windows, trim, flooring, and other finish carpentry",
+      "Build and set forms for poured concrete work",
+      "Erect and use scaffolding or ladders to work above ground level",
+      "Check work for level, plumb, and square using a level and plumb bob"
+    ]
+  },
+  "concrete": {
+    "soc_code": "47-2051.00",
+    "title": "Cement Masons and Concrete Finishers",
+    "description": "Cement masons and concrete finishers pour, spread, level, and smooth concrete for floors, sidewalks, driveways, and other structures using hand and power tools. They set forms, monitor curing conditions, and finish surfaces to a smooth or textured final grade.",
+    "tasks": [
+      "Set and align forms that hold poured concrete to the correct depth and pitch",
+      "Spread, level, and smooth concrete using rakes, trowels, screeds, and floats",
+      "Monitor weather and temperature conditions that affect how concrete cures",
+      "Mold expansion joints and edges with edging and jointing tools",
+      "Apply sealing or hardening compounds to finished concrete surfaces",
+      "Operate power vibrators to remove air pockets and compact concrete",
+      "Patch, smooth, or repair holes and cracks in concrete surfaces",
+      "Mix cement, sand, and water to the right consistency for the job"
+    ]
+  },
+  "painting": {
+    "soc_code": "47-2141.00",
+    "title": "Painters, Construction and Maintenance",
+    "description": "Painters apply paint, stain, and other finishes to walls, buildings, and structures using brushes, rollers, and spray equipment. They prepare surfaces by cleaning, sanding, patching, and priming before finishing, and mix or match colors to the desired result.",
+    "tasks": [
+      "Cover floors, furniture, and fixtures with dropcloths or tape before painting",
+      "Prepare surfaces by sanding, scraping, patching holes, and washing away dirt or mildew",
+      "Apply primer or sealer to new or bare surfaces before the finish coat",
+      "Apply paint, stain, or varnish using brushes, rollers, or spray guns",
+      "Fill cracks, holes, and joints with caulk, putty, or filler",
+      "Mix and match paint colors to achieve the specified finish",
+      "Set up ladders or scaffolding to reach upper walls and ceilings",
+      "Clean and maintain brushes, rollers, and spray equipment after use"
+    ]
+  },
+  "drywall": {
+    "soc_code": "47-2081.00",
+    "title": "Drywall and Ceiling Tile Installers",
+    "description": "Drywall and ceiling tile installers hang plasterboard and wallboard on walls and ceilings and install the framing and acoustical tile that support it. They measure, cut, and fasten panels to framing, and coordinate with finishers who tape and finish the seams.",
+    "tasks": [
+      "Read blueprints to plan panel layout, framing, and material needs",
+      "Measure and mark panels and framing for cuts and fastener locations",
+      "Cut drywall panels to size and cut openings for outlets, vents, and fixtures",
+      "Fasten wallboard or drywall to framing using screws, nails, or adhesive",
+      "Install metal or wood studs and framing to support panels",
+      "Hang panels on ceilings and walls, using lifts for overhead work",
+      "Trim rough panel edges to keep joints even before finishing",
+      "Coordinate with drywall finishers on seam and joint locations"
+    ]
+  },
+  "general_labor": {
+    "soc_code": "47-2061.00",
+    "title": "Construction Laborers",
+    "description": "Construction laborers perform a wide range of physical tasks at job sites, including site prep, digging, material handling, and cleanup, and assist skilled trades such as carpenters, masons, and plasterers. They operate basic tools and equipment and help keep the site safe and organized.",
+    "tasks": [
+      "Clean and prepare job sites to remove hazards before work begins",
+      "Load, unload, and move building materials, tools, and equipment around the site",
+      "Dig trenches, backfill excavations, and grade earth to specification",
+      "Erect and take down scaffolding, barricades, and temporary supports",
+      "Mix, pour, and spread concrete, and assist with finishing surfaces",
+      "Operate hand tools and small power tools such as saws, drills, and compactors",
+      "Assist skilled tradespeople such as carpenters, masons, or plasterers as directed",
+      "Control traffic or signal equipment operators around active work zones"
+    ]
+  }
+}

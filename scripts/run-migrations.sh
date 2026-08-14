@@ -212,6 +212,7 @@ MIGRATIONS=(
   "068_preferred_city_centroids.sql"
   "069_employer_job_templates.sql"
   "070_worker_applied_job_visibility.sql"
+  "071_wage_references.sql"
 )
 
 WORKDIR="$(mktemp -d)"

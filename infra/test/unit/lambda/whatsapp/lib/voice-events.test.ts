@@ -9,6 +9,7 @@ import {
   VOICE_EVENT_FIELD,
   type TrustVoiceEventV2,
   type ProfileIntakeVoiceEventV2,
+  type VoicePipelineExecutionInputV2,
 } from '../../../../../lambda/whatsapp/lib/voice-events';
 
 // Mirrors processor.ts's parseFormBody (URLSearchParams entries -> object).
@@ -172,5 +173,67 @@ describe('parseVoiceTranscriptEvent — strict rejection', () => {
     const params = decodeFormBody(buildSyntheticVoiceInboundBody(trustEvent));
     delete params.MessageSid;
     expect(parseVoiceTranscriptEvent(params)).toBeNull();
+  });
+});
+
+describe('VoicePipelineExecutionInputV2 shape', () => {
+  // languageCode was dropped (T-transcription-language-id): the Step
+  // Functions construct now identifies language itself
+  // (IdentifyMultipleLanguages) instead of reading it from the execution
+  // input, so the field must no longer be required — or even present — on
+  // this type. This is a compile-time assertion: the object literal below
+  // fails to typecheck if `languageCode` is still a required/known field.
+  it('constructs without a languageCode field', () => {
+    const input: VoicePipelineExecutionInputV2 = {
+      transcriptionJobName: 'jale-vt-worker1-123',
+      mediaS3Uri: 's3://bucket/worker1/voice/media-id',
+      mediaBucketName: 'bucket',
+      transcriptOutputKey: 'worker1/transcripts/jale-vt-worker1-123.json',
+      v2: {
+        version: 'v2',
+        kind: 'trust_answer',
+        phone: '+15125551234',
+        runId: 'run-1',
+        stepKey: 'trust.question.1',
+        language: 'es',
+        origMessageSid: '1'.repeat(34),
+        startedAt: '2026-08-14T00:00:00.000Z',
+        questionIndex: 0,
+      },
+    };
+    expect(input).not.toHaveProperty('languageCode');
+    expect(input.transcriptionJobName).toBe('jale-vt-worker1-123');
+  });
+
+  // The test above only proves languageCode isn't REQUIRED — it would still
+  // pass if the field came back as optional (a partial regression: no
+  // longer mandatory, but still a recognized property some caller could
+  // resurrect). Assigning it into an object literal is an excess-property
+  // check: TS only flags an unknown key on a literal assigned directly to
+  // the typed variable, so this fails to compile today (languageCode isn't
+  // a property of VoicePipelineExecutionInputV2 at all) and would silently
+  // stop failing — making @ts-expect-error itself an unused-directive error
+  // — the moment languageCode is reintroduced in ANY form, required or not.
+  it('rejects a languageCode field even if reintroduced as optional (compile-time)', () => {
+    const input: VoicePipelineExecutionInputV2 = {
+      transcriptionJobName: 'jale-vt-worker1-123',
+      mediaS3Uri: 's3://bucket/worker1/voice/media-id',
+      mediaBucketName: 'bucket',
+      transcriptOutputKey: 'worker1/transcripts/jale-vt-worker1-123.json',
+      // @ts-expect-error languageCode was removed from VoicePipelineExecutionInputV2
+      languageCode: 'es-US',
+      v2: {
+        version: 'v2',
+        kind: 'trust_answer',
+        phone: '+15125551234',
+        runId: 'run-1',
+        stepKey: 'trust.question.1',
+        language: 'es',
+        origMessageSid: '1'.repeat(34),
+        startedAt: '2026-08-14T00:00:00.000Z',
+        questionIndex: 0,
+      },
+    };
+    expect(input.transcriptionJobName).toBe('jale-vt-worker1-123');
   });
 });

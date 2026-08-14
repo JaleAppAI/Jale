@@ -65,6 +65,10 @@ scripts/start-local-admin-demo.ps1
 # Local frontend deploy state
 infra/scripts/.frontend-fast-deploy-last.env
 
+# generate-oews-seed.ts's raw-download cache (BLS/Census source files) --
+# regenerable, not the checked-in artifact (infra/scripts/data/oews-tx-seed.json IS committed)
+infra/scripts/data/.cache/
+
 # Code review scratch artifacts
 .claude-review/
 

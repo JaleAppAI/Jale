@@ -89,7 +89,13 @@
     "interval_daily": "día",
     "interval_weekly": "semana",
     "interval_monthly": "mes",
-    "interval_fixed": "fijo"
+    "interval_fixed": "fijo",
+    "reference_employer_intro": "Punto de partida:",
+    "reference_worker_profile_intro": "Pago típico para tu oficio:",
+    "reference_worker_job_intro": "Para comparar:",
+    "reference_headline": "Pago típico para {trade} en {area}: {min}–{max}/hora",
+    "reference_median": "(mediana {amount})",
+    "reference_source": "Fuente: Oficina de Estadísticas Laborales de EE. UU. (BLS), OEWS, {vintage}"
   },
   "header": {
     "language_toggle": "English",
@@ -692,6 +698,15 @@
       "error": "Error al publicar el empleo. Inténtelo de nuevo.",
       "job_description": "Descripción del empleo",
       "description_placeholder": "¿Qué incluye el trabajo? ¿Qué experiencia se requiere?",
+      "description_helper": {
+        "use_sample": "Usar un ejemplo",
+        "source_credit": "Fuente: O*NET",
+        "generate": "Generar con IA",
+        "generating": "Generando…",
+        "replace_hint": "Esto reemplazará la descripción actual.",
+        "limit_reached": "Alcanzó el límite diario de descripciones generadas con IA. Inténtelo de nuevo mañana.",
+        "generate_error": "No pudimos generar una descripción en este momento. Inténtelo de nuevo o escriba la suya."
+      },
       "select_placeholder": "Seleccionar...",
       "trade_category": "Oficio",
       "trade": {

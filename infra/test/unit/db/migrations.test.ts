@@ -102,6 +102,7 @@ describe('database migrations', () => {
       '068',
       '069',
       '070',
+      '071',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -667,5 +668,17 @@ describe('database migrations', () => {
     expect(migration).toContain('SET search_path = public');
     // Trigger binding is preserved via CREATE OR REPLACE — must NOT recreate it.
     expect(migration).not.toContain('CREATE TRIGGER');
+  });
+
+  it('adds read-only wage reference tables with no write policy in migration 070', () => {
+    const migration = fs.readFileSync(path.join(migrationsDir, '071_wage_references.sql'), 'utf8');
+
+    expect(migration).toContain('CREATE TABLE wage_references');
+    expect(migration).toContain('CREATE TABLE city_cbsa_crosswalk');
+    expect(migration).toContain('ALTER TABLE wage_references FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('ALTER TABLE city_cbsa_crosswalk FORCE ROW LEVEL SECURITY');
+    expect(migration).toContain('wage_references_read_all');
+    expect(migration).toContain('city_cbsa_crosswalk_read_all');
+    expect(migration).not.toMatch(/GRANT\s+(INSERT|UPDATE|DELETE)/i);
   });
 });

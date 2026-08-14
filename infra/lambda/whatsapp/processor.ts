@@ -905,14 +905,12 @@ async function startTrustTranscription(
     [mediaId, input.workerId, s3Key, input.mediaContentType],
   );
 
-  const languageCode = input.language === 'es' ? 'es-US' : 'en-US';
   const transcriptionJobName = `jale-vt-${input.workerId.replace(/-/g, '')}-${Date.now()}`;
   const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
   const transcriptOutputKey = `${input.workerId}/transcripts/${transcriptionJobName}.json`;
 
   const sfnInput: VoicePipelineExecutionInputV2 = {
     transcriptionJobName,
-    languageCode,
     mediaS3Uri,
     mediaBucketName: bucketName,
     transcriptOutputKey,
@@ -1027,7 +1025,6 @@ async function ingestProfileVoiceNote(
     [mediaId, input.workerId, s3Key, input.mediaContentType],
   );
 
-  const languageCode = input.language === 'es' ? 'es-US' : 'en-US';
   const transcriptionJobName = `jale-vp-${input.workerId.replace(/-/g, '')}-${Date.now()}`;
   const mediaS3Uri = `s3://${bucketName}/${s3Key}`;
   const transcriptOutputKey = `${input.workerId}/transcripts/${transcriptionJobName}.json`;
@@ -1049,7 +1046,6 @@ async function ingestProfileVoiceNote(
     language: input.language,
     mediaBucketName: bucketName,
     transcriptionJobName,
-    languageCode,
     mediaS3Uri,
     transcriptOutputKey,
     voiceMessageMediaId: mediaId,

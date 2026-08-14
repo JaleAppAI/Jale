@@ -120,6 +120,40 @@ describe('job-fields parser', () => {
     expect(normalizeApplicationStatus('hired')).toBe('hired');
     expect(normalizeApplicationStatus('bogus')).toBeNull();
   });
+
+  // A-7: 4000-char cap on `description`, shared by employer-jobs-create,
+  // employer-jobs-update, and employer-templates-save (all three call
+  // parseJobFields with the full request body, so this single check covers
+  // all three ride-along paths without touching any of those handlers).
+  describe('description length cap', () => {
+    it('accepts a description at exactly the 4000-char boundary', () => {
+      const result = parseJobFields({ ...validBody, description: 'A'.repeat(4000) });
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects a description one character past the 4000-char boundary', () => {
+      const result = parseJobFields({ ...validBody, description: 'A'.repeat(4001) });
+      expect(result).toEqual({ ok: false, error: 'invalid_description' });
+    });
+
+    it('measures the TRIMMED length, so surrounding whitespace cannot smuggle extra characters past the cap', () => {
+      const padded = `  ${'A'.repeat(4000)}  `; // trims to exactly 4000
+      expect(parseJobFields({ ...validBody, description: padded }).ok).toBe(true);
+
+      const overPadded = `  ${'A'.repeat(4001)}  `; // trims to 4001
+      expect(parseJobFields({ ...validBody, description: overPadded })).toEqual({
+        ok: false,
+        error: 'invalid_description',
+      });
+    });
+
+    it('ignores an absent description (still optional)', () => {
+      expect(parseJobFields({ ...validBody })).toEqual({
+        ok: true,
+        value: expect.objectContaining({}),
+      });
+    });
+  });
 });
 
 describe('parseOptionalCoordinates', () => {

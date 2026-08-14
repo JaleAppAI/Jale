@@ -449,6 +449,24 @@ describe('employer-jobs-update', () => {
     expect(returningClause).toMatch(/\bstate_region\b/);
   });
 
+  // A-7 (T-A1 ride-along): 4000-char cap on `description`, enforced by
+  // parseJobFields (infra/lambda/lib/job-fields.ts) -- this handler makes no
+  // description-specific check of its own, so these two tests are the
+  // endpoint-level proof that the shared validator's rejection reaches the
+  // field-edit path unchanged.
+  it('rejects an over-length (4001+ char) description with 400 invalid_description, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, description: 'A'.repeat(4001) }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_description' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('accepts a description at exactly the 4000-char boundary', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, description: 'A'.repeat(4000) }) }));
+    expect(res.statusCode).toBe(200);
+  });
+
   it('rejects invalid field values with 400', async () => {
     mockCurrentJob();
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, trade_category: 'astronaut' }) }));

@@ -60,6 +60,31 @@ function makeTranscriptS3Response(text: string) {
   };
 }
 
+/**
+ * Regression fixture (T-transcription-language-id): Transcribe's output JSON
+ * shape when a job runs with `IdentifyMultipleLanguages` — `results` carries
+ * an additional `language_codes` array (per-segment identified languages)
+ * alongside the SAME `transcripts[0].transcript` field the old hardcoded-
+ * LanguageCode jobs always produced. `readTranscript` only ever reads
+ * `results.transcripts[0].transcript`, so this extra field must be inert.
+ */
+function makeMultiLanguageTranscriptS3Response(text: string) {
+  const json = JSON.stringify({
+    results: {
+      transcripts: [{ transcript: text }],
+      language_codes: [
+        { language_code: 'es-US', duration_in_seconds: 3.2 },
+        { language_code: 'en-US', duration_in_seconds: 1.1 },
+      ],
+    },
+  });
+  return {
+    Body: {
+      transformToString: jest.fn().mockResolvedValue(json),
+    },
+  };
+}
+
 function makeBedrockResponse(fields: object, scores: object, summaryEn: string, summaryEs: string) {
   return {
     output: {
@@ -703,4 +728,39 @@ test('v1 legacy path is byte-identical (no v2 marker => no SQS send, users/outbo
   expect(mockSqsSend).not.toHaveBeenCalled();
   expect(mockQuery.mock.calls.some(([sql]: [string]) => /UPDATE users/.test(sql))).toBe(true);
   expect(outboxInserts().length).toBeGreaterThan(0);
+});
+
+test('a transcript with results.language_codes (multi-language job output) parses identically to a single-language one', async () => {
+  mockS3Send.mockResolvedValue(makeMultiLanguageTranscriptS3Response('I am an electrician in Austin with 5 years experience'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { city: 'Austin', main_trade: 'electrician', years_experience: '5-9' },
+    { city: 0.9, main_trade: 0.95, years_experience: 0.85 },
+    'Electrician in Austin with 5+ years experience.',
+    'Electricista en Austin con más de 5 años de experiencia.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-lang-codes',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-lang-codes.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  expect(mockS3Send).toHaveBeenCalledTimes(1);
+  expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+  // The extra language_codes field must not change what gets sent to
+  // Bedrock: it should see the SAME plain transcript text, not the raw JSON.
+  const converseInput = (mockBedrockSend.mock.calls[0][0] as any).input;
+  const promptText = JSON.stringify(converseInput);
+  expect(promptText).toContain('I am an electrician in Austin with 5 years experience');
+  expect(promptText).not.toContain('language_codes');
+
+  const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql)
+  );
+  expect(insertCall).toBeDefined();
 });

@@ -106,6 +106,35 @@ describe('AiStack', () => {
     }
   });
 
+  // T-A1: bedrockArns() was extracted from a private function in this file
+  // into the shared infra/lib/bedrock-arns.ts (so ApiStack's new
+  // employer-generate-description Lambda can scope an identical IAM policy
+  // without duplicating the ARN list). This pins the exact IAM resource ARN
+  // set every Bedrock-invoking Lambda in this stack is granted, so a future
+  // edit to the shared module cannot silently change AiStack's template.
+  it('grants bedrock:InvokeModel scoped to the exact pinned Nova Lite ARN set (extracted to lib/bedrock-arns.ts)', () => {
+    // bedrockArns() returns 4 entries, but in this us-east-1 test harness the
+    // hardcoded 'us-east-1' literal foundation-model ARN and the region-templated
+    // one are byte-identical -- CDK's PolicyDocument rendering dedupes the
+    // Resource array, so the synthesized template carries 3 unique ARNs here.
+    // (In us-east-2 production this harness's collision does not occur.)
+    const expectedResources = [
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.amazon.nova-lite-v1:0',
+      'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
+      'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
+    ];
+    const policies = template.findResources('AWS::IAM::Policy');
+    const bedrockStatements = Object.values(policies)
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => statement.Action === 'bedrock:InvokeModel');
+
+    expect(bedrockStatements.length).toBeGreaterThanOrEqual(3); // question-generator, alias-generator, trust-scorer
+    for (const statement of bedrockStatements) {
+      expect(statement.Resource).toEqual(expectedResources);
+      expect(statement.Effect).toBe('Allow');
+    }
+  });
+
   it('feeds Bedrock parse/validation failures into one alarmed TrustScorerFailures metric', () => {
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
       FilterPattern: '{ $.metric = "TrustScorerParseFailure" }',
