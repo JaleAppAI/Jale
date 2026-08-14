@@ -137,6 +137,7 @@ describe('whatsapp outbox templates', () => {
         templates: {
           job_alert_en: 'HX_job_en',
           admin_support_reply_en: 'HX_admin_en',
+          employer_message_invite_es: 'HX_employer_invite_es',
         },
       }),
     });
@@ -169,6 +170,34 @@ describe('whatsapp outbox templates', () => {
       content_template: null,
       content_variables: null,
     })).rejects.toBeInstanceOf(AmbiguousTwilioSendError);
+  });
+
+  it('throws TwilioTemplateInvalidError with the template name on Twilio code 21655', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 400,
+      json: async () => ({ code: 21655, message: 'ContentSid is Invalid' }),
+    });
+    await expect(sendTwilioWhatsAppMessage('whatsapp:+15125550100', {
+      body: null,
+      content_template: 'employer_message_invite_es',
+      content_variables: { '1': 'ACME', '2': 'Plomero' },
+    })).rejects.toMatchObject({
+      name: 'TwilioTemplateInvalidError',
+      templateName: 'employer_message_invite_es',
+      twilioCode: 21655,
+    });
+  });
+
+  it('keeps the generic error (with code appended) for other non-ok responses', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 429,
+      json: async () => ({ code: 20429 }),
+    });
+    await expect(sendTwilioWhatsAppMessage('whatsapp:+15125550100', {
+      body: 'hola', content_template: null, content_variables: null,
+    })).rejects.toThrow('Twilio send failed with HTTP 429 (code 20429)');
   });
 
   it('sends Twilio Content API templates from outbox rows', async () => {

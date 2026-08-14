@@ -1030,6 +1030,7 @@ export class WhatsAppV2Harness {
       requiredLegalVersion: '1.0',
       recordLegalAcceptance: async (_client, input) => {
         this.canonicalLegalConsents.push(input);
+        return { verified: true };
       },
       workflowVersion: 1,
       voiceIntake: this.voiceIntakeFake.voiceIntake,

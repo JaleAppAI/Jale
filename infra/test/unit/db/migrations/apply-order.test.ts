@@ -79,6 +79,7 @@ const expectedBaselineMigrations = [
   '068_preferred_city_centroids.sql',
   '069_employer_job_templates.sql',
   '070_worker_applied_job_visibility.sql',
+  '071_whatsapp_retrigger_sweep_definer.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -632,6 +633,17 @@ describe('migration apply order baseline', () => {
     // The SET TRUE / SET FALSE + revoke choreography must restore the
     // exactly-one-membership invariant that 020b/038 assert on rerun.
     expect(sql).toContain('REVOKE jale_rls_relationship_reader FROM jale_admin GRANTED BY jale_admin');
+  });
+
+  it('adds the deferred-retrigger sweep definer in migration 071', () => {
+    const sql = readMigration('071_whatsapp_retrigger_sweep_definer.sql');
+    expect(sql).toContain('retrigger_deferred_ready_workers');
+    expect(sql).toContain('SECURITY DEFINER');
+    expect(sql).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(sql).toContain("ON CONFLICT (event_key) DO NOTHING");
+    expect(sql).toContain("'worker.ready:sweep:'");
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.retrigger_deferred_ready_workers(TEXT, INTEGER) FROM PUBLIC');
+    expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.retrigger_deferred_ready_workers(TEXT, INTEGER) TO jale_whatsapp');
   });
 
   maybeIt('applies migrations 001-034 against a local Postgres database', async () => {

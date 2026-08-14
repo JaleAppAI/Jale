@@ -24,6 +24,23 @@ class AmbiguousTwilioSendError extends Error {
 
 export { AmbiguousTwilioSendError };
 
+/**
+ * Twilio rejected the send because the ContentSid is invalid or not usable
+ * (error 21655) — an unapproved, deleted, or mistyped template SID in the
+ * jale/whatsapp/twilio secret. Retrying cannot succeed until the secret or
+ * the template's WhatsApp approval changes; surfaced as its own metric so
+ * the failure is one CloudWatch query away instead of invisible.
+ */
+export class TwilioTemplateInvalidError extends Error {
+  constructor(
+    public readonly templateName: string,
+    public readonly twilioCode: number,
+  ) {
+    super(`Twilio template invalid (code ${twilioCode}): ${templateName}`);
+    this.name = 'TwilioTemplateInvalidError';
+  }
+}
+
 export async function sendTwilioWhatsAppMessage(to: string, row: {
   body: string | null;
   content_template: string | null;
@@ -86,7 +103,17 @@ export async function sendTwilioWhatsAppMessage(to: string, row: {
     );
   }
   if (!res.ok) {
-    throw new Error(`Twilio send failed with HTTP ${res.status}`);
+    let twilioCode: number | null = null;
+    try {
+      const errorBody = await res.json() as { code?: number };
+      twilioCode = typeof errorBody?.code === 'number' ? errorBody.code : null;
+    } catch {
+      // Non-JSON error body: fall through to the generic error.
+    }
+    if (twilioCode === 21655 && row.content_template) {
+      throw new TwilioTemplateInvalidError(row.content_template, twilioCode);
+    }
+    throw new Error(`Twilio send failed with HTTP ${res.status}${twilioCode !== null ? ` (code ${twilioCode})` : ''}`);
   }
   let responseBody: { sid?: string } | null = null;
   try {

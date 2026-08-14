@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { setInternalUserRlsContext } from './db';
-import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError } from '../whatsapp/lib/outbox';
+import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInvalidError } from '../whatsapp/lib/outbox';
 import { categoryRenderers } from '../whatsapp/lib/onboarding-renderers';
 import { enqueueWorkerMessage, registerCategoryRenderer } from '../whatsapp/lib/worker-delivery-gateway';
 import { loadWorkerGate } from '../whatsapp/lib/onboarding-repository';
@@ -187,18 +187,23 @@ async function queueWorkerInviteTemplate(
   client: PoolClient,
   conversation: ConversationAccessRow,
   templateName: string,
+  messageId: string,
 ): Promise<void> {
   const whatsappNumber = normalizeWhatsappNumber(conversation.worker_phone);
   if (!whatsappNumber) throw new Error('worker_whatsapp_unavailable');
 
   const companyName = conversation.company_name ?? 'Jale';
   const jobTitle = conversation.job_title ?? 'this job';
+  // message_id ties this invite to the employer's message row so an
+  // unambiguous send failure marks it 'failed' in the employer UI. Success
+  // marking is send_kind-aware (freeform only) — see sendPendingJobMessageOutbox.
   await client.query(
     `INSERT INTO job_message_outbox
-        (conversation_id, whatsapp_number, send_kind, content_template, content_variables)
-     VALUES ($1, $2, 'template', $3, $4::jsonb)`,
+        (conversation_id, message_id, whatsapp_number, send_kind, content_template, content_variables)
+     VALUES ($1, $2, $3, 'template', $4, $5::jsonb)`,
     [
       conversation.id,
+      messageId,
       whatsappNumber,
       templateName,
       JSON.stringify({
@@ -548,6 +553,7 @@ export async function queueConversationMessageFromEmployer(
         client,
         conversation,
         closedWindowTemplateName ?? resumeTemplateName(conversation.worker_language),
+        messageId,
       );
     }
   }
@@ -631,6 +637,16 @@ export async function recordWorkerConversationReply(
   }
 
   if (!target) {
+    const toAmbiguous = (rows: OpenThreadRow[]): WorkerReplyRouteResult => ({
+      status: 'ambiguous',
+      threads: rows.map((r) => ({
+        conversationId: r.id,
+        jobTitle: r.job_title,
+        companyName: r.company,
+        threadNumber: r.worker_thread_number,
+      })),
+    });
+
     const open = await client.query<OpenThreadRow>(
       `${OPEN_THREAD_SELECT}
         WHERE jc.worker_id = $1 AND jc.status = 'open'
@@ -640,19 +656,30 @@ export async function recordWorkerConversationReply(
         FOR UPDATE OF jc`,
       [workerId],
     );
-    if (open.rowCount === 0) return { status: 'no_conversation' };
-    if ((open.rowCount ?? 0) > 1) {
-      return {
-        status: 'ambiguous',
-        threads: open.rows.map((r) => ({
-          conversationId: r.id,
-          jobTitle: r.job_title,
-          companyName: r.company,
-          threadNumber: r.worker_thread_number,
-        })),
-      };
+    if ((open.rowCount ?? 0) > 1) return toAmbiguous(open.rows);
+    if (open.rowCount === 1) {
+      target = open.rows[0];
+    } else {
+      // No ACCEPTED thread. Employer-initiated threads have accepted_at NULL
+      // until the worker engages — before this fallback, a worker replying
+      // plain text to their only invite dead-ended in "No entendí ese
+      // mensaje" forever (spec 2026-08-13 §4). Re-run ungated: a single open
+      // thread routes (the accepted_at COALESCE below performs the accept —
+      // byte-for-byte what CHATS→pick 1→resend does); several become the
+      // numbered picker. The gated query above still wins when an accepted
+      // thread exists, preserving the documented no-hijack rule.
+      const unaccepted = await client.query<OpenThreadRow>(
+        `${OPEN_THREAD_SELECT}
+          WHERE jc.worker_id = $1 AND jc.status = 'open'
+          ORDER BY jc.worker_thread_number NULLS LAST, jc.created_at
+          LIMIT 10
+          FOR UPDATE OF jc`,
+        [workerId],
+      );
+      if (unaccepted.rowCount === 0) return { status: 'no_conversation' };
+      if ((unaccepted.rowCount ?? 0) > 1) return toAmbiguous(unaccepted.rows);
+      target = unaccepted.rows[0];
     }
-    target = open.rows[0];
   }
 
   await client.query(
@@ -870,8 +897,9 @@ export async function sendPendingJobMessageOutbox(
       body: string | null;
       content_template: string | null;
       content_variables: Record<string, string> | null;
+      send_kind: string;
     }>(
-      `SELECT id, conversation_id, message_id, whatsapp_number, body, content_template, content_variables
+      `SELECT id, conversation_id, message_id, whatsapp_number, body, content_template, content_variables, send_kind
        FROM job_message_outbox
        WHERE status IN ('pending', 'failed')
          AND attempt_count < ${MAX_SEND_ATTEMPTS}
@@ -899,7 +927,10 @@ export async function sendPendingJobMessageOutbox(
             WHERE id = $1`,
           [row.id, twilioMessageSid],
         );
-        if (row.message_id) {
+        // Only freeform rows carry the employer's actual text. A template row
+        // is just the invite: on success the message must STAY
+        // 'waiting_worker_reply' so the worker-reply flush delivers it.
+        if (row.message_id && row.send_kind === 'freeform') {
           await client.query(
             `UPDATE job_conversation_messages
                 SET status = 'sent',
@@ -914,6 +945,14 @@ export async function sendPendingJobMessageOutbox(
         lastError = err as Error;
         const ambiguous = err instanceof AmbiguousTwilioSendError;
         console.log(JSON.stringify({ metric: 'JobMessageOutboxSendFailed', outboxId: row.id, ambiguous }));
+        if (err instanceof TwilioTemplateInvalidError) {
+          console.log(JSON.stringify({
+            metric: 'JobMessageTemplateSidInvalid',
+            template: err.templateName,
+            conversationId: row.conversation_id,
+            outboxId: row.id,
+          }));
+        }
         await client.query(
           `UPDATE job_message_outbox
               SET status = $1,

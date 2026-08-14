@@ -9,7 +9,7 @@ import { setRlsContext } from '../../lib/db';
 export async function recordCanonicalWhatsAppConsent(
   client: PoolClient,
   input: { workerId: string; documentVersion: string },
-): Promise<void> {
+): Promise<{ verified: boolean }> {
   const user = await client.query<{ cognito_sub: string }>(
     'SELECT cognito_sub FROM users WHERE id = $1',
     [input.workerId],
@@ -45,4 +45,14 @@ export async function recordCanonicalWhatsAppConsent(
       )`,
     [input.workerId, input.documentVersion],
   );
+
+  // Verify the write actually stuck. The UPDATE's WHERE clause skips
+  // already-accepted users (idempotent no-op — still verified); what must
+  // never happen is advancing on a write RLS silently swallowed (0 rows AND
+  // still-null tos_version — the identity-split failure mode).
+  const check = await client.query<{ tos_version: string | null }>(
+    'SELECT tos_version FROM users WHERE id = $1',
+    [input.workerId],
+  );
+  return { verified: !!check.rows[0]?.tos_version };
 }

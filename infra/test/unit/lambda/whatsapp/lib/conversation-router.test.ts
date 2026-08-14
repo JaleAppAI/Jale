@@ -66,7 +66,7 @@ import {
   relayWorkerFreeText, handlePickerResponse, parseDisambiguationPick,
   tryConversationRelay, handleEmployerConversationButton, isChatsKeyword,
   isCloseKeyword, isLikelyOtpCode, parseEmployerConversationTextAction,
-  handleEmployerConversationTextAction,
+  handleEmployerConversationTextAction, ensureWorkerTosAccepted,
 } from '../../../../../lambda/whatsapp/lib/conversation-router';
 import {
   recordWorkerConversationReply,
@@ -79,7 +79,12 @@ const WORKER = 'aaaaaaaa-0000-0000-0000-000000000001';
 const CONV_A = 'bbbbbbbb-0000-0000-0000-00000000000a';
 const CONV_B = 'bbbbbbbb-0000-0000-0000-00000000000b';
 
-const deps = { updateConversation: jest.fn(), queueLegalPrompt: jest.fn() };
+const deps = {
+  updateConversation: jest.fn(),
+  queueLegalPrompt: jest.fn(),
+  recordLegalAcceptance: jest.fn(),
+  requiredLegalVersion: '1.0',
+};
 const baseConv: any = {
   id: 'wa-conv-1', user_id: WORKER, whatsapp_number: '+1512', language: 'es',
   conversation_state: 'idle', state_context: {}, otp_attempts: 0,
@@ -198,6 +203,79 @@ describe('legal-wall gate', () => {
       { status: 'routed', conversationId: CONV_A });
     const routed = await relayWorkerFreeText(client, baseConv, msg, WORKER, deps);
     expect(routed).toBe(WORKER);
+    expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensureWorkerTosAccepted', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('accepted worker: returns \'accepted\', no prompt queued', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 });
+    const result = await ensureWorkerTosAccepted(
+      client, baseConv, msg, WORKER, deps, 'ConversationRelayLegalHold');
+    expect(result).toBe('accepted');
+    expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+    expect(deps.recordLegalAcceptance).not.toHaveBeenCalled();
+  });
+
+  it('un-accepted worker, body "hola": queues the legal prompt, logs the hold metric, returns \'handled\'', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const result = await ensureWorkerTosAccepted(
+      client, baseConv, { ...msg, body: 'hola' }, WORKER, deps, 'ConversationRelayLegalHold');
+    expect(result).toBe('handled');
+    expect(deps.queueLegalPrompt).toHaveBeenCalledTimes(1);
+    expect(deps.queueLegalPrompt).toHaveBeenCalledWith(client, msg.messageSid, msg.from, baseConv.language);
+    expect(logSpy).toHaveBeenCalledWith(
+      JSON.stringify({ metric: 'ConversationRelayLegalHold', workerId: WORKER }));
+    logSpy.mockRestore();
+  });
+
+  it('un-accepted worker, body "Acepto": records acceptance and queues the ES confirmation, returns \'handled\', no prompt', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 });
+    (deps.recordLegalAcceptance as jest.Mock).mockResolvedValueOnce({ verified: true });
+    const result = await ensureWorkerTosAccepted(
+      client, baseConv, { ...msg, body: 'Acepto' }, WORKER, deps, 'ConversationRelayLegalHold');
+    expect(result).toBe('handled');
+    expect(deps.recordLegalAcceptance).toHaveBeenCalledWith(
+      client, { workerId: WORKER, documentVersion: deps.requiredLegalVersion });
+    expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3];
+    expect(sent).toContain('aceptados');
+  });
+
+  it('un-accepted worker, body "acepto", recordLegalAcceptance verified:false: logs WhatsAppConsentWriteFailed + apology', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 });
+    (deps.recordLegalAcceptance as jest.Mock).mockResolvedValueOnce({ verified: false });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    const result = await ensureWorkerTosAccepted(
+      client, baseConv, { ...msg, body: 'acepto' }, WORKER, deps, 'ConversationRelayLegalHold');
+    expect(result).toBe('handled');
+    expect(logSpy).toHaveBeenCalledWith(
+      JSON.stringify({ metric: 'WhatsAppConsentWriteFailed', workerId: WORKER }));
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3];
+    expect(sent).toMatch(/algo salió mal/i);
+    logSpy.mockRestore();
+  });
+
+  it('un-accepted worker, body "Aceptó" (accented autocorrect): records acceptance, no legal prompt', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 });
+    (deps.recordLegalAcceptance as jest.Mock).mockResolvedValueOnce({ verified: true });
+    const result = await ensureWorkerTosAccepted(
+      client, baseConv, { ...msg, body: 'Aceptó' }, WORKER, deps, 'ConversationRelayLegalHold');
+    expect(result).toBe('handled');
+    expect(deps.recordLegalAcceptance).toHaveBeenCalledWith(
+      client, { workerId: WORKER, documentVersion: deps.requiredLegalVersion });
+    expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
+  });
+
+  it('relayWorkerFreeText integration: un-accepted worker typing "Acepto" is handled by the gate (no recordWorkerConversationReply)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: null }], rowCount: 1 });
+    (deps.recordLegalAcceptance as jest.Mock).mockResolvedValueOnce({ verified: true });
+    const routed = await relayWorkerFreeText(client, baseConv, { ...msg, body: 'Acepto' }, WORKER, deps);
+    expect(routed).toBe(WORKER);
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
     expect(deps.queueLegalPrompt).not.toHaveBeenCalled();
   });
 });

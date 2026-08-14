@@ -416,6 +416,28 @@ export class WhatsAppStack extends cdk.Stack {
       targets: [new eventTargets.LambdaFunction(outboxSweeperLambda.function)],
     });
 
+    // ── Deferred-intent retrigger sweep ─────────────────────────
+    // EventBridge every 5 min: calls the migration-071 SECURITY DEFINER to
+    // re-emit worker.ready for ready workers still holding deferred business
+    // intents (e.g. web-bypass workers who never got a worker.ready event).
+    // The 1-minute DomainOutboxDrainLambda consumes the events. Never sends
+    // via Twilio, so it gets only the WhatsApp DB secret.
+    const retriggerSweepLambda = new JaleLambdaFunction(this, 'RetriggerSweepLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/retrigger-sweep-drain.ts'),
+      description: 'Deferred-intent retrigger sweep — re-emits worker.ready for stranded ready workers',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+      },
+    });
+    whatsappDbSecret.grantRead(retriggerSweepLambda.function);
+
+    new events.Rule(this, 'RetriggerSweepSchedule', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new eventTargets.LambdaFunction(retriggerSweepLambda.function)],
+    });
+
     this.adminOutboxDispatcherLambda = new JaleLambdaFunction(this, 'AdminOutboxDispatcherLambda', {
       entry: path.join(__dirname, '../../lambda/whatsapp/admin-outbox-dispatcher.ts'),
       description: 'WhatsApp admin outbox dispatcher',

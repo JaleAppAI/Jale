@@ -6,10 +6,20 @@ class MockAmbiguousTwilioSendError extends Error {
     this.name = 'AmbiguousTwilioSendError';
   }
 }
+class MockTwilioTemplateInvalidError extends Error {
+  constructor(
+    public readonly templateName: string,
+    public readonly twilioCode: number,
+  ) {
+    super(`Twilio template invalid (code ${twilioCode}): ${templateName}`);
+    this.name = 'TwilioTemplateInvalidError';
+  }
+}
 jest.mock('../../../../lambda/whatsapp/lib/outbox', () => ({
   sendTwilioWhatsAppMessage: jest.fn(),
   queueOutboxText: jest.fn(),
   AmbiguousTwilioSendError: MockAmbiguousTwilioSendError,
+  TwilioTemplateInvalidError: MockTwilioTemplateInvalidError,
 }));
 import { recordWorkerConversationReply, queueConversationMessageFromEmployer, closeWorkerConversation } from '../../../../lambda/lib/job-messaging';
 
@@ -71,8 +81,11 @@ describe('recordWorkerConversationReply (focused-thread)', () => {
   });
 
   it('returns no_conversation when worker has zero open threads', async () => {
-    // No focus + no open accepted threads -> single open-threads query returns empty.
-    mockQuery.mockResolvedValueOnce(openThreadsResult([]));
+    // No focus + no open accepted threads -> gated query empty, then the
+    // ungated fallback query also comes back empty.
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([]))
+      .mockResolvedValueOnce(openThreadsResult([]));
     const result = await recordWorkerConversationReply(
       client, WORKER, 'hola', 'whatsapp:+1512', 'SM3', undefined,
     );
@@ -103,10 +116,84 @@ describe('recordWorkerConversationReply (focused-thread)', () => {
     expect(select).toBeDefined();
     expect(select![0]).toMatch(/employer_display_name\(jc\.employer_id\)/);
   });
+
+  it('routes a bare text to the single open UNACCEPTED thread and flushes waiting messages', async () => {
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([])) // gated query (accepted_at IS NOT NULL) -> 0 rows
+      .mockResolvedValueOnce(openThreadsResult([
+        { id: CONV_A, application_id: 'app-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+      ])) // fallback query (no accepted_at predicate) -> 1 row
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // INSERT inbound worker message
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE job_conversations accepted_at COALESCE
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 }) // UPDATE job_applications -> talking
+      .mockResolvedValueOnce({ rows: [{ id: 'em-1', body: 'hola trabajador' }], rowCount: 1 }) // pending employer messages (waiting_worker_reply)
+      .mockResolvedValue({ rows: [], rowCount: 1 }); // outbox insert + message status='queued' update
+    const result = await recordWorkerConversationReply(
+      client, WORKER, 'hola', 'whatsapp:+1512', 'SM6', undefined,
+    );
+    expect(result).toEqual({ status: 'routed', conversationId: CONV_A });
+
+    const [gatedSql] = mockQuery.mock.calls[0];
+    const [fallbackSql] = mockQuery.mock.calls[1];
+    expect(gatedSql).toMatch(/accepted_at IS NOT NULL/);
+    expect(fallbackSql).not.toMatch(/accepted_at IS NOT NULL/);
+
+    expect(mockQuery.mock.calls.some(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql))).toBe(true);
+    const conversationUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /UPDATE job_conversations/.test(sql) && /accepted_at/.test(sql));
+    expect(conversationUpdate).toBeDefined();
+    const applicationUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /UPDATE job_applications/.test(sql));
+    expect(applicationUpdate).toBeDefined();
+
+    // The "flushes waiting messages" half of the contract: the pending
+    // employer message (em-1, still 'waiting_worker_reply') must actually
+    // get queued as a freeform outbox row addressed to the worker's number,
+    // and the source message row flipped to 'queued'.
+    const outboxInsert = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /INSERT INTO job_message_outbox/.test(sql) && /'freeform'/.test(sql));
+    expect(outboxInsert).toBeDefined();
+    expect(outboxInsert![1]).toEqual([CONV_A, 'em-1', '+1512', expect.stringContaining('hola trabajador')]);
+
+    const messageQueuedUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'queued'/.test(sql));
+    expect(messageQueuedUpdate).toBeDefined();
+    expect(messageQueuedUpdate![1]).toEqual(['em-1']);
+  });
+
+  it('returns ambiguous with the unaccepted threads when several exist and none is accepted', async () => {
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([])) // gated query -> 0 rows
+      .mockResolvedValueOnce(openThreadsResult([
+        { id: CONV_A, application_id: 'app-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+        { id: CONV_B, application_id: 'app-b', job_title: 'Plomero', company: 'BuildCo', worker_thread_number: 2 },
+      ])); // fallback -> 2 rows
+    const result = await recordWorkerConversationReply(
+      client, WORKER, 'hola', 'whatsapp:+1512', 'SM7', undefined,
+    );
+    expect(result.status).toBe('ambiguous');
+    if (result.status === 'ambiguous') {
+      expect(result.threads.map((t: any) => t.conversationId)).toEqual([CONV_A, CONV_B]);
+    }
+    expect(mockQuery.mock.calls.some(([sql]: [string]) =>
+      /INSERT INTO job_conversation_messages/.test(sql))).toBe(false);
+  });
+
+  it('still returns no_conversation when the worker has no open threads at all', async () => {
+    mockQuery
+      .mockResolvedValueOnce(openThreadsResult([])) // gated query -> 0 rows
+      .mockResolvedValueOnce(openThreadsResult([])); // fallback -> 0 rows
+    const result = await recordWorkerConversationReply(
+      client, WORKER, 'hola', 'whatsapp:+1512', 'SM8', undefined,
+    );
+    expect(result.status).toBe('no_conversation');
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+  });
 });
 
 import { sendPendingJobMessageOutbox } from '../../../../lambda/lib/job-messaging';
-import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError } from '../../../../lambda/whatsapp/lib/outbox';
+import { sendTwilioWhatsAppMessage, AmbiguousTwilioSendError, TwilioTemplateInvalidError } from '../../../../lambda/whatsapp/lib/outbox';
 
 const CONV_B2 = 'bbbbbbbb-0000-0000-0000-00000000000c';
 
@@ -197,6 +284,91 @@ describe('sendPendingJobMessageOutbox hardening (R8)', () => {
       /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
     expect(messageUpdate).toBeDefined();
     expect(messageUpdate![1]).toEqual(['m1']);
+  });
+
+  it('does NOT mark the conversation message sent when a TEMPLATE row sends successfully', async () => {
+    // A template row is only the invite — the real text arrives later via
+    // the worker-reply flush. Marking the employer message 'sent' here would
+    // silently drop it forever, since the flush only rescues rows still in
+    // 'waiting_worker_reply'.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'invite_v1', content_variables: {}, send_kind: 'template' },
+      ], rowCount: 1 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
+    (sendTwilioWhatsAppMessage as jest.Mock).mockResolvedValueOnce('SMtemplate');
+
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
+
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = 'sent'/.test(sql));
+    expect(outboxUpdate).toBeDefined();
+    expect(outboxUpdate![1]).toEqual(['o1', 'SMtemplate']);
+
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'sent'/.test(sql));
+    expect(messageUpdate).toBeUndefined();
+  });
+
+  it('still marks the conversation message failed when a template row fails unambiguously', async () => {
+    // Failure-marking is unchanged for both send kinds: a dead invite must
+    // still surface as 'failed' on the employer's message.
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'invite_v1', content_variables: {}, send_kind: 'template' },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null, send_kind: 'freeform' },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
+    (sendTwilioWhatsAppMessage as jest.Mock)
+      .mockRejectedValueOnce(new Error('Twilio 400 bad request'))  // o1 (template) fails
+      .mockResolvedValue('SMxx');                                 // o2 succeeds (avoids total-outage rethrow)
+
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
+
+    const messageUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_conversation_messages/.test(sql) && /status = 'failed'/.test(sql));
+    expect(messageUpdate).toBeDefined();
+    expect(messageUpdate![1]).toEqual(['m1']);
+  });
+
+  it('emits JobMessageTemplateSidInvalid when the send throws TwilioTemplateInvalidError', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })   // set_config
+      .mockResolvedValueOnce({ rows: [
+        { id: 'o1', conversation_id: CONV_A, message_id: 'm1', whatsapp_number: '+1', body: null, content_template: 'employer_message_invite_es', content_variables: {}, send_kind: 'template' },
+        { id: 'o2', conversation_id: CONV_B2, message_id: 'm2', whatsapp_number: '+1', body: 'b1', content_template: null, content_variables: null, send_kind: 'freeform' },
+      ], rowCount: 2 })                                    // SELECT pending
+      .mockResolvedValue({ rows: [], rowCount: 1 });       // subsequent updates
+    (sendTwilioWhatsAppMessage as jest.Mock)
+      .mockRejectedValueOnce(new TwilioTemplateInvalidError('employer_message_invite_es', 21655))  // o1 fails
+      .mockResolvedValue('SMxx');                                 // o2 succeeds (avoids total-outage rethrow)
+
+    await sendPendingJobMessageOutbox(client, { actorUserId: WORKER });
+
+    const metricLog = logSpy.mock.calls.find(([line]) =>
+      typeof line === 'string' && line.includes('JobMessageTemplateSidInvalid'));
+    expect(metricLog).toBeDefined();
+    expect(JSON.parse(metricLog![0] as string)).toEqual({
+      metric: 'JobMessageTemplateSidInvalid',
+      template: 'employer_message_invite_es',
+      conversationId: CONV_A,
+      outboxId: 'o1',
+    });
+
+    const outboxUpdate = mockQuery.mock.calls.find(([sql]) =>
+      /UPDATE job_message_outbox/.test(sql) && /SET status = \$1/.test(sql));
+    expect(outboxUpdate).toBeDefined();
+    expect(outboxUpdate![0]).toMatch(/attempt_count = attempt_count \+ 1/);
+    expect(outboxUpdate![1]).toEqual([
+      'failed',
+      'Twilio template invalid (code 21655): employer_message_invite_es',
+      'o1',
+    ]);
+
+    logSpy.mockRestore();
   });
 });
 
@@ -587,5 +759,41 @@ describe('context header on employer freeform messages', () => {
       const hasHeader = params.some((p: any) => typeof p === 'string' && p.includes('🏢'));
       expect(hasHeader).toBe(false);
     });
+  });
+});
+
+describe('template outbox visibility (spec 2026-08-13)', () => {
+  it('queueWorkerInviteTemplate carries the message_id so failures mark the employer message', async () => {
+    // Drive queueConversationMessageFromEmployer down the template path:
+    // conversation loaded, worker gate ready, reply window closed (default
+    // conversationAccessRow has last_worker_message_at: null), no pending invite.
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const scriptedQuery = jest.fn(async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      // Distinguish loadConversationForEmployer from the pendingInvite EXISTS
+      // check below — both contain "FROM job_conversations jc" (the dedupe
+      // query joins it in a subquery), so also require the jobs join that
+      // only the top-level load performs.
+      if (sql.includes('FROM job_conversations jc') && sql.includes('JOIN jobs j')) {
+        return { rows: [conversationAccessRow()], rowCount: 1 };
+      }
+      if (sql.includes('FROM worker_onboarding_state')) {
+        return { rows: [{ lifecycle: 'ready' }], rowCount: 1 };
+      }
+      if (sql.includes('INSERT INTO job_conversation_messages')) {
+        return { rows: [{ id: 'msg-77' }], rowCount: 1 };
+      }
+      if (sql.includes('SELECT EXISTS')) {
+        return { rows: [{ exists: false }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    await queueConversationMessageFromEmployer({ query: scriptedQuery } as any, CONV_A, EMPLOYER, 'hola');
+
+    const outboxInsert = calls.find((c) => c.sql.includes('INSERT INTO job_message_outbox'));
+    expect(outboxInsert).toBeDefined();
+    expect(outboxInsert!.sql).toContain('message_id');
+    expect(outboxInsert!.params).toContain('msg-77');
   });
 });
