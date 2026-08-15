@@ -213,6 +213,7 @@ MIGRATIONS=(
   "069_employer_job_templates.sql"
   "070_worker_applied_job_visibility.sql"
   "071_wage_references.sql"
+  "072_whatsapp_retrigger_sweep_definer.sql"
 )
 
 WORKDIR="$(mktemp -d)"

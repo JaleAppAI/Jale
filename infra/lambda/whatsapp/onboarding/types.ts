@@ -203,7 +203,7 @@ export interface OnboardingV2Deps {
   recordLegalAcceptance: (
     client: PoolClient,
     input: { workerId: string; documentVersion: string },
-  ) => Promise<void>;
+  ) => Promise<{ verified: boolean }>;
   /**
    * Gated by the `voice_intake_enabled` runtime control (fail-closed,
    * allowlist-then-global-rollout pattern) — the only phone-scoped runtime

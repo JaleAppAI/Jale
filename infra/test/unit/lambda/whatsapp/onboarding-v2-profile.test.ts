@@ -307,7 +307,7 @@ function makeDeps() {
     tosUrl: 'https://jale.example/tos',
     privacyUrl: 'https://jale.example/privacy',
     requiredLegalVersion: '1.0',
-    recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
+    recordLegalAcceptance: jest.fn().mockResolvedValue({ verified: true }),
     workflowVersion: 1,
     voiceIntake: {
       enabled: false,

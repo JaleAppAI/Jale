@@ -272,8 +272,8 @@ describe('event-driven outbox wake queues', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 11 Lambda functions including the worker-intent drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 11);
+  test('Stack creates 12 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 12);
   });
 
   test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
@@ -693,6 +693,20 @@ describe('event-driven outbox wake queues', () => {
           Match.objectLike({ MetricName: 'DeferredBacklogAge', MetricNamespace: 'Jale/WhatsApp' }),
         ]),
       });
+    });
+
+    test('RetriggerSweepLambda runs on a rate(5 minutes) schedule with only the WhatsApp DB secret', () => {
+      const [sweepLogicalId, sweepFn] = findFunctionByDescription(/retrigger.*sweep/i);
+      const rules = template.findResources('AWS::Events::Rule', {
+        Properties: { ScheduleExpression: 'rate(5 minutes)' },
+      });
+      const targetsSweep = Object.values(rules).some((rule: any) =>
+        (rule.Properties.Targets || []).some((t: any) => t.Arn?.['Fn::GetAtt']?.[0] === sweepLogicalId));
+      expect(targetsSweep).toBe(true);
+      // No Twilio secret: this Lambda never sends.
+      const envVars = sweepFn.Properties?.Environment?.Variables ?? {};
+      expect(envVars.TWILIO_SECRET_ARN).toBeUndefined();
+      expect(envVars.DB_SECRET_ARN).toBeDefined();
     });
   });
 

@@ -26,6 +26,10 @@
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --enable voice_intake
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --allow-phone +19152272188 --control voice_intake
  *   npx ts-node scripts/whatsapp-runtime-controls.ts --go-global --control voice_intake
+ *
+ *   # Verify Twilio Content Template SIDs against approval state — needs only
+ *   # AWS credentials (reads the jale/whatsapp/twilio secret), no DB env:
+ *   npx ts-node scripts/whatsapp-runtime-controls.ts --verify-templates
  */
 
 import { Client } from 'pg';
@@ -338,6 +342,19 @@ export async function runControlsAction(
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === '--verify-templates') {
+    const { verifyTwilioTemplates } = await import('./lib/verify-twilio-templates');
+    const result = await verifyTwilioTemplates();
+    for (const row of result.rows) {
+      console.log(`${row.key}\t${row.sid}\t${row.exists ? 'exists' : 'MISSING'}\t${row.whatsappStatus ?? '-'}`);
+    }
+    if (result.failures.length > 0) {
+      for (const failure of result.failures) console.error(`FAIL: ${failure}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
   const parsed = parseControlsArgs(process.argv.slice(2));
   if (!parsed.ok) {
     console.error(parsed.error);

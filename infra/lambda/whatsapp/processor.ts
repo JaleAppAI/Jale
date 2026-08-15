@@ -34,6 +34,8 @@ import {
   tryConversationRelay,
   parseDisambiguationPick,
   handlePickerResponse,
+  recordRelayLegalAcceptance,
+  handleLegalDeclineFromRelay,
   type ConversationRow,
   type IncomingMessage,
   type RouterDeps,
@@ -59,6 +61,7 @@ import {
   parseButtonPayload,
   parseCommandPayload,
   parseEmployerConversationButtonPayload,
+  parseLegalReplyPayload,
   parseTypedJobAction,
   type ConversationState,
   type ProfileStateContext,
@@ -1319,6 +1322,20 @@ async function routeMessage(
     }
   }
 
+  // Legal-prompt replies from READY workers (the v2 legal.review step handles
+  // mid-onboarding workers above; ready workers fall through to here). The
+  // relay legal prompt's buttons emit legal:accept / legal:decline, which no
+  // post-onboarding parser consumed before — the loop this fixes.
+  const legalReply = parseLegalReplyPayload(msg.interactivePayload ?? msg.buttonPayload);
+  if (legalReply && conv.user_id) {
+    if (legalReply === 'accept') {
+      await recordRelayLegalAcceptance(client, conv, msg, conv.user_id, routerDeps);
+    } else {
+      await handleLegalDeclineFromRelay(client, conv, msg);
+    }
+    return conv.user_id;
+  }
+
   const commandPayload = parseCommandPayload(msg.interactivePayload);
   if (commandPayload) {
     msg = {
@@ -1374,7 +1391,12 @@ async function routeMessage(
 }
 
 // Processor-owned mutations injected into the conversation router module.
-const routerDeps: RouterDeps = { updateConversation, queueLegalPrompt };
+const routerDeps: RouterDeps = {
+  updateConversation,
+  queueLegalPrompt,
+  recordLegalAcceptance: recordCanonicalWhatsAppConsent,
+  requiredLegalVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
+};
 
 /**
  * Promote the placeholder users row (Case A) OR link WhatsApp to an existing

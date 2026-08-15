@@ -54,10 +54,15 @@ export async function handleLegalStep(
   }
 
   if (accept) {
-    await deps.recordLegalAcceptance(client, {
+    const consent = await deps.recordLegalAcceptance(client, {
       workerId: gate.userId,
       documentVersion: deps.requiredLegalVersion,
     });
+    if (!consent.verified) {
+      console.log(JSON.stringify({ metric: 'WhatsAppConsentWriteFailed', workerId: gate.userId }));
+      await repeatCurrentPrompt(client, session, deps, gate.userId, 'legal.review', lang, now, gate.runId!, msg.messageSid);
+      return { handled: true, workerId: gate.userId, stepKey: 'legal.review' };
+    }
     return advanceLegalAcceptToProfileEntry(
       client, session, msg, deps, gate,
       { legalAcceptedAt: now.toISOString() },

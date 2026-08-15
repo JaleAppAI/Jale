@@ -349,7 +349,7 @@ function makeDeps() {
     tosUrl: 'https://jale.example/tos',
     privacyUrl: 'https://jale.example/privacy',
     requiredLegalVersion: '1.0',
-    recordLegalAcceptance: jest.fn().mockResolvedValue(undefined),
+    recordLegalAcceptance: jest.fn().mockResolvedValue({ verified: true }),
     workflowVersion: 1,
     voiceIntake: {
       enabled: false,
@@ -742,6 +742,25 @@ describe('legal.review', () => {
       sourceId: gate.runId,
       dedupeKey: expect.stringContaining(message.messageSid),
     }));
+  });
+
+  it('does not advance past legal.review when consent verification fails', async () => {
+    const { deps, gateRepo, gateway } = makeDeps();
+    (deps.recordLegalAcceptance as jest.Mock).mockResolvedValue({ verified: false });
+    const gate = seedActiveGate(gateRepo, { userId: 'user-legal-unverified' });
+    const session = makeSession({ user_id: gate.userId });
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const message = makeMsg('ACCEPT');
+
+    const result = await routeOnboardingV2(client, session, message, deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'legal.review' });
+    expect(gateRepo._gates.get(gate.userId)?.currentStepKey).toBe('legal.review');
+    expect(gateway.calls.length).toBeGreaterThan(0);
+    const failureLog = warnedMetrics(logSpy).find((m) => m.metric === 'WhatsAppConsentWriteFailed');
+    expect(failureLog).toMatchObject({ metric: 'WhatsAppConsentWriteFailed', workerId: gate.userId });
+
+    logSpy.mockRestore();
   });
 
   it('Decline sets status declined while currentStepKey stays legal.review', async () => {

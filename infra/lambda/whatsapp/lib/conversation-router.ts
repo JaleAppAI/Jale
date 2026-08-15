@@ -69,6 +69,11 @@ export interface RouterDeps {
     to: string,
     lang: Lang,
   ): Promise<void>;
+  recordLegalAcceptance: (
+    client: PoolClient,
+    input: { workerId: string; documentVersion: string },
+  ) => Promise<{ verified: boolean }>;
+  requiredLegalVersion: string;
 }
 
 export function isLikelyOtpCode(body: string): boolean {
@@ -105,6 +110,81 @@ async function workerHasAcceptedTos(client: PoolClient, workerId: string): Promi
   const r = await client.query<{ tos_version: string | null }>(
     `SELECT tos_version FROM users WHERE id = $1`, [workerId]);
   return !!r.rows[0]?.tos_version;
+}
+
+const TOS_ACCEPT_KEYWORDS = new Set(['acepto', 'aceptar', 'accept']);
+
+/**
+ * Legal wall with a working exit (spec 2026-08-13 §5). The prompt sent to
+ * READY workers had no acceptance handler: payloads and typed "Acepto" fell
+ * back to the gate and re-prompted forever. Stateless keyword contract:
+ * while the gate FAILS, acepto/aceptar/accept mean legal acceptance; once
+ * accepted, this helper is never reached and 'accept' keeps its open-thread
+ * meaning in parseEmployerConversationTextAction.
+ */
+export async function ensureWorkerTosAccepted(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  workerId: string,
+  deps: RouterDeps,
+  holdMetric: string,
+): Promise<'accepted' | 'handled'> {
+  if (await workerHasAcceptedTos(client, workerId)) return 'accepted';
+
+  // Case/accent-insensitive (spec §5): normalizeCommandText only lowercases
+  // and trims — it must stay exact for the other parsers that depend on it
+  // (flows.ts), so diacritics are stripped locally here instead. Catches
+  // autocorrect variants like "Aceptó".
+  const normalized = normalizeCommandText(msg.body).normalize('NFD').replace(/\p{M}/gu, '');
+  if (TOS_ACCEPT_KEYWORDS.has(normalized)) {
+    return await recordRelayLegalAcceptance(client, conv, msg, workerId, deps);
+  }
+
+  await deps.queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
+  console.log(JSON.stringify({ metric: holdMetric, workerId }));
+  return 'handled';
+}
+
+/** Records consent for a ready worker replying to the relay legal prompt. */
+export async function recordRelayLegalAcceptance(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+  workerId: string,
+  deps: RouterDeps,
+): Promise<'handled'> {
+  const consent = await deps.recordLegalAcceptance(client, {
+    workerId,
+    documentVersion: deps.requiredLegalVersion,
+  });
+  if (!consent.verified) {
+    console.log(JSON.stringify({ metric: 'WhatsAppConsentWriteFailed', workerId }));
+    await queueOutboxText(client, msg.messageSid, msg.from,
+      conv.language === 'en'
+        ? 'Something went wrong saving your acceptance. Please try again later.'
+        : 'Algo salió mal al guardar tu aceptación. Inténtalo de nuevo más tarde.');
+    return 'handled';
+  }
+  // D5: no buffering — the worker resends their message through the now-open gate.
+  await queueOutboxText(client, msg.messageSid, msg.from,
+    conv.language === 'en'
+      ? 'Thanks — terms accepted. Send your message again to continue.'
+      : 'Listo — términos aceptados. Envía tu mensaje de nuevo para continuar.');
+  return 'handled';
+}
+
+/** Decline from the relay legal prompt: acknowledged, nothing recorded. */
+export async function handleLegalDeclineFromRelay(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<'handled'> {
+  await queueOutboxText(client, msg.messageSid, msg.from,
+    conv.language === 'en'
+      ? 'Understood. You can accept the terms later by replying "Accept".'
+      : 'Entendido. Puedes aceptar los términos después respondiendo "Acepto".');
+  return 'handled';
 }
 
 export function parseEmployerConversationTextAction(body: string): 'open' | 'decline' | null {
@@ -179,9 +259,7 @@ export async function tryConversationRelay(
   // Must be intercepted here so it never reaches relayWorkerFreeText which
   // would attempt to route "CHATS" as a job message.
   if (isChatsKeyword(msg.body)) {
-    if (!(await workerHasAcceptedTos(client, workerId))) {
-      await deps.queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
-      console.log(JSON.stringify({ metric: 'ChatsKeywordLegalHold', workerId }));
+    if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ChatsKeywordLegalHold')) !== 'accepted') {
       return workerId;
     }
     await setInternalUserRlsContext(client, workerId);
@@ -294,9 +372,7 @@ export async function handleEmployerConversationButton(
   // Legal wall (V2 plan §4.5): opening a conversation relays the worker into
   // an employer thread, so it is compliance-gated. (Decline is NOT gated — a
   // worker can always decline without consent.)
-  if (!(await workerHasAcceptedTos(client, workerId))) {
-    await deps.queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
-    console.log(JSON.stringify({ metric: 'ConversationOpenLegalHold', workerId }));
+  if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ConversationOpenLegalHold')) !== 'accepted') {
     return workerId;
   }
 
@@ -361,9 +437,7 @@ export async function handleEmployerConversationTextAction(
 
   // Legal wall (V2 plan §4.5): opening a conversation is compliance-gated;
   // decline (above) is not.
-  if (!(await workerHasAcceptedTos(client, workerId))) {
-    await deps.queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
-    console.log(JSON.stringify({ metric: 'ConversationOpenLegalHold', workerId }));
+  if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ConversationOpenLegalHold')) !== 'accepted') {
     return workerId;
   }
 
@@ -498,9 +572,7 @@ export async function relayWorkerFreeText(
 ): Promise<string | null> {
   // Legal wall (V2 plan §4.5): messaging is compliance-gated. Workers who
   // never accepted (or declined) the ToS get the legal prompt, not a relay.
-  if (!(await workerHasAcceptedTos(client, workerId))) {
-    await deps.queueLegalPrompt(client, msg.messageSid, msg.from, conv.language);
-    console.log(JSON.stringify({ metric: 'ConversationRelayLegalHold', workerId }));
+  if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ConversationRelayLegalHold')) !== 'accepted') {
     return workerId; // handled — do not fall through to onboarding replies
   }
 

@@ -80,6 +80,7 @@ const expectedBaselineMigrations = [
   '069_employer_job_templates.sql',
   '070_worker_applied_job_visibility.sql',
   '071_wage_references.sql',
+  '072_whatsapp_retrigger_sweep_definer.sql',
 ];
 
 function migrationFiles(): string[] {
@@ -684,6 +685,17 @@ describe('migration apply order baseline', () => {
     // No rows seeded by the migration itself -- population is the loader's job.
     expect(sql).not.toMatch(/INSERT INTO wage_references/i);
     expect(sql).not.toMatch(/INSERT INTO city_cbsa_crosswalk/i);
+  });
+
+  it('adds the deferred-retrigger sweep definer in migration 072', () => {
+    const sql = readMigration('072_whatsapp_retrigger_sweep_definer.sql');
+    expect(sql).toContain('retrigger_deferred_ready_workers');
+    expect(sql).toContain('SECURITY DEFINER');
+    expect(sql).toContain('SET search_path = pg_catalog, pg_temp');
+    expect(sql).toContain("ON CONFLICT (event_key) DO NOTHING");
+    expect(sql).toContain("'worker.ready:sweep:'");
+    expect(sql).toContain('REVOKE ALL ON FUNCTION public.retrigger_deferred_ready_workers(TEXT, INTEGER) FROM PUBLIC');
+    expect(sql).toContain('GRANT EXECUTE ON FUNCTION public.retrigger_deferred_ready_workers(TEXT, INTEGER) TO jale_whatsapp');
   });
 
   maybeIt('applies migrations 001-034 against a local Postgres database', async () => {
