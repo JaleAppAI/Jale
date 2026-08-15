@@ -86,7 +86,6 @@ export type VoiceEventV2 = TrustVoiceEventV2 | ProfileIntakeVoiceEventV2;
  */
 export interface VoicePipelineExecutionInputV2 {
   transcriptionJobName: string;
-  languageCode: 'en-US' | 'es-US';
   mediaS3Uri: string;
   mediaBucketName: string;
   transcriptOutputKey: string;

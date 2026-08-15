@@ -58,6 +58,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_fields', required: ['title', 'location', 'job_type'] }) };
     }
 
+    // parseJobFields (below) caps the TRIMMED length at 4000 chars, but this
+    // insert previously stored the RAW value -- a whitespace-padded string
+    // that trims to exactly 4000 chars could carry an unbounded amount of
+    // padding into the DB (e.g. ' '.repeat(1_000_000) + 'A'.repeat(4000)
+    // passes validation and previously persisted ~1MB). Normalize the same
+    // way employer-jobs-update.ts and employer-templates-save.ts already do:
+    // trimmed-or-null, computed once here so every use below agrees.
+    const normalizedDescription = typeof description === 'string' ? (description.trim() || null) : null;
+
     if (!JOB_TYPES.includes(job_type as any)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_job_type', valid: JOB_TYPES }) };
     }
@@ -204,7 +213,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         location.trim(),
         formatPayRange(jobFields.value.pay_min, jobFields.value.pay_max),
         job_type,
-        description ?? null,
+        normalizedDescription,
         required_docs,
         jobFields.value.pay_min,
         jobFields.value.pay_max,

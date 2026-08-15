@@ -15,6 +15,7 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 
 export interface AiStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -31,17 +32,6 @@ export interface AiStackOutputs {
   readonly questionGeneratorFn: JaleLambdaFunction;
   readonly aliasGeneratorFn: JaleLambdaFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
-}
-
-const BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
-
-function bedrockArns(region: string, account: string): string[] {
-  return [
-    `arn:aws:bedrock:${region}:${account}:inference-profile/${BEDROCK_MODEL_ID}`,
-    'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
-    `arn:aws:bedrock:${region}::foundation-model/amazon.nova-lite-v1:0`,
-    'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
-  ];
 }
 
 export class AiStack extends cdk.Stack implements AiStackOutputs {

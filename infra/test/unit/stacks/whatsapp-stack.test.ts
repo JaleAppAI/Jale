@@ -772,6 +772,30 @@ describe('event-driven outbox wake queues', () => {
       });
     });
 
+    // Both pipelines share the VoiceTranscriptionPipeline construct — assert
+    // BOTH state machines (Profile + Trust) carry the multi-language
+    // identification config and the es-US vocabulary name, not just one.
+    test('Both voice pipeline state machines use IdentifyMultipleLanguages and the es-US vocabulary', () => {
+      const machines = Object.values(template.findResources('AWS::StepFunctions::StateMachine'));
+      expect(machines).toHaveLength(2);
+      for (const machine of machines as any[]) {
+        const text = JSON.stringify(machine.Properties.DefinitionString);
+        // Pin the boolean literal, not just the key name — a regression
+        // that stringifies it as `"true"` (string) would otherwise still
+        // pass a bare substring-contains check.
+        // JSON.stringify(machine.Properties.DefinitionString) runs on top
+        // of the ASL fragment's own JSON encoding, so the real string
+        // contains a literal backslash before each quote around the key.
+        expect(text).toContain('\\"IdentifyMultipleLanguages\\":true');
+        expect(text).toContain('LanguageOptions');
+        expect(text).toContain('es-US');
+        expect(text).toContain('en-US');
+        expect(text).toContain('LanguageIdSettings');
+        expect(text).toContain('jale-es-us-trades');
+        expect(text).not.toContain('LanguageCode');
+      }
+    });
+
     test('Stack creates ai-profile-writer Lambda', () => {
       template.hasResourceProperties('AWS::Lambda::Function', {
         Description: Match.stringLikeRegexp('ai-profile-writer'),
@@ -795,6 +819,51 @@ describe('event-driven outbox wake queues', () => {
           }),
         },
       });
+    });
+
+    // Upgrade: Nova Lite -> Claude Haiku 4.5 (Samuel's finding that
+    // extraction "omits many aspects"). Pinned to the exact inference
+    // profile ID, not Match.anyValue() — a passing "env var exists" test
+    // wouldn't catch a wrong/stale model ID.
+    test('ai-profile-writer Lambda is pinned to the Claude Haiku 4.5 Bedrock inference profile', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('ai-profile-writer'),
+        Environment: {
+          Variables: Match.objectLike({
+            BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+          }),
+        },
+      });
+    });
+
+    // Full Resource-array assertion (not Match.anyValue()) — a vacuous IAM
+    // test that only checks the action name was a known defect class here
+    // (T-A1). Assert the exact 4-ARN set, mirroring the prior nova-lite
+    // pattern: inference-profile (region token) + foundation-model in
+    // us-east-1 (literal) + region token + us-west-2 (literal).
+    test('ai-profile-writer bedrock:InvokeModel policy grants exactly the 4 Haiku 4.5 ARNs', () => {
+      const policies = Object.values(template.findResources('AWS::IAM::Policy')) as any[];
+      const bedrockPolicy = policies.find((p) =>
+        (p.Properties.PolicyDocument.Statement as any[]).some(
+          (stmt) => stmt.Action === 'bedrock:InvokeModel' || (Array.isArray(stmt.Action) && stmt.Action.includes('bedrock:InvokeModel')),
+        ));
+      expect(bedrockPolicy).toBeDefined();
+      const stmt = (bedrockPolicy.Properties.PolicyDocument.Statement as any[]).find(
+        (s) => s.Action === 'bedrock:InvokeModel' || (Array.isArray(s.Action) && s.Action.includes('bedrock:InvokeModel')),
+      );
+      const resources = stmt.Resource as any[];
+      expect(resources).toHaveLength(4);
+      // inference-profile ARN uses the stack's own region/account tokens
+      // (Fn::Join with Ref/GetAtt), so match its literal tail instead of
+      // asserting exact equality on the whole intrinsic-function object.
+      expect(JSON.stringify(resources[0])).toContain('inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0');
+      expect(resources[1]).toBe('arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+      expect(JSON.stringify(resources[2])).toContain('foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+      expect(resources[3]).toBe('arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+      // No leftover nova-lite ARNs.
+      for (const r of resources) {
+        expect(JSON.stringify(r)).not.toContain('nova-lite');
+      }
     });
 
     test('Processor Lambda has MEDIA_BUCKET_NAME env var', () => {

@@ -410,6 +410,50 @@ export async function createJob(token: string, data: JobWritePayload): Promise<J
   return res.json();
 }
 
+/**
+ * Payload for `generateJobDescription` -- every field but `trade_category` is
+ * optional, mirroring "whatever the job form currently holds". Strings are
+ * capped at 200 chars by the backend (400 `invalid_*` past that); callers
+ * should trim/slice before sending rather than round-trip into a failure.
+ * `trade_category: 'other'` is rejected outright (400
+ * `unsupported_trade_category`) -- callers should keep the trigger disabled
+ * for that trade instead of surfacing the generic failure message.
+ */
+export type GenerateJobDescriptionPayload = {
+  title?: string;
+  trade_category: string;
+  city?: string;
+  state?: string;
+  pay_min?: number;
+  pay_max?: number;
+  pay_interval?: string;
+  expected_duration?: string;
+  shift_schedule?: string;
+};
+
+export type GenerateJobDescriptionResult = {
+  description_en: string;
+  description_es: string;
+};
+
+/**
+ * AI-drafted job description in both locales. Mirrors `createJob` above --
+ * same `apiFetch` + typed-error shape, just a different endpoint/payload.
+ * A daily-cap 429 comes back as `generation_limit_reached`; a Bedrock/provider
+ * failure comes back as 502 `generation_failed`.
+ */
+export async function generateJobDescription(
+  token: string,
+  data: GenerateJobDescriptionPayload,
+): Promise<GenerateJobDescriptionResult> {
+  const res = await apiFetch('/employer/jobs/generate-description', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }, token);
+  if (!res.ok) throw await parseApiError(res, 'generate_failed');
+  return res.json();
+}
+
 export async function getJob(
   token: string,
   jobId: string,

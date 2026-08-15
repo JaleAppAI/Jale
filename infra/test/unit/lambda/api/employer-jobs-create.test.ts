@@ -111,6 +111,45 @@ describe('employer-jobs-create', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
+  // A-7 (T-A1 ride-along): 4000-char cap on `description`, enforced by
+  // parseJobFields (infra/lambda/lib/job-fields.ts) -- this handler makes no
+  // description-specific check of its own, so these two tests are the
+  // endpoint-level proof that the shared validator's rejection reaches the
+  // create path unchanged.
+  it('rejects an over-length (4001+ char) description with 400 invalid_description, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ description: 'A'.repeat(4001) }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_description' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('accepts a description at exactly the 4000-char boundary', async () => {
+    const res = await handler(makeEvent({ description: 'A'.repeat(4000) }));
+
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('persists a TRIMMED description, so surrounding whitespace cannot smuggle extra characters past the 4000-char cap into storage', async () => {
+    // parseJobFields validates the TRIMMED length (4000, passes), but a raw
+    // pass-through would previously store this ~1MB whitespace-padded value
+    // verbatim. Assert on the actual INSERT bind param, not just the status
+    // code -- a 201 alone would not have caught the bug.
+    const padded = `  ${'A'.repeat(4000)}  `;
+    const res = await handler(makeEvent({ description: padded }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(
+      (call) => typeof call[0] === 'string' && (call[0] as string).includes('INSERT INTO jobs'),
+    );
+    expect(insertCall).toBeDefined();
+    const params = insertCall![1] as unknown[];
+    // Column order in the INSERT: employer_id, title, location, pay,
+    // job_type, description, ... -- description is bind param index 5.
+    expect(params[5]).toBe('A'.repeat(4000));
+    expect((params[5] as string).length).toBe(4000);
+  });
+
   // ---------------------------------------------------------------------------
   // Entitlement gate — A7 tests
   // ---------------------------------------------------------------------------

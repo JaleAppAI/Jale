@@ -417,7 +417,7 @@ export class WhatsAppStack extends cdk.Stack {
     });
 
     // ── Deferred-intent retrigger sweep ─────────────────────────
-    // EventBridge every 5 min: calls the migration-071 SECURITY DEFINER to
+    // EventBridge every 5 min: calls the migration-072 SECURITY DEFINER to
     // re-emit worker.ready for ready workers still holding deferred business
     // intents (e.g. web-bypass workers who never got a worker.ready event).
     // The 1-minute DomainOutboxDrainLambda consumes the events. Never sends
@@ -479,7 +479,7 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        BEDROCK_MODEL_ID: 'us.amazon.nova-lite-v1:0',
+        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
         QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
@@ -512,10 +512,10 @@ export class WhatsAppStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
         resources: [
-          `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.amazon.nova-lite-v1:0`,
-          'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
-          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/amazon.nova-lite-v1:0`,
-          'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
+          'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
+          'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
         ],
       }),
     );
@@ -557,6 +557,7 @@ export class WhatsAppStack extends cdk.Stack {
       lambdaSg: props.lambdaSg,
       mediaBucket,
       completionHandler: aiProfileWriterLambda.function,
+      esVocabularyName: 'jale-es-us-trades',
     });
 
     const trustVoicePipeline = new VoiceTranscriptionPipeline(this, 'TrustVoicePipeline', {
@@ -564,6 +565,7 @@ export class WhatsAppStack extends cdk.Stack {
       lambdaSg: props.lambdaSg,
       mediaBucket,
       completionHandler: voiceTrustReceiverLambda.function,
+      esVocabularyName: 'jale-es-us-trades',
     });
 
     // ── Processor Lambda: add media env vars and grants ──────────

@@ -89,7 +89,13 @@
     "interval_daily": "day",
     "interval_weekly": "wk",
     "interval_monthly": "mo",
-    "interval_fixed": "fixed"
+    "interval_fixed": "fixed",
+    "reference_employer_intro": "Starting point:",
+    "reference_worker_profile_intro": "Typical pay for your trade:",
+    "reference_worker_job_intro": "For comparison:",
+    "reference_headline": "Typical pay for {trade} in {area}: {min}–{max}/hr",
+    "reference_median": "(median {amount})",
+    "reference_source": "Source: U.S. Bureau of Labor Statistics, OEWS, {vintage}"
   },
   "header": {
     "language_toggle": "Español",
@@ -692,6 +698,15 @@
       "error": "Failed to post job. Please try again.",
       "job_description": "Job Description",
       "description_placeholder": "What does the job involve? What experience is required?",
+      "description_helper": {
+        "use_sample": "Use a sample",
+        "source_credit": "Source: O*NET",
+        "generate": "Generate with AI",
+        "generating": "Generating…",
+        "replace_hint": "This will replace the current description.",
+        "limit_reached": "You've reached today's limit for AI-generated descriptions. Try again tomorrow.",
+        "generate_error": "We couldn't generate a description right now. Please try again or write your own."
+      },
       "select_placeholder": "Select...",
       "trade_category": "Trade",
       "trade": {

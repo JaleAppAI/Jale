@@ -50,7 +50,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
               j.workers_hired AS hired_count,
               GREATEST(j.number_of_workers_needed - j.workers_hired, 0) AS open_count,
               j.trade_category, j.required_experience_years, j.required_experience_months, j.certifications,
-              j.public_listing_enabled,
+              j.public_listing_enabled, j.city_key,
               employer_display_name(j.employer_id) AS company_name
        FROM jobs j
        WHERE j.id = $1

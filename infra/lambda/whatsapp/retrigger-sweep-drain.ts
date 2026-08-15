@@ -1,7 +1,7 @@
 // infra/lambda/whatsapp/retrigger-sweep-drain.ts
 //
 // EventBridge-scheduled (every 5 minutes) release of stranded deferred
-// intents: calls the SECURITY DEFINER sweep (migration 071), which re-emits
+// intents: calls the SECURITY DEFINER sweep (migration 072), which re-emits
 // one worker.ready event per ready worker still holding deferred business
 // intents (e.g. workers made ready by the migration-053 web bypass, which
 // emits no worker.ready event). The existing 1-minute DomainOutboxDrainLambda

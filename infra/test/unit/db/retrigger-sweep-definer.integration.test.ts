@@ -9,7 +9,7 @@ if (!databaseUrl) {
 }
 const maybeDescribe = databaseUrl ? describe : describe.skip;
 
-maybeDescribe('retrigger_deferred_ready_workers definer (migration 071)', () => {
+maybeDescribe('retrigger_deferred_ready_workers definer (migration 072)', () => {
   it('executes as jale_whatsapp and returns zero counts on empty data', async () => {
     const client = new Client({ connectionString: databaseUrl });
     await client.connect();

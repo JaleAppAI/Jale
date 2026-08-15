@@ -1,6 +1,6 @@
 -- ============================================================
--- 071_whatsapp_retrigger_sweep_definer.sql
--- Run manually AFTER 070_worker_applied_job_visibility.sql, connected as
+-- 072_whatsapp_retrigger_sweep_definer.sql
+-- Run manually AFTER 071_wage_references.sql, connected as
 -- jale_admin (NOT the RDS master user). Forward-only (ADR-005).
 --
 -- Stranded-intent repair (spec 2026-08-13-whatsapp-employer-delivery):
