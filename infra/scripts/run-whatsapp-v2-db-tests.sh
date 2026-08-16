@@ -33,4 +33,5 @@ exec npx jest --runInBand \
   test/unit/db/worker-profiles-constraints.integration.test.ts \
   test/unit/db/whatsapp-onboarding-052.integration.test.ts \
   test/unit/db/whatsapp-onboarding-053.integration.test.ts \
-  test/unit/db/whatsapp-onboarding-reset.integration.test.ts
+  test/unit/db/whatsapp-onboarding-reset.integration.test.ts \
+  test/unit/db/retrigger-sweep-definer.integration.test.ts

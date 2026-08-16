@@ -25,6 +25,7 @@ const SUITE_053 = 'test/unit/db/whatsapp-onboarding-053.integration.test.ts';
 // Postgres rejects on the first `user_id = $1` predicate. Only a real
 // database enforces bind counts, so this suite is the regression gate.
 const SUITE_RESET = 'test/unit/db/whatsapp-onboarding-reset.integration.test.ts';
+const SUITE_RETRIGGER = 'test/unit/db/retrigger-sweep-definer.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -42,7 +43,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
   it('invokes exactly the migration-042, concurrency, migration-049, and profile-constraint suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
-    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_053, SUITE_RESET]);
+    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_053, SUITE_RESET, SUITE_RETRIGGER]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(
