@@ -178,7 +178,22 @@ export type Job = {
 
 export type EmployerJobDetail = Job & {
   description: string | null;
-  required_docs: Array<'resume' | 'driver_license'>;
+  /**
+   * Widened from the legacy 2-value union to admit the two new doc types
+   * (`work_auth_doc`, `certification_doc` -- migration 074). `string[]` on
+   * purpose rather than re-narrowing: every reader here already falls back
+   * gracefully on an unrecognized value (a label-map `?? doc`).
+   */
+  required_docs: string[];
+  /**
+   * The four three-state arrays (migrations 073/074). All optional: the
+   * currently-deployed employer-jobs handlers do not send them yet (schema +
+   * validator shipped ahead of the handler update), so every reader must
+   * treat an absent array the same as an empty one, never crash on it.
+   */
+  optional_docs?: string[];
+  required_fields?: string[];
+  optional_fields?: string[];
   /** Short code for the public job page URL (/j/{public_code}). */
   public_code: string;
   /** The employer's opt-IN to a public job page. Default false (migration 057). */
@@ -196,6 +211,16 @@ export type Applicant = {
   availability: string | null;
   years_experience: number | null;
   location: string | null;
+  /**
+   * The worker's answers to this job's required+optional custom fields
+   * (job_applications.application_answers), keyed by field vocabulary --
+   * see infra/lambda/lib/application-answers.ts for the per-key shapes.
+   * Optional: absent on rows from before this feature, or while the
+   * applicants handler has not yet been updated to select the column.
+   */
+  application_answers?: Record<string, unknown>;
+  /** Optional fields the job asked for that this applicant left unanswered. */
+  not_provided?: string[];
 };
 
 export type ApplicantFilters = {
@@ -382,6 +407,11 @@ export type JobWritePayload = {
   job_type: string;
   description?: string;
   required_docs?: string[];
+  /** The three-state picker's other three arrays (migrations 073/074). Omit
+   *  to preserve on update, same contract as `required_docs`. */
+  optional_docs?: string[];
+  required_fields?: string[];
+  optional_fields?: string[];
   pay_min?: number | null;
   pay_max?: number | null;
   start_date?: string | null;

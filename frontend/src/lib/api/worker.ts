@@ -7,8 +7,26 @@ export interface UploadUrlResponse {
   s3_key: string;
 }
 
-export type DocType = 'resume' | 'driver_license' | 'ssn';
-export type JobDocType = 'resume' | 'driver_license';
+/**
+ * `work_auth_doc`/`certification_doc` (migration 074) widen this alongside
+ * the job-side `DOC_TYPES` in job-fields.ts. `ssn` stays -- legacy vault rows
+ * may still carry it even though no new job or upload may select it.
+ */
+export type DocType = 'resume' | 'driver_license' | 'ssn' | 'work_auth_doc' | 'certification_doc';
+export type JobDocType = 'resume' | 'driver_license' | 'work_auth_doc' | 'certification_doc';
+/** Per-job custom-field vocabulary (job_applications.application_answers keys). */
+export type JobFieldKey =
+  | 'work_authorization'
+  | 'date_available'
+  | 'desired_pay'
+  | 'home_address'
+  | 'date_of_birth'
+  | 'emergency_contact'
+  | 'worked_here_before'
+  | 'education'
+  | 'references'
+  | 'work_history'
+  | 'military_service';
 
 // The upload trio below (and uploadFileToS3) deliberately use raw `fetch`, not
 // `apiFetch`: they run the unauthenticated one-time-token flow on /upload/[token],
@@ -116,6 +134,19 @@ export type JobDetail = Job & {
   already_applied: boolean;
   application_status: ApplicationStatus | null;
   missing_docs: JobDocType[];
+  /**
+   * The three-state picker's other three arrays plus the two derived
+   * "what's left" lists (migrations 073/074). All optional: the
+   * currently-deployed `worker-jobs-detail` handler does not select them
+   * yet, so every reader must treat an absent array as empty, never crash.
+   */
+  optional_docs?: JobDocType[];
+  required_fields?: JobFieldKey[];
+  optional_fields?: JobFieldKey[];
+  /** Required fields this worker (if already applied) has not yet answered. */
+  missing_fields?: JobFieldKey[];
+  /** Optional fields the job asks for that this worker left unanswered. */
+  optional_unanswered?: JobFieldKey[];
   /** Public listing opt-in (migration 057). Absent on older payloads --
    * treat absence as false (fail-closed): the share panel must not render
    * for a job the employer never opted into public listing for. */
@@ -201,6 +232,8 @@ export type WorkerApiError = Error & {
   status?: number;
   code?: string;
   missing_docs?: string[];
+  /** `missing_answers` -- the required custom-field keys the apply call left unanswered. */
+  missing_fields?: string[];
 };
 
 /**
@@ -236,8 +269,29 @@ export async function getJob(token: string, id: string, signal?: AbortSignal): P
   return res.json();
 }
 
-export async function applyToJob(token: string, id: string): Promise<Application> {
-  const res = await apiFetch(`/worker/jobs/${id}/apply`, { method: 'POST' }, token);
+/**
+ * `answers` (job_applications.application_answers) is optional and only
+ * meaningful when the job has any required/optional custom fields --
+ * `ApplicationAnswersForm` builds it via `buildAnswersPayload`. Omitting it
+ * entirely (jobs with no configured fields) sends the same bare POST this
+ * call always sent.
+ *
+ * Two NEW 400 codes ride the same taxonomy `missing_docs` already used:
+ * `missing_answers` carries `missing_fields` (the still-unanswered required
+ * field keys) and `invalid_answers` carries `detail` (the specific
+ * validator failure, e.g. `invalid_desired_pay`) -- both allowlisted onto
+ * `ApiError.payload` by `parseApiError`.
+ */
+export async function applyToJob(
+  token: string,
+  id: string,
+  answers?: Record<string, unknown>,
+): Promise<Application> {
+  const res = await apiFetch(
+    `/worker/jobs/${id}/apply`,
+    { method: 'POST', body: answers !== undefined ? JSON.stringify({ answers }) : undefined },
+    token,
+  );
   // A 400 from the required-docs guard carries `missing_docs`; the job page
   // renders one label per entry. parseApiError allowlists that field onto both
   // `err.payload.missing_docs` and `err.missing_docs`.

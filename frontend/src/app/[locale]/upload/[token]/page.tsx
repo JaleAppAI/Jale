@@ -81,7 +81,13 @@ export default function WorkerUploadPage() {
   /** S9. Terminal: there is no retry that can bring a spent link back. */
   const [linkDead, setLinkDead] = useState(false);
 
-  const docLabel: Record<DocType, string> = {
+  // `Partial`, not `Record<DocType, string>`: this anonymous one-token flow
+  // only ever renders `DOC_TYPES` above (resume/driver_license) -- the two
+  // new doc types (`work_auth_doc`/`certification_doc`, migration 074) are
+  // asked for through the authenticated worker vault/apply flow instead, so
+  // this map deliberately stays incomplete rather than growing entries this
+  // page never looks up.
+  const docLabel: Partial<Record<DocType, string>> = {
     resume: t('doc_resume'),
     driver_license: t('doc_driver_license'),
     ssn: t('doc_ssn'),

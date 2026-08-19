@@ -45,6 +45,7 @@ import {
 } from '@/lib/api/employer';
 import type { Applicant, ApplicantFilters, EmployerJobDetail } from '@/lib/api/employer';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
+import { answerEntries } from '@/lib/format-application-answers';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import type { WritableJobStatus } from '@/lib/status';
@@ -905,6 +906,7 @@ function ApplicantRow({
     const { idToken } = useAuth();
     const router = useRouter();
     const errorMessage = useErrorMessage();
+    const tReq = useTranslations('job_requirements');
     const [starting, setStarting] = useState(false);
     const [messageError, setMessageError] = useState<string | null>(null);
 
@@ -913,6 +915,11 @@ function ApplicantRow({
     const availabilityKey = applicant.availability
         ? normalizeAvailabilityKey(applicant.availability)
         : null;
+    // `?? []`/`?? undefined` throughout: the currently-deployed applicants
+    // handler does not select `application_answers`/`not_provided` yet, so
+    // an absent value must render nothing, never crash the row.
+    const answers = answerEntries(applicant.application_answers, tReq);
+    const notProvided = applicant.not_provided ?? [];
 
     async function handleMessageWorker() {
         if (!idToken || starting) return;
@@ -990,6 +997,33 @@ function ApplicantRow({
                     {match && match.match_reasons.length > 0 ? (
                         <div className="mt-2">
                             <MatchReasonChips reasons={match.match_reasons} />
+                        </div>
+                    ) : null}
+
+                    {(answers.length > 0 || notProvided.length > 0) ? (
+                        <div className="mt-3 rounded-[10px] border border-[var(--jale-divider)] p-3">
+                            {answers.length > 0 ? (
+                                <>
+                                    <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+                                        {tReq('employer.answers_title')}
+                                    </p>
+                                    <KVList
+                                        items={answers.map(({ key, value }) => ({
+                                            label: tReq(`fields.${key}`),
+                                            value,
+                                        }))}
+                                    />
+                                </>
+                            ) : null}
+                            {notProvided.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                    {notProvided.map((key) => (
+                                        <Badge key={key} tone="neutral">
+                                            {tReq(`fields.${key}`)} · {tReq('employer.not_provided')}
+                                        </Badge>
+                                    ))}
+                                </div>
+                            ) : null}
                         </div>
                     ) : null}
                 </div>
