@@ -1,8 +1,9 @@
 import type { Handler } from 'aws-lambda';
 import type { PoolClient } from 'pg';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { getDbPool } from '../lib/db';
+import { readTranscriptResult } from '../lib/transcript';
 import type { Lang } from '../whatsapp/lib/templates';
 import { sendPendingOutbox } from '../whatsapp/lib/outbox';
 import { normalizeProfession } from '../whatsapp/handlers/custom-trust';
@@ -100,13 +101,6 @@ function inboundV2QueueUrl(): string {
   return url;
 }
 
-async function readTranscript(bucket: string, key: string): Promise<string> {
-  const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  const raw = await (res.Body as { transformToString: () => Promise<string> }).transformToString();
-  const parsed = JSON.parse(raw);
-  return parsed.results?.transcripts?.[0]?.transcript ?? '';
-}
-
 async function queueOutboxText(
   client: PoolClient,
   inboundMessageSid: string,
@@ -162,7 +156,8 @@ async function handleV2VoiceTrustCompletion(
     // onboarding/steps/trust.ts) handle it exactly like a genuinely empty
     // transcript already does below.
     try {
-      transcript = await readTranscript(ctx.mediaBucketName, ctx.transcriptOutputKey);
+      const result = await readTranscriptResult(s3, ctx.mediaBucketName, ctx.transcriptOutputKey);
+      transcript = result.text;
       if (transcript.trim().length === 0) {
         finalStatus = 'FAILED';
       }
@@ -262,10 +257,12 @@ export async function handleVoiceTrustCompletion(
       return;
     }
 
-    const transcriptText = await readTranscript(
+    const transcriptResult = await readTranscriptResult(
+      s3,
       ctx.mediaBucketName,
       ctx.transcriptOutputKey,
     );
+    const transcriptText = transcriptResult.text;
     const step = ctx.trustStep;
     const newAnswer: TrustAnswer = {
       q_en: questions[step]?.q_en ?? '',

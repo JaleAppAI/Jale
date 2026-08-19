@@ -227,6 +227,30 @@ describe('handleVoiceTrustCompletion — v2 branch', () => {
     expect(evt.transcript).toBe('five years experience');
   });
 
+  // Task A: transcript reading is now delegated to the shared
+  // infra/lambda/lib/transcript.ts parser, which recognizes a
+  // `jaleTranscriptVersion: 1` passthrough payload (future provider
+  // adapters) as well as raw Transcribe batch output. This proves that
+  // hook is wired through end-to-end here, not just unit-tested in
+  // isolation on the parser itself.
+  it('parses a jaleTranscriptVersion:1 fixture (future-provider passthrough) via the shared transcript helper', async () => {
+    mockS3Send.mockResolvedValueOnce({
+      Body: {
+        transformToString: () => Promise.resolve(JSON.stringify({
+          jaleTranscriptVersion: 1,
+          text: 'five years experience',
+          provider: 'deepgram',
+        })),
+      },
+    });
+
+    await handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: v2Context, executionArn: V2_EXECUTION_ARN });
+
+    const { evt } = parseSentEvent();
+    expect(evt.status).toBe('COMPLETED');
+    expect(evt.transcript).toBe('five years experience');
+  });
+
   it('throws when executionArn is missing on a v2 completion (never silently omits the staleness anchor)', async () => {
     await expect(
       handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: v2Context }),

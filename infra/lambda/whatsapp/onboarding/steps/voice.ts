@@ -321,6 +321,16 @@ export async function handleVoiceIntakeResult(
     resolveLocation: (raw) => deps.adapters.location.resolve(raw),
   });
 
+  // Telemetry only: field NAMES and skip REASONS, never extracted values,
+  // transcript text, phone numbers, or user names.
+  console.log(JSON.stringify({
+    metric: 'OnboardingVoiceExtractionPlan',
+    applied: plan.appliedFields,
+    skipped: plan.skipped,
+    threshold: VOICE_CONFIDENCE_THRESHOLD,
+    stepKey,
+  }));
+
   if (plan.writes.length === 0) {
     await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_fallback', {}, now, gate.runId!, msg.messageSid, 'voice_intake_zero_writes');
     return advanceProfileToNextStep(client, session, msg, deps, gate, stepKey, { voiceIntakeZeroWrites: true }, 'profile_voice_intake_zero_writes', now);
