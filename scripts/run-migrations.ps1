@@ -124,6 +124,7 @@ $MigrationFiles = @(
     '072_whatsapp_retrigger_sweep_definer.sql'
     '073_job_application_requirements.sql'
     '074_job_optional_requirements.sql'
+    '075_ai_extraction_asr_metadata.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
