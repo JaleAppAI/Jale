@@ -730,7 +730,7 @@ test('v1 legacy path is byte-identical (no v2 marker => no SQS send, users/outbo
   expect(outboxInserts().length).toBeGreaterThan(0);
 });
 
-test('a transcript with results.language_codes (multi-language job output) parses identically to a single-language one', async () => {
+test('a transcript with results.language_codes (multi-language job output) parses identically to a single-language one, with a detected-language ASR metadata line added', async () => {
   mockS3Send.mockResolvedValue(makeMultiLanguageTranscriptS3Response('I am an electrician in Austin with 5 years experience'));
   mockBedrockSend.mockResolvedValue(makeBedrockResponse(
     { city: 'Austin', main_trade: 'electrician', years_experience: '5-9' },
@@ -752,15 +752,306 @@ test('a transcript with results.language_codes (multi-language job output) parse
 
   expect(mockS3Send).toHaveBeenCalledTimes(1);
   expect(mockBedrockSend).toHaveBeenCalledTimes(1);
-  // The extra language_codes field must not change what gets sent to
-  // Bedrock: it should see the SAME plain transcript text, not the raw JSON.
+  // Task A (new contract): the raw language_codes JSON shape must never
+  // reach Bedrock verbatim — only the shared transcript.ts parser's
+  // derived `languages` array, rendered as a plain calibration line.
   const converseInput = (mockBedrockSend.mock.calls[0][0] as any).input;
   const promptText = JSON.stringify(converseInput);
   expect(promptText).toContain('I am an electrician in Austin with 5 years experience');
   expect(promptText).not.toContain('language_codes');
+  expect(promptText).toContain('Detected language(s): es-US, en-US');
 
   const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
     /INSERT INTO worker_profile_ai_extractions/.test(sql)
   );
   expect(insertCall).toBeDefined();
+});
+
+// ── Task A: empty-transcript guard + ASR-metadata prompt block + quality logs ──
+
+function makeTranscribeItemsS3Response(text: string, items: Array<{ w: string; conf: string | undefined; type?: string }>) {
+  const json = JSON.stringify({
+    results: {
+      transcripts: [{ transcript: text }],
+      items: items.map((item) => ({
+        type: item.type ?? 'pronunciation',
+        alternatives: [{ content: item.w, ...(item.conf === undefined ? {} : { confidence: item.conf }) }],
+      })),
+    },
+  });
+  return {
+    Body: {
+      transformToString: jest.fn().mockResolvedValue(json),
+    },
+  };
+}
+
+function makeEmptyTranscriptS3Response() {
+  const json = JSON.stringify({ results: { transcripts: [{ transcript: '   ' }] } });
+  return {
+    Body: {
+      transformToString: jest.fn().mockResolvedValue(json),
+    },
+  };
+}
+
+test('empty transcript on the v2 lane degrades to FAILED: writes a failed extraction row and a FAILED #vp event', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-empty-v2' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+  mockS3Send.mockResolvedValue(makeEmptyTranscriptS3Response());
+
+  await handler({
+    status: 'COMPLETED',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-empty',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-empty' }),
+  } as any, {} as any, () => {});
+
+  expect(mockBedrockSend).not.toHaveBeenCalled();
+  const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql)
+  );
+  expect(insertCall).toBeDefined();
+  expect(insertCall![0]).toContain("'failed'");
+
+  expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  const sent = mockSqsSend.mock.calls[0][0].input;
+  expect(sent.MessageDeduplicationId).toBe('MMvoice-empty#vp');
+  const params = Object.fromEntries(new URLSearchParams(sent.MessageBody));
+  const evt = parseVoiceTranscriptEvent(params);
+  expect(evt).toMatchObject({ kind: 'profile_intake', status: 'FAILED', fields: null, extractionId: 'extraction-empty-v2' });
+});
+
+test('an S3 GetObject rejection on the v2 lane degrades to FAILED: writes a failed extraction row and a FAILED #vp event', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-s3err-v2' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+  mockS3Send.mockRejectedValue(new Error('S3 unavailable'));
+
+  await handler({
+    status: 'COMPLETED',
+    executionArn: 'arn:aws:states:us-east-2:123456789012:execution:profile-voice-pipeline:vp-MMvoice-s3err',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-s3err' }),
+  } as any, {} as any, () => {});
+
+  expect(mockBedrockSend).not.toHaveBeenCalled();
+  const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql)
+  );
+  expect(insertCall).toBeDefined();
+  expect(insertCall![0]).toContain("'failed'");
+
+  expect(mockSqsSend).toHaveBeenCalledTimes(1);
+  const sent = mockSqsSend.mock.calls[0][0].input;
+  expect(sent.MessageDeduplicationId).toBe('MMvoice-s3err#vp');
+  const params = Object.fromEntries(new URLSearchParams(sent.MessageBody));
+  const evt = parseVoiceTranscriptEvent(params);
+  expect(evt).toMatchObject({ kind: 'profile_intake', status: 'FAILED', fields: null, extractionId: 'extraction-s3err-v2' });
+});
+
+test('empty transcript on the v1 legacy lane degrades to FAILED: queues the ai_extraction_failed outbox message', async () => {
+  mockS3Send.mockResolvedValue(makeEmptyTranscriptS3Response());
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-empty-v1',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-empty.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  expect(mockBedrockSend).not.toHaveBeenCalled();
+  const outboxCalls = outboxInserts();
+  expect(outboxCalls.length).toBeGreaterThan(0);
+  expect(outboxCalls[0][1][3]).toContain("We could not process your voice message");
+  expect(mockSendPendingOutbox).toHaveBeenCalled();
+});
+
+test('never logs the transcript text on an empty-transcript or S3-error degrade', async () => {
+  const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+  mockS3Send.mockResolvedValue(makeEmptyTranscriptS3Response());
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-empty-log',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-empty-log.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  const logged = logSpy.mock.calls.map(([msg]) => String(msg)).join('\n');
+  expect(logged).toContain('AiProfileWriterTranscriptReadFailed');
+  expect(logged).toContain('empty_transcript');
+  logSpy.mockRestore();
+});
+
+test('low-confidence words (conf < 0.5) appear in the ASR metadata prompt block, in transcript order, 2-decimal formatted', async () => {
+  mockS3Send.mockResolvedValue(makeTranscribeItemsS3Response('troca rufero good electrician', [
+    { w: 'troca', conf: '0.41' },
+    { w: 'rufero', conf: '0.38' },
+    { w: 'good', conf: '0.9' },
+    { w: 'electrician', conf: '0.95' },
+  ]));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { main_trade: 'electrician' },
+    { main_trade: 0.9 },
+    'Summary.',
+    'Resumen.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-lowconf',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-lowconf.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  const converseInput = (mockBedrockSend.mock.calls[0][0] as any).input;
+  const promptText = JSON.stringify(converseInput);
+  expect(promptText).toContain('Possibly mistranscribed words');
+  expect(promptText).toContain('\\"troca\\" (0.41)');
+  expect(promptText).toContain('\\"rufero\\" (0.38)');
+  // High-confidence words must never appear in the mistranscribed list.
+  expect(promptText).not.toMatch(/"good" \(0\.9/);
+  expect(promptText).not.toMatch(/"electrician" \(0\.9/);
+});
+
+test('no ASR metadata block is added to the prompt when the transcript has no items', async () => {
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('I am an electrician'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { main_trade: 'electrician' },
+    { main_trade: 0.9 },
+    'Summary.',
+    'Resumen.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-nometa',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-nometa.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  const converseInput = (mockBedrockSend.mock.calls[0][0] as any).input;
+  const promptText = JSON.stringify(converseInput);
+  // The system prompt always carries the one-sentence calibration
+  // instruction (spec 3c); only the USER prompt's metadata block itself is
+  // conditional on data existing. Assert the header/lines that only ever
+  // appear in that block are absent, not the word "ASR metadata" generally.
+  expect(promptText).not.toContain('ASR metadata (calibration only, do not extract from it)');
+  expect(promptText).not.toContain('Possibly mistranscribed words');
+  expect(promptText).not.toContain('Detected language');
+  expect(promptText).not.toContain('Overall transcription confidence');
+});
+
+test('caps the mistranscribed-words list at 10, in transcript order', async () => {
+  const items = Array.from({ length: 15 }, (_, i) => ({ w: `word${i}`, conf: '0.10' }));
+  mockS3Send.mockResolvedValue(makeTranscribeItemsS3Response('fifteen low confidence words', items));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { main_trade: 'electrician' },
+    { main_trade: 0.9 },
+    'Summary.',
+    'Resumen.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-cap10',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-cap10.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  const converseInput = (mockBedrockSend.mock.calls[0][0] as any).input;
+  const promptText = JSON.stringify(converseInput);
+  for (let i = 0; i < 10; i++) {
+    expect(promptText).toContain(`word${i}`);
+  }
+  for (let i = 10; i < 15; i++) {
+    expect(promptText).not.toContain(`word${i}`);
+  }
+});
+
+test('asr_metadata is present in the completed extraction INSERT params', async () => {
+  mockS3Send.mockResolvedValue(makeTranscribeItemsS3Response('troca is a truck', [
+    { w: 'troca', conf: '0.41' },
+    { w: 'is', conf: '0.95' },
+    { w: 'a', conf: '0.9' },
+    { w: 'truck', conf: '0.92' },
+  ]));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { main_trade: 'electrician' },
+    { main_trade: 0.9 },
+    'Summary.',
+    'Resumen.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-asrmeta',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-asrmeta.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql) && /'completed'/.test(sql)
+  );
+  expect(insertCall).toBeDefined();
+  expect(insertCall![0]).toContain('asr_metadata');
+  const params = insertCall![1] as unknown[];
+  const asrMetadataParam = params[params.length - 1] as string;
+  expect(asrMetadataParam).not.toBeNull();
+  const parsed = JSON.parse(asrMetadataParam);
+  expect(parsed).toMatchObject({
+    provider: 'transcribe',
+    word_count: 4,
+    low_confidence_word_count: 1,
+  });
+});
+
+test('asr_metadata is NULL in the failed extraction INSERT params when the transcript was never read', async () => {
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-nulasr',
+    whatsappNumber: '+15125551234',
+    language: 'es',
+    status: 'failed',
+    errorMessage: 'TranscribeJobFailed',
+  }, {} as any, () => {});
+
+  const insertCall = mockQuery.mock.calls.find(([sql]: [string]) =>
+    /INSERT INTO worker_profile_ai_extractions/.test(sql)
+  );
+  expect(insertCall).toBeDefined();
+  expect(insertCall![0]).toContain('asr_metadata');
+  const params = insertCall![1] as unknown[];
+  expect(params[params.length - 1]).toBeNull();
 });

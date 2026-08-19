@@ -1,6 +1,6 @@
 import type { Handler } from 'aws-lambda';
 import type { PoolClient } from 'pg';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client } from '@aws-sdk/client-s3';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
@@ -8,6 +8,7 @@ import {
   ConverseCommand,
 } from '@aws-sdk/client-bedrock-runtime';
 import { getDbPool, setRlsContext } from '../lib/db';
+import { readTranscriptResult, type TranscriptResult } from '../lib/transcript';
 import { t, type Lang } from './lib/templates';
 import { sendPendingOutbox } from './lib/outbox';
 import { autoAdvanceProfileAfterAi } from './lib/profile-flow';
@@ -120,19 +121,43 @@ function parseBedrockJsonResponse(responseText: string): BedrockResult {
   return JSON.parse(jsonText) as BedrockResult;
 }
 
-// ── Transcript reader ────────────────────────────────────────────
-async function readTranscript(bucketName: string, key: string): Promise<string> {
-  const res = await s3.send(
-    new GetObjectCommand({ Bucket: bucketName, Key: key }),
-  );
-  const raw = await (res.Body as any).transformToString();
-  const parsed = JSON.parse(raw);
-  return parsed.results?.transcripts?.[0]?.transcript ?? '';
+// ── ASR metadata prompt block ─────────────────────────────────────
+//
+// Appended to the end of the user prompt, calibration-only: it never
+// introduces new extractable content, only signals to Bedrock which parts
+// of the transcript are less trustworthy. Each line is included only when
+// its underlying data exists; the whole block (including its header) is
+// omitted when none of the three lines would have anything to show.
+function buildAsrMetadataPromptBlock(transcript: TranscriptResult): string {
+  const lines: string[] = [];
+
+  if (transcript.languages && transcript.languages.length > 0) {
+    lines.push(`- Detected language(s): ${transcript.languages.join(', ')}`);
+  }
+
+  if (typeof transcript.avgConfidence === 'number') {
+    lines.push(`- Overall transcription confidence: ${transcript.avgConfidence.toFixed(2)}`);
+  }
+
+  if (transcript.words && transcript.words.length > 0) {
+    const lowConfidenceWords = transcript.words
+      .filter((word) => word.conf !== null && word.conf < 0.5)
+      .slice(0, 10);
+    if (lowConfidenceWords.length > 0) {
+      const wordsText = lowConfidenceWords
+        .map((word) => `"${word.w}" (${(word.conf as number).toFixed(2)})`)
+        .join(', ');
+      lines.push(`- Possibly mistranscribed words: ${wordsText}`);
+    }
+  }
+
+  if (lines.length === 0) return '';
+  return `ASR metadata (calibration only, do not extract from it):\n${lines.join('\n')}`;
 }
 
 // ── Bedrock extraction ───────────────────────────────────────────
 async function extractProfileFromTranscript(
-  transcript: string,
+  transcript: TranscriptResult,
 ): Promise<BedrockResult> {
   const keywordsText =
     INDUSTRY_KEYWORDS.length > 0
@@ -142,7 +167,10 @@ async function extractProfileFromTranscript(
   const systemPrompt =
     `You are a profile extraction assistant for Jale, a bilingual job platform for blue-collar workers in the US.${keywordsText}\n` +
     `Extract structured profile information from voice message transcripts. Workers may speak English or Spanish.\n` +
-    `Return ONLY valid JSON — no additional text, no markdown fences.`;
+    `Return ONLY valid JSON — no additional text, no markdown fences.\n` +
+    `You may be given ASR metadata about transcription quality. Use it only to calibrate confidence_scores (lower confidence for fields supported by low-confidence words); never copy it into extracted fields.`;
+
+  const asrMetadataBlock = buildAsrMetadataPromptBlock(transcript);
 
   const userPrompt =
     `Extract profile information from this transcript. Return JSON with exactly these keys:\n` +
@@ -160,7 +188,8 @@ async function extractProfileFromTranscript(
     `  "summary_en": "1-2 sentence profile summary in English",\n` +
     `  "summary_es": "1-2 sentence profile summary in Spanish"\n` +
     `}\n\n` +
-    `Transcript: ${transcript}`;
+    `Transcript: ${transcript.text}` +
+    (asrMetadataBlock ? `\n\n${asrMetadataBlock}` : '');
 
   const res = await bedrock.send(
     new ConverseCommand({
@@ -176,6 +205,26 @@ async function extractProfileFromTranscript(
 }
 
 // ── DB helpers ───────────────────────────────────────────────────
+
+/**
+ * Builds the `asr_metadata` JSONB value persisted alongside both the
+ * completed and failed `worker_profile_ai_extractions` rows. NULL when no
+ * transcript was ever successfully read (e.g. an already-FAILED Transcribe
+ * job, or an S3 read error caught by the COMPLETED guard below).
+ */
+function buildAsrMetadata(
+  transcript: TranscriptResult | undefined,
+): Record<string, unknown> | null {
+  if (!transcript) return null;
+  return {
+    provider: transcript.provider ?? null,
+    languages: transcript.languages ?? null,
+    avg_confidence: transcript.avgConfidence ?? null,
+    word_count: transcript.words?.length ?? null,
+    low_confidence_word_count:
+      transcript.words?.filter((word) => word.conf !== null && word.conf < 0.5).length ?? null,
+  };
+}
 
 /** Build a parameterized UPDATE users SET ... for fields above confidence threshold. */
 function buildUserUpdateSql(
@@ -376,8 +425,64 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     voiceMessageMediaId,
     v2,
   } = normalized.ctx;
-  const status = normalized.status;
   const outboxMessageSid = inboundMessageSid ?? conversationId;
+
+  // ── Transcript read + Bedrock extraction — BEFORE the DB transaction ────
+  // Neither needs DB state, and holding a Postgres transaction open across
+  // two network calls (S3 + Bedrock) needlessly extends the lock window.
+  // `effectiveStatus` starts as the incoming status; the guard below
+  // downgrades it to FAILED on an S3 read error or an empty transcript,
+  // mirroring voice-trust-receiver.ts's graceful degrade — the DB flow
+  // below then runs the SAME FAILED branch it always has, exactly as if
+  // Transcribe itself had reported failure. Bedrock JSON-parse failures are
+  // out of scope for this guard and still throw uncaught, same as today.
+  let effectiveStatus = normalized.status;
+  let transcriptResult: TranscriptResult | undefined;
+  let extraction: BedrockResult | undefined;
+
+  if (effectiveStatus === 'COMPLETED') {
+    if (!mediaBucketName || !transcriptOutputKey) {
+      throw new Error('mediaBucketName and transcriptOutputKey required for completed transcription');
+    }
+
+    try {
+      transcriptResult = await readTranscriptResult(s3, mediaBucketName, transcriptOutputKey);
+      if (transcriptResult.text.trim().length === 0) {
+        console.log(JSON.stringify({
+          metric: 'AiProfileWriterTranscriptReadFailed',
+          reason: 'empty_transcript',
+          v2: !!v2,
+        }));
+        effectiveStatus = 'FAILED';
+      }
+    } catch {
+      console.log(JSON.stringify({
+        metric: 'AiProfileWriterTranscriptReadFailed',
+        reason: 's3_error',
+        v2: !!v2,
+      }));
+      effectiveStatus = 'FAILED';
+    }
+
+    if (effectiveStatus === 'COMPLETED' && transcriptResult) {
+      console.log(JSON.stringify({
+        metric: 'AiProfileWriterAsrQuality',
+        languages: transcriptResult.languages,
+        avgConfidence: transcriptResult.avgConfidence,
+        wordCount: transcriptResult.words?.length,
+        lowConfWordCount: transcriptResult.words?.filter(
+          (word) => word.conf !== null && word.conf < 0.5,
+        ).length,
+        transcriptChars: transcriptResult.text.length,
+        v2: !!v2,
+      }));
+
+      extraction = await extractProfileFromTranscript(transcriptResult);
+    }
+  }
+
+  const asrMetadata = buildAsrMetadata(transcriptResult);
+  const asrMetadataParam = asrMetadata ? JSON.stringify(asrMetadata) : null;
 
   const pool = await getDbPool();
   const client = await pool.connect();
@@ -386,14 +491,14 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
     await client.query('BEGIN');
     await setWorkerRlsContextByUserId(client, userId);
 
-    if (status === 'FAILED') {
+    if (effectiveStatus === 'FAILED') {
       // Write failed extraction record
       const failedExtraction = await client.query<{ id: string }>(
         `INSERT INTO worker_profile_ai_extractions
-           (user_id, bedrock_model_id, status)
-         VALUES ($1, $2, 'failed')
+           (user_id, bedrock_model_id, status, asr_metadata)
+         VALUES ($1, $2, 'failed', $3)
          RETURNING id`,
-        [userId, BEDROCK_MODEL_ID],
+        [userId, BEDROCK_MODEL_ID, asrMetadataParam],
       );
 
       if (v2) {
@@ -451,29 +556,28 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       return;
     }
 
-    // status === 'COMPLETED'
-    if (!mediaBucketName || !transcriptOutputKey) {
-      throw new Error('mediaBucketName and transcriptOutputKey required for completed transcription');
-    }
-
-    const transcript = await readTranscript(mediaBucketName, transcriptOutputKey);
-    const result = await extractProfileFromTranscript(transcript);
+    // effectiveStatus === 'COMPLETED' — guaranteed by the guard above:
+    // reaching this point means the transcript read succeeded and the
+    // transcript was non-empty, so both are defined.
+    const result = extraction as BedrockResult;
+    const transcript = transcriptResult as TranscriptResult;
 
     // Write extraction record (link voice media row if available) — SQL is
     // unchanged for v1/v2 alike; only `RETURNING id` was added so the v2
     // branch can thread `extractionId` into the outbound event.
-    const extraction = await client.query<{ id: string }>(
+    const extractionRow = await client.query<{ id: string }>(
       `INSERT INTO worker_profile_ai_extractions
-         (user_id, voice_message_media_id, bedrock_model_id, transcript_text, extracted_fields, confidence_scores, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'completed')
+         (user_id, voice_message_media_id, bedrock_model_id, transcript_text, extracted_fields, confidence_scores, status, asr_metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, 'completed', $7)
        RETURNING id`,
       [
         userId,
         voiceMessageMediaId ?? null,
         BEDROCK_MODEL_ID,
-        transcript,
+        transcript.text,
         JSON.stringify(result.extracted_fields),
         JSON.stringify(result.confidence_scores),
+        asrMetadataParam,
       ],
     );
 
@@ -497,7 +601,7 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         language,
         origMessageSid: outboxMessageSid,
         executionArn: normalized.executionArn,
-        extractionId: extraction.rows[0]?.id ?? null,
+        extractionId: extractionRow.rows[0]?.id ?? null,
         fields: result.extracted_fields,
         confidences: result.confidence_scores,
         summaryEn: result.summary_en,
