@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { isPlainObject } from '../lib/application-answers';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -53,18 +54,27 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     await setInternalUserRlsContext(client, employerId);
 
-    // Verify this job belongs to the caller (RLS returns no rows if not)
-    const jobCheck = await client.query('SELECT id FROM jobs WHERE id = $1 AND employer_id = $2', [jobId, employerId]);
+    // Verify this job belongs to the caller (RLS returns no rows if not).
+    // Also carries optional_fields/optional_docs so the applicant query
+    // below can compute each applicant's not_provided list without a
+    // second round trip.
+    const jobCheck = await client.query(
+      'SELECT id, optional_fields, optional_docs FROM jobs WHERE id = $1 AND employer_id = $2',
+      [jobId, employerId],
+    );
     if (jobCheck.rowCount === 0) {
       await client.query('COMMIT');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
+    const jobRow = (jobCheck.rows ?? [])[0] ?? {};
+    const optionalFields: string[] = Array.isArray(jobRow.optional_fields) ? jobRow.optional_fields : [];
+    const optionalDocs: string[] = Array.isArray(jobRow.optional_docs) ? jobRow.optional_docs : [];
 
     // Build applicant query with optional filters
     const qs = event.queryStringParameters ?? {};
     const conditions: string[] = ['ja.job_id = $1', 'j.employer_id = $2'];
-    const params: (string | number | string[])[] = [jobId, employerId];
-    let idx = 3;
+    const params: (string | number | string[])[] = [jobId, employerId, optionalDocs];
+    let idx = 4;
 
     if (qs.status) {
       if (!APPLICATION_STATUSES.includes(qs.status as any)) {
@@ -119,6 +129,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
            ELSE ja.status
          END AS status,
          ja.applied_at,
+         ja.application_answers,
          ARRAY(
            SELECT ws.skill
            FROM worker_skills ws
@@ -127,7 +138,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          ) AS skills,
          wp.availability,
          wp.years_experience,
-         wp.location
+         wp.location,
+         -- Optional docs (job's optional_docs, param $3) this applicant's
+         -- vault/job worker_documents rows do NOT cover -- folded into
+         -- not_provided below alongside skipped optional_fields answers.
+         ARRAY(
+           SELECT dt FROM unnest($3::text[]) AS dt
+           WHERE NOT EXISTS (
+             SELECT 1 FROM worker_documents wd
+              WHERE wd.worker_id = ja.worker_id
+                AND wd.doc_type = dt
+                AND (wd.job_id IS NULL OR wd.job_id = ja.job_id)
+           )
+         ) AS missing_optional_docs
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id
@@ -139,10 +162,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     await client.query('COMMIT');
 
+    // The employer must see exactly which optional items were skipped:
+    // not_provided = optional_fields absent from this applicant's answers,
+    // plus optional_docs missing_optional_docs computed in SQL above.
+    // missing_optional_docs is an internal helper column, dropped from the
+    // response -- only its contribution to not_provided is exposed.
+    const applicants = result.rows.map((row: any) => {
+      const { missing_optional_docs, ...applicant } = row;
+      // Guard + normalize, not just guard: application_answers is JSONB NOT
+      // NULL DEFAULT '{}' and node-pg returns it pre-parsed in production,
+      // but if it ever arrived as something else, ship the normalized {}
+      // rather than passing a non-object value through to the employer.
+      const answers = isPlainObject(applicant.application_answers) ? applicant.application_answers : {};
+      const notProvided = [
+        ...optionalFields.filter((field) => !Object.prototype.hasOwnProperty.call(answers, field)),
+        ...(Array.isArray(missing_optional_docs) ? missing_optional_docs : []),
+      ];
+      return { ...applicant, application_answers: answers, not_provided: notProvided };
+    });
+
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ applicants: result.rows, total: result.rowCount }),
+      body: JSON.stringify({ applicants, total: result.rowCount }),
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }

@@ -85,11 +85,74 @@ describe('worker-jobs-apply', () => {
     const body = JSON.parse(res.body);
     expect(body.id).toBe('a1');
     const applicationInsert = calls.find(c => c.includes('INSERT INTO job_applications')) as string;
-    expect(applicationInsert).toContain('(job_id, worker_id, status)');
+    expect(applicationInsert).toContain('(job_id, worker_id, status, application_answers)');
     expect(applicationInsert).toContain("'pending'");
     expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.any(Object), 'worker-id');
     expect(calls.some(c => c.includes('INSERT INTO worker_documents'))).toBe(true);
     const docCopy = calls.find(c => c.includes('INSERT INTO worker_documents')) as string;
     expect(docCopy).toContain('s3_version_id');
+  });
+
+  it('returns 400 missing_answers listing unanswered required fields when no answers are sent', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [],
+            required_fields: ['work_authorization', 'date_available'], optional_fields: [],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(ev);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'missing_answers', missing_fields: ['work_authorization', 'date_available'] });
+  });
+
+  it('returns 400 invalid_answers for an unrecognized answer key', async () => {
+    const evWithBody = { ...ev, body: JSON.stringify({ answers: { bogus_key: 'x' } }) } as unknown as APIGatewayProxyEvent;
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{ id: 'job-1', required_docs: [], optional_docs: [], required_fields: [], optional_fields: ['date_available'] }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(evWithBody);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_answers', detail: 'unknown_answer_key' });
+  });
+
+  it('returns 400 invalid_json for a malformed request body', async () => {
+    const evBadJson = { ...ev, body: '{not json' } as unknown as APIGatewayProxyEvent;
+    const res = await handler(evBadJson);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_json' });
+  });
+
+  it('passes answers through to applyWorkerToJob and persists them on success', async () => {
+    const evWithAnswers = { ...ev, body: JSON.stringify({ answers: { work_authorization: true } }) } as unknown as APIGatewayProxyEvent;
+    const calls: Array<[string, unknown[]]> = [];
+    mockQuery.mockImplementation((q: string, params: unknown[]) => {
+      calls.push([q, params]);
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs') && !q.includes('INSERT')) {
+        return Promise.resolve({
+          rows: [{ id: 'job-1', required_docs: [], optional_docs: [], required_fields: ['work_authorization'], optional_fields: [] }],
+        });
+      }
+      if (q.includes('INSERT INTO job_applications')) {
+        return Promise.resolve({ rows: [{ id: 'a1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(evWithAnswers);
+    expect(res.statusCode).toBe(201);
+    const insertCall = calls.find(([q]) => q.includes('INSERT INTO job_applications'));
+    expect(insertCall?.[1]).toEqual(['job-1', 'worker-id', JSON.stringify({ work_authorization: true })]);
   });
 });

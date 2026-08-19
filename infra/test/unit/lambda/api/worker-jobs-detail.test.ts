@@ -157,4 +157,73 @@ describe('worker-jobs-detail', () => {
     expect(jobsSql).toContain('employer_display_name(j.employer_id) AS company_name');
     expect(jobsSql).not.toContain('JOIN users');
   });
+
+  it('exposes required_fields/optional_fields/optional_docs and computes unanswered lists before applying', async () => {
+    const job = {
+      id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+      required_docs: [], created_at: 'ts', company_name: 'Acme',
+      required_fields: ['work_authorization'], optional_fields: ['date_available'], optional_docs: ['driver_license'],
+    };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+    const res = await handler(baseEvent);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.required_fields).toEqual(['work_authorization']);
+    expect(body.optional_fields).toEqual(['date_available']);
+    expect(body.optional_docs).toEqual(['driver_license']);
+    // Nothing answered yet (not applied) -- everything required/optional is unanswered.
+    expect(body.missing_fields).toEqual(['work_authorization']);
+    expect(body.optional_unanswered).toEqual(['date_available']);
+  });
+
+  it('computes missing_fields/optional_unanswered from the stored application_answers when already applied', async () => {
+    const job = {
+      id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+      required_docs: [], created_at: 'ts', company_name: 'Acme',
+      required_fields: ['work_authorization', 'date_available'], optional_fields: ['home_address'], optional_docs: [],
+    };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) {
+        return Promise.resolve({ rows: [{ status: 'pending', application_answers: { work_authorization: true } }] });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(baseEvent);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.already_applied).toBe(true);
+    expect(body.missing_fields).toEqual(['date_available']);
+    expect(body.optional_unanswered).toEqual(['home_address']);
+    // v1 write-once contract: never leak the raw answers, only derived key lists.
+    expect(body.application_answers).toBeUndefined();
+  });
+
+  it('normalizes nullable required_fields/optional_fields/optional_docs for the frontend contract', async () => {
+    const job = {
+      id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+      required_docs: null, created_at: 'ts', company_name: 'Acme',
+      required_fields: null, optional_fields: null, optional_docs: null,
+    };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+    const res = await handler(baseEvent);
+    const body = JSON.parse(res.body);
+    expect(res.statusCode).toBe(200);
+    expect(body.required_fields).toEqual([]);
+    expect(body.optional_fields).toEqual([]);
+    expect(body.optional_docs).toEqual([]);
+    expect(body.missing_fields).toEqual([]);
+    expect(body.optional_unanswered).toEqual([]);
+  });
 });

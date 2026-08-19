@@ -1541,7 +1541,7 @@ describe('Processor Lambda', () => {
       );
 
       const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
-      expect(applicationInsert).toEqual(['job-1', 'user-1']);
+      expect(applicationInsert).toEqual(['job-1', 'user-1', JSON.stringify({})]);
     });
 
     // Task 4 (WhatsApp pay localization): the "<n> info"/"<n> informacion"
@@ -1972,6 +1972,62 @@ describe('Processor Lambda', () => {
       expect(findQueryByPattern(/INSERT INTO job_applications/i)).toBeUndefined();
       expect(outboxBodies()[0]).toContain('Resume');
       expect(outboxBodies()[0]).toContain('requires these documents');
+    });
+
+    // Stage 1b regression guard: WhatsApp "accept" happens before the bot
+    // has any chance to collect required_fields answers (it's a one-tap
+    // reply, not a form), so applyWorkerToJob must bypass the answers gate
+    // for this surface even when the job has non-empty required_fields and
+    // no answers were supplied. See applications.ts's surface === 'whatsapp'
+    // branch. The mirrored web-surface behavior (missing_answers, NOT
+    // applied, for the identical job/no-answers case) is covered by
+    // applications.test.ts and worker-jobs-apply.test.ts.
+    it('typed accept still applies (bypassing the answers gate) on a job with non-empty required_fields and no answers', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-accept-reqfields' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: { recent_jobs: ['job-1'] },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [],
+            required_fields: ['work_authorization', 'date_available'], optional_fields: [],
+          }],
+        }) // helper job check -- required_fields is non-empty, no answers supplied
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox accepted
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-accept-reqfields',
+          From: 'whatsapp:+15125551234',
+          Body: '1 accept',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const applicationInsert = findQueryByPattern(/INSERT INTO job_applications/i);
+      expect(applicationInsert).toEqual(['job-1', 'user-1', JSON.stringify({})]);
+      expect(outboxBodies()).toContain(t('job_accepted', 'en'));
     });
   });
 
