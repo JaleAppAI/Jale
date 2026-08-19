@@ -1,8 +1,11 @@
 import {
+  DOC_TYPES,
+  REQUIRED_FIELD_TYPES,
   formatPayRangeLocalized,
   normalizeApplicationStatus,
   parseJobFields,
   parseOptionalCoordinates,
+  parseRequiredFields,
   payNotSpecifiedLabel,
 } from '../../../../lambda/lib/job-fields';
 
@@ -256,5 +259,78 @@ describe('payNotSpecifiedLabel', () => {
   it('returns the localized "not specified" placeholder for each locale', () => {
     expect(payNotSpecifiedLabel('en')).toBe('Pay not specified');
     expect(payNotSpecifiedLabel('es')).toBe('Pago no especificado');
+  });
+});
+
+describe('DOC_TYPES', () => {
+  it('contains the two new document types', () => {
+    expect(DOC_TYPES).toContain('work_auth_doc');
+    expect(DOC_TYPES).toContain('certification_doc');
+  });
+
+  it('never contains ssn', () => {
+    expect(DOC_TYPES).not.toContain('ssn');
+  });
+});
+
+describe('parseRequiredFields', () => {
+  it('accepts a valid subset of REQUIRED_FIELD_TYPES', () => {
+    const result = parseRequiredFields(['work_authorization', 'date_available']);
+    expect(result).toEqual({ ok: true, value: ['work_authorization', 'date_available'] });
+  });
+
+  it('accepts all eleven required field types', () => {
+    const result = parseRequiredFields([...REQUIRED_FIELD_TYPES]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sort()).toEqual([...REQUIRED_FIELD_TYPES].sort());
+    }
+  });
+
+  it('rejects an invalid key and echoes the valid list', () => {
+    const result = parseRequiredFields(['work_authorization', 'not_a_real_field']);
+    expect(result).toEqual({
+      ok: false,
+      error: 'invalid_required_fields',
+      valid: REQUIRED_FIELD_TYPES,
+    });
+  });
+
+  it('treats undefined as an empty array', () => {
+    expect(parseRequiredFields(undefined)).toEqual({ ok: true, value: [] });
+  });
+
+  it('dedupes repeated entries', () => {
+    const result = parseRequiredFields(['education', 'education', 'references']);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.sort()).toEqual(['education', 'references']);
+    }
+  });
+
+  it('rejects non-array values', () => {
+    expect(parseRequiredFields('work_authorization')).toEqual({
+      ok: false,
+      error: 'invalid_required_fields',
+      valid: REQUIRED_FIELD_TYPES,
+    });
+    expect(parseRequiredFields({ work_authorization: true })).toEqual({
+      ok: false,
+      error: 'invalid_required_fields',
+      valid: REQUIRED_FIELD_TYPES,
+    });
+    expect(parseRequiredFields(null)).toEqual({
+      ok: false,
+      error: 'invalid_required_fields',
+      valid: REQUIRED_FIELD_TYPES,
+    });
+  });
+
+  it('rejects non-string array entries', () => {
+    expect(parseRequiredFields(['work_authorization', 123])).toEqual({
+      ok: false,
+      error: 'invalid_required_fields',
+      valid: REQUIRED_FIELD_TYPES,
+    });
   });
 });

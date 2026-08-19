@@ -6,9 +6,34 @@ export const LEGACY_APPLICATION_STATUS_MAP: Record<string, ApplicationStatus> = 
   reviewed: 'contacted',
   rejected: 'not_interested',
 };
-export const DOC_TYPES = ['resume', 'driver_license'] as const;
+// 'ssn' is intentionally excluded: legacy jobs/worker_documents rows may
+// still reference it (kept in the DB CHECK constraints for that reason),
+// but no new job or upload may select it. See
+// 073_job_application_requirements.sql and 032_work_authorization_required.sql.
+export const DOC_TYPES = ['resume', 'driver_license', 'work_auth_doc', 'certification_doc'] as const;
 export const LANGUAGE_PREFERENCES = ['any', 'en', 'es'] as const;
 export const PAY_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly', 'fixed'] as const;
+// Per-job applicant-requirement checkboxes (jobs.required_fields). This is
+// the source of truth for the app layer -- it must match the
+// jobs_required_fields_valid CHECK added in
+// 073_job_application_requirements.sql BY HAND; nothing enforces the two
+// stay in sync automatically.
+export const REQUIRED_FIELD_TYPES = [
+  'work_authorization',
+  'date_available',
+  'desired_pay',
+  'home_address',
+  'date_of_birth',
+  'emergency_contact',
+  'worked_here_before',
+  'education',
+  'references',
+  'work_history',
+  'military_service',
+] as const;
+// Defense-in-depth cap on certification_doc uploads per slot, mirrored by
+// the trigger in 074_worker_documents_multi_certification.sql.
+export const MAX_CERTIFICATION_FILES = 5;
 export const TRADE_CATEGORIES = [
   'electrician',
   'plumber',
@@ -77,7 +102,7 @@ function optionalInteger(value: unknown, fieldName: string, maxValue?: number): 
   return { ok: true, value };
 }
 
-function isValidIsoDate(value: string): boolean {
+export function isValidIsoDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
@@ -102,6 +127,18 @@ export function parseRequiredDocs(value: unknown): { ok: true; value: string[] }
   if (value === undefined) return { ok: true, value: [] };
   if (!Array.isArray(value) || value.some((doc) => typeof doc !== 'string' || !DOC_TYPES.includes(doc as any))) {
     return { ok: false, error: 'invalid_required_docs', valid: DOC_TYPES };
+  }
+  return { ok: true, value: Array.from(new Set(value)) };
+}
+
+// NOTE: deliberately NOT part of ParsedJobFields/parseJobFields -- that
+// type is spread into stored template payloads (see
+// 069_employer_job_templates.sql), and required_fields is a standalone jobs
+// column with its own CHECK, not a template payload field.
+export function parseRequiredFields(value: unknown): { ok: true; value: string[] } | { ok: false; error: 'invalid_required_fields'; valid: readonly string[] } {
+  if (value === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(value) || value.some((field) => typeof field !== 'string' || !REQUIRED_FIELD_TYPES.includes(field as any))) {
+    return { ok: false, error: 'invalid_required_fields', valid: REQUIRED_FIELD_TYPES };
   }
   return { ok: true, value: Array.from(new Set(value)) };
 }
