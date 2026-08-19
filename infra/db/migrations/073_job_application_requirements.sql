@@ -22,7 +22,7 @@
 -- jale_public_jobs in this migration.
 --
 -- Does NOT touch the worker_documents vault/per-job unique indexes -- that
--- is 074_worker_documents_multi_certification.sql, which has the OPPOSITE
+-- is 075_worker_documents_multi_certification.sql, which has the OPPOSITE
 -- deploy-order requirement (deploy AFTER the lambda rollout, not before).
 --
 -- Run AFTER 072_whatsapp_retrigger_sweep_definer.sql, connected as jale_admin
