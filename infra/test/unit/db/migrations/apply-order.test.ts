@@ -83,6 +83,7 @@ const expectedBaselineMigrations = [
   '072_whatsapp_retrigger_sweep_definer.sql',
   '073_job_application_requirements.sql',
   '074_job_optional_requirements.sql',
+  '075_worker_documents_multi_certification.sql',
 ];
 
 function migrationFiles(): string[] {
