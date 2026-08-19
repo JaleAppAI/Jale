@@ -778,5 +778,36 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
 
       logSpy.mockRestore();
     });
+
+    it('never logs an unresolvable city value: a sentinel city string never appears in the logged JSON, only the skip reason', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const h = await toVoiceChoice('+15552230026');
+      h.failAdapter('location'); // forces resolveLocation(raw) -> null regardless of input
+      await h.sendVoiceNote();
+
+      const SENTINEL_CITY = 'ZZ_DO_NOT_LOG_THIS_CITY_7Q2';
+      await h.injectVoiceIntakeResult(0, {
+        status: 'COMPLETED',
+        fields: {
+          city: SENTINEL_CITY,
+          main_trade: 'plumber',
+        },
+        confidences: { city: 0.9, main_trade: 0.9 },
+        summaryEn: 'summary', summaryEs: 'resumen',
+      });
+
+      const call = logSpy.mock.calls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('OnboardingVoiceExtractionPlan'),
+      );
+      expect(call).toBeDefined();
+      expect(call![0] as string).not.toContain(SENTINEL_CITY);
+
+      const logged = findPlanLog(logSpy);
+      expect(logged.skipped).toEqual(
+        expect.arrayContaining([{ field: 'city', reason: 'unresolvable_location' }]),
+      );
+
+      logSpy.mockRestore();
+    });
   });
 });
