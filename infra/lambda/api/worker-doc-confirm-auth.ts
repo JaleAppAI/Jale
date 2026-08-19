@@ -3,11 +3,15 @@ import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { DOC_TYPES, MAX_CERTIFICATION_FILES } from '../lib/job-fields';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
-const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
+const VALID_DOC_TYPES = DOC_TYPES;
 const VALID_MIME = new Set(['application/pdf', 'image/jpeg', 'image/png']);
+const UNIQUE_VIOLATION = '23505';
+const CHECK_VIOLATION = '23514';
+const CERTIFICATION_DOC_LIMIT_CONSTRAINT = 'certification_document_limit';
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -81,18 +85,57 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Switch to worker_documents RLS convention (user.id::text).
     await setInternalUserRlsContext(client, workerId);
 
-    // Replace any existing vault row for (worker, doc_type, NULL).
-    await client.query(
-      `DELETE FROM worker_documents WHERE worker_id = $1 AND doc_type = $2 AND job_id IS NULL`,
-      [workerId, doc_type],
-    );
+    const isCertification = doc_type === 'certification_doc';
 
-    const insertRes = await client.query(
-      `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type)
-       VALUES ($1, NULL, $2, $3, $4, $5, $6)
-       RETURNING id, doc_type, s3_key, file_name, file_size, uploaded_at`,
-      [workerId, doc_type, s3_key, file_name, file_size, mime_type],
-    );
+    if (isCertification) {
+      // certification_doc allows up to MAX_CERTIFICATION_FILES rows per slot
+      // (worker, NULL job_id) -- append, never delete the existing ones. The
+      // count check is defense-in-depth: 075_worker_documents_multi_certification.sql
+      // adds a DB trigger enforcing the same cap (errcode 23514, constraint
+      // certification_document_limit), which the insert's catch below also maps.
+      const countRes = await client.query(
+        `SELECT COUNT(*)::int AS count FROM worker_documents WHERE worker_id = $1 AND doc_type = $2 AND job_id IS NULL`,
+        [workerId, doc_type],
+      );
+      if (countRes.rows[0].count >= MAX_CERTIFICATION_FILES) {
+        await client.query('COMMIT');
+        return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'certification_document_limit' }) };
+      }
+    } else {
+      // Replace any existing vault row for (worker, doc_type, NULL).
+      await client.query(
+        `DELETE FROM worker_documents WHERE worker_id = $1 AND doc_type = $2 AND job_id IS NULL`,
+        [workerId, doc_type],
+      );
+    }
+
+    let insertRes;
+    if (isCertification) {
+      try {
+        insertRes = await client.query(
+          `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type)
+           VALUES ($1, NULL, $2, $3, $4, $5, $6)
+           RETURNING id, doc_type, s3_key, file_name, file_size, uploaded_at`,
+          [workerId, doc_type, s3_key, file_name, file_size, mime_type],
+        );
+      } catch (insertErr) {
+        const pgErr = insertErr as { code?: string; constraint?: string };
+        const isCertLimit = pgErr?.code === UNIQUE_VIOLATION
+          || (pgErr?.code === CHECK_VIOLATION && pgErr?.constraint === CERTIFICATION_DOC_LIMIT_CONSTRAINT);
+        if (isCertLimit) {
+          await client.query('ROLLBACK');
+          return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'certification_document_limit' }) };
+        }
+        throw insertErr;
+      }
+    } else {
+      insertRes = await client.query(
+        `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6)
+         RETURNING id, doc_type, s3_key, file_name, file_size, uploaded_at`,
+        [workerId, doc_type, s3_key, file_name, file_size, mime_type],
+      );
+    }
 
     await client.query('COMMIT');
     return { statusCode: 201, headers: CORS_HEADERS, body: JSON.stringify(insertRes.rows[0]) };

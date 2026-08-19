@@ -152,4 +152,105 @@ describe('worker-doc-confirm-auth', () => {
     const calls = mockQuery.mock.calls.map(c => c[0]);
     expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(false);
   });
+
+  const CERT_KEY = 'documents/vault/u1/certification_doc/uuid.pdf';
+
+  it('accepts work_auth_doc as a valid doc_type', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 0 });
+      if (q.includes('INSERT INTO worker_documents')) return Promise.resolve({ rows: [{ id: 'd1', doc_type: 'work_auth_doc' }] });
+      return Promise.resolve({});
+    });
+    const res = await handler(mkEv({
+      doc_type: 'work_auth_doc',
+      s3_key: 'documents/vault/u1/work_auth_doc/uuid.pdf',
+      file_name: 'f',
+      file_size: 1,
+      mime_type: 'application/pdf',
+    }));
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('rejects a bogus doc_type and echoes the four valid types', async () => {
+    const res = await handler(mkEv({ doc_type: 'passport', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).valid).toEqual(['resume', 'driver_license', 'work_auth_doc', 'certification_doc']);
+  });
+
+  it('appends a new certification_doc row without deleting prior ones, when under the cap', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 2 }] });
+      if (q.includes('INSERT INTO worker_documents')) return Promise.resolve({ rows: [{ id: 'd2', doc_type: 'certification_doc' }] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+
+    expect(res.statusCode).toBe(201);
+    const calls = mockQuery.mock.calls.map(c => c[0]);
+    expect(calls.some((c: string) => c.includes('DELETE FROM worker_documents'))).toBe(false);
+    expect(calls.some((c: string) => c.includes('SELECT COUNT'))).toBe(true);
+    expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(true);
+  });
+
+  it('returns 409 certification_document_limit when at the cap (defense-in-depth count check)', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 5 }] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+    const calls = mockQuery.mock.calls.map(c => c[0]);
+    expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(false);
+  });
+
+  it('maps a 23505 unique violation on insert (pre-075 race) to 409 certification_document_limit', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 4 }] });
+      if (q.includes('INSERT INTO worker_documents')) {
+        const err: any = new Error('duplicate key value violates unique constraint');
+        err.code = '23505';
+        return Promise.reject(err);
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+    const calls = mockQuery.mock.calls.map(c => c[0]);
+    expect(calls).toContain('ROLLBACK');
+  });
+
+  it('maps a 23514 check-violation from the certification_document_limit trigger (post-075) to 409', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 3 }] });
+      if (q.includes('INSERT INTO worker_documents')) {
+        const err: any = new Error('new row violates check constraint "certification_document_limit"');
+        err.code = '23514';
+        err.constraint = 'certification_document_limit';
+        return Promise.reject(err);
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+  });
 });

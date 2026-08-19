@@ -5,10 +5,11 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { DOC_TYPES } from '../lib/job-fields';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
-const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
+const VALID_DOC_TYPES = DOC_TYPES;
 const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',

@@ -3,10 +3,11 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { DOC_TYPES } from '../lib/job-fields';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
-const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
+const VALID_DOC_TYPES = DOC_TYPES;
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   let client;
@@ -38,12 +39,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     await setInternalUserRlsContext(client, workerId);
 
-    const delRes = await client.query(
-      `DELETE FROM worker_documents
-       WHERE worker_id = $1 AND doc_type = $2 AND job_id IS NULL
-       RETURNING s3_key`,
-      [workerId, docType],
-    );
+    // Optional `id` query parameter targets a single row -- needed to delete
+    // one of several certification_doc files from a slot without touching the
+    // others. Without it, the delete is the original type-wide vault delete.
+    const id = event.queryStringParameters?.id;
+    const delRes = id
+      ? await client.query(
+          `DELETE FROM worker_documents
+           WHERE worker_id = $1 AND id = $2 AND job_id IS NULL
+           RETURNING s3_key`,
+          [workerId, id],
+        )
+      : await client.query(
+          `DELETE FROM worker_documents
+           WHERE worker_id = $1 AND doc_type = $2 AND job_id IS NULL
+           RETURNING s3_key`,
+          [workerId, docType],
+        );
     await client.query('COMMIT');
 
     if (delRes.rowCount === 0) {

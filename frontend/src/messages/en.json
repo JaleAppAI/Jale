@@ -877,6 +877,8 @@
     "doc_resume": "Resume",
     "doc_driver_license": "Driver's License",
     "doc_ssn": "SSN Card / ITIN",
+    "doc_work_auth_doc": "Work Authorization Document",
+    "doc_certification_doc": "Certification",
     "error_upload": "Upload failed. Please try again.",
     "error_submit": "Submission failed. Please try again.",
     "error_already_received": "We already received this document through this link.",

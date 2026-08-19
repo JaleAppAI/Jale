@@ -57,6 +57,24 @@ describe('worker-doc-confirm Lambda', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it('accepts work_auth_doc as a valid doc_type (rejects with invalid_or_confirmed_upload only for lack of a matching slot)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    const res = await handler(makeEvent({ ...validBody, doc_type: 'work_auth_doc' }));
+    // No `valid` field on this handler's invalid_doc_type response (preserved
+    // shape) -- work_auth_doc must pass validation and reach the slot lookup,
+    // which then legitimately 409s because no slot mock was set up for it.
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('invalid_or_confirmed_upload');
+  });
+
+  it('rejects a bogus doc_type with invalid_doc_type and no `valid` field (response shape preserved)', async () => {
+    const res = await handler(makeEvent({ ...validBody, doc_type: 'passport' }));
+    expect(res.statusCode).toBe(400);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error).toBe('invalid_doc_type');
+    expect(parsed.valid).toBeUndefined();
+  });
+
   it('returns 409 if the upload slot is invalid, confirmed, or mismatched', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -69,13 +87,15 @@ describe('worker-doc-confirm Lambda', () => {
     expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 
-  it('returns 200, validates the token without marking it used, and inserts the verified document row', async () => {
+  it('returns 200, validates the token without marking it used, deletes then inserts the replacement row (non-cert replace semantics)', async () => {
     mockS3Send.mockResolvedValueOnce(headResult);
     mockQuery
       .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({}) // set_config RLS
-      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid' }] }) // guarded CTE
+      .mockResolvedValueOnce({ rows: [slotRow] }) // guarded confirm SELECT
+      .mockResolvedValueOnce({ rowCount: 1 }) // DELETE existing row
+      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid' }] }) // INSERT
       .mockResolvedValueOnce({}); // COMMIT
 
     const res = await handler(makeEvent(validBody));
@@ -104,9 +124,56 @@ describe('worker-doc-confirm Lambda', () => {
     expect(atomicSql).toContain('slots.expected_mime_type = $4');
     expect(atomicSql).toContain('slots.confirmed_at IS NULL');
     expect(atomicSql).toContain('SET confirmed_at = now()');
-    expect(atomicSql).toContain('INSERT INTO worker_documents');
+    // The old single-statement ON CONFLICT upsert is gone: confirming the slot
+    // and writing worker_documents are now separate statements, since an
+    // ON CONFLICT arbiter's WHERE clause must match an index predicate
+    // exactly -- 075_worker_documents_multi_certification.sql narrows that
+    // predicate to exclude certification_doc, which would otherwise break
+    // inference for every doc type, not just certifications.
+    expect(atomicSql).not.toContain('INSERT INTO worker_documents');
+    expect(atomicSql).not.toContain('ON CONFLICT');
+
+    const deleteSql = mockQuery.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('DELETE FROM worker_documents')
+    )?.[0] as string;
+    const insertSql = mockQuery.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('INSERT INTO worker_documents')
+    )?.[0] as string;
+    expect(deleteSql).toBeDefined();
+    expect(insertSql).toBeDefined();
+    // Delete must precede insert (replace semantics), and must scope on the
+    // per-job triple, not the vault (job_id IS NULL) triple.
+    const deleteIdx = mockQuery.mock.calls.findIndex(([sql]) => sql === deleteSql);
+    const insertIdx = mockQuery.mock.calls.findIndex(([sql]) => sql === insertSql);
+    expect(deleteIdx).toBeLessThan(insertIdx);
+    expect(deleteSql).toContain('job_id = $2');
+    expect(deleteSql).toContain('doc_type = $3');
+
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('replaces an existing per-job document on a second upload of the same doc_type (single row, no ON CONFLICT)', async () => {
+    // Regression test for the replace-semantics requirement: a second confirm
+    // of the same (worker, job, doc_type) must DELETE the old row before
+    // INSERTing the new one -- never rely on an ON CONFLICT arbiter, which
+    // breaks once 075 narrows the per-job unique index's predicate.
+    mockS3Send.mockResolvedValueOnce(headResult);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({}) // set_config RLS
+      .mockResolvedValueOnce({ rows: [slotRow] }) // guarded confirm SELECT
+      .mockResolvedValueOnce({ rowCount: 1 }) // DELETE existing row (the first upload)
+      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-2' }] }) // INSERT the replacement
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const res = await handler(makeEvent({ ...validBody, file_name: 'resume-v2.pdf' }));
+
+    expect(res.statusCode).toBe(200);
+    const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
+    expect(calls.filter((sql) => sql.includes('DELETE FROM worker_documents'))).toHaveLength(1);
+    expect(calls.filter((sql) => sql.includes('INSERT INTO worker_documents'))).toHaveLength(1);
   });
 
   it('allows confirming a second document slot on the same still-unused token', async () => {
@@ -133,7 +200,9 @@ describe('worker-doc-confirm Lambda', () => {
       .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({}) // set_config RLS
-      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-1' }] }) // guarded CTE
+      .mockResolvedValueOnce({ rows: [slotRow] }) // guarded confirm SELECT
+      .mockResolvedValueOnce({ rowCount: 0 }) // DELETE (no prior row)
+      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-1' }] }) // INSERT
       .mockResolvedValueOnce({}); // COMMIT
 
     const firstRes = await handler(makeEvent(validBody));
@@ -147,7 +216,9 @@ describe('worker-doc-confirm Lambda', () => {
       .mockResolvedValueOnce({ rows: [secondSlotRow] }) // slot lookup
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({}) // set_config RLS
-      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-2' }] }) // guarded CTE
+      .mockResolvedValueOnce({ rows: [secondSlotRow] }) // guarded confirm SELECT
+      .mockResolvedValueOnce({ rowCount: 0 }) // DELETE (no prior row)
+      .mockResolvedValueOnce({ rows: [{ id: 'doc-uuid-2' }] }) // INSERT
       .mockResolvedValueOnce({}); // COMMIT
 
     const secondRes = await handler(makeEvent(secondBody));
@@ -170,7 +241,7 @@ describe('worker-doc-confirm Lambda', () => {
       .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({}) // set_config RLS
-      .mockResolvedValueOnce({ rows: [] }) // guarded CTE loses the race
+      .mockResolvedValueOnce({ rows: [] }) // guarded confirm SELECT loses the race
       .mockResolvedValueOnce({}); // ROLLBACK
 
     const res = await handler(makeEvent(validBody));
@@ -243,7 +314,7 @@ describe('worker-doc-confirm Lambda', () => {
       .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
       .mockResolvedValueOnce({}) // BEGIN
       .mockResolvedValueOnce({}) // set_config RLS
-      .mockRejectedValueOnce(new Error('DB down')) // guarded CTE
+      .mockRejectedValueOnce(new Error('DB down')) // guarded confirm SELECT
       .mockResolvedValueOnce({}); // ROLLBACK
 
     const res = await handler(makeEvent(validBody));
@@ -251,5 +322,105 @@ describe('worker-doc-confirm Lambda', () => {
     expect(res.statusCode).toBe(500);
     expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  describe('certification_doc (append, capped)', () => {
+    const certBody = {
+      ...validBody,
+      doc_type: 'certification_doc',
+      s3_key: 'documents/job-1/worker-1/certification_doc/uuid.pdf',
+      file_name: 'cert.pdf',
+    };
+    const certSlotRow = {
+      ...slotRow,
+      doc_type: 'certification_doc',
+      issued_s3_key: 'documents/job-1/worker-1/certification_doc/uuid.pdf',
+    };
+
+    it('inserts without deleting existing rows when under the cap', async () => {
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 2 }] }) // cap count check
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
+        .mockResolvedValueOnce({ rows: [{ id: 'cert-uuid' }] }) // INSERT (no DELETE)
+        .mockResolvedValueOnce({}); // COMMIT
+
+      const res = await handler(makeEvent(certBody));
+
+      expect(res.statusCode).toBe(200);
+      const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
+      expect(calls.some((sql) => sql.includes('DELETE FROM worker_documents'))).toBe(false);
+      expect(calls.some((sql) => sql.includes('SELECT COUNT'))).toBe(true);
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_documents'))).toBe(true);
+    });
+
+    it('returns 409 certification_document_limit at the cap, without touching the slot', async () => {
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 5 }] }) // cap count check -- at cap
+        .mockResolvedValueOnce({}); // ROLLBACK
+
+      const res = await handler(makeEvent(certBody));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+      const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
+      // The slot-confirming guarded UPDATE must never run -- a cap rejection
+      // must not burn the (single-use) upload slot.
+      expect(calls.some((sql) => sql.includes('WITH valid_token AS'))).toBe(false);
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_documents'))).toBe(false);
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    });
+
+    it('maps a 23505 unique violation on insert (pre-075 race) to 409 certification_document_limit', async () => {
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 4 }] }) // cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
+        .mockImplementationOnce(() => {
+          const err: any = new Error('duplicate key value violates unique constraint');
+          err.code = '23505';
+          return Promise.reject(err);
+        }) // INSERT races into a duplicate
+        .mockResolvedValueOnce({}); // ROLLBACK
+
+      const res = await handler(makeEvent(certBody));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    });
+
+    it('maps a 23514 check-violation from the certification_document_limit trigger (post-075) to 409', async () => {
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 4 }] }) // cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
+        .mockImplementationOnce(() => {
+          const err: any = new Error('new row violates check constraint "certification_document_limit"');
+          err.code = '23514';
+          err.constraint = 'certification_document_limit';
+          return Promise.reject(err);
+        }) // INSERT hits the post-075 DB trigger
+        .mockResolvedValueOnce({}); // ROLLBACK
+
+      const res = await handler(makeEvent(certBody));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    });
   });
 });
