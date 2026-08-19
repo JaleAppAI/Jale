@@ -18,6 +18,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_id' }) };
     }
 
+    let body: { answers?: unknown };
+    try {
+      body = JSON.parse(event.body ?? '{}');
+    } catch {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_json' }) };
+    }
+    const answers = body.answers as Record<string, unknown> | undefined;
+
     const pool = await getDbPool();
     client = await pool.connect();
     await client.query('BEGIN');
@@ -40,7 +48,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     const workerId: string = workerRes.rows[0].id;
 
-    const applyResult = await applyWorkerToJob(client, { workerId, jobId, surface: 'web' });
+    const applyResult = await applyWorkerToJob(client, { workerId, jobId, surface: 'web', answers });
     await client.query('COMMIT');
 
     if (applyResult.status === 'job_closed') {
@@ -48,6 +56,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (applyResult.status === 'missing_documents') {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_documents', missing_docs: applyResult.missing_docs }) };
+    }
+    if (applyResult.status === 'missing_answers') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_answers', missing_fields: applyResult.missing_fields }) };
+    }
+    if (applyResult.status === 'invalid_answers') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_answers', detail: applyResult.error }) };
     }
     if (applyResult.status === 'already_applied') {
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'already_applied' }) };

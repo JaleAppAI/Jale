@@ -70,4 +70,80 @@ describe('employer-job-applicants Lambda', () => {
     expect(applicantCall?.[0]).toContain('ws.skill = ANY');
     expect(applicantCall?.[1]).toContainEqual(['welding', 'carpentry']);
   });
+
+  it('includes application_answers and a not_provided list of skipped optional fields/docs per applicant', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
+      .mockResolvedValueOnce({
+        rows: [{ id: JOB_ID, optional_fields: ['date_available'], optional_docs: ['driver_license'] }],
+        rowCount: 1,
+      }) // job ownership -- now also carries optional_fields/optional_docs
+      .mockResolvedValueOnce({
+        rows: [{
+          application_id: 'app-1',
+          worker_id: 'worker-1',
+          full_name: 'Jane Doe',
+          phone: '555-0100',
+          status: 'pending',
+          applied_at: 'ts',
+          skills: [],
+          availability: null,
+          years_experience: null,
+          location: null,
+          application_answers: {},
+          missing_optional_docs: ['driver_license'],
+        }],
+        rowCount: 1,
+      }) // applicants
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.applicants).toHaveLength(1);
+    const applicant = body.applicants[0];
+    expect(applicant.application_answers).toEqual({});
+    // date_available (optional_fields, unanswered) + driver_license (optional_docs, missing)
+    expect(applicant.not_provided.sort()).toEqual(['date_available', 'driver_license']);
+    expect(applicant.missing_optional_docs).toBeUndefined();
+
+    const applicantQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
+    expect(applicantQuery).toContain('ja.application_answers');
+  });
+
+  it('reports an empty not_provided when the applicant answered every optional field and has every optional doc', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
+      .mockResolvedValueOnce({
+        rows: [{ id: JOB_ID, optional_fields: ['date_available'], optional_docs: [] }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({
+        rows: [{
+          application_id: 'app-1',
+          worker_id: 'worker-1',
+          full_name: 'Jane Doe',
+          phone: '555-0100',
+          status: 'pending',
+          applied_at: 'ts',
+          skills: [],
+          availability: null,
+          years_experience: null,
+          location: null,
+          application_answers: { date_available: '2026-09-01' },
+          missing_optional_docs: [],
+        }],
+        rowCount: 1,
+      })
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const res = await handler(makeEvent());
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.applicants[0].not_provided).toEqual([]);
+  });
 });

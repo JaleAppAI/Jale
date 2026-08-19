@@ -46,7 +46,7 @@ const PHONE_PATTERN = /^[0-9 ()+.-]{7,20}$/;
 const STATE_PATTERN = /^[A-Z]{2}$/;
 const ZIP_PATTERN = /^\d{5}(-\d{4})?$/;
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
