@@ -11,6 +11,7 @@ import {
   certificationHintNames,
   FIELD_GROUPS,
   SENSITIVE_FIELD_KEYS,
+  type RequirementsMap,
 } from '@/lib/job-requirements';
 
 describe('initialRequirements', () => {
@@ -148,9 +149,9 @@ describe('countRequirements', () => {
   });
 
   it('counts zero/zero for an all-off map', () => {
-    const map = {} as Record<string, 'off'>;
+    const map = {} as RequirementsMap;
     for (const key of REQUIREMENT_KEYS) map[key] = 'off';
-    expect(countRequirements(map as any)).toEqual({ required: 0, optional: 0 });
+    expect(countRequirements(map)).toEqual({ required: 0, optional: 0 });
   });
 });
 
