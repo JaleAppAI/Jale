@@ -8,11 +8,10 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { ApiError, createJob, listJobTemplates, saveJobTemplate, Job, JobTemplate } from '@/lib/api/employer';
 import {
-  DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
-  type DocType, type PayInterval, type JobForm,
+  LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
+  type PayInterval, type JobForm,
   initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
 } from '@/lib/job-form';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
@@ -22,6 +21,7 @@ import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
+import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { locationDatasetFailed } from '@/lib/location-search';
@@ -75,6 +75,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const tBilling = useTranslations('billing');
+  const tReq = useTranslations('job_requirements');
   const { idToken } = useAuth();
   // `enabled: false` — the DASHBOARD owns the sign-in redirect for this route.
   // All this call wants is the legal-wall router, so a create that trips the
@@ -163,13 +164,6 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     const { form: prefilled, cityPrefilled } = jobFormFromTemplatePayload(template.payload);
     setForm(prefilled);
     setCheckCity(cityPrefilled);
-  };
-
-  const toggleDoc = (doc: DocType) => {
-    setForm((current) => ({
-      ...current,
-      required_docs: { ...current.required_docs, [doc]: !current.required_docs[doc] },
-    }));
   };
 
   const toggleLanguage = (value: 'any' | 'en' | 'es') => {
@@ -287,25 +281,29 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       }
 
       // The typed `job_limit_reached` code is the one failure with its own
-      // story: the plan's ceiling, and the page that lifts it. Everything else
-      // is classified into the app's shared, bilingual failure sentences —
+      // story: the plan's ceiling, and the page that lifts it. `city_required`
+      // and `requirements_tier_overlap` are the two create-time 400s the
+      // requirements picker can provoke (a create with no picked city; a key
+      // landing in both a required and an optional array -- should not
+      // happen through the picker's own UI, but is the backend's own
+      // validation, not a generic "something went wrong"). Everything else is
+      // classified into the app's shared, bilingual failure sentences —
       // `modal.error` stays as the override for the genuinely unclassifiable.
       if (err instanceof ApiError && err.code === 'job_limit_reached') {
         setLimitReached(true);
         setError(tBilling('limit_reached.modal_message', {
           limit: err.payload.active_job_limit ?? 0,
         }));
+      } else if (err instanceof ApiError && err.code === 'city_required') {
+        setError(tReq('errors.city_required'));
+      } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
+        setError(tReq('errors.tier_overlap'));
       } else {
         setError(errorMessage(err, { unknown: t('modal.error') }));
       }
     } finally {
       setLoading(false);
     }
-  };
-
-  const docLabel: Record<DocType, string> = {
-    resume: t('worker_profile.doc_resume'),
-    driver_license: t('worker_profile.doc_driver_license'),
   };
 
   const stepHint =
@@ -563,18 +561,15 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
             </div>
           </Field>
           {/* `CheckboxCard` is the app's boolean toggle (employer signup and
-              the employer profile both use it). These two were raw, unstyled
-              browser checkboxes — the only ones left in an employer form. */}
+              the employer profile both use it). Work authorization moved off
+              this raw checkbox onto the requirements picker's own
+              `work_authorization` row (step 3) -- see `jobFormToBasePayload`,
+              which derives the legacy boolean from that row's state. */}
           <div className="grid gap-2">
             <CheckboxCard
               checked={form.transportation_required}
               label={t('modal.transportation_required')}
               onChange={() => update('transportation_required', !form.transportation_required)}
-            />
-            <CheckboxCard
-              checked={form.work_authorization_required}
-              label={t('modal.work_authorization_required')}
-              onChange={() => update('work_authorization_required', !form.work_authorization_required)}
             />
           </div>
           <Field label={t('modal.certifications')}>
@@ -585,31 +580,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 3 && (
         <div className="grid gap-5">
-        {/* Divided rows in ONE bordered container, like every other list in the
-            app — not two floating tinted cards. The Required/Optional state is a
-            `Badge` (dot + text), which is the app's one status chip. */}
-        <ul className="divide-y divide-[var(--jale-divider)] overflow-hidden rounded-[var(--radius-card)] border border-[var(--jale-divider)]">
-          {DOC_TYPES.map((doc) => {
-            const required = form.required_docs[doc];
-            return (
-              <li key={doc}>
-                <button
-                  type="button"
-                  aria-pressed={required}
-                  onClick={() => toggleDoc(doc)}
-                  className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition-colors hover:bg-[var(--jale-paper-2)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                >
-                  <span className="min-w-0 text-sm font-semibold text-[var(--jale-ink)]">
-                    {docLabel[doc]}
-                  </span>
-                  <Badge tone={required ? 'info' : 'neutral'}>
-                    {required ? t('post_job_docs.required_label') : t('post_job_docs.optional_label')}
-                  </Badge>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <RequirementsPicker
+          requirements={form.requirements}
+          onChange={(next) => setForm((current) => ({ ...current, requirements: next }))}
+          certifications={form.certifications}
+        />
 
         <div className="rounded-[10px] border border-[var(--jale-divider)] p-4">
           <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">

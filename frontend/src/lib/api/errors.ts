@@ -23,6 +23,10 @@ export type ApiErrorPayload = {
   required?: string[];
   /** Doc types a worker still has to upload before an application is accepted. */
   missing_docs?: string[];
+  /** `missing_answers`: the required custom-field keys the apply call left unanswered. */
+  missing_fields?: string[];
+  /** `invalid_answers`: the specific validator failure code (e.g. `invalid_desired_pay`). */
+  detail?: string;
 };
 
 const ALLOWED_PAYLOAD_KEYS = [
@@ -34,6 +38,8 @@ const ALLOWED_PAYLOAD_KEYS = [
   'currentVersion',
   'required',
   'missing_docs',
+  'missing_fields',
+  'detail',
 ] as const;
 
 /**
@@ -53,6 +59,7 @@ export class ApiError extends Error {
   readonly code: string;
   readonly payload: ApiErrorPayload;
   readonly missing_docs?: string[];
+  readonly missing_fields?: string[];
 
   constructor(status: number, code: string, payload: ApiErrorPayload = {}) {
     super(code);
@@ -61,6 +68,7 @@ export class ApiError extends Error {
     this.code = code;
     this.payload = payload;
     if (payload.missing_docs !== undefined) this.missing_docs = payload.missing_docs;
+    if (payload.missing_fields !== undefined) this.missing_fields = payload.missing_fields;
     // Keeps `instanceof` working if this ever gets transpiled down to ES5,
     // where subclassing a built-in loses the prototype link.
     Object.setPrototypeOf(this, ApiError.prototype);
@@ -92,7 +100,8 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     // `missing_docs` is the one payload field the UI iterates over (it renders
     // one label per entry), so a malformed value would crash the page rather
     // than degrade it. Everything else is passed through as the backend sent it.
-    if (key === 'missing_docs' && !isStringArray(value)) continue;
+    if ((key === 'missing_docs' || key === 'missing_fields') && !isStringArray(value)) continue;
+    if (key === 'detail' && typeof value !== 'string') continue;
     (payload as Record<string, unknown>)[key] = value;
   }
   return payload;

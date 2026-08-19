@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, type JobForm,
+  applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, setRequirementState, type JobForm,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
@@ -313,7 +313,8 @@ describe('jobFormFromTemplatePayload', () => {
     const { form, cityPrefilled } = jobFormFromTemplatePayload(payload);
     expect(form.title).toBe('Concrete Finisher');
     expect(form.pay_min).toBe('20');
-    expect(form.required_docs).toEqual({ resume: true, driver_license: false });
+    expect(form.requirements.resume).toBe('required');
+    expect(form.requirements.driver_license).toBe('off');
     expect(form.city_key).toBe('el-paso-tx');
     expect(cityPrefilled).toBe(true);
   });
@@ -336,6 +337,90 @@ describe('jobFormFromTemplatePayload', () => {
   it('drops unknown keys instead of leaking them into the form', () => {
     const { form } = jobFormFromTemplatePayload({ ...payload, bogus_future_field: 'x' } as never);
     expect('bogus_future_field' in form).toBe(false);
+  });
+});
+
+describe('requirements mapper round-trip (three-state -> four arrays -> back)', () => {
+  it('jobFormToCreatePayload emits all four arrays split by doc vs field vocabulary', () => {
+    const form: JobForm = {
+      ...base,
+      requirements: setRequirementState(
+        setRequirementState(initialForm.requirements, 'resume', 'required'),
+        'references', 'optional',
+      ),
+    };
+    const payload = jobFormToCreatePayload(form);
+    expect(payload.required_docs).toEqual(['resume']);
+    expect(payload.optional_docs).toEqual([]);
+    expect(payload.optional_fields).toEqual(['references']);
+    expect(payload.required_fields).toEqual(
+      expect.arrayContaining(['work_authorization', 'date_available', 'emergency_contact', 'worked_here_before']),
+    );
+  });
+
+  it('jobToForm reconstructs the exact three-state map a create payload produced', () => {
+    const form: JobForm = {
+      ...base,
+      requirements: setRequirementState(
+        setRequirementState(initialForm.requirements, 'certification_doc', 'optional'),
+        'education', 'required',
+      ),
+    };
+    const payload = jobFormToCreatePayload(form);
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      required_docs: payload.required_docs ?? [],
+      optional_docs: payload.optional_docs,
+      required_fields: payload.required_fields,
+      optional_fields: payload.optional_fields,
+      work_authorization_required: payload.work_authorization_required ?? false,
+    };
+    const rebuilt = jobToForm(job);
+    expect(rebuilt.requirements).toEqual(form.requirements);
+  });
+
+  it('derives work_authorization_required from the requirements map rather than a separate input', () => {
+    const required = jobFormToCreatePayload({
+      ...base,
+      requirements: setRequirementState(initialForm.requirements, 'work_authorization', 'required'),
+    });
+    expect(required.work_authorization_required).toBe(true);
+
+    const off = jobFormToCreatePayload({
+      ...base,
+      requirements: setRequirementState(initialForm.requirements, 'work_authorization', 'off'),
+    });
+    expect(off.work_authorization_required).toBe(false);
+
+    const optional = jobFormToCreatePayload({
+      ...base,
+      requirements: setRequirementState(initialForm.requirements, 'work_authorization', 'optional'),
+    });
+    expect(optional.work_authorization_required).toBe(false);
+  });
+
+  it('jobToForm defaults every requirement to off for a legacy job with none of the four arrays', () => {
+    const legacyJob = { ...baseJob } as EmployerJobDetail;
+    delete (legacyJob as Record<string, unknown>).required_docs;
+    const form = jobToForm({ ...legacyJob, required_docs: undefined as unknown as string[] });
+    for (const state of Object.values(form.requirements)) expect(state).toBe('off');
+  });
+
+  it('work-auth migration rule: a legacy job with work_authorization_required=true but no required_fields entry loads as Required', () => {
+    const legacyJob: EmployerJobDetail = {
+      ...baseJob,
+      work_authorization_required: true,
+      required_fields: [],
+    };
+    const form = jobToForm(legacyJob);
+    expect(form.requirements.work_authorization).toBe('required');
+  });
+
+  it('does not crash loading an old template payload missing all four requirement arrays', () => {
+    const { form } = jobFormFromTemplatePayload({
+      title: 'Old Template', location: 'Reno, NV', job_type: 'full-time' as const, trade_category: 'other',
+    });
+    for (const state of Object.values(form.requirements)) expect(state).toBe('off');
   });
 });
 

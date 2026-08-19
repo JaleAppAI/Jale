@@ -36,6 +36,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
   const tBilling = useTranslations('billing');
+  const tReq = useTranslations('job_requirements');
   const { idToken } = useAuth();
 
   const [name, setName] = useState(template?.name ?? '');
@@ -95,6 +96,13 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
           ? t('modal.template_limit_reached_n', { limit })
           : t('modal.template_limit_reached'));
         setLimitReached(true);
+      } else if (err instanceof ApiError && err.code === 'city_required') {
+        // Same requirements-picker-adjacent 400 PostJobModal/EditJobModal
+        // classify -- a template's payload goes through the identical
+        // create-shape validation.
+        setError(tReq('errors.city_required'));
+      } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
+        setError(tReq('errors.tier_overlap'));
       } else {
         setError(t('templates.save_error'));
       }

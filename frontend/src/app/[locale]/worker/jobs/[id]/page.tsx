@@ -21,6 +21,7 @@ import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
+import { ApplicationAnswersForm } from '@/components/worker/ApplicationAnswersForm';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { formatLongDate, formatStartDate } from '@/lib/date';
@@ -52,12 +53,18 @@ export default function WorkerJobDetailPage() {
   // NEVER employer_dashboard.jobs.status.*, whose es "Lleno" is employer
   // vocabulary kept off worker surfaces.
   const tApps = useTranslations('worker_applications');
+  const tReq = useTranslations('job_requirements');
   const locale = useLocale();
 
   const [applying, setApplying] = useState(false);
   const [applyFeedback, setApplyFeedback] = useState<ApplyFeedback | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [profilePrefill, setProfilePrefill] = useState<Partial<ProfileCompleteValues> | null>(null);
+  // The job-requirements gate (ApplicationAnswersForm) -- a second, PARALLEL
+  // pre-apply modal alongside ProfileCompleteModal above. It only opens when
+  // the job actually asks for something beyond the general profile: any
+  // required/optional custom field, or any required/optional document.
+  const [answersModalOpen, setAnswersModalOpen] = useState(false);
 
   const {
     phase,
@@ -101,6 +108,31 @@ export default function WorkerJobDetailPage() {
     return !!(p.full_name && p.skills && p.skills.length > 0 && p.availability && p.location);
   }
 
+  /**
+   * Does this job ask for anything the requirements gate would render? Both
+   * the field arrays and the doc arrays are `?? []` -- the currently-deployed
+   * `worker-jobs-detail` handler sends none of the four yet, so a job with no
+   * data means "nothing configured" here, not "gate is broken".
+   *
+   * Deliberately NOT keyed on `required_docs` (plural, the full configured
+   * set): that array is already fully reflected in `missing_docs` (the ones
+   * actually still outstanding for THIS worker), and `canApplyToJob` already
+   * requires `missing_docs` to be empty before the Apply button is even
+   * reachable. Gating on the full `required_docs` set would pop this modal
+   * for a worker who has already satisfied every required doc -- an empty
+   * questionnaire with a green doc checklist, forcing a redundant second tap.
+   * `optional_docs` stays in: those are never in `missing_docs` (they cannot
+   * block Apply), so the gate is the only place they get offered at all.
+   */
+  function needsAnswersGate(j: JobDetail): boolean {
+    return (
+      (j.required_fields?.length ?? 0) > 0 ||
+      (j.optional_fields?.length ?? 0) > 0 ||
+      (j.optional_docs?.length ?? 0) > 0 ||
+      j.missing_docs.length > 0
+    );
+  }
+
   async function handleApplyClick() {
     if (!idToken || !id || !job) return;
     setApplyFeedback(null);
@@ -112,6 +144,10 @@ export default function WorkerJobDetailPage() {
         setModalOpen(true);
         return;
       }
+      if (needsAnswersGate(job)) {
+        setAnswersModalOpen(true);
+        return;
+      }
       await doApply();
     } catch (err) {
       await handleApplyError(err);
@@ -120,11 +156,11 @@ export default function WorkerJobDetailPage() {
     }
   }
 
-  async function doApply() {
+  async function doApply(answers?: Record<string, unknown>) {
     if (!idToken || !id) return;
     setApplying(true);
     try {
-      const application = await applyToJob(idToken, id);
+      const application = await applyToJob(idToken, id, answers);
       setApplyFeedback({ tone: 'success', message: t('apply_success') });
       // Reflect the outcome locally before asking the server again: the POST
       // already succeeded, so the page must show "applied" even if the
@@ -141,6 +177,20 @@ export default function WorkerJobDetailPage() {
     } finally {
       setApplying(false);
     }
+  }
+
+  /**
+   * The requirements gate's submit. Unlike `ProfileCompleteModal` (which owns
+   * its own save failure so a broken profile save can be corrected in place),
+   * apply failures here go through the SAME apply-error taxonomy as every
+   * other apply path (`handleApplyError`, anchored to the apply button) --
+   * per the design, `missing_answers`/`invalid_answers` are just two more
+   * branches in that one taxonomy. The gate closes either way: `doApply`
+   * already reflects both outcomes at the page level.
+   */
+  async function handleAnswersSubmit(answers: Record<string, unknown>) {
+    setAnswersModalOpen(false);
+    await doApply(answers);
   }
 
   async function handleModalSubmit(values: ProfileCompleteValues) {
@@ -165,6 +215,10 @@ export default function WorkerJobDetailPage() {
     // of the gate -- and from here every failure is an APPLY failure, which
     // belongs to the taxonomy anchored to the apply button.
     setModalOpen(false);
+    if (job && needsAnswersGate(job)) {
+      setAnswersModalOpen(true);
+      return;
+    }
     await doApply();
   }
 
@@ -196,6 +250,24 @@ export default function WorkerJobDetailPage() {
       showApplyError(t('errors.missing_docs', {
         docs: applyErr.missing_docs.map(docLabel).join(', '),
       }));
+      return;
+    }
+    if (applyErr.status === 400 && applyErr.code === 'missing_answers') {
+      // The gate should have blocked this locally (`canSubmitAnswers`) --
+      // this is the backstop for a stale gate (job requirements changed
+      // between load and submit) or a client bypassing the gate entirely.
+      const missingFields = applyErr.missing_fields;
+      showApplyError(
+        missingFields?.length
+          ? tReq('errors.missing_answers_fields', {
+              fields: missingFields.map((key) => tReq(`fields.${key}`)).join(', '),
+            })
+          : tReq('errors.missing_answers'),
+      );
+      return;
+    }
+    if (applyErr.status === 400 && applyErr.code === 'invalid_answers') {
+      showApplyError(tReq('errors.invalid_answers'));
       return;
     }
     if (applyErr.status === 400) {
@@ -287,7 +359,18 @@ export default function WorkerJobDetailPage() {
   const pay = job ? formatPay(job, tPay) : null;
   const matchScore = normalizeMatchScore(job?.match_score);
   const matchBand = matchScore === null ? null : scoreBandForScore(matchScore);
-  const canApply = job ? canApplyToJob(job) : false;
+  // `canApplyToJob` alone disables Apply whenever `missing_docs` is
+  // non-empty -- correct for the old direct-apply flow, but the requirements
+  // gate exists precisely to let a worker clear missing required docs
+  // in-place (`ApplicationAnswersForm`'s own upload rows) before submitting.
+  // So the button also stays enabled whenever the gate is reachable and
+  // would open, leaving the gate's own `missingRequiredDocs` check (backed by
+  // a live vault fetch) as the real doc gate; the already-applied/status
+  // checks are never bypassed either way.
+  const canApply = job
+    ? canApplyToJob(job) ||
+      (needsAnswersGate(job) && !job.already_applied && (job.status ?? 'active') === 'active')
+    : false;
   const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
 
   const facts: KVItem[] = [];
@@ -521,6 +604,16 @@ export default function WorkerJobDetailPage() {
                   onClose={() => setModalOpen(false)}
                   onSubmit={handleModalSubmit}
                 />
+
+                {job && idToken ? (
+                  <ApplicationAnswersForm
+                    open={answersModalOpen}
+                    job={job}
+                    token={idToken}
+                    onClose={() => setAnswersModalOpen(false)}
+                    onSubmit={handleAnswersSubmit}
+                  />
+                ) : null}
               </div>
             )}
           </div>

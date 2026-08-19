@@ -46,6 +46,7 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
     // create and edit forms drift into naming the same field two ways.
     const t = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
+    const tReq = useTranslations('job_requirements');
     const { idToken } = useAuth();
     const errorMessage = useErrorMessage();
 
@@ -115,14 +116,20 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
             onClose();
         } catch (err) {
             // The backend's `field_locked` code is a domain answer this form can
-            // explain precisely; everything else goes through the classifier so
-            // the employer never reads a raw backend code (`err.message`).
+            // explain precisely; `city_required`/`requirements_tier_overlap` are
+            // the requirements-picker-adjacent 400s (see PostJobModal); everything
+            // else goes through the classifier so the employer never reads a raw
+            // backend code (`err.message`).
             const code = err instanceof ApiError ? err.code : null;
-            setError(
-                code === 'field_locked'
-                    ? t('modal.locked_note')
-                    : errorMessage(err, { unknown: t('modal.edit_error') }),
-            );
+            if (code === 'field_locked') {
+                setError(t('modal.locked_note'));
+            } else if (code === 'city_required') {
+                setError(tReq('errors.city_required'));
+            } else if (code === 'requirements_tier_overlap') {
+                setError(tReq('errors.tier_overlap'));
+            } else {
+                setError(errorMessage(err, { unknown: t('modal.edit_error') }));
+            }
         } finally {
             setLoading(false);
         }

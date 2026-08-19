@@ -3,13 +3,14 @@ import type React from 'react';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
-  DOC_TYPES, LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
-  type DocType, type PayInterval, type JobForm, type JobFormLocation,
+  LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
+  type PayInterval, type JobForm, type JobFormLocation,
 } from '@/lib/job-form';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
+import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
@@ -47,10 +48,6 @@ export function JobFormFields({
   // silently overwritten seconds later by the eventual success response.
   const [descriptionGenerating, setDescriptionGenerating] = useState(false);
 
-  const toggleDoc = (doc: DocType) => {
-    if (locked) return;
-    onUpdate('required_docs', { ...form.required_docs, [doc]: !form.required_docs[doc] });
-  };
   const toggleLanguage = (value: 'any' | 'en' | 'es') => {
     if (value === 'any') {
       onUpdate('language_preference', ['any']);
@@ -61,11 +58,6 @@ export function JobFormFields({
     onUpdate('language_preference', next.length > 0 ? next : ['any']);
   };
 
-  const docLabel: Record<DocType, string> = {
-    resume: t('worker_profile.doc_resume'),
-    driver_license: t('worker_profile.doc_driver_license'),
-  };
-
   const languageChipClass = (selected: boolean) =>
     [
       'cursor-pointer rounded-full border px-3 py-2 text-xs font-semibold transition-colors duration-150',
@@ -73,16 +65,6 @@ export function JobFormFields({
       selected
         ? 'border-[var(--jale-blue-500)] bg-[var(--jale-blue-50)] text-[var(--jale-blue-700)]'
         : 'border-[var(--jale-divider)] bg-[var(--jale-input)] text-[var(--jale-ink)]',
-    ].join(' ');
-
-  const docChipClass = (selected: boolean) =>
-    [
-      'flex cursor-pointer items-center justify-between rounded-[10px] border px-4 py-3 text-left',
-      'transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-60',
-      'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
-      selected
-        ? 'border-[var(--jale-blue-500)] bg-[var(--jale-blue-50)]'
-        : 'border-[var(--jale-divider)] bg-[var(--jale-paper-2)]',
     ].join(' ');
 
   return (
@@ -172,33 +154,21 @@ export function JobFormFields({
         <input type="checkbox" checked={form.transportation_required} onChange={(e) => onUpdate('transportation_required', e.target.checked)} />
         {t('modal.transportation_required')}
       </label>
-      <label className="flex items-center gap-2 text-sm font-medium text-[var(--jale-ink)]">
-        <input type="checkbox" checked={form.work_authorization_required} onChange={(e) => onUpdate('work_authorization_required', e.target.checked)} />
-        {t('modal.work_authorization_required')}
-      </label>
       <Field label={t('modal.certifications')}>
         <Input value={form.certifications} onChange={(e) => onUpdate('certifications', e.target.value)} />
       </Field>
 
-      <div>
-        <p className="mb-2 text-xs font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">{t('post_job_docs.subtitle')}</p>
-        {locked && <p className="mb-2 text-xs font-semibold text-[var(--jale-ink-2)]">{t('modal.locked_note')}</p>}
-        <div className="flex flex-col gap-2.5">
-          {DOC_TYPES.map((doc) => (
-            <button
-              key={doc}
-              type="button"
-              aria-pressed={form.required_docs[doc]}
-              onClick={() => toggleDoc(doc)}
-              disabled={locked}
-              className={docChipClass(form.required_docs[doc])}
-            >
-              <span className="text-sm font-medium text-[var(--jale-ink)]">{docLabel[doc]}</span>
-              <span className="text-xs font-semibold text-[var(--jale-blue-700)]">{form.required_docs[doc] ? t('post_job_docs.required_label') : t('post_job_docs.optional_label')}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* Work authorization is no longer a standalone checkbox here -- the
+          requirements picker's `work_authorization` row is its one input
+          (see `jobFormToBasePayload`, which derives the legacy boolean from
+          it). Doc requirements live in the same picker instead of a separate
+          two-item chip list, now that there are four doc types. */}
+      <RequirementsPicker
+        requirements={form.requirements}
+        onChange={(next) => onUpdate('requirements', next)}
+        certifications={form.certifications}
+        locked={locked}
+      />
     </>
   );
 }

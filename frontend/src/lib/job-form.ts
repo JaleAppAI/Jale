@@ -1,8 +1,32 @@
 import { splitDedupe } from '@/lib/text';
 import type { EmployerJobDetail, JobWritePayload } from '@/lib/api/employer';
+import {
+  type RequirementsMap,
+  initialRequirements,
+  requirementsToArrays,
+  arraysToRequirements,
+} from '@/lib/job-requirements';
+export type { RequirementsMap } from '@/lib/job-requirements';
+export {
+  REQUIREMENT_DOC_KEYS,
+  REQUIREMENT_FIELD_KEYS,
+  REQUIREMENT_KEYS,
+  FIELD_GROUPS,
+  SENSITIVE_FIELD_KEYS,
+  initialRequirements,
+  requirementsToArrays,
+  arraysToRequirements,
+  setRequirementState,
+  countRequirements,
+  certificationHintNames,
+} from '@/lib/job-requirements';
+export type {
+  RequirementKey,
+  RequirementDocKey,
+  RequirementFieldKey,
+  RequirementState,
+} from '@/lib/job-requirements';
 
-export type DocType = 'resume' | 'driver_license';
-export const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
 export const LANGUAGE_OPTIONS = ['any', 'en', 'es'] as const;
 export const TRADE_CATEGORIES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'drywall', 'general_labor', 'other'] as const;
 export const PAY_INTERVALS = ['hourly', 'daily', 'weekly', 'monthly', 'fixed'] as const;
@@ -30,13 +54,19 @@ export type JobForm = {
   expected_duration: string;
   shift_schedule: string;
   transportation_required: boolean;
-  work_authorization_required: boolean;
   language_preference: Array<'any' | 'en' | 'es'>;
   number_of_workers_needed: string;
   trade_category: typeof TRADE_CATEGORIES[number] | '';
   required_experience_years: string;
   certifications: string;
-  required_docs: Record<DocType, boolean>;
+  /**
+   * Three-state Off/Optional/Required per data point (docs + fields), owned
+   * by `RequirementsPicker`. There is no separate `work_authorization_required`
+   * input any more -- `requirements.work_authorization` is the single source
+   * of truth, and the legacy boolean is DERIVED from it at payload-build time
+   * (see `jobFormToBasePayload`) so the two can never disagree.
+   */
+  requirements: RequirementsMap;
 };
 
 export const initialForm: JobForm = {
@@ -46,9 +76,9 @@ export const initialForm: JobForm = {
   job_type: 'full-time', description: '',
   pay_min: '', pay_max: '', pay_interval: 'hourly', start_date: '',
   expected_duration: '', shift_schedule: '', transportation_required: false,
-  work_authorization_required: false, language_preference: ['any'],
+  language_preference: ['any'],
   number_of_workers_needed: '1', trade_category: '', required_experience_years: '',
-  certifications: '', required_docs: { resume: false, driver_license: false },
+  certifications: '', requirements: initialRequirements(),
 };
 
 // Structural shape of the LocationPicker's onChange payload. Declared here
@@ -116,12 +146,17 @@ export function validateJobLocationFields(form: JobForm): 'state_region' | null 
 type BasePayload = Omit<JobWritePayload, 'city' | 'state_region'>;
 
 function jobFormToBasePayload(form: JobForm): BasePayload {
+  const { required_docs, optional_docs, required_fields, optional_fields } =
+    requirementsToArrays(form.requirements);
   return {
     title: form.title.trim(),
     location: form.location.trim(),
     job_type: form.job_type,
     description: form.description.trim() || undefined,
-    required_docs: DOC_TYPES.filter((doc) => form.required_docs[doc]),
+    required_docs,
+    optional_docs,
+    required_fields,
+    optional_fields,
     pay_min: parseOptionalNumber(form.pay_min),
     pay_max: parseOptionalNumber(form.pay_max),
     pay_interval: form.pay_interval,
@@ -129,7 +164,11 @@ function jobFormToBasePayload(form: JobForm): BasePayload {
     expected_duration: form.expected_duration.trim() || null,
     shift_schedule: form.shift_schedule.trim() || null,
     transportation_required: form.transportation_required,
-    work_authorization_required: form.work_authorization_required,
+    // Derived, not a separate input: the legacy standalone column mirrors
+    // whichever tier `requirements.work_authorization` is actually set to,
+    // so the two can never disagree (see `arraysToRequirements`'s migration
+    // rule for the read-back direction).
+    work_authorization_required: form.requirements.work_authorization === 'required',
     language_preference: form.language_preference,
     number_of_workers_needed: Number(form.number_of_workers_needed),
     trade_category: form.trade_category as string,
@@ -214,16 +253,21 @@ export function jobToForm(job: EmployerJobDetail): JobForm {
     expected_duration: job.expected_duration ?? '',
     shift_schedule: job.shift_schedule ?? '',
     transportation_required: job.transportation_required ?? false,
-    work_authorization_required: job.work_authorization_required ?? false,
     language_preference: (job.language_preference?.length ? job.language_preference : ['any']) as JobForm['language_preference'],
     number_of_workers_needed: String(job.number_of_workers_needed ?? 1),
     trade_category: (job.trade_category as JobForm['trade_category']) ?? '',
     required_experience_years: job.required_experience_years != null ? String(job.required_experience_years) : '',
     certifications: (job.certifications ?? []).join(', '),
-    required_docs: {
-      resume: (job.required_docs ?? []).includes('resume'),
-      driver_license: (job.required_docs ?? []).includes('driver_license'),
-    },
+    // `?? []` on all four -- a job/template payload from before this feature
+    // (or the current, not-yet-updated backend handlers) carries none of
+    // them, and every key must still resolve to 'off' rather than crash.
+    requirements: arraysToRequirements({
+      required_docs: job.required_docs ?? [],
+      optional_docs: job.optional_docs ?? [],
+      required_fields: job.required_fields ?? [],
+      optional_fields: job.optional_fields ?? [],
+      work_authorization_required: job.work_authorization_required ?? false,
+    }),
   };
 }
 
