@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs } from '../lib/job-fields';
+import { JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
 import { parseCityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -27,6 +27,18 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   }
   const requiredDocs = parseRequiredDocs(raw.required_docs as string[] | undefined);
   if (!requiredDocs.ok) return { ok: false, status: 400, error: requiredDocs.error, extra: { valid: requiredDocs.valid } };
+
+  // optional_docs/required_fields/optional_fields reuse the same shared
+  // parsers, wrapped here (like employer-jobs-create/update) so each tier
+  // gets its own distinct error code instead of colliding on
+  // parseRequiredFields' baked-in 'invalid_required_fields'.
+  const optionalDocs = parseRequiredDocs(raw.optional_docs as string[] | undefined);
+  if (!optionalDocs.ok) return { ok: false, status: 400, error: 'invalid_optional_docs', extra: { valid: optionalDocs.valid } };
+  const requiredFields = parseRequiredFields(raw.required_fields);
+  if (!requiredFields.ok) return { ok: false, status: 400, error: 'invalid_required_fields', extra: { valid: requiredFields.valid } };
+  const optionalFields = parseRequiredFields(raw.optional_fields);
+  if (!optionalFields.ok) return { ok: false, status: 400, error: 'invalid_optional_fields', extra: { valid: optionalFields.valid } };
+
   const jobFields = parseJobFields(raw);
   if (!jobFields.ok) return { ok: false, status: 400, error: jobFields.error, extra: jobFields.valid ? { valid: jobFields.valid } : undefined };
   const coordinates = parseOptionalCoordinates(raw);
@@ -34,12 +46,29 @@ function validateTemplatePayload(raw: Record<string, unknown>):
   const cityFields = parseCityFields(raw);
   if (!cityFields.ok) return { ok: false, status: 400, error: cityFields.error };
 
+  // Tier-overlap rejection BEFORE hitting the DB CHECK (mirrors
+  // employer-jobs-create.ts/employer-jobs-update.ts).
+  const requirementsOverlapKeys = [
+    ...requiredFields.value.filter((key) => optionalFields.value.includes(key)),
+    ...requiredDocs.value.filter((key) => optionalDocs.value.includes(key)),
+  ];
+  if (requirementsOverlapKeys.length > 0) {
+    return { ok: false, status: 400, error: 'requirements_tier_overlap', extra: { keys: requirementsOverlapKeys } };
+  }
+
   const value: Record<string, unknown> = {
     title: title.trim(),
     location: location.trim(),
     job_type,
     description: typeof raw.description === 'string' ? raw.description.trim() || undefined : undefined,
     required_docs: requiredDocs.value,
+    // The three new arrays stay ABSENT when the raw payload doesn't carry
+    // them (hasOwnProperty-gated), unlike required_docs above -- an old
+    // template re-saved without these keys must not have them injected as
+    // `[]` into the stored payload (Stage 1a: "absent keys stay absent").
+    ...(Object.prototype.hasOwnProperty.call(raw, 'optional_docs') ? { optional_docs: optionalDocs.value } : {}),
+    ...(Object.prototype.hasOwnProperty.call(raw, 'required_fields') ? { required_fields: requiredFields.value } : {}),
+    ...(Object.prototype.hasOwnProperty.call(raw, 'optional_fields') ? { optional_fields: optionalFields.value } : {}),
     ...jobFields.value,
     ...(coordinates.value ?? {}),
     ...(cityFields.value ?? {}),

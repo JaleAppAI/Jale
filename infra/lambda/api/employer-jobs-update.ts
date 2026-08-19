@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields, WRITABLE_JOB_STATUSES } from '../lib/job-fields';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
@@ -179,6 +179,11 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
 const EDITABLE_COLUMNS = [
   'title', 'location', 'pay', 'job_type', 'description', 'required_docs',
+  // The three new Stage 1a arrays land next to required_docs; required_docs
+  // itself keeps its pre-existing exact-replace semantics (see the
+  // hasOwnProperty preserve-on-omit handling below for how these three
+  // differ from it).
+  'optional_docs', 'required_fields', 'optional_fields',
   'pay_min', 'pay_max', 'pay_interval', 'start_date', 'expected_duration',
   'shift_schedule', 'transportation_required', 'work_authorization_required',
   'language_preference', 'number_of_workers_needed', 'trade_category',
@@ -206,6 +211,34 @@ async function handleFieldEdit(
   }
   const required_docs = requiredDocsResult.value;
 
+  // optional_docs/required_fields/optional_fields: unlike required_docs
+  // above (always exact-replace), these three are preserve-on-omit -- an
+  // absent key means "leave the stored value alone," which requires the
+  // current row (fetched inside the transaction below) to resolve. Parse +
+  // validate here (same hasOwnProperty idiom as parseOptionalCoordinates,
+  // job-fields.ts:203-212) but defer merging with the stored value until
+  // `cur` is available.
+  const hasOptionalDocsKey = Object.prototype.hasOwnProperty.call(body, 'optional_docs');
+  const optionalDocsResult = parseRequiredDocs(body.optional_docs);
+  if (!optionalDocsResult.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_docs', valid: optionalDocsResult.valid }) };
+  }
+  const optionalDocsInput = optionalDocsResult.value;
+
+  const hasRequiredFieldsKey = Object.prototype.hasOwnProperty.call(body, 'required_fields');
+  const requiredFieldsResult = parseRequiredFields(body.required_fields);
+  if (!requiredFieldsResult.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_required_fields', valid: requiredFieldsResult.valid }) };
+  }
+  const requiredFieldsInput = requiredFieldsResult.value;
+
+  const hasOptionalFieldsKey = Object.prototype.hasOwnProperty.call(body, 'optional_fields');
+  const optionalFieldsResult = parseRequiredFields(body.optional_fields);
+  if (!optionalFieldsResult.ok) {
+    return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_fields', valid: optionalFieldsResult.valid }) };
+  }
+  const optionalFieldsInput = optionalFieldsResult.value;
+
   // Recomputed on every edit (location is always present in this full-replacement
   // payload); explicit city/state_region body fields win over the parse -- an
   // employer must always be able to correct a location the parser can't handle.
@@ -219,6 +252,15 @@ async function handleFieldEdit(
     return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: jobFields.error, ...(jobFields.valid ? { valid: jobFields.valid } : {}) }) };
   }
   const f = jobFields.value;
+
+  // Work-auth ownership: same rule as employer-jobs-create.ts -- once the
+  // body carries required_fields at all, it owns work_authorization_required
+  // going forward, overriding the legacy standalone flag. Absent
+  // required_fields preserves the existing (legacy parseJobFields) flag
+  // behavior exactly as before.
+  const workAuthorizationRequired = hasRequiredFieldsKey
+    ? requiredFieldsInput.includes('work_authorization')
+    : f.work_authorization_required;
 
   const cityFields = parseCityFields(body);
   if (!cityFields.ok) {
@@ -257,11 +299,16 @@ async function handleFieldEdit(
     }
 
     const current = await client.query<{
-      job_type: string; required_docs: string[] | null; applicant_count: number; hired_count: number;
+      job_type: string; required_docs: string[] | null; optional_docs: string[] | null;
+      required_fields: string[] | null; optional_fields: string[] | null;
+      applicant_count: number; hired_count: number;
       city: string | null; state_region: string | null;
     }>(
       `SELECT jobs.job_type,
               jobs.required_docs,
+              jobs.optional_docs,
+              jobs.required_fields,
+              jobs.optional_fields,
               jobs.workers_hired AS hired_count,
               jobs.city,
               jobs.state_region,
@@ -277,12 +324,45 @@ async function handleFieldEdit(
     }
     const cur = current.rows[0];
 
-    // Lock rules: required_docs and job_type freeze once the job has applicants.
+    // Preserve-on-omit for the three new arrays: an absent key means "leave
+    // the stored value alone" (hasOwnProperty-based, same idiom as
+    // parseOptionalCoordinates in job-fields.ts:203-212); a present key
+    // (including an explicit []) replaces it. required_docs above keeps its
+    // pre-existing exact-replace semantics -- deliberately asymmetric, same
+    // as the city/state_region clear-vs-preserve distinction commented below.
+    const optional_docs = hasOptionalDocsKey ? optionalDocsInput : (cur.optional_docs ?? []);
+    const required_fields = hasRequiredFieldsKey ? requiredFieldsInput : (cur.required_fields ?? []);
+    const optional_fields = hasOptionalFieldsKey ? optionalFieldsInput : (cur.optional_fields ?? []);
+
+    // Tier-overlap rejection BEFORE hitting the DB CHECK -- computed on the
+    // EFFECTIVE (post-preserve-merge) values, not the raw body, so an
+    // omitted-and-preserved array can still be caught colliding against a
+    // tier the body DID change.
+    const requirementsOverlapKeys = [
+      ...required_fields.filter((key) => optional_fields.includes(key)),
+      ...required_docs.filter((key) => optional_docs.includes(key)),
+    ];
+    if (requirementsOverlapKeys.length > 0) {
+      await client.query('ROLLBACK');
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'requirements_tier_overlap', keys: requirementsOverlapKeys }) };
+    }
+
+    // Lock rules: once the job has applicants, all four requirement arrays
+    // and job_type freeze. `fields` lists exactly which of them changed
+    // (comparing the EFFECTIVE value -- so a preserved (omitted) array never
+    // spuriously appears as "changed").
     if (cur.applicant_count > 0) {
-      const docsChanged = JSON.stringify([...required_docs].sort()) !== JSON.stringify([...(cur.required_docs ?? [])].sort());
-      if (docsChanged || job_type !== cur.job_type) {
+      const arrayChanged = (next: string[], storedValue: string[] | null) =>
+        JSON.stringify([...next].sort()) !== JSON.stringify([...(storedValue ?? [])].sort());
+      const lockedFields: string[] = [];
+      if (arrayChanged(required_docs, cur.required_docs)) lockedFields.push('required_docs');
+      if (arrayChanged(optional_docs, cur.optional_docs)) lockedFields.push('optional_docs');
+      if (arrayChanged(required_fields, cur.required_fields)) lockedFields.push('required_fields');
+      if (arrayChanged(optional_fields, cur.optional_fields)) lockedFields.push('optional_fields');
+      if (job_type !== cur.job_type) lockedFields.push('job_type');
+      if (lockedFields.length > 0) {
         await client.query('ROLLBACK');
-        return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'field_locked', fields: ['required_docs', 'job_type'] }) };
+        return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'field_locked', fields: lockedFields }) };
       }
     }
     if (f.number_of_workers_needed < cur.hired_count) {
@@ -297,6 +377,9 @@ async function handleFieldEdit(
       job_type,
       description: typeof body.description === 'string' ? (body.description.trim() || null) : null,
       required_docs,
+      optional_docs,
+      required_fields,
+      optional_fields,
       pay_min: f.pay_min,
       pay_max: f.pay_max,
       pay_interval: f.pay_interval,
@@ -304,7 +387,7 @@ async function handleFieldEdit(
       expected_duration: f.expected_duration,
       shift_schedule: f.shift_schedule,
       transportation_required: f.transportation_required,
-      work_authorization_required: f.work_authorization_required,
+      work_authorization_required: workAuthorizationRequired,
       language_preference: f.language_preference,
       number_of_workers_needed: f.number_of_workers_needed,
       trade_category: f.trade_category,
@@ -332,7 +415,7 @@ async function handleFieldEdit(
     const result = await client.query(
       `UPDATE jobs SET ${setClauses.replace(`start_date = $${startDateIdx}`, `start_date = $${startDateIdx}::date`)}
          WHERE id = $${EDITABLE_COLUMNS.length + 1}
-       RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
+       RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
          transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,

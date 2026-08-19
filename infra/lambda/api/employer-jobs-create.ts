@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { resolveEntitlements } from '../lib/entitlements';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs } from '../lib/job-fields';
+import { formatPayRange, JOB_TYPES, parseJobFields, parseOptionalCoordinates, parseRequiredDocs, parseRequiredFields } from '../lib/job-fields';
 import { resolveJobLocationFields } from '../lib/job-location-parse';
 import { setJobCoordinates } from '../lib/location';
 import { parseCityFields, parseCityFromLocation } from '../lib/city-fields';
@@ -26,6 +26,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       job_type?: string;
       description?: string;
       required_docs?: string[];
+      optional_docs?: string[];
+      required_fields?: string[];
+      optional_fields?: string[];
       latitude?: number;
       longitude?: number;
       pay_min?: number | null;
@@ -81,6 +84,42 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     const required_docs = requiredDocsResult.value;
 
+    // optional_docs/required_fields/optional_fields reuse the same shared
+    // parsers as required_docs (parseRequiredDocs enforces the DOC_TYPES
+    // vocabulary regardless of which tier it's parsing; parseRequiredFields
+    // is REQUIRED_FIELD_TYPES-scoped for both tiers too), wrapped here so
+    // each tier gets its own distinct error code instead of colliding on
+    // parseRequiredFields' baked-in 'invalid_required_fields'.
+    const optionalDocsResult = parseRequiredDocs(body.optional_docs);
+    if (!optionalDocsResult.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_docs', valid: optionalDocsResult.valid }) };
+    }
+    const optional_docs = optionalDocsResult.value;
+
+    const requiredFieldsResult = parseRequiredFields(body.required_fields);
+    if (!requiredFieldsResult.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_required_fields', valid: requiredFieldsResult.valid }) };
+    }
+    const required_fields = requiredFieldsResult.value;
+
+    const optionalFieldsResult = parseRequiredFields(body.optional_fields);
+    if (!optionalFieldsResult.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_optional_fields', valid: optionalFieldsResult.valid }) };
+    }
+    const optional_fields = optionalFieldsResult.value;
+
+    // Tier-overlap rejection BEFORE hitting the DB CHECK (jobs_fields_tiers_disjoint /
+    // jobs_docs_tiers_disjoint in 074_job_optional_requirements.sql enforce
+    // NOT (required && optional) at the DB layer) -- catching it here gives a
+    // single combined, named error instead of a raw constraint-violation 500.
+    const requirementsOverlapKeys = [
+      ...required_fields.filter((key) => optional_fields.includes(key)),
+      ...required_docs.filter((key) => optional_docs.includes(key)),
+    ];
+    if (requirementsOverlapKeys.length > 0) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'requirements_tier_overlap', keys: requirementsOverlapKeys }) };
+    }
+
     // Explicit city/state_region body fields win over the parse -- an employer
     // must always be able to correct a location the parser can't handle.
     const locationFields = resolveJobLocationFields(location.trim(), body.city, body.state_region);
@@ -97,6 +136,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // Work-auth ownership: once the employer's picker sends required_fields
+    // AT ALL (hasOwnProperty, not just a non-empty array), it owns
+    // work_authorization_required going forward -- the legacy standalone
+    // body.work_authorization_required flag is overridden so the two
+    // controls can never silently disagree. Absent required_fields keeps the
+    // legacy parseJobFields behavior exactly as-is.
+    const hasRequiredFieldsKey = Object.prototype.hasOwnProperty.call(body, 'required_fields');
+    const workAuthorizationRequired = hasRequiredFieldsKey
+      ? required_fields.includes('work_authorization')
+      : jobFields.value.work_authorization_required;
+
     const coordinates = parseOptionalCoordinates(body as Record<string, unknown>);
     if (!coordinates.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: coordinates.error }) };
@@ -105,6 +155,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const cityFields = parseCityFields(body as Record<string, unknown>);
     if (!cityFields.ok) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: cityFields.error }) };
+    }
+
+    // Location precision (create only): every job must land in some
+    // city-filtered feed. If neither the validated picker triple
+    // (parseCityFields) nor the SEO parse of `location`
+    // (resolveJobLocationFields) yields a city, reject rather than silently
+    // persist an unfindable job. The update path deliberately keeps its
+    // existing laxity here -- see employer-jobs-update.ts.
+    if (cityFields.value === null && locationFields.value.city === null) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'city_required' }) };
     }
 
     // Degraded-picker fallback: no triple sent -> best-effort parse of the
@@ -178,6 +238,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          job_type,
          description,
          required_docs,
+         optional_docs,
+         required_fields,
+         optional_fields,
          pay_min,
          pay_max,
          pay_interval,
@@ -198,9 +261,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          state_region
        )
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
        )
-       RETURNING id, title, location, pay, job_type, status, required_docs, created_at,
+       RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
          transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,
@@ -215,6 +278,9 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         job_type,
         normalizedDescription,
         required_docs,
+        optional_docs,
+        required_fields,
+        optional_fields,
         jobFields.value.pay_min,
         jobFields.value.pay_max,
         jobFields.value.pay_interval,
@@ -222,7 +288,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         jobFields.value.expected_duration,
         jobFields.value.shift_schedule,
         jobFields.value.transportation_required,
-        jobFields.value.work_authorization_required,
+        workAuthorizationRequired,
         jobFields.value.language_preference,
         jobFields.value.number_of_workers_needed,
         jobFields.value.trade_category,

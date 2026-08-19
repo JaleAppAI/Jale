@@ -4,6 +4,7 @@ import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { setJobCoordinates } from '../../../../lambda/lib/location';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { resolveEntitlements } from '../../../../lambda/lib/entitlements';
+import { DOC_TYPES, REQUIRED_FIELD_TYPES } from '../../../../lambda/lib/job-fields';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/lib/location');
@@ -262,21 +263,21 @@ describe('employer-jobs-create', () => {
     expect(insertCall[0]).toContain('city_key');
     // state_region is derived from location ('Columbus, OH') independently of
     // the picker triple, which only feeds city_key/city/state.
-    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
+    expect(insertCall[1].slice(24)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
   });
 
   it('derives the city triple from parseable location text when no picker triple is sent', async () => {
     const res = await handler(makeEvent({}));  // location defaults to 'Columbus, OH'
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1].slice(21)).toEqual(['columbus-oh', 'Columbus', 'OH', 'OH']);
+    expect(insertCall[1].slice(24)).toEqual(['columbus-oh', 'Columbus', 'OH', 'OH']);
   });
 
-  it('accepts a job with unparseable location and no city fields (degraded picker)', async () => {
+  it('rejects a job with unparseable location and no city fields (400 city_required) -- doctrine change: create no longer allows a fully un-locatable job (see Stage 1a)', async () => {
     const res = await handler(makeEvent({ location: 'Near the old stadium' }));
-    expect(res.statusCode).toBe(201);
-    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1].slice(21)).toEqual([null, null, null, null]);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'city_required' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
   it('a picker triple wins over the location text parse', async () => {
@@ -288,7 +289,7 @@ describe('employer-jobs-create', () => {
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
     // state_region still derives from location ('Columbus, OH' -> OH),
     // independently of the picker triple overriding city_key/city/state.
-    expect(insertCall[1].slice(21)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
+    expect(insertCall[1].slice(24)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
   });
 
   it('accepts a lone `city` field (no city_key/state) as the SEO-only channel -- no longer a 400 partial triple', async () => {
@@ -304,10 +305,10 @@ describe('employer-jobs-create', () => {
     const res = await handler(makeEvent({ city: 'El Paso' }));
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1][21]).toBe('columbus-oh');
-    expect(insertCall[1][22]).toBe('Columbus');
-    expect(insertCall[1][23]).toBe('OH');
-    expect(insertCall[1][24]).toBe('OH');
+    expect(insertCall[1][24]).toBe('columbus-oh');
+    expect(insertCall[1][25]).toBe('Columbus');
+    expect(insertCall[1][26]).toBe('OH');
+    expect(insertCall[1][27]).toBe('OH');
   });
 
   it('rejects a mismatched city_key (400)', async () => {
@@ -315,5 +316,133 @@ describe('employer-jobs-create', () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe('invalid_city_key');
     expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Stage 1a -- optional_docs / required_fields / optional_fields
+  // ---------------------------------------------------------------------------
+
+  it('persists and returns all four requirement arrays', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
+      if (sql.includes('INSERT INTO jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', title: 'Concrete Finisher', location: 'Columbus, OH', pay: null,
+            job_type: 'contract', status: 'active',
+            required_docs: ['resume'], optional_docs: ['driver_license'],
+            required_fields: ['work_authorization'], optional_fields: ['date_available'],
+            created_at: 'now', pay_min: null, pay_max: null, start_date: null,
+            expected_duration: null, shift_schedule: null, transportation_required: false,
+            language_preference: ['any'], number_of_workers_needed: 1, hired_count: 0, open_count: 1,
+            trade_category: 'concrete', required_experience_years: null, certifications: [],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      required_docs: ['resume'],
+      optional_docs: ['driver_license'],
+      required_fields: ['work_authorization'],
+      optional_fields: ['date_available'],
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.required_docs).toEqual(['resume']);
+    expect(body.optional_docs).toEqual(['driver_license']);
+    expect(body.required_fields).toEqual(['work_authorization']);
+    expect(body.optional_fields).toEqual(['date_available']);
+
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[0]).toContain('optional_docs');
+    expect(insertCall[0]).toContain('required_fields');
+    expect(insertCall[0]).toContain('optional_fields');
+    const returningClause = (insertCall[0] as string).split('RETURNING')[1];
+    expect(returningClause).toMatch(/\boptional_docs\b/);
+    expect(returningClause).toMatch(/\brequired_fields\b/);
+    expect(returningClause).toMatch(/\boptional_fields\b/);
+    // Column order in the INSERT (0-based): ... 6 required_docs, 7 optional_docs,
+    // 8 required_fields, 9 optional_fields (three new columns land next to
+    // required_docs, per Stage 1a).
+    expect(insertCall[1][6]).toEqual(['resume']);
+    expect(insertCall[1][7]).toEqual(['driver_license']);
+    expect(insertCall[1][8]).toEqual(['work_authorization']);
+    expect(insertCall[1][9]).toEqual(['date_available']);
+  });
+
+  it('rejects an invalid required_fields entry with 400 invalid_required_fields and the valid echo', async () => {
+    const res = await handler(makeEvent({ required_fields: ['bogus'] }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('invalid_required_fields');
+    expect(body.valid).toEqual(REQUIRED_FIELD_TYPES);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid optional_fields entry with 400 invalid_optional_fields and the valid echo', async () => {
+    const res = await handler(makeEvent({ optional_fields: ['bogus'] }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('invalid_optional_fields');
+    expect(body.valid).toEqual(REQUIRED_FIELD_TYPES);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid optional_docs entry with 400 invalid_optional_docs and the valid echo', async () => {
+    const res = await handler(makeEvent({ optional_docs: ['bogus'] }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('invalid_optional_docs');
+    expect(body.valid).toEqual(DOC_TYPES);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects overlapping required/optional fields with 400 requirements_tier_overlap, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ required_fields: ['work_authorization'], optional_fields: ['work_authorization'] }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['work_authorization']);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects overlapping required/optional docs with 400 requirements_tier_overlap', async () => {
+    const res = await handler(makeEvent({ required_docs: ['resume'], optional_docs: ['resume'] }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['resume']);
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('derives work_authorization_required=true from required_fields, overriding a false legacy flag', async () => {
+    const res = await handler(makeEvent({ required_fields: ['work_authorization'], work_authorization_required: false }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    // work_authorization_required is bind param index 17 (0-based) post-shift.
+    expect(insertCall[1][17]).toBe(true);
+  });
+
+  it('derives work_authorization_required=false when required_fields is present but excludes it, overriding a true legacy flag', async () => {
+    const res = await handler(makeEvent({ required_fields: ['date_available'], work_authorization_required: true }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][17]).toBe(false);
+  });
+
+  it('keeps the legacy work_authorization_required flag when required_fields is absent from the body', async () => {
+    const res = await handler(makeEvent({ work_authorization_required: true }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][17]).toBe(true);
+  });
+
+  it('creates successfully when the location parses to a city (e.g. "Austin, TX") with no explicit city fields', async () => {
+    const res = await handler(makeEvent({ location: 'Austin, TX' }));
+    expect(res.statusCode).toBe(201);
   });
 });
