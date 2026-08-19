@@ -677,6 +677,40 @@ test('v2 COMPLETED: a COMMIT failure publishes no event and never rolls back (th
   expect(mockSqsSend).not.toHaveBeenCalled();
 });
 
+// Pins the rollback/release path through the pre-transaction restructure
+// (Task A): the extraction row is written and executionArn is checked
+// AFTER `BEGIN`/`setWorkerRlsContextByUserId`, so a missing executionArn on
+// COMPLETED still throws from inside the open transaction — `committed`
+// never flips to true, so the outer catch issues ROLLBACK (never COMMIT),
+// no #vp event is ever published, and the client is released in `finally`
+// regardless. Mirrors voice-trust-receiver.test.ts's "throws when
+// executionArn is missing" case for the same contract.
+test('v2 COMPLETED: missing executionArn throws, rolls back (never commits), publishes no event, and releases the client', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-v2-noarn' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('My name is Jose, I am a plumber'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { full_name: 'Jose', main_trade: 'plumber' },
+    { full_name: 0.9, main_trade: 0.9 },
+    'Jose, a plumber.',
+    'Jose, un plomero.',
+  ));
+
+  await expect(handler({
+    status: 'COMPLETED',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-v2-noarn' }),
+  } as any, {} as any, () => {})).rejects.toThrow(/executionArn missing/);
+
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => sql === 'COMMIT')).toBe(false);
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => sql === 'ROLLBACK')).toBe(true);
+  expect(mockSqsSend).not.toHaveBeenCalled();
+  expect(mockRelease).toHaveBeenCalled();
+});
+
 test('v2 FAILED: writes a failed extraction row and enqueues a FAILED #vp event, still no users/outbox writes', async () => {
   mockQuery.mockImplementation((sql: string) => {
     if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
@@ -703,6 +737,29 @@ test('v2 FAILED: writes a failed extraction row and enqueues a FAILED #vp event,
   const params = Object.fromEntries(new URLSearchParams(sent.MessageBody));
   const evt = parseVoiceTranscriptEvent(params);
   expect(evt).toMatchObject({ kind: 'profile_intake', status: 'FAILED', fields: null, extractionId: 'extraction-v2-2' });
+});
+
+// Same rollback/release contract as the COMPLETED case above, for the
+// FAILED branch's own executionArn check (ai-profile-writer.ts:505-507).
+test('v2 FAILED: missing executionArn throws, rolls back (never commits), publishes no event, and releases the client', async () => {
+  mockQuery.mockImplementation((sql: string) => {
+    if (/INSERT INTO worker_profile_ai_extractions/.test(sql)) {
+      return Promise.resolve({ rows: [{ id: 'extraction-v2-failnoarn' }] });
+    }
+    return Promise.resolve({ rows: [{ next_seq: 1, cognito_sub: 'worker-sub' }], rowCount: 1 });
+  });
+
+  await expect(handler({
+    status: 'FAILED',
+    executionContext: v2ExecutionContext({ inboundMessageSid: 'MMvoice-v2-failnoarn' }),
+  } as any, {} as any, () => {})).rejects.toThrow(/executionArn missing/);
+
+  expect(mockS3Send).not.toHaveBeenCalled();
+  expect(mockBedrockSend).not.toHaveBeenCalled();
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => sql === 'COMMIT')).toBe(false);
+  expect(mockQuery.mock.calls.some(([sql]: [string]) => sql === 'ROLLBACK')).toBe(true);
+  expect(mockSqsSend).not.toHaveBeenCalled();
+  expect(mockRelease).toHaveBeenCalled();
 });
 
 test('v1 legacy path is byte-identical (no v2 marker => no SQS send, users/outbox writes unchanged)', async () => {
