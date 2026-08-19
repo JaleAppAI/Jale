@@ -98,7 +98,13 @@
 #
 # Never add -v/--trace* to any curl call in this script — that would print
 # the Authorization header (containing DEEPGRAM_API_KEY/OPENAI_API_KEY) to
-# stdout/logs. This script never enables `set -x` for the same reason.
+# stdout/logs. This script never enables `set -x` for the same reason. A
+# third vector: a key passed as a literal `-H "Authorization: ..."` curl
+# argv entry is visible to any process on the host via `ps`/
+# `/proc/<pid>/cmdline` for the full duration of that curl invocation — so
+# both API keys are instead injected via `curl --config <(printf 'header =
+# "Authorization: ..." ...')`, a curl config read from a file descriptor
+# rather than passed as a command-line argument.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -176,8 +182,11 @@ DEEPGRAM_URL="https://api.deepgram.com/v1/listen?model=nova-3&language=multi&sma
 #    omitted here since it's env-driven (AI_INDUSTRY_KEYWORDS) there and
 #    empty by default in the real system prompt too — the keywordsText
 #    interpolation collapses to "" in that case, which is what's reproduced
-#    below. If ai-profile-writer.ts's prompt text changes, update this copy
-#    to match. ──
+#    below. run_extraction()'s `aws bedrock-runtime converse` call also
+#    passes `--inference-config '{"maxTokens":1024}'` for parity with that
+#    same function's `inferenceConfig: { maxTokens: 1024 }`. If
+#    ai-profile-writer.ts's prompt text or inferenceConfig changes, update
+#    this copy to match. ──
 EXTRACTION_SYSTEM_PROMPT=$(cat <<'EOF'
 You are a profile extraction assistant for Jale, a bilingual job platform for blue-collar workers in the US.
 Extract structured profile information from voice message transcripts. Workers may speak English or Spanish.
@@ -319,6 +328,7 @@ run_extraction() {
     --model-id "$BEDROCK_MODEL_ID" \
     --system "$system_json" \
     --messages "$messages_json" \
+    --inference-config '{"maxTokens":1024}' \
     --region "$REGION" \
     --output json > "$out_file"
 }
@@ -360,16 +370,44 @@ while IFS= read -r S3_KEY; do
   mkdir -p "$SAMPLE_DIR"
 
   # Fail closed: never start a billed provider call against a key that
-  # doesn't exist. Stop the whole run rather than silently skip a sample —
-  # same ethos as ab-compare.sh's staging guard.
-  if ! aws s3api head-object \
+  # doesn't exist, and never GUESS a content-type for the Deepgram/OpenAI
+  # calls below — a wrong content-type silently garbles the transcript,
+  # corrupting the garbled-trade-term count, this script's PRIMARY decision
+  # metric (see header comment). So this captures ContentType instead of
+  # discarding head-object's output (same ethos as ab-compare.sh's staging
+  # guard, extended to cover the content-type). Media objects are one of
+  # audio/ogg, audio/mpeg, or audio/mp4 (infra/lambda/whatsapp/lib/media.ts's
+  # ALLOWED_VOICE_TYPES) — CONTENT_TYPE/AUDIO_EXT below drive (a) Deepgram's
+  # Content-Type header verbatim and (b) an explicit filename+type on
+  # OpenAI's multipart upload, since OpenAI's /v1/audio/transcriptions
+  # detects the container from the multipart FILENAME extension, not by
+  # sniffing bytes — a bare extensionless mktemp path 400s on every sample.
+  CONTENT_TYPE="$(aws s3api head-object \
     --bucket "$JALE_MEDIA_BUCKET" \
     --key "$S3_KEY" \
-    --region "$REGION" >/dev/null 2>&1; then
-    echo "provider-compare: [$i] SOURCE NOT FOUND — s3://${JALE_MEDIA_BUCKET}/${S3_KEY} does not exist." >&2
-    echo "  Refusing to start any provider call against a missing object." >&2
+    --region "$REGION" \
+    --query 'ContentType' \
+    --output text 2>/dev/null)" || CONTENT_TYPE=""
+
+  if [ -z "$CONTENT_TYPE" ] || [ "$CONTENT_TYPE" = "None" ]; then
+    echo "provider-compare: [$i] SOURCE NOT FOUND — s3://${JALE_MEDIA_BUCKET}/${S3_KEY} does not exist (or has no ContentType)." >&2
+    echo "  Refusing to start any provider call against a missing/untyped object." >&2
     exit 1
   fi
+
+  case "$CONTENT_TYPE" in
+    audio/ogg) AUDIO_EXT="ogg" ;;
+    audio/mpeg) AUDIO_EXT="mp3" ;;
+    audio/mp4) AUDIO_EXT="m4a" ;;
+    *)
+      echo "provider-compare: [$i] UNSUPPORTED ContentType '${CONTENT_TYPE}' for s3://${JALE_MEDIA_BUCKET}/${S3_KEY}" >&2
+      echo "  Only audio/ogg, audio/mpeg, audio/mp4 are supported (see" >&2
+      echo "  infra/lambda/whatsapp/lib/media.ts's ALLOWED_VOICE_TYPES)." >&2
+      echo "  Refusing to guess a container/extension — that would silently" >&2
+      echo "  garble the transcript." >&2
+      exit 1
+      ;;
+  esac
 
   # ── (a) AWS Transcribe — current production flags ──
   TRANSCRIBE_JSON="${SAMPLE_DIR}/transcribe.json"
@@ -415,8 +453,8 @@ while IFS= read -r S3_KEY; do
     else
       echo "  [$i] calling Deepgram nova-3"
       if ! curl -sf --data-binary "@${AUDIO_TMP}" \
-        -H "Authorization: Token $DEEPGRAM_API_KEY" \
-        -H "Content-Type: audio/ogg" \
+        --config <(printf 'header = "Authorization: Token %s"\n' "$DEEPGRAM_API_KEY") \
+        -H "Content-Type: $CONTENT_TYPE" \
         "$DEEPGRAM_URL" \
         -o "$DEEPGRAM_JSON"; then
         echo "provider-compare: [$i] Deepgram call FAILED." >&2
@@ -428,11 +466,19 @@ while IFS= read -r S3_KEY; do
       echo "  [$i] openai.json already exists — skipping (already fetched on a prior run)"
     else
       echo "  [$i] calling OpenAI gpt-4o-transcribe"
+      # The prompt field uses --form-string, not -F: curl's -F/--form splits
+      # a plain (non-@) value on `;` to look for type=/filename=/headers=
+      # sub-parameters, REGARDLESS of whether the field is a file upload —
+      # so with -F, this prompt's own "...worker; expect terms: ..." would
+      # silently truncate at the semicolon, dropping the entire vocabulary
+      # hint list. --form-string treats the value as fully literal. (The
+      # file= field below deliberately keeps -F, since it relies on exactly
+      # that semicolon-splitting to attach filename=/type=.)
       if ! curl -sf https://api.openai.com/v1/audio/transcriptions \
-        -H "Authorization: Bearer $OPENAI_API_KEY" \
+        --config <(printf 'header = "Authorization: Bearer %s"\n' "$OPENAI_API_KEY") \
         -F model=gpt-4o-transcribe \
-        -F "file=@${AUDIO_TMP}" \
-        -F "prompt=Spanglish construction-trade voice note from a Texas blue-collar worker; expect terms: ${DISPLAY_TERMS_CSV}" \
+        -F "file=@${AUDIO_TMP};filename=audio.${AUDIO_EXT};type=${CONTENT_TYPE}" \
+        --form-string "prompt=Spanglish construction-trade voice note from a Texas blue-collar worker; expect terms: ${DISPLAY_TERMS_CSV}" \
         -o "$OPENAI_JSON"; then
         echo "provider-compare: [$i] OpenAI call FAILED." >&2
         exit 1
