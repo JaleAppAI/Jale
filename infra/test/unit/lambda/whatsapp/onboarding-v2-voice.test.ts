@@ -665,4 +665,118 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
       expect(h.getState().gate?.currentStepKey).toBe('profile.name');
     });
   });
+
+  // Task C: the plan's applied/skipped shape must be visible in telemetry
+  // (transcript-quality failures were previously invisible), but the log
+  // line itself must never carry an extracted value, transcript text, phone
+  // number, or user name — field NAMES and skip REASONS only.
+  describe('OnboardingVoiceExtractionPlan telemetry', () => {
+    function findPlanLog(logSpy: jest.SpyInstance) {
+      const call = logSpy.mock.calls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('OnboardingVoiceExtractionPlan'),
+      );
+      return call ? JSON.parse(call[0] as string) : undefined;
+    }
+
+    it('a fully successful extraction logs the applied field names and an empty skipped list', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const h = await toVoiceChoice('+15552230023');
+      await h.sendVoiceNote();
+
+      await h.injectVoiceIntakeResult(0, {
+        status: 'COMPLETED',
+        fields: {
+          full_name: 'Jose Martinez',
+          city: '78701',
+          main_trade: 'plumber',
+          years_experience: '5-9',
+          has_transportation: true,
+          availability: 'full_time',
+        },
+        confidences: {
+          full_name: 0.9, city: 0.9, main_trade: 0.9,
+          years_experience: 0.9, has_transportation: 0.9, availability: 0.9,
+        },
+        summaryEn: 'summary', summaryEs: 'resumen',
+      });
+
+      const logged = findPlanLog(logSpy);
+      expect(logged).toBeDefined();
+      expect(logged).toMatchObject({
+        metric: 'OnboardingVoiceExtractionPlan',
+        threshold: 0.75,
+        stepKey: 'profile.voice_processing',
+      });
+      expect([...logged.applied].sort()).toEqual(
+        ['availability', 'city', 'full_name', 'has_transportation', 'main_trade', 'years_experience'].sort(),
+      );
+      expect(logged.skipped).toEqual([]);
+
+      logSpy.mockRestore();
+    });
+
+    it('below-threshold and invalid-enum fields log their {field, reason} entries and the 0.75 threshold', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const h = await toVoiceChoice('+15552230024');
+      await h.sendVoiceNote();
+
+      await h.injectVoiceIntakeResult(0, {
+        status: 'COMPLETED',
+        fields: {
+          full_name: 'Jose Martinez', // below threshold -> skipped
+          main_trade: 'plumber', // above threshold -> applied
+          years_experience: '3 years', // not in the DB enum -> skipped
+        },
+        confidences: {
+          full_name: 0.4,
+          main_trade: 0.9,
+          years_experience: 0.9,
+        },
+        summaryEn: 'summary', summaryEs: 'resumen',
+      });
+
+      const logged = findPlanLog(logSpy);
+      expect(logged).toBeDefined();
+      expect(logged.threshold).toBe(0.75);
+      expect(logged.applied).toEqual(['main_trade']);
+      expect(logged.skipped).toEqual(
+        expect.arrayContaining([
+          { field: 'full_name', reason: 'low_confidence' },
+          { field: 'years_experience', reason: 'invalid_enum' },
+        ]),
+      );
+      expect(logged.skipped).toHaveLength(2);
+
+      logSpy.mockRestore();
+    });
+
+    it('never logs an extracted value: a sentinel placed in the fixture never appears in the logged JSON', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+      const h = await toVoiceChoice('+15552230025');
+      await h.sendVoiceNote();
+
+      const SENTINEL = 'ZZ_DO_NOT_LOG_THIS_VALUE_9F3';
+      await h.injectVoiceIntakeResult(0, {
+        status: 'COMPLETED',
+        fields: {
+          full_name: SENTINEL,
+          main_trade: 'other',
+          main_trade_other: SENTINEL,
+        },
+        confidences: { full_name: 0.9, main_trade: 0.9 },
+        summaryEn: 'summary', summaryEs: 'resumen',
+      });
+
+      const call = logSpy.mock.calls.find(
+        (args) => typeof args[0] === 'string' && args[0].includes('OnboardingVoiceExtractionPlan'),
+      );
+      expect(call).toBeDefined();
+      expect(call![0] as string).not.toContain(SENTINEL);
+
+      const logged = findPlanLog(logSpy);
+      expect(logged.applied).toEqual(expect.arrayContaining(['full_name', 'main_trade', 'main_trade_other']));
+
+      logSpy.mockRestore();
+    });
+  });
 });
