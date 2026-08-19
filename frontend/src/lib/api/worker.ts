@@ -7,8 +7,12 @@ export interface UploadUrlResponse {
   s3_key: string;
 }
 
-export type DocType = 'resume' | 'driver_license' | 'ssn';
-export type JobDocType = 'resume' | 'driver_license';
+// Hand-mirrored from DOC_TYPES in infra/lambda/lib/job-fields.ts -- no
+// cross-package import exists between frontend and infra, so keep both in
+// sync by hand. 'ssn' is legacy-only (excluded from DOC_TYPES) but stays here
+// for existing vault rows/UI.
+export type DocType = 'resume' | 'driver_license' | 'ssn' | 'work_auth_doc' | 'certification_doc';
+export type JobDocType = 'resume' | 'driver_license' | 'work_auth_doc' | 'certification_doc';
 
 // The upload trio below (and uploadFileToS3) deliberately use raw `fetch`, not
 // `apiFetch`: they run the unauthenticated one-time-token flow on /upload/[token],

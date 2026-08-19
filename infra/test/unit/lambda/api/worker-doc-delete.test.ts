@@ -16,7 +16,11 @@ const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
-const mkEv = (doc_type: string) => ({ requestContext: { authorizer: { claims: { sub: 'w' } } }, pathParameters: { doc_type } } as unknown as APIGatewayProxyEvent);
+const mkEv = (doc_type: string, id?: string) => ({
+  requestContext: { authorizer: { claims: { sub: 'w' } } },
+  pathParameters: { doc_type },
+  queryStringParameters: id ? { id } : null,
+} as unknown as APIGatewayProxyEvent);
 
 describe('worker-doc-delete', () => {
   const env = process.env;
@@ -60,5 +64,47 @@ describe('worker-doc-delete', () => {
     const res = await handler(mkEv('resume'));
     expect(res.statusCode).toBe(204);
     expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'u1');
+  });
+
+  it('deletes only the row matching id when id is provided, scoped to job_id IS NULL', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 1, rows: [{ s3_key: 'k' }] });
+      return Promise.resolve({});
+    });
+    const res = await handler(mkEv('certification_doc', 'doc-123'));
+    expect(res.statusCode).toBe(204);
+    const deleteCall = mockQuery.mock.calls.find(([q]) => String(q).includes('DELETE FROM worker_documents'));
+    expect(deleteCall).toBeDefined();
+    const [deleteSql, deleteParams] = deleteCall as [string, unknown[]];
+    expect(deleteSql).toContain('id = $2');
+    expect(deleteSql).toContain('job_id IS NULL');
+    expect(deleteSql).not.toContain('doc_type = $2');
+    expect(deleteParams).toEqual(['u1', 'doc-123']);
+  });
+
+  it('returns 404 when id is provided but does not match a row (foreign or missing id)', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 0, rows: [] });
+      return Promise.resolve({});
+    });
+    const res = await handler(mkEv('certification_doc', 'someone-elses-doc'));
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body).error).toBe('not_found');
+  });
+
+  it('without id, preserves the existing type-wide vault delete behavior unchanged', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 1, rows: [{ s3_key: 'k' }] });
+      return Promise.resolve({});
+    });
+    const res = await handler(mkEv('resume'));
+    expect(res.statusCode).toBe(204);
+    const deleteCall = mockQuery.mock.calls.find(([q]) => String(q).includes('DELETE FROM worker_documents'));
+    const [deleteSql, deleteParams] = deleteCall as [string, unknown[]];
+    expect(deleteSql).toContain('doc_type = $2');
+    expect(deleteParams).toEqual(['u1', 'resume']);
   });
 });

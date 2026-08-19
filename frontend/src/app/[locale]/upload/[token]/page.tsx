@@ -23,7 +23,9 @@ import { Spinner } from '@/components/ui/spinner';
 
 export const dynamic = 'force-dynamic';
 
-const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
+// Hand-mirrored from DOC_TYPES in infra/lambda/lib/job-fields.ts (see note on
+// DocType in @/lib/api/worker) -- the token flow now accepts all four types.
+const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'work_auth_doc', 'certification_doc'];
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const ACCEPTED_MIME = ['application/pdf', 'image/jpeg', 'image/png'];
 
@@ -85,6 +87,8 @@ export default function WorkerUploadPage() {
     resume: t('doc_resume'),
     driver_license: t('doc_driver_license'),
     ssn: t('doc_ssn'),
+    work_auth_doc: t('doc_work_auth_doc'),
+    certification_doc: t('doc_certification_doc'),
   };
 
   const handleFileSelect = async (doc_type: DocType, file: File) => {

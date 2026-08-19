@@ -877,6 +877,8 @@
     "doc_resume": "Currículum",
     "doc_driver_license": "Licencia de conducir",
     "doc_ssn": "Tarjeta SSN / ITIN",
+    "doc_work_auth_doc": "Documento de autorización de trabajo",
+    "doc_certification_doc": "Certificación",
     "error_upload": "No se pudo subir el archivo. Intente de nuevo.",
     "error_submit": "No se pudo enviar. Intente de nuevo.",
     "error_already_received": "Ya recibimos este documento con este enlace.",

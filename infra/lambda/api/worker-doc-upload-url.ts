@@ -4,10 +4,11 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { DOC_TYPES } from '../lib/job-fields';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
-const VALID_DOC_TYPES = ['resume', 'driver_license', 'ssn'] as const;
+const VALID_DOC_TYPES = DOC_TYPES;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MIME_TO_EXT: Record<string, string> = {
   'application/pdf': 'pdf',
