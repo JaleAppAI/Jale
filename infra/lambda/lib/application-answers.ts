@@ -1,9 +1,24 @@
 import { PAY_INTERVALS, PayInterval, isValidIsoDate } from './job-fields';
 
 // The single authoritative validator for job_applications.application_answers
-// (073_job_application_requirements.sql). Both the employer-web apply flow
-// and the WhatsApp incremental-fill flow must call this -- it is the only
-// place the per-key answer shapes are defined.
+// (073_job_application_requirements.sql, widened by
+// 074_job_optional_requirements.sql). Both the employer-web apply flow and
+// the WhatsApp incremental-fill flow must call this -- it is the only place
+// the per-key answer shapes are defined.
+//
+// Three-state model: every per-job data point is Off / Optional / Required.
+// - Off:      the field's key is in neither requiredFields nor
+//             optionalFields -- present in answers is 'unknown_answer_key'.
+// - Optional: the key may be entirely absent from answers (fine); if
+//             present, it validates with the same per-key shape rules as a
+//             required field, and an invalid value still fails with
+//             'invalid_<key>'.
+// - Required: the key must be present in answers (absence is
+//             'missing_answers'), and it validates with the same rules.
+// A key listed in both requiredFields and optionalFields (should not
+// happen -- see jobs_fields_tiers_disjoint / jobs_docs_tiers_disjoint in
+// 074_job_optional_requirements.sql) is treated as required, the stricter
+// of the two readings.
 
 export type ApplicationAnswers = Record<string, unknown>;
 
@@ -280,6 +295,7 @@ const FIELD_VALIDATORS: Record<string, (value: unknown) => unknown> = {
 
 export function validateApplicationAnswers(
   requiredFields: readonly string[],
+  optionalFields: readonly string[],
   answers: unknown,
 ): ValidateAnswersResult {
   if (!isPlainObject(answers)) return { ok: false, error: 'invalid_answers' };
@@ -292,23 +308,31 @@ export function validateApplicationAnswers(
   }
   if (serialized.length > MAX_ANSWERS_JSON_LENGTH) return { ok: false, error: 'invalid_answers' };
 
-  // Every own key must be in requiredFields. This also rejects
-  // __proto__/constructor-style keys, since neither is ever a member of
-  // REQUIRED_FIELD_TYPES.
+  // Every own key must be in requiredFields or optionalFields. This also
+  // rejects __proto__/constructor-style keys, since neither is ever a
+  // member of REQUIRED_FIELD_TYPES.
   for (const key of Object.keys(answers)) {
-    if (!requiredFields.includes(key)) {
+    if (!requiredFields.includes(key) && !optionalFields.includes(key)) {
       return { ok: false, error: 'unknown_answer_key' };
     }
   }
 
+  // missing is computed against requiredFields ONLY -- an absent optional
+  // key is fine.
   const missing = requiredFields.filter((field) => !Object.prototype.hasOwnProperty.call(answers, field));
   if (missing.length > 0) {
     return { ok: false, error: 'missing_answers', missing };
   }
 
+  // A key present in both lists (should never happen -- see the
+  // three-state model note above) is validated once, as required.
+  const presentOptionalFields = optionalFields.filter(
+    (field) => !requiredFields.includes(field) && Object.prototype.hasOwnProperty.call(answers, field),
+  );
+
   // Built fresh from validated keys only -- never spread the input.
   const value: Record<string, unknown> = {};
-  for (const field of requiredFields) {
+  for (const field of [...requiredFields, ...presentOptionalFields]) {
     const validator = FIELD_VALIDATORS[field];
     if (!validator) {
       return { ok: false, error: `invalid_${field}` };
