@@ -439,7 +439,7 @@ BASTION_ID=$(aws cloudformation describe-stacks --stack-name "$BASTION_STACK" --
   --query "Stacks[0].Outputs[?OutputKey=='BastionInstanceId'].OutputValue" --output text)
 [[ -n "$BASTION_ID" && "$BASTION_ID" != "None" ]] \
   || die "no BastionInstanceId on $BASTION_STACK. Deploy it first: bash scripts/deploy-bastion.sh"
-note "   bastion: $BASTION_ID"
+note "   bastion: resolved"
 
 # The four DB-role secrets are resolved with their CloudFormation logical-ID
 # prefixes spelled out in full. The queries are deliberately not factored into
@@ -454,25 +454,25 @@ note "Resolving jale_admin DB secret ARN..."
 DB_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'JaleDatabaseStackDatabaseSecret')].PhysicalResourceId | [0]")
 [[ -n "$DB_SECRET_ARN" && "$DB_SECRET_ARN" != "None" ]] \
   || die "could not find the jale_admin DB secret in $DATABASE_STACK"
-note "   db-secret: $DB_SECRET_ARN"
+note "   db-secret: resolved"
 
 note "Resolving jale_matching DB secret ARN..."
 MATCHING_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'MatchingDbSecret')].PhysicalResourceId | [0]")
 [[ -n "$MATCHING_SECRET_ARN" && "$MATCHING_SECRET_ARN" != "None" ]] \
   || die "could not find the jale_matching DB secret in $DATABASE_STACK"
-note "   matching-secret: $MATCHING_SECRET_ARN"
+note "   matching-secret: resolved"
 
 note "Resolving jale_admin_console DB secret ARN..."
 ADMIN_CONSOLE_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'AdminConsoleDbSecret')].PhysicalResourceId | [0]")
 [[ -n "$ADMIN_CONSOLE_SECRET_ARN" && "$ADMIN_CONSOLE_SECRET_ARN" != "None" ]] \
   || die "could not find the jale_admin_console DB secret in $DATABASE_STACK"
-note "   admin-console-secret: $ADMIN_CONSOLE_SECRET_ARN"
+note "   admin-console-secret: resolved"
 
 note "Resolving jale_billing DB secret ARN..."
 BILLING_SECRET_ARN=$(describe_secret_arn "StackResources[?ResourceType=='AWS::SecretsManager::Secret' && starts_with(LogicalResourceId, 'BillingDbSecret')].PhysicalResourceId | [0]")
 [[ -n "$BILLING_SECRET_ARN" && "$BILLING_SECRET_ARN" != "None" ]] \
   || die "could not find the jale_billing DB secret in $DATABASE_STACK"
-note "   billing-secret: $BILLING_SECRET_ARN"
+note "   billing-secret: resolved"
 
 # jale_public_jobs (migration 056) is the anonymous read role behind the public
 # job pages. Its secret only exists once JaleDatabaseStack has deployed with
@@ -490,7 +490,7 @@ if [[ -z "$REFERRALS_SECRET_ARN" || "$REFERRALS_SECRET_ARN" == "None" ]]; then
   note "   referrals-secret: not found (JaleDatabaseStack predates ReferralsDbSecret) — jale_public_jobs sync unavailable until it deploys"
   REFERRALS_SECRET_ARN=""
 else
-  note "   referrals-secret: $REFERRALS_SECRET_ARN"
+  note "   referrals-secret: resolved"
 fi
 
 # ---------------------------------------------------------------------------

@@ -147,7 +147,7 @@ if ([string]::IsNullOrEmpty($bastionId) -or $bastionId -eq 'None') {
     Write-Host "   Deploy the stack first: pwsh scripts/deploy-bastion.ps1"
     exit 1
 }
-Write-Host "   bastion: $bastionId"
+Write-Host "   bastion: resolved"
 
 # ---------------------------------------------------------------------------
 # Resolve jale_admin DB secret ARN.
@@ -165,7 +165,7 @@ if ([string]::IsNullOrEmpty($dbSecretArn) -or $dbSecretArn -eq 'None') {
     Write-Host "!! Could not find jale_admin DB secret in $DatabaseStack." -ForegroundColor Red
     exit 1
 }
-Write-Host "   db-secret: $dbSecretArn"
+Write-Host "   db-secret: resolved"
 
 # ---------------------------------------------------------------------------
 # Resolve jale_matching DB secret ARN.
@@ -181,7 +181,7 @@ if ([string]::IsNullOrEmpty($matchingSecretArn) -or $matchingSecretArn -eq 'None
     Write-Host "!! Could not find jale_matching DB secret in $DatabaseStack." -ForegroundColor Red
     exit 1
 }
-Write-Host "   matching-secret: $matchingSecretArn"
+Write-Host "   matching-secret: resolved"
 
 # ---------------------------------------------------------------------------
 # Resolve jale_admin_console DB secret ARN.
@@ -197,7 +197,7 @@ if ([string]::IsNullOrEmpty($adminConsoleSecretArn) -or $adminConsoleSecretArn -
     Write-Host "!! Could not find jale_admin_console DB secret in $DatabaseStack." -ForegroundColor Red
     exit 1
 }
-Write-Host "   admin-console-secret: $adminConsoleSecretArn"
+Write-Host "   admin-console-secret: resolved"
 
 # ---------------------------------------------------------------------------
 # Resolve jale_billing DB secret ARN.
@@ -213,7 +213,7 @@ if ([string]::IsNullOrEmpty($billingSecretArn) -or $billingSecretArn -eq 'None')
     Write-Host "!! Could not find jale_billing DB secret in $DatabaseStack." -ForegroundColor Red
     exit 1
 }
-Write-Host "   billing-secret: $billingSecretArn"
+Write-Host "   billing-secret: resolved"
 
 # ---------------------------------------------------------------------------
 # Resolve jale_public_jobs DB secret ARN (public job pages, migration 056).
@@ -232,7 +232,7 @@ if ([string]::IsNullOrEmpty($referralsSecretArn) -or $referralsSecretArn -eq 'No
     Write-Host "!! Could not find jale/referrals/db secret in $DatabaseStack — deploy JaleDatabaseStack first; refusing to silently skip the jale_public_jobs password sync." -ForegroundColor Red
     exit 1
 }
-Write-Host "   referrals-secret: $referralsSecretArn"
+Write-Host "   referrals-secret: resolved"
 
 # ---------------------------------------------------------------------------
 # Verify migration files + base64-encode.
