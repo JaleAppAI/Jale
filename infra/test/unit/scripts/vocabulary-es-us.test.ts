@@ -45,6 +45,43 @@ describe('vocabulary-es-us.txt format', () => {
     expect(rows.length).toBeGreaterThan(1); // header + data
   });
 
+  // Task D vocabulary expansion (2026-08-19): grew the file from 36 to 51
+  // data rows by adding ~15 more real Spanglish construction-trade terms
+  // (concrete/site-work vocabulary: banqueta, colado, cimbra, zanja,
+  // drenaje, fierro, acabado, firme, plafones, yeso, mezcla,
+  // retroexcavadora, plus troquero/dompear alongside the existing
+  // troca/dompe pair). Locks in the expansion as a regression guard so a
+  // future edit can't silently shrink the file back down.
+  it('has at least 51 data rows after the Task D vocabulary expansion', () => {
+    const [, ...dataRows] = readRows();
+    expect(dataRows.length).toBeGreaterThanOrEqual(51);
+  });
+
+  it('includes the Task D construction-trade terms added on top of the original 36', () => {
+    const [, ...dataRows] = readRows();
+    const displayAsValues = new Set(dataRows.map(([, displayAs]) => displayAs));
+    const expectedNewTerms = [
+      'banqueta',
+      'banquetas',
+      'colado',
+      'cimbra',
+      'zanja',
+      'drenaje',
+      'fierro',
+      'acabado',
+      'firme',
+      'plafones',
+      'yeso',
+      'mezcla',
+      'retroexcavadora',
+      'troquero',
+      'dompear',
+    ];
+    for (const term of expectedNewTerms) {
+      expect(displayAsValues.has(term)).toBe(true);
+    }
+  });
+
   it('every row (including header) has exactly 4 tab-separated fields', () => {
     const rows = readRows();
     for (const row of rows) {
