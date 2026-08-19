@@ -45,7 +45,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const result = await client.query(
-      `SELECT id, title, location, city, state_region, pay, job_type, status, description, required_docs, created_at,
+      `SELECT id, title, location, city, state_region, pay, job_type, status, description,
+         required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
          transportation_required, work_authorization_required, language_preference, number_of_workers_needed,
          workers_hired AS hired_count,
@@ -72,7 +73,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       headers: CORS_HEADERS,
       body: JSON.stringify({
         ...job,
+        // All four requirement arrays must round-trip to EditJobModal: the
+        // edit payload always re-sends them (no omit path in the frontend
+        // mappers), so omitting any array here would wipe it on the next save
+        // — or permanently 409-lock a job whose requirements are frozen.
         required_docs: Array.isArray(job.required_docs) ? job.required_docs : [],
+        optional_docs: Array.isArray(job.optional_docs) ? job.optional_docs : [],
+        required_fields: Array.isArray(job.required_fields) ? job.required_fields : [],
+        optional_fields: Array.isArray(job.optional_fields) ? job.optional_fields : [],
       }),
     };
   } catch (err) {

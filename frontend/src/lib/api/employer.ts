@@ -186,10 +186,10 @@ export type EmployerJobDetail = Job & {
    */
   required_docs: string[];
   /**
-   * The four three-state arrays (migrations 073/074). All optional: the
-   * currently-deployed employer-jobs handlers do not send them yet (schema +
-   * validator shipped ahead of the handler update), so every reader must
-   * treat an absent array the same as an empty one, never crash on it.
+   * The four three-state arrays (migrations 073/074). Every employer-jobs
+   * handler (create/update/detail) now returns them; they stay optional in
+   * the type only for jobs fetched by a cached pre-rollout client or replayed
+   * fixtures — readers must still treat an absent array as empty, never crash.
    */
   optional_docs?: string[];
   required_fields?: string[];

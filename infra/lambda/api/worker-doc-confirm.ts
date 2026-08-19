@@ -277,7 +277,27 @@ export const handler = async (
         throw insertErr;
       }
     } else {
-      await client.query(insertSql, insertParams);
+      try {
+        await client.query(insertSql, insertParams);
+      } catch (insertErr) {
+        // Concurrent confirms of two independently-issued token slots for the
+        // same (worker, job, doc_type) can race the DELETE-then-INSERT above:
+        // both DELETEs see the same prior row (or none), then the second
+        // INSERT collides on worker_documents_per_job_unique. Map it to a 409
+        // rather than a 500 — the transaction rolls back cleanly and the
+        // caller can simply retry (the first confirm's row stands).
+        const pgErr = insertErr as { code?: string };
+        if (pgErr?.code === UNIQUE_VIOLATION) {
+          await client.query('ROLLBACK');
+          transactionStarted = false;
+          return {
+            statusCode: 409,
+            headers: CORS_HEADERS,
+            body: JSON.stringify({ error: 'document_conflict' }),
+          };
+        }
+        throw insertErr;
+      }
     }
 
     await client.query('COMMIT');

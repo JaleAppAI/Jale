@@ -324,6 +324,31 @@ describe('worker-doc-confirm Lambda', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
+  it('maps a 23505 on the non-cert INSERT (concurrent confirms of two slots for one doc_type) to 409 document_conflict', async () => {
+    // Two independently-issued tokens can each carry a slot for the same
+    // (worker, job, doc_type); confirming both concurrently races the
+    // DELETE-then-INSERT and the loser hits worker_documents_per_job_unique.
+    mockS3Send.mockResolvedValueOnce(headResult);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [slotRow] }) // slot lookup
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({}) // set_config RLS
+      .mockResolvedValueOnce({ rows: [slotRow] }) // guarded confirm SELECT
+      .mockResolvedValueOnce({ rowCount: 0 }) // DELETE (concurrent txn's row not yet visible)
+      .mockImplementationOnce(() => {
+        const err: any = new Error('duplicate key value violates unique constraint');
+        err.code = '23505';
+        return Promise.reject(err);
+      }) // INSERT loses the race
+      .mockResolvedValueOnce({}); // ROLLBACK
+
+    const res = await handler(makeEvent(validBody));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('document_conflict');
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
+
   describe('certification_doc (append, capped)', () => {
     const certBody = {
       ...validBody,

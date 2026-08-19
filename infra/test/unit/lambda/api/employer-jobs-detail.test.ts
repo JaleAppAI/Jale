@@ -71,7 +71,12 @@ describe('employer-jobs-detail', () => {
     const res = await handler(baseEvent);
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual(row);
+    expect(JSON.parse(res.body)).toEqual({
+      ...row,
+      optional_docs: [],
+      required_fields: [],
+      optional_fields: [],
+    });
     expect(JSON.parse(res.body).city).toBe('Houston');
     expect(JSON.parse(res.body).state_region).toBe('TX');
     expect(mockSetRlsContext).toHaveBeenCalledWith(expect.any(Object), 'employer-sub-1');
@@ -125,6 +130,49 @@ describe('employer-jobs-detail', () => {
     const jobLookupCall = mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('SELECT id, title, location'));
     expect(jobLookupCall![0]).toMatch(/\bcity\b/);
     expect(jobLookupCall![0]).toMatch(/\bstate_region\b/);
+  });
+
+  it('selects and returns all four requirement arrays so EditJobModal round-trips them', async () => {
+    // Regression: this endpoint feeds jobToForm/EditJobModal, whose save
+    // payload ALWAYS re-sends the four arrays. Omitting any of them here
+    // wiped stored requirements on the next save (or permanently 409-locked
+    // a frozen job) — the adversarial integration review's critical finding.
+    const row = {
+      id: JOB_ID,
+      title: 'Concrete Finisher',
+      location: 'Kyle, TX',
+      job_type: 'full-time',
+      status: 'active',
+      description: null,
+      required_docs: ['driver_license'],
+      optional_docs: ['resume'],
+      required_fields: ['work_authorization', 'references'],
+      optional_fields: ['education'],
+      created_at: '2026-08-18T00:00:00Z',
+      applicant_count: 1,
+      city_key: 'kyle-tx',
+      city: 'Kyle',
+      state: 'TX',
+      latitude: 29.99,
+      longitude: -97.88,
+    };
+    let capturedSql = '';
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, title, location')) {
+        capturedSql = sql;
+        return Promise.resolve({ rows: [row] });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(baseEvent);
+
+    expect(res.statusCode).toBe(200);
+    for (const col of ['optional_docs', 'required_fields', 'optional_fields'] as const) {
+      expect(capturedSql).toContain(col);
+      expect(JSON.parse(res.body)[col]).toEqual(row[col]);
+    }
+    expect(JSON.parse(res.body).required_docs).toEqual(['driver_license']);
   });
 
   it('normalizes nullable required_docs for the frontend contract', async () => {
