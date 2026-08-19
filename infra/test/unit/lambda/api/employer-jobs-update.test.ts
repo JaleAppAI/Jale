@@ -396,8 +396,15 @@ describe('employer-jobs-update', () => {
   };
 
   // Mock the current-job SELECT the edit path runs before UPDATE.
-  function mockCurrentJob(over: Partial<{ job_type: string; required_docs: string[]; applicant_count: number; hired_count: number; city: string | null; state_region: string | null }> = {}) {
-    const row = { job_type: 'full-time', required_docs: ['resume'], applicant_count: 0, hired_count: 0, city: null, state_region: null, ...over };
+  function mockCurrentJob(over: Partial<{
+    job_type: string; required_docs: string[]; optional_docs: string[];
+    required_fields: string[]; optional_fields: string[];
+    applicant_count: number; hired_count: number; city: string | null; state_region: string | null;
+  }> = {}) {
+    const row = {
+      job_type: 'full-time', required_docs: ['resume'], optional_docs: [], required_fields: [], optional_fields: [],
+      applicant_count: 0, hired_count: 0, city: null, state_region: null, ...over,
+    };
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
         return Promise.resolve({ rowCount: 1, rows: [row] });
@@ -522,9 +529,11 @@ describe('employer-jobs-update', () => {
   // Field-edit path — city triple + coordinates
   // ---------------------------------------------------------------------------
   //
-  // EDITABLE_COLUMNS positional layout (0-based param array index):
-  //   20 city_key, 21 city, 22 state, 23 state_region; WHERE id is bind $25
-  //   (i.e. params[24] once the trailing jobId is appended).
+  // EDITABLE_COLUMNS positional layout (0-based param array index), post
+  // Stage 1a shift (optional_docs/required_fields/optional_fields inserted
+  // next to required_docs):
+  //   23 city_key, 24 city, 25 state, 26 state_region; WHERE id is bind $28
+  //   (i.e. params[27] once the trailing jobId is appended).
 
   function findUpdateCall() {
     return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('UPDATE jobs SET'));
@@ -561,7 +570,7 @@ describe('employer-jobs-update', () => {
     const updateCall = findUpdateCall()!;
     expect(updateCall[0]).toContain('city_key');
     // params for city_key/city/state/state_region must be null — pinned positionally:
-    expect(updateCall[1].slice(20, 24)).toEqual([null, null, null, null]);
+    expect(updateCall[1].slice(23, 27)).toEqual([null, null, null, null]);
   });
 
   it('derives the matching-identity triple from parseable location text when a field edit omits the triple', async () => {
@@ -575,7 +584,7 @@ describe('employer-jobs-update', () => {
     // returns null for this same string, so state_region falls back to the
     // (here, null) stored value -- an intentional asymmetry between the two
     // location parsers under the merged doctrine.
-    expect(updateCall[1].slice(20, 24)).toEqual(['el-paso-tx', 'El Paso', 'TX', null]);
+    expect(updateCall[1].slice(23, 27)).toEqual(['el-paso-tx', 'El Paso', 'TX', null]);
   });
 
   it('a picker triple wins over the location text parse on edit', async () => {
@@ -589,7 +598,7 @@ describe('employer-jobs-update', () => {
     // state_region still derives from the SEO parser's read of `location`
     // ("El Paso, TX" -> TX), independently of the picker triple overriding
     // city_key/city/state to Austin.
-    expect(updateCall[1].slice(20, 24)).toEqual(['austin-tx', 'Austin', 'TX', 'TX']);
+    expect(updateCall[1].slice(23, 27)).toEqual(['austin-tx', 'Austin', 'TX', 'TX']);
   });
 
   it('rejects a mismatched city_key on edit (400)', async () => {
@@ -655,8 +664,8 @@ describe('employer-jobs-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'El Paso, TX' }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    expect(params[21]).toBe('El Paso');
-    expect(params[23]).toBe('TX');
+    expect(params[24]).toBe('El Paso');
+    expect(params[26]).toBe('TX');
   });
 
   it('explicit city/state_region body fields win over the parsed location when no triple or derivable location-city is present', async () => {
@@ -672,10 +681,10 @@ describe('employer-jobs-update', () => {
     }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    expect(params[20]).toBeNull();
-    expect(params[21]).toBe('North Austin');
-    expect(params[22]).toBeNull();
-    expect(params[23]).toBe('OK');
+    expect(params[23]).toBeNull();
+    expect(params[24]).toBe('North Austin');
+    expect(params[25]).toBeNull();
+    expect(params[26]).toBe('OK');
   });
 
   it('preserves the existing city/state_region when the new location is unparseable and no explicit override is given', async () => {
@@ -688,10 +697,10 @@ describe('employer-jobs-update', () => {
     // location changed. The matching-identity fields (city_key/state) DO
     // reset to null regardless -- that asymmetry is deliberate (see the
     // handler's inline comment) so a stale key never keeps matching feeds.
-    expect(params[20]).toBeNull();
-    expect(params[21]).toBe('El Paso');
-    expect(params[22]).toBeNull();
-    expect(params[23]).toBe('TX');
+    expect(params[23]).toBeNull();
+    expect(params[24]).toBe('El Paso');
+    expect(params[25]).toBeNull();
+    expect(params[26]).toBe('TX');
   });
 
   it('rejects an invalid explicit city on field edit, before opening a DB connection', async () => {
@@ -723,13 +732,13 @@ describe('employer-jobs-update', () => {
     // city_key/state are also null: cityCleared suppresses the derive
     // entirely, so a deliberately cleared city can never resurrect as a
     // matching city_key (merged doctrine).
-    expect(params[20]).toBeNull();
+    expect(params[23]).toBeNull();
     // city is NULL (cleared) despite both a parseable location ("Austin") and
     // a pre-existing stored value ("El Paso") that the old fallback-to-cur
     // behavior would otherwise have preserved.
-    expect(params[21]).toBeNull();
-    expect(params[22]).toBeNull();
-    expect(params[23]).toBe('TX');
+    expect(params[24]).toBeNull();
+    expect(params[25]).toBeNull();
+    expect(params[26]).toBe('TX');
   });
 
   it('an explicit null state_region clears it to NULL, even though the job already has a stored state_region', async () => {
@@ -740,10 +749,10 @@ describe('employer-jobs-update', () => {
     // Unlike an explicit `city: null`, a cleared state_region does not affect
     // the separate matching-identity triple: "Austin, TX" still derives a
     // full city_key/city/state via parseCityFromLocation.
-    expect(params[20]).toBe('austin-tx');
-    expect(params[21]).toBe('Austin');
-    expect(params[22]).toBe('TX');
-    expect(params[23]).toBeNull();
+    expect(params[23]).toBe('austin-tx');
+    expect(params[24]).toBe('Austin');
+    expect(params[25]).toBe('TX');
+    expect(params[26]).toBeNull();
   });
 
   it('both city and state_region explicitly null clears both, ignoring both the parse and the stored values', async () => {
@@ -751,10 +760,10 @@ describe('employer-jobs-update', () => {
     const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, location: 'Austin, TX', city: null, state_region: null }) }));
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
-    expect(params[20]).toBeNull();
-    expect(params[21]).toBeNull();
-    expect(params[22]).toBeNull();
     expect(params[23]).toBeNull();
+    expect(params[24]).toBeNull();
+    expect(params[25]).toBeNull();
+    expect(params[26]).toBeNull();
   });
 
   it('an explicit empty-string city still 400s -- null clears, but empty string is never valid', async () => {
@@ -962,5 +971,235 @@ describe('employer-jobs-update', () => {
     );
     expect(preReadCall).toBeDefined();
     expect(preReadCall![0]).toContain('FOR UPDATE OF jobs');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Stage 1a -- optional_docs / required_fields / optional_fields
+  // ---------------------------------------------------------------------------
+  //
+  // New EDITABLE_COLUMNS positional layout (0-based param array index), post
+  // Stage 1a shift: 5 required_docs, 6 optional_docs, 7 required_fields,
+  // 8 optional_fields, 16 work_authorization_required,
+  // 23 city_key, 24 city, 25 state, 26 state_region.
+
+  it('rejects an invalid required_fields entry on a field edit, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['bogus'] }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_required_fields');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid optional_fields entry on a field edit, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_fields: ['bogus'] }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_optional_fields');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid optional_docs entry on a field edit, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_docs: ['bogus'] }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_optional_docs');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects overlapping required_fields/optional_fields on update with 400 requirements_tier_overlap', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, required_fields: ['work_authorization'], optional_fields: ['work_authorization'],
+    }) }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['work_authorization']);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects overlapping required_docs/optional_docs on update with 400 requirements_tier_overlap', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, required_docs: ['resume'], optional_docs: ['resume'],
+    }) }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['resume']);
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('rejects an overlap created against a PRESERVED optional_docs value (effective values, not just the raw body)', async () => {
+    // optional_docs is omitted from the body -> preserved from cur (['resume']).
+    // VALID_EDIT's required_docs (['resume']) now collides with that preserved
+    // value -- proves the overlap check runs on effective post-merge values.
+    mockCurrentJob({ optional_docs: ['resume'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['resume']);
+  });
+
+  it('lists exactly optional_docs in 409 field_locked when only optional_docs changes with applicants', async () => {
+    mockCurrentJob({ applicant_count: 1, optional_docs: ['driver_license'] });
+    // VALID_EDIT's required_docs is ['resume'] -- pick a non-overlapping
+    // optional_docs value (work_auth_doc) so this only exercises the freeze
+    // check, not the (separately tested) tier-overlap rejection.
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_docs: ['work_auth_doc'] }) }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toEqual(['optional_docs']);
+  });
+
+  it('lists exactly required_fields in 409 field_locked when only required_fields changes with applicants', async () => {
+    mockCurrentJob({ applicant_count: 1, required_fields: ['date_available'] });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['work_authorization'] }) }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toEqual(['required_fields']);
+  });
+
+  it('lists exactly optional_fields in 409 field_locked when only optional_fields changes with applicants', async () => {
+    mockCurrentJob({ applicant_count: 1, optional_fields: ['education'] });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_fields: ['references'] }) }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toEqual(['optional_fields']);
+  });
+
+  it('lists every locked field when required_docs, optional_docs, required_fields, optional_fields, and job_type all change with applicants', async () => {
+    mockCurrentJob({
+      applicant_count: 3, job_type: 'contract', required_docs: ['driver_license'],
+      optional_docs: ['work_auth_doc'], required_fields: ['date_available'], optional_fields: ['education'],
+    });
+    const res = await handler(makeEvent({ body: JSON.stringify({
+      ...VALID_EDIT, // job_type 'full-time' differs from cur 'contract'; required_docs ['resume'] differs
+      optional_docs: ['certification_doc'], required_fields: ['work_authorization'], optional_fields: ['references'],
+    }) }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toEqual(expect.arrayContaining(['required_docs', 'optional_docs', 'required_fields', 'optional_fields', 'job_type']));
+    expect(body.fields).toHaveLength(5);
+  });
+
+  it('does NOT lock when the three new arrays are simply omitted from the body on a job with applicants (preserve-on-omit must not look like a change)', async () => {
+    mockCurrentJob({ applicant_count: 2, optional_docs: ['driver_license'], required_fields: ['date_available'], optional_fields: ['education'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) })); // omits all three new keys
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('preserves stored optional_docs when the body omits the key', async () => {
+    mockCurrentJob({ optional_docs: ['driver_license'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[6]).toEqual(['driver_license']);
+  });
+
+  it('clears optional_docs when the body sends an explicit empty array', async () => {
+    mockCurrentJob({ optional_docs: ['driver_license'] });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_docs: [] }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[6]).toEqual([]);
+  });
+
+  it('preserves stored required_fields when the body omits the key', async () => {
+    mockCurrentJob({ required_fields: ['date_available'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[7]).toEqual(['date_available']);
+  });
+
+  it('clears required_fields when the body sends an explicit empty array', async () => {
+    mockCurrentJob({ required_fields: ['date_available'] });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: [] }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[7]).toEqual([]);
+  });
+
+  it('preserves stored optional_fields when the body omits the key', async () => {
+    mockCurrentJob({ optional_fields: ['education'] });
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[8]).toEqual(['education']);
+  });
+
+  it('clears optional_fields when the body sends an explicit empty array', async () => {
+    mockCurrentJob({ optional_fields: ['education'] });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, optional_fields: [] }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[8]).toEqual([]);
+  });
+
+  it('required_docs keeps exact-replace semantics: omitting it clears to empty (regression -- unlike the new preserve-on-omit arrays)', async () => {
+    mockCurrentJob({ required_docs: ['resume', 'driver_license'] });
+    const { required_docs: _omit, ...editWithoutDocs } = VALID_EDIT as Record<string, unknown>;
+    const res = await handler(makeEvent({ body: JSON.stringify(editWithoutDocs) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[5]).toEqual([]);
+  });
+
+  it('derives work_authorization_required=true from required_fields on update, overriding a false legacy flag', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['work_authorization'], work_authorization_required: false }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[16]).toBe(true);
+  });
+
+  it('derives work_authorization_required=false on update when required_fields is present but excludes it, overriding a true legacy flag', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, required_fields: ['date_available'], work_authorization_required: true }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[16]).toBe(false);
+  });
+
+  it('keeps the legacy work_authorization_required flag on update when required_fields is absent from the body', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, work_authorization_required: true }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[16]).toBe(true);
+  });
+
+  it('does NOT resync work_authorization_required from a PRESERVED required_fields -- only a body-supplied required_fields owns the flag (deliberate, spec-directed asymmetry)', async () => {
+    // Stored required_fields includes work_authorization, but the body omits
+    // required_fields (so it's preserved) AND explicitly sends
+    // work_authorization_required: false via the legacy flag. Per the
+    // ownership rule, the legacy flag governs whenever required_fields is
+    // absent from THIS body -- even though the effective (preserved)
+    // required_fields still contains work_authorization. The row can end up
+    // internally inconsistent (required_fields says required, the flag says
+    // not) until the next edit that touches required_fields explicitly --
+    // that's the documented tradeoff, not a bug.
+    mockCurrentJob({ required_fields: ['work_authorization'] });
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, work_authorization_required: false }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[7]).toEqual(['work_authorization']); // required_fields: preserved as-is
+    expect(params[16]).toBe(false); // work_authorization_required: legacy flag wins
+  });
+
+  it('required_docs 409 field_locked still fires when required_docs is omitted (exact-replace clears it) on a job with applicants', async () => {
+    mockCurrentJob({ applicant_count: 1, required_docs: ['resume', 'driver_license'] });
+    const { required_docs: _omit, ...editWithoutDocs } = VALID_EDIT as Record<string, unknown>;
+    const res = await handler(makeEvent({ body: JSON.stringify(editWithoutDocs) }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toEqual(['required_docs']);
   });
 });

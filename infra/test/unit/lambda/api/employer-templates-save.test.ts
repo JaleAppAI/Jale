@@ -179,4 +179,85 @@ describe('employer-templates-save', () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe(code);
   });
+
+  // ---------------------------------------------------------------------------
+  // Stage 1a -- optional_docs / required_fields / optional_fields
+  // ---------------------------------------------------------------------------
+
+  it('stores all four requirement arrays from a fully-populated payload', async () => {
+    const res = await handler(makeEvent({
+      payload: {
+        ...BASE_PAYLOAD,
+        required_docs: ['resume'],
+        optional_docs: ['driver_license'],
+        required_fields: ['work_authorization'],
+        optional_fields: ['date_available'],
+      },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(insertCall).toBeDefined();
+    const parsed = JSON.parse(insertCall[1][2]);
+    expect(parsed.required_docs).toEqual(['resume']);
+    expect(parsed.optional_docs).toEqual(['driver_license']);
+    expect(parsed.required_fields).toEqual(['work_authorization']);
+    expect(parsed.optional_fields).toEqual(['date_available']);
+  });
+
+  it('validates a legacy payload with none of the three new keys (still 201, and no defaults are injected into the stored payload)', async () => {
+    const res = await handler(makeEvent({ payload: BASE_PAYLOAD }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    const parsed = JSON.parse(insertCall[1][2]);
+    // required_docs is existing, unconditional behavior -- untouched by Stage 1a.
+    expect(parsed.required_docs).toEqual([]);
+    // The three NEW keys must stay absent, not default to [], so an old
+    // template's stored shape is never rewritten just by being re-saved.
+    expect(parsed).not.toHaveProperty('optional_docs');
+    expect(parsed).not.toHaveProperty('required_fields');
+    expect(parsed).not.toHaveProperty('optional_fields');
+  });
+
+  it('rejects overlapping required/optional fields with 400 requirements_tier_overlap', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, required_fields: ['work_authorization'], optional_fields: ['work_authorization'] },
+    }));
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['work_authorization']);
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('INSERT INTO employer_job_templates'), expect.anything());
+  });
+
+  it('rejects overlapping required/optional docs with 400 requirements_tier_overlap', async () => {
+    const res = await handler(makeEvent({
+      payload: { ...BASE_PAYLOAD, required_docs: ['resume'], optional_docs: ['resume'] },
+    }));
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('requirements_tier_overlap');
+    expect(body.keys).toEqual(['resume']);
+  });
+
+  it('rejects an invalid optional_docs entry with 400 invalid_optional_docs', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, optional_docs: ['bogus'] } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_optional_docs');
+  });
+
+  it('rejects an invalid required_fields entry with 400 invalid_required_fields', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, required_fields: ['bogus'] } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_required_fields');
+  });
+
+  it('rejects an invalid optional_fields entry with 400 invalid_optional_fields', async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, optional_fields: ['bogus'] } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_optional_fields');
+  });
 });
