@@ -186,11 +186,23 @@ DEEPGRAM_URL="https://api.deepgram.com/v1/listen?model=nova-3&language=multi&sma
 #    passes `--inference-config '{"maxTokens":1024}'` for parity with that
 #    same function's `inferenceConfig: { maxTokens: 1024 }`. If
 #    ai-profile-writer.ts's prompt text or inferenceConfig changes, update
-#    this copy to match. ──
+#    this copy to match.
+#
+#    DELIBERATE DEVIATION — user-prompt ASR-metadata block: production's
+#    extractProfileFromTranscript() appends a conditional "ASR metadata
+#    (calibration only, ...)" block after the transcript, built from
+#    Transcribe's per-word confidences and language codes. This harness
+#    EXCLUDES that block for all three providers ON PURPOSE: only the
+#    Transcribe branch could supply it, and giving one provider a different
+#    prompt than the other two would confound transcript quality with
+#    prompt shape — the whole point here is field yield under IDENTICAL
+#    prompts. The system prompt's ASR-metadata sentence IS included below
+#    (production sends it unconditionally, block or no block). ──
 EXTRACTION_SYSTEM_PROMPT=$(cat <<'EOF'
 You are a profile extraction assistant for Jale, a bilingual job platform for blue-collar workers in the US.
 Extract structured profile information from voice message transcripts. Workers may speak English or Spanish.
 Return ONLY valid JSON — no additional text, no markdown fences.
+You may be given ASR metadata about transcription quality. Use it only to calibrate confidence_scores (lower confidence for fields supported by low-confidence words); never copy it into extracted fields.
 EOF
 )
 
