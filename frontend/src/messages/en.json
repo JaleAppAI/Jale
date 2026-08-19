@@ -678,7 +678,7 @@
         "basics_hint": "What the job is, and where the work happens.",
         "details": "Pay and schedule",
         "details_hint": "Pay, dates, and how many workers you need on site.",
-        "documents": "Documents"
+        "documents": "What applicants must provide"
       },
       "close": "Close",
       "job_title": "Job Title",
@@ -1138,6 +1138,126 @@
     "tracked_caption": "Opens and signups from this link are tracked and credited to your business.",
     "fallback_link_label": "Backup link",
     "fallback_link_untracked": "This link works, but opens and signups from it won't be tracked or credited to your business. Try \"Get share link\" again later for a trackable link."
+  },
+  "job_requirements": {
+    "picker": {
+      "rule_line": "Required items must be completed to apply. Optional items can be skipped. Off items are not asked.",
+      "count_badge": "{required} required · {optional} optional",
+      "locked_note": "Requirements are locked — this job already has applicants",
+      "sensitive": "Sensitive",
+      "cert_hint": "Will ask for proof of: {names}"
+    },
+    "groups": {
+      "documents": "Documents",
+      "questions": "Questions",
+      "identity": "Identity & contact",
+      "availability": "Availability & pay",
+      "background": "Background",
+      "experience": "Experience"
+    },
+    "states": {
+      "off": "Off",
+      "optional": "Optional",
+      "required": "Required"
+    },
+    "docs": {
+      "resume": "Resume",
+      "driver_license": "Driver's License",
+      "work_auth_doc": "Work Authorization Document",
+      "certification_doc": "Certification"
+    },
+    "fields": {
+      "work_authorization": "Authorized to work in the US?",
+      "date_available": "Date available",
+      "desired_pay": "Desired pay",
+      "home_address": "Home address",
+      "date_of_birth": "Date of birth",
+      "emergency_contact": "Emergency contact",
+      "worked_here_before": "Worked here before?",
+      "education": "Education",
+      "references": "References",
+      "work_history": "Work history",
+      "military_service": "Military service"
+    },
+    "apply": {
+      "title": "Complete your application",
+      "submit": "Submit Application",
+      "skip": "Skip",
+      "skipped": "Skipped",
+      "not_answered": "This needs an answer",
+      "submit_blocked": "Complete the required fields before submitting",
+      "certification_count": "{count} of {max} uploaded",
+      "add_certification": "Add certification",
+      "select_placeholder": "Select...",
+      "graduated": "Graduated?",
+      "worked_here_before_when": "When did you work here?",
+      "yes": "Yes",
+      "no": "No",
+      "remove": "Remove",
+      "add_reference": "Add reference",
+      "add_work_history": "Add previous job",
+      "pay_interval": {
+        "hourly": "Hourly",
+        "daily": "Daily",
+        "weekly": "Weekly",
+        "monthly": "Monthly",
+        "fixed": "Fixed (flat rate)"
+      },
+      "education_level": {
+        "none": "None",
+        "primary": "Primary school",
+        "high_school": "High school",
+        "ged": "GED",
+        "some_college": "Some college",
+        "college": "College degree",
+        "trade_school": "Trade school"
+      },
+      "address": {
+        "street": "Street address",
+        "apartment": "Apt, unit, etc. (optional)",
+        "city": "City",
+        "state": "State",
+        "zip": "ZIP code"
+      },
+      "contact": {
+        "name": "Name",
+        "phone": "Phone"
+      },
+      "reference": {
+        "name": "Name",
+        "relationship": "Relationship",
+        "company": "Company",
+        "phone": "Phone"
+      },
+      "work_history": {
+        "company": "Company",
+        "title": "Job title",
+        "from": "From",
+        "to": "To",
+        "responsibilities": "Responsibilities",
+        "reason_for_leaving": "Reason for leaving"
+      },
+      "military": {
+        "branch": "Branch",
+        "rank_at_discharge": "Rank at discharge",
+        "from": "From",
+        "to": "To",
+        "discharge_type": "Discharge type"
+      }
+    },
+    "employer": {
+      "answers_title": "Application answers",
+      "not_provided": "Not provided",
+      "references_count": "{count, plural, one {# reference} other {# references}}",
+      "work_history_count": "{count, plural, one {# job} other {# jobs}}"
+    },
+    "errors": {
+      "city_required": "Pick a real city from the list",
+      "tier_overlap": "A requirement can't be both required and optional",
+      "missing_answers": "Some required answers are missing",
+      "missing_answers_fields": "Missing: {fields}",
+      "invalid_answers": "Some answers aren't valid. Please review and try again."
+    }
   },
   "job_share": {
     "title": "Share this job",
