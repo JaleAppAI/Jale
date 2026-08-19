@@ -678,7 +678,7 @@
         "basics_hint": "Qué es el empleo y dónde se hace el trabajo.",
         "details": "Pago y horario",
         "details_hint": "Pago, fechas y cuántos trabajadores necesita en el sitio.",
-        "documents": "Documentos"
+        "documents": "Lo que deben entregar los postulantes"
       },
       "close": "Cerrar",
       "job_title": "Título del puesto",
@@ -1136,6 +1136,126 @@
     "tracked_caption": "Las visitas y registros desde este enlace se rastrean y se acreditan a su negocio.",
     "fallback_link_label": "Enlace de respaldo",
     "fallback_link_untracked": "Este enlace funciona, pero las visitas y registros desde él no se rastrearán ni se acreditarán a su negocio. Intente \"Obtener enlace\" de nuevo más tarde para conseguir un enlace rastreable."
+  },
+  "job_requirements": {
+    "picker": {
+      "rule_line": "Los elementos Requeridos deben completarse para postularse. Los Opcionales se pueden omitir. Los que están Desactivados no se piden.",
+      "count_badge": "{required, plural, one {# requerido} other {# requeridos}} · {optional, plural, one {# opcional} other {# opcionales}}",
+      "locked_note": "Los requisitos están bloqueados — este trabajo ya tiene postulantes",
+      "sensitive": "Sensible",
+      "cert_hint": "Se pedirá comprobante de: {names}"
+    },
+    "groups": {
+      "documents": "Documentos",
+      "questions": "Preguntas",
+      "identity": "Identidad y contacto",
+      "availability": "Disponibilidad y pago",
+      "background": "Información general",
+      "experience": "Experiencia"
+    },
+    "states": {
+      "off": "Desactivado",
+      "optional": "Opcional",
+      "required": "Requerido"
+    },
+    "docs": {
+      "resume": "Currículum",
+      "driver_license": "Licencia de conducir",
+      "work_auth_doc": "Documento de autorización de trabajo",
+      "certification_doc": "Certificación"
+    },
+    "fields": {
+      "work_authorization": "¿Autorizado para trabajar en EE. UU.?",
+      "date_available": "Fecha de disponibilidad",
+      "desired_pay": "Pago deseado",
+      "home_address": "Dirección",
+      "date_of_birth": "Fecha de nacimiento",
+      "emergency_contact": "Contacto de emergencia",
+      "worked_here_before": "¿Ha trabajado aquí antes?",
+      "education": "Educación",
+      "references": "Referencias",
+      "work_history": "Historial de trabajo",
+      "military_service": "Servicio militar"
+    },
+    "apply": {
+      "title": "Complete su postulación",
+      "submit": "Enviar postulación",
+      "skip": "Omitir",
+      "skipped": "Omitido",
+      "not_answered": "Falta responder esto",
+      "submit_blocked": "Complete los campos requeridos antes de enviar",
+      "certification_count": "{count} de {max} subidos",
+      "add_certification": "Agregar certificación",
+      "select_placeholder": "Seleccionar...",
+      "graduated": "¿Se graduó?",
+      "worked_here_before_when": "¿Cuándo trabajó aquí?",
+      "yes": "Sí",
+      "no": "No",
+      "remove": "Eliminar",
+      "add_reference": "Agregar referencia",
+      "add_work_history": "Agregar empleo anterior",
+      "pay_interval": {
+        "hourly": "Por hora",
+        "daily": "Diario",
+        "weekly": "Semanal",
+        "monthly": "Mensual",
+        "fixed": "Fijo (tarifa plana)"
+      },
+      "education_level": {
+        "none": "Ninguna",
+        "primary": "Primaria",
+        "high_school": "Preparatoria (high school)",
+        "ged": "GED",
+        "some_college": "Algunos estudios universitarios",
+        "college": "Título universitario",
+        "trade_school": "Escuela técnica"
+      },
+      "address": {
+        "street": "Calle y número",
+        "apartment": "Apto, unidad, etc. (opcional)",
+        "city": "Ciudad",
+        "state": "Estado",
+        "zip": "Código postal"
+      },
+      "contact": {
+        "name": "Nombre",
+        "phone": "Teléfono"
+      },
+      "reference": {
+        "name": "Nombre",
+        "relationship": "Relación",
+        "company": "Empresa",
+        "phone": "Teléfono"
+      },
+      "work_history": {
+        "company": "Empresa",
+        "title": "Puesto",
+        "from": "Desde",
+        "to": "Hasta",
+        "responsibilities": "Responsabilidades",
+        "reason_for_leaving": "Motivo de salida"
+      },
+      "military": {
+        "branch": "Rama",
+        "rank_at_discharge": "Rango al salir",
+        "from": "Desde",
+        "to": "Hasta",
+        "discharge_type": "Tipo de baja"
+      }
+    },
+    "employer": {
+      "answers_title": "Respuestas de la postulación",
+      "not_provided": "No proporcionado",
+      "references_count": "{count, plural, one {# referencia} other {# referencias}}",
+      "work_history_count": "{count, plural, one {# empleo} other {# empleos}}"
+    },
+    "errors": {
+      "city_required": "Seleccione una ciudad real de la lista",
+      "tier_overlap": "Un requisito no puede ser requerido y opcional a la vez",
+      "missing_answers": "Faltan algunas respuestas requeridas",
+      "missing_answers_fields": "Faltan: {fields}",
+      "invalid_answers": "Algunas respuestas no son válidas. Revise e intente de nuevo."
+    }
   },
   "job_share": {
     "title": "Comparta este trabajo",
