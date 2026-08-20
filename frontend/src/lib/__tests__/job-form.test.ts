@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyLocationToJobForm, initialForm, jobFormToCreatePayload, jobFormToEditPayload, jobToForm, validateJobLocationFields, jobFormFromTemplatePayload, templateRowSummary, setRequirementState, type JobForm,
+  DURATION_BUCKETS, WORK_DAYS, DURATION_BUCKET_LABELS, type DurationBucket,
+  deriveLegacyExpectedDuration, deriveLegacyShiftSchedule,
+  payRangeExceeds, validateJobNumbers, validateStepBasics, validateStepDetails, validateFullJobForm,
+  type CertificationRequirement,
 } from '@/lib/job-form';
 import type { EmployerJobDetail } from '@/lib/api/employer';
 
@@ -451,5 +455,611 @@ describe('templateRowSummary', () => {
   it('joins a provided interval label onto real pay, never onto the em dash', () => {
     expect(templateRowSummary({ pay_min: 20, pay_max: 28 }, 'per hour').pay).toBe('$20–$28 · per hour');
     expect(templateRowSummary({}, 'per hour').pay).toBe('—');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FE-T3: job-flow-redesign structured fields (trade_category_other,
+// expected_duration_bucket, work_days, shift_start/shift_end,
+// certification_requirements) -- constants, legacy derivation, jobToForm
+// parsing/seeding, and the payload rules.
+// ---------------------------------------------------------------------------
+
+describe('DURATION_BUCKETS / WORK_DAYS constants', () => {
+  it('byte-matches the migration 077 enum order', () => {
+    expect(DURATION_BUCKETS).toEqual(['lt_1w', '1_2w', '2_4w', '1_3m', '3_6m', '6m_plus', 'ongoing']);
+  });
+
+  it('byte-matches the migration 077 work_days allowlist order', () => {
+    expect(WORK_DAYS).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']);
+  });
+});
+
+describe('initialForm additive defaults', () => {
+  it('defaults every FE-T3 field to its empty shape', () => {
+    expect(initialForm.trade_category_other).toBe('');
+    expect(initialForm.expected_duration_bucket).toBe('');
+    expect(initialForm.work_days).toEqual([]);
+    expect(initialForm.shift_start).toBe('');
+    expect(initialForm.shift_end).toBe('');
+    expect(initialForm.certification_requirements).toEqual([]);
+  });
+});
+
+describe('deriveLegacyExpectedDuration', () => {
+  // Copied byte-for-byte from messages/en.json's common.duration_bucket.* --
+  // job-detail-display.ts's durationLabel() renders the SAME job via that
+  // catalogue, so the legacy free-text fallback this produces must read
+  // identically, not merely "close enough".
+  const EXPECTED: Record<DurationBucket, string> = {
+    lt_1w: 'Less than 1 week',
+    '1_2w': '1–2 weeks',
+    '2_4w': '2–4 weeks',
+    '1_3m': '1–3 months',
+    '3_6m': '3–6 months',
+    '6m_plus': '6+ months',
+    ongoing: 'Ongoing / Permanent',
+  };
+
+  it('matches messages/en.json common.duration_bucket verbatim for every bucket', () => {
+    for (const bucket of DURATION_BUCKETS) {
+      expect(DURATION_BUCKET_LABELS[bucket]).toBe(EXPECTED[bucket]);
+      expect(deriveLegacyExpectedDuration(bucket)).toBe(EXPECTED[bucket]);
+    }
+  });
+});
+
+describe('deriveLegacyShiftSchedule', () => {
+  it('does not wrap the week: {sat,sun,mon} groups Sat-Sun together, Mon alone', () => {
+    expect(deriveLegacyShiftSchedule(['sat', 'sun', 'mon'], '', '')).toBe('Mon, Sat–Sun');
+  });
+
+  it('groups two separate mid-week runs', () => {
+    expect(deriveLegacyShiftSchedule(['mon', 'tue', 'thu', 'fri'], '', '')).toBe('Mon–Tue, Thu–Fri');
+  });
+
+  it('renders a single selected day with no dash', () => {
+    expect(deriveLegacyShiftSchedule(['wed'], '', '')).toBe('Wed');
+  });
+
+  it('collapses a full week into one range', () => {
+    expect(deriveLegacyShiftSchedule(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], '', '')).toBe('Mon–Sun');
+  });
+
+  it('is order-independent -- input order never affects the rendered grouping', () => {
+    expect(deriveLegacyShiftSchedule(['fri', 'mon', 'thu', 'tue'], '', '')).toBe('Mon–Tue, Thu–Fri');
+  });
+
+  it('formats a full 12h hours range with no days present', () => {
+    expect(deriveLegacyShiftSchedule([], '07:00', '16:00')).toBe('7:00 AM–4:00 PM');
+  });
+
+  it('combines days and hours with a middot separator', () => {
+    expect(deriveLegacyShiftSchedule(['mon', 'tue', 'thu', 'fri'], '07:00', '16:00'))
+      .toBe('Mon–Tue, Thu–Fri · 7:00 AM–4:00 PM');
+  });
+
+  // One-sided shifts are a legitimate shape (migration 077's header: "starts
+  // around 7am, end time varies"). Convention mirrors formatPayRange() in
+  // infra/lambda/lib/job-fields.ts, which renders a one-sided pay bound as
+  // "From $20" / "Up to $30" rather than a dangling dash.
+  it('renders a start-only shift as "From <time>"', () => {
+    expect(deriveLegacyShiftSchedule([], '07:00', '')).toBe('From 7:00 AM');
+  });
+
+  it('renders an end-only shift as "Up to <time>"', () => {
+    expect(deriveLegacyShiftSchedule([], '', '16:00')).toBe('Up to 4:00 PM');
+  });
+
+  it('handles midnight and noon boundaries (12-hour rollover)', () => {
+    expect(deriveLegacyShiftSchedule([], '00:00', '12:00')).toBe('12:00 AM–12:00 PM');
+  });
+
+  it('tolerates a Postgres TIME value with seconds (HH:MM:SS)', () => {
+    expect(deriveLegacyShiftSchedule([], '07:00:00', '16:00:30.5')).toBe('7:00 AM–4:00 PM');
+  });
+
+  it('returns an empty string when nothing is set', () => {
+    expect(deriveLegacyShiftSchedule([], '', '')).toBe('');
+  });
+
+  it('ignores an unparseable time rather than crashing', () => {
+    expect(deriveLegacyShiftSchedule([], 'garbage', '16:00')).toBe('Up to 4:00 PM');
+  });
+});
+
+describe('payRangeExceeds', () => {
+  it('is false when min equals max', () => {
+    expect(payRangeExceeds('20', '20')).toBe(false);
+  });
+
+  it('is false when either side is empty', () => {
+    expect(payRangeExceeds('', '30')).toBe(false);
+    expect(payRangeExceeds('20', '')).toBe(false);
+    expect(payRangeExceeds('', '')).toBe(false);
+  });
+
+  it('is true when min exceeds max', () => {
+    expect(payRangeExceeds('30', '20')).toBe(true);
+  });
+
+  it('is false when min is below max', () => {
+    expect(payRangeExceeds('20', '30')).toBe(false);
+  });
+
+  it('is false for non-numeric input (not this function\'s job to flag)', () => {
+    expect(payRangeExceeds('abc', '20')).toBe(false);
+  });
+});
+
+describe('validateJobNumbers (regression coverage for the payRangeExceeds refactor)', () => {
+  it('accepts a fully valid form', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_min: '20', pay_max: '30', number_of_workers_needed: '2', required_experience_years: '1' })).toBeNull();
+  });
+
+  it('flags non-numeric pay as "number"', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_min: 'abc' })).toBe('number');
+  });
+
+  it('flags a negative pay value as "number"', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_min: '-5' })).toBe('number');
+  });
+
+  // Pins the payRangeExceeds refactor: a negative pay_max alongside a valid
+  // pay_min must still hit the pre-existing "number" check (line order:
+  // negative-value check runs BEFORE the pay_range/payRangeExceeds check),
+  // not get reclassified as "pay_range" or silently pass.
+  it('flags a valid pay_min with a negative pay_max as "number", not "pay_range"', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_min: '5', pay_max: '-1' })).toBe('number');
+  });
+
+  it('flags a negative pay_max alone as "number"', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_max: '-1' })).toBe('number');
+  });
+
+  it('flags min > max as "pay_range"', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_min: '30', pay_max: '20' })).toBe('pay_range');
+  });
+
+  it('allows min === max', () => {
+    expect(validateJobNumbers({ ...initialForm, pay_min: '20', pay_max: '20' })).toBeNull();
+  });
+
+  it('flags fewer than 1 worker as "headcount"', () => {
+    expect(validateJobNumbers({ ...initialForm, number_of_workers_needed: '0' })).toBe('headcount');
+  });
+});
+
+describe('validateStepBasics', () => {
+  const validBasics: JobForm = { ...initialForm, title: 'Roofer', location: 'El Paso, TX', trade_category: 'concrete', city_key: 'el-paso-tx' };
+
+  it('passes a fully valid basics form', () => {
+    expect(validateStepBasics(validBasics)).toBeNull();
+  });
+
+  it('flags a missing title as "required"', () => {
+    expect(validateStepBasics({ ...validBasics, title: '' })).toBe('required');
+  });
+
+  it('flags a missing location as "required"', () => {
+    expect(validateStepBasics({ ...validBasics, location: '' })).toBe('required');
+  });
+
+  it('flags a missing trade_category as "required"', () => {
+    expect(validateStepBasics({ ...validBasics, trade_category: '' })).toBe('required');
+  });
+
+  it('requires trade_category_other when trade_category is "other"', () => {
+    expect(validateStepBasics({ ...validBasics, trade_category: 'other', trade_category_other: '' }))
+      .toBe('trade_category_other_required');
+  });
+
+  it('accepts trade_category "other" once trade_category_other is filled', () => {
+    expect(validateStepBasics({ ...validBasics, trade_category: 'other', trade_category_other: 'Welder' }))
+      .toBeNull();
+  });
+
+  it('does not require trade_category_other for a non-"other" trade', () => {
+    expect(validateStepBasics({ ...validBasics, trade_category: 'concrete', trade_category_other: '' }))
+      .toBeNull();
+  });
+
+  it('requires a picked city (location_pick_required)', () => {
+    expect(validateStepBasics({ ...validBasics, city_key: null })).toBe('location_pick_required');
+  });
+
+  it('flags a malformed state_region once a city is picked', () => {
+    // city_key must be set here, or the location_pick_required branch above
+    // fires first and masks this check.
+    expect(validateStepBasics({ ...validBasics, state_region: '1A' })).toBe('state_region');
+  });
+
+  it('priority: the bundled required-fields check wins over trade_category_other', () => {
+    expect(validateStepBasics({ ...validBasics, title: '', trade_category: 'other', trade_category_other: '' }))
+      .toBe('required');
+  });
+
+  it('priority: trade_category_other wins over the city-pick check', () => {
+    expect(validateStepBasics({ ...validBasics, trade_category: 'other', trade_category_other: '', city_key: null }))
+      .toBe('trade_category_other_required');
+  });
+});
+
+describe('validateStepDetails', () => {
+  it('passes valid numbers with no minWorkers constraint', () => {
+    expect(validateStepDetails({ ...initialForm, number_of_workers_needed: '2' })).toBeNull();
+  });
+
+  it('passes through validateJobNumbers codes unchanged', () => {
+    expect(validateStepDetails({ ...initialForm, pay_min: 'abc' })).toBe('number');
+    expect(validateStepDetails({ ...initialForm, pay_min: '30', pay_max: '20' })).toBe('pay_range');
+    expect(validateStepDetails({ ...initialForm, number_of_workers_needed: '0' })).toBe('headcount');
+  });
+
+  it('flags headcount below an edit-mode minWorkers floor (EditJobModal\'s hired_count guard)', () => {
+    expect(validateStepDetails({ ...initialForm, number_of_workers_needed: '2' }, { minWorkers: 3 })).toBe('headcount');
+  });
+
+  it('allows headcount exactly at the minWorkers floor', () => {
+    expect(validateStepDetails({ ...initialForm, number_of_workers_needed: '3' }, { minWorkers: 3 })).toBeNull();
+  });
+
+  it('base numeric validation still wins over a satisfied minWorkers floor', () => {
+    expect(validateStepDetails({ ...initialForm, pay_min: '30', pay_max: '20', number_of_workers_needed: '5' }, { minWorkers: 3 }))
+      .toBe('pay_range');
+  });
+
+  // Both-or-neither for shift_start/shift_end: migration 077 allows either
+  // TIME column alone at the DB layer, but lib/job-detail-display.ts's
+  // scheduleSummary() only renders an hours range when BOTH bounds are
+  // present AND suppresses the legacy shift_schedule fallback the moment any
+  // structured field exists -- so a one-sided submission from this form
+  // would display as no schedule row at all. Blocked here at the form layer.
+  // Distinct code from validateStepBasics's 'required' (title/location/trade)
+  // so a caller flattening validateFullJobForm's result can still tell which
+  // control to highlight; both currently map onto the same
+  // `modal.validation_required` i18n key (no dedicated key exists yet).
+  it('flags a start-only shift as "shift_incomplete"', () => {
+    expect(validateStepDetails({ ...initialForm, shift_start: '07:00' })).toBe('shift_incomplete');
+  });
+
+  it('flags an end-only shift as "shift_incomplete"', () => {
+    expect(validateStepDetails({ ...initialForm, shift_end: '16:00' })).toBe('shift_incomplete');
+  });
+
+  it('allows both shift bounds set', () => {
+    expect(validateStepDetails({ ...initialForm, shift_start: '07:00', shift_end: '16:00' })).toBeNull();
+  });
+
+  it('allows neither shift bound set', () => {
+    expect(validateStepDetails({ ...initialForm, shift_start: '', shift_end: '' })).toBeNull();
+  });
+
+  it('a days-only schedule (no shift hours) remains valid', () => {
+    expect(validateStepDetails({ ...initialForm, work_days: ['mon', 'tue'] })).toBeNull();
+  });
+});
+
+describe('validateFullJobForm', () => {
+  const validForm: JobForm = { ...initialForm, title: 'Roofer', location: 'El Paso, TX', trade_category: 'concrete', city_key: 'el-paso-tx' };
+
+  it('passes a fully valid form', () => {
+    expect(validateFullJobForm(validForm)).toBeNull();
+  });
+
+  it('basics errors take priority over details errors', () => {
+    expect(validateFullJobForm({ ...validForm, title: '', pay_min: '30', pay_max: '20' })).toBe('required');
+  });
+
+  it('falls through to a details error once basics pass', () => {
+    expect(validateFullJobForm({ ...validForm, pay_min: '30', pay_max: '20' })).toBe('pay_range');
+  });
+
+  it('forwards the minWorkers option to the details stage', () => {
+    expect(validateFullJobForm({ ...validForm, number_of_workers_needed: '2' }, { minWorkers: 3 })).toBe('headcount');
+  });
+});
+
+describe('jobFormToBasePayload (via jobFormToCreatePayload): trade_category_other', () => {
+  const base: JobForm = { ...initialForm, title: 'Job', location: 'Reno, NV', trade_category: 'other', trade_category_other: 'Welder' };
+
+  it('includes the trimmed trade_category_other when trade_category is "other"', () => {
+    expect(jobFormToCreatePayload({ ...base, trade_category_other: '  Welder  ' }).trade_category_other).toBe('Welder');
+  });
+
+  it('omits trade_category_other when it is blank', () => {
+    const payload = jobFormToCreatePayload({ ...base, trade_category_other: '' });
+    expect('trade_category_other' in payload).toBe(false);
+  });
+
+  // Migration 077's jobs_trade_category_other_valid CHECK is one-way:
+  // `trade_category = 'other' OR trade_category_other IS NULL`. A stale
+  // trade_category_other left over from a prior "other" selection must never
+  // ride along once the employer picks a different trade -- sending it would
+  // build a payload the database itself would reject.
+  it('omits trade_category_other when trade_category is not "other", even if the field still holds stale text', () => {
+    const payload = jobFormToCreatePayload({ ...base, trade_category: 'electrician', trade_category_other: 'Welder' });
+    expect('trade_category_other' in payload).toBe(false);
+  });
+});
+
+describe('jobFormToBasePayload (via jobFormToCreatePayload): expected_duration_bucket', () => {
+  const base: JobForm = { ...initialForm, title: 'Job', location: 'Reno, NV', trade_category: 'concrete' };
+
+  it('derives expected_duration from the bucket and includes the raw bucket', () => {
+    const payload = jobFormToCreatePayload({ ...base, expected_duration_bucket: '2_4w' });
+    expect(payload.expected_duration).toBe('2–4 weeks');
+    expect(payload.expected_duration_bucket).toBe('2_4w');
+  });
+
+  it('passes the legacy free-text value through untouched when the bucket is empty', () => {
+    const payload = jobFormToCreatePayload({ ...base, expected_duration: 'Two-ish weeks' });
+    expect(payload.expected_duration).toBe('Two-ish weeks');
+    expect('expected_duration_bucket' in payload).toBe(false);
+  });
+
+  it('sends null expected_duration (not omitted) when both the bucket and the legacy text are blank', () => {
+    const payload = jobFormToCreatePayload(base);
+    expect(payload.expected_duration).toBeNull();
+    expect('expected_duration_bucket' in payload).toBe(false);
+  });
+});
+
+describe('jobFormToBasePayload (via jobFormToCreatePayload): work_days / shift_start / shift_end', () => {
+  const base: JobForm = { ...initialForm, title: 'Job', location: 'Reno, NV', trade_category: 'concrete' };
+
+  it('derives shift_schedule from work_days alone and includes the raw array', () => {
+    const workDays = ['mon', 'tue'];
+    const payload = jobFormToCreatePayload({ ...base, work_days: workDays });
+    expect(payload.shift_schedule).toBe('Mon–Tue');
+    expect(payload.work_days).toEqual(['mon', 'tue']);
+    // A fresh copy, not the same form-state array reference (no-aliasing
+    // contract shared with every other field this builder derives).
+    expect(payload.work_days).not.toBe(workDays);
+    expect('shift_start' in payload).toBe(false);
+    expect('shift_end' in payload).toBe(false);
+  });
+
+  it('derives shift_schedule from shift hours alone and includes the raw bounds', () => {
+    const payload = jobFormToCreatePayload({ ...base, shift_start: '07:00', shift_end: '16:00' });
+    expect(payload.shift_schedule).toBe('7:00 AM–4:00 PM');
+    expect(payload.shift_start).toBe('07:00');
+    expect(payload.shift_end).toBe('16:00');
+    expect('work_days' in payload).toBe(false);
+  });
+
+  it('derives a combined shift_schedule when both days and hours are present', () => {
+    const payload = jobFormToCreatePayload({ ...base, work_days: ['mon', 'tue'], shift_start: '07:00', shift_end: '16:00' });
+    expect(payload.shift_schedule).toBe('Mon–Tue · 7:00 AM–4:00 PM');
+  });
+
+  it('passes the legacy shift_schedule text through untouched when nothing structured is set', () => {
+    const payload = jobFormToCreatePayload({ ...base, shift_schedule: 'Mon-Fri day shift' });
+    expect(payload.shift_schedule).toBe('Mon-Fri day shift');
+    expect('work_days' in payload).toBe(false);
+    expect('shift_start' in payload).toBe(false);
+    expect('shift_end' in payload).toBe(false);
+  });
+
+  it('a one-sided shift (start only) still triggers derivation and omits the unset bound', () => {
+    const payload = jobFormToCreatePayload({ ...base, shift_start: '07:00' });
+    expect(payload.shift_schedule).toBe('From 7:00 AM');
+    expect(payload.shift_start).toBe('07:00');
+    expect('shift_end' in payload).toBe(false);
+  });
+});
+
+describe('jobFormToBasePayload (via jobFormToCreatePayload): certification_requirements payload rule', () => {
+  const certs: CertificationRequirement[] = [{ name: 'OSHA 10', tier: 'required', proof_required: true }];
+  const base: JobForm = {
+    ...initialForm, title: 'Job', location: 'Reno, NV', trade_category: 'concrete',
+    requirements: setRequirementState(initialForm.requirements, 'certification_doc', 'optional'),
+  };
+
+  it('when certs are present: emits certification_requirements with exactly {name, tier, proof_required}', () => {
+    const payload = jobFormToCreatePayload({ ...base, certification_requirements: certs });
+    expect(payload.certification_requirements).toEqual([{ name: 'OSHA 10', tier: 'required', proof_required: true }]);
+  });
+
+  it('when certs are present: certifications is the derived name list', () => {
+    const payload = jobFormToCreatePayload({ ...base, certification_requirements: certs });
+    expect(payload.certifications).toEqual(['OSHA 10']);
+  });
+
+  it('when certs are present: certification_doc is force-stripped from BOTH doc arrays regardless of its own tier', () => {
+    const requiredTier = jobFormToCreatePayload({
+      ...base,
+      requirements: setRequirementState(initialForm.requirements, 'certification_doc', 'required'),
+      certification_requirements: certs,
+    });
+    expect(requiredTier.required_docs).not.toContain('certification_doc');
+    expect(requiredTier.optional_docs).not.toContain('certification_doc');
+
+    const optionalTier = jobFormToCreatePayload({ ...base, certification_requirements: certs });
+    expect(optionalTier.required_docs).not.toContain('certification_doc');
+    expect(optionalTier.optional_docs).not.toContain('certification_doc');
+  });
+
+  it('when certs are empty: certification_requirements is omitted and certification_doc is left alone', () => {
+    const payload = jobFormToCreatePayload({ ...base, certifications: 'OSHA 10, CPR' });
+    expect('certification_requirements' in payload).toBe(false);
+    expect(payload.certifications).toEqual(['OSHA 10', 'CPR']);
+    expect(payload.optional_docs).toContain('certification_doc');
+  });
+
+  it('trims and drops blank cert names, keeping certifications and certification_requirements in exact agreement', () => {
+    const messy: CertificationRequirement[] = [
+      { name: '  OSHA 10  ', tier: 'required', proof_required: true },
+      { name: '   ', tier: 'optional', proof_required: false },
+    ];
+    const payload = jobFormToCreatePayload({ ...base, certification_requirements: messy });
+    expect(payload.certifications).toEqual(['OSHA 10']);
+    expect(payload.certification_requirements).toEqual([{ name: 'OSHA 10', tier: 'required', proof_required: true }]);
+  });
+});
+
+describe('jobToForm: FE-T3 structured field parsing', () => {
+  it('parses trade_category_other, defaulting to empty when absent', () => {
+    expect(jobToForm({ ...baseJob, trade_category_other: 'Welder' }).trade_category_other).toBe('Welder');
+    expect(jobToForm({ ...baseJob, trade_category_other: undefined }).trade_category_other).toBe('');
+  });
+
+  it('parses a valid expected_duration_bucket and rejects an unrecognized one', () => {
+    expect(jobToForm({ ...baseJob, expected_duration_bucket: '2_4w' }).expected_duration_bucket).toBe('2_4w');
+    expect(jobToForm({ ...baseJob, expected_duration_bucket: 'bogus' as never }).expected_duration_bucket).toBe('');
+    expect(jobToForm({ ...baseJob, expected_duration_bucket: undefined }).expected_duration_bucket).toBe('');
+  });
+
+  it('parses work_days, filtering out any value outside the allowlist', () => {
+    expect(jobToForm({ ...baseJob, work_days: ['mon', 'tue'] }).work_days).toEqual(['mon', 'tue']);
+    expect(jobToForm({ ...baseJob, work_days: ['mon', 'bogus'] as never }).work_days).toEqual(['mon']);
+    expect(jobToForm({ ...baseJob, work_days: undefined }).work_days).toEqual([]);
+    expect(jobToForm({ ...baseJob, work_days: null as never }).work_days).toEqual([]);
+  });
+
+  it('normalizes a Postgres HH:MM:SS shift time down to HH:MM', () => {
+    expect(jobToForm({ ...baseJob, shift_start: '07:00:00' as never }).shift_start).toBe('07:00');
+    expect(jobToForm({ ...baseJob, shift_end: '16:00:30.5' as never }).shift_end).toBe('16:00');
+  });
+
+  it('leaves an already-HH:MM shift time untouched', () => {
+    expect(jobToForm({ ...baseJob, shift_start: '07:00' }).shift_start).toBe('07:00');
+  });
+
+  it('defaults shift_start/shift_end to empty when absent or unparseable', () => {
+    expect(jobToForm({ ...baseJob, shift_start: undefined, shift_end: null as never }).shift_start).toBe('');
+    expect(jobToForm({ ...baseJob, shift_end: null as never }).shift_end).toBe('');
+    expect(jobToForm({ ...baseJob, shift_start: 'garbage' as never }).shift_start).toBe('');
+  });
+});
+
+describe('jobToForm: certification_requirements -- direct load vs. legacy seeding', () => {
+  it('loads certification_requirements directly when the job already has them, ignoring legacy fields entirely', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certification_requirements: [{ name: 'CPR', tier: 'optional', proof_required: false }],
+      certifications: ['Ignored Legacy Name'],
+      required_docs: ['certification_doc'],
+    };
+    expect(jobToForm(job).certification_requirements).toEqual([{ name: 'CPR', tier: 'optional', proof_required: false }]);
+  });
+
+  it('seeds one required cert per legacy name when certification_doc is Required', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certifications: ['OSHA 10', 'CPR'],
+      required_docs: ['certification_doc'],
+    };
+    expect(jobToForm(job).certification_requirements).toEqual([
+      { name: 'OSHA 10', tier: 'required', proof_required: true },
+      { name: 'CPR', tier: 'required', proof_required: true },
+    ]);
+  });
+
+  it('seeds one optional cert per legacy name when certification_doc is Optional', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certifications: ['OSHA 10'],
+      required_docs: [],
+      optional_docs: ['certification_doc'],
+    };
+    expect(jobToForm(job).certification_requirements).toEqual([
+      { name: 'OSHA 10', tier: 'optional', proof_required: true },
+    ]);
+  });
+
+  it('does NOT seed when the legacy certification_doc tier is Off', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certifications: ['OSHA 10'],
+      required_docs: [],
+      optional_docs: [],
+    };
+    expect(jobToForm(job).certification_requirements).toEqual([]);
+  });
+
+  it('seeds nothing when there are no legacy certification names to seed from', () => {
+    const job: EmployerJobDetail = { ...baseJob, certifications: [], required_docs: ['certification_doc'] };
+    expect(jobToForm(job).certification_requirements).toEqual([]);
+  });
+});
+
+describe('headline: jobToForm -> jobFormToCreatePayload round-trip for a pre-FE-T3 legacy job', () => {
+  // The identity case REQUIRES certification_doc's legacy tier to be 'off':
+  // any other tier makes jobToForm's (correct) legacy-seeding rule populate
+  // certification_requirements, which then makes the (also correct) payload
+  // rule strip certification_doc and emit certification_requirements --  an
+  // intentional divergence covered separately below, not a round-trip.
+  const legacyJob: EmployerJobDetail = {
+    ...baseJob,
+    expected_duration: 'About 2 weeks',
+    shift_schedule: 'Mon-Fri, 7am-4pm',
+    certifications: ['OSHA 10', 'CPR'],
+    required_docs: [],
+    optional_docs: [],
+    // No trade_category_other / expected_duration_bucket / work_days /
+    // shift_start / shift_end / certification_requirements at all -- a
+    // job row from before migration 077, or a client that hasn't been
+    // updated to request the new columns.
+  };
+
+  it('reproduces the three legacy strings byte-for-byte and omits all six new fields', () => {
+    const form = jobToForm(legacyJob);
+    const payload = jobFormToCreatePayload(form);
+
+    expect(payload.expected_duration).toBe('About 2 weeks');
+    expect(payload.shift_schedule).toBe('Mon-Fri, 7am-4pm');
+    expect(payload.certifications).toEqual(['OSHA 10', 'CPR']);
+
+    const wire = JSON.parse(JSON.stringify(payload));
+    for (const key of ['trade_category_other', 'expected_duration_bucket', 'work_days', 'shift_start', 'shift_end', 'certification_requirements']) {
+      expect(wire).not.toHaveProperty(key);
+      expect(key in payload).toBe(false);
+    }
+  });
+
+  it('the same job WITH certification_doc Required seeds certs and intentionally diverges from identity', () => {
+    const seededJob: EmployerJobDetail = { ...legacyJob, required_docs: ['certification_doc'] };
+    const form = jobToForm(seededJob);
+    const payload = jobFormToCreatePayload(form);
+
+    expect(payload.certification_requirements).toEqual([
+      { name: 'OSHA 10', tier: 'required', proof_required: true },
+      { name: 'CPR', tier: 'required', proof_required: true },
+    ]);
+    expect(payload.certifications).toEqual(['OSHA 10', 'CPR']);
+    expect(payload.required_docs).not.toContain('certification_doc');
+    expect(payload.optional_docs).not.toContain('certification_doc');
+  });
+});
+
+describe('jobFormFromTemplatePayload: FE-T3 additive fields', () => {
+  it('carries all six new fields through from a template payload', () => {
+    const { form } = jobFormFromTemplatePayload({
+      title: 'Concrete Finisher', location: 'El Paso, TX', job_type: 'contract' as const,
+      trade_category: 'other', trade_category_other: 'Welder',
+      expected_duration_bucket: '1_2w', work_days: ['mon', 'wed', 'fri'],
+      shift_start: '08:00', shift_end: '17:00',
+      certification_requirements: [{ name: 'OSHA 10', tier: 'required', proof_required: true }],
+    } as never);
+
+    expect(form.trade_category_other).toBe('Welder');
+    expect(form.expected_duration_bucket).toBe('1_2w');
+    expect(form.work_days).toEqual(['mon', 'wed', 'fri']);
+    expect(form.shift_start).toBe('08:00');
+    expect(form.shift_end).toBe('17:00');
+    expect(form.certification_requirements).toEqual([{ name: 'OSHA 10', tier: 'required', proof_required: true }]);
+  });
+
+  it('defaults all six fields for an old template payload that predates them', () => {
+    const { form } = jobFormFromTemplatePayload({
+      title: 'Old Template', location: 'Reno, NV', job_type: 'full-time' as const, trade_category: 'other',
+    });
+    expect(form.trade_category_other).toBe('');
+    expect(form.expected_duration_bucket).toBe('');
+    expect(form.work_days).toEqual([]);
+    expect(form.shift_start).toBe('');
+    expect(form.shift_end).toBe('');
+    expect(form.certification_requirements).toEqual([]);
   });
 });
