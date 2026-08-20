@@ -8,23 +8,29 @@ import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { ApiError, createJob, listJobTemplates, saveJobTemplate, Job, JobTemplate } from '@/lib/api/employer';
 import {
-  LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
-  type PayInterval, type JobForm,
-  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
+  LANGUAGE_OPTIONS,
+  type JobForm, type WorkDay,
+  initialForm, jobFormToCreatePayload, jobFormFromTemplatePayload,
+  validateStepBasics, validateStepDetails, validateFullJobForm, applyLocationToJobForm,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
+import { CertificationsPicker } from '@/components/employer/CertificationsPicker';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
+import { DurationField } from '@/components/employer/DurationField';
+import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
 import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
+import { PayFields } from '@/components/employer/PayFields';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
+import { ScheduleFields } from '@/components/employer/ScheduleFields';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { locationDatasetFailed } from '@/lib/location-search';
+import { TradeCategoryField } from '@/components/employer/TradeCategoryField';
 
 interface Props {
   open: boolean;
@@ -84,6 +90,11 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const errorMessage = useErrorMessage();
 
   const [step, setStep] = useState<Step>(1);
+  // The furthest step this run of the wizard has successfully validated into
+  // -- drives which step chips render as "completed" (see `goToStep` below).
+  // Free navigation means every chip is clickable regardless of this value;
+  // it only affects the checkmark, never whether a click does anything.
+  const [maxVisitedStep, setMaxVisitedStep] = useState<Step>(1);
   const [form, setForm] = useState<JobForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -147,6 +158,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
   const handleClose = () => {
     setStep(1);
+    setMaxVisitedStep(1);
     setForm(initialForm);
     setError('');
     setLimitReached(false);
@@ -177,55 +189,113 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     });
   };
 
-  const validateCurrentStep = (): string | null => {
-    if (step === 1) {
-      if (!form.title.trim() || !form.location.trim() || !form.trade_category) return t('modal.validation_required');
-      if (!form.city_key && !locationDatasetFailed()) return t('modal.location_pick_required');
-      if (validateJobLocationFields(form) === 'state_region') return t('modal.validation_state_region');
-      return null;
-    }
-    if (step === 2) {
-      const code = validateJobNumbers(form);
-      if (code === 'number') return t('modal.validation_number');
-      if (code === 'pay_range') return t('modal.validation_pay_range');
-      if (code === 'headcount') return t('modal.validation_headcount');
-    }
-    return null;
+  const toggleWorkDay = (day: WorkDay) => {
+    setForm((current) => ({
+      ...current,
+      work_days: current.work_days.includes(day)
+        ? current.work_days.filter((d) => d !== day)
+        : [...current.work_days, day],
+    }));
   };
 
-  const nextStep = () => {
-    const validationError = validateCurrentStep();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    setError('');
-    setLimitReached(false);
-    setStep((current) => (current === 1 ? 2 : 3));
+  const setCertificationTier = (name: string, tier: 'required' | 'optional') => {
+    setForm((current) => ({
+      ...current,
+      certification_requirements: current.certification_requirements.map((cert) =>
+        cert.name === name ? { ...cert, tier } : cert),
+    }));
   };
 
-  const previousStep = () => {
-    setError('');
-    setLimitReached(false);
-    setStep((current) => (current === 3 ? 2 : 1));
+  const toggleCertificationProof = (name: string) => {
+    setForm((current) => ({
+      ...current,
+      certification_requirements: current.certification_requirements.map((cert) =>
+        cert.name === name ? { ...cert, proof_required: !cert.proof_required } : cert),
+    }));
   };
 
   /**
-   * The indicator's only navigation: back to a step already completed. Forward
-   * jumps stay closed, because each forward transition is what runs that step's
-   * validation — skipping one would let an invalid step through.
+   * Maps `validateStepBasics`/`validateStepDetails`/`validateFullJobForm`'s
+   * error codes onto this modal's existing i18n keys. `trade_category_other_required`
+   * and `shift_incomplete` both fall back onto `validation_required` per
+   * those functions' own doc comments -- there is no dedicated key for
+   * either yet.
    */
-  const goBackToStep = (target: Step) => {
-    if (target >= step) return;
+  const validationMessage = (
+    code: ReturnType<typeof validateStepBasics> | ReturnType<typeof validateStepDetails>,
+  ): string | null => {
+    switch (code) {
+      case null:
+        return null;
+      case 'required':
+      case 'trade_category_other_required':
+      case 'shift_incomplete':
+        return t('modal.validation_required');
+      case 'location_pick_required':
+        return t('modal.location_pick_required');
+      case 'state_region':
+        return t('modal.validation_state_region');
+      case 'number':
+        return t('modal.validation_number');
+      case 'pay_range':
+        return t('modal.validation_pay_range');
+      case 'headcount':
+        return t('modal.validation_headcount');
+      default:
+        return null;
+    }
+  };
+
+  /** Step 1 -> `validateStepBasics`, step 2 -> `validateStepDetails`, step 3 has no gate of its own. */
+  const validateStepAt = (n: Step): string | null => {
+    if (n === 1) return validationMessage(validateStepBasics(form));
+    if (n === 2) return validationMessage(validateStepDetails(form));
+    return null;
+  };
+
+  /**
+   * Free step navigation (job-flow redesign, FE-T6): every step chip, plus
+   * the footer Back/Next buttons, all funnel through this one function.
+   *
+   * Backward (`target <= step`) is unconditional -- an employer can always
+   * revisit a step they've already filled in. Forward (`target > step`)
+   * validates every step in `[step, target)` in order and stops at the FIRST
+   * one that fails, landing on it with its error shown, so the employer sees
+   * exactly what still needs attention rather than being bounced back to
+   * wherever they started. `maxVisitedStep` only tracks how far navigation
+   * has successfully reached, for the step indicator's checkmarks -- it is
+   * never itself a gate on which chip can be clicked.
+   */
+  const goToStep = (target: Step) => {
+    if (target === step) return;
+    if (target < step) {
+      setError('');
+      setLimitReached(false);
+      setStep(target);
+      return;
+    }
+    for (let n: number = step; n < target; n++) {
+      const message = validateStepAt(n as Step);
+      if (message) {
+        setError(message);
+        setStep(n as Step);
+        return;
+      }
+    }
     setError('');
     setLimitReached(false);
     setStep(target);
+    setMaxVisitedStep((current) => (current > target ? current : target));
   };
 
   const handleSubmit = async () => {
-    const validationError = validateCurrentStep();
+    const validationError = validationMessage(validateFullJobForm(form));
     if (validationError) {
       setError(validationError);
+      // Land on whichever step actually owns the failing field, same as a
+      // blocked forward jump, so the employer isn't left on step 3 staring
+      // at a message about step 1.
+      setStep(validateStepBasics(form) ? 1 : 2);
       return;
     }
 
@@ -327,7 +397,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               {t('modal.cancel')}
             </Button>
           ) : (
-            <Button variant="ghost" onClick={previousStep} disabled={loading} className="flex-1">
+            <Button variant="ghost" onClick={() => goToStep((step - 1) as Step)} disabled={loading} className="flex-1">
               {t('post_job_docs.back')}
             </Button>
           )}
@@ -336,7 +406,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               variant has since been retired outright (see `ui/button`), so
               `primary` is now simply the only CTA fill there is. */}
           {step < 3 ? (
-            <Button variant="primary" onClick={nextStep} className="flex-1">
+            <Button variant="primary" onClick={() => goToStep((step + 1) as Step)} className="flex-1">
               {t('modal.next')}
             </Button>
           ) : (
@@ -358,40 +428,38 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           {STEPS.map((n) => {
             const label = t(`modal.steps.${STEP_KEYS[n]}`);
-            const done = n < step;
             const current = n === step;
+            // "Done" (checkmark) tracks the furthest step this run has
+            // validated into, not just "before the current one" -- free
+            // navigation means a completed later step can be visited while
+            // sitting on an earlier one. Every chip below is clickable
+            // regardless of this value; see `goToStep`.
+            const done = !current && n <= maxVisitedStep;
 
             return (
               <li key={n} className="flex min-w-0 items-center gap-2">
-                {done ? (
-                  <button
-                    type="button"
-                    onClick={() => goBackToStep(n)}
-                    className="inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 py-0.5 text-xs font-bold text-[var(--jale-ink)] transition-colors hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                  >
-                    <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-[var(--jale-success)]" />
-                    <span className="truncate">{label}</span>
-                    <span className="sr-only"> — {t('modal.steps.completed')}</span>
-                  </button>
-                ) : (
+                <button
+                  type="button"
+                  aria-current={current ? 'step' : undefined}
+                  onClick={() => goToStep(n)}
+                  className={[
+                    'inline-flex min-w-0 items-center gap-1.5 rounded-full px-1 py-0.5 text-xs transition-colors',
+                    'hover:underline focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
+                    current ? 'font-extrabold text-[var(--jale-ink)]' : 'font-semibold',
+                    !current && done ? 'text-[var(--jale-ink)]' : '',
+                    !current && !done ? 'text-[var(--jale-ink-2)]' : '',
+                  ].join(' ')}
+                >
                   <span
-                    aria-current={current ? 'step' : undefined}
+                    aria-hidden
                     className={[
-                      'inline-flex min-w-0 items-center gap-1.5 px-1 py-0.5 text-xs',
-                      current
-                        ? 'font-extrabold text-[var(--jale-ink)]'
-                        : 'font-semibold text-[var(--jale-ink-2)]',
+                      'size-[7px] shrink-0 rounded-full',
+                      done ? 'bg-[var(--jale-success)]' : current ? 'bg-[var(--jale-blue-500)]' : 'bg-[var(--jale-divider)]',
                     ].join(' ')}
-                  >
-                    <span
-                      aria-hidden
-                      className={`size-[7px] shrink-0 rounded-full ${
-                        current ? 'bg-[var(--jale-blue-500)]' : 'bg-[var(--jale-divider)]'
-                      }`}
-                    />
-                    <span className="truncate">{label}</span>
-                  </span>
-                )}
+                  />
+                  <span className="truncate">{label}</span>
+                  {done ? <span className="sr-only"> — {t('modal.steps.completed')}</span> : null}
+                </button>
 
                 {n < STEPS.length ? (
                   <span aria-hidden className="h-px w-4 shrink-0 bg-[var(--jale-divider)]" />
@@ -474,20 +542,29 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               </Select>
             </Field>
           </div>
-          <Field label={t('modal.trade_category')} required>
-            <Select value={form.trade_category} onChange={(e) => update('trade_category', e.target.value as JobForm['trade_category'])}>
-              <option value="">{t('modal.select_placeholder')}</option>
-              {TRADE_CATEGORIES.map((trade) => (
-                <option key={trade} value={trade}>{t(`modal.trade.${trade}`)}</option>
-              ))}
-            </Select>
-          </Field>
+          <TradeCategoryField
+            tradeCategory={form.trade_category}
+            tradeCategoryOther={form.trade_category_other}
+            onTradeCategoryChange={(value) => update('trade_category', value)}
+            onTradeCategoryOtherChange={(value) => update('trade_category_other', value)}
+          />
           <Field label={t('modal.job_description')}>
             <Textarea
               rows={4}
               value={form.description}
               onChange={(e) => update('description', e.target.value)}
-              placeholder={t('modal.description_placeholder')}
+              // The Other-trade path has neither an O*NET sample nor
+              // (currently) a working Generate button (`DescriptionHelper`'s
+              // `canGenerate` excludes `trade_category === 'other'`
+              // outright), so once the employer has actually named their
+              // custom trade, the placeholder stops inviting "brief notes
+              // for AI" and instead invites the fuller description they'll
+              // need to write themselves.
+              placeholder={
+                form.trade_category === 'other' && form.trade_category_other.trim()
+                  ? t('modal.description_placeholder_notes')
+                  : t('modal.description_placeholder')
+              }
               disabled={descriptionGenerating}
             />
             <DescriptionHelper
@@ -501,41 +578,41 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
       {step === 2 && (
         <div className="grid gap-4">
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label={t('modal.pay_min')}>
-              <Input type="number" min={0} value={form.pay_min} onChange={(e) => update('pay_min', e.target.value)} />
-            </Field>
-            <Field label={t('modal.pay_max')}>
-              <Input type="number" min={0} value={form.pay_max} onChange={(e) => update('pay_max', e.target.value)} />
-            </Field>
-          </div>
-          <Field label={t('modal.pay_interval')}>
-            <Select value={form.pay_interval} onChange={(e) => update('pay_interval', e.target.value as PayInterval)}>
-              {PAY_INTERVALS.map((interval) => (
-                <option key={interval} value={interval}>{t(`modal.pay_interval_option.${interval}`)}</option>
-              ))}
-            </Select>
-          </Field>
+          <PayFields
+            payMin={form.pay_min}
+            payMax={form.pay_max}
+            payInterval={form.pay_interval}
+            onPayMinChange={(value) => update('pay_min', value)}
+            onPayMaxChange={(value) => update('pay_max', value)}
+            onPayIntervalChange={(value) => update('pay_interval', value)}
+          />
           <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
           <div className="grid gap-3 md:grid-cols-2">
             <Field label={t('modal.start_date')}>
               <Input type="date" value={form.start_date} onChange={(e) => update('start_date', e.target.value)} />
             </Field>
-            <Field label={t('modal.expected_duration')}>
-              <Input value={form.expected_duration} onChange={(e) => update('expected_duration', e.target.value)} placeholder={t('modal.duration_placeholder')} />
-            </Field>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <Field label={t('modal.shift_schedule')}>
-              <Input value={form.shift_schedule} onChange={(e) => update('shift_schedule', e.target.value)} placeholder={t('modal.shift_placeholder')} />
-            </Field>
             <Field label={t('modal.number_of_workers_needed')} required>
               <Input type="number" min={1} value={form.number_of_workers_needed} onChange={(e) => update('number_of_workers_needed', e.target.value)} />
             </Field>
           </div>
-          <Field label={t('modal.required_experience_years')}>
-            <Input type="number" min={0} value={form.required_experience_years} onChange={(e) => update('required_experience_years', e.target.value)} />
-          </Field>
+          <DurationField
+            value={form.expected_duration_bucket}
+            legacyExpectedDuration={form.expected_duration}
+            onChange={(value) => update('expected_duration_bucket', value)}
+          />
+          <ScheduleFields
+            workDays={form.work_days}
+            shiftStart={form.shift_start}
+            shiftEnd={form.shift_end}
+            legacyShiftSchedule={form.shift_schedule}
+            onToggleDay={toggleWorkDay}
+            onShiftStartChange={(value) => update('shift_start', value)}
+            onShiftEndChange={(value) => update('shift_end', value)}
+          />
+          <ExperienceStepper
+            value={form.required_experience_years}
+            onChange={(value) => update('required_experience_years', value)}
+          />
           <Field label={t('modal.language_preference')}>
             <div className="flex flex-wrap gap-2">
               {LANGUAGE_OPTIONS.map((lang) => {
@@ -572,9 +649,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               onChange={() => update('transportation_required', !form.transportation_required)}
             />
           </div>
-          <Field label={t('modal.certifications')}>
-            <Input value={form.certifications} onChange={(e) => update('certifications', e.target.value)} placeholder={t('modal.certifications_placeholder')} />
-          </Field>
+          <CertificationsPicker
+            certificationRequirements={form.certification_requirements}
+            onChange={(next) => update('certification_requirements', next)}
+          />
         </div>
       )}
 
@@ -584,6 +662,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           requirements={form.requirements}
           onChange={(next) => setForm((current) => ({ ...current, requirements: next }))}
           certifications={form.certifications}
+          certificationRequirements={form.certification_requirements}
+          onCertificationTierChange={setCertificationTier}
+          onCertificationProofToggle={toggleCertificationProof}
         />
 
         <div className="rounded-[10px] border border-[var(--jale-divider)] p-4">

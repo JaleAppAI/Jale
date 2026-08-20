@@ -7,13 +7,12 @@ import { useErrorMessage } from '@/hooks/useErrorMessage';
 import { ApiError, updateJob, type EmployerJobDetail } from '@/lib/api/employer';
 import {
     type JobForm,
-    jobFormToEditPayload, jobToForm, validateJobNumbers, applyLocationToJobForm, validateJobLocationFields,
+    jobFormToEditPayload, jobToForm, validateFullJobForm, applyLocationToJobForm,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { JobFormFields } from '@/components/employer/JobFormFields';
 import { Modal } from '@/components/ui/modal';
-import { locationDatasetFailed } from '@/lib/location-search';
 
 /**
  * Edit an existing job posting.
@@ -92,21 +91,31 @@ export function EditJobModal({ open, job, onClose, onJobUpdated }: Props) {
         setForm((current) => ({ ...current, [key]: value }));
 
     const handleSubmit = async () => {
-        if (!form.title.trim() || !form.location.trim() || !form.trade_category) {
-            setError(t('modal.validation_required'));
-            return;
-        }
-        if (!form.city_key && !locationDatasetFailed()) {
-            setError(t('modal.location_pick_required'));
-            return;
-        }
-        const code = validateJobNumbers(form);
-        if (code === 'number') return setError(t('modal.validation_number'));
-        if (code === 'pay_range') return setError(t('modal.validation_pay_range'));
-        if (code === 'headcount') return setError(t('modal.validation_headcount'));
-        if (validateJobLocationFields(form) === 'state_region') return setError(t('modal.validation_state_region'));
-        if (Number(form.number_of_workers_needed) < job.hired_count) {
-            return setError(t('modal.validation_headcount'));
+        // `validateFullJobForm` replaces this modal's own inline checks --
+        // `{ minWorkers: job.hired_count }` is EditJobModal's one validation
+        // rule the create/template paths don't share (an employer can't drop
+        // the headcount below workers already hired). `trade_category_other_required`
+        // and `shift_incomplete` both fall back onto `validation_required`
+        // per `validateStepBasics`/`validateStepDetails`'s own doc comments --
+        // there is no dedicated key for either yet.
+        const code = validateFullJobForm(form, { minWorkers: job.hired_count });
+        switch (code) {
+            case null:
+                break;
+            case 'required':
+            case 'trade_category_other_required':
+            case 'shift_incomplete':
+                return setError(t('modal.validation_required'));
+            case 'location_pick_required':
+                return setError(t('modal.location_pick_required'));
+            case 'state_region':
+                return setError(t('modal.validation_state_region'));
+            case 'number':
+                return setError(t('modal.validation_number'));
+            case 'pay_range':
+                return setError(t('modal.validation_pay_range'));
+            case 'headcount':
+                return setError(t('modal.validation_headcount'));
         }
         setLoading(true);
         setError('');
