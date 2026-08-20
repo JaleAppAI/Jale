@@ -68,11 +68,19 @@ export const handler = async (
         body: JSON.stringify({ error: 'invalid_doc_type' }),
       };
     }
-    // cert_name is REQUIRED on a certification_doc confirm and forbidden on
-    // every other doc_type -- mirrors worker_documents_cert_name_valid. See
-    // ../lib/cert-name.ts for why upload-url (the presign step) does not
-    // enforce this same requirement.
-    const certResult = validateCertName(doc_type, cert_name, true);
+    // cert_name is OPTIONAL on this (tokenized) surface's certification_doc
+    // confirm -- deliberately asymmetric with worker-doc-confirm-auth.ts,
+    // where it's required. This is the WhatsApp-sent upload-link flow
+    // (/upload/[token]): it collects no label UI today, so an omitted
+    // cert_name inserts NULL and lands in 078's unlabeled bucket (still
+    // capped at 5 via `cert_name IS NOT DISTINCT FROM NULL`, same ceiling
+    // this surface has always had). A non-blank cert_name is still forbidden
+    // on every other doc_type -- mirrors worker_documents_cert_name_valid.
+    // If a labeled-upload UI is ever added to this tokenized surface, tighten
+    // `required` to true here to match the authed confirm. Ivan's WhatsApp
+    // flows reach documents through this tokenized path, so any labeling
+    // work on the WhatsApp side interacts with this exact toggle.
+    const certResult = validateCertName(doc_type, cert_name, false);
     if (!certResult.ok) {
       return {
         statusCode: 400,

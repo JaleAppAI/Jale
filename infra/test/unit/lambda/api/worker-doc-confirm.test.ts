@@ -371,12 +371,33 @@ describe('worker-doc-confirm Lambda', () => {
       issued_s3_key: 'documents/job-1/worker-1/certification_doc/uuid.pdf',
     };
 
-    it('returns 400 missing_cert_name when cert_name is omitted, without querying the DB', async () => {
+    it('allows a certification_doc confirm without cert_name -- optional on this tokenized surface, inserts NULL into the unlabeled bucket', async () => {
+      // Asymmetric with worker-doc-confirm-auth.ts (required there): this
+      // surface (/upload/[token], the WhatsApp-sent upload-link flow)
+      // collects no label UI today, so an omitted cert_name must insert NULL
+      // rather than 400 -- and NULL still groups into 078's shared unlabeled
+      // per-name bucket (cert_name IS NOT DISTINCT FROM NULL), so the
+      // per-name pre-check still runs and still caps at 5.
       const { cert_name, ...bodyWithoutCertName } = certBody;
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 2 }] }) // total cap count check
+        .mockResolvedValueOnce({ rows: [{ count: 1 }] }) // per-name (NULL bucket) cap count check
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
+        .mockResolvedValueOnce({ rows: [{ id: 'cert-uuid-null' }] }) // INSERT (no DELETE)
+        .mockResolvedValueOnce({}); // COMMIT
+
       const res = await handler(makeEvent(bodyWithoutCertName));
-      expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).error).toBe('missing_cert_name');
-      expect(mockQuery).not.toHaveBeenCalled();
+
+      expect(res.statusCode).toBe(200);
+      const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
+      expect(calls.filter((sql) => sql.includes('SELECT COUNT')).length).toBe(2);
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_documents'));
+      expect(insertCall).toBeDefined();
+      expect(insertCall![1]).toContain(null); // cert_name param is NULL, not omitted
     });
 
     it('returns 400 invalid_cert_name when cert_name exceeds 200 chars, without querying the DB', async () => {
