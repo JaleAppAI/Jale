@@ -10,6 +10,10 @@ import * as React from 'react';
  * `check` / `alert` / `x` / `wifi-off` were added for the feedback surfaces
  * (toast tones, error states, dismiss buttons), drawn to the same recipe:
  * 18x18, a 24-unit viewBox, `currentColor` at stroke-width 1.8, round joins.
+ *
+ * `minus` was added for `ExperienceStepper`'s decrement control (job-flow
+ * redesign, FE-T6) -- `plus`'s single horizontal stroke, so the pair reads
+ * as one stepper glyph set.
  */
 export type IconName =
     | 'grid'
@@ -22,6 +26,7 @@ export type IconName =
     | 'chart'
     | 'clock'
     | 'plus'
+    | 'minus'
     | 'home'
     | 'eye'
     | 'upload'
@@ -63,6 +68,8 @@ export function Icon({ name }: { name: IconName }) {
             return <svg {...common}><circle cx="12" cy="12" r="8" /><path d="M12 8v5l3 2" /></svg>;
         case 'plus':
             return <svg {...common}><path d="M12 5v14" /><path d="M5 12h14" /></svg>;
+        case 'minus':
+            return <svg {...common}><path d="M5 12h14" /></svg>;
         case 'home':
             return <svg {...common}><path d="M4 10.5 12 4l8 6.5" /><path d="M6 9.5V20h12V9.5" /></svg>;
         case 'eye':

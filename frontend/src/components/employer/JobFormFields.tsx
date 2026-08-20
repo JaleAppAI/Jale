@@ -3,16 +3,22 @@ import type React from 'react';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import {
-  LANGUAGE_OPTIONS, TRADE_CATEGORIES, PAY_INTERVALS,
-  type PayInterval, type JobForm, type JobFormLocation,
+  LANGUAGE_OPTIONS,
+  type JobForm, type JobFormLocation, type WorkDay,
 } from '@/lib/job-form';
+import { CertificationsPicker } from '@/components/employer/CertificationsPicker';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
+import { DurationField } from '@/components/employer/DurationField';
+import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
+import { PayFields } from '@/components/employer/PayFields';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
+import { ScheduleFields } from '@/components/employer/ScheduleFields';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { TradeCategoryField } from '@/components/employer/TradeCategoryField';
 
 /**
  * The job form's field set, shared by EditJobModal and TemplateEditModal so
@@ -67,6 +73,30 @@ export function JobFormFields({
         : 'border-[var(--jale-divider)] bg-[var(--jale-input)] text-[var(--jale-ink)]',
     ].join(' ');
 
+  const toggleWorkDay = (day: WorkDay) => {
+    onUpdate(
+      'work_days',
+      form.work_days.includes(day)
+        ? form.work_days.filter((d) => d !== day)
+        : [...form.work_days, day],
+    );
+  };
+
+  const setCertificationTier = (name: string, tier: 'required' | 'optional') => {
+    onUpdate(
+      'certification_requirements',
+      form.certification_requirements.map((cert) => (cert.name === name ? { ...cert, tier } : cert)),
+    );
+  };
+
+  const toggleCertificationProof = (name: string) => {
+    onUpdate(
+      'certification_requirements',
+      form.certification_requirements.map((cert) =>
+        cert.name === name ? { ...cert, proof_required: !cert.proof_required } : cert),
+    );
+  };
+
   return (
     <>
       <Field label={t('modal.job_title')} required>
@@ -91,17 +121,25 @@ export function JobFormFields({
           </Select>
         </Field>
       </div>
-      <Field label={t('modal.trade_category')} required>
-        <Select value={form.trade_category} onChange={(e) => onUpdate('trade_category', e.target.value as JobForm['trade_category'])}>
-          <option value="">{t('modal.select_placeholder')}</option>
-          {TRADE_CATEGORIES.map((trade) => (<option key={trade} value={trade}>{t(`modal.trade.${trade}`)}</option>))}
-        </Select>
-      </Field>
+      <TradeCategoryField
+        tradeCategory={form.trade_category}
+        tradeCategoryOther={form.trade_category_other}
+        onTradeCategoryChange={(value) => onUpdate('trade_category', value)}
+        onTradeCategoryOtherChange={(value) => onUpdate('trade_category_other', value)}
+      />
       <Field label={t('modal.job_description')}>
         <Textarea
           rows={4}
           value={form.description}
           onChange={(e) => onUpdate('description', e.target.value)}
+          // Same Other-trade placeholder swap as PostJobModal's step 1, for
+          // the same reason (locked decision: "Generate-with-AI enables for
+          // Other once custom trade typed") -- see that component's comment.
+          placeholder={
+            form.trade_category === 'other' && form.trade_category_other.trim()
+              ? t('modal.description_placeholder_notes')
+              : t('modal.description_placeholder')
+          }
           disabled={descriptionGenerating}
         />
         <DescriptionHelper
@@ -110,31 +148,41 @@ export function JobFormFields({
           onGeneratingChange={setDescriptionGenerating}
         />
       </Field>
-      <div className="grid gap-3 md:grid-cols-2">
-        <Field label={t('modal.pay_min')}><Input type="number" min={0} className="tabular-nums" value={form.pay_min} onChange={(e) => onUpdate('pay_min', e.target.value)} /></Field>
-        <Field label={t('modal.pay_max')}><Input type="number" min={0} className="tabular-nums" value={form.pay_max} onChange={(e) => onUpdate('pay_max', e.target.value)} /></Field>
-      </div>
-      <Field label={t('modal.pay_interval')}>
-        <Select value={form.pay_interval} onChange={(e) => onUpdate('pay_interval', e.target.value as PayInterval)}>
-          {PAY_INTERVALS.map((interval) => (<option key={interval} value={interval}>{t(`modal.pay_interval_option.${interval}`)}</option>))}
-        </Select>
-      </Field>
+      <PayFields
+        payMin={form.pay_min}
+        payMax={form.pay_max}
+        payInterval={form.pay_interval}
+        onPayMinChange={(value) => onUpdate('pay_min', value)}
+        onPayMaxChange={(value) => onUpdate('pay_max', value)}
+        onPayIntervalChange={(value) => onUpdate('pay_interval', value)}
+      />
       <PayReferenceHint trade={form.trade_category} cityKey={form.city_key} variant="employer" />
       <div className="grid gap-3 md:grid-cols-2">
         {showStartDate && (
           <Field label={t('modal.start_date')}><Input type="date" className="tabular-nums" value={form.start_date} onChange={(e) => onUpdate('start_date', e.target.value)} /></Field>
         )}
-        <Field label={t('modal.expected_duration')}><Input value={form.expected_duration} onChange={(e) => onUpdate('expected_duration', e.target.value)} /></Field>
-      </div>
-      <div className="grid gap-3 md:grid-cols-2">
-        <Field label={t('modal.shift_schedule')}><Input value={form.shift_schedule} onChange={(e) => onUpdate('shift_schedule', e.target.value)} /></Field>
         <Field label={t('modal.number_of_workers_needed')} required>
           <Input type="number" min={minWorkers} className="tabular-nums" value={form.number_of_workers_needed} onChange={(e) => onUpdate('number_of_workers_needed', e.target.value)} />
         </Field>
       </div>
-      <Field label={t('modal.required_experience_years')}>
-        <Input type="number" min={0} className="tabular-nums" value={form.required_experience_years} onChange={(e) => onUpdate('required_experience_years', e.target.value)} />
-      </Field>
+      <DurationField
+        value={form.expected_duration_bucket}
+        legacyExpectedDuration={form.expected_duration}
+        onChange={(value) => onUpdate('expected_duration_bucket', value)}
+      />
+      <ScheduleFields
+        workDays={form.work_days}
+        shiftStart={form.shift_start}
+        shiftEnd={form.shift_end}
+        legacyShiftSchedule={form.shift_schedule}
+        onToggleDay={toggleWorkDay}
+        onShiftStartChange={(value) => onUpdate('shift_start', value)}
+        onShiftEndChange={(value) => onUpdate('shift_end', value)}
+      />
+      <ExperienceStepper
+        value={form.required_experience_years}
+        onChange={(value) => onUpdate('required_experience_years', value)}
+      />
       <Field label={t('modal.language_preference')}>
         <div className="flex flex-wrap gap-2">
           {LANGUAGE_OPTIONS.map((lang) => (
@@ -154,9 +202,20 @@ export function JobFormFields({
         <input type="checkbox" checked={form.transportation_required} onChange={(e) => onUpdate('transportation_required', e.target.checked)} />
         {t('modal.transportation_required')}
       </label>
-      <Field label={t('modal.certifications')}>
-        <Input value={form.certifications} onChange={(e) => onUpdate('certifications', e.target.value)} />
-      </Field>
+      <CertificationsPicker
+        certificationRequirements={form.certification_requirements}
+        legacyCertifications={form.certifications}
+        // See PostJobModal's identical wiring for why `certifications` is
+        // cleared on every picker edit, not just non-empty ones:
+        // `jobFormToBasePayload` falls back to the legacy free-text field
+        // whenever `certification_requirements` is empty, so deleting every
+        // chip here must not let a legacy job's old cert names come back on
+        // save.
+        onChange={(next) => {
+          onUpdate('certification_requirements', next);
+          onUpdate('certifications', '');
+        }}
+      />
 
       {/* Work authorization is no longer a standalone checkbox here -- the
           requirements picker's `work_authorization` row is its one input
@@ -167,6 +226,9 @@ export function JobFormFields({
         requirements={form.requirements}
         onChange={(next) => onUpdate('requirements', next)}
         certifications={form.certifications}
+        certificationRequirements={form.certification_requirements}
+        onCertificationTierChange={setCertificationTier}
+        onCertificationProofToggle={toggleCertificationProof}
         locked={locked}
       />
     </>
