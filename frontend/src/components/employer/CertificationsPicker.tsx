@@ -38,18 +38,36 @@ const fold = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').t
  * just a UX nicety, it is the frontend's half of that invariant. Removing a
  * certification is still exact-name (chips are keyed by the stored `name`,
  * which is unique by construction).
+ *
+ * `legacyCertifications` is the pre-redesign free-text `certifications`
+ * value (same rationale as `ScheduleFields`'s `legacyShiftSchedule` and
+ * `DurationField`'s `legacyExpectedDuration`). A legacy job whose
+ * `certification_doc` tier was `'off'` seeds `certificationRequirements` to
+ * `[]` on load (see `seedCertificationRequirements` in `lib/job-form.ts`),
+ * so with the free-text input gone from this surface those names would
+ * otherwise be completely invisible here while still round-tripping into
+ * the payload on save (`jobFormToBasePayload` falls back to
+ * `splitDedupe(form.certifications)` whenever the structured list is
+ * empty). The note is read-only by design: it only ever explains what's
+ * about to be saved, it never offers to clear it directly -- the moment the
+ * employer adds any chip, `certificationRequirements` stops being empty and
+ * this note disappears on its own.
  */
 interface CertificationsPickerProps {
   certificationRequirements: CertificationRequirement[];
+  legacyCertifications: string;
   onChange: (next: CertificationRequirement[]) => void;
   disabled?: boolean;
 }
 
-export function CertificationsPicker({ certificationRequirements, onChange, disabled }: CertificationsPickerProps) {
+export function CertificationsPicker({
+  certificationRequirements, legacyCertifications, onChange, disabled,
+}: CertificationsPickerProps) {
   const t = useTranslations('employer_dashboard');
   const locale = useLocale();
   const activeLocale: 'en' | 'es' = locale === 'es' ? 'es' : 'en';
   const listboxId = useId();
+  const showLegacyNote = certificationRequirements.length === 0 && legacyCertifications.trim() !== '';
 
   const [text, setText] = useState('');
   const [open, setOpen] = useState(false);
@@ -149,6 +167,12 @@ export function CertificationsPicker({ certificationRequirements, onChange, disa
             );
           })}
         </ul>
+      )}
+
+      {showLegacyNote && (
+        <p className="text-xs text-[var(--jale-ink-2)]">
+          {t('modal.legacy_value_note', { value: legacyCertifications })}
+        </p>
       )}
 
       <div ref={containerRef} className="relative">

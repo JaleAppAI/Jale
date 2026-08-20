@@ -204,6 +204,7 @@ export function JobFormFields({
       </label>
       <CertificationsPicker
         certificationRequirements={form.certification_requirements}
+        legacyCertifications={form.certifications}
         // See PostJobModal's identical wiring for why `certifications` is
         // cleared on every picker edit, not just non-empty ones:
         // `jobFormToBasePayload` falls back to the legacy free-text field

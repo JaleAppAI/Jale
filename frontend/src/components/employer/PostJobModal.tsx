@@ -655,6 +655,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           </div>
           <CertificationsPicker
             certificationRequirements={form.certification_requirements}
+            legacyCertifications={form.certifications}
             // Clearing the legacy free-text `certifications` alongside every
             // picker edit (not just non-empty ones) matters specifically for
             // the empty case: `jobFormToBasePayload` falls back to
