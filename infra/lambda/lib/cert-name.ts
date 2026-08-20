@@ -28,9 +28,13 @@ export type CertNameValidation =
  *     frontend caller sends cert_name at presign time (it's supplied later,
  *     at confirm), so requiring it here would 400 every certification
  *     upload before the file is even PUT to S3.
- *   - confirm endpoints call this with `required: true` -- cert_name is
- *     mandatory on a certification_doc confirm (the frontend's
- *     `confirmAuthUpload(..., cert_name)` call site supplies it).
+ *   - the AUTHED confirm (worker-doc-confirm-auth.ts) calls this with
+ *     `required: true` -- cert_name is mandatory there (the frontend's
+ *     `confirmAuthUpload(..., cert_name)` call site supplies it). The
+ *     TOKENIZED confirm (worker-doc-confirm.ts, the WhatsApp-sent
+ *     /upload/[token] flow) calls with `required: false` -- that surface
+ *     collects no label today, so an omitted cert_name inserts NULL into
+ *     078's shared unlabeled bucket; see the asymmetry comment there.
  * `required` has no effect when `doc_type !== 'certification_doc'`: cert_name
  * is simply never required there, mirroring `worker_documents_cert_name_valid`.
  */
