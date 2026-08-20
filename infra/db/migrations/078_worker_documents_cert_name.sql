@@ -45,16 +45,35 @@
 -- 'certification_doc' + job_id IS NOT DISTINCT FROM NEW.job_id (the vault
 -- slot when NULL, or the same per-job slot when not):
 --
---   1. Total-per-slot cap of 5 (unchanged from 075: same query, same
---      RAISE ... USING ERRCODE = '23514', CONSTRAINT = 'certification_document_limit').
---      infra/lambda/api/worker-doc-confirm.ts and worker-doc-confirm-auth.ts
---      both key off this EXACT (code, constraint) pair
---      (`pgErr.code === '23514' && pgErr.constraint === 'certification_document_limit'`)
---      to turn the DB-level rejection into a graceful 409. Changing this
---      RAISE's ERRCODE or CONSTRAINT value would silently turn that 409 into
---      an unhandled 500 -- left byte-for-byte identical on purpose.
---   2. NEW per-name cap of 5: the same scope, plus
---      cert_name IS NOT DISTINCT FROM NEW.cert_name. This is a genuinely new
+--   1. Total-per-slot cap, RAISED from 5 (075) to 20 HERE: same query, same
+--      RAISE ... USING ERRCODE = '23514', CONSTRAINT = 'certification_document_limit'
+--      -- byte-identical code/constraint, only the threshold and message
+--      text change. infra/lambda/api/worker-doc-confirm.ts and
+--      worker-doc-confirm-auth.ts both key off this EXACT (code, constraint)
+--      pair (`pgErr.code === '23514' && pgErr.constraint === 'certification_document_limit'`)
+--      to turn the DB-level rejection into a graceful 409 -- changing either
+--      of those two values would silently turn that 409 into an unhandled
+--      500, so they stay byte-for-byte identical even though the number
+--      moved.
+--
+--      WHY 20, NOT 5 (product decision): the per-cert-proof feature this
+--      sprint ships lets a job require several distinct certifications, each
+--      of which may need multiple files (front/back of a card, a multi-page
+--      license) -- "3 proof-required certs x 2 files each" is a normal case
+--      that a hard cap of 5 would reject outright. 20 gives real headroom
+--      per slot while the per-name cap below keeps any single label bounded.
+--      This also mitigates a latent bug in
+--      infra/lambda/lib/applications.ts's copyRequiredDocumentSnapshots
+--      (cert branch, ~lines 79-98): it dedupes snapshot copies by s3_key but
+--      never deletes, so vault churn followed by a re-apply can grow a
+--      per-job slot's row count over time; at the old cap of 5 that path
+--      could abort the whole apply transaction mid-flight, at 20 there is
+--      far more headroom before that pre-existing issue becomes
+--      user-visible. That lambda bug itself is untouched here -- it lives in
+--      code this migration does not own.
+--
+--   2. Per-name cap, still 5, NOW INDEPENDENTLY REACHABLE: the same scope,
+--      plus cert_name IS NOT DISTINCT FROM NEW.cert_name. A genuinely new
 --      failure mode (no lambda code today anticipates "too many files under
 --      this same label"), so it deliberately raises a DIFFERENT constraint
 --      name -- 'certification_document_name_limit' -- rather than reusing
@@ -62,23 +81,45 @@
 --      lambda's exact-match handler mislabel a per-name rejection as a
 --      per-slot one in its response body.
 --
---      REACHABILITY, verified empirically against a live Postgres 16
---      instance: with both caps set to 5 and the name-cap query being the
---      total-cap query plus one more AND clause, existing_name_count can
---      never exceed existing_count for the same candidate row. So the
---      total-cap RAISE (unchanged, #1 above) always fires no later than the
---      name-cap RAISE could -- this branch cannot be independently reached
---      today; five certification_doc rows in one slot trip the *total* cap
---      on the sixth insert regardless of what name it carries. This is not
---      dead code: it is structurally correct now and starts firing for real
---      the moment the two limits ever diverge (e.g. a future migration
---      raises the total-per-slot cap above 5 while leaving the per-name cap
---      at 5). Until then, a per-name-only rejection cannot occur, so the
---      "falls through to a generic 500" lambda-compatibility gap described
---      above for the new constraint name is currently theoretical, not
---      reachable in production as this migration ships. Kept anyway so the
---      cap is already correct in shape and semantics for the day the two
---      thresholds diverge, per the task's explicit request for both caps.
+--      REACHABILITY now that the two thresholds diverge (20 total vs 5
+--      per-name): existing_name_count can independently reach 5 while
+--      existing_count is still well under 20 -- e.g. 5 files all named
+--      'OSHA 30' in an otherwise-empty slot. The per-name cap is now the
+--      BINDING limit for a same-name flood; the total cap only binds once a
+--      slot holds >=20 rows spread across distinct names. Verified
+--      empirically against a live Postgres 16 instance: (a) 5 rows under one
+--      cert_name, a 6th under that same name -> rejected with
+--      certification_document_name_limit; (b) 6 rows under 6 distinct names
+--      -> all succeed (the old cap of 5 no longer binds once names differ);
+--      (c) a slot filled to 20 rows across distinct names -> the 21st is
+--      rejected with certification_document_limit regardless of its name.
+--
+--      NULL-GROUPING SEMANTIC: cert_name is nullable, and
+--      cert_name IS NOT DISTINCT FROM NEW.cert_name groups NULL with NULL --
+--      every unlabeled certification_doc row in a slot (every legacy row,
+--      and any future upload that omits a label) counts toward ONE shared
+--      "name" bucket. So 5 unlabeled files already in a slot block a 6th
+--      unlabeled insert via certification_document_name_limit -- verified
+--      empirically: 5 rows with cert_name NULL, a 6th with cert_name NULL,
+--      rejected with certification_document_name_limit. Unlabeled uploads
+--      therefore keep exactly the old 075 ceiling of 5; only distinctly-
+--      named uploads get the new headroom up to 20.
+--
+--      WHY THIS SHIPS NO PRODUCTION BEHAVIOR CHANGE YET: both confirm
+--      lambdas (worker-doc-confirm.ts, worker-doc-confirm-auth.ts)
+--      pre-check the slot's total count against
+--      MAX_CERTIFICATION_FILES = 5 (infra/lambda/lib/job-fields.ts) BEFORE
+--      ever attempting the insert, and that constant is untouched here --
+--      job-fields.ts and the lambdas belong to other tasks. So today no call
+--      path can push a slot past 5 total regardless of naming: this
+--      migration raises the DB-level ceiling and gives the per-name cap
+--      independent teeth, but the app layer still stops everyone at 5
+--      first, and certification_document_name_limit has no lambda mapping
+--      yet. Wave 2 is expected to raise MAX_CERTIFICATION_FILES to 20, add a
+--      certification_document_name_limit catch mapping alongside the
+--      existing certification_document_limit one, and make cert_name
+--      mandatory on certification uploads -- all in the release that
+--      actually turns this DB headroom into the per-cert-proof feature.
 --
 -- Both caps are TOCTOU races, not serialized caps -- same caveat 075 already
 -- documents for the total cap: two concurrent inserts can each see
@@ -122,35 +163,27 @@ DECLARE
   existing_count INTEGER;
   existing_name_count INTEGER;
 BEGIN
-  -- Total-per-slot cap (unchanged from 075: same query, same error).
+  -- Total-per-slot cap: same query and same error code/constraint as 075,
+  -- threshold raised from 5 to 20 here -- see header for why.
   SELECT count(*) INTO existing_count
   FROM worker_documents
   WHERE worker_id = NEW.worker_id
     AND doc_type = 'certification_doc'
     AND job_id IS NOT DISTINCT FROM NEW.job_id;
 
-  IF existing_count >= 5 THEN
-    RAISE EXCEPTION 'certification document limit reached for this slot (max 5)'
+  IF existing_count >= 20 THEN
+    RAISE EXCEPTION 'certification document limit reached for this slot (max 20)'
       USING ERRCODE = '23514',
             CONSTRAINT = 'certification_document_limit';
   END IF;
 
-  -- Per-name cap (new): same slot scope, plus the same cert_name. A distinct
+  -- Per-name cap: same slot scope, plus the same cert_name. A distinct
   -- constraint name on purpose -- see header for the lambda-compatibility
-  -- rationale.
-  --
-  -- NOTE on reachability: this query is the total-cap query above with one
-  -- extra AND clause, so existing_name_count <= existing_count always holds
-  -- for the same inserted row. With both caps currently set to 5, that means
-  -- existing_name_count >= 5 implies existing_count >= 5 too -- so the
-  -- total-cap RAISE above always fires first, and this branch cannot be
-  -- independently reached today (verified empirically: 5 rows under one
-  -- cert_name in a slot already trips the total-cap error on the 6th
-  -- insert, whatever name it uses). This is deliberate, not dead code: it is
-  -- structurally correct and future-proofed the moment the two limits ever
-  -- diverge (e.g. a later migration raises the total-per-slot cap above 5
-  -- while leaving the per-name cap at 5), at which point this branch starts
-  -- firing for real and produces the more specific error.
+  -- rationale. Now that the total cap is 20 while this stays 5, this branch
+  -- is INDEPENDENTLY REACHABLE and is the binding limit for a same-name
+  -- flood (including the all-NULL/unlabeled bucket -- see header's
+  -- NULL-GROUPING SEMANTIC section). See header REACHABILITY section for
+  -- the full empirical verification.
   SELECT count(*) INTO existing_name_count
   FROM worker_documents
   WHERE worker_id = NEW.worker_id
@@ -219,7 +252,11 @@ BEGIN
   END IF;
 
   -- Both caps must still be present in the function body -- catches a future
-  -- edit that silently drops one cap while "fixing" the other.
+  -- edit that silently drops one cap while "fixing" the other. Now that the
+  -- two thresholds diverge (20 total vs 5 per-name) and both matter, pin the
+  -- exact numbers too, so a future edit that silently changes either cap
+  -- (e.g. reverting the total back to 5, or quietly raising the per-name cap)
+  -- fails loudly here instead of drifting unnoticed.
   SELECT pg_get_functiondef(p.oid) INTO src
   FROM pg_proc p
   JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -230,8 +267,10 @@ BEGIN
      OR src NOT ILIKE '%certification_document_name_limit%'
      OR src NOT ILIKE '%cert_name IS NOT DISTINCT FROM NEW.cert_name%'
      OR src NOT ILIKE '%job_id IS NOT DISTINCT FROM NEW.job_id%'
+     OR src NOT ILIKE '%existing_count >= 20%'
+     OR src NOT ILIKE '%existing_name_count >= 5%'
   THEN
-    RAISE EXCEPTION 'enforce_certification_document_limit missing one of the total-cap/name-cap scopes: %', COALESCE(src, '<absent>');
+    RAISE EXCEPTION 'enforce_certification_document_limit missing one of the total-cap/name-cap scopes or has drifted off its pinned thresholds (total>=20, per-name>=5): %', COALESCE(src, '<absent>');
   END IF;
 END;
 $$;
