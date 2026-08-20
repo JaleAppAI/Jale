@@ -16,7 +16,12 @@
 --                                         (job-fields.ts) for consistency,
 --                                         though that is an app-layer const
 --                                         for a different column and this
---                                         CHECK does not read it.
+--                                         CHECK does not read it. MAX_CERTIFICATION_LENGTH
+--                                         is also module-private (not exported)
+--                                         -- keep the two numbers in sync by
+--                                         hand, same caveat 073/074 already
+--                                         document for their own hand-synced
+--                                         allowlists; nothing enforces it.
 --
 -- NO new unique index on (worker_id, job_id, doc_type, cert_name) or similar:
 -- 075's entire point was that a worker may hold multiple certification_doc
