@@ -56,6 +56,24 @@
       "painting": "Pintura",
       "other": "Otro",
       "unspecified": "Oficio no especificado"
+    },
+    "duration_bucket": {
+      "lt_1w": "Menos de 1 semana",
+      "1_2w": "1–2 semanas",
+      "2_4w": "2–4 semanas",
+      "1_3m": "1–3 meses",
+      "3_6m": "3–6 meses",
+      "6m_plus": "6+ meses",
+      "ongoing": "Continuo / Permanente"
+    },
+    "work_days": {
+      "mon": "Lun",
+      "tue": "Mar",
+      "wed": "Mié",
+      "thu": "Jue",
+      "fri": "Vie",
+      "sat": "Sáb",
+      "sun": "Dom"
     }
   },
   "match": {
@@ -698,6 +716,7 @@
       "error": "Error al publicar el empleo. Inténtelo de nuevo.",
       "job_description": "Descripción del empleo",
       "description_placeholder": "¿Qué incluye el trabajo? ¿Qué experiencia se requiere?",
+      "description_placeholder_notes": "Escriba una breve descripción — con una o dos frases basta. “Generar con IA” construirá la publicación completa a partir de ella, o puede trabajar solo con los datos básicos del empleo.",
       "description_helper": {
         "use_sample": "Usar un ejemplo",
         "source_credit": "Fuente: O*NET",
@@ -705,7 +724,10 @@
         "generating": "Generando…",
         "replace_hint": "Esto reemplazará la descripción actual.",
         "limit_reached": "Alcanzó el límite diario de descripciones generadas con IA. Inténtelo de nuevo mañana.",
-        "generate_error": "No pudimos generar una descripción en este momento. Inténtelo de nuevo o escriba la suya."
+        "generate_error": "No pudimos generar una descripción en este momento. Inténtelo de nuevo o escriba la suya.",
+        "notes_hint": "Consejo: anote unas notas breves arriba y la IA las usará como base.",
+        "generated_from_notes": "Generado a partir de sus notas y los datos básicos del empleo — edítelo libremente.",
+        "other_disabled_hint": "Escriba el oficio arriba para habilitar la generación con IA."
       },
       "select_placeholder": "Seleccionar...",
       "trade_category": "Oficio",
@@ -719,6 +741,9 @@
         "general_labor": "Ayudante general",
         "other": "Otro"
       },
+      "trade_other_label": "¿Para qué oficio es este trabajo?",
+      "trade_other_placeholder": "ej. Soldador",
+      "trade_other_hint": "Los trabajadores que registraron este oficio se emparejarán con su empleo.",
       "pay_min": "Pago mínimo",
       "pay_max": "Pago máximo",
       "pay_interval": "Intervalo de pago",
@@ -732,10 +757,21 @@
       "start_date": "Fecha de inicio",
       "expected_duration": "Duración esperada",
       "duration_placeholder": "ej. 2 semanas",
+      "expected_duration_select_placeholder": "Seleccionar…",
       "shift_schedule": "Horario",
       "shift_placeholder": "ej. Lun-Vie turno de día",
+      "schedule_days_label": "Días de trabajo",
+      "schedule_days_hint": "Toque los días que se trabajan — puede omitir días entre semana.",
+      "shift_start_label": "Inicio del turno",
+      "shift_end_label": "Fin del turno",
+      "shift_to": "a",
       "number_of_workers_needed": "Trabajadores necesarios",
       "required_experience_years": "Experiencia requerida",
+      "experience_years_label": "Años de experiencia requeridos",
+      "experience_none": "No se requiere experiencia",
+      "experience_years": "{n, plural, one {# año de experiencia requerido} other {# años de experiencia requeridos}}",
+      "experience_decrement_aria": "Disminuir años",
+      "experience_increment_aria": "Aumentar años",
       "language_preference": "Idioma preferido",
       "language": {
         "any": "Cualquiera",
@@ -746,6 +782,13 @@
       "work_authorization_required": "Requiere autorización de trabajo",
       "certifications": "Certificaciones",
       "certifications_placeholder": "OSHA 10, montacargas, CDL",
+      "certifications_search_placeholder": "Buscar certificaciones… ej. OSHA 10",
+      "certifications_add_custom": "Agregar “{query}”",
+      "certifications_no_matches": "No hay certificaciones que coincidan",
+      "certifications_already_added": "Ya agregada",
+      "certifications_remove_aria": "Quitar {name}",
+      "certifications_picker_hint": "Elija de la lista o agregue la suya. En el siguiente paso marcará cada una como requerida u opcional.",
+      "legacy_value_note": "Ingresado originalmente como: {value}",
       "validation_required": "Complete los campos requeridos.",
       "validation_number": "Ingrese números válidos y no negativos.",
       "validation_pay_range": "El pago mínimo no puede ser mayor que el máximo.",
@@ -993,6 +1036,68 @@
       "full-time": "Tiempo completo",
       "part-time": "Medio tiempo",
       "contract": "Contrato"
+    },
+    "trade": "Oficio",
+    "trade_with_other": "{other} (Otro)",
+    "language": "Idioma",
+    "transportation": "Transporte",
+    "transportation_required_yes": "Requerido",
+    "transportation_required_no": "No requerido",
+    "work_days_label": "Días de trabajo",
+    "shift_hours": "Horario del turno",
+    "duration": "Duración esperada",
+    "what_you_need": {
+      "title": "Lo que necesita",
+      "in_vault": "ya en su bóveda",
+      "proof_in_vault": "comprobante en su bóveda",
+      "proof_needed": "comprobante necesario",
+      "required": "Requerido",
+      "optional": "Opcional",
+      "questions_summary": "{count} preguntas rápidas",
+      "questions_required": "{count} requeridas",
+      "estimate": "Postularse — unos {minutes} minutos",
+      "vault_check_failed": "No podemos revisar su bóveda en este momento"
+    },
+    "apply_flow": {
+      "steps": {
+        "questions": "Preguntas",
+        "documents": "Documentos y certificaciones",
+        "review": "Revisar y enviar",
+        "aria_label": "Pasos de la postulación",
+        "step_label": "Paso {current} de {total}",
+        "completed": "completado"
+      },
+      "hints": {
+        "questions": "Las respuestas prellenadas vienen de su última postulación — edite lo que quiera, los cambios se guardan para la próxima vez.",
+        "documents": "Los elementos que ya están en su bóveda se emparejan automáticamente.",
+        "review": "Revise todo — las respuestas no se pueden cambiar después de postularse."
+      },
+      "continue_button": "Continuar postulación",
+      "back_to_details": "Volver al detalle del empleo",
+      "back_to_jobs": "Volver a trabajos",
+      "progress_saved": "Su progreso está guardado.",
+      "prefilled_hint": "De su última postulación — edite si es necesario",
+      "cert_question": "¿Tiene {name}?",
+      "cert_use_vault": "Usar {file} de su bóveda",
+      "cert_upload_new": "Subir nuevo",
+      "cert_unverified_note": "Puede postularse sin comprobante — se mostrará como declarado, sin verificar.",
+      "cert_from_vault": "de su bóveda",
+      "review_answers": "{answered} de {total} preguntas respondidas",
+      "review_skipped": "{label} (opcional) — omitido",
+      "review_not_attached": "{label} (opcional) — no adjuntado",
+      "review_claimed_proof": "{name} — declarado · comprobante adjunto",
+      "review_claimed_no_proof": "{name} — declarado, sin comprobante (se mostrará como sin verificar)",
+      "review_not_claimed": "{name} ({tier}) — no declarado",
+      "review_note": "Sus respuestas se guardarán en su perfil para postulaciones futuras más rápidas. Las postulaciones no se pueden editar después de enviarlas.",
+      "submit": "Enviar postulación",
+      "submitted_title": "Postulación enviada",
+      "errors": {
+        "required_questions": "Responda las preguntas requeridas para continuar ({count} restantes).",
+        "required_doc": "Se requiere {label} para este trabajo.",
+        "required_cert": "Se requiere {name} para este trabajo.",
+        "cert_proof": "Adjunte comprobante de {name} para continuar.",
+        "missing_certification_proof": "Este trabajo requiere comprobante de: {certs}."
+      }
     }
   },
   "public_job": {
@@ -1005,6 +1110,9 @@
     "start_date": "Fecha de inicio",
     "shift_schedule": "Horario",
     "trade_category": "Oficio",
+    "trade_with_other": "{other}",
+    "work_days_label": "Días de trabajo",
+    "shift_hours": "Horario del turno",
     "required_experience": "Experiencia",
     "openings": "Vacantes",
     "certifications": "Certificaciones",
@@ -1145,7 +1253,11 @@
       "count_badge": "{required, plural, one {# requerido} other {# requeridos}} · {optional, plural, one {# opcional} other {# opcionales}}",
       "locked_note": "Los requisitos están bloqueados — este trabajo ya tiene postulantes",
       "sensitive": "Sensible",
-      "cert_hint": "Se pedirá comprobante de: {names}"
+      "cert_hint": "Se pedirá comprobante de: {names}",
+      "proof_toggle_label": "Subir comprobante",
+      "proof_hint": "Pide al postulante adjuntar el certificado con su postulación.",
+      "no_certifications_yet": "No se han seleccionado certificaciones. Agréguelas en Pago y horario.",
+      "cert_tier_aria": "Nivel de requisito de {name}"
     },
     "groups": {
       "documents": "Documentos",
@@ -1153,7 +1265,8 @@
       "identity": "Identidad y contacto",
       "availability": "Disponibilidad y pago",
       "background": "Información general",
-      "experience": "Experiencia"
+      "experience": "Experiencia",
+      "certifications": "Certificaciones"
     },
     "states": {
       "off": "Desactivado",
