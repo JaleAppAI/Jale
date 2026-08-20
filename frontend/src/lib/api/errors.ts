@@ -27,6 +27,8 @@ export type ApiErrorPayload = {
   missing_fields?: string[];
   /** `invalid_answers`: the specific validator failure code (e.g. `invalid_desired_pay`). */
   detail?: string;
+  /** `missing_certification_proof`: the still-unproven certification names. */
+  certs?: string[];
 };
 
 const ALLOWED_PAYLOAD_KEYS = [
@@ -40,6 +42,7 @@ const ALLOWED_PAYLOAD_KEYS = [
   'missing_docs',
   'missing_fields',
   'detail',
+  'certs',
 ] as const;
 
 /**
@@ -97,10 +100,11 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
   for (const key of ALLOWED_PAYLOAD_KEYS) {
     const value = body[key];
     if (value === undefined) continue;
-    // `missing_docs` is the one payload field the UI iterates over (it renders
-    // one label per entry), so a malformed value would crash the page rather
-    // than degrade it. Everything else is passed through as the backend sent it.
-    if ((key === 'missing_docs' || key === 'missing_fields') && !isStringArray(value)) continue;
+    // `missing_docs`/`certs` are payload fields the UI iterates over (one
+    // renders a label per entry, the other a joined cert-name list), so a
+    // malformed value would crash the page rather than degrade it. Everything
+    // else is passed through as the backend sent it.
+    if ((key === 'missing_docs' || key === 'missing_fields' || key === 'certs') && !isStringArray(value)) continue;
     if (key === 'detail' && typeof value !== 'string') continue;
     (payload as Record<string, unknown>)[key] = value;
   }
