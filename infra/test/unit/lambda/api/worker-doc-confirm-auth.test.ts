@@ -9,7 +9,7 @@ import { handler } from '../../../../lambda/api/worker-doc-confirm-auth';
 import { getDbPool, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { S3Client } from '@aws-sdk/client-s3';
-import { MAX_CERTIFICATION_FILES } from '../../../../lambda/lib/job-fields';
+import { MAX_CERTIFICATION_FILES, MAX_CERTIFICATION_FILES_PER_NAME } from '../../../../lambda/lib/job-fields';
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -50,6 +50,13 @@ describe('worker-doc-confirm-auth', () => {
   it('rejects invalid doc_type', async () => {
     const res = await handler(mkEv({ doc_type: 'passport', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf' }));
     expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects a cert_name on a non-certification doc_type with invalid_cert_name, without querying the DB', async () => {
+    const res = await handler(mkEv({ doc_type: 'resume', s3_key: OWN_KEY, file_name: 'f', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 30' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_cert_name');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('deletes existing vault row and inserts new', async () => {
@@ -180,38 +187,79 @@ describe('worker-doc-confirm-auth', () => {
     expect(JSON.parse(res.body).valid).toEqual(['resume', 'driver_license', 'work_auth_doc', 'certification_doc']);
   });
 
-  it('appends a new certification_doc row without deleting prior ones, when under the cap', async () => {
+  it('returns 400 missing_cert_name when cert_name is omitted on a certification_doc confirm, without querying the DB', async () => {
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('missing_cert_name');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 invalid_cert_name when cert_name exceeds 200 chars, without querying the DB', async () => {
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'a'.repeat(201) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_cert_name');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('appends a new certification_doc row without deleting prior ones, when under both caps, writing the trimmed cert_name', async () => {
     mockS3Send.mockResolvedValueOnce(validHead);
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      // Per-name check first: its SQL is a superset-match of the generic
+      // 'SELECT COUNT' the total check also uses, so it must be discriminated
+      // ahead of the generic branch below.
+      if (q.includes('cert_name IS NOT DISTINCT FROM')) return Promise.resolve({ rows: [{ count: 1 }] });
       if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 2 }] });
       if (q.includes('INSERT INTO worker_documents')) return Promise.resolve({ rows: [{ id: 'd2', doc_type: 'certification_doc' }] });
       return Promise.resolve({});
     });
 
-    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: '  OSHA 30  ' }));
 
     expect(res.statusCode).toBe(201);
-    const calls = mockQuery.mock.calls.map(c => c[0]);
-    expect(calls.some((c: string) => c.includes('DELETE FROM worker_documents'))).toBe(false);
-    expect(calls.some((c: string) => c.includes('SELECT COUNT'))).toBe(true);
-    expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(true);
+    const calls = mockQuery.mock.calls.map(c => c[0] as string);
+    expect(calls.some((c) => c.includes('DELETE FROM worker_documents'))).toBe(false);
+    expect(calls.filter((c) => c.includes('SELECT COUNT')).length).toBe(2);
+    const insertCall = mockQuery.mock.calls.find(([q]) => typeof q === 'string' && q.includes('INSERT INTO worker_documents'));
+    expect(insertCall).toBeDefined();
+    expect(insertCall![0]).toContain('cert_name');
+    expect(insertCall![1]).toContain('OSHA 30'); // trimmed before persisting
   });
 
-  it('returns 409 certification_document_limit when at the cap (defense-in-depth count check)', async () => {
+  it('returns 409 certification_document_limit when at the total cap (defense-in-depth count check)', async () => {
     mockS3Send.mockResolvedValueOnce(validHead);
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
-      // BE-T2 (078) raised MAX_CERTIFICATION_FILES from 5 to 20 -- the cap
+      // BE-T3 (078) raised MAX_CERTIFICATION_FILES from 5 to 20 -- the cap
       // check below is keyed off the constant, not a hardcoded number.
+      if (q.includes('cert_name IS NOT DISTINCT FROM')) return Promise.resolve({ rows: [{ count: 0 }] });
       if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: MAX_CERTIFICATION_FILES }] });
       return Promise.resolve({});
     });
 
-    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 30' }));
 
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+    const calls = mockQuery.mock.calls.map(c => c[0]);
+    expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(false);
+  });
+
+  it('returns 409 certification_document_name_limit when at the per-name cap (defense-in-depth count check)', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      // Per-name cap stays 5 even though the total cap is now 20 -- see
+      // 078's header REACHABILITY section.
+      if (q.includes('cert_name IS NOT DISTINCT FROM')) return Promise.resolve({ rows: [{ count: MAX_CERTIFICATION_FILES_PER_NAME }] });
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 3 }] }); // total, well under 20
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 30' }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('certification_document_name_limit');
     const calls = mockQuery.mock.calls.map(c => c[0]);
     expect(calls.some((c: string) => c.includes('INSERT INTO worker_documents'))).toBe(false);
   });
@@ -220,6 +268,7 @@ describe('worker-doc-confirm-auth', () => {
     mockS3Send.mockResolvedValueOnce(validHead);
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('cert_name IS NOT DISTINCT FROM')) return Promise.resolve({ rows: [{ count: 1 }] });
       if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 4 }] });
       if (q.includes('INSERT INTO worker_documents')) {
         const err: any = new Error('duplicate key value violates unique constraint');
@@ -229,7 +278,7 @@ describe('worker-doc-confirm-auth', () => {
       return Promise.resolve({});
     });
 
-    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 30' }));
 
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('certification_document_limit');
@@ -241,6 +290,7 @@ describe('worker-doc-confirm-auth', () => {
     mockS3Send.mockResolvedValueOnce(validHead);
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('cert_name IS NOT DISTINCT FROM')) return Promise.resolve({ rows: [{ count: 1 }] });
       if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 3 }] });
       if (q.includes('INSERT INTO worker_documents')) {
         const err: any = new Error('new row violates check constraint "certification_document_limit"');
@@ -251,9 +301,30 @@ describe('worker-doc-confirm-auth', () => {
       return Promise.resolve({});
     });
 
-    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf' }));
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 30' }));
 
     expect(res.statusCode).toBe(409);
     expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+  });
+
+  it('maps a 23514 check-violation from the certification_document_name_limit trigger (078, TOCTOU backstop) to 409', async () => {
+    mockS3Send.mockResolvedValueOnce(validHead);
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('cert_name IS NOT DISTINCT FROM')) return Promise.resolve({ rows: [{ count: 2 }] });
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 3 }] });
+      if (q.includes('INSERT INTO worker_documents')) {
+        const err: any = new Error('new row violates check constraint "certification_document_name_limit"');
+        err.code = '23514';
+        err.constraint = 'certification_document_name_limit';
+        return Promise.reject(err);
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(mkEv({ doc_type: 'certification_doc', s3_key: CERT_KEY, file_name: 'cert.pdf', file_size: 1, mime_type: 'application/pdf', cert_name: 'OSHA 30' }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toBe('certification_document_name_limit');
   });
 });

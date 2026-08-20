@@ -91,8 +91,11 @@ export const handler = async (
       };
     }
 
+    // cert_name is additive here (BE-T3): lets the employer see which
+    // labeled certification file they're looking at (e.g. "OSHA 30" vs
+    // "Forklift cert") among the up-to-20 files a slot may hold.
     const docsResult = await client.query(
-      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id
+      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id, cert_name
        FROM worker_documents wd
        JOIN job_applications ja ON ja.worker_id = wd.worker_id AND ja.job_id = wd.job_id
        JOIN jobs j ON j.id = ja.job_id

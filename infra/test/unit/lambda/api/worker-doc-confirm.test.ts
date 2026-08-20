@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-doc-confirm';
 import { getDbPool } from '../../../../lambda/lib/db';
 import { S3Client } from '@aws-sdk/client-s3';
-import { MAX_CERTIFICATION_FILES } from '../../../../lambda/lib/job-fields';
+import { MAX_CERTIFICATION_FILES, MAX_CERTIFICATION_FILES_PER_NAME } from '../../../../lambda/lib/job-fields';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('@aws-sdk/client-s3', () => ({
@@ -74,6 +74,13 @@ describe('worker-doc-confirm Lambda', () => {
     const parsed = JSON.parse(res.body);
     expect(parsed.error).toBe('invalid_doc_type');
     expect(parsed.valid).toBeUndefined();
+  });
+
+  it('rejects a cert_name on a non-certification doc_type with invalid_cert_name, without querying the DB', async () => {
+    const res = await handler(makeEvent({ ...validBody, cert_name: 'OSHA 30' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_cert_name');
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('returns 409 if the upload slot is invalid, confirmed, or mismatched', async () => {
@@ -356,6 +363,7 @@ describe('worker-doc-confirm Lambda', () => {
       doc_type: 'certification_doc',
       s3_key: 'documents/job-1/worker-1/certification_doc/uuid.pdf',
       file_name: 'cert.pdf',
+      cert_name: 'OSHA 30',
     };
     const certSlotRow = {
       ...slotRow,
@@ -363,35 +371,56 @@ describe('worker-doc-confirm Lambda', () => {
       issued_s3_key: 'documents/job-1/worker-1/certification_doc/uuid.pdf',
     };
 
-    it('inserts without deleting existing rows when under the cap', async () => {
+    it('returns 400 missing_cert_name when cert_name is omitted, without querying the DB', async () => {
+      const { cert_name, ...bodyWithoutCertName } = certBody;
+      const res = await handler(makeEvent(bodyWithoutCertName));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('missing_cert_name');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 invalid_cert_name when cert_name exceeds 200 chars, without querying the DB', async () => {
+      const res = await handler(makeEvent({ ...certBody, cert_name: 'a'.repeat(201) }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBe('invalid_cert_name');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('inserts without deleting existing rows when under both caps, writing the trimmed cert_name', async () => {
       mockS3Send.mockResolvedValueOnce(headResult);
       mockQuery
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({}) // set_config RLS
-        .mockResolvedValueOnce({ rows: [{ count: 2 }] }) // cap count check
+        .mockResolvedValueOnce({ rows: [{ count: 2 }] }) // total cap count check
+        .mockResolvedValueOnce({ rows: [{ count: 1 }] }) // per-name cap count check
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
         .mockResolvedValueOnce({ rows: [{ id: 'cert-uuid' }] }) // INSERT (no DELETE)
         .mockResolvedValueOnce({}); // COMMIT
 
-      const res = await handler(makeEvent(certBody));
+      const res = await handler(makeEvent({ ...certBody, cert_name: '  OSHA 30  ' }));
 
       expect(res.statusCode).toBe(200);
       const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
       expect(calls.some((sql) => sql.includes('DELETE FROM worker_documents'))).toBe(false);
-      expect(calls.some((sql) => sql.includes('SELECT COUNT'))).toBe(true);
-      expect(calls.some((sql) => sql.includes('INSERT INTO worker_documents'))).toBe(true);
+      // Both pre-checks must fire exactly once each -- a miscount here would
+      // silently mean one of the two COUNT queries never ran.
+      expect(calls.filter((sql) => sql.includes('SELECT COUNT')).length).toBe(2);
+      const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO worker_documents'));
+      expect(insertCall).toBeDefined();
+      expect(insertCall![0]).toContain('cert_name');
+      expect(insertCall![1]).toContain('OSHA 30'); // trimmed before persisting
     });
 
-    it('returns 409 certification_document_limit at the cap, without touching the slot', async () => {
+    it('returns 409 certification_document_limit at the total cap, without touching the slot or checking per-name', async () => {
       mockS3Send.mockResolvedValueOnce(headResult);
       mockQuery
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({}) // set_config RLS
-        // BE-T2 (078) raised MAX_CERTIFICATION_FILES from 5 to 20 -- the cap
+        // BE-T3 (078) raised MAX_CERTIFICATION_FILES from 5 to 20 -- the cap
         // check below is keyed off the constant, not a hardcoded number.
-        .mockResolvedValueOnce({ rows: [{ count: MAX_CERTIFICATION_FILES }] }) // cap count check -- at cap
+        .mockResolvedValueOnce({ rows: [{ count: MAX_CERTIFICATION_FILES }] }) // total cap count check -- at cap
         .mockResolvedValueOnce({}); // ROLLBACK
 
       const res = await handler(makeEvent(certBody));
@@ -400,7 +429,32 @@ describe('worker-doc-confirm Lambda', () => {
       expect(JSON.parse(res.body).error).toBe('certification_document_limit');
       const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
       // The slot-confirming guarded UPDATE must never run -- a cap rejection
-      // must not burn the (single-use) upload slot.
+      // must not burn the (single-use) upload slot. The per-name pre-check
+      // must not run either -- the total cap short-circuits first.
+      expect(calls.filter((sql) => sql.includes('SELECT COUNT')).length).toBe(1);
+      expect(calls.some((sql) => sql.includes('WITH valid_token AS'))).toBe(false);
+      expect(calls.some((sql) => sql.includes('INSERT INTO worker_documents'))).toBe(false);
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    });
+
+    it('returns 409 certification_document_name_limit at the per-name cap, without touching the slot', async () => {
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 10 }] }) // total cap count check -- well under 20
+        // BE-T3 (078) per-name cap stays 5 even though the total cap is now
+        // 20 -- see 078's header REACHABILITY section.
+        .mockResolvedValueOnce({ rows: [{ count: MAX_CERTIFICATION_FILES_PER_NAME }] }) // per-name cap count check -- at cap
+        .mockResolvedValueOnce({}); // ROLLBACK
+
+      const res = await handler(makeEvent(certBody));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('certification_document_name_limit');
+      const calls = mockQuery.mock.calls.map(([sql]) => sql as string);
+      expect(calls.filter((sql) => sql.includes('SELECT COUNT')).length).toBe(2);
       expect(calls.some((sql) => sql.includes('WITH valid_token AS'))).toBe(false);
       expect(calls.some((sql) => sql.includes('INSERT INTO worker_documents'))).toBe(false);
       expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
@@ -412,7 +466,8 @@ describe('worker-doc-confirm Lambda', () => {
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({}) // set_config RLS
-        .mockResolvedValueOnce({ rows: [{ count: 4 }] }) // cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [{ count: 4 }] }) // total cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [{ count: 1 }] }) // per-name cap count check -- under cap
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
         .mockImplementationOnce(() => {
           const err: any = new Error('duplicate key value violates unique constraint');
@@ -434,7 +489,8 @@ describe('worker-doc-confirm Lambda', () => {
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({}) // set_config RLS
-        .mockResolvedValueOnce({ rows: [{ count: 4 }] }) // cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [{ count: 4 }] }) // total cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [{ count: 1 }] }) // per-name cap count check -- under cap
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
         .mockImplementationOnce(() => {
           const err: any = new Error('new row violates check constraint "certification_document_limit"');
@@ -448,6 +504,30 @@ describe('worker-doc-confirm Lambda', () => {
 
       expect(res.statusCode).toBe(409);
       expect(JSON.parse(res.body).error).toBe('certification_document_limit');
+      expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    });
+
+    it('maps a 23514 check-violation from the certification_document_name_limit trigger (078, TOCTOU backstop) to 409', async () => {
+      mockS3Send.mockResolvedValueOnce(headResult);
+      mockQuery
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
+        .mockResolvedValueOnce({}) // BEGIN
+        .mockResolvedValueOnce({}) // set_config RLS
+        .mockResolvedValueOnce({ rows: [{ count: 10 }] }) // total cap count check -- under cap
+        .mockResolvedValueOnce({ rows: [{ count: 2 }] }) // per-name cap count check -- under cap (raced)
+        .mockResolvedValueOnce({ rows: [certSlotRow] }) // guarded confirm SELECT
+        .mockImplementationOnce(() => {
+          const err: any = new Error('new row violates check constraint "certification_document_name_limit"');
+          err.code = '23514';
+          err.constraint = 'certification_document_name_limit';
+          return Promise.reject(err);
+        }) // INSERT hits the 078 DB trigger's per-name cap
+        .mockResolvedValueOnce({}); // ROLLBACK
+
+      const res = await handler(makeEvent(certBody));
+
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).error).toBe('certification_document_name_limit');
       expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
     });
   });
