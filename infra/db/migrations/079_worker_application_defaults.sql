@@ -19,10 +19,12 @@
 --
 -- updated_at is NOT NULL DEFAULT now() but has NO update trigger (unlike
 -- job_applications_updated_at, 019): the app layer is expected to set it
--- explicitly on every UPDATE, since every write to this table already goes
--- through one narrow handler (the worker's own defaults-save endpoint) with
--- no multi-path write surface the way job_applications has. A trigger would
--- be redundant machinery for a single call site.
+-- explicitly on every UPDATE, since every write to this table goes through
+-- one narrow helper (upsertWorkerApplicationDefaults in
+-- infra/lambda/lib/worker-application-defaults.ts, called inside the web
+-- apply transaction) with no multi-path write surface the way
+-- job_applications has. A trigger would be redundant machinery for a single
+-- call site.
 --
 -- ── Grants: jale_admin ONLY, by design ───────────────────────────
 -- GRANT SELECT, INSERT, UPDATE TO jale_admin -- deliberately NO explicit
@@ -74,6 +76,11 @@ GRANT SELECT, INSERT, UPDATE ON worker_application_defaults TO jale_admin;
 
 ALTER TABLE worker_application_defaults ENABLE ROW LEVEL SECURITY;
 ALTER TABLE worker_application_defaults FORCE ROW LEVEL SECURITY;
+
+-- DROP-guard so a re-apply of this file alone is clean, matching 077/078's
+-- IF-EXISTS-guarded DDL (CREATE POLICY has no IF NOT EXISTS form). The chain
+-- is still forward-only (ADR-005); this only hardens accidental re-runs.
+DROP POLICY IF EXISTS worker_application_defaults_self ON worker_application_defaults;
 
 CREATE POLICY worker_application_defaults_self ON worker_application_defaults FOR ALL
   USING (

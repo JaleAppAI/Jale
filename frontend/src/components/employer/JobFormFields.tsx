@@ -205,6 +205,14 @@ export function JobFormFields({
       <CertificationsPicker
         certificationRequirements={form.certification_requirements}
         legacyCertifications={form.certifications}
+        // The post-applicants freeze covers WHAT the job requires, not just
+        // each requirement's tier: adding/removing a named certification is a
+        // strictly larger change than the tier/proof tweaks RequirementsPicker
+        // already locks below, and the pre-redesign certification_doc gate
+        // lived inside the locked required/optional_docs arrays. The backend
+        // enforces the same rule (employer-jobs-update.ts's applicant-count
+        // lock).
+        disabled={locked}
         // See PostJobModal's identical wiring for why `certifications` is
         // cleared on every picker edit, not just non-empty ones:
         // `jobFormToBasePayload` falls back to the legacy free-text field

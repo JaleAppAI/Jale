@@ -42,12 +42,10 @@ export type ApplyFlowSubmitPayload = {
  *     component only ever displays a string the caller already translated,
  *     never a raw error/code.
  *
- * PREREQUISITE NOT YET WIRED (flagging for Wave-3/backend): `lib/api/errors.ts`'s
- * `ALLOWED_PAYLOAD_KEYS` has no `certs` entry, so `parseApiError` drops it
- * even once a backend sends `missing_certification_proof` with a certs list.
- * This component renders that arm correctly once handed cert names -- nothing
- * upstream can currently produce them. `lib/api/errors.ts` is a lib file this
- * task does not own.
+ * The `certs` list survives the wire because `lib/api/errors.ts`'s
+ * `ALLOWED_PAYLOAD_KEYS` includes 'certs' -- `parseApiError` preserves it
+ * from the backend's `missing_certification_proof` 400 body, and the page
+ * hands it to this component via `submitError`.
  */
 export type ApplyFlowSubmitError =
   | { kind: 'missing_certification_proof'; certs: string[] }

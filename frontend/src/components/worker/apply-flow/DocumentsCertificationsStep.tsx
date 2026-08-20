@@ -151,8 +151,15 @@ export function DocumentsCertificationsStep({
   const certs = job.certification_requirements ?? [];
   const hasCerts = certs.length > 0;
 
+  // certification_doc is excluded UNCONDITIONALLY, not just when hasCerts:
+  // when a job requires the plain certification_doc (no named certs), that
+  // requirement renders below via the dedicated CertificationDocRow (the
+  // "X of 5 uploaded" multi-file row) -- letting it also pass this filter
+  // would render the same requirement twice with two inconsistent controls,
+  // exactly the double-render the pre-redesign form's single-loop ternary
+  // never allowed.
   const docsToShow = REQUIREMENT_DOC_KEYS.filter((key) => {
-    if (key === 'certification_doc' && hasCerts) return false;
+    if (key === 'certification_doc') return false;
     return requiredDocs.includes(key) || optionalDocs.includes(key);
   }) as JobDocType[];
 
@@ -436,7 +443,7 @@ export function CertClaimRow({
       </div>
 
       <div className="mt-2">
-        <YesNo value={claim.has} onChange={onSetHas} />
+        <YesNo value={claim.has} onChange={onSetHas} ariaLabel={tFlow('cert_question', { name: cert.name })} />
       </div>
 
       {missingClaim ? (

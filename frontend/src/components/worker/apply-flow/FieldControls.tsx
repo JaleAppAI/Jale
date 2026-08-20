@@ -28,12 +28,15 @@ import {
  * new per-certification rows need the identical control.
  */
 
-export function YesNo({ value, onChange, label }: { value: boolean | null; onChange: (value: boolean) => void; label?: string }) {
+// `ariaLabel` names the radiogroup without rendering visible text -- for call
+// sites (CertClaimRow) whose question copy is already rendered as their own
+// styled element and must not appear twice.
+export function YesNo({ value, onChange, label, ariaLabel }: { value: boolean | null; onChange: (value: boolean) => void; label?: string; ariaLabel?: string }) {
   const t = useTranslations('job_requirements');
   return (
     <div className="flex items-center gap-2">
       {label && <span className="text-xs font-semibold text-[var(--jale-ink-2)]">{label}</span>}
-      <div role="radiogroup" aria-label={label} className="flex gap-1 rounded-full border border-[var(--jale-divider)] p-0.5">
+      <div role="radiogroup" aria-label={ariaLabel ?? label} className="flex gap-1 rounded-full border border-[var(--jale-divider)] p-0.5">
         {[true, false].map((option) => {
           const selected = value === option;
           return (

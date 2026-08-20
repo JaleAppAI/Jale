@@ -400,10 +400,11 @@ describe('employer-jobs-update', () => {
     job_type: string; required_docs: string[]; optional_docs: string[];
     required_fields: string[]; optional_fields: string[];
     applicant_count: number; hired_count: number; city: string | null; state_region: string | null;
+    certification_requirements: Array<{ name: string; tier: string; proof_required: boolean }> | null;
   }> = {}) {
     const row = {
       job_type: 'full-time', required_docs: ['resume'], optional_docs: [], required_fields: [], optional_fields: [],
-      applicant_count: 0, hired_count: 0, city: null, state_region: null, ...over,
+      applicant_count: 0, hired_count: 0, city: null, state_region: null, certification_requirements: null, ...over,
     };
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
@@ -501,6 +502,56 @@ describe('employer-jobs-update', () => {
   it('allows unchanged locked fields even with applicants', async () => {
     mockCurrentJob({ applicant_count: 5, job_type: 'full-time', required_docs: ['resume'] });
     const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  // Adversarial-review regression pins: certification_requirements is part of
+  // WHAT the job requires (its predecessor, the certification_doc entry,
+  // lived inside the locked docs arrays), so it freezes with applicants too.
+  it('rejects adding certification_requirements when the job has applicants (409 field_locked)', async () => {
+    mockCurrentJob({ applicant_count: 1, job_type: 'full-time', required_docs: ['resume'], certification_requirements: null });
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toContain('certification_requirements');
+  });
+
+  it('rejects removing certification_requirements when the job has applicants (409 field_locked)', async () => {
+    mockCurrentJob({
+      applicant_count: 1, job_type: 'full-time', required_docs: ['resume'],
+      certification_requirements: [{ name: 'OSHA 30', proof_required: true, tier: 'required' }],
+    });
+    // VALID_EDIT carries no certification_requirements key -- exact-replace
+    // semantics would write NULL, which the lock must treat as a change.
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('field_locked');
+    expect(body.fields).toContain('certification_requirements');
+  });
+
+  it('allows an unchanged certification_requirements round-trip with applicants, despite jsonb key-order normalization', async () => {
+    // Stored jsonb sorts object keys ({name, proof_required, tier}); the
+    // client resends insertion order ({name, tier, proof_required}). Same
+    // content must NOT trip the lock -- the comparison is content-normalized,
+    // never a raw JSON.stringify byte match.
+    mockCurrentJob({
+      applicant_count: 3, job_type: 'full-time', required_docs: ['resume'],
+      certification_requirements: [{ name: 'OSHA 30', proof_required: true, tier: 'required' }],
+    });
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
     expect(res.statusCode).toBe(200);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });

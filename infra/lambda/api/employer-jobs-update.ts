@@ -310,6 +310,7 @@ async function handleFieldEdit(
       required_fields: string[] | null; optional_fields: string[] | null;
       applicant_count: number; hired_count: number;
       city: string | null; state_region: string | null;
+      certification_requirements: Array<{ name: string; tier: string; proof_required: boolean }> | null;
     }>(
       `SELECT jobs.job_type,
               jobs.required_docs,
@@ -319,6 +320,7 @@ async function handleFieldEdit(
               jobs.workers_hired AS hired_count,
               jobs.city,
               jobs.state_region,
+              jobs.certification_requirements,
               (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count
          FROM jobs JOIN users u ON u.id = jobs.employer_id
         WHERE jobs.id = $1 AND u.cognito_sub = $2
@@ -384,6 +386,21 @@ async function handleFieldEdit(
       if (arrayChanged(required_fields, cur.required_fields)) lockedFields.push('required_fields');
       if (arrayChanged(optional_fields, cur.optional_fields)) lockedFields.push('optional_fields');
       if (job_type !== cur.job_type) lockedFields.push('job_type');
+      // certification_requirements is part of WHAT the job requires, and its
+      // predecessor (the certification_doc entry) lived inside the locked
+      // docs arrays above -- so adding/removing/re-tiering named certs after
+      // applicants exist is locked the same way. Compared by normalized
+      // content, not JSON.stringify of the raw values: jsonb sorts object
+      // keys on storage, so a byte comparison would spuriously flag an
+      // unchanged round-trip as an edit. Entry ORDER is significant on
+      // purpose (the UI never reorders; a reorder implies an actual edit).
+      const certReqsNormalized = (value: unknown): string =>
+        JSON.stringify(
+          (Array.isArray(value) ? value : []).map((entry: any) => [entry?.name, entry?.tier, entry?.proof_required]),
+        );
+      if (certReqsNormalized(f.certification_requirements) !== certReqsNormalized(cur.certification_requirements)) {
+        lockedFields.push('certification_requirements');
+      }
       if (lockedFields.length > 0) {
         await client.query('ROLLBACK');
         return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'field_locked', fields: lockedFields }) };

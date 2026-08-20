@@ -982,6 +982,43 @@ describe('jobToForm: certification_requirements -- direct load vs. legacy seedin
     const job: EmployerJobDetail = { ...baseJob, certifications: [], required_docs: ['certification_doc'] };
     expect(jobToForm(job).certification_requirements).toEqual([]);
   });
+
+  // Adversarial-review regression pins: seeding is skipped once the job has
+  // applicants. A seeded save drops certification_doc from the (locked) docs
+  // arrays, so seeding a locked legacy job would make EVERY save of it fail
+  // -- even a title fix. Stored per-cert data still round-trips regardless.
+  it('does NOT seed from legacy fields when the job has applicants (locked docs arrays)', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certifications: ['OSHA 10', 'CPR'],
+      required_docs: ['certification_doc'],
+      applicant_count: 3,
+    };
+    expect(jobToForm(job).certification_requirements).toEqual([]);
+  });
+
+  it('still loads STORED certification_requirements when the job has applicants', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certification_requirements: [{ name: 'CPR', tier: 'optional', proof_required: false }],
+      applicant_count: 3,
+    };
+    expect(jobToForm(job).certification_requirements).toEqual([{ name: 'CPR', tier: 'optional', proof_required: false }]);
+  });
+
+  it('locked legacy job round-trips its legacy shape untouched (no cert seeding, certification_doc stays in required_docs)', () => {
+    const job: EmployerJobDetail = {
+      ...baseJob,
+      certifications: ['OSHA 10'],
+      required_docs: ['certification_doc', 'resume'],
+      applicant_count: 1,
+    };
+    const form = jobToForm(job);
+    const payload = jobFormToCreatePayload(form);
+    expect(payload.certifications).toEqual(['OSHA 10']);
+    expect(payload.required_docs).toEqual(expect.arrayContaining(['certification_doc', 'resume']));
+    expect(payload.certification_requirements).toBeUndefined();
+  });
 });
 
 describe('headline: jobToForm -> jobFormToCreatePayload round-trip for a pre-FE-T3 legacy job', () => {

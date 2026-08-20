@@ -588,16 +588,28 @@ function loadedCertDocTierFromArrays(job: {
  * name (proof was implicitly required by uploading against that doc slot).
  * A legacy tier of 'off', or no legacy certification names at all, seeds
  * nothing.
+ *
+ * Seeding is also SKIPPED entirely once the job has applicants: a seeded
+ * save would drop certification_doc from the docs arrays (see
+ * jobFormToBasePayload's payload rule), and those arrays are frozen by the
+ * post-applicants lock on both ends (employer-jobs-update.ts rejects the
+ * change) -- so seeding a locked legacy job would make EVERY save of it
+ * fail, even a title fix. A locked legacy job keeps its legacy shape
+ * verbatim instead; STORED per-cert data (the first branch) still
+ * round-trips regardless of lock, since resending unchanged values passes
+ * the backend's content comparison.
  */
 function seedCertificationRequirements(job: {
   certification_requirements?: readonly CertificationRequirement[] | null;
   certifications?: readonly string[] | null;
   required_docs?: readonly string[] | null;
   optional_docs?: readonly string[] | null;
+  applicant_count?: number | null;
 }): CertificationRequirement[] {
   if (job.certification_requirements && job.certification_requirements.length > 0) {
     return job.certification_requirements.map((cert) => ({ ...cert }));
   }
+  if ((job.applicant_count ?? 0) > 0) return [];
   const names = job.certifications ?? [];
   if (names.length === 0) return [];
   const tier = loadedCertDocTierFromArrays(job);
