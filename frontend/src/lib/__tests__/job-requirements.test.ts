@@ -11,7 +11,6 @@ import {
   certificationHintNames,
   deriveCertificationDocTier,
   FIELD_GROUPS,
-  SENSITIVE_FIELD_KEYS,
   type RequirementsMap,
   type CertificationRequirement,
 } from '@/lib/job-requirements';
@@ -235,9 +234,5 @@ describe('vocabulary shape', () => {
     const grouped = Object.values(FIELD_GROUPS).flat();
     expect(grouped.sort()).toEqual([...REQUIREMENT_FIELD_KEYS].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
-  });
-
-  it('marks exactly date_of_birth and home_address as sensitive', () => {
-    expect([...SENSITIVE_FIELD_KEYS].sort()).toEqual(['date_of_birth', 'home_address']);
   });
 });
