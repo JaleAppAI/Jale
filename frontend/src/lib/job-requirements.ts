@@ -203,14 +203,6 @@ export const FIELD_GROUPS: Record<'identity' | 'availability' | 'background' | '
 };
 
 /**
- * Fields whose row carries the "sensitive" marker (muted badge + tooltip).
- *
- * @deprecated Sensitive badges are being removed; deleted together with
- * RequirementsPicker's usage in the picker task.
- */
-export const SENSITIVE_FIELD_KEYS: readonly RequirementFieldKey[] = ['date_of_birth', 'home_address'];
-
-/**
  * The certification_doc row's hint: when the row is not Off and the
  * employer typed free-text certification names in step 2, quote them back
  * ("Will ask for proof of: …"). Returns null when there is nothing to quote,

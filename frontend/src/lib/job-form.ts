@@ -12,7 +12,6 @@ export {
   REQUIREMENT_FIELD_KEYS,
   REQUIREMENT_KEYS,
   FIELD_GROUPS,
-  SENSITIVE_FIELD_KEYS,
   initialRequirements,
   requirementsToArrays,
   arraysToRequirements,
