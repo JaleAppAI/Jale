@@ -108,6 +108,24 @@ describe('searchCertifications', () => {
     const otherLabels = results.slice(lastActiveIndex + 1).map((c) => c.label_en);
     expect([...otherLabels].sort((a, b) => a.localeCompare(b, 'en'))).toEqual(otherLabels);
   });
+
+  it('matches diacritic-insensitively: an unaccented query finds an accented label_es', () => {
+    // "Protección contra caídas" (fall_protection) -- typed without accents,
+    // as is common on a phone keyboard.
+    const results = searchCertifications('proteccion', 'es');
+    expect(results.map((c) => c.id)).toContain('fall_protection');
+  });
+
+  it('matches diacritic-insensitively across locales too', () => {
+    // Same entry, other-locale direction: locale='en' query hits label_es only.
+    const results = searchCertifications('caidas', 'en');
+    expect(results.map((c) => c.id)).toContain('fall_protection');
+  });
+
+  it('still matches when the query itself carries accents', () => {
+    const results = searchCertifications('protección', 'es');
+    expect(results.map((c) => c.id)).toContain('fall_protection');
+  });
 });
 
 describe('certificationLabel', () => {
@@ -148,5 +166,11 @@ describe('findCertificationByName', () => {
   it('returns null for an empty or whitespace-only name', () => {
     expect(findCertificationByName('')).toBeNull();
     expect(findCertificationByName('   ')).toBeNull();
+  });
+
+  it('finds by Spanish label typed without accents (phone-keyboard input)', () => {
+    // Stored label_es is "Operador de grúa (NCCCO)".
+    const found = findCertificationByName('operador de grua (nccco)');
+    expect(found?.id).toBe('crane_operator_nccco');
   });
 });
