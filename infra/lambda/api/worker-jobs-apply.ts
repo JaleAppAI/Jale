@@ -18,13 +18,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_id' }) };
     }
 
-    let body: { answers?: unknown };
+    let body: { answers?: unknown; certification_claims?: unknown };
     try {
       body = JSON.parse(event.body ?? '{}');
     } catch {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_json' }) };
     }
     const answers = body.answers as Record<string, unknown> | undefined;
+    // Top-level sibling of `answers`, NEVER routed through it or through
+    // validateApplicationAnswers -- shape is checked by
+    // validateCertificationClaims (certification-claims.ts) inside
+    // applyWorkerToJob, not here.
+    const certificationClaims = body.certification_claims;
 
     const pool = await getDbPool();
     client = await pool.connect();
@@ -48,7 +53,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     const workerId: string = workerRes.rows[0].id;
 
-    const applyResult = await applyWorkerToJob(client, { workerId, jobId, surface: 'web', answers });
+    const applyResult = await applyWorkerToJob(client, {
+      workerId,
+      jobId,
+      surface: 'web',
+      answers,
+      certificationClaims,
+    });
     await client.query('COMMIT');
 
     if (applyResult.status === 'job_closed') {
@@ -62,6 +73,19 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
     if (applyResult.status === 'invalid_answers') {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_answers', detail: applyResult.error }) };
+    }
+    if (applyResult.status === 'invalid_certification_claims') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_certification_claims' }) };
+    }
+    if (applyResult.status === 'missing_certification_claims') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_certification_claims' }) };
+    }
+    if (applyResult.status === 'missing_certification_proof') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_certification_proof', certs: applyResult.certs }) };
+    }
+    if (applyResult.status === 'certification_document_limit') {
+      // Matches worker-doc-confirm.ts's precedent for the same DB-level cap.
+      return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'certification_document_limit' }) };
     }
     if (applyResult.status === 'already_applied') {
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'already_applied' }) };
