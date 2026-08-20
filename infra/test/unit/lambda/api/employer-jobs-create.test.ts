@@ -263,14 +263,14 @@ describe('employer-jobs-create', () => {
     expect(insertCall[0]).toContain('city_key');
     // state_region is derived from location ('Columbus, OH') independently of
     // the picker triple, which only feeds city_key/city/state.
-    expect(insertCall[1].slice(24)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
+    expect(insertCall[1].slice(24, 28)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
   });
 
   it('derives the city triple from parseable location text when no picker triple is sent', async () => {
     const res = await handler(makeEvent({}));  // location defaults to 'Columbus, OH'
     expect(res.statusCode).toBe(201);
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
-    expect(insertCall[1].slice(24)).toEqual(['columbus-oh', 'Columbus', 'OH', 'OH']);
+    expect(insertCall[1].slice(24, 28)).toEqual(['columbus-oh', 'Columbus', 'OH', 'OH']);
   });
 
   it('rejects a job with unparseable location and no city fields (400 city_required) -- doctrine change: create no longer allows a fully un-locatable job (see Stage 1a)', async () => {
@@ -289,7 +289,7 @@ describe('employer-jobs-create', () => {
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
     // state_region still derives from location ('Columbus, OH' -> OH),
     // independently of the picker triple overriding city_key/city/state.
-    expect(insertCall[1].slice(24)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
+    expect(insertCall[1].slice(24, 28)).toEqual(['el-paso-tx', 'El Paso', 'TX', 'OH']);
   });
 
   it('accepts a lone `city` field (no city_key/state) as the SEO-only channel -- no longer a 400 partial triple', async () => {
@@ -444,5 +444,203 @@ describe('employer-jobs-create', () => {
   it('creates successfully when the location parses to a city (e.g. "Austin, TX") with no explicit city fields', async () => {
     const res = await handler(makeEvent({ location: 'Austin, TX' }));
     expect(res.statusCode).toBe(201);
+  });
+
+  // ---------------------------------------------------------------------------
+  // BE-T2 -- six new structured fields (077)
+  // ---------------------------------------------------------------------------
+
+  it('a legacy payload with none of the six new keys still creates (additive wire shape)', async () => {
+    const res = await handler(makeEvent({}));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    // New columns land at the END of the column/param list (indices 28-33)
+    // so every pre-existing positional assertion in this file stays valid.
+    expect(insertCall[1].slice(28)).toEqual([null, null, null, null, null, null]);
+  });
+
+  it('threads all six new fields through INSERT and RETURNING', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
+      if (sql.includes('INSERT INTO jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', title: 'Concrete Finisher', location: 'Columbus, OH', pay: null,
+            job_type: 'contract', status: 'active', required_docs: [], created_at: 'now',
+            pay_min: null, pay_max: null, start_date: null, expected_duration: null,
+            shift_schedule: null, transportation_required: false, language_preference: ['any'],
+            number_of_workers_needed: 1, hired_count: 0, open_count: 1, trade_category: 'other',
+            required_experience_years: null, certifications: ['OSHA 30'],
+            trade_category_other: 'Scaffolding', expected_duration_bucket: '1_2w',
+            work_days: ['mon', 'tue'], shift_start: '07:00', shift_end: '15:30',
+            certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      trade_category: 'other',
+      trade_category_other: 'Scaffolding',
+      expected_duration_bucket: '1_2w',
+      work_days: ['mon', 'tue'],
+      shift_start: '07:00',
+      shift_end: '15:30',
+      certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.trade_category_other).toBe('Scaffolding');
+    expect(body.expected_duration_bucket).toBe('1_2w');
+    expect(body.work_days).toEqual(['mon', 'tue']);
+    expect(body.shift_start).toBe('07:00');
+    expect(body.shift_end).toBe('15:30');
+    expect(body.certification_requirements).toEqual([{ name: 'OSHA 30', tier: 'required', proof_required: true }]);
+
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[0]).toContain('trade_category_other');
+    expect(insertCall[0]).toContain('expected_duration_bucket');
+    expect(insertCall[0]).toContain('work_days');
+    expect(insertCall[0]).toContain('shift_start');
+    expect(insertCall[0]).toContain('shift_end');
+    expect(insertCall[0]).toContain('certification_requirements');
+    const returningClause = (insertCall[0] as string).split('RETURNING')[1];
+    expect(returningClause).toMatch(/\btrade_category_other\b/);
+    expect(returningClause).toMatch(/\bexpected_duration_bucket\b/);
+    expect(returningClause).toMatch(/\bwork_days\b/);
+    expect(returningClause).toMatch(/\bshift_start\b/);
+    expect(returningClause).toMatch(/\bshift_end\b/);
+    expect(returningClause).toMatch(/\bcertification_requirements\b/);
+
+    // Indices 28-33: the six new columns, appended at the end so every
+    // pre-existing positional index in this file (e.g. description at 5,
+    // work_authorization_required at 17, the city triple at 24-27) is
+    // undisturbed.
+    expect(insertCall[1][28]).toBe('Scaffolding');
+    expect(insertCall[1][29]).toBe('1_2w');
+    expect(insertCall[1][30]).toEqual(['mon', 'tue']);
+    expect(insertCall[1][31]).toBe('07:00');
+    expect(insertCall[1][32]).toBe('15:30');
+    expect(insertCall[1][33]).toBe(JSON.stringify([{ name: 'OSHA 30', tier: 'required', proof_required: true }]));
+  });
+
+  it('pins the shift_start/shift_end/certification_requirements casts in the generated INSERT SQL (::time / ::jsonb)', async () => {
+    const res = await handler(makeEvent({
+      shift_start: '07:00',
+      shift_end: '15:30',
+      certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+    }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    const valuesClause = (insertCall[0] as string).split('VALUES')[1].split('RETURNING')[0];
+    expect(valuesClause).toMatch(/\$\d+::time/);
+    expect(valuesClause.match(/::time/g)?.length).toBe(2);
+    expect(valuesClause).toMatch(/\$\d+::jsonb/);
+  });
+
+  it('passes a real SQL NULL (not the string "null") for certification_requirements when absent', async () => {
+    const res = await handler(makeEvent({}));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][33]).toBeNull();
+  });
+
+  it('passes the JSON string "[]" (not null) for certification_requirements when an explicit empty array is sent', async () => {
+    const res = await handler(makeEvent({ certification_requirements: [] }));
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    expect(insertCall[1][33]).toBe('[]');
+  });
+
+  it("rejects a trade_category_other sent for a non-'other' trade_category, before opening a DB connection", async () => {
+    const res = await handler(makeEvent({ trade_category_other: 'Scaffolding' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_trade_category_other' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid expected_duration_bucket with the valid echo, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ expected_duration_bucket: 'never' }));
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('invalid_expected_duration_bucket');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects a duplicate work_days entry, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ work_days: ['mon', 'mon'] }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_work_days');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed shift_start, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ shift_start: '9:00' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_shift_start');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects certification_requirements with a name over 200 chars, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ certification_requirements: [{ name: 'A'.repeat(201), tier: 'required', proof_required: true }] }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_certification_requirements');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects certification_requirements with duplicate names case-insensitively, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({
+      certification_requirements: [
+        { name: 'OSHA 10', tier: 'required', proof_required: true },
+        { name: 'osha 10', tier: 'optional', proof_required: false },
+      ],
+    }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_certification_requirements');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects certification_requirements conflicting with required_docs certification_doc, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({
+      required_docs: ['certification_doc'],
+      certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+    }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_certification_requirements_doc_conflict' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects certification_requirements conflicting with optional_docs certification_doc, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({
+      optional_docs: ['certification_doc'],
+      certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+    }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_certification_requirements_doc_conflict' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('derives certifications from certification_requirements names, ignoring a stale client-supplied certifications value', async () => {
+    mockQuery.mockImplementation((sql: string) => {
+      if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+      if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
+      if (sql.includes('INSERT INTO jobs')) {
+        return Promise.resolve({ rows: [{ id: 'job-1', certifications: ['OSHA 30'] }] });
+      }
+      return Promise.resolve({});
+    });
+
+    const res = await handler(makeEvent({
+      certifications: ['Stale Legacy Cert'],
+      certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
+    // certifications is bind param index 23 (0-based), unchanged position.
+    expect(insertCall[1][23]).toEqual(['OSHA 30']);
   });
 });

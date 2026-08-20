@@ -189,6 +189,13 @@ const EDITABLE_COLUMNS = [
   'language_preference', 'number_of_workers_needed', 'trade_category',
   'required_experience_years', 'required_experience_months', 'certifications',
   'city_key', 'city', 'state', 'state_region',
+  // BE-T2 (077): six new structured columns, appended at the END so every
+  // pre-existing positional index above is undisturbed. Exact-replace
+  // semantics like the rest of this list (parseJobFields already returns
+  // null for an absent key, so a PATCH that omits them clears them, matching
+  // 077's one-way CHECKs / the "full row write on every PATCH" doctrine).
+  'trade_category_other', 'expected_duration_bucket', 'work_days',
+  'shift_start', 'shift_end', 'certification_requirements',
 ] as const;
 
 async function handleFieldEdit(
@@ -347,6 +354,23 @@ async function handleFieldEdit(
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'requirements_tier_overlap', keys: requirementsOverlapKeys }) };
     }
 
+    // BE-T2 (077/078) doc-conflict re-check on EFFECTIVE (post-preserve-merge)
+    // values: parseJobFields (job-fields.ts) already rejects an EXPLICIT
+    // required_docs/optional_docs body value that conflicts with a non-empty
+    // certification_requirements, but it only sees the RAW request body --
+    // it cannot see a PRESERVED optional_docs inherited from `cur` when the
+    // body omits that key entirely. Without this re-check, a PATCH that sets
+    // certification_requirements while omitting optional_docs could silently
+    // inherit a stored certification_doc entry, double-gating the applicant
+    // on both the per-cert proofs and the single certification_doc row.
+    if (
+      f.certification_requirements && f.certification_requirements.length > 0 &&
+      (required_docs.includes('certification_doc') || optional_docs.includes('certification_doc'))
+    ) {
+      await client.query('ROLLBACK');
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_certification_requirements_doc_conflict' }) };
+    }
+
     // Lock rules: once the job has applicants, all four requirement arrays
     // and job_type freeze. `fields` lists exactly which of them changed
     // (comparing the EFFECTIVE value -- so a preserved (omitted) array never
@@ -394,6 +418,19 @@ async function handleFieldEdit(
       required_experience_years: f.required_experience_years,
       required_experience_months: f.required_experience_months,
       certifications: f.certifications,
+      // BE-T2 (077): exact-replace, like every other parseJobFields-sourced
+      // column above -- an absent key is already null on `f` itself.
+      trade_category_other: f.trade_category_other,
+      expected_duration_bucket: f.expected_duration_bucket,
+      work_days: f.work_days,
+      shift_start: f.shift_start,
+      shift_end: f.shift_end,
+      // JSON.stringify only when non-null -- JSON.stringify(null) would
+      // produce the string "null", which casts to the JSONB scalar `null`
+      // (jsonb_typeof = 'null'), NOT a SQL NULL, and would trip
+      // jobs_certification_requirements_valid's "IS NULL OR ...= 'array'"
+      // CHECK on every legacy row that never set this field.
+      certification_requirements: f.certification_requirements === null ? null : JSON.stringify(f.certification_requirements),
       // Matching identity (city_key/state): an omitted triple replaces the
       // stored keys on purpose -- a fresh parse of the new location text, or
       // NULL when unparseable. A stale key must never keep matching the old
@@ -410,10 +447,29 @@ async function handleFieldEdit(
     };
     const setClauses = EDITABLE_COLUMNS.map((col, i) => `${col} = $${i + 1}`).join(', ');
     const params = EDITABLE_COLUMNS.map((col) => values[col]);
-    const startDateIdx = EDITABLE_COLUMNS.indexOf('start_date') + 1;
+
+    // A handful of columns need an explicit cast: node-postgres binds JS
+    // strings as text-typed params, and Postgres has no implicit
+    // text->date/time/jsonb ASSIGNMENT cast -- the same reason start_date has
+    // carried ::date since the MVP fields landed. Substituted by column name
+    // since EDITABLE_COLUMNS drives placeholder generation dynamically, so a
+    // fixed `$N` literal can't be hardcoded here.
+    const CAST_OVERRIDES: Partial<Record<typeof EDITABLE_COLUMNS[number], string>> = {
+      start_date: 'date',
+      shift_start: 'time',
+      shift_end: 'time',
+      certification_requirements: 'jsonb',
+    };
+    const setClausesWithCasts = (Object.entries(CAST_OVERRIDES) as [typeof EDITABLE_COLUMNS[number], string][]).reduce(
+      (clauses, [col, cast]) => {
+        const idx = EDITABLE_COLUMNS.indexOf(col) + 1;
+        return clauses.replace(`${col} = $${idx}`, `${col} = $${idx}::${cast}`);
+      },
+      setClauses,
+    );
 
     const result = await client.query(
-      `UPDATE jobs SET ${setClauses.replace(`start_date = $${startDateIdx}`, `start_date = $${startDateIdx}::date`)}
+      `UPDATE jobs SET ${setClausesWithCasts}
          WHERE id = $${EDITABLE_COLUMNS.length + 1}
        RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -422,6 +478,7 @@ async function handleFieldEdit(
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
          city_key, city, state, state_region,
+         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements,
          public_code, public_listing_enabled,
          (SELECT COUNT(*)::int FROM job_applications WHERE job_id = jobs.id) AS applicant_count`,
       [...params, jobId],

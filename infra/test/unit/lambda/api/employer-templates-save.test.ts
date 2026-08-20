@@ -260,4 +260,73 @@ describe('employer-templates-save', () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).error).toBe('invalid_optional_fields');
   });
+
+  // ---------------------------------------------------------------------------
+  // BE-T2 -- six new structured fields (077): old-shape template re-save
+  // ---------------------------------------------------------------------------
+
+  it("saves an old-shape template payload (trade_category='other' with NO trade_category_other, and no other BE-T2 keys) with 200/201 -- parseJobFields alone must keep old template re-saves working", async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, trade_category: 'other' } }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    expect(insertCall).toBeDefined();
+    const parsed = JSON.parse(insertCall[1][2]);
+    expect(parsed.trade_category).toBe('other');
+    // parseJobFields gives these six keys as null unconditionally (same
+    // treatment as expected_duration/shift_schedule above them) -- no
+    // requiredness is enforced here, and no error is raised for the historic
+    // 'other' rows that predate trade_category_other.
+    expect(parsed.trade_category_other).toBeNull();
+    expect(parsed.expected_duration_bucket).toBeNull();
+    expect(parsed.work_days).toBeNull();
+    expect(parsed.shift_start).toBeNull();
+    expect(parsed.shift_end).toBeNull();
+    expect(parsed.certification_requirements).toBeNull();
+  });
+
+  it('stores all six new fields when a fully-populated payload is saved as a template', async () => {
+    const res = await handler(makeEvent({
+      payload: {
+        ...BASE_PAYLOAD,
+        trade_category: 'other',
+        trade_category_other: 'Scaffolding',
+        expected_duration_bucket: '1_2w',
+        work_days: ['mon', 'tue'],
+        shift_start: '07:00',
+        shift_end: '15:30',
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      },
+    }));
+
+    expect(res.statusCode).toBe(201);
+    const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO employer_job_templates'));
+    const parsed = JSON.parse(insertCall[1][2]);
+    expect(parsed.trade_category_other).toBe('Scaffolding');
+    expect(parsed.expected_duration_bucket).toBe('1_2w');
+    expect(parsed.work_days).toEqual(['mon', 'tue']);
+    expect(parsed.shift_start).toBe('07:00');
+    expect(parsed.shift_end).toBe('15:30');
+    expect(parsed.certification_requirements).toEqual([{ name: 'OSHA 30', tier: 'required', proof_required: true }]);
+    // certifications is DERIVED from certification_requirements' names.
+    expect(parsed.certifications).toEqual(['OSHA 30']);
+  });
+
+  it("rejects a trade_category_other sent for a non-'other' trade_category in a template payload", async () => {
+    const res = await handler(makeEvent({ payload: { ...BASE_PAYLOAD, trade_category_other: 'Scaffolding' } }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_trade_category_other');
+  });
+
+  it('rejects certification_requirements conflicting with required_docs certification_doc in a template payload', async () => {
+    const res = await handler(makeEvent({
+      payload: {
+        ...BASE_PAYLOAD,
+        required_docs: ['certification_doc'],
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      },
+    }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_certification_requirements_doc_conflict');
+  });
 });

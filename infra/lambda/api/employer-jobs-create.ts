@@ -45,6 +45,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       required_experience_years?: number | null;
       required_experience_months?: number | null;
       certifications?: string[];
+      trade_category_other?: string | null;
+      expected_duration_bucket?: string | null;
+      work_days?: string[] | null;
+      shift_start?: string | null;
+      shift_end?: string | null;
+      certification_requirements?: { name: string; tier: 'required' | 'optional'; proof_required: boolean }[] | null;
       city_key?: string;
       city?: string | null;
       state?: string;
@@ -229,6 +235,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
+    // BE-T2 (077): the six new structured columns are appended at the END of
+    // the column/VALUES/RETURNING lists (and of the params array below) so
+    // every pre-existing positional index elsewhere in this codebase/tests
+    // (description at params[5], work_authorization_required at params[17],
+    // the city triple at params[24..27]) is undisturbed.
+    const certificationRequirementsParam = jobFields.value.certification_requirements === null
+      ? null
+      : JSON.stringify(jobFields.value.certification_requirements);
+
     const result = await client.query(
       `INSERT INTO jobs (
          employer_id,
@@ -258,10 +273,17 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          city_key,
          city,
          state,
-         state_region
+         state_region,
+         trade_category_other,
+         expected_duration_bucket,
+         work_days,
+         shift_start,
+         shift_end,
+         certification_requirements
        )
        VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
+         $29, $30, $31, $32::time, $33::time, $34::jsonb
        )
        RETURNING id, title, location, pay, job_type, status, required_docs, optional_docs, required_fields, optional_fields, created_at,
          pay_min, pay_max, pay_interval, start_date, expected_duration, shift_schedule,
@@ -269,7 +291,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          workers_hired AS hired_count,
          GREATEST(number_of_workers_needed - workers_hired, 0) AS open_count,
          trade_category, required_experience_years, required_experience_months, certifications,
-         city_key, city, state, state_region`,
+         city_key, city, state, state_region,
+         trade_category_other, expected_duration_bucket, work_days, shift_start, shift_end, certification_requirements`,
       [
         userId,
         title.trim(),
@@ -302,6 +325,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         cityTriple?.city ?? locationFields.value.city,
         cityTriple?.state ?? null,
         locationFields.value.state_region,
+        jobFields.value.trade_category_other,
+        jobFields.value.expected_duration_bucket,
+        jobFields.value.work_days,
+        jobFields.value.shift_start,
+        jobFields.value.shift_end,
+        certificationRequirementsParam,
       ],
     );
     const job = result.rows[0];

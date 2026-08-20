@@ -9,6 +9,7 @@ import { handler } from '../../../../lambda/api/worker-doc-confirm-auth';
 import { getDbPool, setInternalUserRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { S3Client } from '@aws-sdk/client-s3';
+import { MAX_CERTIFICATION_FILES } from '../../../../lambda/lib/job-fields';
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
@@ -201,7 +202,9 @@ describe('worker-doc-confirm-auth', () => {
     mockS3Send.mockResolvedValueOnce(validHead);
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
-      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: 5 }] });
+      // BE-T2 (078) raised MAX_CERTIFICATION_FILES from 5 to 20 -- the cap
+      // check below is keyed off the constant, not a hardcoded number.
+      if (q.includes('SELECT COUNT')) return Promise.resolve({ rows: [{ count: MAX_CERTIFICATION_FILES }] });
       return Promise.resolve({});
     });
 

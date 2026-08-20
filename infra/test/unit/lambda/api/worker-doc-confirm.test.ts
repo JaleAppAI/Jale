@@ -2,6 +2,7 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/worker-doc-confirm';
 import { getDbPool } from '../../../../lambda/lib/db';
 import { S3Client } from '@aws-sdk/client-s3';
+import { MAX_CERTIFICATION_FILES } from '../../../../lambda/lib/job-fields';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('@aws-sdk/client-s3', () => ({
@@ -388,7 +389,9 @@ describe('worker-doc-confirm Lambda', () => {
         .mockResolvedValueOnce({ rows: [certSlotRow] }) // slot lookup
         .mockResolvedValueOnce({}) // BEGIN
         .mockResolvedValueOnce({}) // set_config RLS
-        .mockResolvedValueOnce({ rows: [{ count: 5 }] }) // cap count check -- at cap
+        // BE-T2 (078) raised MAX_CERTIFICATION_FILES from 5 to 20 -- the cap
+        // check below is keyed off the constant, not a hardcoded number.
+        .mockResolvedValueOnce({ rows: [{ count: MAX_CERTIFICATION_FILES }] }) // cap count check -- at cap
         .mockResolvedValueOnce({}); // ROLLBACK
 
       const res = await handler(makeEvent(certBody));
