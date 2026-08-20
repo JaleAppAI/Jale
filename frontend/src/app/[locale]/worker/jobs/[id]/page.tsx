@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
@@ -14,22 +14,25 @@ import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { KVList, type KVItem } from '@/components/ui/kv-list';
-import { MatchScoreBadge } from '@/components/ui/match-signals';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { ApplicationStatusChip } from '@/components/worker/ApplicationStatusChip';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
+import { WhatYouNeedPanel } from '@/components/worker/WhatYouNeedPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
-import { ApplicationAnswersForm } from '@/components/worker/ApplicationAnswersForm';
+import { ApplyFlow, type ApplyFlowSubmitError, type ApplyFlowSubmitPayload } from '@/components/worker/apply-flow/ApplyFlow';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
+import { applyFlowReducer, initialApplyFlowState, flowHasProgress } from '@/lib/apply-flow-view';
 import { formatLongDate, formatStartDate } from '@/lib/date';
-import { normalizeMatchScore, scoreBandForScore } from '@/lib/match';
+import { durationLabel, scheduleSummary, type Translator } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
-import { getJob, applyToJob, updateWorkerProfile } from '@/lib/api/worker';
-import { canApplyToJob, visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
-import type { JobDetail, WorkerApiError } from '@/lib/api/worker';
+import {
+  getJob, applyToJob, updateWorkerProfile, getVaultDocuments, getApplicationDefaults,
+  type JobDetail, type WorkerApiError, type WorkerVaultDoc, type ApplicationDefaults,
+} from '@/lib/api/worker';
+import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +42,10 @@ const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 /** Where "back to jobs" goes, and the destination the S5 states offer. */
 const JOBS_HREF = '/worker/home';
 
-type ApplyFeedback = { tone: 'danger' | 'success'; message: string };
+// 'info' is for the "your progress is saved" note shown when a worker backs
+// out of the in-page apply flow with unsubmitted progress -- not an error and
+// not a completed action, so neither 'danger' nor 'success' fits.
+type ApplyFeedback = { tone: 'danger' | 'success' | 'info'; message: string };
 
 export default function WorkerJobDetailPage() {
   const { id } = useParams<{ id: string; locale: string }>();
@@ -47,24 +53,60 @@ export default function WorkerJobDetailPage() {
   const { handleLegalWall } = useRequireAuth();
   const t = useTranslations('worker_job_detail');
   const tCommon = useTranslations('common');
-  const tMatch = useTranslations('match');
+  const tFlow = useTranslations('worker_job_detail.apply_flow');
   const tPay = useTranslations('pay');
   // Badge labels live in the worker_applications namespace (Task 6 keys) —
   // NEVER employer_dashboard.jobs.status.*, whose es "Lleno" is employer
   // vocabulary kept off worker surfaces.
   const tApps = useTranslations('worker_applications');
   const tReq = useTranslations('job_requirements');
+  // `public_job.language_*` reused for the same reason `tApps` above avoids
+  // `employer_dashboard.jobs.status.*`: that flat Any/English/Spanish
+  // vocabulary carries no page-specific framing, and `public_job` is the
+  // exact sibling surface this task matches display parity against (which
+  // itself borrows `worker_job_detail.what_you_need.proof_needed` the same
+  // way) -- reuse over a duplicate `worker_job_detail`-scoped copy.
+  const tPublicJob = useTranslations('public_job');
   const locale = useLocale();
+
+  // `job-detail-display.ts`'s formatters take a deliberately structural
+  // `Translator` type (`(key, values?) => string`) so they stay unit-testable
+  // without a next-intl runtime -- see that module's doc comment. next-intl's
+  // client translator is generic over ITS OWN namespace's message keys, which
+  // is narrower than that structural type for the `values` parameter, so
+  // passing `tCommon` directly fails `tsc` (verified). This is the identical
+  // thin widening adapter the merged public `/j/[code]` page already uses at
+  // the same boundary (its server-translator equivalent) -- not a behavior
+  // change, just satisfying the wider structural type.
+  const tCommonDisplay: Translator = (key, values) =>
+    (tCommon as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
 
   const [applying, setApplying] = useState(false);
   const [applyFeedback, setApplyFeedback] = useState<ApplyFeedback | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [profilePrefill, setProfilePrefill] = useState<Partial<ProfileCompleteValues> | null>(null);
-  // The job-requirements gate (ApplicationAnswersForm) -- a second, PARALLEL
-  // pre-apply modal alongside ProfileCompleteModal above. It only opens when
-  // the job actually asks for something beyond the general profile: any
-  // required/optional custom field, or any required/optional document.
-  const [answersModalOpen, setAnswersModalOpen] = useState(false);
+
+  // In-page apply flow (replaces the old ApplicationAnswersForm modal
+  // entirely): a view-state boolean swaps the details content for
+  // `<ApplyFlow key={job.id}>` rather than navigating to a new route. The
+  // flow's OWN reducer state is lifted here (ApplyFlow is a controlled
+  // component per its doc comment) and reset only on a job-id change --
+  // never in place -- via the effect below.
+  const [viewMode, setViewMode] = useState<'details' | 'apply'>('details');
+  const [applyState, applyDispatch] = useReducer(applyFlowReducer, undefined, () => initialApplyFlowState([]));
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<ApplyFlowSubmitError | null>(null);
+  const [defaults, setDefaults] = useState<ApplicationDefaults | null>(null);
+  // Guards the once-per-job-id `getApplicationDefaults` fetch ("on first open
+  // of the flow") the same way `ApplyFlow`'s own `appliedDefaultsForJobRef`
+  // guards its one-time `apply_defaults` dispatch -- both keyed on job.id,
+  // not fetched-once-ever, since a worker can navigate this same page
+  // instance from one job to another (`usePageData`'s `deps: [id]`).
+  const defaultsLoadedForJobRef = useRef<string | null>(null);
+  // One shared vault fetch for both `WhatYouNeedPanel` (details view) and
+  // `ApplyFlow` (apply view) -- `null` means "failed or not yet loaded",
+  // which both components already degrade on independently.
+  const [vaultDocs, setVaultDocs] = useState<readonly WorkerVaultDoc[] | null>(null);
 
   const {
     phase,
@@ -83,12 +125,61 @@ export default function WorkerJobDetailPage() {
     deps: [id],
   });
 
+  // Resets the lifted apply-flow state ONLY on a job-id change -- never in
+  // place. `ApplyFlow` itself is remounted via `key={job.id}` (which resets
+  // ITS internal transient state, e.g. the `apply_defaults` guard ref and
+  // each step's local `attempted`/`uploadingKey` flags), but the reducer
+  // state living on this page is a separate object reference that a
+  // key-based remount does not touch by itself -- this effect is what
+  // actually clears it. Guarded on `job.id` (a ref, not a dep-array
+  // identity), so a `refresh()`/`setData` that produces a new `job` object
+  // with the SAME id (e.g. after a successful apply) does not wipe answers
+  // the worker is mid-typing.
+  const appliedJobIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!job) return;
+    if (appliedJobIdRef.current === job.id) return;
+    appliedJobIdRef.current = job.id;
+    const certNames = (job.certification_requirements ?? []).map((cert) => cert.name);
+    applyDispatch({ type: 'reset', certNames });
+    setSubmitError(null);
+    setDefaults(null);
+    setViewMode('details');
+  }, [job]);
+
+  // One shared vault fetch, refetched on demand via `onVaultChanged` (after a
+  // successful upload from inside `ApplyFlow`) and whenever the auth token
+  // changes. `null` on failure -- both `WhatYouNeedPanel` and `ApplyFlow`
+  // already degrade on that per their own doc comments.
+  const fetchVaultDocs = useCallback(async () => {
+    if (!idToken) {
+      setVaultDocs(null);
+      return;
+    }
+    try {
+      const { documents } = await getVaultDocuments(idToken);
+      setVaultDocs(documents);
+    } catch {
+      setVaultDocs(null);
+    }
+  }, [idToken]);
+
+  useEffect(() => {
+    void fetchVaultDocs();
+  }, [fetchVaultDocs]);
+
   function showApplyError(message: string) {
     setApplyFeedback({ tone: 'danger', message });
   }
 
   function docLabel(doc: string): string {
-    return KNOWN_DOC_TYPES.includes(doc) ? t(`doc_labels.${doc}`) : doc;
+    if (KNOWN_DOC_TYPES.includes(doc)) return t(`doc_labels.${doc}`);
+    // `work_auth_doc`/`certification_doc` have no `worker_job_detail.doc_labels`
+    // entry -- they live in the shared `job_requirements.docs.*` catalogue
+    // instead (same one `ApplyFlow`'s steps already read from), so a
+    // `missing_docs` message naming either no longer prints the raw key.
+    if (doc === 'work_auth_doc' || doc === 'certification_doc') return tReq(`docs.${doc}`);
+    return doc;
   }
 
   /**
@@ -109,28 +200,24 @@ export default function WorkerJobDetailPage() {
   }
 
   /**
-   * Does this job ask for anything the requirements gate would render? Both
-   * the field arrays and the doc arrays are `?? []` -- the currently-deployed
-   * `worker-jobs-detail` handler sends none of the four yet, so a job with no
-   * data means "nothing configured" here, not "gate is broken".
-   *
-   * Deliberately NOT keyed on `required_docs` (plural, the full configured
-   * set): that array is already fully reflected in `missing_docs` (the ones
-   * actually still outstanding for THIS worker), and `canApplyToJob` already
-   * requires `missing_docs` to be empty before the Apply button is even
-   * reachable. Gating on the full `required_docs` set would pop this modal
-   * for a worker who has already satisfied every required doc -- an empty
-   * questionnaire with a green doc checklist, forcing a redundant second tap.
-   * `optional_docs` stays in: those are never in `missing_docs` (they cannot
-   * block Apply), so the gate is the only place they get offered at all.
+   * Opens the in-page apply flow and, on its first open for THIS job.id,
+   * kicks off the best-effort `getApplicationDefaults` prefill fetch
+   * (failures swallowed to `null` -- per that call's own doc comment this is
+   * a convenience pre-fill, never a blocker to applying). Reused by both the
+   * direct Apply tap (profile already complete) and by `handleModalSubmit`
+   * (profile just completed) -- the flow always opens next, replacing the
+   * old ApplicationAnswersForm modal AND the old direct-`doApply()` shortcut
+   * for jobs with nothing to ask: every apply now goes through the flow's
+   * own Review step to submit.
    */
-  function needsAnswersGate(j: JobDetail): boolean {
-    return (
-      (j.required_fields?.length ?? 0) > 0 ||
-      (j.optional_fields?.length ?? 0) > 0 ||
-      (j.optional_docs?.length ?? 0) > 0 ||
-      j.missing_docs.length > 0
-    );
+  function openApplyFlow() {
+    setViewMode('apply');
+    if (job && idToken && defaultsLoadedForJobRef.current !== job.id) {
+      defaultsLoadedForJobRef.current = job.id;
+      void getApplicationDefaults(idToken)
+        .then(setDefaults)
+        .catch(() => setDefaults(null));
+    }
   }
 
   async function handleApplyClick() {
@@ -144,11 +231,7 @@ export default function WorkerJobDetailPage() {
         setModalOpen(true);
         return;
       }
-      if (needsAnswersGate(job)) {
-        setAnswersModalOpen(true);
-        return;
-      }
-      await doApply();
+      openApplyFlow();
     } catch (err) {
       await handleApplyError(err);
     } finally {
@@ -156,11 +239,30 @@ export default function WorkerJobDetailPage() {
     }
   }
 
-  async function doApply(answers?: Record<string, unknown>) {
+  /** Returns to the details view WITHOUT resetting the flow's own state --
+   * only a job-id change (the effect above) clears it. A worker who leaves
+   * mid-answer and re-taps "Continue application" picks up where they left
+   * off. */
+  function handleBackToDetails() {
+    setViewMode('details');
+    // Clear whatever the banner slot last held (a stale danger message from
+    // before the flow opened, or a leftover success/info note) before
+    // possibly writing the progress-saved note -- otherwise backing out with
+    // no progress can leave an unrelated old message sitting on the details
+    // view.
+    setApplyFeedback(
+      flowHasProgress(applyState) ? { tone: 'info', message: tFlow('progress_saved') } : null,
+    );
+  }
+
+  /** `ApplyFlow`'s `onSubmit` -- a straight pass-through onto `applyToJob`'s
+   * two trailing params, per `ReviewStep.tsx`'s documented payload contract. */
+  async function doApply(payload: ApplyFlowSubmitPayload) {
     if (!idToken || !id) return;
-    setApplying(true);
+    setSubmitError(null);
+    setSubmitting(true);
     try {
-      const application = await applyToJob(idToken, id, answers);
+      const application = await applyToJob(idToken, id, payload.answers, payload.certification_claims);
       setApplyFeedback({ tone: 'success', message: t('apply_success') });
       // Reflect the outcome locally before asking the server again: the POST
       // already succeeded, so the page must show "applied" even if the
@@ -171,26 +273,13 @@ export default function WorkerJobDetailPage() {
         already_applied: true,
         application_status: application?.status ?? prev.application_status ?? 'pending',
       }));
+      setViewMode('details');
       await refresh();
     } catch (err) {
-      await handleApplyError(err);
+      await handleApplyError(err, { fromFlow: true });
     } finally {
-      setApplying(false);
+      setSubmitting(false);
     }
-  }
-
-  /**
-   * The requirements gate's submit. Unlike `ProfileCompleteModal` (which owns
-   * its own save failure so a broken profile save can be corrected in place),
-   * apply failures here go through the SAME apply-error taxonomy as every
-   * other apply path (`handleApplyError`, anchored to the apply button) --
-   * per the design, `missing_answers`/`invalid_answers` are just two more
-   * branches in that one taxonomy. The gate closes either way: `doApply`
-   * already reflects both outcomes at the page level.
-   */
-  async function handleAnswersSubmit(answers: Record<string, unknown>) {
-    setAnswersModalOpen(false);
-    await doApply(answers);
   }
 
   async function handleModalSubmit(values: ProfileCompleteValues) {
@@ -215,11 +304,7 @@ export default function WorkerJobDetailPage() {
     // of the gate -- and from here every failure is an APPLY failure, which
     // belongs to the taxonomy anchored to the apply button.
     setModalOpen(false);
-    if (job && needsAnswersGate(job)) {
-      setAnswersModalOpen(true);
-      return;
-    }
-    await doApply();
+    openApplyFlow();
   }
 
   /**
@@ -227,19 +312,52 @@ export default function WorkerJobDetailPage() {
    *
    * Every branch below is a distinct thing that can go wrong when a worker taps
    * Apply, and each one gets its own translated sentence -- "you already
-   * applied" is not "this job closed" is not "we are broken". Only the
-   * PRESENTATION changed in the refresh: the message is anchored to the apply
-   * control as `InlineFeedback tone="danger"` instead of drifting to the page
-   * bottom, and `err.message` (an untranslated backend code) is never rendered.
+   * applied" is not "this job closed" is not "we are broken".
    *
-   * The three branches that reload do it through `refresh()`, not a full
-   * reload: the worker keeps reading the job while the truth catches up, and a
-   * refresh that itself fails cannot blank the page.
+   * `opts.fromFlow` distinguishes the two call sites without duplicating this
+   * taxonomy: `handleApplyClick`'s pre-flow profile check (default, `false`)
+   * still anchors its message to the apply button as `InlineFeedback
+   * tone="danger"` on the details view, exactly as before. `doApply`'s
+   * post-submit failures (`true`) render INSIDE the still-open flow instead,
+   * via `ApplyFlow`'s `submitError` prop -- so a fixable problem (a missing
+   * doc, an invalid answer) never discards the worker's in-progress answers
+   * the way the old modal's unconditional close-then-doApply did. Only the
+   * two branches below that call `refresh()` -- already applied, and the job
+   * closing out from under the applicant -- are TRULY terminal: nothing left
+   * to fix inside the flow, so they exit it back to details even when
+   * `fromFlow` is true, same as `refresh()`-then-render-status did before
+   * this task. `err.message` (an untranslated backend code) is never rendered
+   * either way.
    */
-  async function handleApplyError(err: unknown) {
+  async function handleApplyError(err: unknown, opts: { fromFlow: boolean } = { fromFlow: false }) {
+    const { fromFlow } = opts;
+    const reportProblem = (message: string) => {
+      if (fromFlow) setSubmitError({ kind: 'generic', message });
+      else showApplyError(message);
+    };
+
     if (isLegalWallError(err)) {
       try { handleLegalWall(err, `/worker/jobs/${id}`); }
-      catch { showApplyError(t('errors.legal_required')); }
+      catch { reportProblem(t('errors.legal_required')); }
+      return;
+    }
+
+    // These two 400 codes can only ever come back from a flow submission
+    // (`ApplyFlow`'s Review step already gates locally on the same
+    // `certification-claims.ts` rules `worker-jobs-apply` enforces
+    // server-side) -- they exist as a stale-gate backstop, mirroring
+    // `missing_answers` below. `missing_certification_proof` carries the
+    // still-unproven cert names (`lib/api/errors.ts`'s `certs` payload key);
+    // `ReviewStep` does the `{certs}` join itself. `missing_certification_claims`
+    // carries no payload at all, so it maps to the closest existing generic
+    // "some required answers are missing" copy (`errors.required_cert` needs
+    // a `{name}` this code's body does not carry).
+    if (fromFlow && err instanceof ApiError && err.code === 'missing_certification_proof') {
+      setSubmitError({ kind: 'missing_certification_proof', certs: err.payload.certs ?? [] });
+      return;
+    }
+    if (fromFlow && err instanceof ApiError && err.code === 'missing_certification_claims') {
+      setSubmitError({ kind: 'generic', message: tReq('errors.missing_answers') });
       return;
     }
 
@@ -247,7 +365,7 @@ export default function WorkerJobDetailPage() {
     if (applyErr.status === 400 && applyErr.missing_docs?.length) {
       // The one payload-carrying branch: it names the documents that are
       // missing, which is the only thing that makes the message actionable.
-      showApplyError(t('errors.missing_docs', {
+      reportProblem(t('errors.missing_docs', {
         docs: applyErr.missing_docs.map(docLabel).join(', '),
       }));
       return;
@@ -257,7 +375,7 @@ export default function WorkerJobDetailPage() {
       // this is the backstop for a stale gate (job requirements changed
       // between load and submit) or a client bypassing the gate entirely.
       const missingFields = applyErr.missing_fields;
-      showApplyError(
+      reportProblem(
         missingFields?.length
           ? tReq('errors.missing_answers_fields', {
               fields: missingFields.map((key) => tReq(`fields.${key}`)).join(', '),
@@ -267,34 +385,36 @@ export default function WorkerJobDetailPage() {
       return;
     }
     if (applyErr.status === 400 && applyErr.code === 'invalid_answers') {
-      showApplyError(tReq('errors.invalid_answers'));
+      reportProblem(tReq('errors.invalid_answers'));
       return;
     }
     if (applyErr.status === 400) {
-      showApplyError(t('errors.profile_invalid'));
+      reportProblem(t('errors.profile_invalid'));
       return;
     }
     if (applyErr.status === 401) {
-      showApplyError(t('errors.not_signed_in'));
+      reportProblem(t('errors.not_signed_in'));
       return;
     }
     if (applyErr.status === 403 || applyErr.code === 'legal_required') {
-      showApplyError(t('errors.legal_required'));
+      reportProblem(t('errors.legal_required'));
       return;
     }
     if (applyErr.status === 409) {
       if (applyErr.code === 'user_not_provisioned') showApplyError(t('errors.account_not_ready'));
       else showApplyError(t('errors.already_applied'));
+      if (fromFlow) setViewMode('details');
       await refresh();
       return;
     }
     if (applyErr.status === 410 || applyErr.status === 404) {
       showApplyError(t('errors.job_closed'));
+      if (fromFlow) setViewMode('details');
       await refresh();
       return;
     }
     if (applyErr.status && applyErr.status >= 500) {
-      showApplyError(t('errors.server_error'));
+      reportProblem(t('errors.server_error'));
       return;
     }
     // A dead connection is not a profile problem. Without this, both fall
@@ -303,10 +423,10 @@ export default function WorkerJobDetailPage() {
     // connectivity copy already says the right thing in both locales.
     const { kind } = classifyError(err);
     if (kind === 'offline' || kind === 'timeout') {
-      showApplyError(tCommon(`errors.${kind}`));
+      reportProblem(tCommon(`errors.${kind}`));
       return;
     }
-    showApplyError(t('errors.apply_failed'));
+    reportProblem(t('errors.apply_failed'));
   }
 
   /**
@@ -357,20 +477,18 @@ export default function WorkerJobDetailPage() {
     ? (KNOWN_JOB_TYPES.includes(job.job_type) ? t(`job_type.${job.job_type}`) : job.job_type)
     : null;
   const pay = job ? formatPay(job, tPay) : null;
-  const matchScore = normalizeMatchScore(job?.match_score);
-  const matchBand = matchScore === null ? null : scoreBandForScore(matchScore);
-  // `canApplyToJob` alone disables Apply whenever `missing_docs` is
-  // non-empty -- correct for the old direct-apply flow, but the requirements
-  // gate exists precisely to let a worker clear missing required docs
-  // in-place (`ApplicationAnswersForm`'s own upload rows) before submitting.
-  // So the button also stays enabled whenever the gate is reachable and
-  // would open, leaving the gate's own `missingRequiredDocs` check (backed by
-  // a live vault fetch) as the real doc gate; the already-applied/status
-  // checks are never bypassed either way.
-  const canApply = job
-    ? canApplyToJob(job) ||
-      (needsAnswersGate(job) && !job.already_applied && (job.status ?? 'active') === 'active')
-    : false;
+  // MatchScoreBadge removed (decision, WK-T5): the deployed
+  // `worker-jobs-detail` handler never returns `match_score` on the detail
+  // payload, so the badge this page used to render off it was permanently
+  // dead code -- `match_score` still exists on `Job`/`JobDetail` for the
+  // list-card surfaces (`WorkerJobCard`) that do receive it.
+  //
+  // Apply is reachable whenever the job is still active and not already
+  // applied to -- unlike the old direct-apply shortcut, `missing_docs`
+  // no longer gates the button itself: EVERY apply now goes through the
+  // in-page flow's Documents & Certifications step, which is the real doc/
+  // cert gate (backed by a live vault fetch), with its own Submit action.
+  const canApply = job ? !job.already_applied && (job.status ?? 'active') === 'active' : false;
   const jobStatusBadge = job ? visibleJobStatusBadge(job.status) : null;
 
   const facts: KVItem[] = [];
@@ -381,12 +499,61 @@ export default function WorkerJobDetailPage() {
         value: <span className="tabular-nums">{formatStartDate(job.start_date, locale) ?? job.start_date}</span>,
       });
     }
-    if (job.expected_duration) {
-      facts.push({ label: t('expected_duration'), value: job.expected_duration });
+
+    // Trade: deliberately NOT `job-detail-display.ts`'s `tradeLabel` -- that
+    // helper's `tTrade` translator is meant to resolve the slug through a
+    // real per-slug catalogue (see its doc comment), and `worker_job_detail`
+    // has none (only the flat `trade` row label), exactly the same gap the
+    // merged public `/j/[code]` page's own comment documents for itself. This
+    // mirrors that page's inline idiom instead: an employer-typed "other"
+    // trade renders verbatim via `trade_with_other` (never capitalized -- it
+    // is free text, not a taxonomy slug); every other value is the raw
+    // `trade_category` slug, title-cased by CSS only (dates/numbers elsewhere
+    // on this page must never get that treatment).
+    if (job.trade_category) {
+      const customTrade = job.trade_category === 'other' ? job.trade_category_other?.trim() : null;
+      facts.push({
+        label: t('trade'),
+        value: customTrade
+          ? t('trade_with_other', { other: customTrade })
+          : <span className="capitalize">{job.trade_category}</span>,
+      });
     }
-    if (job.shift_schedule) {
-      facts.push({ label: t('shift_schedule'), value: job.shift_schedule });
+
+    // Schedule: structured `work_days`/`shift_start`/`shift_end` (via the
+    // shared `scheduleSummary` formatter) win over the legacy free-text
+    // `shift_schedule` string whenever ANY structured schedule data exists --
+    // same fallback matrix the public page uses, including its documented
+    // edge case: a job with only a one-sided `shift_start` (no `work_days`)
+    // renders no shift row at all rather than mixing legacy text with a
+    // partial structured render (`scheduleSummary`'s own documented intent,
+    // not a regression).
+    const schedule = scheduleSummary(job, locale, tCommonDisplay);
+    if (schedule.legacy) {
+      facts.push({ label: t('shift_schedule'), value: schedule.legacy });
+    } else {
+      if (schedule.days.length > 0) {
+        facts.push({
+          label: t('work_days_label'),
+          value: (
+            <span className="flex flex-wrap justify-end gap-1.5">
+              {schedule.days.map((day) => (
+                <Badge key={day} tone="neutral">{day}</Badge>
+              ))}
+            </span>
+          ),
+        });
+      }
+      if (schedule.hours) {
+        facts.push({ label: t('shift_hours'), value: schedule.hours });
+      }
     }
+
+    const durationText = durationLabel(job, tCommonDisplay);
+    if (durationText) {
+      facts.push({ label: t('duration'), value: durationText });
+    }
+
     if (job.number_of_workers_needed !== undefined && job.number_of_workers_needed !== null) {
       facts.push({
         label: t('openings'),
@@ -403,6 +570,25 @@ export default function WorkerJobDetailPage() {
       facts.push({
         label: t('work_authorization_required'),
         value: t('work_authorization_required_yes'),
+      });
+    }
+    // Transportation, unlike work-authorization above, shows in BOTH states
+    // (dedicated yes/no keys) rather than only when required -- the public
+    // page's "what you need" card omits it when false since that card only
+    // ever lists applicable requirements, but this page's flat facts list
+    // states every known fact plainly either way.
+    if (job.transportation_required !== undefined && job.transportation_required !== null) {
+      facts.push({
+        label: t('transportation'),
+        value: job.transportation_required
+          ? t('transportation_required_yes')
+          : t('transportation_required_no'),
+      });
+    }
+    if (job.language_preference && job.language_preference.length > 0) {
+      facts.push({
+        label: t('language'),
+        value: job.language_preference.map((code) => tPublicJob(`language_${code}`)).join(' / '),
       });
     }
     facts.push({
@@ -444,6 +630,27 @@ export default function WorkerJobDetailPage() {
               /* Ready with no body at all -- treat it as the job not existing
                  rather than crashing on `job.title`. */
               <DashboardPanel>{errorPanel('not_found')}</DashboardPanel>
+            ) : viewMode === 'apply' && idToken ? (
+              /* In-page takeover: a view-state boolean, not a route change.
+                 `key={job.id}` remounts the whole tree on a job-id change --
+                 see `ApplyFlow`'s own doc comment for why that (not a
+                 dispatched reset) is what actually clears its internal
+                 transient state; the page's OWN lifted reducer state resets
+                 separately, via the `appliedJobIdRef` effect above. */
+              <ApplyFlow
+                key={job.id}
+                job={job}
+                token={idToken}
+                state={applyState}
+                dispatch={applyDispatch}
+                vaultDocs={vaultDocs}
+                onVaultChanged={fetchVaultDocs}
+                defaults={defaults}
+                onSubmit={doApply}
+                submitting={submitting}
+                submitError={submitError}
+                onBackToDetails={handleBackToDetails}
+              />
             ) : (
               <div className="space-y-5">
                 {refreshError ? (
@@ -502,14 +709,6 @@ export default function WorkerJobDetailPage() {
                       </div>
                     ) : null}
 
-                    {matchBand && matchScore !== null ? (
-                      <MatchScoreBadge
-                        score={matchScore}
-                        band={matchBand}
-                        label={tMatch(`score_bands.${matchBand}`)}
-                      />
-                    ) : null}
-
                     {job.description ? (
                       <p className="whitespace-pre-wrap text-sm leading-relaxed text-[var(--jale-ink)]">
                         {job.description}
@@ -554,6 +753,15 @@ export default function WorkerJobDetailPage() {
                   </div>
                 </DashboardPanel>
 
+                {/* Pre-apply readiness preview -- questions/docs/certs and
+                    what's already in the vault. Only meaningful BEFORE
+                    applying; once `already_applied` is true there is nothing
+                    left to prepare, so it is skipped rather than shown stale
+                    next to the "Already applied" status chip below. */}
+                {!job.already_applied ? (
+                  <WhatYouNeedPanel job={job} vaultDocs={vaultDocs} />
+                ) : null}
+
                 {job.public_listing_enabled && job.status === 'active' ? (
                   <DashboardPanel>
                     <div className="p-5 md:p-6">
@@ -591,31 +799,30 @@ export default function WorkerJobDetailPage() {
                           loading={applying}
                           loadingLabel={tCommon('loading')}
                         >
-                          {t('apply')}
+                          {/* "Continue application" once the worker has left
+                              something behind in the flow (an answer, a visit
+                              past step 1, a cert claim) -- otherwise the
+                              plain "Apply" a first-time visitor sees. */}
+                          {flowHasProgress(applyState) ? tFlow('continue_button') : t('apply')}
                         </Button>
                       )}
                     </div>
                   </div>
                 </DashboardPanel>
-
-                <ProfileCompleteModal
-                  open={modalOpen}
-                  initial={profilePrefill ?? undefined}
-                  onClose={() => setModalOpen(false)}
-                  onSubmit={handleModalSubmit}
-                />
-
-                {job && idToken ? (
-                  <ApplicationAnswersForm
-                    open={answersModalOpen}
-                    job={job}
-                    token={idToken}
-                    onClose={() => setAnswersModalOpen(false)}
-                    onSubmit={handleAnswersSubmit}
-                  />
-                ) : null}
               </div>
             )}
+
+            {/* A modal overlay, not "details content" -- stays reachable
+                regardless of `viewMode` rather than living inside the
+                details-only branch above. */}
+            {job ? (
+              <ProfileCompleteModal
+                open={modalOpen}
+                initial={profilePrefill ?? undefined}
+                onClose={() => setModalOpen(false)}
+                onSubmit={handleModalSubmit}
+              />
+            ) : null}
           </div>
         )}
       </main>
