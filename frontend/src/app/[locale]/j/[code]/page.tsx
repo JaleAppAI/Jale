@@ -372,9 +372,11 @@ export default async function PublicJobPage({ params }: PageProps) {
     // adding a public_job-scoped copy -- its text ("proof needed") carries no
     // worker-app-specific framing, so it reads correctly here too, and this
     // task does not own messages/*.json. Keyed by index, not `cert.name`:
-    // migration 078 caps a name at 5 occurrences, so the same name can repeat
-    // in one job's certification set (same reasoning KVList itself documents
-    // for its own positional, never-reordered rows).
+    // parseJobFields (job-fields.ts) dedupes names case-insensitively on
+    // write, but this page renders whatever the row holds -- data written by
+    // any other path is not guaranteed unique, and a positional key is safe
+    // for this static, never-reordered list either way (same reasoning
+    // KVList itself documents for its own positional rows).
     needRows.push({
       label: t('certifications'),
       value: (
