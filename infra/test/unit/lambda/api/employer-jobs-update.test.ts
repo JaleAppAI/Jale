@@ -532,8 +532,12 @@ describe('employer-jobs-update', () => {
   // EDITABLE_COLUMNS positional layout (0-based param array index), post
   // Stage 1a shift (optional_docs/required_fields/optional_fields inserted
   // next to required_docs):
-  //   23 city_key, 24 city, 25 state, 26 state_region; WHERE id is bind $28
-  //   (i.e. params[27] once the trailing jobId is appended).
+  //   23 city_key, 24 city, 25 state, 26 state_region.
+  // BE-T2 appended six more columns (27-32: trade_category_other,
+  // expected_duration_bucket, work_days, shift_start, shift_end,
+  // certification_requirements) at the END of EDITABLE_COLUMNS, so these
+  // indices are undisturbed; WHERE id is now bind $34 (i.e. params[33] once
+  // the trailing jobId is appended).
 
   function findUpdateCall() {
     return mockQuery.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('UPDATE jobs SET'));
@@ -1201,5 +1205,207 @@ describe('employer-jobs-update', () => {
     const body = JSON.parse(res.body);
     expect(body.error).toBe('field_locked');
     expect(body.fields).toEqual(['required_docs']);
+  });
+
+  // ---------------------------------------------------------------------------
+  // BE-T2 -- six new structured fields (077), field-edit path
+  // ---------------------------------------------------------------------------
+  //
+  // The six new columns are appended at the END of EDITABLE_COLUMNS (indices
+  // 27-32: trade_category_other, expected_duration_bucket, work_days,
+  // shift_start, shift_end, certification_requirements), so every
+  // pre-existing positional index above (5, 6, 7, 8, 16, 23-26) is
+  // undisturbed.
+
+  it('a legacy field edit with none of the six new keys still 200s, six params null', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params.slice(27, 33)).toEqual([null, null, null, null, null, null]);
+  });
+
+  it('threads all six new fields through UPDATE and RETURNING', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        trade_category: 'other',
+        trade_category_other: 'Scaffolding',
+        expected_duration_bucket: '1_2w',
+        work_days: ['mon', 'tue'],
+        shift_start: '07:00',
+        shift_end: '15:30',
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(200);
+
+    const updateCall = findUpdateCall()!;
+    expect(updateCall[0]).toContain('trade_category_other');
+    expect(updateCall[0]).toContain('expected_duration_bucket');
+    expect(updateCall[0]).toContain('work_days');
+    expect(updateCall[0]).toContain('shift_start');
+    expect(updateCall[0]).toContain('shift_end');
+    expect(updateCall[0]).toContain('certification_requirements');
+    const returningClause = (updateCall[0] as string).split('RETURNING')[1];
+    expect(returningClause).toMatch(/\btrade_category_other\b/);
+    expect(returningClause).toMatch(/\bexpected_duration_bucket\b/);
+    expect(returningClause).toMatch(/\bwork_days\b/);
+    expect(returningClause).toMatch(/\bshift_start\b/);
+    expect(returningClause).toMatch(/\bshift_end\b/);
+    expect(returningClause).toMatch(/\bcertification_requirements\b/);
+
+    const params = updateCall[1] as unknown[];
+    expect(params[27]).toBe('Scaffolding');
+    expect(params[28]).toBe('1_2w');
+    expect(params[29]).toEqual(['mon', 'tue']);
+    expect(params[30]).toBe('07:00');
+    expect(params[31]).toBe('15:30');
+    expect(params[32]).toBe(JSON.stringify([{ name: 'OSHA 30', tier: 'required', proof_required: true }]));
+  });
+
+  it('pins the shift_start/shift_end/certification_requirements casts in the generated UPDATE SQL (::time / ::jsonb)', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        shift_start: '07:00',
+        shift_end: '15:30',
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(200);
+    const updateCall = findUpdateCall()!;
+    const setClause = (updateCall[0] as string).split('SET')[1].split('WHERE')[0];
+    expect(setClause).toMatch(/shift_start = \$\d+::time/);
+    expect(setClause).toMatch(/shift_end = \$\d+::time/);
+    expect(setClause).toMatch(/certification_requirements = \$\d+::jsonb/);
+  });
+
+  it('passes a real SQL NULL (not the string "null") for certification_requirements when absent', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[32]).toBeNull();
+  });
+
+  it('passes the JSON string "[]" (not null) for certification_requirements when an explicit empty array is sent', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, certification_requirements: [] }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[32]).toBe('[]');
+  });
+
+  it("rejects a trade_category_other sent for a non-'other' trade_category on a field edit, before opening a DB connection", async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, trade_category_other: 'Scaffolding' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_trade_category_other' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed shift_end on a field edit, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, shift_end: '9:00' }) }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBe('invalid_shift_end');
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('rejects certification_requirements conflicting with an explicitly-sent required_docs certification_doc, before opening a DB connection', async () => {
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        required_docs: ['certification_doc'],
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_certification_requirements_doc_conflict' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
+  it('derives certifications from certification_requirements names on update, ignoring a stale client-supplied certifications value', async () => {
+    mockCurrentJob();
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        certifications: ['Stale Legacy Cert'],
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    // certifications is param index 22 (0-based), unchanged position.
+    expect(params[22]).toEqual(['OSHA 30']);
+  });
+
+  // The critical preserve-on-omit gap: parseJobFields' doc-conflict check can
+  // only see the RAW request body, not the EFFECTIVE (post preserve-on-omit
+  // merge) optional_docs computed from `cur` below. A PATCH that sets
+  // certification_requirements while omitting optional_docs entirely must
+  // still be caught if the job's STORED optional_docs already contains
+  // certification_doc -- otherwise the per-cert-proof feature would silently
+  // coexist with the single certification_doc gate it's supposed to replace.
+  it('rejects when certification_requirements is set and the job\'s PRESERVED (omitted-from-body) optional_docs already contains certification_doc', async () => {
+    mockCurrentJob({ optional_docs: ['certification_doc'] });
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT, // omits optional_docs entirely -> preserved from cur
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_certification_requirements_doc_conflict' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('does NOT conflict when optional_docs is preserved but contains no certification_doc', async () => {
+    mockCurrentJob({ optional_docs: ['driver_license'] });
+    const res = await handler(makeEvent({
+      body: JSON.stringify({
+        ...VALID_EDIT,
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }),
+    }));
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  // ---------------------------------------------------------------------------
+  // BE-T2 cross-slice addendum: full-row-write, absent -> NULL (never
+  // preserve-on-omit) for the six new columns. 077's CHECK constraints are
+  // one-way BECAUSE this handler writes the full row on every PATCH (see that
+  // migration's header) -- the six new columns are NOT read from `cur` at
+  // all (unlike optional_docs/required_fields/optional_fields), so a PATCH
+  // that omits one of them always writes NULL, never the stored value.
+  // ---------------------------------------------------------------------------
+
+  it("clears trade_category_other to NULL when trade_category changes away from 'other' without resending trade_category_other -- full-row-write must not preserve the stale text and trip jobs_trade_category_other_valid", async () => {
+    // The job's stored trade_category_other is irrelevant here (never read by
+    // this handler) -- the point is that an edit switching to a non-'other'
+    // category, with no trade_category_other in the body, is a normal 200,
+    // not a 500 from a preserved value violating the one-way CHECK.
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, trade_category: 'electrician' }) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params[19]).toBe('electrician'); // trade_category (unchanged position)
+    expect(params[27]).toBeNull(); // trade_category_other: full-row-write clears it
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('writes all six new columns as NULL on a legacy-only edit of an already-structured job (deliberate full-row-write, not preserve-on-omit)', async () => {
+    // Unlike optional_docs/required_fields/optional_fields, the six new
+    // columns are never read from `cur`, so this holds regardless of what
+    // the job currently has stored -- the mock doesn't even need to model a
+    // prior structured value to prove it.
+    mockCurrentJob();
+    const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+    expect(res.statusCode).toBe(200);
+    const params = findUpdateCall()![1] as unknown[];
+    expect(params.slice(27, 33)).toEqual([null, null, null, null, null, null]);
   });
 });

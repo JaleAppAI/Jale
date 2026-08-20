@@ -1,6 +1,10 @@
 import {
   DOC_TYPES,
+  EXPECTED_DURATION_BUCKETS,
+  MAX_CERTIFICATION_FILES,
+  MAX_CERTIFICATION_FILES_PER_NAME,
   REQUIRED_FIELD_TYPES,
+  WORK_DAYS,
   formatPayRangeLocalized,
   normalizeApplicationStatus,
   parseJobFields,
@@ -156,6 +160,386 @@ describe('job-fields parser', () => {
         value: expect.objectContaining({}),
       });
     });
+  });
+
+  // BE-T2: six new structured fields from 077_jobs_structured_fields.sql.
+  // ADDITIVE wire shape -- a legacy payload (none of the six keys) must parse
+  // byte-identically to today, plus the six new keys defaulting to null.
+  describe('BE-T2 structured fields — legacy byte-identity', () => {
+    it('parses a legacy payload (none of the six new keys) with the six new fields defaulting to null, everything else unchanged', () => {
+      const result = parseJobFields({ ...validBody });
+      expect(result).toEqual({
+        ok: true,
+        value: {
+          pay_min: 25,
+          pay_max: 30,
+          pay_interval: null,
+          start_date: '2026-06-15',
+          expected_duration: null,
+          shift_schedule: null,
+          transportation_required: false,
+          work_authorization_required: false,
+          language_preference: ['any'],
+          number_of_workers_needed: 3,
+          trade_category: 'concrete',
+          required_experience_years: 2,
+          required_experience_months: 24,
+          certifications: ['OSHA 10'],
+          trade_category_other: null,
+          expected_duration_bucket: null,
+          work_days: null,
+          shift_start: null,
+          shift_end: null,
+          certification_requirements: null,
+        },
+      });
+    });
+  });
+
+  describe('trade_category_other', () => {
+    it("accepts a trimmed value when trade_category is 'other'", () => {
+      const result = parseJobFields({ ...validBody, trade_category: 'other', trade_category_other: '  Scaffolding  ' });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ trade_category_other: 'Scaffolding' }) });
+    });
+
+    it("does NOT require trade_category_other when trade_category is 'other' (legacy 'other' rows have none)", () => {
+      const result = parseJobFields({ ...validBody, trade_category: 'other' });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ trade_category_other: null }) });
+    });
+
+    it("rejects a present trade_category_other when trade_category is NOT 'other' (mirrors the one-way DB CHECK)", () => {
+      const result = parseJobFields({ ...validBody, trade_category: 'concrete', trade_category_other: 'Scaffolding' });
+      expect(result).toEqual({ ok: false, error: 'invalid_trade_category_other' });
+    });
+
+    it('rejects a trade_category_other over 200 chars', () => {
+      const result = parseJobFields({ ...validBody, trade_category: 'other', trade_category_other: 'A'.repeat(201) });
+      expect(result).toEqual({ ok: false, error: 'invalid_trade_category_other' });
+    });
+
+    it('accepts a trade_category_other at exactly 200 chars', () => {
+      const result = parseJobFields({ ...validBody, trade_category: 'other', trade_category_other: 'A'.repeat(200) });
+      expect(result.ok).toBe(true);
+    });
+
+    it('treats a whitespace-only trade_category_other as absent (no error) even when trade_category is NOT other', () => {
+      // optionalString-first semantics, matching every other optional string
+      // field in this file (expected_duration, shift_schedule): blank-after-
+      // trim is the same as omitted, not a validation failure.
+      const result = parseJobFields({ ...validBody, trade_category: 'concrete', trade_category_other: '   ' });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ trade_category_other: null }) });
+    });
+  });
+
+  describe('expected_duration_bucket', () => {
+    it.each([...EXPECTED_DURATION_BUCKETS])('accepts %s', (bucket) => {
+      const result = parseJobFields({ ...validBody, expected_duration_bucket: bucket });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ expected_duration_bucket: bucket }) });
+    });
+
+    it('rejects an unknown bucket and echoes the valid list', () => {
+      const result = parseJobFields({ ...validBody, expected_duration_bucket: 'never' });
+      expect(result).toEqual({ ok: false, error: 'invalid_expected_duration_bucket', valid: EXPECTED_DURATION_BUCKETS });
+    });
+
+    it('defaults to null when absent', () => {
+      const result = parseJobFields({ ...validBody });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ expected_duration_bucket: null }) });
+    });
+
+    it('coexists with the legacy free-text expected_duration column (does not replace it)', () => {
+      const result = parseJobFields({ ...validBody, expected_duration: '2 weeks', expected_duration_bucket: '1_2w' });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ expected_duration: '2 weeks', expected_duration_bucket: '1_2w' }),
+      });
+    });
+  });
+
+  describe('work_days', () => {
+    it('accepts a valid subset', () => {
+      const result = parseJobFields({ ...validBody, work_days: ['mon', 'wed', 'fri'] });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ work_days: ['mon', 'wed', 'fri'] }) });
+    });
+
+    it('accepts all seven days', () => {
+      const result = parseJobFields({ ...validBody, work_days: [...WORK_DAYS] });
+      expect(result.ok).toBe(true);
+    });
+
+    it('accepts an explicit empty array', () => {
+      const result = parseJobFields({ ...validBody, work_days: [] });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ work_days: [] }) });
+    });
+
+    it('defaults to null when absent', () => {
+      const result = parseJobFields({ ...validBody });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ work_days: null }) });
+    });
+
+    it('rejects an invalid day and echoes the valid list', () => {
+      const result = parseJobFields({ ...validBody, work_days: ['mon', 'someday'] });
+      expect(result).toEqual({ ok: false, error: 'invalid_work_days', valid: WORK_DAYS });
+    });
+
+    it('rejects duplicate days (no silent de-dup, unlike language_preference)', () => {
+      const result = parseJobFields({ ...validBody, work_days: ['mon', 'mon'] });
+      expect(result).toEqual({ ok: false, error: 'invalid_work_days', valid: WORK_DAYS });
+    });
+
+    it('rejects a non-array value', () => {
+      const result = parseJobFields({ ...validBody, work_days: 'mon' });
+      expect(result).toEqual({ ok: false, error: 'invalid_work_days', valid: WORK_DAYS });
+    });
+  });
+
+  describe('shift_start / shift_end', () => {
+    it.each(['09:00', '23:59', '00:00'])('accepts %s for shift_start', (value) => {
+      const result = parseJobFields({ ...validBody, shift_start: value });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ shift_start: value }) });
+    });
+
+    it.each([
+      ['24:00'],
+      ['9:00'],
+      ['09:60'],
+      ['abc'],
+      [900],
+      [''],
+    ])('rejects %s for shift_start', (value) => {
+      const result = parseJobFields({ ...validBody, shift_start: value });
+      expect(result).toEqual({ ok: false, error: 'invalid_shift_start' });
+    });
+
+    it.each([
+      ['24:00'],
+      ['9:00'],
+      ['09:60'],
+      ['abc'],
+      [900],
+    ])('rejects %s for shift_end', (value) => {
+      const result = parseJobFields({ ...validBody, shift_end: value });
+      expect(result).toEqual({ ok: false, error: 'invalid_shift_end' });
+    });
+
+    it('both default to null when absent', () => {
+      const result = parseJobFields({ ...validBody });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ shift_start: null, shift_end: null }) });
+    });
+
+    it('accepts shift_start alone (no cross-check requiring shift_end)', () => {
+      const result = parseJobFields({ ...validBody, shift_start: '07:00' });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ shift_start: '07:00', shift_end: null }) });
+    });
+
+    it('accepts shift_end alone (no cross-check requiring shift_start)', () => {
+      const result = parseJobFields({ ...validBody, shift_end: '15:30' });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ shift_start: null, shift_end: '15:30' }) });
+    });
+
+    it('accepts an overnight shift (shift_end before shift_start) — deliberately no same-day CHECK', () => {
+      const result = parseJobFields({ ...validBody, shift_start: '22:00', shift_end: '06:00' });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ shift_start: '22:00', shift_end: '06:00' }) });
+    });
+  });
+
+  describe('certification_requirements', () => {
+    const validCert = { name: 'OSHA 30', tier: 'required' as const, proof_required: true };
+
+    it('accepts a valid array', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [validCert] });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ certification_requirements: [validCert] }),
+      });
+    });
+
+    it('trims names and accepts both tiers and boolean proof_required values', () => {
+      const result = parseJobFields({
+        ...validBody,
+        certification_requirements: [
+          { name: '  Forklift  ', tier: 'optional', proof_required: false },
+        ],
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          certification_requirements: [{ name: 'Forklift', tier: 'optional', proof_required: false }],
+        }),
+      });
+    });
+
+    it('defaults to null when absent', () => {
+      const result = parseJobFields({ ...validBody });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ certification_requirements: null }) });
+    });
+
+    it('accepts an explicit empty array', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [] });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ certification_requirements: [] }) });
+    });
+
+    it('rejects more than 20 entries', () => {
+      const many = Array.from({ length: 21 }, (_, i) => ({ name: `Cert ${i}`, tier: 'required' as const, proof_required: false }));
+      const result = parseJobFields({ ...validBody, certification_requirements: many });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('accepts exactly 20 entries', () => {
+      const twenty = Array.from({ length: 20 }, (_, i) => ({ name: `Cert ${i}`, tier: 'required' as const, proof_required: false }));
+      const result = parseJobFields({ ...validBody, certification_requirements: twenty });
+      expect(result.ok).toBe(true);
+    });
+
+    it('rejects a name over 200 chars', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [{ name: 'A'.repeat(201), tier: 'required', proof_required: false }] });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('rejects a blank (whitespace-only) name', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [{ name: '   ', tier: 'required', proof_required: false }] });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('rejects a non-string name', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [{ name: 123, tier: 'required', proof_required: false }] });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('rejects an invalid tier', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [{ name: 'OSHA 10', tier: 'mandatory', proof_required: false }] });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('rejects a non-boolean proof_required', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: [{ name: 'OSHA 10', tier: 'required', proof_required: 'yes' }] });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('rejects duplicate names case-insensitively', () => {
+      const result = parseJobFields({
+        ...validBody,
+        certification_requirements: [
+          { name: 'OSHA 10', tier: 'required', proof_required: false },
+          { name: 'osha 10', tier: 'optional', proof_required: true },
+        ],
+      });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    it('rejects a non-array value', () => {
+      const result = parseJobFields({ ...validBody, certification_requirements: 'OSHA 10' });
+      expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements' });
+    });
+
+    describe('derivation of certifications', () => {
+      it('derives certifications from names when present and non-empty, ignoring any client-supplied certifications', () => {
+        const result = parseJobFields({
+          ...validBody,
+          certifications: ['Stale Legacy Cert'],
+          certification_requirements: [
+            { name: 'OSHA 30', tier: 'required', proof_required: true },
+            { name: 'Forklift', tier: 'optional', proof_required: false },
+          ],
+        });
+        expect(result).toEqual({
+          ok: true,
+          value: expect.objectContaining({ certifications: ['OSHA 30', 'Forklift'] }),
+        });
+      });
+
+      it('ignores (does not even validate) a hostile client-supplied certifications value when certification_requirements is present and non-empty', () => {
+        const result = parseJobFields({
+          ...validBody,
+          certifications: ['A'.repeat(501), 123, '   '], // would fail legacy validation on its own
+          certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+        });
+        expect(result).toEqual({
+          ok: true,
+          value: expect.objectContaining({ certifications: ['OSHA 30'] }),
+        });
+      });
+
+      it('preserves legacy certifications behavior (including client-supplied values) when certification_requirements is absent', () => {
+        const result = parseJobFields({ ...validBody, certifications: ['OSHA 10'] });
+        expect(result).toEqual({ ok: true, value: expect.objectContaining({ certifications: ['OSHA 10'] }) });
+      });
+
+      it('preserves legacy certifications behavior when certification_requirements is present but empty', () => {
+        const result = parseJobFields({ ...validBody, certifications: ['OSHA 10'], certification_requirements: [] });
+        expect(result).toEqual({
+          ok: true,
+          value: expect.objectContaining({ certifications: ['OSHA 10'], certification_requirements: [] }),
+        });
+      });
+    });
+
+    describe('doc-conflict rule (no double-gating certification_doc)', () => {
+      it('rejects when certification_doc is in required_docs and certification_requirements is present and non-empty', () => {
+        const result = parseJobFields({
+          ...validBody,
+          required_docs: ['certification_doc'],
+          certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+        });
+        expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements_doc_conflict' });
+      });
+
+      it('rejects when certification_doc is in optional_docs and certification_requirements is present and non-empty', () => {
+        const result = parseJobFields({
+          ...validBody,
+          optional_docs: ['certification_doc'],
+          certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+        });
+        expect(result).toEqual({ ok: false, error: 'invalid_certification_requirements_doc_conflict' });
+      });
+
+      it('does NOT conflict when certification_requirements is present but empty, even with certification_doc in required_docs', () => {
+        const result = parseJobFields({
+          ...validBody,
+          required_docs: ['certification_doc'],
+          certification_requirements: [],
+        });
+        expect(result.ok).toBe(true);
+      });
+
+      it('does NOT conflict when required_docs/optional_docs are absent', () => {
+        const result = parseJobFields({
+          ...validBody,
+          certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+        });
+        expect(result.ok).toBe(true);
+      });
+
+      it('does NOT conflict when required_docs/optional_docs contain other doc types only', () => {
+        const result = parseJobFields({
+          ...validBody,
+          required_docs: ['resume'],
+          optional_docs: ['driver_license'],
+          certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+        });
+        expect(result.ok).toBe(true);
+      });
+    });
+  });
+
+  describe('MAX_CERTIFICATION_FILES / MAX_CERTIFICATION_FILES_PER_NAME (078)', () => {
+    it('MAX_CERTIFICATION_FILES is 20 -- the TOTAL-per-slot cap raised by 078_worker_documents_cert_name.sql', () => {
+      expect(MAX_CERTIFICATION_FILES).toBe(20);
+    });
+
+    it('MAX_CERTIFICATION_FILES_PER_NAME is 5 -- the per-name cap introduced by 078_worker_documents_cert_name.sql', () => {
+      expect(MAX_CERTIFICATION_FILES_PER_NAME).toBe(5);
+    });
+  });
+});
+
+describe('EXPECTED_DURATION_BUCKETS / WORK_DAYS (077 CHECK byte-match)', () => {
+  it('EXPECTED_DURATION_BUCKETS byte-matches the jobs_expected_duration_bucket_valid CHECK', () => {
+    expect(EXPECTED_DURATION_BUCKETS).toEqual(['lt_1w', '1_2w', '2_4w', '1_3m', '3_6m', '6m_plus', 'ongoing']);
+  });
+
+  it('WORK_DAYS byte-matches the jobs_work_days_valid CHECK', () => {
+    expect(WORK_DAYS).toEqual(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']);
   });
 });
 

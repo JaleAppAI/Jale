@@ -114,6 +114,89 @@ describe('public-job Lambda', () => {
     expect(jobLookupCall[0]).toMatch(/\bstate_region\b/);
   });
 
+  // ---------------------------------------------------------------------------
+  // BE-T2 -- six new structured fields (077)
+  // ---------------------------------------------------------------------------
+
+  it('selects all six BE-T2 structured columns in the job lookup query', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] });
+    await handler(makeEvent({ code: 'ABC123' }));
+    const jobLookupCall = mockQuery.mock.calls[0];
+    expect(jobLookupCall[0]).toMatch(/\btrade_category_other\b/);
+    expect(jobLookupCall[0]).toMatch(/\bexpected_duration_bucket\b/);
+    expect(jobLookupCall[0]).toMatch(/\bwork_days\b/);
+    expect(jobLookupCall[0]).toMatch(/\bshift_start\b/);
+    expect(jobLookupCall[0]).toMatch(/\bshift_end\b/);
+    expect(jobLookupCall[0]).toMatch(/\bcertification_requirements\b/);
+  });
+
+  it('returns null passthrough for the six BE-T2 columns on a legacy row that predates them', async () => {
+    // A legacy row's SELECT returns these columns as SQL NULL -- the driver
+    // surfaces them as JS null (not undefined), and the handler does no
+    // extra normalization: nullable passthrough, straight from the row.
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        ...ACTIVE_JOB_ROW,
+        trade_category_other: null,
+        expected_duration_bucket: null,
+        work_days: null,
+        shift_start: null,
+        shift_end: null,
+        certification_requirements: null,
+      }],
+    });
+    const res = await handler(makeEvent({ code: 'ABC123' }));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trade_category_other).toBeNull();
+    expect(body.expected_duration_bucket).toBeNull();
+    expect(body.work_days).toBeNull();
+    expect(body.shift_start).toBeNull();
+    expect(body.shift_end).toBeNull();
+    expect(body.certification_requirements).toBeNull();
+  });
+
+  it('passes through populated values for the six BE-T2 columns', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        ...ACTIVE_JOB_ROW,
+        trade_category: 'other',
+        trade_category_other: 'Scaffolding',
+        expected_duration_bucket: '1_2w',
+        work_days: ['mon', 'tue'],
+        shift_start: '07:00:00',
+        shift_end: '15:30:00',
+        certification_requirements: [{ name: 'OSHA 30', tier: 'required', proof_required: true }],
+      }],
+    });
+    const res = await handler(makeEvent({ code: 'ABC123' }));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trade_category_other).toBe('Scaffolding');
+    expect(body.expected_duration_bucket).toBe('1_2w');
+    expect(body.work_days).toEqual(['mon', 'tue']);
+    expect(body.shift_start).toBe('07:00:00');
+    expect(body.shift_end).toBe('15:30:00');
+    expect(body.certification_requirements).toEqual([{ name: 'OSHA 30', tier: 'required', proof_required: true }]);
+  });
+
+  it('does NOT include the six BE-T2 columns in the closed-job minimal view', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ...ACTIVE_JOB_ROW, status: 'filled', trade_category_other: 'Scaffolding' }],
+    });
+    const res = await handler(makeEvent({ code: 'ABC123' }));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toEqual({
+      code: 'ABC123',
+      title: 'Warehouse Associate',
+      company: 'Acme Co',
+      location: 'Miami, FL',
+      status: 'closed',
+      applications_closed: true,
+    });
+  });
+
   it('returns the minimal closed view for a non-active job, not a 404', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ ...ACTIVE_JOB_ROW, status: 'filled' }] });
     const res = await handler(makeEvent({ code: 'ABC123' }));
