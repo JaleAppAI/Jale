@@ -1,9 +1,14 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError, generateJobDescription } from '@/lib/api/employer';
-import { buildGenerateDescriptionPayload, type DescriptionHelperFields } from '@/lib/generate-description-payload';
+import {
+  buildGenerateDescriptionPayload,
+  capEmployerNotes,
+  shouldSendAsNotes,
+  type DescriptionHelperFields,
+} from '@/lib/generate-description-payload';
 import { getTradeSample, hasTradeSample } from '@/lib/trade-samples';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
@@ -41,12 +46,28 @@ export function DescriptionHelper({ form, onDescriptionChange, disabled = false,
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<'limit' | 'generic' | null>(null);
 
-  // `other` and unset both read as "no trade picked" for both actions --
-  // `other` has no O*NET sample to ground against, and the backend rejects
-  // it outright for generation (400 `unsupported_trade_category`), so there
-  // is no point round-tripping into the generic failure message for it.
+  /**
+   * Tracks the text most recently written into the description box by THIS
+   * component -- either a successful AI generation or an inserted sample --
+   * so `shouldSendAsNotes` can tell "the employer typed something new" apart
+   * from "this is just what we put there." An inserted sample is tracked the
+   * same way a generation is: it's canned O*NET-derived prose, not employer
+   * input, and feeding it back as `employer_notes` on the next Generate would
+   * be the same self-referential-drift problem a stale generation would be.
+   */
+  const lastGeneratedRef = useRef<string | null>(null);
+
+  // `other` has no O*NET sample to ground a "Use a sample" insert against,
+  // regardless of whether custom trade text is present.
   const canUseSample = hasTradeSample(form.trade_category);
-  const canGenerate = !disabled && form.trade_category !== '' && form.trade_category !== 'other';
+  // Unset trade_category always disables Generate. `other` is now allowed,
+  // but ONLY once the employer has typed a custom trade name -- the backend
+  // rejects 'other' without `trade_category_other` outright (400
+  // `unsupported_trade_category`, see employer-generate-description.ts), so
+  // there is no point enabling the button (and round-tripping into the
+  // generic failure message) until there's text to send.
+  const canGenerate = !disabled && form.trade_category !== ''
+    && (form.trade_category !== 'other' || form.trade_category_other.trim() !== '');
 
   const setGeneratingState = (value: boolean) => {
     setGenerating(value);
@@ -57,6 +78,11 @@ export function DescriptionHelper({ form, onDescriptionChange, disabled = false,
     const sample = getTradeSample(form.trade_category, locale);
     if (!sample) return;
     onDescriptionChange(sample);
+    // The sample is canned O*NET-derived prose, not employer input -- it
+    // must not be fed back as `employer_notes` on the next Generate (see the
+    // ref's doc comment above). Recording it here makes the next
+    // `shouldSendAsNotes` read the untouched sample as "nothing new typed."
+    lastGeneratedRef.current = sample;
     // A prior Generate failure is no longer relevant to what's now in the
     // field -- the sample just replaced it.
     setGenerateError(null);
@@ -68,10 +94,22 @@ export function DescriptionHelper({ form, onDescriptionChange, disabled = false,
     setGenerateError(null);
     try {
       const payload = buildGenerateDescriptionPayload(form);
+      // Seed the request with whatever the employer has typed into the
+      // description box, UNLESS it's just what we put there ourselves (a
+      // prior generation or sample) -- see `shouldSendAsNotes`'s doc comment.
+      if (shouldSendAsNotes(form.description, lastGeneratedRef.current)) {
+        payload.employer_notes = capEmployerNotes(form.description);
+      }
       const result = await generateJobDescription(idToken, payload);
+      const generated = locale === 'es' ? result.description_es : result.description_en;
+      // Recorded before the description actually updates in the host (that
+      // update is async state in JobFormFields/PostJobModal) -- an immediate
+      // re-generate must compare against this fresh value, not a stale one
+      // left over from a render that hasn't happened yet.
+      lastGeneratedRef.current = generated;
       // Only touch the description on SUCCESS -- a failure below must never
       // clobber whatever the employer already typed.
-      onDescriptionChange(locale === 'es' ? result.description_es : result.description_en);
+      onDescriptionChange(generated);
     } catch (err) {
       setGenerateError(err instanceof ApiError && err.code === 'generation_limit_reached' ? 'limit' : 'generic');
     } finally {

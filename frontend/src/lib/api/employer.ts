@@ -475,13 +475,21 @@ export async function createJob(token: string, data: JobWritePayload): Promise<J
  * optional, mirroring "whatever the job form currently holds". Strings are
  * capped at 200 chars by the backend (400 `invalid_*` past that); callers
  * should trim/slice before sending rather than round-trip into a failure.
- * `trade_category: 'other'` is rejected outright (400
- * `unsupported_trade_category`) -- callers should keep the trigger disabled
- * for that trade instead of surfacing the generic failure message.
+ * `trade_category: 'other'` is rejected outright UNLESS `trade_category_other`
+ * is also present (non-blank, ≤200 chars) -- callers should keep the trigger
+ * disabled for 'other' without custom trade text instead of surfacing the
+ * generic failure message.
+ * `trade_category_other` is only meaningful (and only ever read by the
+ * backend) when `trade_category === 'other'`.
+ * `employer_notes` is a separate, larger cap (500 chars server-side; callers
+ * generally send far less -- see `lib/generate-description-payload.ts`'s
+ * `EMPLOYER_NOTES_MAX_LENGTH`) for brief free-text context typed by the
+ * employer, e.g. into the description box before generating.
  */
 export type GenerateJobDescriptionPayload = {
   title?: string;
   trade_category: string;
+  trade_category_other?: string;
   city?: string;
   state?: string;
   pay_min?: number;
@@ -489,6 +497,7 @@ export type GenerateJobDescriptionPayload = {
   pay_interval?: string;
   expected_duration?: string;
   shift_schedule?: string;
+  employer_notes?: string;
 };
 
 export type GenerateJobDescriptionResult = {
