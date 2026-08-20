@@ -94,6 +94,23 @@ describe('worker-doc-delete', () => {
     expect(JSON.parse(res.body).error).toBe('not_found');
   });
 
+  it('deletes a legacy certification_doc row with cert_name NULL by id fine (delete is cert_name-agnostic)', async () => {
+    // BE-T3 regression coverage: cert_name is nullable (078) and this lambda's
+    // DELETE never references the column at all, so a pre-078 row (cert_name
+    // NULL) must delete exactly like a labeled one.
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('DELETE FROM worker_documents')) return Promise.resolve({ rowCount: 1, rows: [{ s3_key: 'k' }] });
+      return Promise.resolve({});
+    });
+    const res = await handler(mkEv('certification_doc', 'legacy-doc-null-cert-name'));
+    expect(res.statusCode).toBe(204);
+    const deleteCall = mockQuery.mock.calls.find(([q]) => String(q).includes('DELETE FROM worker_documents'));
+    const [deleteSql, deleteParams] = deleteCall as [string, unknown[]];
+    expect(deleteSql).not.toContain('cert_name');
+    expect(deleteParams).toEqual(['u1', 'legacy-doc-null-cert-name']);
+  });
+
   it('without id, preserves the existing type-wide vault delete behavior unchanged', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
