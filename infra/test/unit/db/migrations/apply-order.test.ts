@@ -85,6 +85,9 @@ const expectedBaselineMigrations = [
   '074_job_optional_requirements.sql',
   '075_worker_documents_multi_certification.sql',
   '076_ai_extraction_asr_metadata.sql',
+  '077_jobs_structured_fields.sql',
+  '078_worker_documents_cert_name.sql',
+  '079_worker_application_defaults.sql',
 ];
 
 function migrationFiles(): string[] {
