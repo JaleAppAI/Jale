@@ -132,8 +132,9 @@ export function JobFormFields({
           rows={4}
           value={form.description}
           onChange={(e) => onUpdate('description', e.target.value)}
-          // Same Other-trade placeholder swap as PostJobModal's step 1 --
-          // see that component's comment for the rationale.
+          // Same Other-trade placeholder swap as PostJobModal's step 1, for
+          // the same reason (locked decision: "Generate-with-AI enables for
+          // Other once custom trade typed") -- see that component's comment.
           placeholder={
             form.trade_category === 'other' && form.trade_category_other.trim()
               ? t('modal.description_placeholder_notes')
@@ -203,7 +204,16 @@ export function JobFormFields({
       </label>
       <CertificationsPicker
         certificationRequirements={form.certification_requirements}
-        onChange={(next) => onUpdate('certification_requirements', next)}
+        // See PostJobModal's identical wiring for why `certifications` is
+        // cleared on every picker edit, not just non-empty ones:
+        // `jobFormToBasePayload` falls back to the legacy free-text field
+        // whenever `certification_requirements` is empty, so deleting every
+        // chip here must not let a legacy job's old cert names come back on
+        // save.
+        onChange={(next) => {
+          onUpdate('certification_requirements', next);
+          onUpdate('certifications', '');
+        }}
       />
 
       {/* Work authorization is no longer a standalone checkbox here -- the

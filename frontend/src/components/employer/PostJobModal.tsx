@@ -553,13 +553,17 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
               rows={4}
               value={form.description}
               onChange={(e) => update('description', e.target.value)}
-              // The Other-trade path has neither an O*NET sample nor
-              // (currently) a working Generate button (`DescriptionHelper`'s
-              // `canGenerate` excludes `trade_category === 'other'`
-              // outright), so once the employer has actually named their
-              // custom trade, the placeholder stops inviting "brief notes
-              // for AI" and instead invites the fuller description they'll
-              // need to write themselves.
+              // Locked decision (job-flow redesign): "Generate-with-AI
+              // enables for Other once custom trade typed." Once the
+              // employer has actually named their custom trade, notes fed
+              // into this field become exactly as useful to AI generation as
+              // for any other trade, so the placeholder swaps to the same
+              // "jot brief notes" invitation the redesign uses everywhere
+              // else. (`DescriptionHelper`'s `canGenerate` still hard-excludes
+              // `trade_category === 'other'` today -- closing that gap is the
+              // parallel description-helper task's work, not this one's --
+              // but the placeholder copy here is written for the intended end
+              // state, not today's temporary restriction.)
               placeholder={
                 form.trade_category === 'other' && form.trade_category_other.trim()
                   ? t('modal.description_placeholder_notes')
@@ -651,7 +655,16 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           </div>
           <CertificationsPicker
             certificationRequirements={form.certification_requirements}
-            onChange={(next) => update('certification_requirements', next)}
+            // Clearing the legacy free-text `certifications` alongside every
+            // picker edit (not just non-empty ones) matters specifically for
+            // the empty case: `jobFormToBasePayload` falls back to
+            // `splitDedupe(form.certifications)` whenever
+            // `certification_requirements` is empty, so an employer who
+            // deletes every chip here would otherwise have the legacy names
+            // silently resurrected on save. The picker is the one authoritative
+            // editor for certifications once it's in play, so it owns retiring
+            // the legacy field the moment it's touched.
+            onChange={(next) => setForm((current) => ({ ...current, certification_requirements: next, certifications: '' }))}
           />
         </div>
       )}
