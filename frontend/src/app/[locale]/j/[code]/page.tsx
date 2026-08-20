@@ -8,6 +8,7 @@ import { KVList, type KVItem } from '@/components/ui/kv-list';
 import { Link } from '@/i18n/navigation';
 import { formatLongDate, formatStartDate } from '@/lib/date';
 import { formatPay } from '@/lib/pay';
+import { durationLabel, scheduleSummary, type Translator } from '@/lib/job-detail-display';
 import { getPublicJob, isClosedJob, PublicJobNotFoundError } from '@/lib/api/publicJob';
 import type { PublicJobActive, PublicJobDocType } from '@/lib/api/publicJob';
 import { buildJobPostingJsonLd, serializeJsonLd } from '@/lib/seo/jobPostingJsonLd';
@@ -313,6 +314,26 @@ export default async function PublicJobPage({ params }: PageProps) {
   const postedDate = formatLongDate(active.created_at, params.locale) ?? active.created_at;
   const pay = formatPay(active, tPay);
 
+  // Structured trade/duration/schedule/certification display, added by a
+  // parallel backend task (migrations 077-079). Every field here is
+  // optional -- see this task's summary for the exact fallback matrix.
+  //
+  // `job-detail-display.ts`'s `Translator` type is deliberately structural
+  // (a plain `(key, values?) => string`) so its formatters stay unit-testable
+  // without a next-intl runtime -- see that module's doc comment. next-intl
+  // v4's server translator is generic over its own namespace's message keys,
+  // which is narrower than that structural type for the `values` parameter,
+  // so passing it directly fails `tsc` (verified). The next line is a thin
+  // widening adapter at that boundary, not a behavior change.
+  const tCommonRaw = await getTranslations({ locale: params.locale, namespace: 'common' });
+  const tCommon: Translator = (key, values) =>
+    (tCommonRaw as unknown as (k: string, v?: Record<string, unknown>) => string)(key, values);
+  const tJobRequirements = await getTranslations({ locale: params.locale, namespace: 'job_requirements' });
+  const tWorkerJobDetail = await getTranslations({ locale: params.locale, namespace: 'worker_job_detail' });
+
+  const durationText = durationLabel(active, tCommon);
+  const schedule = scheduleSummary(active, params.locale, tCommon);
+
   // The header location line: company, then whichever of the structured
   // city/state_region pair and the free-text location field actually exist.
   const cityState =
@@ -344,7 +365,37 @@ export default async function PublicJobPage({ params }: PageProps) {
       value: active.required_docs.map((d) => docLabel(t, d)).join(', '),
     });
   }
-  if (active.certifications && active.certifications.length > 0) {
+  if (active.certification_requirements && active.certification_requirements.length > 0) {
+    // Structured per-cert list: name + Required/Optional (job_requirements's
+    // shared tier labels) + a proof-needed note when the job asks for it.
+    // `worker_job_detail.what_you_need.proof_needed` is reused rather than
+    // adding a public_job-scoped copy -- its text ("proof needed") carries no
+    // worker-app-specific framing, so it reads correctly here too, and this
+    // task does not own messages/*.json. Keyed by index, not `cert.name`:
+    // migration 078 caps a name at 5 occurrences, so the same name can repeat
+    // in one job's certification set (same reasoning KVList itself documents
+    // for its own positional, never-reordered rows).
+    needRows.push({
+      label: t('certifications'),
+      value: (
+        <ul className="space-y-1">
+          {active.certification_requirements.map((cert, index) => (
+            <li key={index} className="flex flex-wrap items-baseline justify-end gap-x-1.5">
+              <span>{cert.name}</span>
+              <span className="text-[var(--jale-ink-2)]">
+                ({tJobRequirements(`states.${cert.tier}`)})
+              </span>
+              {cert.proof_required && (
+                <span className="text-xs text-[var(--jale-ink-2)]">
+                  · {tWorkerJobDetail('what_you_need.proof_needed')}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      ),
+    });
+  } else if (active.certifications && active.certifications.length > 0) {
     needRows.push({ label: t('certifications'), value: active.certifications.join(', ') });
   }
   const experienceText = formatExperience(
@@ -365,20 +416,56 @@ export default async function PublicJobPage({ params }: PageProps) {
   // taxonomy/provenance rows.
   const detailRows: KVItem[] = [];
   if (startDate) detailRows.push({ label: t('start_date'), value: startDate });
-  if (active.shift_schedule) {
-    detailRows.push({ label: t('shift_schedule'), value: active.shift_schedule });
+  // Structured work_days/shift_start/shift_end (via the merged
+  // `scheduleSummary` formatter) win over the legacy free-text
+  // `shift_schedule` string whenever ANY structured schedule data exists.
+  // `scheduleSummary` suppresses `legacy` in that case even for a one-sided
+  // shift with no matching start/end to pair it with -- so a job with only
+  // `shift_start` set (no `work_days`) renders no shift row at all, rather
+  // than mixing an old free-text description with a partial structured
+  // render. This is the merged lib's documented intent (see its doc
+  // comment), not an oversight.
+  if (schedule.legacy) {
+    detailRows.push({ label: t('shift_schedule'), value: schedule.legacy });
+  } else {
+    if (schedule.days.length > 0) {
+      detailRows.push({ label: t('work_days_label'), value: schedule.days.join(', ') });
+    }
+    if (schedule.hours) {
+      detailRows.push({ label: t('shift_hours'), value: schedule.hours });
+    }
   }
-  if (active.expected_duration) {
-    detailRows.push({ label: t('duration'), value: active.expected_duration });
+  if (durationText) {
+    detailRows.push({ label: t('duration'), value: durationText });
   }
   if (active.trade_category) {
-    // Only the raw `trade_category` value benefits from title-casing (it's an
-    // unlabeled taxonomy string, e.g. "electrician"). Dates and numbers must
-    // NOT get this -- `capitalize` mangles Spanish month names and
-    // prepositions (e.g. "1 de enero" -> "1 De Enero").
+    // Custom-trade branch: an employer-typed "other" trade shows verbatim,
+    // with NO title-casing -- it's free text the employer wrote, not a
+    // taxonomy slug, so forcing `capitalize` on it would mangle it the same
+    // way that CSS class already must not touch dates (see below). Every
+    // other trade_category value -- a known slug, or "other" with no free
+    // text attached -- renders exactly as before this task: the raw slug,
+    // title-cased by CSS.
+    //
+    // This deliberately does NOT go through `job-detail-display`'s
+    // `tradeLabel`: that helper's `tTrade` translator is meant to resolve the
+    // slug through a real per-slug catalog (see its doc comment), and
+    // `public_job` has no such catalog -- only the `trade_category` row
+    // label and `trade_with_other`. Passing an identity function would
+    // type-check but would misrepresent the contract for no real reuse.
+    const customTrade =
+      active.trade_category === 'other' ? active.trade_category_other?.trim() : null;
     detailRows.push({
       label: t('trade_category'),
-      value: <span className="capitalize">{active.trade_category}</span>,
+      value: customTrade ? (
+        t('trade_with_other', { other: customTrade })
+      ) : (
+        // Only the raw `trade_category` value benefits from title-casing
+        // (it's an unlabeled taxonomy string, e.g. "electrician"). Dates and
+        // numbers must NOT get this -- `capitalize` mangles Spanish month
+        // names and prepositions (e.g. "1 de enero" -> "1 De Enero").
+        <span className="capitalize">{active.trade_category}</span>
+      ),
     });
   }
   if (active.number_of_workers_needed != null) {

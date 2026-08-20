@@ -44,6 +44,23 @@ export interface PublicJobActive {
    * defensively against undefined, same as `id` above. */
   city?: string | null;
   state_region?: string | null;
+  /** Structured trade/duration/schedule/certification columns, added by a
+   * parallel backend task (migrations 077-079). All additive and optional --
+   * an older payload (or a job that never got structured data) omits them
+   * entirely, and every display branch that reads these must render exactly
+   * today's legacy output when they are null/absent. See
+   * `lib/job-detail-display.ts` for the shared formatters that consume the
+   * trade/duration/schedule subset of these fields. */
+  trade_category_other?: string | null;
+  expected_duration_bucket?: string | null;
+  work_days?: string[] | null;
+  shift_start?: string | null;
+  shift_end?: string | null;
+  certification_requirements?: Array<{
+    name: string;
+    tier: 'required' | 'optional';
+    proof_required: boolean;
+  }> | null;
 }
 
 export interface PublicJobClosed {
