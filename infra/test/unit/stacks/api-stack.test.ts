@@ -131,6 +131,39 @@ describe('ApiStack', () => {
     });
   });
 
+  // BE-T4: GET /worker/application-defaults (worker_application_defaults,
+  // 079_worker_application_defaults.sql). Asserts the actual resource path
+  // and that the GET method's ResourceId Refs THAT specific resource — a
+  // plain "some GET is WorkerAuthorizer-protected" check would pass even if
+  // this route were never wired up, since every other worker GET route
+  // already uses the same authorizer.
+  test('Worker application defaults Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker application defaults endpoint',
+    });
+  });
+
+  test('application-defaults path-part resource exists under /worker', () => {
+    template.hasResourceProperties('AWS::ApiGateway::Resource', { PathPart: 'application-defaults' });
+  });
+
+  test('GET /worker/application-defaults is wired to its own resource and protected by WorkerAuthorizer', () => {
+    const resources = template.findResources('AWS::ApiGateway::Resource', {
+      Properties: { PathPart: 'application-defaults' },
+    });
+    const resourceLogicalIds = Object.keys(resources);
+    expect(resourceLogicalIds).toHaveLength(1);
+
+    template.hasResourceProperties('AWS::ApiGateway::Method', {
+      HttpMethod: 'GET',
+      ResourceId: { Ref: resourceLogicalIds[0] },
+      AuthorizationType: 'COGNITO_USER_POOLS',
+      AuthorizerId: Match.objectLike({
+        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
+      }),
+    });
+  });
+
   test('Employer profile Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {
       Description: 'Employer profile endpoint',
