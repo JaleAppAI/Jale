@@ -471,6 +471,36 @@
         "required": "Obligatorio.",
         "missing_summary": "Por favor agregue: {fields}"
       }
+    },
+    "digest": {
+      "title": "Notificaciones",
+      "description": "Reciba un correo al día con el resumen de los nuevos candidatos de sus empleos abiertos. No se envía nada los días sin actividad.",
+      "toggle_aria": "Correo diario de resumen de candidatos",
+      "state_on": "Resumen diario activado",
+      "state_off": "Resumen diario desactivado",
+      "hour_label": "Hora de envío",
+      "hour_hint": "El resumen se envía a esta hora en la zona horaria de abajo.",
+      "timezone_label": "Zona horaria",
+      "language_label": "Idioma del correo",
+      "language_hint": "Esto cambia solo el correo del resumen, no el idioma de este sitio.",
+      "language_group_aria": "Idioma del correo de resumen",
+      "language_option": {
+        "en": "Inglés",
+        "es": "Español"
+      },
+      "load_error": "No se pudieron cargar sus preferencias de notificación. Intente de nuevo.",
+      "save_error": "No se pudieron guardar sus preferencias de notificación. Intente de nuevo.",
+      "timezones": {
+        "america_new_york": "Hora del Este — Nueva York",
+        "america_chicago": "Hora del Centro — Chicago",
+        "america_denver": "Hora de la Montaña — Denver",
+        "america_phoenix": "Hora de la Montaña, sin horario de verano — Phoenix",
+        "america_los_angeles": "Hora del Pacífico — Los Ángeles",
+        "america_anchorage": "Hora de Alaska — Anchorage",
+        "pacific_honolulu": "Hora de Hawái — Honolulú",
+        "america_mexico_city": "Hora del Centro — Ciudad de México",
+        "america_puerto_rico": "Hora del Atlántico — Puerto Rico"
+      }
     }
   },
   "employer_messages": {
@@ -1569,5 +1599,15 @@
     "worker_nav_main": "Menú",
     "primary_nav": "Navegación principal",
     "mobile_nav": "Navegación móvil"
+  },
+  "digest_unsubscribe": {
+    "title": "Correos de resumen diario",
+    "body": "Confirme abajo y dejaremos de enviarle el resumen diario de candidatos.",
+    "button": "Cancelar suscripción",
+    "success_title": "Su suscripción fue cancelada",
+    "success_body": "No le enviaremos más correos con el resumen diario de candidatos.",
+    "success_settings_hint": "Puede volver a activar el resumen diario cuando quiera en Notificaciones, dentro de su configuración de Jale.",
+    "error_title": "Este enlace ya no es válido",
+    "error_body": "Puede administrar los correos de resumen en Notificaciones, dentro de su configuración de Jale."
   }
 }

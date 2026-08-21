@@ -403,6 +403,50 @@ export async function updateEmployerProfile(
   return res.json();
 }
 
+/**
+ * The employer's daily applicant-digest email preferences, rendered by the
+ * Notifications panel on `/employer/profile`.
+ *
+ * `language` is the DIGEST EMAIL's language and is independent of the reader's
+ * UI locale -- an employer can read the site in English and want the digest in
+ * Spanish. Never seed it from `useLocale()`.
+ *
+ * An employer with no stored row reads back the backend's defaults
+ * (`false`/`8`/`America/Chicago`/`en`), not a 404, so there is no "not
+ * configured yet" state for the panel to handle.
+ */
+export type EmployerDigestSettings = {
+  enabled: boolean;
+  send_hour_local: number;
+  timezone: string;
+  language: 'en' | 'es';
+};
+
+/** Any subset of the four fields; the response is always the full stored row. */
+export type EmployerDigestSettingsPatch = Partial<EmployerDigestSettings>;
+
+export async function getEmployerDigestSettings(
+  token: string,
+  signal?: AbortSignal,
+): Promise<EmployerDigestSettings> {
+  const res = await apiFetch('/employer/settings/digest', { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'digest_settings_fetch_failed');
+  return res.json();
+}
+
+export async function updateEmployerDigestSettings(
+  token: string,
+  patch: EmployerDigestSettingsPatch,
+): Promise<EmployerDigestSettings> {
+  const res = await apiFetch(
+    '/employer/settings/digest',
+    { method: 'PATCH', body: JSON.stringify(patch) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'digest_settings_update_failed');
+  return res.json();
+}
+
 export async function getJobs(token: string, signal?: AbortSignal): Promise<Job[]> {
   const res = await apiFetch('/employer/jobs', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
