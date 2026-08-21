@@ -81,7 +81,11 @@ jobs:
           full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
-          admin_stack_list="JaleDatabaseStack JaleWhatsAppStack JaleAdminStack"
+          # JaleDocumentsStack precedes JaleWhatsAppStack: the WhatsApp
+          # processor imports the documents bucket/key exports (application-
+          # fill doc uploads), and --exclusively deploys only the stacks
+          # named here.
+          admin_stack_list="JaleDatabaseStack JaleDocumentsStack JaleWhatsAppStack JaleAdminStack"
           billing_prerequisites_stack_list="JaleNetworkStack JaleDatabaseStack"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
