@@ -38,6 +38,13 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly questionGeneratorFn: lambda.IFunction;
   readonly aliasGeneratorFn: lambda.IFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
+  /**
+   * Shared worker documents bucket (from DocumentsStack). The processor
+   * lambda is granted PUT-only access (+ the KMS actions grantPut adds for
+   * the bucket's encryption key) so the WhatsApp flow can upload worker
+   * documents — no read/list/delete.
+   */
+  readonly documentsBucket: s3.IBucket;
   /** Exact public API Gateway URL configured in Twilio for delivery callbacks. */
   readonly statusCallbackUrl: string;
   /**
@@ -227,7 +234,32 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
         WORKER_INTENT_WAKE_QUEUE_URL: workerIntentWakeQueue.queueUrl,
         DOMAIN_OUTBOX_WAKE_QUEUE_URL: domainOutboxWakeQueue.queueUrl,
+        // Task 15 (controller-discovered gap): the processor calls Bedrock
+        // ConverseCommand for application-fill field extraction
+        // (lib/application-fill-extraction.ts's makeBedrockExtractionClient)
+        // but had no BEDROCK_MODEL_ID env at all — every extraction turn hit
+        // that module's `?? 'us.amazon.nova-lite-v1:0'` fallback. Same
+        // model ID as the ai-profile-writer Lambda below (BEDROCK_MODEL_ID
+        // env + bedrock:InvokeModel policy, ~line 489/522).
+        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
       },
+      // Task 15 (confirmed blocker, not just the IAM/env gap): processor.ts
+      // imports handleFillMessage from lib/application-fill.ts, which
+      // imports extractFieldAnswer from lib/application-fill-extraction.ts,
+      // which imports '@aws-sdk/client-bedrock-runtime' at module top level.
+      // JaleLambdaFunction's default bundling externalizes ALL '@aws-sdk/*'
+      // packages (lambda-function.ts:74) on the assumption the Node 20.x
+      // Lambda runtime provides them — untrue for client-bedrock-runtime
+      // (see ai-profile-writer's identical nodeModules override above,
+      // ~line 504). Without this opt-in, the processor bundle would contain
+      // an unresolvable require() for this package, throwing "Cannot find
+      // module" at import time — failing EVERY processor invocation, not
+      // just Bedrock-calling turns, since the import chain above is
+      // unconditional at the top of processor.ts.
+      // (@smithy/node-http-handler, also used by makeBedrockExtractionClient,
+      // does NOT need listing here — only 'pg-native' and '@aws-sdk/*' are
+      // externalModules, so esbuild bundles @smithy/* directly.)
+      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
     });
     whatsappDbSecret.grantRead(this.processorLambda.function);
     twilioSecret.grantRead(this.processorLambda.function);
@@ -508,15 +540,21 @@ export class WhatsAppStack extends cdk.Stack {
       this.inboundV2Queue.grantSendMessages(aiProfileWriterLambda.function);
     }
 
+    // Shared with the processor Lambda's identical bedrock:InvokeModel grant
+    // below (Task 15) — one ARN list, both grants stay in sync by
+    // construction instead of by comment. ConverseCommand (used by both
+    // Lambdas) only needs bedrock:InvokeModel, not a separate
+    // bedrock:Converse action.
+    const bedrockHaiku45Arns = [
+      `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
+      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+      `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
+      'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+    ];
     aiProfileWriterLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
-        resources: [
-          `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
-          'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
-          'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-        ],
+        resources: bedrockHaiku45Arns,
       }),
     );
 
@@ -596,6 +634,31 @@ export class WhatsAppStack extends cdk.Stack {
     props.trustAssessmentQueue.grantSendMessages(this.processorLambda.function);
     props.questionGeneratorFn.grantInvoke(this.processorLambda.function);
     props.aliasGeneratorFn.grantInvoke(this.processorLambda.function);
+
+    // ── Processor Lambda: worker documents bucket (KMS put access) ──
+    // The WhatsApp application-fill flow uploads worker documents (ID,
+    // certs, etc.) directly to the shared documents bucket. Put-only —
+    // no read/list/delete grant here. grantPut also adds the KMS actions
+    // (kms:GenerateDataKey* etc.) needed to write to the KMS-encrypted
+    // bucket.
+    this.processorLambda.function.addEnvironment(
+      'DOCUMENTS_BUCKET',
+      props.documentsBucket.bucketName,
+    );
+    props.documentsBucket.grantPut(this.processorLambda.function);
+
+    // Task 15 (controller-discovered gap): bedrock:InvokeModel grant for the
+    // processor's ConverseCommand calls (application-fill extraction).
+    // Reuses the same bedrockHaiku45Arns list as the ai-profile-writer
+    // Lambda's identical grant above (~line 526) — one ARN list, both
+    // grants stay in sync by construction. ConverseCommand only needs
+    // bedrock:InvokeModel, not a separate bedrock:Converse action.
+    this.processorLambda.function.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: bedrockHaiku45Arns,
+      }),
+    );
 
     // Public Twilio delivery-status receiver. Authentication is the Twilio
     // HMAC signature; it needs DB + Twilio secrets but no Cognito authorizer.
