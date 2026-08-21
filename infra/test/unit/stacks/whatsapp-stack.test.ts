@@ -1,4 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Template, Match } from 'aws-cdk-lib/assertions';
 import { NetworkStack } from '../../../lib/stacks/network-stack';
 import { DatabaseStack } from '../../../lib/stacks/database-stack';
@@ -57,6 +59,17 @@ describe('WhatsAppStack', () => {
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
+    // Stand-in for DocumentsStack's KMS-encrypted bucket (Task 12). A
+    // separate mini-stack keeps this test independent of DocumentsStack's
+    // own Lambda bundling while still exercising a real cross-stack
+    // construct reference, same as production wiring in bin/jale-app.ts.
+    const docsBucketStack = new cdk.Stack(app, 'TestDocsBucketStack');
+    const docsKey = new kms.Key(docsBucketStack, 'TestDocsKey');
+    const docsBucket = new s3.Bucket(docsBucketStack, 'TestDocsBucket', {
+      encryptionKey: docsKey,
+      encryption: s3.BucketEncryption.KMS,
+    });
+
     const whatsapp = new WhatsAppStack(app, 'TestWhatsAppStack', {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
@@ -69,6 +82,7 @@ describe('WhatsAppStack', () => {
       trustAssessmentQueue: ai.trustAssessmentQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
+      documentsBucket: docsBucket,
     });
     template = Template.fromStack(whatsapp);
     apiTemplate = Template.fromStack(api);
@@ -877,6 +891,57 @@ describe('event-driven outbox wake queues', () => {
       });
     });
 
+    // Task 12: WhatsApp flow uploads worker documents (e.g. ID, certs)
+    // directly to the shared documents bucket via a KMS-default PUT.
+    test('Processor Lambda has DOCUMENTS_BUCKET env var', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            DOCUMENTS_BUCKET: Match.anyValue(),
+          }),
+        },
+      });
+    });
+
+    // Scoped to the processor's OWN role (not "any role in the stack") and
+    // pinned to the docs key's actual Resource reference (not "any
+    // resource") — a Resource: '*' grant, or the same statement attached to
+    // a different lambda's role, must fail this test. See the sibling
+    // role-scoping pattern in the 'C7: DomainOutboxDrainLambda' describe
+    // block above (drainFn.Properties.Role['Fn::GetAtt'][0] + filtering
+    // AWS::IAM::Policy by Roles[].Ref) for the convention this follows.
+    test('Processor Lambda role gets kms:GenerateDataKey* scoped to the documents bucket key (grantPut)', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const [, processorFn] = Object.entries(functions).find(([, r]: [string, any]) =>
+        /SQS processor/.test(r.Properties?.Description ?? '')) as [string, any];
+      const roleLogicalId = processorFn.Properties.Role['Fn::GetAtt'][0];
+
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const kmsGenerateStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('kms:GenerateDataKey*');
+        });
+
+      // Exactly one statement, and it must carry a concrete Resource — an
+      // Fn::ImportValue naming the TestDocsKey construct from the stand-in
+      // TestDocsBucketStack fixture above (this test's beforeAll creates the
+      // key as `new kms.Key(docsBucketStack, 'TestDocsKey')`), not a bare
+      // '*' wildcard.
+      expect(kmsGenerateStatements).toHaveLength(1);
+      const resource = kmsGenerateStatements[0].Resource;
+      expect(resource).not.toBe('*');
+      expect(resource).toHaveProperty('Fn::ImportValue');
+      expect(resource['Fn::ImportValue']).toEqual(
+        expect.stringMatching(/^TestDocsBucketStack:.*TestDocsKey.*Arn.*$/),
+      );
+    });
+
     test('Processor Lambda has AI_PIPELINE_STATE_MACHINE_ARN env var', () => {
       template.hasResourceProperties('AWS::Lambda::Function', {
         Description: Match.stringLikeRegexp('SQS processor'),
@@ -990,6 +1055,12 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       api: api.api,
       dualAuthorizer: api.dualAuthorizer,
     });
+    const docsBucketStack = new cdk.Stack(app, 'TestDocsBucketStackV2Transport');
+    const docsKey = new kms.Key(docsBucketStack, 'TestDocsKey');
+    const docsBucket = new s3.Bucket(docsBucketStack, 'TestDocsBucket', {
+      encryptionKey: docsKey,
+      encryption: s3.BucketEncryption.KMS,
+    });
     const whatsapp = new WhatsAppStack(app, 'TestWhatsAppStackV2Transport', {
       vpc: network.vpc,
       privateSubnets: network.privateSubnets,
@@ -1002,6 +1073,7 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       trustAssessmentQueue: ai.trustAssessmentQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
+      documentsBucket: docsBucket,
     });
     template = Template.fromStack(whatsapp);
   });

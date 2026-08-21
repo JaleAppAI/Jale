@@ -38,6 +38,13 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly questionGeneratorFn: lambda.IFunction;
   readonly aliasGeneratorFn: lambda.IFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
+  /**
+   * Shared worker documents bucket (from DocumentsStack). The processor
+   * lambda is granted PUT-only access (+ the KMS actions grantPut adds for
+   * the bucket's encryption key) so the WhatsApp flow can upload worker
+   * documents — no read/list/delete.
+   */
+  readonly documentsBucket: s3.IBucket;
   /** Exact public API Gateway URL configured in Twilio for delivery callbacks. */
   readonly statusCallbackUrl: string;
   /**
@@ -596,6 +603,18 @@ export class WhatsAppStack extends cdk.Stack {
     props.trustAssessmentQueue.grantSendMessages(this.processorLambda.function);
     props.questionGeneratorFn.grantInvoke(this.processorLambda.function);
     props.aliasGeneratorFn.grantInvoke(this.processorLambda.function);
+
+    // ── Processor Lambda: worker documents bucket (KMS put access) ──
+    // The WhatsApp application-fill flow uploads worker documents (ID,
+    // certs, etc.) directly to the shared documents bucket. Put-only —
+    // no read/list/delete grant here. grantPut also adds the KMS actions
+    // (kms:GenerateDataKey* etc.) needed to write to the KMS-encrypted
+    // bucket.
+    this.processorLambda.function.addEnvironment(
+      'DOCUMENTS_BUCKET',
+      props.documentsBucket.bucketName,
+    );
+    props.documentsBucket.grantPut(this.processorLambda.function);
 
     // Public Twilio delivery-status receiver. Authentication is the Twilio
     // HMAC signature; it needs DB + Twilio secrets but no Cognito authorizer.
