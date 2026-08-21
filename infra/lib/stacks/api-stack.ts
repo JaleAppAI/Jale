@@ -44,6 +44,22 @@ export class ApiStack extends cdk.Stack {
   /** Exported so ReferralsStack (and other downstream stacks) can hang routes off /worker */
   public readonly workerResource: apigateway.Resource;
   /**
+   * Exported so ReferralsStack and NotificationsStack can hang their
+   * UNAUTHENTICATED routes off /public.
+   *
+   * Promoted here from ReferralsStack (which used to call
+   * `props.api.root.addResource('public')` itself) the moment a second stack
+   * needed the same node: two stacks calling addResource('public') on one
+   * RestApi is a construct-id collision, and which one wins depends purely on
+   * instantiation order in bin/jale-app.ts. Same reuse-don't-redeclare rule as
+   * workerJobResource / employerJobResource below.
+   *
+   * The move is CloudFormation-neutral: addResource() scopes the child to the
+   * RestApi construct, which has always lived in this stack, so the logical id
+   * is unchanged by moving the CALL here.
+   */
+  public readonly publicResource: apigateway.Resource;
+  /**
    * Exported so ReferralsStack can hang POST /worker/jobs/{jobId}/share off the
    * existing /worker/jobs/{jobId} node — NOT a new addResource() call. A second
    * variable-path resource at this level (even a differently-named one, e.g.
@@ -216,6 +232,22 @@ export class ApiStack extends cdk.Stack {
       },
     });
     props.dbSecret.grantRead(workerApplicationDefaultsGetLambda.function);
+
+    // Employer digest settings — employer auth, DB access. GET + PATCH on one
+    // Lambda (employer-profile precedent). Reads/writes
+    // employer_digest_settings (080_employer_digest_settings.sql).
+    const employerDigestSettingsLambda = new JaleLambdaFunction(this, 'EmployerDigestSettingsLambda', {
+      entry: path.join(__dirname, '../../lambda/api/employer-digest-settings.ts'),
+      description: 'Employer digest settings endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(employerDigestSettingsLambda.function);
 
     // Employer profile — employer auth, DB access
     const employerProfileLambda = new JaleLambdaFunction(this, 'EmployerProfileLambda', {
@@ -672,6 +704,12 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
+    // /public — the shared parent for every UNAUTHENTICATED route added by a
+    // downstream stack (ReferralsStack's /public/jobs*, NotificationsStack's
+    // /public/employer-digest/unsubscribe). Declared here, exported, and never
+    // re-declared downstream: see the publicResource field comment.
+    this.publicResource = this.api.root.addResource('public');
+
     // GET /worker/profile
     // PATCH /worker/profile
     // Exported as public readonly so ReferralsStack (and other downstream
@@ -784,6 +822,23 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     employerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerProfileLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET   /employer/settings/digest — daily-digest preferences
+    // PATCH /employer/settings/digest — partial update of those preferences
+    //
+    // PATCH, not PUT: lib/http.ts's corsHeaders() advertises
+    // GET,POST,PATCH,DELETE,OPTIONS and PUT is absent, so a PUT route would
+    // fail browser preflight no matter what API Gateway accepted.
+    const employerSettingsResource = this.employerResource.addResource('settings');
+    const employerDigestSettingsResource = employerSettingsResource.addResource('digest');
+    employerDigestSettingsResource.addMethod('GET', new apigateway.LambdaIntegration(employerDigestSettingsLambda.function), {
+      authorizer: employerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+    employerDigestSettingsResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerDigestSettingsLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -1024,6 +1079,24 @@ export class ApiStack extends cdk.Stack {
           HttpMethod: 'POST',
           ThrottlingBurstLimit: 10,
           ThrottlingRateLimit: 5,
+        },
+        // POST /public/employer-digest/unsubscribe — UNAUTHENTICATED one-click
+        // unsubscribe (NotificationsStack). The HMAC-signed token is the only
+        // credential, so this stage throttle is the only volume brake on the
+        // route, and it belongs in the tight unauthenticated-WRITE tier with
+        // /auth/worker/signup and /public/jobs/{code}/apply-intent rather than
+        // the looser read tier. Legitimate traffic is one call per emailed link.
+        //
+        // NOTE the numbers are the specified rate 10 / burst 5, which INVERTS
+        // the burst>=rate shape every sibling entry uses (those are burst 10 /
+        // rate 5). Kept as specified; a burst below the sustained rate simply
+        // means the bucket capacity, not the rate, is the effective cap. Flip
+        // the pair if the intent was to mirror the siblings exactly.
+        {
+          ResourcePath: '/public/employer-digest/unsubscribe',
+          HttpMethod: 'POST',
+          ThrottlingBurstLimit: 5,
+          ThrottlingRateLimit: 10,
         },
         // T-B2: GET /pay-reference — dual-authenticated (worker+employer)
         // recommended-pay lookup. Modest throttle: read-only against a
