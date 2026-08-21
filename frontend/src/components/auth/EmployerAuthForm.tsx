@@ -32,6 +32,17 @@ type Step = 'login' | 'signup' | 'confirm' | 'forgot_request' | 'forgot_confirm'
 type ConfirmOrigin = 'signup' | 'signin';
 
 /**
+ * Result of a resend attempt. `skipped` means the cooldown swallowed the call —
+ * distinct from `sent` because it must NOT restart the cooldown (that would let
+ * repeated clicks extend it forever), and distinct from `failed` because the
+ * user's newest code is still on its way, so nothing is wrong.
+ */
+type ResendOutcome =
+    | { status: 'sent' }
+    | { status: 'skipped' }
+    | { status: 'failed'; key: string };
+
+/**
  * Client-side gap between resend requests. Cognito's real cap is 5 resends per
  * user per hour, which this cannot enforce — it exists so a user cannot spend
  * that budget on double-clicks before the first email has even landed.
@@ -118,19 +129,29 @@ export default function EmployerAuthForm() {
     });
 
     /**
-     * Asks Cognito for a new confirmation code. Returns `null` on success, or
-     * the message key describing the failure — never throws, because every
-     * caller here needs the user to keep moving whether or not the resend
-     * landed. A user who already has a valid code in their inbox must still
-     * reach the input for it.
+     * Asks Cognito for a new confirmation code — the single funnel for all
+     * three entry points (the two recovery links, and the confirm step's own
+     * Resend button), so the cooldown cannot be bypassed by taking a different
+     * route to the same call.
+     *
+     * `skipped` is not a failure: Cognito's cap is 5 resends per user per hour,
+     * and a code sent seconds ago is still the newest one. Without a guard here,
+     * clicking a recovery link a few times — or retrying a sign-in that keeps
+     * failing — would spend that whole budget and lock the user out of the only
+     * recovery path they have for an hour.
+     *
+     * It never throws: every caller needs the user to keep moving whether or
+     * not the resend landed, because someone who already has a valid code must
+     * still reach the input for it.
      */
-    const requestNewCode = async (targetEmail: string): Promise<string | null> => {
+    const requestNewCode = async (targetEmail: string): Promise<ResendOutcome> => {
+        if (resendCooldown > 0 || isResending) return { status: 'skipped' };
         setIsResending(true);
         try {
             await employerResendConfirmationCode(targetEmail);
-            return null;
+            return { status: 'sent' };
         } catch (err) {
-            return resendErrorKey(err);
+            return { status: 'failed', key: resendErrorKey(err) };
         } finally {
             setIsResending(false);
         }
@@ -148,23 +169,29 @@ export default function EmployerAuthForm() {
      * login where the sentence ("already confirmed — sign in") matches the
      * screen they are looking at.
      */
-    const enterRecoveryConfirm = (targetEmail: string, resendError: string | null) => {
+    const enterRecoveryConfirm = (targetEmail: string, outcome: ResendOutcome) => {
         setEmail(targetEmail);
         setResetSuccess(false);
-        if (resendError === 'errors.already_confirmed') {
+        if (outcome.status === 'failed' && outcome.key === 'errors.already_confirmed') {
             goToStep('login');
-            setError(t(resendError));
+            setError(t(outcome.key));
             return;
         }
         setConfirmationCode('');
         setConfirmOrigin('signin');
         goToStep('confirm');
-        if (resendError) {
-            setError(t(resendError));
+        if (outcome.status === 'failed') {
+            setError(t(outcome.key));
+            // A refused resend still spent an attempt against the hourly cap,
+            // so hold the button rather than inviting an immediate retry.
+            setResendCooldown(RESEND_COOLDOWN_SECONDS);
             return;
         }
+        // 'sent' and 'skipped' both mean the newest code is already on its way,
+        // so the same confirmation is true for both — but only a call that
+        // actually went out restarts the cooldown.
         setResendSuccess(true);
-        setResendCooldown(RESEND_COOLDOWN_SECONDS);
+        if (outcome.status === 'sent') setResendCooldown(RESEND_COOLDOWN_SECONDS);
     };
 
     const handleSignIn = async () => {
@@ -222,17 +249,19 @@ export default function EmployerAuthForm() {
         enterRecoveryConfirm(targetEmail, await requestNewCode(targetEmail));
     };
 
-    /** Resend from the confirm step itself, behind the cooldown. */
+    /** Resend from the confirm step itself. The cooldown lives in `requestNewCode`. */
     const handleResendCode = async () => {
         setError(null);
         setResendSuccess(false);
-        if (resendCooldown > 0 || isResending) return;
-        const resendError = await requestNewCode(email);
-        if (resendError) {
-            setError(t(resendError));
-            // A refused resend still burned an attempt against the hourly cap,
-            // so hold the button — except when there is nothing left to resend.
-            if (resendError !== 'errors.already_confirmed') setResendCooldown(RESEND_COOLDOWN_SECONDS);
+        const outcome = await requestNewCode(email);
+        // The cooldown label is already on screen explaining the wait, so a
+        // skipped call needs no second message.
+        if (outcome.status === 'skipped') return;
+        if (outcome.status === 'failed') {
+            setError(t(outcome.key));
+            // Already-confirmed is the one refusal with nothing left to resend,
+            // so it does not hold a button the user should stop using anyway.
+            if (outcome.key !== 'errors.already_confirmed') setResendCooldown(RESEND_COOLDOWN_SECONDS);
             return;
         }
         // The old code may still be live, and we cannot promise either way, so
@@ -566,7 +595,10 @@ export default function EmployerAuthForm() {
                             )}
                         </div>
                         {resendSuccess && (
-                            <InlineFeedback tone="success">{t('code_sent', { email })}</InlineFeedback>
+                            // Normalised the same way the resend normalised it, so the
+                            // banner shows the address the code actually went to
+                            // rather than the casing the user happened to type.
+                            <InlineFeedback tone="success">{t('code_sent', { email: email.trim().toLowerCase() })}</InlineFeedback>
                         )}
                         {error && <FormError>{error}</FormError>}
                         <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4} loading={isLoading} loadingLabel={tCommon('loading')}>

@@ -16,12 +16,15 @@ export function authErrorKey(err: unknown): string {
   if (code === 'LimitExceededException' || code === 'TooManyRequestsException') return 'errors.too_many_attempts';
   if (code === 'UserNotFoundException') return 'errors.account_not_found';
   if (code === 'NotAuthorizedException') return 'errors.invalid_credentials';
-  // Cognito raises this when the password was right but the account was never
-  // confirmed. `preventUserExistenceErrors: true` does NOT mask it, so it
+  // Cognito raises this when the credentials were right but the account was
+  // never confirmed. `preventUserExistenceErrors: true` does NOT mask it, so it
   // reaches the browser and needs a sentence of its own — without one, a user
   // who simply missed the confirmation email was told "we could not create the
-  // account", which describes nothing that happened. Reachable from employer
-  // sign-in and from the post-confirm sign-in inside `handleConfirm`.
+  // account", which describes nothing that happened.
+  //
+  // `EmployerAuthForm` intercepts this key to start its recovery flow instead
+  // of rendering it, so the employer-side copy is a fallback; the worker form
+  // renders it directly.
   if (code === 'UserNotConfirmedException') return 'errors.account_not_confirmed';
 
   if (code === 'InvalidParameterException') {
