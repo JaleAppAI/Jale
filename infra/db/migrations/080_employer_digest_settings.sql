@@ -19,8 +19,15 @@
 -- screen) must never by itself start sending mail.
 --
 -- `send_hour_local` + `timezone` together mean "send at this wall-clock hour in
--- this employer's own zone". The producer runs hourly and asks the database
--- which rows match; see jale_digest_internal.due_digest_employers below.
+-- this employer's own zone". The producer sweeps every 15 MINUTES and asks the
+-- database which rows match; see jale_digest_internal.due_digest_employers
+-- below. The hour predicate is therefore true for up to FOUR consecutive
+-- sweeps within the matching local hour, and it is the local-date watermark --
+-- not the hour match -- that makes a digest at-most-once per local day: once
+-- the producer records last_sent_at, the remaining sweeps in that hour see a
+-- watermark whose local date equals p_now's and skip the row. Exactly-once
+-- therefore depends on the producer committing the watermark; the hour
+-- predicate alone would send four times.
 -- `language` is the digest's copy language, matching the platform's bilingual
 -- en/es contract (same two-value CHECK shape as elsewhere in the schema).
 --
@@ -114,12 +121,22 @@
 --
 -- The role-membership dance (creation guard -> GRANT ... WITH ADMIN TRUE,
 -- INHERIT FALSE, SET FALSE -> temporary SET TRUE -> SET FALSE -> REVOKE ...
--- GRANTED BY jale_admin) is transcribed from 036 rather than reinvented: it is
--- load-bearing precisely because it lands on the same end state under a
--- superuser creator (the Docker testbed, where CREATE ROLE by a superuser
--- records no automatic creator membership) and under a non-superuser
--- jale_admin creator (RDS, where PostgreSQL 16 does record one). Only the
--- identifiers differ from 036.
+-- GRANTED BY jale_admin) is transcribed from 036 rather than reinvented, and
+-- like 036 it establishes exactly ONE explicit creator ADMIN row that never
+-- retains SET or INHERIT, on both plain PostgreSQL 16 and AWS RDS
+-- PostgreSQL 16. The creating role is a non-superuser jale_admin with
+-- CREATEROLE in BOTH environments -- RDS's master user is a member of
+-- rds_superuser but is not rolsuper, and the local testbed creates the same
+-- NOSUPERUSER CREATEROLE NOBYPASSRLS owner
+-- (infra/db/local/bootstrap-testbed.sh) and applies the chain as it -- so the
+-- automatic creator membership PostgreSQL 16 records (grantor = the bootstrap
+-- superuser) is present either way, and the cleanup below removes only the
+-- extra self-grant. Only the identifiers differ from 036.
+--
+-- The end state is asserted in the terminal verification block: a second
+-- membership row carrying set_option would let jale_admin SET ROLE to the
+-- enumerator and read every employer's row cross-tenant, so that assertion is
+-- the actual guard, not documentation.
 --
 -- The enumerator's read of users is column-scoped to exactly
 -- (id, cognito_sub, email, user_type) -- the four columns the producer needs to
@@ -385,30 +402,63 @@ SET LOCAL ROLE jale_digest_enumerator;
 DROP FUNCTION IF EXISTS jale_digest_internal.due_digest_employers(TIMESTAMPTZ);
 -- Answers "which employers are due a digest at instant p_now?".
 --
--- The producer runs hourly with no employer identity, so it cannot satisfy
--- employer_digest_settings_self. This function is SECURITY DEFINER, owned by
--- jale_digest_enumerator, and therefore evaluates under the USING(true)
--- policies granted above -- the only cross-tenant read in the digest feature,
--- and it returns nothing but the fields needed to render and address a digest.
+-- The producer sweeps every 15 minutes with no employer identity, so it cannot
+-- satisfy employer_digest_settings_self. This function is SECURITY DEFINER,
+-- owned by jale_digest_enumerator, and therefore evaluates under the
+-- USING(true) policies granted above -- the only cross-tenant read in the
+-- digest feature, and it returns nothing but the fields needed to render,
+-- address, and unsubscribe from a digest.
+--
+-- unsubscribe_token_version is returned so the producer can mint the
+-- one-click unsubscribe token from (employer_id, token_version) without a
+-- second per-employer query back through this same privilege boundary.
 --
 -- Both comparisons deliberately convert to the row's OWN zone:
 --   * the hour match reads the wall-clock hour in s.timezone, so 08:00 means
 --     08:00 in New York for one employer and 08:00 in Los Angeles for another,
---     at two different UTC instants; and
+--     at two different UTC instants. At a 15-minute sweep cadence the hour
+--     predicate is true for up to four consecutive sweeps; see the header --
+--     the watermark, not the hour, is what makes the digest at-most-once.
 --   * the watermark compares LOCAL dates, not UTC dates. Comparing UTC dates
 --     would let an employer whose local day has not rolled over yet receive a
 --     second digest (or skip one) whenever their offset straddles UTC midnight.
 -- Neither comparison consults the session TimeZone GUC, so the producer's
 -- connection settings cannot change who is due.
+--
+-- ── Why the MATERIALIZED pre-join on pg_timezone_names ───────────
+-- `AT TIME ZONE <unlisted zone>` does NOT return NULL, it RAISES (22023,
+-- 'time zone "..." not recognized'). Because this function returns a set, a
+-- single unusable row would abort the whole RETURN QUERY and every employer
+-- would miss their digest -- one bad row causing a total outage. That is not
+-- hypothetical: it is exactly the tzdata-shrink case the timezone-trigger
+-- comment above describes (Debian trixie moved the link names into
+-- tzdata-legacy), where a zone that was valid when it was stored stops being
+-- listed after an OS upgrade.
+--
+-- Joining to pg_timezone_names first turns that outage into a per-row skip:
+-- an employer whose zone is no longer listed is silently omitted, everyone
+-- else still gets their digest. Operators should alarm on enabled rows that
+-- this join drops; losing one employer quietly is the lesser failure, but it
+-- is still a failure.
+--
+-- MATERIALIZED is load-bearing, not decoration. Verified on PostgreSQL 16.14:
+-- with a plain (inlinable) CTE the planner still hoists the
+-- date_part(... AT TIME ZONE s.timezone) predicate to before the join and the
+-- statement raises anyway. MATERIALIZED fences the CTE so the filter provably
+-- runs first. pg_timezone_names.name is unique, so the inner join cannot fan
+-- out and duplicate an employer (a duplicate here would mean a duplicate
+-- email). Cost is one tz-database scan per call (~14ms), which is nothing at a
+-- 15-minute cadence.
 CREATE FUNCTION jale_digest_internal.due_digest_employers(p_now TIMESTAMPTZ)
 RETURNS TABLE (
-  employer_id     uuid,
-  cognito_sub     text,
-  email           text,
-  send_hour_local smallint,
-  timezone        text,
-  language        text,
-  last_sent_at    timestamptz
+  employer_id               uuid,
+  cognito_sub               text,
+  email                     text,
+  send_hour_local           smallint,
+  timezone                  text,
+  language                  text,
+  last_sent_at              timestamptz,
+  unsubscribe_token_version smallint
 )
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -416,16 +466,21 @@ SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
   RETURN QUERY
-  SELECT s.employer_id, u.cognito_sub, u.email, s.send_hour_local,
-         s.timezone, s.language, s.last_sent_at
-    FROM public.employer_digest_settings s
-    JOIN public.users u ON u.id = s.employer_id
-   WHERE s.enabled
-     AND u.user_type = 'employer'
-     AND date_part('hour', p_now AT TIME ZONE s.timezone) = s.send_hour_local
+  WITH listed AS MATERIALIZED (
+    SELECT s.*
+      FROM public.employer_digest_settings s
+      JOIN pg_catalog.pg_timezone_names tz ON tz.name = s.timezone
+     WHERE s.enabled
+  )
+  SELECT l.employer_id, u.cognito_sub, u.email, l.send_hour_local,
+         l.timezone, l.language, l.last_sent_at, l.unsubscribe_token_version
+    FROM listed l
+    JOIN public.users u ON u.id = l.employer_id
+   WHERE u.user_type = 'employer'
+     AND date_part('hour', p_now AT TIME ZONE l.timezone) = l.send_hour_local
      AND (
-       s.last_sent_at IS NULL
-       OR (s.last_sent_at AT TIME ZONE s.timezone)::date < (p_now AT TIME ZONE s.timezone)::date
+       l.last_sent_at IS NULL
+       OR (l.last_sent_at AT TIME ZONE l.timezone)::date < (p_now AT TIME ZONE l.timezone)::date
      );
 END;
 $fn$;
@@ -478,9 +533,17 @@ DO $$
 DECLARE
   helper pg_roles%ROWTYPE;
   expected_column RECORD;
-  policy_name NAME;
+  expected_policy RECORD;
   definer_name NAME;
+  definer_oid OID;
+  definer_owner NAME;
+  definer_secdef BOOLEAN;
+  definer_config TEXT[];
+  definer_count INTEGER;
   blocked_role NAME;
+  enumerator_users_select TEXT[];
+  enumerator_settings_update TEXT[];
+  enumerator_priv_types TEXT[];
 BEGIN
   IF to_regclass('public.employer_digest_settings') IS NULL THEN
     RAISE EXCEPTION 'employer_digest_settings table missing';
@@ -546,37 +609,54 @@ BEGIN
     RAISE EXCEPTION 'employer_digest_settings must have RLS ENABLE + FORCE';
   END IF;
 
-  FOREACH policy_name IN ARRAY ARRAY[
-    'employer_digest_settings_self',
-    'employer_digest_settings_digest_enumerator_select',
-    'employer_digest_settings_digest_enumerator_update'
-  ]::NAME[] LOOP
+  -- Every policy this migration creates, pinned by SHAPE and not merely by
+  -- name: polcmd (so a policy cannot be silently re-scoped from SELECT to ALL)
+  -- and polroles (so it cannot be widened to another role or to PUBLIC).
+  -- polcmd codes: 'r' SELECT, 'a' INSERT, 'w' UPDATE, '*' ALL.
+  --
+  -- expect_qual / expect_withcheck are pinned only where the expression is the
+  -- literal `true` -- that is the security-relevant part of a USING(true)
+  -- helper policy. They are left NULL for employer_digest_settings_self (whose
+  -- qual is the cognito_sub subquery) and for email_outbox_admin_insert:
+  -- matching Postgres's re-rendered expression text for those would be brittle
+  -- without adding real safety, and no sibling migration does it.
+  FOR expected_policy IN
+    SELECT * FROM (VALUES
+      ('employer_digest_settings', 'employer_digest_settings_self',
+       '*', 'jale_admin',             NULL::TEXT, NULL::TEXT),
+      ('employer_digest_settings', 'employer_digest_settings_digest_enumerator_select',
+       'r', 'jale_digest_enumerator', 'true',     NULL::TEXT),
+      ('employer_digest_settings', 'employer_digest_settings_digest_enumerator_update',
+       'w', 'jale_digest_enumerator', 'true',     'true'),
+      ('users',                    'users_digest_enumerator_select',
+       'r', 'jale_digest_enumerator', 'true',     NULL::TEXT),
+      -- 037 shipped SELECT + UPDATE policies for jale_admin only, so without
+      -- this INSERT policy the producer's outbox write fails under FORCE RLS.
+      ('email_outbox',             'email_outbox_admin_insert',
+       'a', 'jale_admin',             NULL::TEXT, NULL::TEXT)
+    ) AS t(relname, polname, polcmd, polrole, expect_qual, expect_withcheck)
+  LOOP
     IF NOT EXISTS (
       SELECT 1 FROM pg_policy p
       JOIN pg_class rel ON rel.oid = p.polrelid
-      WHERE rel.relname = 'employer_digest_settings' AND p.polname = policy_name
+      JOIN pg_namespace n ON n.oid = rel.relnamespace
+      WHERE n.nspname = 'public'
+        AND rel.relname = expected_policy.relname
+        AND p.polname = expected_policy.polname
+        AND p.polcmd::TEXT = expected_policy.polcmd
+        AND p.polroles = ARRAY[(
+              SELECT oid FROM pg_roles WHERE rolname = expected_policy.polrole
+            )]
+        AND (expected_policy.expect_qual IS NULL
+             OR pg_get_expr(p.polqual, p.polrelid) = expected_policy.expect_qual)
+        AND (expected_policy.expect_withcheck IS NULL
+             OR pg_get_expr(p.polwithcheck, p.polrelid) = expected_policy.expect_withcheck)
     ) THEN
-      RAISE EXCEPTION 'employer_digest_settings policy % missing', policy_name;
+      RAISE EXCEPTION 'policy %.% missing or wrong shape (expected cmd=%, role=%)',
+        expected_policy.relname, expected_policy.polname,
+        expected_policy.polcmd, expected_policy.polrole;
     END IF;
   END LOOP;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policy p
-    JOIN pg_class rel ON rel.oid = p.polrelid
-    WHERE rel.relname = 'users' AND p.polname = 'users_digest_enumerator_select'
-  ) THEN
-    RAISE EXCEPTION 'users_digest_enumerator_select policy missing';
-  END IF;
-
-  -- email_outbox INSERT policy for jale_admin (037 shipped SELECT + UPDATE
-  -- only, so without this the producer's INSERT fails under FORCE RLS).
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policy p
-    JOIN pg_class rel ON rel.oid = p.polrelid
-    WHERE rel.relname = 'email_outbox' AND p.polname = 'email_outbox_admin_insert'
-  ) THEN
-    RAISE EXCEPTION 'email_outbox_admin_insert policy missing';
-  END IF;
 
   -- Both triggers present as real (non-internal) triggers.
   IF NOT EXISTS (
@@ -597,17 +677,57 @@ BEGIN
     RAISE EXCEPTION 'employer_digest_settings_timezone_iana trigger missing';
   END IF;
 
-  -- Both definer functions exist, in the private schema, SECURITY DEFINER.
+  -- The private schema must not be reachable by PUBLIC (036:249-257 shape).
+  IF EXISTS (
+    SELECT 1 FROM pg_namespace n,
+      LATERAL aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) acl
+    WHERE n.nspname = 'jale_digest_internal' AND acl.grantee = 0
+  ) THEN
+    RAISE EXCEPTION 'jale_digest_internal is reachable by PUBLIC';
+  END IF;
+
+  -- Exactly the two intended functions live in the private schema -- a stray
+  -- third definer function there would inherit the same cross-tenant reach.
+  SELECT count(*) INTO definer_count
+    FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace
+   WHERE n.nspname = 'jale_digest_internal';
+  IF definer_count <> 2 THEN
+    RAISE EXCEPTION 'jale_digest_internal holds % functions, expected exactly 2', definer_count;
+  END IF;
+
+  -- Both definer functions: present, owned by the enumerator, SECURITY
+  -- DEFINER, search_path pinned, not PUBLIC-executable, executable by
+  -- jale_admin. prosecdef alone is not enough -- a SECURITY DEFINER function
+  -- owned by the wrong role runs with the wrong privileges, and an unpinned
+  -- search_path on a definer function is the classic hijack vector.
   FOREACH definer_name IN ARRAY ARRAY[
     'due_digest_employers', 'unsubscribe_employer'
   ]::NAME[] LOOP
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_proc f
+    SELECT f.oid, owner.rolname, f.prosecdef, f.proconfig
+      INTO definer_oid, definer_owner, definer_secdef, definer_config
+      FROM pg_proc f
       JOIN pg_namespace n ON n.oid = f.pronamespace
-      WHERE n.nspname = 'jale_digest_internal' AND f.proname = definer_name
-        AND f.prosecdef
+      JOIN pg_roles owner ON owner.oid = f.proowner
+     WHERE n.nspname = 'jale_digest_internal' AND f.proname = definer_name;
+
+    IF NOT FOUND
+       OR definer_owner <> 'jale_digest_enumerator'
+       OR NOT definer_secdef
+       OR definer_config IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']::TEXT[] THEN
+      RAISE EXCEPTION 'jale_digest_internal.% definer invariant failed (owner/SECURITY DEFINER/search_path)',
+        definer_name;
+    END IF;
+
+    IF EXISTS (
+      SELECT 1 FROM pg_proc f,
+        LATERAL aclexplode(COALESCE(f.proacl, acldefault('f', f.proowner))) acl
+      WHERE f.oid = definer_oid AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
     ) THEN
-      RAISE EXCEPTION 'jale_digest_internal.% missing or not SECURITY DEFINER', definer_name;
+      RAISE EXCEPTION 'jale_digest_internal.% is EXECUTE-able by PUBLIC', definer_name;
+    END IF;
+
+    IF NOT has_function_privilege('jale_admin', definer_oid, 'EXECUTE') THEN
+      RAISE EXCEPTION 'jale_admin missing EXECUTE on jale_digest_internal.%', definer_name;
     END IF;
   END LOOP;
 
@@ -665,6 +785,50 @@ BEGIN
     RAISE EXCEPTION 'jale_digest_enumerator employer_digest_settings privilege invariant failed';
   END IF;
 
+  -- EXACT column-grant arrays (036:196-211 shape), not spot probes: a future
+  -- widening GRANT must fail this block rather than slip through because
+  -- nobody thought to add a probe for the new column.
+  --
+  -- Scoped by table_name AND privilege_type deliberately. A table-level
+  -- GRANT SELECT expands into one row per column in
+  -- information_schema.column_privileges (verified on PG 16.14), so the
+  -- employer_digest_settings SELECT slice is every column and pinning it as a
+  -- literal list would break on any future ADD COLUMN. The two slices pinned
+  -- here are the ones that carry the security claim: which four users columns
+  -- are readable, and which single settings column is writable.
+  SELECT array_agg(column_name::TEXT ORDER BY column_name::TEXT)
+    INTO enumerator_users_select
+    FROM information_schema.column_privileges
+   WHERE grantee = 'jale_digest_enumerator' AND table_schema = 'public'
+     AND table_name = 'users' AND privilege_type = 'SELECT';
+  IF enumerator_users_select IS DISTINCT FROM
+     ARRAY['cognito_sub', 'email', 'id', 'user_type']::TEXT[] THEN
+    RAISE EXCEPTION 'jale_digest_enumerator exact users SELECT column grants changed: %',
+      COALESCE(enumerator_users_select::TEXT, '<none>');
+  END IF;
+
+  SELECT array_agg(column_name::TEXT ORDER BY column_name::TEXT)
+    INTO enumerator_settings_update
+    FROM information_schema.column_privileges
+   WHERE grantee = 'jale_digest_enumerator' AND table_schema = 'public'
+     AND table_name = 'employer_digest_settings' AND privilege_type = 'UPDATE';
+  IF enumerator_settings_update IS DISTINCT FROM ARRAY['enabled']::TEXT[] THEN
+    RAISE EXCEPTION 'jale_digest_enumerator exact employer_digest_settings UPDATE column grants changed: %',
+      COALESCE(enumerator_settings_update::TEXT, '<none>');
+  END IF;
+
+  -- And no privilege KIND beyond those two on either table, which catches a
+  -- widening INSERT/DELETE/REFERENCES grant without hard-coding every column.
+  SELECT array_agg(DISTINCT privilege_type::TEXT ORDER BY privilege_type::TEXT)
+    INTO enumerator_priv_types
+    FROM information_schema.column_privileges
+   WHERE grantee = 'jale_digest_enumerator' AND table_schema = 'public'
+     AND table_name IN ('users', 'employer_digest_settings');
+  IF enumerator_priv_types IS DISTINCT FROM ARRAY['SELECT', 'UPDATE']::TEXT[] THEN
+    RAISE EXCEPTION 'jale_digest_enumerator holds unexpected privilege kinds: %',
+      COALESCE(enumerator_priv_types::TEXT, '<none>');
+  END IF;
+
   -- No other service role gets anything on this table.
   FOREACH blocked_role IN ARRAY ARRAY[
     'jale_whatsapp', 'jale_matching', 'jale_billing'
@@ -698,6 +862,38 @@ BEGIN
     SELECT 1 FROM pg_catalog.pg_timezone_names WHERE name = 'Zzz/Definitely_Not_A_Zone'
   ) THEN
     RAISE EXCEPTION 'pg_timezone_names matched a nonexistent zone -- the timezone trigger cannot be trusted';
+  END IF;
+
+  -- ── Creator-membership end state (036:281-300, transcribed) ────
+  -- THE load-bearing assertion of the whole role dance, and on RDS the only
+  -- thing that checks it (no Jest runs there). Exactly ONE pg_auth_members row
+  -- may reference jale_digest_enumerator, and it must be the jale_admin
+  -- creator ADMIN row with neither INHERIT nor SET.
+  --
+  -- A surviving second row carrying set_option would let jale_admin
+  -- `SET ROLE jale_digest_enumerator` and then read EVERY employer's settings
+  -- row directly under the USING(true) policies -- i.e. a standing
+  -- cross-tenant read, which is precisely what routing all access through the
+  -- two definer functions exists to prevent. inherit_option would be worse
+  -- still: the enumerator's privileges would apply without any SET ROLE at all.
+  IF (SELECT count(*) FROM pg_auth_members membership
+       JOIN pg_roles granted ON granted.oid = membership.roleid
+       JOIN pg_roles member ON member.oid = membership.member
+      WHERE granted.rolname = 'jale_digest_enumerator'
+         OR member.rolname = 'jale_digest_enumerator') <> 1
+     OR NOT EXISTS (
+       SELECT 1 FROM pg_auth_members membership
+       JOIN pg_roles granted ON granted.oid = membership.roleid
+       JOIN pg_roles member ON member.oid = membership.member
+       JOIN pg_roles grantor ON grantor.oid = membership.grantor
+      WHERE granted.rolname = 'jale_digest_enumerator'
+        AND member.rolname = 'jale_admin'
+        AND membership.admin_option
+        AND NOT membership.inherit_option
+        AND NOT membership.set_option
+        AND grantor.rolsuper
+     ) THEN
+    RAISE EXCEPTION 'jale_digest_enumerator creator membership invariant failed';
   END IF;
 END;
 $$;
