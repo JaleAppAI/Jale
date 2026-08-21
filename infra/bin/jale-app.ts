@@ -16,6 +16,7 @@ import { AdminStack } from '../lib/stacks/admin-stack';
 import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
 import { BillingStack } from '../lib/stacks/billing-stack';
 import { ReferralsStack } from '../lib/stacks/referrals-stack';
+import { NotificationsStack } from '../lib/stacks/notifications-stack';
 import { FrontendStack } from '../lib/stacks/frontend-stack';
 import { resolveWhatsappStatusCallbackUrl } from '../lib/whatsapp-status-callback-url';
 
@@ -158,6 +159,7 @@ new ReferralsStack(app, 'JaleReferralsStack', {
   referralsDbSecret: database.referralsDbSecret,
   appDbSecret: database.dbSecret,
   api: api.api,
+  publicResource: api.publicResource,
   workerAuthorizer: api.workerAuthorizer,
   workerResource: api.workerResource,
   workerJobResource: api.workerJobResource,
@@ -166,6 +168,23 @@ new ReferralsStack(app, 'JaleReferralsStack', {
   // Same shared alarm topic as AiStack/WhatsAppStack -- see ReferralsStack's
   // alarmTopicArn prop doc for why this stack does NOT fail closed like
   // those two when the context/env var is absent.
+  alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
+});
+
+// NotificationsStack -- employer daily-digest producer plus the
+// unauthenticated one-click unsubscribe route. Must come AFTER ApiStack: it
+// consumes api.publicResource, and its route's Method resource lands in the
+// ApiStack template (same relationship ReferralsStack has).
+//
+// No dedicated security group or role secret: the producer is DB-only and runs
+// as jale_admin, so it reuses network.lambdaSg and database.dbSecret exactly
+// like Auth/Ai/Matching. See the stack header for why that is deliberate.
+new NotificationsStack(app, 'JaleNotificationsStack', {
+  env,
+  vpc: network.vpc,
+  lambdaSg: network.lambdaSg,
+  dbSecret: database.dbSecret,
+  publicResource: api.publicResource,
   alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
 });
 

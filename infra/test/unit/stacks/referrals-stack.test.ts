@@ -66,6 +66,9 @@ describe('ReferralsStack', () => {
       referralsDbSecret: database.referralsDbSecret,
       appDbSecret: database.dbSecret,
       api: api.api,
+      // /public is owned and exported by ApiStack now: this stack must reuse
+      // the node, never call addResource('public') itself.
+      publicResource: api.publicResource,
       workerAuthorizer: api.workerAuthorizer,
       workerResource: api.workerResource,
       workerJobResource: api.workerJobResource,

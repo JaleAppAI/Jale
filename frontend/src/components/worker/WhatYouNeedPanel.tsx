@@ -6,7 +6,7 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { visibleFieldKeys } from '@/lib/application-answers-form';
 import { matchCertProof, estimateApplyMinutes } from '@/lib/certification-match';
-import { REQUIREMENT_DOC_KEYS } from '@/lib/job-requirements';
+import { REQUIREMENT_DOC_KEYS, whatYouNeedHintKey, type WhatYouNeedHintKey } from '@/lib/job-requirements';
 import type { JobDetail, WorkerVaultDoc } from '@/lib/api/worker';
 
 /**
@@ -32,12 +32,28 @@ import type { JobDetail, WorkerVaultDoc } from '@/lib/api/worker';
 
 export type WhatYouNeedRowStatus = 'in_vault' | 'proof_in_vault' | 'proof_needed' | 'none';
 
-/** One doc/cert row's display data, pre-computed so the render below stays a straight map. */
+/**
+ * One doc/cert row's display data, pre-computed so the render below stays a
+ * straight map.
+ *
+ * `hintKey` is the row's second line -- what the job will actually ask of the
+ * worker for this item (upload / attest / never blocks), chosen by
+ * `whatYouNeedHintKey`. `undefined` means the row's own status line already
+ * says something more specific, so no hint renders at all. Only the key is
+ * carried, not the inputs it was derived from (`proof_required` &c.): the
+ * decision belongs to the helper, which is testable, and duplicating its
+ * inputs here would invite a second, drifting copy of the same rule in the
+ * view.
+ *
+ * Private on purpose: the exported `WhatYouNeedRowStatus` above is a public
+ * type other files consume, and is deliberately NOT widened for this.
+ */
 type Row = {
   key: string;
   label: string;
   tier: 'required' | 'optional';
   status: WhatYouNeedRowStatus;
+  hintKey: WhatYouNeedHintKey | undefined;
 };
 
 /**
@@ -79,12 +95,27 @@ export function WhatYouNeedPanel({
     return requiredDocs.includes(key) || optionalDocs.includes(key);
   });
 
-  const docRows: Row[] = docKeys.map((key) => ({
-    key,
-    label: tReq(`docs.${key}`),
-    tier: requiredDocs.includes(key) ? 'required' : 'optional',
-    status: vaultDocs && vaultDocs.some((d) => d.doc_type === key) ? 'in_vault' : 'none',
-  }));
+  const docRows: Row[] = docKeys.map((key) => {
+    const tier = requiredDocs.includes(key) ? 'required' : 'optional';
+    const status: WhatYouNeedRowStatus =
+      vaultDocs && vaultDocs.some((d) => d.doc_type === key) ? 'in_vault' : 'none';
+    return {
+      key,
+      label: tReq(`docs.${key}`),
+      tier,
+      status,
+      // `blockingError: false` -- this panel is a preview, never a gate (see
+      // this component's doc comment), so no row here can be in an error
+      // state to defer to.
+      hintKey: whatYouNeedHintKey({
+        kind: 'doc',
+        tier,
+        proofRequired: false,
+        satisfied: status === 'in_vault',
+        blockingError: false,
+      }),
+    };
+  });
 
   const certRows: Row[] = certs.map((cert) => {
     let status: WhatYouNeedRowStatus = 'none';
@@ -93,7 +124,19 @@ export function WhatYouNeedPanel({
       if (cert.proof_required) status = matched ? 'proof_in_vault' : 'proof_needed';
       else if (matched) status = 'in_vault';
     }
-    return { key: cert.name, label: cert.name, tier: cert.tier, status };
+    return {
+      key: cert.name,
+      label: cert.name,
+      tier: cert.tier,
+      status,
+      hintKey: whatYouNeedHintKey({
+        kind: 'cert',
+        tier: cert.tier,
+        proofRequired: cert.proof_required,
+        satisfied: status === 'in_vault' || status === 'proof_in_vault',
+        blockingError: false,
+      }),
+    };
   });
 
   const estimate = estimateApplyMinutes(questionCount, docKeys.length, certs.length);
@@ -145,16 +188,26 @@ function WhatYouNeedRowView({ row }: { row: Row }) {
   const t = useTranslations('worker_job_detail.what_you_need');
   const tReq = useTranslations('job_requirements');
   return (
-    <li className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
-      <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">{row.label}</span>
-      <span className="flex shrink-0 items-center gap-2">
-        <Badge tone={row.tier === 'required' ? 'info' : 'neutral'}>
-          {tReq(`states.${row.tier}`)}
-        </Badge>
-        {row.status === 'in_vault' ? <Badge tone="success">{t('in_vault')}</Badge> : null}
-        {row.status === 'proof_in_vault' ? <Badge tone="success">{t('proof_in_vault')}</Badge> : null}
-        {row.status === 'proof_needed' ? <Badge tone="warning">{t('proof_needed')}</Badge> : null}
-      </span>
+    <li className="px-3.5 py-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0 text-sm font-medium text-[var(--jale-ink)]">{row.label}</span>
+        <span className="flex shrink-0 items-center gap-2">
+          <Badge tone={row.tier === 'required' ? 'info' : 'neutral'}>
+            {tReq(`states.${row.tier}`)}
+          </Badge>
+          {row.status === 'in_vault' ? <Badge tone="success">{t('in_vault')}</Badge> : null}
+          {row.status === 'proof_in_vault' ? <Badge tone="success">{t('proof_in_vault')}</Badge> : null}
+          {row.status === 'proof_needed' ? <Badge tone="warning">{t('proof_needed')}</Badge> : null}
+        </span>
+      </div>
+      {/*
+        Second line: the Required/Optional badge above states the TIER, which
+        says nothing about the mechanism -- a "Required" certification may
+        want a file, or only the worker's word for it. This says which.
+      */}
+      {row.hintKey ? (
+        <p className="mt-0.5 text-xs text-[var(--jale-ink-2)]">{t(row.hintKey)}</p>
+      ) : null}
     </li>
   );
 }
