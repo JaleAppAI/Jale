@@ -17,6 +17,7 @@ on:
           - billing-prerequisites
           - referrals-prerequisites
           - referrals
+          - notifications
           - all
 
 permissions:
@@ -78,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
+          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
           admin_stack_list="JaleDatabaseStack JaleWhatsAppStack JaleAdminStack"
@@ -113,6 +114,31 @@ jobs:
                 # ReferralsStack must deploy together because the referral routes'
                 # Methods land in the ApiStack template. No --exclusively.
                 echo "deploy-stacks=JaleDatabaseStack JaleApiStack JaleReferralsStack" >> "$GITHUB_OUTPUT"
+                echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
+                ;;
+              notifications)
+                # Employer daily digest. ApiStack and NotificationsStack must
+                # deploy together for the same reason the referrals scope above
+                # does: the /public/employer-digest/unsubscribe Method (and the
+                # /employer/settings/digest Methods) land in the ApiStack
+                # template, so NO --exclusively. DatabaseStack is included
+                # because both Lambdas read the jale_admin DB secret it owns.
+                #
+                # Migration 080 is NOT applied by this scope -- production
+                # migrations go through the manual runbook, and this workflow
+                # hard-fails a push that touches infra/db/migrations/ at all.
+                # Apply 080 BEFORE dispatching this scope, or the producer will
+                # fail on every sweep with an undefined-function error.
+                #
+                # OPERATOR NOTE -- this scope is NOT narrow. Because there is no
+                # --exclusively, `cdk deploy` also walks JaleApiStack's
+                # dependencies, which today reach Referrals/Billing/Legal/
+                # WhatsApp/Documents/Auth/Matching/Ai -- effectively the whole
+                # backend. That is inherited from the `referrals` scope above,
+                # not introduced here, and it is the price of the Methods living
+                # in the ApiStack template. Expect a full-backend changeset diff
+                # and review it before confirming.
+                echo "deploy-stacks=JaleDatabaseStack JaleApiStack JaleNotificationsStack" >> "$GITHUB_OUTPUT"
                 echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
                 ;;
               admin)
