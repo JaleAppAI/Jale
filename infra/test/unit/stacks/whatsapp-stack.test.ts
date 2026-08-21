@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as s3 from 'aws-cdk-lib/aws-s3';
@@ -13,6 +15,16 @@ import { WhatsAppStack } from '../../../lib/stacks/whatsapp-stack';
 describe('WhatsAppStack', () => {
   let template: Template;
   let apiTemplate: Template;
+  // Task 15 (confirmed blocker): the processor Lambda's bundled asset
+  // directory on disk, used to verify the `nodeModules` esbuild-bundling
+  // override actually landed the real npm package next to the compiled
+  // handler — `nodeModules` has no representation in the CloudFormation
+  // template itself (Template.fromStack only sees the final Code.S3Key
+  // asset hash), so this is the only way to test it. jest-autoclean
+  // (jest.config.js's setupFilesAfterEnv) only wipes these temp directories
+  // in a file-level `afterAll`, so they're guaranteed to still be on disk
+  // for every test in this file.
+  let processorAssetDir: string;
 
   beforeAll(() => {
     const app = new cdk.App({
@@ -86,6 +98,12 @@ describe('WhatsAppStack', () => {
     });
     template = Template.fromStack(whatsapp);
     apiTemplate = Template.fromStack(api);
+
+    const functions = template.findResources('AWS::Lambda::Function');
+    const [, processorFn] = Object.entries(functions).find(([, r]: [string, any]) =>
+      /SQS processor/.test(r.Properties?.Description ?? '')) as [string, any];
+    const processorAssetHash = (processorFn.Properties.Code.S3Key as string).replace(/\.zip$/, '');
+    processorAssetDir = path.join(app.outdir, `asset.${processorAssetHash}`);
   });
 
   // ── SQS infrastructure ─────────────────────────────────────────
@@ -878,6 +896,108 @@ describe('event-driven outbox wake queues', () => {
       for (const r of resources) {
         expect(JSON.stringify(r)).not.toContain('nova-lite');
       }
+    });
+
+    // Task 15 (controller-discovered gap): the SQS processor Lambda calls
+    // Bedrock ConverseCommand for application-fill field extraction
+    // (lib/application-fill-extraction.ts's makeBedrockExtractionClient,
+    // wired in processor.ts) but — unlike ai-profile-writer above — had no
+    // BEDROCK_MODEL_ID env var and no bedrock IAM grant at all. In
+    // production every extraction turn would hit the
+    // `process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0'` fallback
+    // AND then fail AccessDenied, surfacing as 'bedrock_error' and a retry
+    // loop. Mirrors ai-profile-writer's env value and policy shape exactly.
+    test('Processor Lambda is pinned to the Claude Haiku 4.5 Bedrock inference profile', () => {
+      template.hasResourceProperties('AWS::Lambda::Function', {
+        Description: Match.stringLikeRegexp('SQS processor'),
+        Environment: {
+          Variables: Match.objectLike({
+            BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+          }),
+        },
+      });
+    });
+
+    // Scoped to the processor's OWN role (not "any role in the stack") and
+    // pinned to the exact 4 Haiku 4.5 ARNs — same role-scoping convention as
+    // the 'Processor Lambda role gets kms:GenerateDataKey*...' test below
+    // (processorFn.Properties.Role['Fn::GetAtt'][0] + filtering
+    // AWS::IAM::Policy by Roles[].Ref), and the same 4-ARN assertion shape
+    // as the ai-profile-writer bedrock:InvokeModel test above.
+    test('Processor Lambda role gets bedrock:InvokeModel scoped to the exact 4 Haiku 4.5 ARNs', () => {
+      const functions = template.findResources('AWS::Lambda::Function');
+      const [, processorFn] = Object.entries(functions).find(([, r]: [string, any]) =>
+        /SQS processor/.test(r.Properties?.Description ?? '')) as [string, any];
+      const roleLogicalId = processorFn.Properties.Role['Fn::GetAtt'][0];
+
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const rolePolicies = Object.values(policies).filter((p: any) =>
+        (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId));
+
+      const bedrockStatements = rolePolicies
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('bedrock:InvokeModel');
+        });
+
+      expect(bedrockStatements).toHaveLength(1);
+      const resources = bedrockStatements[0].Resource as any[];
+      expect(resources).toHaveLength(4);
+      expect(JSON.stringify(resources[0])).toContain('inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0');
+      expect(resources[1]).toBe('arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+      expect(JSON.stringify(resources[2])).toContain('foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+      expect(resources[3]).toBe('arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+      for (const r of resources) {
+        expect(JSON.stringify(r)).not.toContain('nova-lite');
+      }
+    });
+
+    // Task 15 (confirmed blocker, found after the IAM/env fix above):
+    // processor.ts -> lib/application-fill.ts -> lib/application-fill-
+    // extraction.ts imports '@aws-sdk/client-bedrock-runtime' at module top
+    // level, unconditionally. JaleLambdaFunction's default esbuild bundling
+    // externalizes ALL '@aws-sdk/*' packages (lambda-function.ts's
+    // `externalModules: ['pg-native', '@aws-sdk/*']`), assuming the Node
+    // 20.x Lambda runtime provides them -- untrue for client-bedrock-runtime
+    // (ai-profile-writer needs the identical `nodeModules` opt-in for the
+    // same package). Without it, the compiled bundle's bare
+    // `require('@aws-sdk/client-bedrock-runtime')` would throw "Cannot find
+    // module" at import time in production -- failing EVERY processor
+    // invocation, not just Bedrock-calling ones.
+    //
+    // `nodeModules` has no CloudFormation footprint (Template.fromStack only
+    // sees the final Code.S3Key asset hash), so this can only be verified by
+    // inspecting the real bundled asset directory on disk -- which the
+    // beforeAll block above locates via that same asset hash into
+    // `processorAssetDir`.
+    test('Processor Lambda bundle installs the real @aws-sdk/client-bedrock-runtime package (nodeModules opt-in)', () => {
+      const pkgJsonPath = path.join(
+        processorAssetDir, 'node_modules', '@aws-sdk', 'client-bedrock-runtime', 'package.json',
+      );
+      expect(fs.existsSync(pkgJsonPath)).toBe(true);
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+      expect(pkg.name).toBe('@aws-sdk/client-bedrock-runtime');
+
+      // The compiled index.js still has a bare require() for it (esbuild
+      // externalized it per lambda-function.ts's externalModules) -- proof
+      // the installed package above is actually what makes that require()
+      // resolve at runtime, not dead weight.
+      const indexJs = fs.readFileSync(path.join(processorAssetDir, 'index.js'), 'utf8');
+      expect(indexJs).toMatch(/require\(["']@aws-sdk\/client-bedrock-runtime["']\)/);
+    });
+
+    // @smithy/node-http-handler (also imported by
+    // makeBedrockExtractionClient, application-fill-extraction.ts) does NOT
+    // need a nodeModules entry: only 'pg-native' and '@aws-sdk/*' are
+    // externalModules (lambda-function.ts), so esbuild inlines
+    // '@smithy/*' packages directly into the bundle. Confirmed by asserting
+    // there's no bare require() for it in the compiled output -- if it were
+    // ever added to externalModules without a matching nodeModules entry,
+    // this would catch the same "Cannot find module" class of bug as above.
+    test('Processor Lambda bundle inlines @smithy/node-http-handler (not externalized)', () => {
+      const indexJs = fs.readFileSync(path.join(processorAssetDir, 'index.js'), 'utf8');
+      expect(indexJs).not.toMatch(/require\(["']@smithy\/node-http-handler["']\)/);
     });
 
     test('Processor Lambda has MEDIA_BUCKET_NAME env var', () => {

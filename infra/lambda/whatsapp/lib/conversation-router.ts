@@ -23,6 +23,11 @@ import {
   isJobsKeyword, parseTypedJobAction, normalizeCommandText, matchCommandFuzzy,
 } from './flows';
 import type { ConversationState, ProfileStateContext } from './flows';
+// Type-only: erased at compile time, so this creates no runtime dependency
+// on application-fill.ts (which itself imports real functions from this
+// module) -- see FillStateContext's own jsdoc for why that stays a
+// one-directional runtime edge.
+import type { FillStateContext } from './application-fill';
 
 // ── Conversation row shape (subset of the DB columns) ───────────
 //
@@ -272,15 +277,6 @@ export async function tryConversationRelay(
   return await relayWorkerFreeText(client, conv, msg, workerId, deps);
 }
 
-// `fill_application_id`/`fill_relay_override` belong to the application-fill
-// flow (Task 1-9), whose state_context fields have not yet been added to
-// ProfileStateContext in ./flows. Declared locally so this set-site can read
-// and write them without widening the shared type from this file.
-type FillAwareStateContext = ProfileStateContext & {
-  fill_application_id?: string;
-  fill_relay_override?: boolean;
-};
-
 /**
  * Set (or clear) the focused employer thread on the conversation row.
  *
@@ -297,6 +293,15 @@ type FillAwareStateContext = ProfileStateContext & {
  * employer instead of feeding the fill — so we arm a one-turn
  * `fill_relay_override` flag here. The fill dispatcher clears it after
  * relaying exactly one message (spec §4.2).
+ *
+ * FINAL-REVIEW Finding 1b: the override is armed ONLY when `conversationId`
+ * is a real thread id, never on a `conversationId === null` call (decline,
+ * the close-reason picker, `focus_closed`'s post-close clear). Those call
+ * sites focus NOTHING — arming the override there would flag the worker's
+ * next free-text message for relay with no focused thread to relay it TO,
+ * so `handleFillMessage`'s consume step returns `handled:false` and the
+ * message (e.g. the worker's actual field answer) is silently swallowed
+ * instead of either relaying or feeding the fill.
  */
 async function setFocusedConversation(
   client: PoolClient,
@@ -306,9 +311,9 @@ async function setFocusedConversation(
   deps: RouterDeps,
 ): Promise<void> {
   const { pending_picker: _drop, ...restContext } =
-    (conv.state_context ?? {}) as FillAwareStateContext;
-  const fillArmed = typeof restContext.fill_application_id === 'string';
-  const nextContext: FillAwareStateContext = fillArmed
+    (conv.state_context ?? {}) as FillStateContext;
+  const fillArmed = conversationId !== null && typeof restContext.fill_application_id === 'string';
+  const nextContext: FillStateContext = fillArmed
     ? { ...restContext, fill_relay_override: true }
     : restContext;
   await deps.updateConversation(client, conv.id, {

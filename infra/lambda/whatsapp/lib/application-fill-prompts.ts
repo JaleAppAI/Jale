@@ -255,8 +255,8 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
     es: 'Cambiaste a otra aplicacion de trabajo. Seguimos con las preguntas de este nuevo empleo.',
   },
   continue_other: {
-    en: 'You have another unfinished application. Do you want to continue it?\n\n1. Yes\n2. No\n\nReply with 1 or 2.',
-    es: 'Tienes otra aplicacion sin terminar. Quieres continuarla?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
+    en: 'You have another unfinished application for {{job_title}}. Do you want to continue it?\n\n1. Yes\n2. No\n\nReply with 1 or 2.',
+    es: 'Tienes otra aplicacion sin terminar para {{job_title}}. Quieres continuarla?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
   },
   exit_job_inactive: {
     en: 'This job is no longer active. We cannot continue with your application.',

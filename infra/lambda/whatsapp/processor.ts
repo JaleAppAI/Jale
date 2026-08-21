@@ -80,9 +80,13 @@ import {
   countRemainingRequirements,
   seedAnswersFromDefaults,
   promptNextStep,
+  handleFillMessage,
+  localizeDocList,
   type FillContext,
   type FillDeps,
+  type FillStateContext,
 } from './lib/application-fill';
+import { REPROMPT_COOLDOWN_MS } from './lib/onboarding-language';
 import { fillMessage } from './lib/application-fill-prompts';
 import { makeBedrockExtractionClient } from './lib/application-fill-extraction';
 import {
@@ -1358,6 +1362,73 @@ async function routeMessage(
     };
   }
 
+  // Task 10 (spec §6): once a worker is mid application-fill
+  // (`fill_application_id` set), the fill lane gets first refusal on every
+  // command that would otherwise land in the picker/help/support/profile/
+  // relay/jobs router below. `handleFillMessage` implements the full escape
+  // order itself (button/interactive payload, a picker digit while
+  // `pending_picker` is set, CHATS/CERRAR/help/support/profile, the exact
+  // jobs keyword, typed job actions, the one-turn relay-override) and
+  // returns `{handled:false}` for every one of them, so a worker with no
+  // fill armed never even enters this branch -- its routing below stays
+  // byte-identical to before this task.
+  //
+  // Task 11 widens the gate to ALSO fire when only `fill_offer_application_id`
+  // is set (no `fill_application_id`) -- the continue-other offer a
+  // completion arm can leave behind (`sendCompletionPrompt`,
+  // application-fill.ts). `handleFillMessage` resolves that case entirely
+  // itself (`resolveOfferOnlyTurn`): '1'/'si'/'yes' arms the offered
+  // application and prompts its first gap; anything else clears the offer
+  // and returns `{handled:false}` (one-shot, no nagging) -- same fall-through
+  // contract as every other `handled:false` escape below.
+  const fillStateContext = conv.state_context as unknown as FillStateContext | undefined;
+  const fillLaneArmed =
+    typeof fillStateContext?.fill_application_id === 'string'
+    || typeof fillStateContext?.fill_offer_application_id === 'string';
+  if (fillLaneArmed && conv.user_id) {
+    const fillResult = await handleFillMessage(client, buildFillCtx(conv), msg, buildFillDeps(conv));
+    if (fillResult.handled) return conv.user_id;
+    // handled:false => an escape/command/relay-override turn, or a
+    // declined/one-shot continue-other offer -- fall through to the normal
+    // routing below exactly as if no fill were armed.
+  }
+
+  const readyResult = await routeReadyWorkerCommands(client, conv, msg);
+
+  // Dispatch tail (Task 10): an escape above (picker resolution, help,
+  // support, profile, a CHATS/CERRAR relay, the jobs listing, a typed job
+  // action, or the relay-override's one free-text pass-through) already
+  // queued its OWN, unrelated reply by the time control reaches here. If the
+  // fill is STILL armed, the worker's pending question would otherwise go
+  // unanswered for the rest of the turn -- re-send it, cooldown-guarded by
+  // the same `fill_last_prompt_at`/`REPROMPT_COOLDOWN_MS` pair
+  // `promptNextStep` itself stamps, so two escapes inside the cooldown
+  // window produce exactly one re-prompt. Never reached for a
+  // `handled:true` seam result above (CANCELAR clears `fill_application_id`;
+  // every other `handled:true` path already queued its own next-step prompt
+  // this turn) -- that branch returns immediately, before `routeReadyWorkerCommands`
+  // (and therefore this check) ever runs.
+  if (typeof (conv.state_context as unknown as FillStateContext | undefined)?.fill_application_id === 'string') {
+    await maybeRepromptFill(client, conv, msg);
+  }
+
+  return readyResult;
+}
+
+/**
+ * Task 10: the picker/help/support/profile/relay/jobs router a ready
+ * worker's message falls into once button-payload routing, legal-prompt
+ * replies, and the command-payload unwrap (all self-identifying and
+ * unrelated to the fill lane) have already had their turn. Extracted from
+ * `routeMessage` so the fill-lane seam and its dispatch tail (both in
+ * `routeMessage`, immediately around this call) can wrap it without
+ * duplicating -- or otherwise disturbing -- the routing itself.
+ */
+async function routeReadyWorkerCommands(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<string | null> {
   if (conv.state_context?.pending_picker && parseDisambiguationPick(msg.body) !== null) {
     // Unbound sessions cannot pick — identity binding requires verified OTP.
     if (conv.user_id) {
@@ -1400,6 +1471,46 @@ async function routeMessage(
   // forced writeback when the run isn't handled), so 'idle' is the only
   // reachable state here now that the legacy state machine is gone.
   return await handleIdle(client, conv, msg);
+}
+
+/**
+ * Task 10: builds the `FillContext` for a seam/dispatch-tail call site
+ * where `jobId` isn't known upfront (unlike `handleJobAction`'s accept
+ * path, which already has it in hand). Safe to pass a placeholder: both
+ * `handleFillMessage` and `promptNextStep`/`computeNextStep` resolve
+ * `jobId` fresh from the DB before it is ever read (see `FillContext`'s own
+ * jsdoc in application-fill.ts) -- this initial value only matters as a
+ * fallback if that lookup somehow returns null, which cannot happen for a
+ * still-valid `fill_application_id`.
+ */
+function buildFillCtx(conv: ConversationRow): FillContext {
+  return {
+    conversationId: conv.id,
+    workerId: conv.user_id ?? '',
+    jobId: '',
+    lang: conv.language,
+    stateContext: conv.state_context as unknown as Record<string, unknown>,
+  };
+}
+
+/**
+ * Task 10 dispatch-tail helper: re-sends the CURRENT fill step's prompt,
+ * cooldown-guarded by `fill_last_prompt_at`/`REPROMPT_COOLDOWN_MS` (the same
+ * pair `sendNextStepPrompt`, application-fill.ts, itself stamps on every
+ * prompt it sends) so two escapes inside the cooldown window produce
+ * exactly one re-prompt.
+ */
+async function maybeRepromptFill(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: IncomingMessage,
+): Promise<void> {
+  const stateContext = conv.state_context as unknown as FillStateContext;
+  const lastPromptAt = stateContext.fill_last_prompt_at;
+  if (typeof lastPromptAt === 'number' && Date.now() - lastPromptAt < REPROMPT_COOLDOWN_MS) {
+    return;
+  }
+  await promptNextStep(client, buildFillCtx(conv), msg.messageSid, msg.from, buildFillDeps(conv));
 }
 
 // Processor-owned mutations injected into the conversation router module.
@@ -1914,6 +2025,26 @@ async function handleJobButton(
  * second DB round trip. `updateConversation`'s `state_context` column write
  * is a full JSONB replace (see that function), so the merge happens here,
  * not there.
+ *
+ * Bug fix (Task 11 review, Critical): this MUST mutate the existing
+ * `conv.state_context` object via `Object.assign`, never REASSIGN
+ * `conv.state_context` to a freshly spread object. `buildFillCtx` captures
+ * `stateContext: conv.state_context` (a reference) onto `FillContext` at the
+ * START of the turn; a reassignment here (`conv.state_context = {...}`)
+ * only repoints `conv`'s OWN property, leaving every already-built
+ * `FillContext.stateContext` -- e.g. `resolveOfferOnlyTurn`'s `ctx`, still
+ * in scope for its own `promptNextStep` call right after this write --
+ * aliased to the STALE pre-patch object. That is exactly how the offer-
+ * acceptance turn broke in production: the accept write set
+ * `fill_application_id` for the first time this turn, `ctx.stateContext`
+ * kept pointing at the old object that never had it, and the immediately
+ * following `promptNextStep` read `ctx.stateContext.fill_application_id`
+ * as `undefined` -- `computeNextStep(client, undefined)`'s `WHERE ja.id =
+ * NULL` then legitimately found no row and exited the worker as
+ * `application_gone`. `Object.assign(target, patch)` overwrites a key even
+ * when `patch`'s value is `null` (identical to what the old spread did --
+ * `null` is just another enumerable value), so patch semantics are
+ * unchanged; only object IDENTITY is preserved now.
  */
 function buildFillDeps(conv: ConversationRow): FillDeps {
   return {
@@ -1921,9 +2052,17 @@ function buildFillDeps(conv: ConversationRow): FillDeps {
     queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
     setRls: setInternalUserRlsContext,
     async updateStateContext(client, conversationId, patch) {
-      const merged = { ...(conv.state_context as unknown as Record<string, unknown>), ...patch };
-      await updateConversation(client, conversationId, { state_context: merged as unknown as ProfileStateContext });
-      conv.state_context = merged as unknown as ProfileStateContext;
+      // Defensive only (the DB column defaults to '{}', so this should
+      // never actually be null/undefined in practice) -- if it somehow
+      // were, this establishes the real, mutable object IN PLACE OF the
+      // missing one, once, so every FillContext already built against
+      // `conv.state_context` before this call still ends up sharing it.
+      if (!conv.state_context) {
+        conv.state_context = {} as unknown as ProfileStateContext;
+      }
+      const target = conv.state_context as unknown as Record<string, unknown>;
+      Object.assign(target, patch);
+      await updateConversation(client, conversationId, { state_context: target as unknown as ProfileStateContext });
     },
     nowMs: () => Date.now(),
     downloadMedia: async (mediaUrl: string) => {
@@ -2024,12 +2163,19 @@ async function handleJobAction(
         // forward note): pending_picker/fill_pending/fill_cert_more_pending
         // are cleared unconditionally at every fill entry, whether this is
         // a fresh arm, a same-application re-arm, or a switch to a
-        // different application.
+        // different application. FINAL-REVIEW Finding 1a/3:
+        // fill_relay_override/fill_offer_application_id are cleared here too
+        // -- this arm write is itself a fill ENTRY point, so a stale
+        // override or offer id left over from a previous fill's exit (or
+        // from before this fix, any exit at all) must not survive into the
+        // freshly-armed fill and swallow the worker's first answer here.
         await deps.updateStateContext(client, conv.id, {
           fill_application_id: applicationId,
           pending_picker: null,
           fill_pending: null,
           fill_cert_more_pending: null,
+          fill_relay_override: null,
+          fill_offer_application_id: null,
         });
 
         const isSwitch = previousApplicationId !== undefined && previousApplicationId !== applicationId;
@@ -2095,12 +2241,6 @@ async function handleJobAction(
   }
 }
 
-function localizeDocList(docTypes: string[], lang: Lang): string {
-  const labels: Record<string, Record<Lang, string>> = {
-    resume: { en: 'Resume', es: 'Resume' },
-    driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
-    // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
-    ssn: { en: 'SSN card / ITIN', es: 'Tarjeta SSN / ITIN' },
-  };
-  return docTypes.map((docType) => labels[docType]?.[lang] ?? docType).join(', ');
-}
+// localizeDocList moved to lib/application-fill.ts (Task 11) so its
+// completion-arm `web_handoff` append can reuse the same labels/fallback
+// this intro-arm append (above) uses -- imported at the top of this file.

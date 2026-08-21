@@ -72,6 +72,8 @@ import {
   recordWorkerConversationReply,
   openWorkerConversationFromButton,
   closeWorkerConversation,
+  declineWorkerConversationFromButton,
+  declineLatestWorkerConversationFromButtonText,
 } from '../../../../../lambda/lib/job-messaging';
 import { queueOutboxText } from '../../../../../lambda/whatsapp/lib/outbox';
 
@@ -753,6 +755,104 @@ describe('conversation:focus button', () => {
     const [sql] = mockQuery.mock.calls[0];
     expect(sql).toMatch(/job_conversations/);
     expect(sql).not.toMatch(/tos_version/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// FINAL-REVIEW Finding 1b: `setFocusedConversation` must arm
+// `fill_relay_override` ONLY when it is actually focusing a real thread
+// (`conversationId !== null`). Every call site below passes `null`
+// (decline, the close-reason picker resolution, `focus_closed`'s clear) --
+// none of them focuses anything, so arming the override there would flag
+// the worker's NEXT free-text message for relay with no focused thread to
+// relay it to: `handleFillMessage`'s consume step would then return
+// `handled:false` and the message (e.g. the worker's real field answer)
+// gets silently swallowed instead of either relaying or feeding the fill.
+// The three "armed when a fill is armed" tests above (CHATS pick,
+// conversation:focus button) all target a REAL conversationId and are
+// correctly unaffected by this fix -- these tests cover the complementary
+// null-conversationId call sites.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('setFocusedConversation null-focus call sites do not arm fill_relay_override (Finding 1b)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const FILL_APP_ID = '33333333-3333-3333-3333-333333333333';
+
+  it('decline via button: does NOT arm fill_relay_override even when a fill is armed', async () => {
+    (declineWorkerConversationFromButton as jest.Mock).mockResolvedValueOnce(true);
+    const conv = {
+      ...baseConv,
+      user_id: WORKER,
+      focused_job_conversation_id: CONV_A,
+      state_context: { fill_application_id: FILL_APP_ID },
+    };
+    const routed = await handleEmployerConversationButton(
+      client, conv, msg, { action: 'decline', conversationId: CONV_A }, deps);
+    expect(routed).toBeNull();
+    const focusClear = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusClear).toBeDefined();
+    expect(focusClear![2].focused_job_conversation_id).toBeNull();
+    expect('fill_relay_override' in (focusClear![2].state_context ?? {})).toBe(false);
+    // fill_application_id itself is untouched (only the override is at issue).
+    expect(focusClear![2].state_context?.fill_application_id).toBe(FILL_APP_ID);
+  });
+
+  it('decline via typed text: does NOT arm fill_relay_override even when a fill is armed', async () => {
+    (declineLatestWorkerConversationFromButtonText as jest.Mock).mockResolvedValueOnce(true);
+    const conv = {
+      ...baseConv,
+      user_id: WORKER,
+      focused_job_conversation_id: CONV_A,
+      state_context: { fill_application_id: FILL_APP_ID },
+    };
+    const routed = await handleEmployerConversationTextAction(client, conv, msg, 'decline', deps);
+    expect(routed).toBeNull();
+    const focusClear = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusClear).toBeDefined();
+    expect(focusClear![2].focused_job_conversation_id).toBeNull();
+    expect('fill_relay_override' in (focusClear![2].state_context ?? {})).toBe(false);
+  });
+
+  it('close-reason picker resolution: does NOT arm fill_relay_override even when a fill is armed', async () => {
+    (closeWorkerConversation as jest.Mock).mockResolvedValueOnce(true);
+    const conv = {
+      ...baseConv,
+      focused_job_conversation_id: CONV_A,
+      state_context: {
+        fill_application_id: FILL_APP_ID,
+        pending_picker: { kind: 'close_reason' as const, conversationId: CONV_A },
+      },
+    };
+    const result = await handlePickerResponse(client, conv, { ...msg, body: '1' }, WORKER, deps);
+    expect(result).toBe(WORKER);
+    const focusClear = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusClear).toBeDefined();
+    expect(focusClear![2].focused_job_conversation_id).toBeNull();
+    expect('fill_relay_override' in (focusClear![2].state_context ?? {})).toBe(false);
+  });
+
+  it('focus_closed auto-clear: does NOT arm fill_relay_override even when a fill is armed', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }) // tos check
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });                        // sendChatsPickerOrAutoFocus: no open threads
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce({ status: 'focus_closed' });
+
+    const conv = {
+      ...baseConv,
+      focused_job_conversation_id: 'old-closed-conv',
+      state_context: { fill_application_id: FILL_APP_ID },
+    };
+    const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
+    expect(routed).toBe(WORKER);
+
+    const focusClear = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2] && c[2].focused_job_conversation_id === null);
+    expect(focusClear).toBeDefined();
+    expect('fill_relay_override' in (focusClear![2].state_context ?? {})).toBe(false);
   });
 });
 

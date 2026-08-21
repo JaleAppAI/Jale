@@ -27,7 +27,7 @@ import type { PoolClient } from 'pg';
 import { randomUUID } from 'crypto';
 import { setInternalUserRlsContext } from '../../lib/db';
 import { DOC_TYPES, type PayInterval } from '../../lib/job-fields';
-import { validateApplicationAnswers } from '../../lib/application-answers';
+import { validateApplicationAnswers, EDUCATION_LEVELS } from '../../lib/application-answers';
 import {
   copyRequiredDocumentSnapshots,
   CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS,
@@ -42,7 +42,7 @@ import {
   type FillMessageKey,
 } from './application-fill-prompts';
 import { extractFieldAnswer, type ExtractionClient } from './application-fill-extraction';
-import type { IncomingMessage } from './conversation-router';
+import { isChatsKeyword, isCloseKeyword, type IncomingMessage } from './conversation-router';
 import { t, type Lang } from './templates';
 import { REPROMPT_COOLDOWN_MS } from './onboarding-language';
 import {
@@ -52,6 +52,14 @@ import {
   ALLOWED_DOCUMENT_TYPES,
   detectMediaCategory,
 } from './media';
+import {
+  isHelpCommand,
+  isSupportCommand,
+  isProfileCommand,
+  parseTypedJobAction,
+  normalizeCommandText,
+  type ProfileStateContext,
+} from './flows';
 
 export type NextStep =
   | { kind: 'field'; key: FillFieldKey; uncollectable: string[] }
@@ -186,13 +194,34 @@ export async function countRemainingRequirements(
   return { nFields, nDocs, uncollectable };
 }
 
+/**
+ * Localizes a list of uncollectable doc-type codes into a comma-joined,
+ * human-readable string for the `web_handoff` note's `{{doc}}` var. Task 11
+ * moves this here (from processor.ts, where Task 9's intro-arm append
+ * originated it) so the completion arm's OWN `web_handoff` append
+ * (`sendCompletionPrompt`) can reuse the exact same labels/fallback
+ * (`labels[docType]?.[lang] ?? docType`) instead of hand-rolling a second
+ * copy -- processor.ts now imports this instead of defining its own.
+ */
+export function localizeDocList(docTypes: string[], lang: Lang): string {
+  const labels: Record<string, Record<Lang, string>> = {
+    resume: { en: 'Resume', es: 'Resume' },
+    driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
+    // SSN is no longer offered for new jobs, but legacy jobs may still require it -- keep the label.
+    ssn: { en: 'SSN card / ITIN', es: 'Tarjeta SSN / ITIN' },
+  };
+  return docTypes.map((docType) => labels[docType]?.[lang] ?? docType).join(', ');
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Task 7: `handleFillMessage` -- field-step collection (parse, extract,
 // confirm). Task 8 adds document collection (media turns, doc-step free
 // text). Escapes/dispatch-order (Task 10) are still NOT implemented here --
 // structured as an early `{handled: false}` return so the processor falls
-// back to normal routing until that task lands. Complete/exit prompting
-// (Task 11) is a minimal placeholder (see `sendNextStepPrompt`).
+// back to normal routing until that task lands. Task 11 expands
+// `sendNextStepPrompt`'s complete/exit arms (see that function and its
+// `sendCompletionPrompt`/`sendExitPrompt` helpers) into real terminal
+// copy/scrub/offer behavior.
 //
 // INVARIANT (binding, from Task 6 review): `handleFillMessage` and
 // `promptNextStep` always run INSIDE the processor's per-turn transaction
@@ -201,7 +230,7 @@ export async function countRemainingRequirements(
 // worker_documents check) sticks for the rest of the turn, and why every
 // DB WRITE below runs after its own `deps.setRls(client, ctx.workerId)`
 // call (see `mergeAnswer`) -- job_applications reads (this file's own
-// `fetchApplicationJobId`, and `computeNextStep`'s SELECT) do not require
+// `fetchApplicationJobContext`, and `computeNextStep`'s SELECT) do not require
 // the GUC, matching `computeNextStep`'s own precedent; only the
 // worker_documents check and answer WRITES do.
 // ─────────────────────────────────────────────────────────────────────────
@@ -245,7 +274,7 @@ export interface FillDeps {
 
 /**
  * Per-turn fill context. `jobId` is NOT read from `stateContext` -- it is
- * resolved fresh every turn (see `fetchApplicationJobId`) from
+ * resolved fresh every turn (see `fetchApplicationJobContext`) from
  * `fill_application_id` and surfaced onto this object before any step
  * handling runs, so Task 8's doc writes (scoped by `job_id`) always see the
  * current value even if the worker switched applications mid-turn.
@@ -261,6 +290,14 @@ export interface FillContext {
   // (Task 8 -- see handleFillMediaTurn's jsdoc for why certification_doc
   // needs its OWN loop flag distinct from fill_pending)
   stateContext: Record<string, unknown>;
+  // Task 11: the CURRENT job's required_fields, surfaced (like `jobId`)
+  // during a text turn's step-5 refresh (`fetchApplicationJobContext`) --
+  // `undefined` whenever that refresh hasn't run (e.g. a promptNextStep call
+  // reached directly from processor.ts, or any test that doesn't populate
+  // it), in which case `finalizeAnswer`'s de-required guard is a no-op
+  // (fails open: merge proceeds exactly as before this field existed).
+  // Never read anywhere except that one guard.
+  requiredFields?: string[];
 }
 
 /** `false` => the processor continues its normal (non-fill) routing. */
@@ -305,6 +342,34 @@ export interface FillPendingCollecting {
   entries: unknown[];
 }
 export type FillPendingState = FillPendingConfirm | FillPendingEntryAnother | FillPendingCollecting;
+
+/**
+ * Task 10 requirement 5: the ONE canonical home for the fill lane's
+ * `state_context` keys, layered onto `ProfileStateContext` (flows.ts) via
+ * intersection rather than widening that shared type directly -- flows.ts
+ * has no knowledge of (and must not depend on) this module. Both
+ * conversation-router.ts (`setFocusedConversation`'s `fill_relay_override`
+ * arm-site) and processor.ts (the Task 10 seam/dispatch-tail) import this
+ * type via `import type` instead of maintaining their own local duplicate.
+ * `import type` keeps this a compile-time-only edge: conversation-router.ts
+ * gains no runtime dependency on this module, so there is no import cycle
+ * even though this module imports real functions (`isChatsKeyword`,
+ * `isCloseKeyword`) from conversation-router.ts below.
+ */
+export type FillStateContext = ProfileStateContext & {
+  fill_application_id?: string | null;
+  fill_relay_override?: boolean | null;
+  fill_pending?: FillPendingState | null;
+  fill_cert_more_pending?: boolean | null;
+  fill_last_prompt_at?: number;
+  // Task 11: set by the completion arm alongside the scrub write when
+  // another of the worker's applications still has a real gap -- see
+  // `findContinueOtherOffer`/`sendCompletionPrompt`. The Task 10 fill-lane
+  // seam gate (processor.ts) fires on this key OR `fill_application_id`;
+  // `handleFillMessage` resolves it as a one-shot yes/no (see
+  // `resolveOfferOnlyTurn`) whenever `fill_application_id` itself is unset.
+  fill_offer_application_id?: string | null;
+};
 
 // references/work_history are the only two array-shaped answer keys
 // (validator caps both at 3 entries) -- collected one entry per turn, per
@@ -362,6 +427,41 @@ export function parseFillConfirmation(body: string): 'yes' | 'no' | null {
   if (t === '1' || t === '1 si' || t === '1 yes' || t === 'si' || t === 'yes') return 'yes';
   if (t === '2' || t === '2 no' || t === 'no') return 'no';
   return null;
+}
+
+// ── Escape detection (Task 10, spec §6) ─────────────────────────────────
+//
+// A worker mid-fill can always step OUT to a handful of reserved commands;
+// `handleFillMessage` checks these (in the order spec §6 specifies) before
+// ever treating the body as a field/doc answer. Every one of these matchers
+// is reused verbatim from flows.ts/conversation-router.ts -- never
+// reimplemented -- so a single grammar change there (e.g. widening
+// COMMAND_KEYWORDS) automatically applies here too.
+
+// Exact-match jobs keyword (spec §6.3): the WHOLE normalized body must BE
+// one of these words. Deliberately NOT `isJobsKeyword` (flows.ts), whose
+// prefix+fuzzy grammar (`/^(trabajos?|jobs?|empleos?)\b/`) would eat a
+// legitimate field answer like "trabajo de pintor 5 anos" as an escape.
+const EXACT_JOBS_WORDS = new Set(['jobs', 'trabajos', 'empleos', 'job', 'trabajo', 'empleo']);
+
+function isExactJobsKeyword(body: string): boolean {
+  return EXACT_JOBS_WORDS.has(normalizeCommandText(body));
+}
+
+/** CHATS/CERRAR/help/support/profile: these always win over an in-flight
+ * fill -- including a pending yes/no confirmation -- so a worker can always
+ * reach them mid-fill. (The one exception, spec §6.3, is a body that
+ * itself PARSES as the pending confirmation -- '1'/'1 si'/'2 no'/bare
+ * si/no/yes -- which `handleFillMessage` intercepts before this check ever
+ * runs; see its own comment.) */
+function matchesCommandEscape(body: string): boolean {
+  return (
+    isChatsKeyword(body)
+    || isCloseKeyword(body)
+    || isHelpCommand(body)
+    || isSupportCommand(body)
+    || isProfileCommand(body)
+  );
 }
 
 // ── Deterministic per-key parsers (spec §7) ─────────────────────────────
@@ -426,6 +526,58 @@ function parseDeterministic(
     }
     default:
       return null; // the extraction bucket
+  }
+}
+
+/**
+ * FINAL-REVIEW Finding 2: `education`/`military_service`/`worked_here_before`
+ * are extraction-bucket keys (not in `DETERMINISTIC_KEYS`), but their own
+ * `FIELD_QUESTIONS` copy (application-fill-prompts.ts) IS a numbered menu --
+ * "Responde con 1, 2, 3, 4, 5, 6 o 7." for education, "1. Si / 2. No" for the
+ * other two. Bedrock extraction never sees that menu text, so a fully
+ * compliant bare-digit/si/no reply was previously sent straight to
+ * extraction anyway, where it likely fails the 0.75 confidence gate --
+ * whose retry hint then tells the worker to repeat the exact input that just
+ * failed, a hard loop for the MOST compliant workers.
+ *
+ * This is a pre-parse, checked BEFORE the extraction call but AFTER
+ * `DETERMINISTIC_KEYS` (those four keys never reach this function). Matches
+ * are merged DIRECTLY through the same no-confirm path `work_authorization`
+ * uses (spec §7: booleans/menus need no echo-confirm) -- never through
+ * `fill_pending`. Anything that doesn't match one of these exact forms
+ * (including a compliant-but-elaborated reply like "si, en 2022" for
+ * worked_here_before) returns null and falls through to extraction
+ * UNCHANGED, so `{answer: true, when: '2022'}`-shaped extraction still
+ * works exactly as before.
+ *
+ * `education`'s menu order is 1:1 with `EDUCATION_LEVELS` (application-
+ * answers.ts) -- verified against the actual FIELD_QUESTIONS copy: 1=None,
+ * 2=Primary school, 3=High school, 4=GED, 5=Some college, 6=College degree,
+ * 7=Trade school, matching EDUCATION_LEVELS' ['none', 'primary',
+ * 'high_school', 'ged', 'some_college', 'college', 'trade_school'] index for
+ * index.
+ */
+function parseMenuAnswer(key: FillFieldKey, body: string): { value: unknown } | null {
+  const t = body.trim().toLowerCase();
+  switch (key) {
+    case 'education': {
+      const m = t.match(/^([1-7])$/);
+      if (!m) return null;
+      const level = EDUCATION_LEVELS[Number(m[1]) - 1];
+      return { value: { level } };
+    }
+    case 'military_service': {
+      if (t === '1' || t === 'si' || t === 'yes') return { value: { served: true } };
+      if (t === '2' || t === 'no') return { value: { served: false } };
+      return null;
+    }
+    case 'worked_here_before': {
+      if (t === '1' || t === 'si' || t === 'yes') return { value: { answer: true } };
+      if (t === '2' || t === 'no') return { value: { answer: false } };
+      return null;
+    }
+    default:
+      return null;
   }
 }
 
@@ -634,9 +786,16 @@ function mergeFailureMessage(reason: 'invalid' | 'too_large', key: FillFieldKey,
  * frozen (Task 6, reviewed/approved -- not to be disturbed) and it does not
  * expose that column. This duplicate, single-column SELECT is the
  * sanctioned way (per the Task 7 brief) to surface `job_id` onto
- * `FillContext` every turn without touching that function. Like
+ * `FillContext` every turn without touching that function. Used ONLY by the
+ * media branch (step 2) -- media turns never resolve a field's
+ * `fill_pending`, so they have no use for `required_fields`
+ * (`fetchApplicationJobContext`, below, is the text-path equivalent). Like
  * `computeNextStep`'s own initial SELECT, this does not require
  * `setInternalUserRlsContext` -- only the worker_documents check does.
+ * Deliberately NOT a job_applications-JOIN-jobs query (unlike
+ * `fetchApplicationJobContext`) so its SQL text stays outside the
+ * `/FROM job_applications ja/` pattern some cert-loop tests use to assert
+ * `computeNextStep` itself never ran.
  */
 async function fetchApplicationJobId(client: PoolClient, applicationId: string): Promise<string | null> {
   const res = await client.query<{ job_id: string }>(
@@ -646,7 +805,192 @@ async function fetchApplicationJobId(client: PoolClient, applicationId: string):
   return res.rows[0]?.job_id ?? null;
 }
 
-// ── Prompting the next step (fields/docs only here; see jsdoc) ─────────
+/**
+ * Task 11: like `fetchApplicationJobId`, but also surfaces `required_fields`
+ * (a JOIN, not a second query) -- read once per TEXT turn (step 5) and
+ * stashed on `ctx.requiredFields` for the sole purpose of `finalizeAnswer`'s
+ * de-required guard (see that function's jsdoc). `computeNextStep`'s own
+ * SELECT already joins in both columns internally, but its signature and
+ * return shape are frozen (Task 6, reviewed/approved) and it does not
+ * expose either. Deliberately spells out `job_applications`/`jobs` instead
+ * of `computeNextStep`'s own `ja`/`j` aliases -- several existing tests
+ * (application-fill.test.ts's cert-loop cases, processor.test.ts's dispatch-
+ * tail cases) grep call history for the literal `FROM job_applications ja`
+ * shape specifically to assert "no `computeNextStep`-like re-derive ran
+ * this turn"; reusing that alias here would make this UNRELATED lookup a
+ * false positive under that pattern.
+ */
+async function fetchApplicationJobContext(
+  client: PoolClient,
+  applicationId: string,
+): Promise<{ jobId: string | null; requiredFields: string[] | undefined }> {
+  const res = await client.query<{ job_id: string; required_fields?: string[] }>(
+    `SELECT job_applications.job_id, jobs.required_fields
+       FROM job_applications
+       JOIN jobs ON jobs.id = job_applications.job_id
+      WHERE job_applications.id = $1`,
+    [applicationId],
+  );
+  const row = res.rows[0];
+  return { jobId: row?.job_id ?? null, requiredFields: row?.required_fields };
+}
+
+// ── Prompting the next step (fields/docs/complete/exit) ────────────────
+
+interface ContinueOtherOffer {
+  applicationId: string;
+  jobTitle: string;
+}
+
+/**
+ * Task 11: scans the worker's OTHER open applications (most-recently-
+ * updated first, per the brief's SQL) for one with a real field/doc gap
+ * left, to offer right after the just-completed application's completion
+ * message. The scan is capped at 5 candidates -- taken in code (not via a
+ * SQL LIMIT, matching the brief text exactly) since the query itself is
+ * already small and ordered -- and always through `computeNextStep` itself
+ * (the single source of truth for "does this application still need
+ * something"), never a hand-rolled duplicate check. Returns `null` the
+ * instant either the query is empty or none of the first 5 candidates has a
+ * real gap (already complete/exited) -- callers offer AT MOST ONE
+ * application, ever.
+ */
+async function findContinueOtherOffer(
+  client: PoolClient,
+  workerId: string,
+  excludeApplicationId: string,
+): Promise<ContinueOtherOffer | null> {
+  const res = await client.query<{ id: string; title: string }>(
+    `SELECT ja.id, j.title
+       FROM job_applications ja JOIN jobs j ON j.id = ja.job_id
+      WHERE ja.worker_id = $1 AND ja.id <> $2
+        AND j.status IN ('active','paused')
+        AND ja.status IN ('pending','contacted','talking')
+      ORDER BY ja.updated_at DESC`,
+    [workerId, excludeApplicationId],
+  );
+  for (const row of res.rows.slice(0, 5)) {
+    const step = await computeNextStep(client, row.id);
+    if (step.kind === 'field' || step.kind === 'doc') {
+      return { applicationId: row.id, jobTitle: row.title };
+    }
+  }
+  return null;
+}
+
+/**
+ * Completion arm (`kind: 'complete'`). Sends the `completion` copy --
+ * appending the `web_handoff` note (same append pattern Task 9's intro-arm
+ * uses, via `localizeDocList`) when `uncollectable` is non-empty -- then
+ * scrubs ALL fill keys (`fill_application_id`, `fill_pending`,
+ * `fill_cert_more_pending`; Task 8 forward note fixed here: the fill's own
+ * cert-loop flag was NOT part of the Task 7 placeholder's scrub) in ONE
+ * spread write. `findContinueOtherOffer` is queried BEFORE that write so a
+ * found candidate's id can ride in the SAME write as
+ * `fill_offer_application_id` -- never a second, separate write. The
+ * `continue_other` message (naming the offered job) is queued AFTER that
+ * write, as its own reply, only when an offer was found.
+ *
+ * FINAL-REVIEW Finding 1a: `fill_relay_override` IS part of the scrub here
+ * (reversing an earlier task brief's "leave it be, it self-clears" call) --
+ * that reasoning only holds while a fill/offer key is still armed, since
+ * `handleFillMessage` step 10 is the flag's ONLY consume site and it is
+ * reachable only then. Once this write clears `fill_application_id`, the
+ * flag has no consume site left and would survive untouched into the NEXT
+ * fill arm, where it swallows the worker's first free-text answer (e.g.
+ * their DOB) and relays it into a stale focused employer thread instead.
+ *
+ * FINAL-REVIEW Finding 3: `fill_offer_application_id` is now ALWAYS written
+ * in this patch -- `offer?.applicationId ?? null` -- never only on the
+ * `if (offer)` branch as before. A stale key from an EARLIER completion's
+ * offer (already declined/ignored, or never cleared by some other path)
+ * must not survive a completion that itself found no new offer; otherwise a
+ * later stray "1"/"si" could re-arm a long-finished application via
+ * `resolveOfferOnlyTurn`.
+ */
+async function sendCompletionPrompt(
+  client: PoolClient,
+  ctx: FillContext,
+  applicationId: string,
+  inboundSid: string,
+  from: string,
+  deps: FillDeps,
+  uncollectable: string[],
+  leadIn?: string,
+): Promise<void> {
+  let body = fillMessage('completion', ctx.lang);
+  if (uncollectable.length > 0) {
+    body += `\n\n${fillMessage('web_handoff', ctx.lang, { doc: localizeDocList(uncollectable, ctx.lang) })}`;
+  }
+  if (leadIn) body = `${leadIn}\n\n${body}`;
+
+  const offer = await findContinueOtherOffer(client, ctx.workerId, applicationId);
+
+  const patch: Record<string, unknown> = {
+    fill_application_id: null,
+    fill_pending: null,
+    fill_cert_more_pending: null,
+    fill_relay_override: null,
+    fill_offer_application_id: offer ? offer.applicationId : null,
+    fill_last_prompt_at: deps.nowMs(),
+  };
+
+  await deps.updateStateContext(client, ctx.conversationId, patch);
+  await deps.queueReplyText(client, inboundSid, from, body);
+  logStep('complete', 'prompted');
+
+  if (offer) {
+    await deps.queueReplyText(
+      client,
+      inboundSid,
+      from,
+      fillMessage('continue_other', ctx.lang, { job_title: offer.jobTitle }),
+    );
+    logStep('complete', 'offered_other');
+  }
+}
+
+// Lifecycle exit reason -> the mapped prompts key (spec §9 / computeNextStep's
+// own header comment documents the DB-enum mapping this mirrors).
+const EXIT_MESSAGE_KEYS: Record<'job_inactive' | 'application_gone' | 'application_closed', FillMessageKey> = {
+  job_inactive: 'exit_job_inactive',
+  application_gone: 'exit_application_gone',
+  application_closed: 'exit_application_closed',
+};
+
+/**
+ * Lifecycle-exit arm (`kind: 'exit'`). Sends the reason-mapped copy, then a
+ * full scrub + disarm -- the SAME key set the completion arm clears
+ * (including, per FINAL-REVIEW Finding 1a/3, `fill_relay_override` and
+ * `fill_offer_application_id` -- an exit is exactly as much a "fill exit" as
+ * a completion, and a stale override/offer surviving it would poison the
+ * NEXT fill arm the same way), but NEVER an offer (task brief requirement 4:
+ * no continue-other offer on an exit -- the worker didn't finish anything
+ * here, there is nothing to "continue from").
+ */
+async function sendExitPrompt(
+  client: PoolClient,
+  ctx: FillContext,
+  inboundSid: string,
+  from: string,
+  deps: FillDeps,
+  reason: 'job_inactive' | 'application_gone' | 'application_closed',
+  leadIn?: string,
+): Promise<void> {
+  let body = fillMessage(EXIT_MESSAGE_KEYS[reason], ctx.lang);
+  if (leadIn) body = `${leadIn}\n\n${body}`;
+
+  await deps.updateStateContext(client, ctx.conversationId, {
+    fill_application_id: null,
+    fill_pending: null,
+    fill_cert_more_pending: null,
+    fill_relay_override: null,
+    fill_offer_application_id: null,
+    fill_last_prompt_at: deps.nowMs(),
+  });
+  await deps.queueReplyText(client, inboundSid, from, body);
+  logStep(reason, 'prompted');
+}
 
 async function sendNextStepPrompt(
   client: PoolClient,
@@ -658,27 +1002,23 @@ async function sendNextStepPrompt(
 ): Promise<void> {
   const applicationId = ctx.stateContext.fill_application_id as string;
   const nextStep = await computeNextStep(client, applicationId);
+
+  if (nextStep.kind === 'complete') {
+    return sendCompletionPrompt(client, ctx, applicationId, inboundSid, from, deps, nextStep.uncollectable, leadIn);
+  }
+  if (nextStep.kind === 'exit') {
+    return sendExitPrompt(client, ctx, inboundSid, from, deps, nextStep.reason, leadIn);
+  }
+
   const patch: Record<string, unknown> = { fill_last_prompt_at: deps.nowMs() };
   let body: string;
   let logKey: string;
-
   if (nextStep.kind === 'field') {
     body = fieldQuestion(nextStep.key, ctx.lang);
     logKey = nextStep.key;
-  } else if (nextStep.kind === 'doc') {
+  } else {
     body = docPrompt(nextStep.docType, ctx.lang);
     logKey = nextStep.docType;
-  } else {
-    // 'complete' | 'exit' -- Task 11 expands both arms (completion copy
-    // including the web-handoff note when uncollectable is non-empty,
-    // exit-reason-specific copy, the next-application offer). Minimal
-    // Task 7 placeholder per the brief: clear fill state and send the
-    // generic completion message so the lane always terminates cleanly
-    // rather than looping forever on a stale fill_application_id.
-    body = fillMessage('completion', ctx.lang);
-    patch.fill_application_id = null;
-    patch.fill_pending = null;
-    logKey = nextStep.kind;
   }
 
   if (leadIn) body = `${leadIn}\n\n${body}`;
@@ -690,7 +1030,7 @@ async function sendNextStepPrompt(
 
 /**
  * Queues the current `computeNextStep` prompt (field question / doc prompt
- * / the Task 11 completion-or-exit placeholder) and stamps
+ * / the Task 11 completion-or-exit copy, scrub, and offer) and stamps
  * `fill_last_prompt_at`. Exposed separately from `handleFillMessage` so
  * `handleJobAction`'s new-accept / already-applied paths (outside this
  * module) and the Task 10 dispatch tail can invoke it directly without
@@ -1018,9 +1358,27 @@ async function resolveCertLoopPending(
 
 // ── fill_pending resolution (spec §6 item 6) ────────────────────────────
 
-/** Finalizes ONE answer (a plain value for a scalar key, or the FULL
+/**
+ * Finalizes ONE answer (a plain value for a scalar key, or the FULL
  * accumulated array for an array key) through the merge choke point, then
- * either re-prompts on failure or clears `fill_pending` and advances. */
+ * either re-prompts on failure or clears `fill_pending` and advances.
+ *
+ * Task 11 de-required guard: `ctx.requiredFields` (surfaced fresh this turn
+ * by `fetchApplicationJobContext`, see `FillContext`'s jsdoc) is checked
+ * FIRST, before ever calling `mergeAnswer`. If the employer removed `key`
+ * from the job's `required_fields` while this exact answer sat in
+ * `fill_pending` awaiting confirmation, merging it now would let it silently
+ * satisfy the SAME key if it is ever re-added later -- `computeNextStep`'s
+ * `hasOwnProperty` walk has no notion of *when* an answer was written, only
+ * whether the key is present. So the stale candidate is discarded SILENTLY
+ * (no error copy -- this was never the worker's mistake) and the actual
+ * current step is re-derived via `promptNextStep` instead of being merged.
+ * `ctx.requiredFields` is `undefined` for any caller that never ran that
+ * refresh (this function's own unit tests that construct `ctx` directly,
+ * or a future call site) -- the guard fails OPEN in that case (proceeds to
+ * merge exactly as before this guard existed) rather than risk a false
+ * discard from absent data.
+ */
 async function finalizeAnswer(
   client: PoolClient,
   ctx: FillContext,
@@ -1029,6 +1387,13 @@ async function finalizeAnswer(
   key: FillFieldKey,
   value: unknown,
 ): Promise<FillResult> {
+  if (Array.isArray(ctx.requiredFields) && !ctx.requiredFields.includes(key)) {
+    await deps.updateStateContext(client, ctx.conversationId, { fill_pending: null });
+    logStep(key, 'discarded_derequired');
+    await promptNextStep(client, ctx, msg.messageSid, msg.from, deps);
+    return { handled: true };
+  }
+
   const result = await mergeAnswer(client, ctx, key, value, deps);
   if (!result.ok) {
     // The confirmed/finalized candidate is provably bad (fails the real
@@ -1190,6 +1555,25 @@ async function handleFieldStep(
     return { handled: true };
   }
 
+  // FINAL-REVIEW Finding 2: education/military_service/worked_here_before
+  // get ONE more deterministic chance -- their own FIELD_QUESTIONS copy is a
+  // numbered menu that Bedrock extraction never sees, so an exact menu reply
+  // must never be sent there (see parseMenuAnswer's jsdoc). Merges DIRECTLY,
+  // exactly like the `det` branch above (no fill_pending confirm loop) --
+  // anything that doesn't match falls through to extraction, unchanged.
+  const menuParsed = parseMenuAnswer(key, body);
+  if (menuParsed) {
+    const result = await mergeAnswer(client, ctx, key, menuParsed.value, deps);
+    if (!result.ok) {
+      await deps.queueReplyText(client, msg.messageSid, msg.from, mergeFailureMessage(result.reason, key, ctx.lang));
+      logStep(key, 'merge_failed', result.reason);
+      return { handled: true };
+    }
+    logStep(key, 'merged');
+    await sendNextStepPrompt(client, ctx, msg.messageSid, msg.from, deps);
+    return { handled: true };
+  }
+
   // Extraction bucket (spec §7): one Bedrock call, confidence/validator
   // gated by extractFieldAnswer itself.
   const outcome = await extractFieldAnswer(deps.extraction, key, body, ctx.lang);
@@ -1221,27 +1605,114 @@ async function handleFieldStep(
 // ── Entry point ──────────────────────────────────────────────────────────
 
 /**
+ * Task 11: resolves a turn where `fill_application_id` is UNSET but
+ * `fill_offer_application_id` is armed (the continue-other offer,
+ * `sendCompletionPrompt`) -- the processor's seam gate now fires on either
+ * key being set (spec amendment), and this is what handles the "only the
+ * offer key is set" half of that gate. Exactly two outcomes, per the brief:
+ *   - '1' / '1 si' / bare 'si' / 'yes' (i.e. `parseFillConfirmation` ===
+ *     'yes') arms `fill_application_id` with the offered id, clears the
+ *     offer key in the SAME write, and prompts that application's first gap
+ *     -- via `promptNextStep`, which re-derives through `computeNextStep`
+ *     rather than trusting the offer's snapshot, since the offered
+ *     application may have gone stale (lifecycle-exited, or completed via
+ *     another channel) between the offer and this reply.
+ *   - ANY other input (decline, stray text, a button/list payload, or a
+ *     media turn -- `msg.body` is `undefined`/empty for all of the latter,
+ *     which `parseFillConfirmation` already treats as non-'yes') clears the
+ *     offer key and returns `{handled:false}` -- one-shot, no nagging: the
+ *     turn falls through to whatever routing would have applied had no
+ *     offer ever been made (including a media turn's own normal handling
+ *     downstream).
+ */
+async function resolveOfferOnlyTurn(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+): Promise<FillResult> {
+  const offerId = ctx.stateContext.fill_offer_application_id as string | undefined;
+  if (typeof offerId !== 'string') return { handled: false };
+
+  if (parseFillConfirmation(msg.body ?? '') === 'yes') {
+    await deps.updateStateContext(client, ctx.conversationId, {
+      fill_offer_application_id: null,
+      fill_application_id: offerId,
+    });
+    logStep('offer', 'accepted');
+    await promptNextStep(client, ctx, msg.messageSid, msg.from, deps);
+    return { handled: true };
+  }
+
+  await deps.updateStateContext(client, ctx.conversationId, { fill_offer_application_id: null });
+  logStep('offer', 'declined');
+  return { handled: false };
+}
+
+/**
  * Fill-lane dispatcher for one inbound WhatsApp turn. Only called once the
- * caller has established `fill_application_id` is set on `stateContext`
- * (spec §6's dispatch section applies "when fill_application_id is set");
- * returns `{handled:false}` immediately otherwise so the processor's normal
- * routing takes over.
+ * caller has established `fill_application_id` OR `fill_offer_application_id`
+ * is set on `stateContext` (spec §6's dispatch section applies "when
+ * fill_application_id is set"; Task 11 widens the seam to the offer key too
+ * -- see `resolveOfferOnlyTurn`). When `fill_application_id` itself is unset,
+ * this delegates the WHOLE turn to `resolveOfferOnlyTurn` and returns
+ * immediately -- none of the numbered steps below ever run without a real
+ * armed application. Returns `{handled:false}` immediately when NEITHER key
+ * is set, so the processor's normal routing takes over.
  *
- * Order implemented here (spec §6, Tasks 7+8's slice of it):
- *   1. Media turn (`handleFillMediaTurn`) -- BEFORE the CANCELAR guard and
+ * Full order implemented here (spec §6, encoded once):
+ *   1. Button/interactive-payload escape (Task 10) -- UNCONDITIONAL, even
+ *      before the media check: button/list payloads keep top priority over
+ *      everything this module does. Fill state is KEPT (scrub rule) --
+ *      the processor's normal routing (job button, legal reply, whatever
+ *      else consumes the payload) runs untouched, and the fill resumes on
+ *      the worker's next plain-text turn.
+ *   2. Media turn (`handleFillMediaTurn`) -- BEFORE the CANCELAR guard and
  *      before any text parsing (a captioned photo's caption never leaks to
  *      the text parser). jobId is surfaced here too, independently of the
- *      text path's own refresh in step 3.
- *   2. CANCELAR guard (also scrubs the cert-loop flag, `fill_cert_more_pending`).
- *   3. jobId surfaced onto `ctx` (see `FillContext`'s jsdoc); if the
- *      cert-loop flag is armed, the text is a yes/no answer to it
- *      (`resolveCertLoopPending`), not a general-purpose advance.
- *   4. `fill_pending` resolution (confirm/discard/entry-loop).
- *   5. Current-step handling: doc-step free text re-sends the doc prompt
+ *      text path's own refresh in step 5.
+ *   3. CANCELAR guard (also scrubs the cert-loop flag, `fill_cert_more_pending`).
+ *   4. Picker-digit escape (Task 10, spec §6.4): a bare 1-2 digit body while
+ *      `state_context.pending_picker` is set always belongs to the picker
+ *      -- checked before jobId refresh/cert-loop/fill_pending so it wins
+ *      even in the (structurally unreachable per Task 8's re-review, but
+ *      guarded conservatively anyway) case both a picker AND a
+ *      confirmation are in flight at once.
+ *   5. jobId surfaced onto `ctx` (see `FillContext`'s jsdoc).
+ *   6. Confirmation-in-flight exception (Task 10, spec §6.3): while the
+ *      cert loop or `fill_pending` is genuinely awaiting a yes/no answer, a
+ *      body that PARSES as that confirmation ('1'/'1 si'/'2 no'/bare
+ *      si/no/yes) is consumed as the confirmation FIRST -- even though the
+ *      identical string can also parse as a typed job action ("1 si" =
+ *      accept recent_jobs[0]) or, in principle, a picker digit (already
+ *      excluded by step 4). Anything that does NOT parse as a confirmation
+ *      falls through to the escape checks below, so e.g. "CHATS" while a
+ *      confirmation is pending still escapes instead of getting a generic
+ *      reconfirm re-echo from `resolveFillPending`/`resolveCertLoopPending`.
+ *   7. Command escapes (Task 10, spec §6 items 5/9): CHATS/CERRAR/help/
+ *      support/profile always win over an in-flight fill (`matchesCommandEscape`).
+ *   8. Exact-match jobs keyword (Task 10, spec §6.3) -- NOT `isJobsKeyword`'s
+ *      prefix+fuzzy grammar, which would eat a legitimate field answer like
+ *      "trabajo de pintor 5 anos" as an escape.
+ *   9. Typed job actions (Task 10) -- the ambiguous overlap with a
+ *      confirmation-in-flight was already resolved at step 6; any typed job
+ *      action reaching this point is a genuine escape.
+ *  10. Relay-override consume+clear (Task 10, spec §4.2): a CHATS pick (or
+ *      a conversation:focus tap) mid-fill arms this ONE-TURN flag
+ *      (`setFocusedConversation`, conversation-router.ts) so the worker's
+ *      very next free-text message relays to the newly-focused employer
+ *      instead of feeding the fill. Cleared here, in the SAME turn it is
+ *      consumed (`deps.updateStateContext`'s spread-merge + in-place
+ *      mutation contract), so a SECOND free-text message goes back to
+ *      feeding the fill -- without this clear every later message would
+ *      relay forever and the fill would deadlock.
+ *  11. `fill_pending`/cert-loop resolution (confirm/discard/entry-loop) for
+ *      any body that reached this point WITHOUT parsing as a confirmation
+ *      at step 6 (e.g. unrecognized text) -- re-echoes the confirmation,
+ *      per spec §6 item 6, exactly as before Task 10.
+ *  12. Current-step handling: doc-step free text re-sends the doc prompt
  *      (cooldown-guarded); field-step text goes through deterministic parse
  *      or extraction.
- * Escapes and the picker/relay interruption precedence are Task 10's
- * dispatch-order work -- not implemented here.
  */
 export async function handleFillMessage(
   client: PoolClient,
@@ -1250,14 +1721,19 @@ export async function handleFillMessage(
   deps: FillDeps,
 ): Promise<FillResult> {
   const applicationId = ctx.stateContext.fill_application_id as string | undefined;
-  if (!applicationId) return { handled: false };
+  if (!applicationId) return resolveOfferOnlyTurn(client, ctx, msg, deps);
 
-  // Media-first (spec §6 item 1) -- BEFORE the CANCELAR guard and before any
-  // text parsing: a captioned photo's caption must never leak to the text
-  // parser, so a media turn never even reads `msg.body`. jobId is refreshed
-  // here too (see FillContext's jsdoc) since Task 8's doc writes below
-  // consume ctx.jobId, and this branch never reaches the text path's own
-  // refresh further down.
+  // (1) Button/interactive-payload escape -- see this function's jsdoc.
+  if (msg.buttonPayload || msg.interactivePayload) {
+    return { handled: false };
+  }
+
+  // (2) Media-first (spec §6 item 1) -- BEFORE the CANCELAR guard and before
+  // any text parsing: a captioned photo's caption must never leak to the
+  // text parser, so a media turn never even reads `msg.body`. jobId is
+  // refreshed here too (see FillContext's jsdoc) since Task 8's doc writes
+  // below consume ctx.jobId, and this branch never reaches the text path's
+  // own refresh further down.
   if (msg.numMedia > 0) {
     ctx.jobId = (await fetchApplicationJobId(client, applicationId)) ?? ctx.jobId;
     return handleFillMediaTurn(client, ctx, msg, deps, applicationId);
@@ -1265,31 +1741,78 @@ export async function handleFillMessage(
 
   const body = msg.body ?? '';
 
-  // CANCELAR guard (spec §6 item 2) -- before any parsing/extraction.
+  // (3) CANCELAR guard (spec §6 item 2) -- before any parsing/extraction.
   if (isFillCancel(body)) {
+    // FINAL-REVIEW Finding 1a/3: fill_relay_override and
+    // fill_offer_application_id are ALSO scrubbed here (not just
+    // fill_application_id/fill_pending) -- neither has any other exit-time
+    // scrub site, so leaving either standing after a cancel would let it
+    // poison the worker's NEXT fill arm (a stale override swallows their
+    // first free-text answer and relays it into an old focused thread; a
+    // stale offer id lets a later stray "1"/"si" re-arm a long-finished
+    // application).
     await deps.updateStateContext(client, ctx.conversationId, {
       fill_application_id: null,
       fill_pending: null,
       fill_cert_more_pending: null,
+      fill_relay_override: null,
+      fill_offer_application_id: null,
     });
     await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('canceled', ctx.lang));
     logStep('cancel', 'canceled');
     return { handled: true };
   }
 
-  // jobId resolved fresh every turn (see FillContext's jsdoc) before any
-  // step handling -- Task 8's doc writes consume ctx.jobId.
-  ctx.jobId = (await fetchApplicationJobId(client, applicationId)) ?? ctx.jobId;
-
-  // Task 8's cert loop (see handleFillMediaTurn's jsdoc; review fix, bug A):
-  // a TEXT reply while the loop is armed is the worker's yes/no answer to
-  // "tienes otro certificado?", NOT an unconditional advance -- gate it
-  // through the same confirm semantics the array-entry loop uses.
-  if (ctx.stateContext.fill_cert_more_pending) {
-    return resolveCertLoopPending(client, ctx, msg, deps, body);
+  // (4) Picker-digit escape -- see this function's jsdoc.
+  if (ctx.stateContext.pending_picker && /^\d{1,2}$/.test(body.trim())) {
+    return { handled: false };
   }
 
+  // (5) jobId (+ Task 11: requiredFields, for finalizeAnswer's de-required
+  // guard) resolved fresh every turn (see FillContext's jsdoc) before any
+  // step handling -- Task 8's doc writes consume ctx.jobId.
+  const jobContext = await fetchApplicationJobContext(client, applicationId);
+  ctx.jobId = jobContext.jobId ?? ctx.jobId;
+  ctx.requiredFields = jobContext.requiredFields;
+
+  const certLoopPending = Boolean(ctx.stateContext.fill_cert_more_pending);
   const pending = ctx.stateContext.fill_pending as FillPendingState | undefined;
+
+  // (6) Confirmation-in-flight exception -- see this function's jsdoc.
+  if ((certLoopPending || pending) && parseFillConfirmation(body) !== null) {
+    if (certLoopPending) return resolveCertLoopPending(client, ctx, msg, deps, body);
+    return resolveFillPending(client, ctx, msg, deps, pending!, applicationId, body);
+  }
+
+  // (7) Command escapes -- CHATS/CERRAR/help/support/profile.
+  if (matchesCommandEscape(body)) {
+    return { handled: false };
+  }
+
+  // (8) Exact-match jobs keyword.
+  if (isExactJobsKeyword(body)) {
+    return { handled: false };
+  }
+
+  // (9) Typed job actions.
+  if (parseTypedJobAction(body)) {
+    return { handled: false };
+  }
+
+  // (10) Relay-override consume+clear -- see this function's jsdoc.
+  if (ctx.stateContext.fill_relay_override) {
+    await deps.updateStateContext(client, ctx.conversationId, { fill_relay_override: null });
+    logStep('relay_override', 'consumed');
+    return { handled: false };
+  }
+
+  // (11) Task 8's cert loop / fill_pending resolution (see
+  // handleFillMediaTurn's jsdoc; review fix, bug A) -- reached only when the
+  // body did NOT parse as a confirmation at step 6, so this is exactly the
+  // "unrecognized text" re-echo path (reconfirm / cert-loop reconfirm).
+  if (certLoopPending) {
+    return resolveCertLoopPending(client, ctx, msg, deps, body);
+  }
   if (pending) {
     return resolveFillPending(client, ctx, msg, deps, pending, applicationId, body);
   }

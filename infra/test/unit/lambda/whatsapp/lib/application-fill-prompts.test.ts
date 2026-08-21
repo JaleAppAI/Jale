@@ -93,6 +93,18 @@ describe('application-fill-prompts.ts', () => {
     expect(canceled).not.toMatch(/\bcancele\b/);
   });
 
+  // Task 11: continue_other names the offered job so the worker knows what
+  // "1" refers to -- same substitution contract as intro/web_handoff above.
+  test('continue_other substitutes job_title', () => {
+    const es = prompts.fillMessage('continue_other', 'es', { job_title: 'Cocinero' });
+    expect(es).toContain('Cocinero');
+    expect(es).not.toContain('{{job_title}}');
+
+    const en = prompts.fillMessage('continue_other', 'en', { job_title: 'Cook' });
+    expect(en).toContain('Cook');
+    expect(en).not.toContain('{{job_title}}');
+  });
+
   test('confirm_footer is a numbered 1/2 footer', () => {
     const es = prompts.fillMessage('confirm_footer', 'es');
     const en = prompts.fillMessage('confirm_footer', 'en');

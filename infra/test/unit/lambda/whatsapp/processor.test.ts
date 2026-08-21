@@ -1591,6 +1591,19 @@ describe('Processor Lambda', () => {
       mockQuery.mockResolvedValueOnce(ok()); // markCompleted
     }
 
+    // Review finding (coverage gap): parses every `UPDATE whatsapp_conversations`
+    // call's actual state_context JSON payload (updateConversation's params
+    // are [id, ...values], so the JSON-serialized state_context is params[1])
+    // so tests can assert on the WRITTEN PATCH CONTENT -- not just "some
+    // update ran" or a brittle substring match -- confirming the arm/switch
+    // write both sets fill_application_id to the new application AND scrubs
+    // pending_picker/fill_pending/fill_cert_more_pending in that SAME write.
+    function stateContextUpdates(): Record<string, unknown>[] {
+      return mockQuery.mock.calls
+        .filter(([sql]) => /UPDATE whatsapp_conversations/i.test(sql as string))
+        .map(([, params]) => JSON.parse((params as unknown[])[1] as string) as Record<string, unknown>);
+    }
+
     it('typed accept uses the stored recent job id', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -2081,18 +2094,25 @@ describe('Processor Lambda', () => {
       expect(bodies).not.toContain(t('job_accepted', 'en'));
       expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '0', n_docs: '1' }));
       expect(bodies).toContain(docPrompt('resume', 'en'));
-      // Fill armed: fill_application_id patched onto the (mocked)
-      // whatsapp_conversations row via updateConversation's state_context
-      // write (updateConversation's params are [id, ...values], so the
-      // JSON-serialized state_context is params[1], not params[0]).
-      const stateWrite = mockQuery.mock.calls.find(
-        ([sql, params]) =>
-          /UPDATE whatsapp_conversations/i.test(sql as string)
-          && Array.isArray(params)
-          && typeof params[1] === 'string'
-          && (params[1] as string).includes('"fill_application_id":"app-1"'),
-      );
-      expect(stateWrite).toBeDefined();
+      // Assert the actual parsed content of the write that arms the fill --
+      // not just that some whatsapp_conversations update ran (an earlier,
+      // unrelated v2-routing writeback also updates state_context this same
+      // turn, before handleJobAction runs). Find the write that flips
+      // fill_application_id to the new application, and confirm
+      // pending_picker/fill_pending/fill_cert_more_pending are explicitly
+      // scrubbed to null in that SAME write (unconditionally, even though
+      // none of the three had a prior value here).
+      const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-1');
+      expect(armWrite).toBeDefined();
+      expect(armWrite!.pending_picker).toBeNull();
+      expect(armWrite!.fill_pending).toBeNull();
+      expect(armWrite!.fill_cert_more_pending).toBeNull();
+      // FINAL-REVIEW Finding 1a/3: the accept-time arm write is itself a
+      // fill ENTRY point -- a stale fill_relay_override/fill_offer_
+      // application_id left over from some earlier turn must not survive
+      // into this freshly-armed fill.
+      expect(armWrite!.fill_relay_override).toBeNull();
+      expect(armWrite!.fill_offer_application_id).toBeNull();
     });
 
     // Stage 1b regression guard: WhatsApp "accept" happens before the bot
@@ -2294,10 +2314,32 @@ describe('Processor Lambda', () => {
             conversation_state: 'idle',
             user_id: 'user-1',
             language: 'en',
-            state_context: { recent_jobs: ['job-1', 'job-2'], fill_application_id: 'app-old' },
+            // Seeded with non-null pending_picker/fill_pending/
+            // fill_cert_more_pending so the scrub assertion below is
+            // load-bearing (review finding): if the anchor-switch scrub
+            // ever regressed, these values would still be sitting in the
+            // arm write's merged state_context instead of null.
+            state_context: {
+              recent_jobs: ['job-1', 'job-2'],
+              fill_application_id: 'app-old',
+              pending_picker: { kind: 'close_reason', conversationId: 'conv-stale' },
+              fill_pending: { key: 'home_address', stage: 'confirm', extracted: 'irrelevant' },
+              fill_cert_more_pending: true,
+              // FINAL-REVIEW Finding 1a/3: seeded non-null so the assertion
+              // below is load-bearing, same rationale as the three siblings.
+              fill_relay_override: true,
+              fill_offer_application_id: 'stale-offer-app',
+            },
           })],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+        // Task 10 seam: fill_application_id ('app-old') is set, so
+        // routeMessage gives handleFillMessage first refusal on "2 accept"
+        // before the typed-job-action router below ever sees it.
+        // handleFillMessage refreshes jobId (fetchApplicationJobId) before
+        // recognizing this body as a typed job action and escaping
+        // (handled:false) -- that one extra query is this row.
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] }) // handleFillMessage jobId refresh (app-old), then escapes
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [{
@@ -2338,6 +2380,27 @@ describe('Processor Lambda', () => {
       const introIdx = bodies.indexOf(fillMessage('intro', 'en', { n_fields: '1', n_docs: '0' }));
       expect(switchedIdx).toBeGreaterThanOrEqual(0);
       expect(introIdx).toBeGreaterThan(switchedIdx);
+
+      // Review finding (Important, coverage gap): the highest-risk leak
+      // scenario is exactly this one -- a switch away from an application
+      // that had real fill_pending/fill_cert_more_pending/pending_picker
+      // state in flight. Find the write that flips fill_application_id to
+      // the NEW application ('app-new', not the stale 'app-old' an earlier,
+      // unrelated v2-routing writeback also persists this same turn) and
+      // confirm it nulls out all three in that SAME write -- not just
+      // eventually, and not in some later write. These seeded non-null
+      // starting values make the assertion load-bearing: it would fail if
+      // the scrub were ever dropped.
+      const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-new');
+      expect(armWrite).toBeDefined();
+      expect(armWrite!.pending_picker).toBeNull();
+      expect(armWrite!.fill_pending).toBeNull();
+      expect(armWrite!.fill_cert_more_pending).toBeNull();
+      // FINAL-REVIEW Finding 1a/3: the seeded fill_relay_override/
+      // fill_offer_application_id from the OLD application must not survive
+      // the switch into the newly-armed one.
+      expect(armWrite!.fill_relay_override).toBeNull();
+      expect(armWrite!.fill_offer_application_id).toBeNull();
     });
 
     // Task 9: the intro appends the web_handoff note when computeNextStep's
@@ -2483,6 +2546,421 @@ describe('Processor Lambda', () => {
       // remaining gap.
       expect(bodies).toContain(fieldQuestion('date_available', 'en'));
       expect(bodies).not.toContain(fieldQuestion('work_authorization', 'en'));
+    });
+
+    // ── Task 10: processor dispatch — fill-lane precedence ────────────────
+    //
+    // The escape/relay-override PRECEDENCE logic itself is unit-tested
+    // exhaustively in application-fill.test.ts (handleFillMessage — escapes
+    // / relay-override). These integration tests lock down the WIRING that
+    // lives only in processor.ts: the seam actually gives handleFillMessage
+    // first refusal, an escape's handled:false correctly falls through to
+    // the pre-existing router below, and the dispatch tail re-prompts the
+    // pending fill question afterward (cooldown-guarded). Every OTHER test
+    // in this file has no `fill_application_id` set, so the full suite
+    // passing is itself the "no fill armed: byte-identical routing"
+    // regression check the task brief calls for.
+    describe('Task 10: fill-lane dispatch precedence', () => {
+      it('exact "trabajos" escapes to the jobs listing, then the dispatch tail re-prompts the pending field question', async () => {
+        mockListMatchedJobsForWorker.mockResolvedValue([
+          { id: 'job-2', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+        ]);
+
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-trabajos' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              // Spanish: "trabajos" is itself an ES_LANG_WORDS entry
+              // (flows.ts's detectCommandLanguage), so starting the
+              // conversation already in Spanish avoids an unrelated
+              // language-switch UPDATE query between the v2 writeback and
+              // the Task 10 seam.
+              language: 'es',
+              state_context: { fill_application_id: 'app-1' },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          // Task 10 seam: handleFillMessage's jobId refresh, then it
+          // escapes (exact jobs keyword, spec §6.3) -- handled:false.
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context (jobs listing)
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE conversation recent_jobs
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT template outbox job-2
+        mockComputeNextStepRow({ required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+        mockRecordTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-trabajos',
+            From: 'whatsapp:+15125551234',
+            Body: 'trabajos',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(mockListMatchedJobsForWorker).toHaveBeenCalled();
+        expect(outboxTemplates()).toContain('job_alert_es');
+        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'es'));
+      });
+
+      it('help command escapes and the dispatch tail re-prompts (no prior cooldown)', async () => {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-help' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              state_context: { fill_application_id: 'app-1' },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] }) // Task 10 seam: jobId refresh, then escapes (help)
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT outbox help_menu_list_en
+        mockComputeNextStepRow({ required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+        mockRecordTail();
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-help',
+            From: 'whatsapp:+15125551234',
+            Body: 'help',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxTemplates()).toContain('help_menu_list_en');
+        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+      });
+
+      it('dispatch-tail cooldown: an escape within 30s of the last fill prompt gets NO re-prompt', async () => {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-cooldown' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              // The fill's last prompt landed 5s ago -- well inside
+              // REPROMPT_COOLDOWN_MS (30s, onboarding-language.ts).
+              state_context: { fill_application_id: 'app-1', fill_last_prompt_at: Date.now() - 5_000 },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] }) // Task 10 seam: jobId refresh, then escapes (help)
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT outbox help_menu_list_en
+        mockRecordTail(); // no computeNextStep / re-prompt queries -- cooldown suppresses the tail entirely
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-cooldown',
+            From: 'whatsapp:+15125551234',
+            Body: 'help',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxTemplates()).toContain('help_menu_list_en');
+        // No re-derive of the fill's current step -- the tail never ran.
+        expect(countQueryByPattern(/FROM job_applications ja/i)).toBe(0);
+      });
+
+      it('CANCELAR mid-fill is handled entirely by the seam -- no tail re-prompt, no other routing', async () => {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-cancel' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              state_context: { fill_application_id: 'app-1' },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          // Task 10 seam: CANCELAR short-circuits handleFillMessage BEFORE
+          // any query (isFillCancel guard) -- the two queries below are its
+          // OWN scrub write + canceled reply, not a jobId lookup.
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE state_context (fill scrub)
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // INSERT outbox canceled
+        // handled:true returns `conv.user_id` ('user-1') from routeMessage,
+        // so processRecord's Phase 2 also drains the job-message outbox for
+        // that actor -- the fuller tail (not the plain 4-query
+        // mockRecordTail()) is needed here, same as any other handled turn
+        // that resolves to a bound worker.
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-cancel',
+            From: 'whatsapp:+15125551234',
+            Body: 'CANCELAR',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        expect(outboxBodies()).toEqual([fillMessage('canceled', 'en')]);
+        // handled:true returns immediately -- routeReadyWorkerCommands (and
+        // therefore the dispatch tail) never runs.
+        expect(countQueryByPattern(/FROM job_applications ja/i)).toBe(0);
+      });
+
+      it('relay-override is consumed once: the free text still relays to the focused employer, then the fill re-prompts', async () => {
+        const activeConversationId = '22222222-3333-4444-5555-666666666666';
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-relay' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'worker-1',
+              language: 'es',
+              focused_job_conversation_id: activeConversationId,
+              state_context: {
+                fill_application_id: 'app-fill-1',
+                fill_relay_override: true,
+                fill_last_prompt_at: Date.now() - 60_000, // outside the cooldown
+              },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          // Task 10 seam: jobId refresh, then the relay-override clear+fall-through.
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-fill-1' }] })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE state_context clearing fill_relay_override
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ tos_version: '1.0' }] }) // legal-wall tos-gate
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [{ id: activeConversationId, application_id: 'app-1' }],
+          }) // focused job conversation lookup
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT worker message
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE job conversation timestamps
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE application status
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // no waiting employer messages
+        mockComputeNextStepRow({ worker_id: 'worker-1', job_id: 'job-fill-1', required_fields: ['work_authorization'], application_answers: {} }); // dispatch-tail re-prompt
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox field question
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-relay',
+            From: 'whatsapp:+15125551234',
+            Body: 'Hola, tengo una pregunta',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        // The message relayed to the employer thread exactly as if no fill
+        // were armed...
+        expect(findQueryByPattern(/INSERT INTO job_conversation_messages/i)).toEqual([
+          activeConversationId,
+          'Hola, tengo una pregunta',
+          'SM-fill-relay',
+          'whatsapp:+15125551234',
+        ]);
+        // ...clearing the one-turn override in the same write (never a
+        // separate later write)...
+        const overrideClears = stateContextUpdates().filter((sc) => sc.fill_relay_override === null);
+        expect(overrideClears.length).toBeGreaterThanOrEqual(1);
+        // ...and the fill still re-prompts afterward, cooldown-permitting.
+        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'es'));
+      });
+
+      // Review finding (Important, coverage gap): every test above is an
+      // ESCAPE scenario (handled:false) -- none exercises the far more
+      // common turn where the seam's answer IS the fill's own field
+      // answer. This drives a plain deterministic answer ("1" for
+      // work_authorization) all the way through `routeMessage` and
+      // confirms: the merge UPDATE ran with the validated value, the next
+      // question was queued on the SAME inbound SID, and the dispatch tail
+      // never double-prompts (handled:true returns immediately from the
+      // seam, before `routeReadyWorkerCommands`/`maybeRepromptFill` ever
+      // run -- there is exactly one job_applications JOIN jobs SELECT
+      // before the merge and exactly one after, never a third from a
+      // tail re-derive).
+      it('a plain field answer flows through the seam end-to-end: merges the value, queues the next prompt on the same inbound SID, and the dispatch tail does not double-prompt', async () => {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-answer' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              state_context: { fill_application_id: 'app-1' },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+          // Task 10 seam: handleFillMessage's jobId refresh.
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ job_id: 'job-1' }] });
+        // computeNextStep (current step): work_authorization is outstanding.
+        mockComputeNextStepRow({ required_fields: ['work_authorization', 'date_available'], application_answers: {} });
+        // mergeAnswer: setRls, then the validated UPDATE.
+        mockQuery.mockResolvedValueOnce({ rowCount: 1, rows: [] }); // set internal RLS context
+        mockQuery.mockResolvedValueOnce(ok()); // UPDATE job_applications
+        // sendNextStepPrompt's own re-derive: date_available remains.
+        mockComputeNextStepRow({
+          required_fields: ['work_authorization', 'date_available'],
+          application_answers: { work_authorization: true },
+        });
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: next field question
+        // handled:true returns `conv.user_id` ('user-1') from routeMessage,
+        // so processRecord's Phase 2 also drains the job-message outbox for
+        // that actor -- same fuller tail as the CANCELAR/relay-override
+        // tests above (not the plain 4-query mockRecordTail()).
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-answer',
+            From: 'whatsapp:+15125551234',
+            Body: '1',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        // The merge ran with the validated value.
+        const mergeUpdate = mockQuery.mock.calls.find(([sql, params]) =>
+          /UPDATE job_applications/i.test(sql as string)
+          && Array.isArray(params)
+          && params[0] === JSON.stringify({ work_authorization: true }),
+        );
+        expect(mergeUpdate).toBeDefined();
+
+        // The next-step prompt was queued on the SAME inbound SID.
+        const outboxInserts = mockQuery.mock.calls.filter(([sql, params]) =>
+          /INSERT INTO whatsapp_outbox/i.test(sql as string)
+          && Array.isArray(params)
+          && params[0] === 'SM-fill-answer',
+        );
+        const promptInsert = outboxInserts.find(([, params]) =>
+          (params as unknown[])[2] === fieldQuestion('date_available', 'en'));
+        expect(promptInsert).toBeDefined();
+
+        // The dispatch tail did NOT double-prompt: exactly one
+        // whatsapp_outbox INSERT this turn, and exactly two
+        // job_applications JOIN jobs derives (current-step, then
+        // sendNextStepPrompt's own re-derive) -- handled:true returns
+        // immediately from the seam, so routeReadyWorkerCommands (and
+        // therefore maybeRepromptFill) never runs.
+        expect(outboxInserts.length).toBe(1);
+        expect(countQueryByPattern(/FROM job_applications ja/i)).toBe(2);
+      });
+
+      // Task 11: the seam gate itself (routeMessage) now fires when EITHER
+      // fill_application_id OR fill_offer_application_id is set. Every test
+      // above only ever exercises the first key -- this locks down the
+      // WIRING for the second: with no fill_application_id at all, the seam
+      // still gives handleFillMessage first refusal, which (per
+      // application-fill.test.ts's own exhaustive coverage of
+      // `resolveOfferOnlyTurn`) arms the offered application and prompts its
+      // first gap on an affirmative reply.
+      it('the seam fires when only fill_offer_application_id is set: "1" arms the offered application and prompts its first gap', async () => {
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+          .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-fill-offer-accept' }] }) // claim
+          .mockResolvedValueOnce({
+            rowCount: 1,
+            rows: [convRow({
+              conversation_state: 'idle',
+              user_id: 'user-1',
+              language: 'en',
+              // No fill_application_id at all -- only the continue-other offer.
+              state_context: { fill_offer_application_id: 'app-2' },
+            })],
+          })
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // v2 forced-idle writeback
+        mockStateContextUpdate(); // resolveOfferOnlyTurn's accept write (offer cleared, fill_application_id armed)
+        mockComputeNextStepRow({ required_fields: ['work_authorization'], application_answers: {} }); // promptNextStep's re-derive
+        mockStateContextUpdate(); // fill_last_prompt_at stamp
+        mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox: first field question
+        mockQuery
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending whatsapp_outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
+          .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
+          .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
+
+        await handler(
+          makeSqsEvent({
+            MessageSid: 'SM-fill-offer-accept',
+            From: 'whatsapp:+15125551234',
+            Body: '1',
+          }),
+          {} as any,
+          {} as any,
+        );
+
+        // The offer was consumed and turned into an armed fill in ONE write.
+        const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-2');
+        expect(armWrite).toBeDefined();
+        expect(armWrite?.fill_offer_application_id).toBeNull();
+
+        expect(outboxBodies()).toContain(fieldQuestion('work_authorization', 'en'));
+
+        // Regression guard (Task 11 review, Critical): the outbox assertion
+        // above alone does NOT catch a stale `ctx.stateContext` -- the mock
+        // for computeNextStep's SELECT returns its canned row unconditionally,
+        // regardless of what `applicationId` param it was actually called
+        // with, so a `buildFillDeps.updateStateContext` that REASSIGNS
+        // `conv.state_context` (instead of mutating it in place) would leave
+        // `resolveOfferOnlyTurn`'s `ctx.stateContext.fill_application_id`
+        // `undefined` post-arm, and `computeNextStep(client, undefined)`
+        // would still "pass" this far since the mock never inspects params.
+        // Assert on the CAPTURED param directly: the offered id, never
+        // `undefined`.
+        const computeNextStepCalls = mockQuery.mock.calls.filter(
+          ([sql]) => /FROM job_applications ja JOIN jobs j/i.test(sql as string),
+        );
+        expect(computeNextStepCalls).toHaveLength(1);
+        expect(computeNextStepCalls[0][1]).toEqual(['app-2']);
+      });
     });
   });
 
