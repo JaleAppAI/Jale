@@ -72,7 +72,7 @@ requireIncludes('.github/workflows/deploy-production.yml', deployProduction, '_r
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, "grep -Ev '^infra/package(-lock)?\\.json$'");
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'admin-prerequisites');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'JaleDatabaseStack JaleAdminCertStack');
-requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'JaleDatabaseStack JaleWhatsAppStack JaleAdminStack');
+requireIncludes('.github/workflows/deploy-production.yml', deployProduction, 'JaleDatabaseStack JaleDocumentsStack JaleWhatsAppStack JaleAdminStack');
 requireIncludes('.github/workflows/deploy-production.yml', deployProduction, "vars.CDK_CONTEXT_ENVIRONMENT || 'production'");
 
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'workflow_call:');

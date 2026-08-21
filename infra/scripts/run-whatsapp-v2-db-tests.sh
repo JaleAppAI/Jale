@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused WhatsApp v2 PostgreSQL enforcement and
-# concurrency suites (migrations 042/049 + onboarding concurrency and
-# least-privilege flow coverage).
+# concurrency suites (migrations 042/049/080 + onboarding concurrency,
+# least-privilege flow coverage, and the 080 application-fill DB contract:
+# worker_documents grants/RLS, the 022 guard's GUC bypass, and the 075/078
+# cert caps).
 #
 # `test:whatsapp-v2-db` points here so that an unset or empty
 # JALE_TEST_DATABASE_URL is a hard, non-zero failure instead of a false green.
@@ -34,4 +36,5 @@ exec npx jest --runInBand \
   test/unit/db/whatsapp-onboarding-052.integration.test.ts \
   test/unit/db/whatsapp-onboarding-053.integration.test.ts \
   test/unit/db/whatsapp-onboarding-reset.integration.test.ts \
-  test/unit/db/retrigger-sweep-definer.integration.test.ts
+  test/unit/db/retrigger-sweep-definer.integration.test.ts \
+  test/unit/db/whatsapp-application-fill-080.integration.test.ts

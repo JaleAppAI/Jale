@@ -18,6 +18,12 @@ export interface DocumentsStackProps extends cdk.StackProps {
 }
 
 export class DocumentsStack extends cdk.Stack {
+  /** KMS key encrypting the worker documents bucket. */
+  public readonly key: kms.Key;
+  /** Worker documents bucket — exposed so other stacks (e.g. WhatsAppStack's
+   * processor lambda) can be granted scoped access (see Task 12). */
+  public readonly bucket: s3.Bucket;
+
   constructor(scope: Construct, id: string, props: DocumentsStackProps) {
     super(scope, id, props);
 
@@ -25,6 +31,7 @@ export class DocumentsStack extends cdk.Stack {
       enableKeyRotation: true,
       description: 'KMS key for Jale worker documents',
     });
+    this.key = docsKey;
 
     const docsBucket = new s3.Bucket(this, 'DocumentsBucket', {
       bucketName: `jale-worker-documents-${this.account}`,
@@ -51,6 +58,7 @@ export class DocumentsStack extends cdk.Stack {
         },
       ],
     });
+    this.bucket = docsBucket;
 
     const commonEnv = {
       DB_SECRET_ARN: props.dbSecret.secretArn,

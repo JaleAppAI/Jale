@@ -179,6 +179,20 @@ new LegalStack(app, 'JaleLegalStack', {
   dualAuthorizer: api.dualAuthorizer,
 });
 
+// DocumentsStack is instantiated before WhatsAppStack so the processor
+// lambda can be granted put access to the documents bucket (Task 12).
+// DocumentsStack only depends on network/api/dbSecret (all already
+// available above) — it does not consume anything from WhatsAppStack, so
+// this ordering introduces no cycle.
+const documents = new DocumentsStack(app, 'JaleDocumentsStack', {
+  env,
+  network,
+  api,
+  dbSecret: database.dbSecret,
+  allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
+  requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
+});
+
 new WhatsAppStack(app, 'JaleWhatsAppStack', {
   env,
   vpc: network.vpc,
@@ -193,15 +207,7 @@ new WhatsAppStack(app, 'JaleWhatsAppStack', {
   trustAssessmentQueue: ai.trustAssessmentQueue,
   statusCallbackUrl: whatsappStatusCallbackUrl,
   alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
-});
-
-new DocumentsStack(app, 'JaleDocumentsStack', {
-  env,
-  network,
-  api,
-  dbSecret: database.dbSecret,
-  allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
-  requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
+  documentsBucket: documents.bucket,
 });
 
 // AdminStack - secure internal ops console at admin.jaleapp.ai.
