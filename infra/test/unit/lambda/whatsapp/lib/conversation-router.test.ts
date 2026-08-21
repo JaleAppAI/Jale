@@ -176,6 +176,50 @@ describe('picker flow (Phase 2 — no buffer)', () => {
     expect(updatedFields.focused_job_conversation_id).toBe(CONV_B);
   });
 
+  it('handlePickerResponse: CHATS pick sets fill_relay_override when a fill is armed', async () => {
+    const conv = {
+      ...baseConv,
+      state_context: {
+        fill_application_id: '11111111-1111-1111-1111-111111111111',
+        pending_picker: {
+          kind: 'disambiguation' as const,
+          threads: [
+            { conversationId: CONV_A, jobTitle: 'Plomero', companyName: 'ACME', threadNumber: 1 },
+            { conversationId: CONV_B, jobTitle: 'Plomero', companyName: 'BuildCo', threadNumber: 2 },
+          ],
+        },
+      },
+    };
+    await handlePickerResponse(client, conv, { ...msg, body: '2' }, WORKER, deps);
+    const updateCall = (deps.updateConversation as jest.Mock).mock.calls[0];
+    const updatedFields = updateCall[2];
+    expect(updatedFields.state_context?.fill_relay_override).toBe(true);
+    // every other key the function already writes must survive untouched
+    expect(updatedFields.state_context?.fill_application_id).toBe('11111111-1111-1111-1111-111111111111');
+    expect(updatedFields.state_context?.pending_picker).toBeUndefined();
+    expect(updatedFields.focused_job_conversation_id).toBe(CONV_B);
+  });
+
+  it('handlePickerResponse: CHATS pick does NOT set fill_relay_override when no fill is armed', async () => {
+    const conv = {
+      ...baseConv,
+      state_context: {
+        pending_picker: {
+          kind: 'disambiguation' as const,
+          threads: [
+            { conversationId: CONV_A, jobTitle: 'Plomero', companyName: 'ACME', threadNumber: 1 },
+            { conversationId: CONV_B, jobTitle: 'Plomero', companyName: 'BuildCo', threadNumber: 2 },
+          ],
+        },
+      },
+    };
+    await handlePickerResponse(client, conv, { ...msg, body: '2' }, WORKER, deps);
+    const updateCall = (deps.updateConversation as jest.Mock).mock.calls[0];
+    const updatedFields = updateCall[2];
+    // key must be ABSENT, not merely falsy
+    expect('fill_relay_override' in (updatedFields.state_context ?? {})).toBe(false);
+  });
+
   it('parseDisambiguationPick accepts 1-2 digit numbers only (never OTP codes)', () => {
     expect(parseDisambiguationPick('2')).toBe(2);
     expect(parseDisambiguationPick(' 1 ')).toBe(1);
@@ -658,6 +702,28 @@ describe('conversation:focus button', () => {
     // Confirmation reply asks worker to send their message
     const sent = (queueOutboxText as jest.Mock).mock.calls[0][3];
     expect(sent).toMatch(/[Ss]end your message|[Ee]scribe tu mensaje/);
+  });
+
+  it('conversation:focus button sets fill_relay_override when a fill is armed', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'conv-b' }], rowCount: 1 });
+    const conv = {
+      ...baseConv,
+      user_id: WORKER,
+      focused_job_conversation_id: 'conv-a',
+      state_context: {
+        fill_application_id: '22222222-2222-2222-2222-222222222222',
+        pending_picker: { kind: 'chats' as const, threads: [] },
+      },
+    };
+    const routed = await handleEmployerConversationButton(
+      client, conv, msg, { action: 'focus', conversationId: 'conv-b' }, deps);
+    expect(routed).toBe(WORKER);
+    const focusUpdate = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusUpdate).toBeDefined();
+    expect(focusUpdate![2].state_context?.fill_relay_override).toBe(true);
+    expect(focusUpdate![2].state_context?.fill_application_id).toBe('22222222-2222-2222-2222-222222222222');
+    expect(focusUpdate![2].state_context?.pending_picker).toBeUndefined();
   });
 
   it('focus on closed thread: replies unavailable, returns null, does not set focus', async () => {

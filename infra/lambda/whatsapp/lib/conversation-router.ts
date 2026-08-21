@@ -272,6 +272,15 @@ export async function tryConversationRelay(
   return await relayWorkerFreeText(client, conv, msg, workerId, deps);
 }
 
+// `fill_application_id`/`fill_relay_override` belong to the application-fill
+// flow (Task 1-9), whose state_context fields have not yet been added to
+// ProfileStateContext in ./flows. Declared locally so this set-site can read
+// and write them without widening the shared type from this file.
+type FillAwareStateContext = ProfileStateContext & {
+  fill_application_id?: string;
+  fill_relay_override?: boolean;
+};
+
 /**
  * Set (or clear) the focused employer thread on the conversation row.
  *
@@ -280,6 +289,14 @@ export async function tryConversationRelay(
  * never `conversation_state`, `state_context`, or `user_id`. A worker mid-
  * onboarding who taps "open" keeps their collected answers; once they finish
  * onboarding and reach idle, relay routes free text to the focused thread.
+ *
+ * Task 10a: this is the SINGLE set-site for focusing an employer thread,
+ * shared by the CHATS picker resolution and the `conversation:focus` button
+ * path. When the worker is mid application-fill (`fill_application_id` is a
+ * string), the very next free-text message must relay to the newly-focused
+ * employer instead of feeding the fill — so we arm a one-turn
+ * `fill_relay_override` flag here. The fill dispatcher clears it after
+ * relaying exactly one message (spec §4.2).
  */
 async function setFocusedConversation(
   client: PoolClient,
@@ -288,14 +305,19 @@ async function setFocusedConversation(
   messageSid: string,
   deps: RouterDeps,
 ): Promise<void> {
-  const { pending_picker: _drop, ...restContext } = (conv.state_context ?? {}) as ProfileStateContext;
+  const { pending_picker: _drop, ...restContext } =
+    (conv.state_context ?? {}) as FillAwareStateContext;
+  const fillArmed = typeof restContext.fill_application_id === 'string';
+  const nextContext: FillAwareStateContext = fillArmed
+    ? { ...restContext, fill_relay_override: true }
+    : restContext;
   await deps.updateConversation(client, conv.id, {
     focused_job_conversation_id: conversationId,
-    state_context: restContext,
+    state_context: nextContext,
     last_processed_message_sid: messageSid,
   });
   conv.focused_job_conversation_id = conversationId;
-  conv.state_context = restContext as typeof conv.state_context;
+  conv.state_context = nextContext as typeof conv.state_context;
 }
 
 // R6: an open/decline targeting a closed/missing conversation must not silently
