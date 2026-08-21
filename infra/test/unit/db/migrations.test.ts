@@ -690,4 +690,88 @@ describe('database migrations', () => {
     expect(migration).toContain('city_cbsa_crosswalk_read_all');
     expect(migration).not.toMatch(/GRANT\s+(INSERT|UPDATE|DELETE)/i);
   });
+
+  // These are literal-string invariants in the same spirit as the 036/038/020b
+  // assertions above, and they exist for one specific reason: on RDS there is
+  // no Jest. Migration 080's own terminal DO block is the ONLY thing that
+  // verifies its role machinery in production, so if someone deletes those
+  // in-file invariants (as an earlier revision of 080 in fact did), no
+  // PostgreSQL-backed suite can catch it -- the database would simply be
+  // unverified rather than wrong. Pinning the error strings here means the
+  // deletion fails a test that runs everywhere, with no database at all.
+  it('keeps migration 080 self-verifying: the in-file invariants that are the only RDS-side check', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '080_employer_digest_settings.sql'),
+      'utf8',
+    );
+
+    // The creator-membership end state (036:281-300 shape). A surviving
+    // membership row with set_option would let jale_admin SET ROLE to the
+    // enumerator and read every employer's settings cross-tenant.
+    expect(migration).toContain('jale_digest_enumerator creator membership invariant failed');
+    expect(migration).toContain('NOT membership.set_option');
+    expect(migration).toContain('NOT membership.inherit_option');
+    expect(migration).toContain('grantor.rolsuper');
+
+    // The 036 role-membership dance itself.
+    expect(migration).toContain('WITH ADMIN TRUE, INHERIT FALSE, SET FALSE');
+    expect(migration).toContain('WITH SET TRUE, INHERIT FALSE');
+    expect(migration).toContain('WITH SET FALSE, INHERIT FALSE');
+    expect(migration).toContain('REVOKE jale_digest_enumerator FROM jale_admin GRANTED BY jale_admin');
+
+    // Definer-function invariants: owner + prosecdef + pinned search_path.
+    expect(migration).toContain(
+      'definer invariant failed (owner/SECURITY DEFINER/search_path)',
+    );
+    expect(migration).toContain("ARRAY['search_path=pg_catalog, pg_temp']::TEXT[]");
+    expect(migration).toContain('functions, expected exactly 2');
+
+    // PUBLIC-ACL negatives on the private schema and both functions.
+    expect(migration).toContain('jale_digest_internal is reachable by PUBLIC');
+    expect(migration).toContain('is EXECUTE-able by PUBLIC');
+    expect(migration).toContain('acl.grantee = 0');
+
+    // Exact column-grant arrays, not spot probes.
+    expect(migration).toContain('exact users SELECT column grants changed');
+    expect(migration).toContain('exact employer_digest_settings UPDATE column grants changed');
+    expect(migration).toContain('holds unexpected privilege kinds');
+    expect(migration).toContain("ARRAY['cognito_sub', 'email', 'id', 'user_type']::TEXT[]");
+    expect(migration).toContain("ARRAY['enabled']::TEXT[]");
+
+    // Policy shape (cmd + roles), not merely policy names.
+    expect(migration).toContain('missing or wrong shape (expected cmd=%, role=%)');
+    expect(migration).toContain('p.polcmd::TEXT = expected_policy.polcmd');
+    expect(migration).toContain('p.polroles = ARRAY[(');
+  });
+
+  it('keeps migration 080 resilient to a stored timezone leaving tzdata', () => {
+    const migration = fs.readFileSync(
+      path.join(migrationsDir, '080_employer_digest_settings.sql'),
+      'utf8',
+    );
+
+    // `AT TIME ZONE <unlisted zone>` RAISES rather than returning NULL, so
+    // without this fence one unusable row aborts the whole set-returning query
+    // and every employer misses their digest. MATERIALIZED is load-bearing: a
+    // plain CTE lets the planner hoist the date_part predicate ahead of the
+    // join and raise anyway (verified on PostgreSQL 16.14).
+    expect(migration).toContain('WITH listed AS MATERIALIZED (');
+    expect(migration).toContain('JOIN pg_catalog.pg_timezone_names tz ON tz.name = s.timezone');
+
+    // The producer mints the unsubscribe token from (employer_id, version), so
+    // the sanctioned cross-tenant read has to return the version too.
+    expect(migration).toContain('unsubscribe_token_version smallint');
+
+    // The guard trigger, and the short-circuit that keeps a row with a
+    // since-delisted zone updatable.
+    expect(migration).toContain('BEFORE INSERT OR UPDATE OF timezone ON employer_digest_settings');
+    expect(migration).toContain(
+      "IF TG_OP = 'UPDATE' AND NEW.timezone IS NOT DISTINCT FROM OLD.timezone THEN",
+    );
+    expect(migration).toContain("name NOT IN ('localtime', 'posixrules', 'Factory')");
+
+    // A subquery CHECK is parse-rejected (0A000) and `AT TIME ZONE` accepts
+    // POSIX-style garbage, so neither may be used as the validator.
+    expect(migration).not.toMatch(/CHECK\s*\([^)]*SELECT\s+name\s+FROM\s+pg_timezone_names/i);
+  });
 });

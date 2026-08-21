@@ -23,6 +23,8 @@
  * over a real non-superuser `jale_admin` connection.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { Client } from 'pg';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
@@ -103,6 +105,64 @@ let superuserUrl: string;
 let adminUrl: string;
 const userIds = new Map<string, string>();
 
+/**
+ * Fixture id lookup that fails loudly.
+ *
+ * `userIds.get(missing)` returns undefined, node-postgres serialises undefined
+ * as SQL NULL, and `WHERE employer_id = NULL` matches nothing -- so every
+ * negative probe in this file ("A cannot see B's row", "unknown id changes
+ * nothing", "the worker row is excluded") would pass vacuously if seeding had
+ * silently failed. Routing every id through this accessor means a seeding
+ * failure surfaces as a thrown error instead of a green suite.
+ */
+function idOf(sub: string): string {
+  const id = userIds.get(sub);
+  if (!id) {
+    throw new Error(`fixture user id missing for ${sub} -- beforeAll seeding did not complete`);
+  }
+  return id;
+}
+
+/**
+ * Plant a stale updated_at with the updated_at trigger disabled.
+ *
+ * set_updated_at() (001) unconditionally assigns NEW.updated_at = NOW() on
+ * EVERY update, so a plain `SET updated_at = now() - interval '1 day'` is
+ * overwritten by the trigger the instant it is written. A later "did
+ * updated_at move?" assertion over such a plant is vacuously true and would
+ * still pass with the trigger dropped entirely. Disabling the trigger for the
+ * plant is what gives that assertion the power to fail.
+ */
+async function plantStaleUpdatedAt(employerId: string): Promise<void> {
+  await withClient(superuserUrl, async (client) => {
+    await client.query(
+      `ALTER TABLE employer_digest_settings DISABLE TRIGGER employer_digest_settings_updated_at`,
+    );
+    try {
+      await client.query(
+        `UPDATE employer_digest_settings SET updated_at = now() - interval '1 day'
+          WHERE employer_id = $1`,
+        [employerId],
+      );
+    } finally {
+      await client.query(
+        `ALTER TABLE employer_digest_settings ENABLE TRIGGER employer_digest_settings_updated_at`,
+      );
+    }
+  });
+
+  // Self-check: prove the plant actually stuck, otherwise the assertion this
+  // sets up cannot mean anything.
+  const planted = await withClient(superuserUrl, (client) =>
+    client.query<{ stale: boolean }>(
+      `SELECT updated_at < now() - interval '1 hour' AS stale
+         FROM employer_digest_settings WHERE employer_id = $1`,
+      [employerId],
+    ),
+  );
+  expect(planted.rows[0].stale).toBe(true);
+}
+
 /** Reset every fixture row to a known baseline (superuser: bypasses RLS). */
 async function resetFixtures(): Promise<void> {
   await withClient(superuserUrl, async (client) => {
@@ -160,10 +220,18 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         await client.query(
           `INSERT INTO employer_digest_settings (employer_id, enabled, send_hour_local, timezone, language)
            VALUES ($1, false, 8, 'America/Chicago', 'en')`,
-          [userIds.get(sub)],
+          [idOf(sub)],
         );
       }
     });
+
+    // Seeding must be complete before any test runs -- see idOf()'s comment on
+    // why a half-seeded fixture set would turn the negative probes green.
+    expect(userIds.size).toBe(ALL_SUBS.length);
+    for (const sub of ALL_SUBS) {
+      expect(typeof userIds.get(sub)).toBe('string');
+      expect(userIds.get(sub)).toBeTruthy();
+    }
   }, 60_000);
 
   afterAll(async () => {
@@ -196,14 +264,14 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         client.query<{ employer_id: string }>(`SELECT employer_id FROM employer_digest_settings`),
       );
       expect(rows.rows).toHaveLength(1);
-      expect(rows.rows[0].employer_id).toBe(userIds.get(SUB_A));
+      expect(rows.rows[0].employer_id).toBe(idOf(SUB_A));
     });
 
     it("employer A cannot SELECT employer B's row even when naming its id explicitly", async () => {
       if (!databaseUrl) return;
       const rows = await asEmployer(SUB_A, (client) =>
         client.query(`SELECT employer_id FROM employer_digest_settings WHERE employer_id = $1`, [
-          userIds.get(SUB_B),
+          idOf(SUB_B),
         ]),
       );
       expect(rows.rows).toHaveLength(0);
@@ -213,7 +281,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
       if (!databaseUrl) return;
       const result = await asEmployer(SUB_A, (client) =>
         client.query(`UPDATE employer_digest_settings SET enabled = true WHERE employer_id = $1`, [
-          userIds.get(SUB_B),
+          idOf(SUB_B),
         ]),
       );
       expect(result.rowCount).toBe(0);
@@ -222,7 +290,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
       const check = await withClient(superuserUrl, (client) =>
         client.query<{ enabled: boolean }>(
           `SELECT enabled FROM employer_digest_settings WHERE employer_id = $1`,
-          [userIds.get(SUB_B)],
+          [idOf(SUB_B)],
         ),
       );
       expect(check.rows[0].enabled).toBe(false);
@@ -234,7 +302,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         asEmployer(SUB_A, (client) =>
           client.query(
             `INSERT INTO employer_digest_settings (employer_id, enabled) VALUES ($1, true)`,
-            [userIds.get(SUB_B)],
+            [idOf(SUB_B)],
           ),
         ),
       ).rejects.toThrow(/row-level security/i);
@@ -245,17 +313,13 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
       const before = await withClient(superuserUrl, (client) =>
         client.query<{ updated_at: Date }>(
           `SELECT updated_at FROM employer_digest_settings WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
-      // Force a distinguishable baseline so the assertion cannot pass on
-      // clock granularity alone.
-      await withClient(superuserUrl, (client) =>
-        client.query(
-          `UPDATE employer_digest_settings SET updated_at = now() - interval '1 day' WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
-        ),
-      );
+      // Force a distinguishable baseline so the assertion cannot pass on clock
+      // granularity alone -- and plant it with the trigger off, or the trigger
+      // overwrites the plant and the `fresh` assertion below becomes vacuous.
+      await plantStaleUpdatedAt(idOf(SUB_A));
       expect(before.rows).toHaveLength(1);
 
       const result = await asEmployer(SUB_A, (client) =>
@@ -267,7 +331,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         client.query<{ enabled: boolean; language: string; fresh: boolean }>(
           `SELECT enabled, language, updated_at > now() - interval '1 minute' AS fresh
              FROM employer_digest_settings WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
       expect(after.rows[0].enabled).toBe(true);
@@ -294,7 +358,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         client.query(
           `INSERT INTO email_outbox (recipient_email, subject, body_text, source_type, source_id)
            VALUES ('digest-080-ok@example.test', 'Your daily digest', 'body', 'employer_digest', $1)`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
       expect(result.rowCount).toBe(1);
@@ -312,7 +376,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           client.query(
             `INSERT INTO email_outbox (recipient_email, subject, body_text, source_type, source_id)
              VALUES ('digest-080-nope@example.test', 'Not a digest', 'body', 'billing_pause', $1)`,
-            [userIds.get(SUB_A)],
+            [idOf(SUB_A)],
           ),
         ),
       ).rejects.toThrow(/row-level security/i);
@@ -323,15 +387,33 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
   // 3. due_digest_employers: the definer bypass, and the hour/date logic
   // -------------------------------------------------------------------------
   describe('jale_digest_internal.due_digest_employers', () => {
-    /** Call the definer function as plain jale_admin with NO GUC set. */
-    async function due(pNow: string): Promise<Array<{ employer_id: string; email: string; timezone: string; language: string }>> {
+    interface DueRow {
+      employer_id: string;
+      cognito_sub: string;
+      email: string;
+      send_hour_local: number;
+      timezone: string;
+      language: string;
+      unsubscribe_token_version: number;
+    }
+
+    /**
+     * Call the definer function as plain jale_admin with NO GUC set.
+     *
+     * ALL_SUBS.map(idOf) throws rather than producing a NULL array element: a
+     * nullish id would silently drop that employer from the `= ANY(...)`
+     * filter and turn an absence assertion green for the wrong reason.
+     */
+    async function due(pNow: string): Promise<DueRow[]> {
+      const ids = ALL_SUBS.map((s) => idOf(s));
       const result = await withClient(adminUrl, (client) =>
-        client.query<{ employer_id: string; email: string; timezone: string; language: string }>(
-          `SELECT employer_id, email, timezone, language
+        client.query<DueRow>(
+          `SELECT employer_id, cognito_sub, email, send_hour_local, timezone, language,
+                  unsubscribe_token_version
              FROM jale_digest_internal.due_digest_employers($1::timestamptz)
             WHERE employer_id = ANY($2::uuid[])
             ORDER BY email`,
-          [pNow, ALL_SUBS.map((s) => userIds.get(s))],
+          [pNow, ids],
         ),
       );
       return result.rows;
@@ -343,7 +425,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         client.query(
           `UPDATE employer_digest_settings SET enabled = true, send_hour_local = 8, timezone = 'America/New_York'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
 
@@ -357,7 +439,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         const viaDefiner = await client.query<{ employer_id: string }>(
           `SELECT employer_id FROM jale_digest_internal.due_digest_employers('2026-01-15 13:00:00+00'::timestamptz)
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         );
         expect(viaDefiner.rows).toHaveLength(1);
       });
@@ -369,12 +451,12 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         await client.query(
           `UPDATE employer_digest_settings SET enabled = true, send_hour_local = 8, timezone = 'America/New_York', language = 'en'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         );
         await client.query(
           `UPDATE employer_digest_settings SET enabled = true, send_hour_local = 8, timezone = 'America/Los_Angeles', language = 'es'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_LA)],
+          [idOf(SUB_LA)],
         );
       });
 
@@ -398,7 +480,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         client.query(
           `UPDATE employer_digest_settings SET enabled = true, send_hour_local = 8, timezone = 'America/Los_Angeles'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_LA)],
+          [idOf(SUB_LA)],
         ),
       );
 
@@ -409,7 +491,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           return client.query(
             `SELECT employer_id FROM jale_digest_internal.due_digest_employers('2026-01-15 16:00:00+00'::timestamptz)
               WHERE employer_id = $1`,
-            [userIds.get(SUB_LA)],
+            [idOf(SUB_LA)],
           );
         });
         counts.push(result.rows.length);
@@ -426,14 +508,126 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
               SET enabled = true, send_hour_local = 8, timezone = 'America/New_York',
                   last_sent_at = '2026-01-15 13:00:00+00'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
 
       expect(await due('2026-01-15 13:00:00+00')).toHaveLength(0);
       const nextDay = await due('2026-01-16 13:00:00+00');
       expect(nextDay).toHaveLength(1);
-      expect(nextDay[0].employer_id).toBe(userIds.get(SUB_A));
+      expect(nextDay[0].employer_id).toBe(idOf(SUB_A));
+    });
+
+    it('returns unsubscribe_token_version so the producer can mint the token without a second query', async () => {
+      if (!databaseUrl) return;
+      await withClient(superuserUrl, (client) =>
+        client.query(
+          `UPDATE employer_digest_settings
+              SET enabled = true, send_hour_local = 8, timezone = 'America/New_York',
+                  unsubscribe_token_version = 7
+            WHERE employer_id = $1`,
+          [idOf(SUB_A)],
+        ),
+      );
+
+      const rows = await due('2026-01-15 13:00:00+00');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].employer_id).toBe(idOf(SUB_A));
+      // The actual stored value, not merely a non-null: the producer signs the
+      // unsubscribe link with this, so an off-by-one would mint links that the
+      // unsubscribe function then refuses.
+      expect(rows[0].unsubscribe_token_version).toBe(7);
+      // And the version it hands back must be the one unsubscribe accepts.
+      const flipped = await withClient(adminUrl, (client) =>
+        client.query<{ flipped: boolean }>(
+          `SELECT jale_digest_internal.unsubscribe_employer($1::uuid, $2::smallint) AS flipped`,
+          [rows[0].employer_id, rows[0].unsubscribe_token_version],
+        ),
+      );
+      expect(flipped.rows[0].flipped).toBe(true);
+    });
+
+    it('returns the addressing fields the producer needs (cognito_sub, email, hour)', async () => {
+      if (!databaseUrl) return;
+      await withClient(superuserUrl, (client) =>
+        client.query(
+          `UPDATE employer_digest_settings
+              SET enabled = true, send_hour_local = 8, timezone = 'America/New_York', language = 'es'
+            WHERE employer_id = $1`,
+          [idOf(SUB_A)],
+        ),
+      );
+      const rows = await due('2026-01-15 13:00:00+00');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].cognito_sub).toBe(SUB_A);
+      expect(rows[0].email).toBe(`${SUB_A}@example.test`);
+      expect(rows[0].send_hour_local).toBe(8);
+      expect(rows[0].language).toBe('es');
+    });
+
+    it('skips ONLY the employer whose stored zone has left tzdata, and still returns everyone else', async () => {
+      if (!databaseUrl) return;
+      // The tzdata-shrink scenario the migration header describes. `AT TIME
+      // ZONE <unlisted>` RAISES rather than returning NULL, so before the
+      // MATERIALIZED pre-join on pg_timezone_names a single such row aborted
+      // the whole RETURN QUERY and NOBODY got a digest. This test pins that it
+      // is now a per-row skip.
+      //
+      // 'US/Pacific' is a real historical zone name that Debian trixie moved
+      // into the separate tzdata-legacy package, so it is genuinely absent from
+      // this host's pg_timezone_names -- exactly the shape of the failure,
+      // rather than a synthetic string. Confirm that premise before relying on
+      // it, since on a host WITH tzdata-legacy the row would simply be valid
+      // and the test would prove nothing.
+      const listed = await withClient(superuserUrl, (client) =>
+        client.query<{ present: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = 'US/Pacific') AS present`,
+        ),
+      );
+      expect(listed.rows[0].present).toBe(false);
+
+      await withClient(superuserUrl, async (client) => {
+        // Both guards must come off: the IANA trigger would refuse the write,
+        // and it is the only thing standing between us and the planted state.
+        await client.query(
+          `ALTER TABLE employer_digest_settings DISABLE TRIGGER employer_digest_settings_timezone_iana`,
+        );
+        try {
+          await client.query(
+            `UPDATE employer_digest_settings
+                SET enabled = true, send_hour_local = 8, timezone = 'US/Pacific'
+              WHERE employer_id = $1`,
+            [idOf(SUB_B)],
+          );
+        } finally {
+          await client.query(
+            `ALTER TABLE employer_digest_settings ENABLE TRIGGER employer_digest_settings_timezone_iana`,
+          );
+        }
+        // A second, healthy employer due at the same instant.
+        await client.query(
+          `UPDATE employer_digest_settings
+              SET enabled = true, send_hour_local = 8, timezone = 'America/New_York'
+            WHERE employer_id = $1`,
+          [idOf(SUB_A)],
+        );
+      });
+
+      try {
+        const rows = await due('2026-01-15 13:00:00+00');
+        // The healthy employer is still served -- this is the assertion that
+        // would have thrown 22023 before the fence.
+        expect(rows.map((r) => r.employer_id)).toEqual([idOf(SUB_A)]);
+        expect(rows.map((r) => r.employer_id)).not.toContain(idOf(SUB_B));
+      } finally {
+        await withClient(superuserUrl, (client) =>
+          client.query(
+            `UPDATE employer_digest_settings SET timezone = 'America/Chicago', enabled = false
+              WHERE employer_id = $1`,
+            [idOf(SUB_B)],
+          ),
+        );
+      }
     });
 
     it('a NULL watermark is due on the first matching hour', async () => {
@@ -443,7 +637,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           `UPDATE employer_digest_settings
               SET enabled = true, send_hour_local = 8, timezone = 'America/New_York', last_sent_at = NULL
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
       expect(await due('2026-01-15 13:00:00+00')).toHaveLength(1);
@@ -456,7 +650,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           `UPDATE employer_digest_settings
               SET enabled = false, send_hour_local = 8, timezone = 'America/New_York'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
       expect(await due('2026-01-15 13:00:00+00')).toHaveLength(0);
@@ -469,11 +663,11 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           `UPDATE employer_digest_settings
               SET enabled = true, send_hour_local = 8, timezone = 'America/New_York'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_WORKER)],
+          [idOf(SUB_WORKER)],
         ),
       );
       const rows = await due('2026-01-15 13:00:00+00');
-      expect(rows.map((r) => r.employer_id)).not.toContain(userIds.get(SUB_WORKER));
+      expect(rows.map((r) => r.employer_id)).not.toContain(idOf(SUB_WORKER));
       expect(rows).toHaveLength(0);
     });
   });
@@ -508,33 +702,33 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         client.query(
           `UPDATE employer_digest_settings SET enabled = true, unsubscribe_token_version = 3
             WHERE employer_id = ANY($1::uuid[])`,
-          [[userIds.get(SUB_A), userIds.get(SUB_B)]],
+          [[idOf(SUB_A), idOf(SUB_B)]],
         ),
       );
     });
 
     it('flips enabled to false and returns true on a version match', async () => {
       if (!databaseUrl) return;
-      expect(await unsubscribe(userIds.get(SUB_A)!, 3)).toBe(true);
-      expect(await enabledOf(userIds.get(SUB_A)!)).toBe(false);
+      expect(await unsubscribe(idOf(SUB_A), 3)).toBe(true);
+      expect(await enabledOf(idOf(SUB_A))).toBe(false);
     });
 
     it('returns false and changes nothing on a stale version (a bumped version invalidates old links)', async () => {
       if (!databaseUrl) return;
-      expect(await unsubscribe(userIds.get(SUB_A)!, 2)).toBe(false);
-      expect(await enabledOf(userIds.get(SUB_A)!)).toBe(true);
+      expect(await unsubscribe(idOf(SUB_A), 2)).toBe(false);
+      expect(await enabledOf(idOf(SUB_A))).toBe(true);
     });
 
     it('returns false and changes nothing for an unknown employer id', async () => {
       if (!databaseUrl) return;
       expect(await unsubscribe('00000000-0000-0000-0000-000000000000', 3)).toBe(false);
-      expect(await enabledOf(userIds.get(SUB_A)!)).toBe(true);
+      expect(await enabledOf(idOf(SUB_A))).toBe(true);
     });
 
     it("touches only the addressed employer, never a neighbour's row", async () => {
       if (!databaseUrl) return;
-      expect(await unsubscribe(userIds.get(SUB_A)!, 3)).toBe(true);
-      expect(await enabledOf(userIds.get(SUB_B)!)).toBe(true);
+      expect(await unsubscribe(idOf(SUB_A), 3)).toBe(true);
+      expect(await enabledOf(idOf(SUB_B))).toBe(true);
     });
 
     it('cannot change any column other than enabled (single-column UPDATE grant), and the trigger still maintains updated_at', async () => {
@@ -542,14 +736,17 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
       await withClient(superuserUrl, (client) =>
         client.query(
           `UPDATE employer_digest_settings
-              SET timezone = 'America/New_York', send_hour_local = 6, language = 'es',
-                  updated_at = now() - interval '1 day'
+              SET timezone = 'America/New_York', send_hour_local = 6, language = 'es'
             WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
+      // Separate, trigger-disabled plant: folding `updated_at = now() - 1 day`
+      // into the UPDATE above would be undone by the trigger on that same
+      // statement, leaving the `fresh` assertion below unable to fail.
+      await plantStaleUpdatedAt(idOf(SUB_A));
 
-      expect(await unsubscribe(userIds.get(SUB_A)!, 3)).toBe(true);
+      expect(await unsubscribe(idOf(SUB_A), 3)).toBe(true);
 
       const after = await withClient(superuserUrl, (client) =>
         client.query<{
@@ -563,7 +760,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           `SELECT enabled, timezone, send_hour_local, language, unsubscribe_token_version,
                   updated_at > now() - interval '1 minute' AS fresh
              FROM employer_digest_settings WHERE employer_id = $1`,
-          [userIds.get(SUB_A)],
+          [idOf(SUB_A)],
         ),
       );
       expect(after.rows[0].enabled).toBe(false);
@@ -618,7 +815,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         const stored = await withClient(superuserUrl, (client) =>
           client.query<{ timezone: string }>(
             `SELECT timezone FROM employer_digest_settings WHERE employer_id = $1`,
-            [userIds.get(SUB_A)],
+            [idOf(SUB_A)],
           ),
         );
         expect(stored.rows[0].timezone).toBe(zone);
@@ -642,7 +839,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         const stored = await withClient(superuserUrl, (client) =>
           client.query<{ timezone: string }>(
             `SELECT timezone FROM employer_digest_settings WHERE employer_id = $1`,
-            [userIds.get(SUB_A)],
+            [idOf(SUB_A)],
           ),
         );
         expect(stored.rows[0].timezone).toBe('America/Chicago');
@@ -653,7 +850,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
       if (!databaseUrl) return;
       await withClient(superuserUrl, (client) =>
         client.query(`DELETE FROM employer_digest_settings WHERE employer_id = $1`, [
-          userIds.get(SUB_B),
+          idOf(SUB_B),
         ]),
       );
       try {
@@ -661,7 +858,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           asEmployer(SUB_B, (client) =>
             client.query(
               `INSERT INTO employer_digest_settings (employer_id, timezone) VALUES ($1, 'Zzz/Not_A_Zone')`,
-              [userIds.get(SUB_B)],
+              [idOf(SUB_B)],
             ),
           ),
         ).rejects.toThrow(/invalid IANA time zone/i);
@@ -670,7 +867,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
           client.query(
             `INSERT INTO employer_digest_settings (employer_id) VALUES ($1)
              ON CONFLICT (employer_id) DO NOTHING`,
-            [userIds.get(SUB_B)],
+            [idOf(SUB_B)],
           ),
         );
       }
@@ -692,7 +889,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         try {
           await client.query(
             `UPDATE employer_digest_settings SET timezone = 'Factory' WHERE employer_id = $1`,
-            [userIds.get(SUB_A)],
+            [idOf(SUB_A)],
           );
         } finally {
           await client.query(
@@ -732,7 +929,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         await withClient(superuserUrl, (client) =>
           client.query(
             `UPDATE employer_digest_settings SET timezone = 'America/Chicago' WHERE employer_id = $1`,
-            [userIds.get(SUB_A)],
+            [idOf(SUB_A)],
           ),
         );
       }
@@ -904,6 +1101,134 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
         expect(row.prosecdef).toBe(true);
         expect(row.proconfig).toEqual(['search_path=pg_catalog, pg_temp']);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 7. Re-apply idempotence -- LAST in the file on purpose
+  //
+  // Re-executing 080 drops and recreates every policy, trigger, and definer
+  // function it owns. Any test that ran after this one would be racing that
+  // churn, so this block is deliberately the final describe in the file.
+  //
+  // The value over the migration runner's own apply is twofold: it exercises
+  // node-postgres's simple-query path (the whole file as ONE multi-statement
+  // query, rather than psql's statement-at-a-time -f) and it runs 080's
+  // terminal verification block against a POPULATED database, where the
+  // fixtures above already exist -- a stronger test of those invariants than
+  // the empty-schema apply the chain gate performs.
+  // -------------------------------------------------------------------------
+  describe('re-apply idempotence (migration text executed a second time)', () => {
+    const migrationPath = path.join(
+      __dirname, '..', '..', '..', 'db', 'migrations', '080_employer_digest_settings.sql',
+    );
+
+    it('re-executing the whole migration over a jale_admin connection succeeds', async () => {
+      if (!databaseUrl) return;
+      const sql = fs.readFileSync(migrationPath, 'utf8');
+      // Sanity: we are running the real file, not an empty read.
+      expect(sql).toContain('CREATE TABLE IF NOT EXISTS employer_digest_settings');
+      expect(sql).toContain('COMMIT;');
+
+      // One simple query carrying BEGIN; ... COMMIT; and several DO blocks.
+      // If the migration's own terminal verification block finds anything
+      // wrong with the state it just re-established, this rejects.
+      await withClient(adminUrl, (client) => client.query(sql));
+    }, 120_000);
+
+    it('still leaves exactly one enumerator membership with no SET or INHERIT', async () => {
+      if (!databaseUrl) return;
+      const result = await withClient(superuserUrl, (client) =>
+        client.query<{
+          member: string;
+          admin_option: boolean;
+          inherit_option: boolean;
+          set_option: boolean;
+          grantor_is_super: boolean;
+        }>(
+          `SELECT member.rolname AS member, m.admin_option, m.inherit_option, m.set_option,
+                  grantor.rolsuper AS grantor_is_super
+             FROM pg_auth_members m
+             JOIN pg_roles granted ON granted.oid = m.roleid
+             JOIN pg_roles member ON member.oid = m.member
+             JOIN pg_roles grantor ON grantor.oid = m.grantor
+            WHERE granted.rolname = 'jale_digest_enumerator'
+               OR member.rolname = 'jale_digest_enumerator'`,
+        ),
+      );
+      expect(result.rows).toEqual([
+        {
+          member: 'jale_admin',
+          admin_option: true,
+          inherit_option: false,
+          set_option: false,
+          grantor_is_super: true,
+        },
+      ]);
+    });
+
+    it('still has exactly the expected policies, triggers, and two definer functions', async () => {
+      if (!databaseUrl) return;
+      const state = await withClient(superuserUrl, async (client) => {
+        const policies = await client.query<{ polname: string }>(
+          `SELECT p.polname FROM pg_policy p JOIN pg_class rel ON rel.oid = p.polrelid
+            WHERE rel.relname = 'employer_digest_settings' ORDER BY p.polname`,
+        );
+        const triggers = await client.query<{ tgname: string }>(
+          `SELECT t.tgname FROM pg_trigger t JOIN pg_class rel ON rel.oid = t.tgrelid
+            WHERE rel.relname = 'employer_digest_settings' AND NOT t.tgisinternal
+            ORDER BY t.tgname`,
+        );
+        const functions = await client.query<{ proname: string; prosecdef: boolean }>(
+          `SELECT f.proname, f.prosecdef FROM pg_proc f
+             JOIN pg_namespace n ON n.oid = f.pronamespace
+            WHERE n.nspname = 'jale_digest_internal' ORDER BY f.proname`,
+        );
+        return {
+          policies: policies.rows.map((r) => r.polname),
+          triggers: triggers.rows.map((r) => r.tgname),
+          functions: functions.rows,
+        };
+      });
+
+      expect(state.policies).toEqual([
+        'employer_digest_settings_digest_enumerator_select',
+        'employer_digest_settings_digest_enumerator_update',
+        'employer_digest_settings_self',
+      ]);
+      expect(state.triggers).toEqual([
+        'employer_digest_settings_timezone_iana',
+        'employer_digest_settings_updated_at',
+      ]);
+      expect(state.functions).toEqual([
+        { proname: 'due_digest_employers', prosecdef: true },
+        { proname: 'unsubscribe_employer', prosecdef: true },
+      ]);
+    });
+
+    it('the re-applied definer function still answers the due question and still returns the token version', async () => {
+      if (!databaseUrl) return;
+      // Proves the recreated function is wired up (grants, policies, owner),
+      // not merely present in the catalog.
+      await withClient(superuserUrl, (client) =>
+        client.query(
+          `UPDATE employer_digest_settings
+              SET enabled = true, send_hour_local = 8, timezone = 'America/New_York',
+                  last_sent_at = NULL, unsubscribe_token_version = 5
+            WHERE employer_id = $1`,
+          [idOf(SUB_A)],
+        ),
+      );
+      const rows = await withClient(adminUrl, (client) =>
+        client.query<{ employer_id: string; unsubscribe_token_version: number }>(
+          `SELECT employer_id, unsubscribe_token_version
+             FROM jale_digest_internal.due_digest_employers('2026-01-15 13:00:00+00'::timestamptz)
+            WHERE employer_id = $1`,
+          [idOf(SUB_A)],
+        ),
+      );
+      expect(rows.rows).toHaveLength(1);
+      expect(rows.rows[0].unsubscribe_token_version).toBe(5);
     });
   });
 });
