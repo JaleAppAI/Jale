@@ -1056,7 +1056,12 @@
       "questions_summary": "{count} quick questions",
       "questions_required": "{count} required",
       "estimate": "Apply — about {minutes} minutes",
-      "vault_check_failed": "Can’t check your vault right now"
+      "vault_check_failed": "Can’t check your vault right now",
+      "hint_doc_required": "You’ll need to upload this to apply.",
+      "hint_doc_optional": "Optional — you can apply without it.",
+      "hint_cert_required_proof": "You’ll confirm you have this and attach proof.",
+      "hint_cert_required_attest": "You’ll just confirm you have this — no upload needed.",
+      "hint_cert_optional": "Share it if you have it — it won’t block your application."
     },
     "apply_flow": {
       "steps": {
@@ -1081,6 +1086,8 @@
       "cert_use_vault": "Use {file} from your vault",
       "cert_upload_new": "Upload new",
       "cert_unverified_note": "You can apply without proof — it will show as claimed, unverified.",
+      "cert_attest_note": "No upload needed — the employer may ask to see this in person.",
+      "cert_proof_note": "Upload a photo or file of this certification to continue.",
       "cert_from_vault": "from your vault",
       "review_answers": "{answered} of {total} questions answered",
       "review_skipped": "{label} (optional) — skipped",
@@ -1257,7 +1264,12 @@
       "proof_toggle_label": "Proof upload",
       "proof_hint": "Asks the applicant to attach the certificate with their application.",
       "no_certifications_yet": "No certifications selected. Add them in Pay and schedule.",
-      "cert_tier_aria": "{name} requirement level"
+      "cert_tier_aria": "{name} requirement level",
+      "cert_hint_required_proof": "Applicants must upload proof of this certification with their initial application.",
+      "cert_hint_required_attest": "Applicants will confirm they have this certification — no upload needed. You can ask to see it in person.",
+      "cert_hint_optional": "Applicants can share this if they have it. It never blocks an application.",
+      "doc_hint_required": "Applicants must upload this document to apply.",
+      "doc_hint_optional": "Applicants may attach this — not needed to apply."
     },
     "groups": {
       "documents": "Documents",

@@ -7,7 +7,10 @@ import {
   FIELD_GROUPS,
   countRequirements,
   certificationHintNames,
+  certificationHintKey,
+  docHintKey,
   setRequirementState,
+  type RequirementDocKey,
   type RequirementKey,
   type RequirementsMap,
   type RequirementState,
@@ -118,6 +121,28 @@ export function RequirementsPicker({
     ? REQUIREMENT_DOC_KEYS.filter((key) => key !== 'certification_doc')
     : REQUIREMENT_DOC_KEYS;
 
+  /**
+   * Every document row now explains what its state actually does to an
+   * applicant (`docHintKey` -- Required means the upload itself is mandatory
+   * at apply; there is no "I have it" attestation path for these legacy doc
+   * types). `certification_doc` KEEPS its existing "Will ask for proof of:
+   * …" names hint on top of that sentence rather than losing it: the two say
+   * different things (the gate vs. which certificates the employer typed in
+   * step 2), so they are composed, not swapped.
+   *
+   * DOCUMENT ROWS ONLY -- the question rows below pass no hint, and this
+   * copy ("this document") would be wrong for them.
+   */
+  const docRowHint = (key: RequirementDocKey): string | undefined => {
+    const stateKey = docHintKey(requirements[key]);
+    const parts: string[] = [];
+    if (stateKey) parts.push(t(stateKey));
+    if (key === 'certification_doc' && requirements[key] !== 'off' && certNames.length > 0) {
+      parts.push(t('picker.cert_hint', { names: certNames.join(', ') }));
+    }
+    return parts.length > 0 ? parts.join(' ') : undefined;
+  };
+
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -142,11 +167,7 @@ export function RequirementsPicker({
                 state={requirements[key]}
                 onChange={(state) => setState(key, state)}
                 disabled={locked}
-                hint={
-                  key === 'certification_doc' && requirements[key] !== 'off' && certNames.length > 0
-                    ? t('picker.cert_hint', { names: certNames.join(', ') })
-                    : undefined
-                }
+                hint={docRowHint(key)}
               />
             </li>
           ))}
@@ -311,7 +332,19 @@ function CertificationRow({
       <div className="flex items-center justify-between gap-3">
         <span className="min-w-0">
           <span className="block text-xs font-semibold text-[var(--jale-ink)]">{t('picker.proof_toggle_label')}</span>
-          <span className="block text-xs text-[var(--jale-ink-2)]">{t('picker.proof_hint')}</span>
+          {/*
+            State-dependent, because the old static sentence ("asks the
+            applicant to attach the certificate") described only one of the
+            three reachable combinations and quietly misdescribed the other
+            two: a required cert with the toggle OFF still gates on the
+            worker's yes/no attestation, and an OPTIONAL cert never blocks an
+            application no matter how this toggle is set (see
+            `certificationHintKey`, and `certification-claims.ts` for the gate
+            it mirrors).
+          */}
+          <span className="block text-xs text-[var(--jale-ink-2)]">
+            {t(certificationHintKey(tier, proofRequired))}
+          </span>
         </span>
         <button
           type="button"
