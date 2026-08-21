@@ -771,11 +771,15 @@ async function handleDocUpload(client, ctx, msg, docType: CollectableDocType, de
 
 ---
 
-### Task 9: Processor entry — arm the fill at accept
+### Task 9: Processor entry — arm the fill at accept (+ defaults seeding, Ivan's 2026-08-20 decision)
 
 **Files:**
 - Modify: `infra/lambda/whatsapp/processor.ts` (`handleJobAction` result handling, lines ~1925-1942)
-- Test: `infra/test/unit/lambda/whatsapp/processor.test.ts` (extend; Bedrock enters only via FillDeps, so no new jest.mock)
+- Create: `infra/db/migrations/081_whatsapp_application_defaults_read.sql` — exactly `GRANT SELECT ON worker_application_defaults TO jale_whatsapp;` with a 073-style self-verification block (NOT insert/update — write-back of collected answers to defaults is explicitly deferred; migration 079's header anticipates this grant). Register in both runner manifests + apply-order baseline + sequence-numbers array (081).
+- Modify: `infra/lambda/whatsapp/lib/application-fill.ts` — add `seedAnswersFromDefaults(client, ctx, requiredFields, optionalFields): Promise<string[]>` (returns seeded keys): after `setInternalUserRlsContext`, SELECT the worker's `worker_application_defaults` row (read migration 079 for the exact column/shape and RLS before writing the query); for each job-relevant key present in defaults and ABSENT from `application_answers`, validate via `validateApplicationAnswers([key], [], {[key]: value})` and merge `validated.value[key]` with the existing `||` UPDATE; keys whose default fails validation are simply not seeded (the bot asks instead — never an error to the worker). Called once at fill-arm time, BEFORE computeNextStep/intro counts, for both fresh accepts and re-arms.
+- Test: `infra/test/unit/lambda/whatsapp/processor.test.ts` (extend; Bedrock enters only via FillDeps, so no new jest.mock); `infra/test/unit/lambda/whatsapp/lib/application-fill.test.ts` (seeding unit tests)
+
+Additional Step-1 test cases (defaults): seeded keys are never asked (intro counts reflect post-seed gaps); an invalid stored default is skipped and its question asked; existing application_answers keys are never overwritten by defaults; worker with no defaults row seeds nothing.
 
 **Interfaces:**
 - Consumes: Task 2 statuses; Task 6/7 `computeNextStep`, `promptNextStep`; Task 3 intro copy.

@@ -429,7 +429,23 @@ Stage 2 is separable: the core flow ships without it.
 - **PII sentinel test:** no log call contains message body or extracted
   values.
 
-## 15. External checklist (not code)
+## 15. Amendments (2026-08-20, post-merge of main's job-flow redesign)
+
+- Migration renumbering: main took 077–079, so this spec's "077" is
+  **`080_whatsapp_application_fill.sql`**; the cert-cap error mapping must
+  match the `CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS` set (078 added a
+  second per-cert-name cap), and `worker_documents` writes must account for
+  078's `cert_name` column.
+- **Defaults seeding (Ivan's decision):** main's 079 created
+  `worker_application_defaults` (per-worker saved answers). At fill-arm time
+  the bot seeds `application_answers` from the worker's validated defaults
+  for the job's relevant keys (never overwriting existing answers; invalid
+  defaults are skipped and asked instead), so workers are not re-asked what
+  they already saved. A new migration **081** grants `jale_whatsapp` SELECT
+  on the table (079's header anticipates it). Write-back of chat-collected
+  answers INTO defaults is deferred (follow-up list).
+
+## 16. External checklist (not code)
 
 - Confirm Twilio Advanced Opt-Out setting for the WhatsApp sender
   (does STOP/ALTO reach the webhook?).
