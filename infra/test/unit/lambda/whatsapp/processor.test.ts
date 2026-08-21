@@ -1523,6 +1523,7 @@ describe('Processor Lambda', () => {
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: [] }] }) // helper job check
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox accepted
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
@@ -1932,7 +1933,15 @@ describe('Processor Lambda', () => {
       ]);
     });
 
-    it('typed accept with missing required docs sends document-required reply without applying', async () => {
+    // Task 2 (WhatsApp application-fill spec, migration 077): "accept" now
+    // creates the application row upfront even when required docs are
+    // missing -- the app-layer bounce is skipped for this surface and the
+    // 022 DB guard is bypassed via a transaction-local GUC set immediately
+    // before the INSERT. Docs are collected conversationally after the row
+    // exists (spec §6); the previous "document-required, do not apply"
+    // reply for WhatsApp accept is now web-surface-only behavior. See
+    // applications.ts's surface === 'whatsapp' branch and applications.test.ts.
+    it('typed accept with missing required docs still applies (docs collected later via fill flow)', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-missing-docs' }] }) // claim
@@ -1952,8 +1961,11 @@ describe('Processor Lambda', () => {
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume'] }] }) // helper job check
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missing required docs
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox missing docs
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missing required docs -- worker has none
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // document snapshot copy -- nothing to copy
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox accepted
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
@@ -1969,9 +1981,8 @@ describe('Processor Lambda', () => {
         {} as any,
       );
 
-      expect(findQueryByPattern(/INSERT INTO job_applications/i)).toBeUndefined();
-      expect(outboxBodies()[0]).toContain('Resume');
-      expect(outboxBodies()[0]).toContain('requires these documents');
+      expect(findQueryByPattern(/INSERT INTO job_applications/i)).toEqual(['job-1', 'user-1', JSON.stringify({})]);
+      expect(outboxBodies()).toContain(t('job_accepted', 'en'));
     });
 
     // Stage 1b regression guard: WhatsApp "accept" happens before the bot
@@ -2008,6 +2019,7 @@ describe('Processor Lambda', () => {
             required_fields: ['work_authorization', 'date_available'], optional_fields: [],
           }],
         }) // helper job check -- required_fields is non-empty, no answers supplied
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox accepted
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed

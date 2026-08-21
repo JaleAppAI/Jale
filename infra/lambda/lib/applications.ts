@@ -6,12 +6,13 @@ export type ApplySurface = 'web' | 'whatsapp';
 
 export type ApplyWorkerResult =
   | { status: 'applied'; application: Record<string, unknown> }
-  | { status: 'already_applied'; application?: Record<string, unknown> }
+  | { status: 'already_applied'; application: Record<string, unknown> }
   | { status: 'missing_documents'; missing_docs: string[] }
   | { status: 'missing_answers'; missing_fields: string[] }
   | { status: 'invalid_answers'; error: string }
   | { status: 'job_closed' }
-  | { status: 'forbidden' };
+  | { status: 'forbidden' }
+  | { status: 'guard_blocked' };
 
 interface ApplyWorkerToJobInput {
   workerId: string;
@@ -157,7 +158,11 @@ export async function applyWorkerToJob(
   const optionalFields = job.optional_fields ?? [];
 
   const missingDocs = await missingRequiredDocuments(client, workerId, jobId, requiredDocs);
-  if (missingDocs.length > 0) {
+  // WhatsApp collects docs conversationally AFTER the row exists (fill flow,
+  // spec §6); the 022 DB guard is bypassed via GUC for this surface only, so
+  // the app-layer bounce below is skipped for whatsapp and every other
+  // surface keeps bouncing here exactly as before.
+  if (missingDocs.length > 0 && surface !== 'whatsapp') {
     return { status: 'missing_documents', missing_docs: missingDocs };
   }
 
@@ -201,6 +206,13 @@ export async function applyWorkerToJob(
   const docTypesToSnapshot = Array.from(new Set([...requiredDocs, ...optionalDocs]));
 
   try {
+    if (surface === 'whatsapp') {
+      // Transaction-local (SET LOCAL semantics via the third `true` arg): the
+      // 022 trigger guard on job_applications reads this GUC and skips the
+      // required-docs check for the INSERT below only. Nothing outside this
+      // transaction is affected. See 077_whatsapp_application_fill.sql.
+      await client.query(`SELECT set_config('app.allow_incomplete_docs', 'on', true)`);
+    }
     const insertRes = await client.query(
       `INSERT INTO job_applications (job_id, worker_id, status, application_answers)
        VALUES ($1, $2, 'pending', $3::jsonb)
@@ -236,6 +248,9 @@ export async function applyWorkerToJob(
   } catch (err: any) {
     if (err?.code === '42501') {
       return { status: 'forbidden' };
+    }
+    if (err?.code === '23514' && err?.constraint === 'job_applications_required_docs_check') {
+      return { status: 'guard_blocked' };
     }
     throw err;
   }

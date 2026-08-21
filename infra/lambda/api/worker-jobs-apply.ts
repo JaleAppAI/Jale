@@ -69,6 +69,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (applyResult.status === 'forbidden') {
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'apply_forbidden' }) };
     }
+    if (applyResult.status === 'guard_blocked') {
+      // Only reachable for surface === 'whatsapp' (see applyWorkerToJob); this
+      // handler always calls it with surface: 'web', so this is unreachable
+      // in practice but required for the exhaustive status narrowing below.
+      console.error('worker-jobs-apply: unexpected guard_blocked for web surface');
+      return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
+    }
 
     return { statusCode: 201, headers: CORS_HEADERS, body: JSON.stringify(applyResult.application) };
   } catch (err) {
