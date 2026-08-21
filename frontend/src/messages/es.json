@@ -1578,8 +1578,8 @@
   "digest_unsubscribe": {
     "title": "Correos de resumen diario",
     "body": "Confirme abajo y dejaremos de enviarle el resumen diario de candidatos.",
-    "success_title": "Su suscripción fue cancelada",
     "button": "Cancelar suscripción",
+    "success_title": "Su suscripción fue cancelada",
     "success_body": "No le enviaremos más correos con el resumen diario de candidatos.",
     "success_settings_hint": "Puede volver a activar el resumen diario cuando quiera en Notificaciones, dentro de su configuración de Jale.",
     "error_title": "Este enlace ya no es válido",
