@@ -131,6 +131,32 @@ export function employerConfirmSignUp(email: string, code: string): Promise<void
     return confirm(getEmployerPool(), email.trim().toLowerCase(), code);
 }
 
+/**
+ * Sends a fresh confirmation code to an unconfirmed employer.
+ *
+ * Unauthenticated by design — the whole point is that the user cannot get in
+ * yet. The app client is created with `generateSecret: false`, so there is no
+ * SecretHash to compute here.
+ *
+ * `resendConfirmationCode` is node-style (a single `(err) => void` callback),
+ * NOT the `{ onSuccess, onFailure }` shape the neighbouring `forgotPassword`
+ * and `confirmPassword` calls use. Passing an object here would leave the
+ * promise pending forever.
+ *
+ * The username is normalised the same way `employerConfirmSignUp` normalises
+ * it, so a user who typed `Foo@Example.com` reaches the same Cognito record on
+ * the resend and on the confirm that follows it.
+ */
+export function employerResendConfirmationCode(email: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: getEmployerPool() });
+        user.resendConfirmationCode((err) => {
+            if (err) reject(err);
+            else resolve();
+        });
+    });
+}
+
 export function employerSignIn(email: string, password: string): Promise<AuthTokens> {
     return new Promise((resolve, reject) => {
         const user = new CognitoUser({ Username: email, Pool: getEmployerPool() });
