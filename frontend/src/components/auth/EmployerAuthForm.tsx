@@ -1,9 +1,16 @@
 'use client';
-import { useState, type InputHTMLAttributes, type ReactNode } from 'react';
+import { useEffect, useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword } from '@/lib/cognito';
+import {
+    employerConfirmNewPassword,
+    employerConfirmSignUp,
+    employerForgotPassword,
+    employerResendConfirmationCode,
+    employerSignIn,
+    employerSignUp,
+} from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
@@ -20,6 +27,7 @@ import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 const TRADES: EmployerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
 const JOB_TYPES: EmployerJobType[] = ['full-time', 'part-time', 'contract'];
 const COMPANY_SIZES: CompanySize[] = ['1-10', '11-50', '51-200', '200+'];
+const RESEND_CODE_COOLDOWN_SECONDS = 60;
 
 type Step = 'login' | 'signup' | 'confirm' | 'forgot_request' | 'forgot_confirm';
 
@@ -65,6 +73,9 @@ export default function EmployerAuthForm() {
     const [error, setError] = useState<string | null>(null);
     const [missingFields, setMissingFields] = useState<EmployerSignupField[]>([]);
     const [isLoading, setIsLoading] = useState(false);
+    const [isResendingCode, setIsResendingCode] = useState(false);
+    const [resendSuccess, setResendSuccess] = useState(false);
+    const [resendCooldownSeconds, setResendCooldownSeconds] = useState(0);
     const [resetSuccess, setResetSuccess] = useState(false);
     const [forgotEmail, setForgotEmail] = useState('');
     const [resetCode, setResetCode] = useState('');
@@ -73,6 +84,14 @@ export default function EmployerAuthForm() {
     const [showNewPassword, setShowNewPassword] = useState(false);
     const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false);
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
+
+    useEffect(() => {
+        if (resendCooldownSeconds <= 0) return;
+        const timeoutId = window.setTimeout(() => {
+            setResendCooldownSeconds((seconds) => Math.max(0, seconds - 1));
+        }, 1000);
+        return () => window.clearTimeout(timeoutId);
+    }, [resendCooldownSeconds]);
 
     const pendingProfile = (): EmployerProfilePatch => ({
         company_name: companyName.trim(),
@@ -130,6 +149,8 @@ export default function EmployerAuthForm() {
         try {
             await employerSignUp({ email, password, companyName, contactName, phone });
             setConfirmationCode('');
+            setResendSuccess(false);
+            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
             setStep('confirm');
         } catch (err) {
             setError(t(authErrorKey(err)));
@@ -140,6 +161,7 @@ export default function EmployerAuthForm() {
 
     const handleConfirm = async () => {
         setError(null);
+        setResendSuccess(false);
         setIsLoading(true);
         try {
             await employerConfirmSignUp(email, confirmationCode);
@@ -151,6 +173,23 @@ export default function EmployerAuthForm() {
             setError(t(authErrorKey(err)));
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleResendConfirmationCode = async () => {
+        if (resendCooldownSeconds > 0) return;
+        setError(null);
+        setResendSuccess(false);
+        setIsResendingCode(true);
+        try {
+            await employerResendConfirmationCode(email);
+            setConfirmationCode('');
+            setResendSuccess(true);
+            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+        } catch (err) {
+            setError(t(authErrorKey(err)));
+        } finally {
+            setIsResendingCode(false);
         }
     };
 
@@ -201,6 +240,8 @@ export default function EmployerAuthForm() {
     const goToStep = (next: Step) => {
         setError(null);
         setMissingFields([]);
+        setResendSuccess(false);
+        setResendCooldownSeconds(0);
         setStep(next);
     };
 
@@ -342,11 +383,49 @@ export default function EmployerAuthForm() {
                 {step === 'confirm' && (
                     <div className="anim-fade-in flex flex-col gap-4">
                         <BackButton label={t('back')} onClick={() => goToStep('signup')} />
-                        <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
+                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">
+                            {t('confirm_subtitle', { email })}
+                        </p>
+                        <Field label={t('fields.confirmation_code')}>
+                            <Input
+                                value={confirmationCode}
+                                onChange={(e) => {
+                                    setConfirmationCode(e.target.value);
+                                    setResendSuccess(false);
+                                }}
+                                inputMode="numeric"
+                                autoComplete="one-time-code"
+                            />
+                        </Field>
                         {error && <FormError>{error}</FormError>}
-                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        {resendSuccess && (
+                            <InlineFeedback tone="success">{t('resend_success')}</InlineFeedback>
+                        )}
+                        <Button
+                            className="w-full mt-1"
+                            size="lg"
+                            onClick={handleConfirm}
+                            disabled={confirmationCode.length < 4 || isResendingCode}
+                            loading={isLoading}
+                            loadingLabel={tCommon('loading')}
+                        >
                             {t('confirm_account')}
                         </Button>
+                        <p className="text-center text-sm text-[var(--jale-ink-2)]">
+                            {t('resend_prompt')}{' '}
+                            <button
+                                type="button"
+                                onClick={handleResendConfirmationCode}
+                                disabled={isLoading || isResendingCode || resendCooldownSeconds > 0}
+                                className={`text-[length:inherit] disabled:cursor-not-allowed disabled:opacity-60 ${LINK_BUTTON}`}
+                            >
+                                {isResendingCode
+                                    ? tCommon('loading')
+                                    : resendCooldownSeconds > 0
+                                        ? t('resend_wait', { seconds: resendCooldownSeconds })
+                                        : t('resend_code')}
+                            </button>
+                        </p>
                     </div>
                 )}
 

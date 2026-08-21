@@ -28,6 +28,7 @@ const OTP_LENGTH = 6;
 const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
 const EXPERIENCE: WorkerExperience[] = ['0-1', '2-4', '5-9', '10+'];
 const AVAILABILITY: WorkerAvailability[] = ['full_time', 'part_time', 'weekends', 'flexible'];
+const RESEND_CODE_COOLDOWN_SECONDS = 60;
 
 type Step = 'login' | 'signup' | 'otp';
 
@@ -69,12 +70,23 @@ export default function WorkerAuthForm() {
     const [user, setUser] = useState<CognitoUser | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [isResendingCode, setIsResendingCode] = useState(false);
+    const [resendSuccess, setResendSuccess] = useState(false);
+    const [resendCooldownSeconds, setResendCooldownSeconds] = useState(0);
     const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
     const resetDigits = () => setDigits(Array(OTP_LENGTH).fill(''));
     const code = digits.join('');
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
     const phoneReady = phoneLocalNumber.replace(/\D/g, '').length >= 7;
+
+    useEffect(() => {
+        if (resendCooldownSeconds <= 0) return;
+        const timeoutId = window.setTimeout(() => {
+            setResendCooldownSeconds((seconds) => Math.max(0, seconds - 1));
+        }, 1000);
+        return () => window.clearTimeout(timeoutId);
+    }, [resendCooldownSeconds]);
 
     const pendingProfile = (): WorkerProfilePatch => ({
         full_name: fullName.trim(),
@@ -89,10 +101,12 @@ export default function WorkerAuthForm() {
 
     const handleSendOtp = async () => {
         setError(null);
+        setResendSuccess(false);
         setIsLoading(true);
         try {
             setUser(await workerSignIn(phone));
             resetDigits();
+            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
         } catch (err) {
@@ -104,6 +118,7 @@ export default function WorkerAuthForm() {
 
     const handleCreateAccount = async () => {
         setError(null);
+        setResendSuccess(false);
         if (mainTrade === 'other' && !mainTradeOther.trim()) {
             setError(t('errors.trade_other_required'));
             return;
@@ -114,6 +129,7 @@ export default function WorkerAuthForm() {
             sessionStorage.setItem('pendingWorkerProfile', JSON.stringify(pendingProfile()));
             setUser(await workerSignIn(phone));
             resetDigits();
+            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
         } catch (err) {
@@ -123,9 +139,28 @@ export default function WorkerAuthForm() {
         }
     };
 
+    const handleResendOtp = async () => {
+        if (resendCooldownSeconds > 0) return;
+        setError(null);
+        setResendSuccess(false);
+        setIsResendingCode(true);
+        try {
+            setUser(await workerSignIn(phone));
+            resetDigits();
+            setResendSuccess(true);
+            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+            setTimeout(() => inputRefs.current[0]?.focus(), 50);
+        } catch (err) {
+            setError(t(authErrorKey(err)));
+        } finally {
+            setIsResendingCode(false);
+        }
+    };
+
     const handleVerifyOtp = async () => {
         if (!user) return;
         setError(null);
+        setResendSuccess(false);
         setIsLoading(true);
         try {
             const tokens = await workerVerifyOtp(user, code);
@@ -173,6 +208,7 @@ export default function WorkerAuthForm() {
             const next = Array(OTP_LENGTH).fill('');
             numeric.split('').forEach((digit, digitIndex) => { next[digitIndex] = digit; });
             setDigits(next);
+            setResendSuccess(false);
             inputRefs.current[Math.min(numeric.length, OTP_LENGTH) - 1]?.focus();
             return;
         }
@@ -180,6 +216,7 @@ export default function WorkerAuthForm() {
         const next = [...digits];
         next[index] = numeric;
         setDigits(next);
+        setResendSuccess(false);
         if (numeric && index < OTP_LENGTH - 1) inputRefs.current[index + 1]?.focus();
     };
 
@@ -194,6 +231,7 @@ export default function WorkerAuthForm() {
         const next = Array(OTP_LENGTH).fill('');
         pasted.split('').forEach((d, i) => { next[i] = d; });
         setDigits(next);
+        setResendSuccess(false);
         inputRefs.current[Math.min(pasted.length, OTP_LENGTH - 1)]?.focus();
     };
 
@@ -276,17 +314,31 @@ export default function WorkerAuthForm() {
                     title={t('otp_title')}
                     subtitle={t('code_sent', { phone })}
                     backLabel={t('back')}
-                    onBack={() => { setError(null); resetDigits(); setStep('login'); }}
+                    onBack={() => {
+                        setError(null);
+                        setResendSuccess(false);
+                        setResendCooldownSeconds(0);
+                        resetDigits();
+                        setStep('login');
+                    }}
                     digits={digits}
                     inputRefs={inputRefs}
                     onChange={handleDigitChange}
                     onKeyDown={handleDigitKeyDown}
                     onPaste={handleDigitPaste}
                     error={error}
+                    resendSuccess={resendSuccess}
+                    resendSuccessMessage={t('resend_success')}
+                    resendPrompt={t('resend_prompt')}
+                    resendLabel={t('resend_code')}
+                    resendWaitLabel={t('resend_wait', { seconds: resendCooldownSeconds })}
+                    canResend={resendCooldownSeconds <= 0}
+                    isResending={isResendingCode}
+                    onResend={handleResendOtp}
                     buttonLabel={t('verify')}
                     isLoading={isLoading}
                     loadingLabel={tCommon('loading')}
-                    disabled={!otpComplete || isLoading}
+                    disabled={!otpComplete || isLoading || isResendingCode}
                     onSubmit={handleVerifyOtp}
                 />
             )}
@@ -365,6 +417,14 @@ function OtpStep(props: {
     onKeyDown: (index: number, e: React.KeyboardEvent<HTMLInputElement>) => void;
     onPaste: (e: React.ClipboardEvent<HTMLInputElement>) => void;
     error: string | null;
+    resendSuccess: boolean;
+    resendSuccessMessage: string;
+    resendPrompt: string;
+    resendLabel: string;
+    resendWaitLabel: string;
+    canResend: boolean;
+    isResending: boolean;
+    onResend: () => void;
     buttonLabel: string;
     isLoading: boolean;
     loadingLabel: string;
@@ -397,9 +457,27 @@ function OtpStep(props: {
                 ))}
             </div>
             {props.error && <FormError>{props.error}</FormError>}
+            {props.resendSuccess && (
+                <InlineFeedback tone="success">{props.resendSuccessMessage}</InlineFeedback>
+            )}
             <Button className="w-full" size="lg" onClick={props.onSubmit} disabled={props.disabled} loading={props.isLoading} loadingLabel={props.loadingLabel}>
                 {props.buttonLabel}
             </Button>
+            <p className="text-center text-sm text-[var(--jale-ink-2)]">
+                {props.resendPrompt}{' '}
+                <button
+                    type="button"
+                    onClick={props.onResend}
+                    disabled={props.isLoading || props.isResending || !props.canResend}
+                    className={`text-[length:inherit] disabled:cursor-not-allowed disabled:opacity-60 ${LINK_BUTTON}`}
+                >
+                    {props.isResending
+                        ? props.loadingLabel
+                        : props.canResend
+                            ? props.resendLabel
+                            : props.resendWaitLabel}
+                </button>
+            </p>
         </div>
     );
 }
