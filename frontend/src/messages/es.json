@@ -1086,7 +1086,7 @@
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",
       "cert_unverified_note": "Puede postularse sin comprobante — se mostrará como declarado, sin verificar.",
-      "cert_attest_note": "No necesita subir nada — el empleador puede pedirle verlo en persona.",
+      "cert_attest_note": "No necesita subir nada — el empleador puede pedirle verla en persona.",
       "cert_proof_note": "Suba una foto o un archivo de esta certificación para continuar.",
       "cert_from_vault": "de su bóveda",
       "review_answers": "{answered} de {total} preguntas respondidas",

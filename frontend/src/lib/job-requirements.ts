@@ -334,12 +334,20 @@ export type WhatYouNeedHintKey =
  * carries the MECHANISM (upload / attest / never blocks), never a restatement
  * of the tier.
  *
- * One suppression rule for both surfaces: no hint when the row already
- * carries a satisfied-by-vault badge (`satisfied`) or a blocking error line
- * (`blockingError`). In both cases the row's own status line is more specific
- * than a generic explanation of the requirement, and stacking the two reads
- * as a contradiction ("already in your vault" above "you'll need to upload
- * this").
+ * Suppression, for both surfaces: no hint when the row already carries a
+ * blocking error line (`blockingError`) or a satisfied-by-vault badge
+ * (`satisfied`) -- the row's own status line is more specific than a generic
+ * explanation, and stacking the two reads as a contradiction ("already in
+ * your vault" above "you'll need to upload this").
+ *
+ * The ONE exception, and the whole reason `kind` is a parameter: an
+ * attestation-only certification (`kind: 'cert'`, `proofRequired: false`) is
+ * satisfied by the worker's yes/no answer in the apply flow, NOT by a file.
+ * A vault match still badges that row "already in your vault" (see
+ * `WhatYouNeedPanel`'s `certRows`), which is true about the vault and
+ * misleading about the requirement -- so this is the one row where the hint
+ * must survive `satisfied`, because it is the only thing saying the file is
+ * beside the point.
  */
 export function whatYouNeedHintKey(args: {
   kind: 'doc' | 'cert';
@@ -348,7 +356,9 @@ export function whatYouNeedHintKey(args: {
   satisfied: boolean;
   blockingError: boolean;
 }): WhatYouNeedHintKey | undefined {
-  if (args.satisfied || args.blockingError) return undefined;
+  if (args.blockingError) return undefined;
+  const attestOnlyCert = args.kind === 'cert' && !args.proofRequired;
+  if (args.satisfied && !attestOnlyCert) return undefined;
   if (args.kind === 'doc') {
     return args.tier === 'required' ? 'hint_doc_required' : 'hint_doc_optional';
   }

@@ -342,6 +342,20 @@ describe('whatYouNeedHintKey', () => {
     ).toBeUndefined();
   });
 
+  it('still explains an attest-only cert whose vault match does NOT satisfy it', () => {
+    // A vault file satisfies an upload requirement, but an attest-only cert
+    // is satisfied by the worker's yes/no answer in the flow -- the file is
+    // beside the point. The panel still badges that row "already in your
+    // vault", so suppressing the hint here would leave the ONE row where the
+    // badge actively misleads with no explanation at all.
+    expect(
+      whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: false, satisfied: true }),
+    ).toBe('hint_cert_required_attest');
+    expect(
+      whatYouNeedHintKey({ ...base, kind: 'cert', tier: 'optional', proofRequired: false, satisfied: true }),
+    ).toBe('hint_cert_optional');
+  });
+
   it('suppresses the hint when a blocking error is already showing on the row', () => {
     expect(whatYouNeedHintKey({ ...base, blockingError: true })).toBeUndefined();
   });
