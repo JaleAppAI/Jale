@@ -201,13 +201,16 @@ export class NotificationsStack extends cdk.Stack {
     unsubscribeSecret.grantRead(unsubscribeLambda.function);
 
     // ── Alarms ────────────────────────────────────────────────────
-    // Three failure shapes, three signals:
+    // Four failure shapes, four signals. The last two exist because the
+    // producer is deliberately per-employer fault-tolerant: it catches, counts,
+    // and CONTINUES, which means signals 1 and 2 are blind to anything that
+    // goes wrong with an individual employer.
     //   1. DLQ depth — an async invocation the Lambda service gave up on.
-    //   2. Lambda Errors — the run itself threw (bad config, dead connection).
-    //   3. digest_skipped_invalid_email — the producer's DELIBERATE per-employer
-    //      skip path. It returns normally, so signal 2 cannot see it, and the
-    //      affected employer silently never receives a digest. Same
-    //      MetricFilter-over-a-log-line technique AiStack/ReferralsStack use.
+    //   2. Lambda Errors — the run itself threw (bad config, unreadable signing
+    //      secret, dead connection).
+    //   3. digest_skipped_invalid_email — the DELIBERATE skip: a stored address
+    //      that cannot satisfy email_outbox's CHECK. Returns normally.
+    //   4. digest_employer_failed — ANY per-employer rollback. Returns normally.
     let alarmAction: cloudwatchActions.SnsAction | undefined;
     if (props.alarmTopicArn) {
       const alarmTopic = sns.Topic.fromTopicArn(this, 'NotificationsAlarmTopic', props.alarmTopicArn);
@@ -253,22 +256,52 @@ export class NotificationsStack extends cdk.Stack {
       producerLambda.function.metricErrors({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
     );
 
-    const skippedEmailMetric = new logs.MetricFilter(this, 'EmployerDigestSkippedInvalidEmailMetric', {
-      logGroup: producerLambda.logGroup,
-      // The literal string employer-digest-producer.ts logs. Keep the two in
-      // step: a rename on either side silently disarms this alarm.
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'digest_skipped_invalid_email'),
-      metricNamespace: 'Jale/Notifications',
-      metricName: 'EmployerDigestSkippedInvalidEmail',
-      metricValue: '1',
-    });
-    notificationsAlarm(
-      'EmployerDigestSkippedInvalidEmailAlarm',
-      'EmployerDigestSkippedInvalidEmail',
-      'An employer with the digest enabled was skipped because their stored email address is unusable. '
-        + 'Nothing throws on this path and their watermark is not advanced, so they simply never receive a digest.',
-      skippedEmailMetric.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
-    );
+    // ── Silent per-employer outcomes -> alarmable metrics ─────────
+    // LITERAL term patterns, deliberately NOT `FilterPattern.stringValue(
+    // '$.metric', ...)`. A JSON filter pattern requires the whole log EVENT to
+    // parse as JSON, and Node 20 Lambda's default TEXT log format prefixes
+    // every console line with `timestamp<TAB>requestId<TAB>LEVEL<TAB>` -- so a
+    // `{ $.metric = "..." }` pattern matches nothing and the alarm is silently
+    // disarmed. A quoted term matches the substring inside the JSON.stringify
+    // output under BOTH the text and JSON log formats.
+    // billing-stack.ts:364/392 is the precedent; the $.metric idiom used by
+    // AiStack/ReferralsStack/WhatsAppStack is the thing being avoided here.
+    //
+    // The literals must match what employer-digest-producer.ts writes. A rename
+    // on either side silently disarms the alarm, so keep the two in step.
+    for (const [id, literal, metricName, alarmName, alarmDescription] of [
+      [
+        'EmployerDigestSkippedInvalidEmail',
+        'digest_skipped_invalid_email',
+        'EmployerDigestSkippedInvalidEmail',
+        'EmployerDigestSkippedInvalidEmail',
+        'An employer with the digest enabled was skipped because their stored email address is unusable. '
+          + 'Nothing throws on this path and their watermark is not advanced, so they simply never receive a digest.',
+      ],
+      [
+        'EmployerDigestEmployerFailed',
+        'digest_employer_failed',
+        'EmployerDigestEmployerFailed',
+        'EmployerDigestEmployerFailed',
+        'A single employer’s digest transaction was rolled back — a constraint violation, an outbox '
+          + 'idempotency conflict, or a mid-loop AWS throttle. The run continues and returns normally, so the '
+          + 'Lambda Errors metric and the DLQ are both blind to this. That employer got no digest today.',
+      ],
+    ] as const) {
+      const metricFilter = new logs.MetricFilter(this, `${id}Metric`, {
+        logGroup: producerLambda.logGroup,
+        filterPattern: logs.FilterPattern.literal(`"${literal}"`),
+        metricNamespace: 'Jale/Notifications',
+        metricName,
+        metricValue: '1',
+      });
+      notificationsAlarm(
+        `${id}Alarm`,
+        alarmName,
+        alarmDescription,
+        metricFilter.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
+      );
+    }
 
     // ── Route ─────────────────────────────────────────────────────
     // POST /public/employer-digest/unsubscribe — UNAUTHENTICATED. The
@@ -276,8 +309,8 @@ export class NotificationsStack extends cdk.Stack {
     // ReferralsStack/DocumentsStack/LegalStack idiom for downstream stacks
     // adding unauthenticated methods to the shared API.
     //
-    // Throttle (rate 10 / burst 5) lives in ApiStack's centralized
-    // MethodSettings array, not here.
+    // Throttle (burst 10 / rate 5, the unauthenticated-write tier) lives in
+    // ApiStack's centralized MethodSettings array, not here.
     props.publicResource
       .addResource('employer-digest')
       .addResource('unsubscribe')

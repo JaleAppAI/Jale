@@ -200,8 +200,8 @@ describe('NotificationsStack', () => {
 
   // ── Alarms ────────────────────────────────────────────────────────────────
 
-  it('creates exactly three alarms, all NOT_BREACHING on missing data', () => {
-    template.resourceCountIs('AWS::CloudWatch::Alarm', 3);
+  it('creates exactly four alarms, all NOT_BREACHING on missing data', () => {
+    template.resourceCountIs('AWS::CloudWatch::Alarm', 4);
     const alarms = template.findResources('AWS::CloudWatch::Alarm');
     for (const alarm of Object.values(alarms) as any[]) {
       expect(alarm.Properties.TreatMissingData).toBe('notBreaching');
@@ -231,7 +231,7 @@ describe('NotificationsStack', () => {
     // The literal must match what employer-digest-producer.ts writes; the skip
     // path returns normally, so the Errors alarm above cannot see it.
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
-      FilterPattern: '{ $.metric = "digest_skipped_invalid_email" }',
+      FilterPattern: '"digest_skipped_invalid_email"',
       MetricTransformations: [
         Match.objectLike({
           MetricNamespace: 'Jale/Notifications',
@@ -245,6 +245,43 @@ describe('NotificationsStack', () => {
       Namespace: 'Jale/Notifications',
       MetricName: 'EmployerDigestSkippedInvalidEmail',
     });
+  });
+
+  it('turns the digest_employer_failed log line into an alarmable metric', () => {
+    // Every per-employer failure — a 23514, an idempotency conflict, a Secrets
+    // Manager throttle mid-loop — is swallowed by the producer's per-employer
+    // catch, which returns normally. metricErrors cannot see it and the DLQ
+    // stays empty, so this filter is the ONLY signal.
+    template.hasResourceProperties('AWS::Logs::MetricFilter', {
+      FilterPattern: '"digest_employer_failed"',
+      MetricTransformations: [
+        Match.objectLike({
+          MetricNamespace: 'Jale/Notifications',
+          MetricName: 'EmployerDigestEmployerFailed',
+          MetricValue: '1',
+        }),
+      ],
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'EmployerDigestEmployerFailed',
+      Namespace: 'Jale/Notifications',
+      MetricName: 'EmployerDigestEmployerFailed',
+    });
+  });
+
+  it('uses LITERAL term patterns, never $.metric JSON patterns', () => {
+    // A JSON filter pattern requires the whole log EVENT to parse as JSON.
+    // Node 20 Lambda's default TEXT log format prefixes every console line with
+    // `timestamp<TAB>requestId<TAB>LEVEL<TAB>`, so `{ $.metric = "..." }` never
+    // matches and the alarm is silently disarmed. A quoted term matches the
+    // substring inside the JSON.stringify output under BOTH log formats.
+    // billing-stack.ts:364/392 is the correct precedent.
+    const filters = template.findResources('AWS::Logs::MetricFilter');
+    expect(Object.keys(filters)).toHaveLength(2);
+    for (const filter of Object.values(filters) as any[]) {
+      expect(filter.Properties.FilterPattern).not.toContain('$.');
+      expect(filter.Properties.FilterPattern).toMatch(/^"[a-z_]+"$/);
+    }
   });
 
   it('synthesizes cleanly with no alarm topic, leaving the alarms actionless but visible', () => {
@@ -263,7 +300,7 @@ describe('NotificationsStack', () => {
 
     it('attaches both alarm and OK actions to the shared topic', () => {
       const alarms = alarmed.findResources('AWS::CloudWatch::Alarm');
-      expect(Object.keys(alarms)).toHaveLength(3);
+      expect(Object.keys(alarms)).toHaveLength(4);
       for (const alarm of Object.values(alarms) as any[]) {
         expect(alarm.Properties.AlarmActions).toEqual([TOPIC_ARN]);
         expect(alarm.Properties.OKActions).toEqual([TOPIC_ARN]);
