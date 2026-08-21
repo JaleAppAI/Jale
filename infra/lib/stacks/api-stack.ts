@@ -1087,23 +1087,15 @@ export class ApiStack extends cdk.Stack {
         // /auth/worker/signup and /public/jobs/{code}/apply-intent rather than
         // the looser read tier. Legitimate traffic is one call per emailed link.
         //
-        // NOTE the numbers are the specified rate 10 / burst 5, which INVERTS
-        // the burst>=rate shape every sibling entry uses (those are burst 10 /
-        // rate 5). Kept as specified; a burst below the sustained rate simply
-        // means the bucket capacity, not the rate, is the effective cap. Flip
-        // the pair if the intent was to mirror the siblings exactly.
-        //
-        // Concretely: the sustained rate here is 2x the sibling unauthenticated
-        // -write tier (10/s vs 5/s) while the burst is half. That is acceptable
-        // rather than merely inconsistent, because a forged or malformed token
-        // is rejected by verifyUnsubscribeToken BEFORE any DB connection is
-        // opened -- so the exposure of the looser rate is wasted Lambda
-        // invocations, not database load and not data.
+        // Burst 10 / rate 5 — byte-identical to the two siblings in this tier.
+        // A HARVESTED VALID link replayed passes verifyUnsubscribeToken and
+        // reaches pool.connect() on every request, so the sustained rate is a
+        // real database-connection brake and must not be looser than theirs.
         {
           ResourcePath: '/public/employer-digest/unsubscribe',
           HttpMethod: 'POST',
-          ThrottlingBurstLimit: 5,
-          ThrottlingRateLimit: 10,
+          ThrottlingBurstLimit: 10,
+          ThrottlingRateLimit: 5,
         },
         // T-B2: GET /pay-reference — dual-authenticated (worker+employer)
         // recommended-pay lookup. Modest throttle: read-only against a

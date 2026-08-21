@@ -1005,10 +1005,20 @@ describe('ApiStack', () => {
       (s) => s.ResourcePath === '/public/employer-digest/unsubscribe' && s.HttpMethod === 'POST',
     );
     expect(matches).toHaveLength(1);
+    // The unauthenticated-WRITE tier: identical to POST
+    // /public/jobs/{code}/apply-intent and POST /auth/worker/signup. Burst >=
+    // rate is the shape every sibling uses; a harvested valid token replayed
+    // reaches pool.connect() on every request, so the sustained rate is a real
+    // database-connection brake, not just a Lambda-invocation one.
     expect(matches[0]).toEqual(expect.objectContaining({
-      ThrottlingBurstLimit: 5,
-      ThrottlingRateLimit: 10,
+      ThrottlingBurstLimit: 10,
+      ThrottlingRateLimit: 5,
     }));
+    const applyIntent = methodSettings.find(
+      (s) => s.ResourcePath === '/public/jobs/{code}/apply-intent' && s.HttpMethod === 'POST',
+    );
+    expect(matches[0].ThrottlingBurstLimit).toBe(applyIntent.ThrottlingBurstLimit);
+    expect(matches[0].ThrottlingRateLimit).toBe(applyIntent.ThrottlingRateLimit);
   });
 
   test('NotificationsStack adds no MethodSettings array of its own — ApiStack owns the only one', () => {
