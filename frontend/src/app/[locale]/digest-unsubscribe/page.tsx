@@ -77,11 +77,16 @@ export default function DigestUnsubscribePage() {
                 setPhase('done');
                 return;
             }
-            // 4xx is the link itself: unknown token, already used, expired.
-            // The body is deliberately not read -- the page has nothing to say
+            // These three, and only these three, mean the LINK is the problem:
+            // unknown token, already spent, expired. Deliberately not the whole
+            // 4xx range -- a 408 or 429 says nothing about the token, and
+            // reporting it as "no longer valid" would be the same misreport
+            // this branch exists to avoid for 5xx.
+            //
+            // The body is deliberately not read: the page has nothing to say
             // about `invalid_token` that it does not already say generically,
             // and echoing a server field is how detail leaks out.
-            if (res.status >= 400 && res.status < 500) {
+            if (res.status === 400 || res.status === 401 || res.status === 410) {
                 setPhase('dead');
                 return;
             }
