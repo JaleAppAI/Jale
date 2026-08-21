@@ -28,7 +28,16 @@ export interface ReferralsStackProps extends cdk.StackProps {
    * use this credential, not referralsDbSecret.
    */
   readonly appDbSecret: secretsmanager.ISecret;
-  /** Shared REST API from ApiStack */
+  /**
+   * Shared REST API from ApiStack.
+   *
+   * Now that /public arrives pre-built via `publicResource` below, this stack
+   * no longer dereferences `props.api` anywhere. Kept on the interface
+   * deliberately rather than removed: it documents that this stack mounts onto
+   * ApiStack's API rather than owning one, and dropping it would churn
+   * bin/jale-app.ts plus two test harnesses for no behavioural gain. Remove it
+   * in a dedicated cleanup if that trade stops being worth it.
+   */
   readonly api: apigateway.RestApi;
   /**
    * /public resource from ApiStack — every route in this stack's public lane
