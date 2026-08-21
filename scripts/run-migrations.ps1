@@ -129,6 +129,7 @@ $MigrationFiles = @(
     '077_jobs_structured_fields.sql'
     '078_worker_documents_cert_name.sql'
     '079_worker_application_defaults.sql'
+    '080_employer_digest_settings.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
