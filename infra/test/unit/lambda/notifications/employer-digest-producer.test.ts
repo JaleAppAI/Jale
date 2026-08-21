@@ -24,6 +24,7 @@ const mockSetInternalUserRlsContext = jest.fn();
 const mockQueueEmail = jest.fn();
 const mockListEmployerCandidates = jest.fn();
 const mockMintUnsubscribeToken = jest.fn();
+const mockGetUnsubscribeSecret = jest.fn();
 
 jest.mock('../../../../lambda/lib/db', () => ({
   getDbPool: jest.fn(() => Promise.resolve({ connect: mockConnect })),
@@ -48,6 +49,12 @@ jest.mock('../../../../lambda/lib/employer-candidate-ranking', () => ({
 jest.mock('../../../../lambda/lib/unsubscribe-token', () => ({
   mintUnsubscribeToken: (...args: unknown[]) => mockMintUnsubscribeToken(...args),
 }));
+jest.mock('../../../../lambda/lib/unsubscribe-secret', () => ({
+  getUnsubscribeSecret: (...args: unknown[]) => {
+    sequence.push('getUnsubscribeSecret');
+    return mockGetUnsubscribeSecret(...args);
+  },
+}));
 
 import { handler } from '../../../../lambda/notifications/employer-digest-producer';
 
@@ -58,6 +65,16 @@ const JOB_2 = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
 const BASE_URL = 'https://jaleapp.ai';
 
 const DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Deliberate skew between Node's clock and the "database" clock, applied to
+ * EVERY fixture. applied_at and last_sent_at are both written by the DB, so the
+ * cutoff the producer compares them against must come from the DB too. Making
+ * the two clocks differ by default means any regression back to `new Date()`
+ * shows up as a wrong candidate set somewhere in this file rather than only in
+ * the one test that targets it.
+ */
+const DB_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 interface DueRow {
   employer_id: string;
@@ -122,9 +139,16 @@ interface DbFixture {
   due: DueRow[];
   jobs: Record<string, Array<{ id: string; title: string }>>;
   localDate?: string;
+  /** What `SELECT now()` hands back. Defaults to Node-now + DB_CLOCK_SKEW_MS. */
+  dbCutoff?: Date;
+  /** Set to 0 to simulate an RLS-filtered watermark UPDATE that matches nothing. */
+  watermarkRowCount?: number;
+  /** Set to true to have the clock query come back with no row at all. */
+  clockReturnsNoRow?: boolean;
 }
 
-function configureDb(fixture: DbFixture): void {
+function configureDb(fixture: DbFixture): Date {
+  const dbCutoff = fixture.dbCutoff ?? new Date(Date.now() + DB_CLOCK_SKEW_MS);
   mockConnect.mockResolvedValue({ query: mockQuery, release: mockRelease });
   mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
     const text = String(sql);
@@ -137,8 +161,13 @@ function configureDb(fixture: DbFixture): void {
       return Promise.resolve({ rows: fixture.due, rowCount: fixture.due.length });
     }
     if (text.includes('AT TIME ZONE')) {
-      sequence.push('localDate');
-      return Promise.resolve({ rows: [{ local_date: fixture.localDate ?? '2026-08-21' }], rowCount: 1 });
+      sequence.push('clock');
+      if (fixture.clockReturnsNoRow) return Promise.resolve({ rows: [], rowCount: 0 });
+      // node-postgres parses timestamptz into a JS Date, so the stub does too.
+      return Promise.resolve({
+        rows: [{ cutoff: dbCutoff, local_date: fixture.localDate ?? '2026-08-21' }],
+        rowCount: 1,
+      });
     }
     if (/FROM jobs\b/.test(text)) {
       sequence.push('jobs');
@@ -148,11 +177,12 @@ function configureDb(fixture: DbFixture): void {
     }
     if (text.includes('UPDATE employer_digest_settings')) {
       sequence.push('watermark');
-      return Promise.resolve({ rows: [], rowCount: 1 });
+      return Promise.resolve({ rows: [], rowCount: fixture.watermarkRowCount ?? 1 });
     }
     sequence.push(`other:${text.slice(0, 40)}`);
     return Promise.resolve({ rows: [], rowCount: 0 });
   });
+  return dbCutoff;
 }
 
 describe('employer-digest-producer', () => {
@@ -164,6 +194,7 @@ describe('employer-digest-producer', () => {
     process.env = { ...env, PUBLIC_SITE_BASE_URL: BASE_URL };
     mockQueueEmail.mockResolvedValue('outbox-id');
     mockMintUnsubscribeToken.mockResolvedValue('tok.sig');
+    mockGetUnsubscribeSecret.mockResolvedValue('signing-secret');
     mockListEmployerCandidates.mockResolvedValue(rankingResult([]));
   });
   afterAll(() => { process.env = env; });
@@ -175,6 +206,30 @@ describe('employer-digest-producer', () => {
     configureDb({ due: [], jobs: {} });
     await expect(handler()).rejects.toThrow(/PUBLIC_SITE_BASE_URL|base_url/i);
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('fails the WHOLE run before opening a connection when the signing secret is unreadable', async () => {
+    // Not a per-employer concern. Fetching the secret lazily inside the loop
+    // would put a Secrets-Manager-over-VPC call inside an open
+    // email_outbox-writing transaction, and its failure would land in the
+    // per-employer catch — invisible to metricErrors and to the DLQ. Warming it
+    // up front turns a missing secret into a loud whole-run failure instead.
+    configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [] } });
+    mockGetUnsubscribeSecret.mockRejectedValue(new Error('unsubscribe_secret_empty'));
+    await expect(handler()).rejects.toThrow(/unsubscribe_secret/);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockConnect).not.toHaveBeenCalled();
+  });
+
+  it('warms the signing secret before the first BEGIN, never inside a transaction', async () => {
+    configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] } });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    await handler();
+    const warm = sequence.indexOf('getUnsubscribeSecret');
+    const begin = sequence.indexOf('BEGIN');
+    expect(warm).toBeGreaterThanOrEqual(0);
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(warm).toBeLessThan(begin);
   });
 
   // ── Due-selection delegation ───────────────────────────────────────────────
@@ -227,6 +282,72 @@ describe('employer-digest-producer', () => {
     expect(input.bodyText).not.toContain('ExactlyAtWatermark');
     expect(input.bodyText).not.toContain('FromTheFuture');
     expect(input.subject).toMatch(/^1 new applicant\b/);
+  });
+
+  it('takes the cutoff from the DATABASE clock, not Node’s', async () => {
+    // applied_at and last_sent_at are both DB-clock values. If the cutoff came
+    // from Node and Lambda ran behind RDS, this applicant — already committed on
+    // the DB clock, still "in the future" on Node's — would be dropped from this
+    // digest AND from the next one (applied_at <= the advanced watermark).
+    const dbCutoff = configureDb({
+      due: [dueRow({ last_sent_at: new Date(Date.now() - DAY) })],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([
+      candidate({ display_name: 'AheadOfNodeClock', applied_at: new Date(Date.now() + 2 * 60 * 1000) }),
+      candidate({ display_name: 'AfterTheDbCutoff', applied_at: new Date(dbCutoff.getTime() + 1000) }),
+    ]));
+    await handler();
+    expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+    const input = mockQueueEmail.mock.calls[0][1];
+    expect(input.bodyText).toContain('AheadOfNodeClock');
+    expect(input.bodyText).not.toContain('AfterTheDbCutoff');
+  });
+
+  it('stores the DB cutoff itself as the watermark, so no applicant falls between the two', async () => {
+    const dbCutoff = configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    await handler();
+    const watermarkCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('UPDATE employer_digest_settings'));
+    expect(watermarkCall![1]).toEqual([EMPLOYER_A, dbCutoff]);
+  });
+
+  it('reads the cutoff and the local date in ONE statement, from the DB clock, after the GUCs', async () => {
+    configureDb({ due: [dueRow({ timezone: 'Asia/Tokyo' })], jobs: { [EMPLOYER_A]: [] } });
+    await handler();
+    const clockCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('AT TIME ZONE'));
+    const sql = String(clockCall![0]);
+    expect(sql).toMatch(/now\(\)\s+AS\s+cutoff/i);
+    expect(sql).toContain('AT TIME ZONE');
+    // The explicit ::text cast on the zone parameter — belt and braces on
+    // unknown-parameter resolution for AT TIME ZONE.
+    expect(sql).toContain('$1::text');
+    expect(clockCall![1]).toEqual(['Asia/Tokyo']);
+    // Exactly one clock round trip per employer: no separate local-date query.
+    expect(sequence.filter((s) => s === 'clock')).toHaveLength(1);
+    const internal = sequence.indexOf(`setInternalUserRlsContext:${EMPLOYER_A}`);
+    expect(internal).toBeLessThan(sequence.indexOf('clock'));
+  });
+
+  it('fails the employer closed — no mail — when the clock row comes back empty', async () => {
+    configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+      clockReturnsNoRow: true,
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = await handler();
+    // A missing cutoff must NOT silently degrade into "nobody is new" — that
+    // would look exactly like a quiet day and commit.
+    expect(mockQueueEmail).not.toHaveBeenCalled();
+    expect(sequence).toContain('ROLLBACK');
+    expect(sequence).not.toContain('COMMIT');
+    expect(result).toMatchObject({ due: 1, queued: 0, quiet: 0, failed: 1 });
+    errorLog.mockRestore();
   });
 
   it('treats a null last_sent_at as "everything is new"', async () => {
@@ -286,7 +407,7 @@ describe('employer-digest-producer', () => {
     expect(sequence).not.toContain('watermark');
     expect(sequence).toContain('COMMIT');
     expect(sequence).not.toContain('ROLLBACK');
-    expect(result).toMatchObject({ due: 1, queued: 0 });
+    expect(result).toMatchObject({ due: 1, queued: 0, quiet: 1 });
   });
 
   // ── 10-cap + "+N more" ────────────────────────────────────────────────────
@@ -319,8 +440,10 @@ describe('employer-digest-producer', () => {
     });
     mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
     await handler();
+    // The zone is the ONLY parameter: the timestamp side is now(), read from
+    // the DB clock in the same statement rather than passed in from Node.
     const localDateCall = mockQuery.mock.calls.find((c) => String(c[0]).includes('AT TIME ZONE'));
-    expect(localDateCall![1]).toEqual([expect.any(String), 'Asia/Tokyo']);
+    expect(localDateCall![1]).toEqual(['Asia/Tokyo']);
     expect(mockQueueEmail.mock.calls[0][1]).toMatchObject({
       idempotencyKey: `employer-digest:${EMPLOYER_A}:2026-08-22`,
       sourceType: 'employer_digest',
@@ -350,12 +473,54 @@ describe('employer-digest-producer', () => {
     expect(watermarkCall![1]![0]).toBe(EMPLOYER_A);
   });
 
+  it('rolls the queued email BACK when the watermark UPDATE matches zero rows', async () => {
+    // employer_digest_settings is FORCE RLS, and an RLS-filtered UPDATE that
+    // matches nothing raises nothing. Committing here would send a digest with
+    // an unadvanced watermark, which re-mails the same backlog every day
+    // forever — silently. The at-most-once property depends on this check.
+    configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+      watermarkRowCount: 0,
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = await handler();
+    // The email was queued inside the transaction, so the ROLLBACK unqueues it.
+    expect(sequence).toContain('queueEmail');
+    expect(sequence).toContain('watermark');
+    expect(sequence).toContain('ROLLBACK');
+    expect(sequence).not.toContain('COMMIT');
+    expect(result).toMatchObject({ due: 1, queued: 0, failed: 1 });
+    errorLog.mockRestore();
+  });
+
+  it('commits when the watermark UPDATE matches exactly one row', async () => {
+    configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+      watermarkRowCount: 1,
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    const result = await handler();
+    expect(sequence).toContain('COMMIT');
+    expect(sequence).not.toContain('ROLLBACK');
+    expect(result).toMatchObject({ queued: 1, failed: 0 });
+  });
+
   // ── Invalid email ─────────────────────────────────────────────────────────
 
+  // Every case here must be caught by the guard rather than becoming a 23514
+  // from email_outbox's `length BETWEEN 3 AND 320 AND position('@') > 1` CHECK:
+  // a 23514 aborts the transaction and lands in the per-employer catch, which
+  // reports the wrong failure shape (failed, not skipped).
   it.each([
     ['null', null],
     ['no at-sign', 'not-an-email'],
     ['over 320 chars', `${'a'.repeat(320)}@example.com`],
+    ['at-sign first — position(@) = 1 fails the CHECK', '@bc'],
+    ['shorter than the 3-char minimum', 'a@'],
+    ['empty string', ''],
   ])('skips an employer with an invalid email (%s): logs the metric, commits, no watermark advance', async (_label, email) => {
     configureDb({ due: [dueRow({ email: email as string | null })], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] } });
     mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
@@ -400,21 +565,97 @@ describe('employer-digest-producer', () => {
     errorLog.mockRestore();
   });
 
-  it('survives a ROLLBACK that itself throws', async () => {
+  it('emits an alarmable digest_employer_failed line for a per-employer failure', async () => {
+    // The catch returns normally, so metricErrors sees nothing and the DLQ stays
+    // empty. Without this structured line every per-employer failure — a 23514,
+    // an idempotency conflict, a Secrets Manager throttle — is invisible.
     configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] } });
     mockListEmployerCandidates.mockRejectedValue(new Error('boom'));
-    mockQuery.mockImplementation((sql: string) => {
-      const text = String(sql);
-      if (text === 'ROLLBACK') return Promise.reject(new Error('connection is dead'));
-      if (text.includes('due_digest_employers')) {
-        return Promise.resolve({ rows: [dueRow()], rowCount: 1 });
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    await handler();
+    // A single argument, so the JSON survives into the log event intact: a
+    // second object argument would be formatted separately and no filter
+    // pattern could match it.
+    const metricLines = errorLog.mock.calls
+      .filter((c) => c.length === 1 && typeof c[0] === 'string' && c[0].startsWith('{'))
+      .map((c) => JSON.parse(String(c[0])));
+    expect(metricLines).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metric: 'digest_employer_failed', employerId: EMPLOYER_A }),
+    ]));
+    errorLog.mockRestore();
+  });
+
+  it('accounts for every due employer exactly once across the summary counters', async () => {
+    // due must equal queued + quiet + skipped + failed. Without this, a future
+    // early-return path shows up as {due: 40} whose parts sum to 39 and nobody
+    // notices — the exact observability gap the metrics above exist to close.
+    const EMPLOYER_C = '33333333-4444-4555-8666-777777777777';
+    const EMPLOYER_D = '44444444-5555-4666-8777-888888888888';
+    const JOB_QUIET = 'cccccccc-1111-4222-8333-444444444444';
+    const JOB_FAILS = 'dddddddd-1111-4222-8333-444444444444';
+    configureDb({
+      due: [
+        dueRow({ employer_id: EMPLOYER_A, cognito_sub: 'sub-a', email: 'a@example.com' }),
+        dueRow({ employer_id: EMPLOYER_B, cognito_sub: 'sub-b', email: 'b@example.com' }),
+        dueRow({ employer_id: EMPLOYER_C, cognito_sub: 'sub-c', email: 'not-an-email' }),
+        dueRow({ employer_id: EMPLOYER_D, cognito_sub: 'sub-d', email: 'd@example.com' }),
+      ],
+      jobs: {
+        // A queues, B is quiet, C is skipped before it ever reads jobs, D fails.
+        [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }],
+        [EMPLOYER_B]: [{ id: JOB_QUIET, title: 'Plumber' }],
+        [EMPLOYER_C]: [{ id: JOB_2, title: 'Welder' }],
+        [EMPLOYER_D]: [{ id: JOB_FAILS, title: 'Roofer' }],
+      },
+    });
+    mockListEmployerCandidates.mockImplementation((_client: unknown, jobId: string) => {
+      if (jobId === JOB_1) return Promise.resolve(rankingResult([candidate()]));
+      if (jobId === JOB_QUIET) return Promise.resolve(rankingResult([]));
+      if (jobId === JOB_FAILS) return Promise.reject(new Error('employer D exploded'));
+      throw new Error(`unexpected job read for ${jobId} — the skipped employer must never reach a jobs query`);
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const result = await handler();
+    expect(result).toMatchObject({ due: 4, queued: 1, quiet: 1, skipped: 1, failed: 1 });
+    expect(result.queued + result.quiet + result.skipped + result.failed).toBe(result.due);
+    warn.mockRestore();
+    errorLog.mockRestore();
+  });
+
+  it('survives a ROLLBACK that itself throws, and still processes the NEXT employer', async () => {
+    // The pool is max:1. A throwing ROLLBACK that escaped the guard would take
+    // the single connection — and therefore every remaining employer — down
+    // with it, so the second employer here is the whole point of the test.
+    const dueRows = [
+      dueRow({ employer_id: EMPLOYER_A, cognito_sub: 'sub-a', email: 'a@example.com' }),
+      dueRow({ employer_id: EMPLOYER_B, cognito_sub: 'sub-b', email: 'b@example.com' }),
+    ];
+    configureDb({
+      due: dueRows,
+      jobs: {
+        [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }],
+        [EMPLOYER_B]: [{ id: JOB_2, title: 'Plumber' }],
+      },
+    });
+    const baseQuery = mockQuery.getMockImplementation()!;
+    mockQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (String(sql) === 'ROLLBACK') {
+        sequence.push('ROLLBACK');
+        return Promise.reject(new Error('connection is dead'));
       }
-      if (text.includes('AT TIME ZONE')) return Promise.resolve({ rows: [{ local_date: '2026-08-21' }] });
-      if (/FROM jobs\b/.test(text)) return Promise.resolve({ rows: [{ id: JOB_1, title: 'Electrician' }] });
-      return Promise.resolve({ rows: [], rowCount: 0 });
+      return baseQuery(sql, params);
+    });
+    mockListEmployerCandidates.mockImplementation((_client: unknown, jobId: string) => {
+      if (jobId === JOB_1) return Promise.reject(new Error('boom'));
+      return Promise.resolve(rankingResult([candidate({ display_name: 'Second Employer Worker' })]));
     });
     const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-    await expect(handler()).resolves.toMatchObject({ failed: 1 });
+    const result = await handler();
+    expect(sequence).toContain('ROLLBACK');
+    expect(mockQueueEmail).toHaveBeenCalledTimes(1);
+    expect(mockQueueEmail.mock.calls[0][1].recipientEmail).toBe('b@example.com');
+    expect(result).toMatchObject({ due: 2, queued: 1, failed: 1 });
     expect(mockRelease).toHaveBeenCalledTimes(1);
     errorLog.mockRestore();
   });

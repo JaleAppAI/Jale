@@ -10,6 +10,7 @@ import {
   type DigestScoreBand,
 } from '../lib/employer-digest-template';
 import { errorMessage, requireAbsoluteBaseUrl } from '../lib/http';
+import { getUnsubscribeSecret } from '../lib/unsubscribe-secret';
 import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
 
 /**
@@ -34,11 +35,19 @@ import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
  * The hour predicate is true for up to FOUR consecutive 15-minute sweeps. The
  * thing that makes the digest at-most-once is the committed last_sent_at
  * watermark, so the watermark UPDATE and the email_outbox INSERT are in ONE
- * transaction. Belt and braces on top of that: the idempotency key is keyed on
- * the employer's LOCAL calendar date, so a same-day concurrent run either
- * dedupes byte-identically (queueEmail returns the existing row) or throws
+ * transaction -- and the UPDATE's rowCount is VERIFIED before that transaction
+ * commits, because employer_digest_settings is FORCE RLS and an RLS-filtered
+ * UPDATE matching zero rows raises nothing at all.
+ *
+ * Belt and braces on top of that: the idempotency key is keyed on the
+ * employer's LOCAL calendar date, so a same-day concurrent run either dedupes
+ * byte-identically (queueEmail returns the existing row) or throws
  * email_outbox_idempotency_conflict, which the per-employer catch turns into a
  * rollback for that employer only.
+ *
+ * Every timestamp in that reasoning -- applied_at, last_sent_at, and the cutoff
+ * they are compared against -- comes from the DATABASE clock. See the clock
+ * read inside the loop for why Node's would be a silent-loss bug.
  *
  * ── Deliberately NOT here: candidate reranking ───────────────────
  * listEmployerCandidates() returns shouldEnqueueRerank, and
@@ -57,9 +66,22 @@ import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
  * If no active job has a new applicant, the transaction COMMITs WITHOUT
  * advancing the watermark. No mail on a quiet day, and the next real send
  * measures its window from the last REAL send rather than from a silent sweep.
+ *
+ * ── Observability ────────────────────────────────────────────────
+ * Every due employer ends in exactly one of five states, and the returned
+ * summary counts all five: queued, quiet, skipped (unusable address), or failed
+ * (anything thrown, including the watermark check). due === queued + quiet +
+ * skipped + failed is an invariant a test asserts.
+ *
+ * Both silent states emit a structured single-string log line that
+ * NotificationsStack turns into a CloudWatch metric, because both return
+ * NORMALLY -- Lambda's Errors metric and the DLQ can see neither:
+ *   digest_skipped_invalid_email  -> EmployerDigestSkippedInvalidEmail
+ *   digest_employer_failed        -> EmployerDigestEmployerFailed
  */
 
 /** email_outbox recipient_email CHECK: length BETWEEN 3 AND 320 AND position('@') > 1. */
+const MIN_EMAIL_LENGTH = 3;
 const MAX_EMAIL_LENGTH = 320;
 
 interface DueEmployerRow {
@@ -81,6 +103,8 @@ interface ActiveJobRow {
 export interface DigestRunSummary {
   due: number;
   queued: number;
+  /** Committed with nothing to say: no active job had a new applicant. */
+  quiet: number;
   skipped: number;
   failed: number;
 }
@@ -92,13 +116,24 @@ function toEpochMs(value: string | Date | null | undefined): number | null {
 }
 
 /**
- * Same shape as the billing processor's employer-email guard
- * (lambda/billing/processor.ts): a value that cannot satisfy email_outbox's
- * recipient_email CHECK must be caught here, not become a 23514 that aborts
- * the transaction.
+ * Mirrors email_outbox's recipient_email CHECK exactly:
+ *   length(recipient_email) BETWEEN 3 AND 320 AND position('@' IN recipient_email) > 1
+ * (migration 037). A value that cannot satisfy it must be caught HERE and
+ * reported as the alarmed skip, not become a 23514 that aborts the transaction
+ * and surfaces as an anonymous per-employer failure.
+ *
+ * `indexOf('@') > 0` is the JS spelling of `position('@') > 1`: present, and not
+ * the first character. Both halves matter — '@bc' passes a naive includes('@')
+ * check and then violates the CHECK.
+ *
+ * NOTE lambda/billing/processor.ts has the looser version of this guard and the
+ * same gap. Deliberately not touched here: it is outside this change's scope.
  */
 function isSendableEmail(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= MAX_EMAIL_LENGTH && value.includes('@');
+  return typeof value === 'string'
+    && value.length >= MIN_EMAIL_LENGTH
+    && value.length <= MAX_EMAIL_LENGTH
+    && value.indexOf('@') > 0;
 }
 
 function digestLanguage(value: unknown): DigestLanguage {
@@ -115,9 +150,18 @@ export const handler = async (): Promise<DigestRunSummary> => {
   const baseUrl = requireAbsoluteBaseUrl(process.env.PUBLIC_SITE_BASE_URL);
   if (!baseUrl) throw new Error('digest_public_site_base_url_missing');
 
+  // Warm the signing secret HERE, not lazily inside mintUnsubscribeToken.
+  // Fetched in the loop it would be a Secrets-Manager-over-VPC round trip
+  // INSIDE an open email_outbox-writing transaction on a cold container, and a
+  // failure would land in the per-employer catch below -- which returns
+  // normally, so metricErrors would not see it and the DLQ would stay empty.
+  // Up here a missing or unreadable secret fails the whole run loudly, before
+  // any connection is opened. The lib caches, so the in-loop calls are free.
+  await getUnsubscribeSecret();
+
   const pool = await getDbPool();
   const client = await pool.connect();
-  const summary: DigestRunSummary = { due: 0, queued: 0, skipped: 0, failed: 0 };
+  const summary: DigestRunSummary = { due: 0, queued: 0, quiet: 0, skipped: 0, failed: 0 };
 
   try {
     const due = await client.query<DueEmployerRow>(
@@ -136,10 +180,36 @@ export const handler = async (): Promise<DigestRunSummary> => {
         await setRlsContext(client, row.cognito_sub);
         await setInternalUserRlsContext(client, row.employer_id);
 
-        // One cutoff per employer, captured before any read, so an applicant
-        // who applies mid-render is not both excluded from this digest and
-        // skipped by the next one.
-        const cutoff = new Date();
+        // ── One clock, and it is the DATABASE's ──────────────────
+        // Both values this employer's window is measured against --
+        // applications.applied_at and employer_digest_settings.last_sent_at --
+        // are written by PostgreSQL. Taking the cutoff from Node instead would
+        // introduce Lambda-vs-RDS clock skew into the comparison: if Lambda ran
+        // δ behind RDS, every applicant who applied inside δ would be excluded
+        // from THIS digest (applied_at > cutoff) and then from the NEXT one
+        // (applied_at <= the advanced watermark) -- silently dropped forever.
+        //
+        // now() is transaction_timestamp(), so this is stable for the whole
+        // employer transaction, and the same call supplies the LOCAL calendar
+        // date for the idempotency key -- one round trip, and by construction
+        // the key cannot disagree with the cutoff it was derived from. The
+        // explicit ::text on the zone parameter is belt and braces on
+        // unknown-parameter resolution for AT TIME ZONE.
+        //
+        // The zone cannot raise here: due_digest_employers() only returns rows
+        // whose timezone joined pg_timezone_names successfully.
+        const clock = await client.query<{ cutoff: string | Date; local_date: string }>(
+          'SELECT now() AS cutoff, (now() AT TIME ZONE $1::text)::date::text AS local_date',
+          [row.timezone],
+        );
+        const cutoffMs = toEpochMs(clock.rows[0]?.cutoff);
+        const localCalendarDate = clock.rows[0]?.local_date;
+        // Fail this employer CLOSED. A null cutoff would make every candidate
+        // fail the `appliedMs <= cutoffMs` test, which looks exactly like a
+        // quiet day and would COMMIT -- turning a broken clock read into a
+        // silent mass non-delivery instead of an alarmable failure.
+        if (cutoffMs === null) throw new Error('digest_cutoff_unresolved');
+        if (!localCalendarDate) throw new Error('digest_local_date_unresolved');
 
         if (!isSendableEmail(row.email)) {
           // A structured warn line, not a throw: this is a data problem for
@@ -157,26 +227,12 @@ export const handler = async (): Promise<DigestRunSummary> => {
 
         const language = digestLanguage(row.language);
 
-        // The employer's LOCAL calendar date, derived by PostgreSQL rather
-        // than by Intl in Node. Deliberate: this is the same engine, and the
-        // same zone string, that due_digest_employers() used to decide the row
-        // was due, so the key cannot disagree with the due-check. It also
-        // cannot raise -- the due list only returns zones that joined
-        // pg_timezone_names successfully.
-        const localDateResult = await client.query<{ local_date: string }>(
-          'SELECT (($1::timestamptz) AT TIME ZONE $2)::date::text AS local_date',
-          [cutoff.toISOString(), row.timezone],
-        );
-        const localCalendarDate = localDateResult.rows[0]?.local_date;
-        if (!localCalendarDate) throw new Error('digest_local_date_unresolved');
-
         const activeJobs = await client.query<ActiveJobRow>(
           "SELECT id, title FROM jobs WHERE employer_id = $1 AND status = 'active'",
           [row.employer_id],
         );
 
         const watermarkMs = toEpochMs(row.last_sent_at);
-        const cutoffMs = cutoff.getTime();
         const digestJobs: DigestJob[] = [];
 
         for (const job of activeJobs.rows) {
@@ -228,6 +284,10 @@ export const handler = async (): Promise<DigestRunSummary> => {
 
         if (digestJobs.length === 0) {
           await client.query('COMMIT');
+          // Counted, not merely skipped over: without this a run reporting
+          // {due: 40, queued: 1} is indistinguishable from one silently
+          // walking 39 rows and doing nothing it meant to do.
+          summary.quiet += 1;
           continue;
         }
 
@@ -252,10 +312,21 @@ export const handler = async (): Promise<DigestRunSummary> => {
           idempotencyKey: `employer-digest:${row.employer_id}:${localCalendarDate}`,
         });
 
-        await client.query(
+        // The watermark stores the EXACT cutoff the candidate filter used, so no
+        // applicant can fall into a gap between "counted in this digest" and
+        // "still new next time".
+        const advanced = await client.query(
           'UPDATE employer_digest_settings SET last_sent_at = $2 WHERE employer_id = $1',
-          [row.employer_id, cutoff.toISOString()],
+          [row.employer_id, clock.rows[0].cutoff],
         );
+        // employer_digest_settings is FORCE RLS and employer_id is its PRIMARY
+        // KEY, so this is 1 or 0 -- and an RLS-filtered UPDATE that matches
+        // ZERO rows raises NOTHING. Committing on 0 would send the digest with
+        // an unadvanced watermark, which re-mails the same backlog every day
+        // forever, silently. Throwing here puts the queued email in the same
+        // ROLLBACK. Not constructible under today's schema (the jobs read above
+        // fails first on the same GUC), but at-most-once is the whole feature.
+        if (advanced.rowCount !== 1) throw new Error('digest_watermark_not_advanced');
 
         await client.query('COMMIT');
         summary.queued += 1;
@@ -267,6 +338,23 @@ export const handler = async (): Promise<DigestRunSummary> => {
         // with it.
         try { await client.query('ROLLBACK'); } catch { /* connection already unusable */ }
         summary.failed += 1;
+        // TWO log lines, deliberately.
+        //
+        // 1. The alarmable one. This catch returns normally, so metricErrors
+        //    never fires and the DLQ stays empty -- a 23514, an
+        //    email_outbox_idempotency_conflict, or a Secrets Manager throttle
+        //    mid-loop would otherwise be completely invisible. It MUST be a
+        //    single JSON string argument: a second object argument is formatted
+        //    separately by the Lambda runtime, and no filter pattern can match
+        //    across that boundary. NotificationsStack matches the literal
+        //    "digest_employer_failed" -- keep the two in step.
+        console.error(JSON.stringify({
+          metric: 'digest_employer_failed',
+          employerId: row.employer_id,
+        }));
+        // 2. The human-readable one, carrying the cause for the operator who
+        //    goes looking after the alarm above fires. Not alarmable, and not
+        //    expected to be.
         console.error('employer-digest-producer employer failed', {
           employerId: row.employer_id,
           error: errorMessage(error),
