@@ -126,6 +126,24 @@ export type Job = {
   created_at: string;
   match_score?: number;
   match_reasons?: string[];
+  /**
+   * Structured job-flow-redesign fields (WK-T0). Every one of these is
+   * optional and may be absent or null on a legacy job -- callers must treat
+   * absence/null as "no structured data" and fall back to the legacy
+   * free-text fields (`trade_category`, `expected_duration`,
+   * `shift_schedule`, `certifications`) rather than crash.
+   *
+   * `trade_category_other` is the free-text trade name when
+   * `trade_category` is `'other'`.
+   */
+  trade_category_other?: string | null;
+  expected_duration_bucket?: 'lt_1w' | '1_2w' | '2_4w' | '1_3m' | '3_6m' | '6m_plus' | 'ongoing' | null;
+  work_days?: Array<'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun'> | null;
+  /** 'HH:MM', 24h. */
+  shift_start?: string | null;
+  /** 'HH:MM', 24h. */
+  shift_end?: string | null;
+  certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }> | null;
 };
 
 export type JobDetail = Job & {
@@ -200,12 +218,16 @@ export type WorkerProfileData = {
 };
 
 export type WorkerVaultDoc = {
+  /** Row identity from the worker vault list endpoint (WK-T0 backend gap fix). */
+  id: string;
   doc_type: DocType;
   s3_key: string;
   file_name: string;
   file_size: number;
   uploaded_at: string;
   url: string;
+  /** Only meaningful when `doc_type` is `'certification_doc'`. */
+  cert_name?: string | null;
 };
 
 /**
@@ -269,6 +291,9 @@ export async function getJob(token: string, id: string, signal?: AbortSignal): P
   return res.json();
 }
 
+/** One certification-requirement claim submitted alongside an application. */
+export type CertificationClaim = { name: string; has: boolean; doc_ids?: string[] };
+
 /**
  * `answers` (job_applications.application_answers) is optional and only
  * meaningful when the job has any required/optional custom fields --
@@ -281,15 +306,25 @@ export async function getJob(token: string, id: string, signal?: AbortSignal): P
  * field keys) and `invalid_answers` carries `detail` (the specific
  * validator failure, e.g. `invalid_desired_pay`) -- both allowlisted onto
  * `ApiError.payload` by `parseApiError`.
+ *
+ * `certification_claims` (WK-T0) is sent as a TOP-LEVEL sibling of `answers`,
+ * never nested inside it, and is omitted from the body entirely when the
+ * caller does not pass it -- existing call sites keep sending exactly the
+ * same body they always sent.
  */
 export async function applyToJob(
   token: string,
   id: string,
   answers?: Record<string, unknown>,
+  certification_claims?: Array<CertificationClaim>,
 ): Promise<Application> {
+  const hasBody = answers !== undefined || certification_claims !== undefined;
+  const body: { answers?: Record<string, unknown>; certification_claims?: Array<CertificationClaim> } = {};
+  if (answers !== undefined) body.answers = answers;
+  if (certification_claims !== undefined) body.certification_claims = certification_claims;
   const res = await apiFetch(
     `/worker/jobs/${id}/apply`,
-    { method: 'POST', body: answers !== undefined ? JSON.stringify({ answers }) : undefined },
+    { method: 'POST', body: hasBody ? JSON.stringify(body) : undefined },
     token,
   );
   // A 400 from the required-docs guard carries `missing_docs`; the job page
@@ -326,6 +361,27 @@ export async function getVaultDocuments(
   return res.json();
 }
 
+/**
+ * A worker's most-recently-submitted custom-field answers, offered as
+ * pre-fill defaults on a new application. `answers` is `{}` for a worker
+ * with no prior application history -- callers are expected to swallow
+ * fetch failures (this is a convenience pre-fill, never a blocker to
+ * applying).
+ */
+export type ApplicationDefaults = { answers: Record<string, unknown>; updated_at?: string | null };
+
+/**
+ * Deliberately does NOT take the trailing `AbortSignal` the READ-helpers
+ * convention above describes: this is a best-effort pre-fill call that
+ * callers wrap in try/catch and swallow on failure, not a page-data fetch
+ * wired through `usePageData`'s unmount/deps-change cancellation.
+ */
+export async function getApplicationDefaults(token: string): Promise<ApplicationDefaults> {
+  const res = await apiFetch('/worker/application-defaults', {}, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return res.json();
+}
+
 export async function getAuthUploadUrl(
   token: string,
   doc_type: DocType,
@@ -340,11 +396,17 @@ export async function getAuthUploadUrl(
   return res.json();
 }
 
+/**
+ * `cert_name` is only meaningful when `doc_type` is `'certification_doc'` and
+ * is omitted from the POST body entirely (not sent as `undefined`/`null`)
+ * when the caller does not pass it, so existing call sites are unaffected.
+ */
 export async function confirmAuthUpload(
   token: string,
   s3_key: string,
   doc_type: DocType,
   file: File,
+  cert_name?: string,
 ): Promise<void> {
   const res = await apiFetch(
     '/worker/vault/confirm',
@@ -353,6 +415,7 @@ export async function confirmAuthUpload(
       body: JSON.stringify({
         s3_key, doc_type,
         file_name: file.name, file_size: file.size, mime_type: file.type,
+        ...(cert_name !== undefined ? { cert_name } : {}),
       }),
     },
     token,
@@ -360,8 +423,15 @@ export async function confirmAuthUpload(
   if (!res.ok) throw await parseApiError(res, 'confirm_failed');
 }
 
-export async function deleteVaultDocument(token: string, doc_type: DocType): Promise<void> {
-  const res = await apiFetch(`/worker/vault/${doc_type}`, { method: 'DELETE' }, token);
+/**
+ * `id` disambiguates between multiple vault rows of the same `doc_type`
+ * (e.g. several `certification_doc` uploads). Omitted entirely when the
+ * caller does not pass it, preserving the existing single-doc-per-type
+ * DELETE behavior for every current call site.
+ */
+export async function deleteVaultDocument(token: string, doc_type: DocType, id?: string): Promise<void> {
+  const qs = id !== undefined ? `?id=${encodeURIComponent(id)}` : '';
+  const res = await apiFetch(`/worker/vault/${doc_type}${qs}`, { method: 'DELETE' }, token);
   if (!res.ok) throw await parseApiError(res, 'delete_failed');
 }
 

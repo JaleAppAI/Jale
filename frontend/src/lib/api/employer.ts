@@ -174,6 +174,25 @@ export type Job = {
   required_experience_months: number | null;
   certifications: string[];
   created_at: string;
+  // ---------------------------------------------------------------------
+  // Job-flow redesign (FE-T3): six structured fields added by migration
+  // 077_jobs_structured_fields.sql. All optional -- a job row from before
+  // that migration, or a client not yet updated to request the new columns,
+  // carries none of them; readers must treat an absent value as "not set"
+  // (see lib/job-form.ts's jobToForm), never crash.
+  // ---------------------------------------------------------------------
+  /** Free text, only meaningful when trade_category === 'other'. */
+  trade_category_other?: string | null;
+  /** Closed enum; see lib/job-form.ts's DURATION_BUCKETS. */
+  expected_duration_bucket?: string | null;
+  /** Day abbreviations, e.g. ['mon', 'wed', 'fri']. */
+  work_days?: string[] | null;
+  /** Postgres TIME -- may arrive as 'HH:MM' or 'HH:MM:SS'. */
+  shift_start?: string | null;
+  shift_end?: string | null;
+  /** Per-certification requirement rows; independent of the legacy
+   *  `certification_doc` three-state row in required_docs/optional_docs. */
+  certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }> | null;
 };
 
 export type EmployerJobDetail = Job & {
@@ -429,6 +448,17 @@ export type JobWritePayload = {
   longitude?: number;
   city_key?: string;
   state?: string;
+  // Job-flow redesign (FE-T3), migration 077 -- see the matching comment on
+  // `Job` above. `lib/job-form.ts`'s `jobFormToBasePayload` omits each of
+  // these independently when its structured value is empty; there is no
+  // explicit-`null` clear story for them yet (unlike `state_region`'s
+  // create/edit split).
+  trade_category_other?: string;
+  expected_duration_bucket?: string;
+  work_days?: string[];
+  shift_start?: string;
+  shift_end?: string;
+  certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }>;
 };
 
 export async function createJob(token: string, data: JobWritePayload): Promise<Job> {
@@ -445,13 +475,21 @@ export async function createJob(token: string, data: JobWritePayload): Promise<J
  * optional, mirroring "whatever the job form currently holds". Strings are
  * capped at 200 chars by the backend (400 `invalid_*` past that); callers
  * should trim/slice before sending rather than round-trip into a failure.
- * `trade_category: 'other'` is rejected outright (400
- * `unsupported_trade_category`) -- callers should keep the trigger disabled
- * for that trade instead of surfacing the generic failure message.
+ * `trade_category: 'other'` is rejected outright UNLESS `trade_category_other`
+ * is also present (non-blank, ≤200 chars) -- callers should keep the trigger
+ * disabled for 'other' without custom trade text instead of surfacing the
+ * generic failure message.
+ * `trade_category_other` is only meaningful (and only ever read by the
+ * backend) when `trade_category === 'other'`.
+ * `employer_notes` is a separate, larger cap (500 chars server-side; callers
+ * generally send far less -- see `lib/generate-description-payload.ts`'s
+ * `EMPLOYER_NOTES_MAX_LENGTH`) for brief free-text context typed by the
+ * employer, e.g. into the description box before generating.
  */
 export type GenerateJobDescriptionPayload = {
   title?: string;
   trade_category: string;
+  trade_category_other?: string;
   city?: string;
   state?: string;
   pay_min?: number;
@@ -459,6 +497,7 @@ export type GenerateJobDescriptionPayload = {
   pay_interval?: string;
   expected_duration?: string;
   shift_schedule?: string;
+  employer_notes?: string;
 };
 
 export type GenerateJobDescriptionResult = {

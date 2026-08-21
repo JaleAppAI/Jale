@@ -6,7 +6,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { ApiError, saveJobTemplate, type JobTemplate } from '@/lib/api/employer';
 import {
   type JobForm, initialForm, jobFormFromTemplatePayload, jobFormToCreatePayload,
-  validateJobNumbers, validateJobLocationFields, applyLocationToJobForm,
+  validateFullJobForm, applyLocationToJobForm,
 } from '@/lib/job-form';
 import { Button } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
@@ -14,7 +14,6 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { JobFormFields } from '@/components/employer/JobFormFields';
 import { Modal } from '@/components/ui/modal';
-import { locationDatasetFailed } from '@/lib/location-search';
 
 /**
  * Create or edit a job template: a name plus the full job form (minus the
@@ -67,17 +66,31 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
     setError('');
     setLimitReached(false);
     if (!name.trim()) return setNameError(t('templates.name_required'));
-    if (!form.title.trim() || !form.location.trim() || !form.trade_category) {
-      return setError(t('modal.validation_required'));
+    // `validateFullJobForm` replaces this modal's own inline checks -- no
+    // `minWorkers` floor here, unlike EditJobModal: a template has no hired
+    // workers to protect. `trade_category_other_required` and
+    // `shift_incomplete` both fall back onto `validation_required` per
+    // `validateStepBasics`/`validateStepDetails`'s own doc comments -- there
+    // is no dedicated key for either yet.
+    const code = validateFullJobForm(form);
+    switch (code) {
+      case null:
+        break;
+      case 'required':
+      case 'trade_category_other_required':
+      case 'shift_incomplete':
+        return setError(t('modal.validation_required'));
+      case 'location_pick_required':
+        return setError(t('modal.location_pick_required'));
+      case 'state_region':
+        return setError(t('modal.validation_state_region'));
+      case 'number':
+        return setError(t('modal.validation_number'));
+      case 'pay_range':
+        return setError(t('modal.validation_pay_range'));
+      case 'headcount':
+        return setError(t('modal.validation_headcount'));
     }
-    if (!form.city_key && !locationDatasetFailed()) {
-      return setError(t('modal.location_pick_required'));
-    }
-    const code = validateJobNumbers(form);
-    if (code === 'number') return setError(t('modal.validation_number'));
-    if (code === 'pay_range') return setError(t('modal.validation_pay_range'));
-    if (code === 'headcount') return setError(t('modal.validation_headcount'));
-    if (validateJobLocationFields(form) === 'state_region') return setError(t('modal.validation_state_region'));
     setLoading(true);
     try {
       const saved = await saveJobTemplate(idToken!, {

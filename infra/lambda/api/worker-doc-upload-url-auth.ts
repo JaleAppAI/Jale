@@ -6,6 +6,7 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 import { DOC_TYPES } from '../lib/job-fields';
+import { validateCertName } from '../lib/cert-name';
 
 const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
@@ -24,16 +25,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 401, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unauthorized' }) };
     }
 
-    let body: { doc_type?: string; mime_type?: string };
+    let body: { doc_type?: string; mime_type?: string; cert_name?: string | null };
     try { body = JSON.parse(event.body ?? '{}'); }
     catch { return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_json' }) }; }
 
-    const { doc_type, mime_type } = body;
+    const { doc_type, mime_type, cert_name } = body;
     if (!doc_type || !mime_type) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_fields', required: ['doc_type', 'mime_type'] }) };
     }
     if (!VALID_DOC_TYPES.includes(doc_type as any)) {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_doc_type', valid: VALID_DOC_TYPES }) };
+    }
+    // cert_name is OPTIONAL here even for certification_doc -- no frontend
+    // caller sends it at presign time (it's supplied later, at confirm; see
+    // ../lib/cert-name.ts). This only rejects a cert_name that's malformed or
+    // present on the wrong doc_type, as fail-fast validation before the
+    // client burns a presigned PUT on an upload that would 400 at confirm.
+    const certResult = validateCertName(doc_type, cert_name, false);
+    if (!certResult.ok) {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: certResult.error }) };
     }
     const ext = MIME_TO_EXT[mime_type];
     if (!ext) {

@@ -1,0 +1,39 @@
+{
+  "certifications": [
+    { "id": "osha_10", "label_en": "OSHA 10", "label_es": "OSHA 10" },
+    { "id": "osha_30", "label_en": "OSHA 30", "label_es": "OSHA 30" },
+    { "id": "forklift_operator", "label_en": "Forklift Operator", "label_es": "Operador de montacargas" },
+    { "id": "cdl_class_a", "label_en": "CDL Class A", "label_es": "Licencia CDL Clase A" },
+    { "id": "cdl_class_b", "label_en": "CDL Class B", "label_es": "Licencia CDL Clase B" },
+    { "id": "first_aid_cpr", "label_en": "First Aid / CPR", "label_es": "Primeros auxilios / RCP" },
+    { "id": "epa_608", "label_en": "EPA 608", "label_es": "EPA 608" },
+    { "id": "hvac_epa_universal", "label_en": "HVAC EPA Universal", "label_es": "EPA Universal para HVAC" },
+    { "id": "aerial_lift", "label_en": "Aerial Lift", "label_es": "Plataforma aérea" },
+    { "id": "scissor_lift", "label_en": "Scissor Lift", "label_es": "Plataforma de tijera" },
+    { "id": "boom_lift", "label_en": "Boom Lift", "label_es": "Plataforma de pluma" },
+    { "id": "confined_space_entry", "label_en": "Confined Space Entry", "label_es": "Espacios confinados" },
+    { "id": "fall_protection", "label_en": "Fall Protection", "label_es": "Protección contra caídas" },
+    { "id": "scaffold_competent_person", "label_en": "Scaffold Competent Person", "label_es": "Persona competente en andamios" },
+    { "id": "rigging_signal_person", "label_en": "Rigging & Signal Person", "label_es": "Aparejador y señalero" },
+    { "id": "crane_operator_nccco", "label_en": "Crane Operator (NCCCO)", "label_es": "Operador de grúa (NCCCO)" },
+    { "id": "aws_d1_1_structural_welding", "label_en": "AWS D1.1 Structural Welding", "label_es": "Soldadura estructural AWS D1.1" },
+    { "id": "hazwoper_40", "label_en": "HAZWOPER 40", "label_es": "HAZWOPER 40" },
+    { "id": "traffic_control_flagger", "label_en": "Traffic Control / Flagger", "label_es": "Control de tránsito / Banderero" },
+    { "id": "journeyman_electrician_license", "label_en": "Journeyman Electrician License", "label_es": "Licencia de electricista oficial" },
+    { "id": "master_electrician_license", "label_en": "Master Electrician License", "label_es": "Licencia de electricista maestro" },
+    { "id": "journeyman_plumber_license", "label_en": "Journeyman Plumber License", "label_es": "Licencia de plomero oficial" },
+    { "id": "backhoe_excavator_operator", "label_en": "Backhoe / Excavator Operator", "label_es": "Operador de retroexcavadora / excavadora" },
+    { "id": "skid_steer_operator", "label_en": "Skid Steer Operator", "label_es": "Operador de minicargador" },
+    { "id": "asbestos_awareness", "label_en": "Asbestos Awareness", "label_es": "Concientización sobre el asbesto" },
+    { "id": "epa_lead_rrp", "label_en": "EPA Lead RRP", "label_es": "EPA RRP para plomo" },
+    { "id": "powder_actuated_tools", "label_en": "Powder-Actuated Tools", "label_es": "Herramientas activadas por pólvora" },
+    { "id": "respirator_fit_test", "label_en": "Respirator Fit Test", "label_es": "Prueba de ajuste de respirador" },
+    { "id": "twic_card", "label_en": "TWIC Card", "label_es": "Tarjeta TWIC" },
+    { "id": "em_385_1_1", "label_en": "EM 385-1-1", "label_es": "EM 385-1-1" }
+  ],
+  "_meta": {
+    "source": "Curated from OSHA (10/30, HAZWOPER), DOT/FMCSA (CDL), EPA (608, Lead RRP), NCCCO, AWS (D1.1), and USACE (EM 385-1-1) credential names in common US construction/blue-collar hiring use -- this is a hand-curated vocabulary, not an O*NET or single-registry extract.",
+    "note": "Proper-noun credential names and standard/acronym designations (OSHA 10/30, EPA 608, HAZWOPER 40, TWIC, EM 385-1-1, NCCCO) are kept as-is in Spanish, as is the industry acronym HVAC. Contested trade-translation calls: 'journeyman' -> 'oficial' (common US trade-Spanish usage, e.g. 'electricista oficial'); 'powder-actuated' -> 'activadas por pólvora'. Spanish labels are natural es-MX trade usage, not literal/formal translations.",
+    "retrieved": "2026-08-19"
+  }
+}

@@ -134,6 +134,151 @@ describe('worker-jobs-apply', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'invalid_json' });
   });
 
+  it('passes certification_claims through to applyWorkerToJob as a top-level sibling of answers', async () => {
+    const evWithClaims = {
+      ...ev,
+      body: JSON.stringify({ certification_claims: [{ name: 'osha10', has: true }] }),
+    } as unknown as APIGatewayProxyEvent;
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [], required_fields: [], optional_fields: [],
+            certification_requirements: [{ name: 'osha10', tier: 'required', proof_required: false }],
+          }],
+        });
+      }
+      if (q.includes('INSERT INTO job_applications')) {
+        return Promise.resolve({ rows: [{ id: 'a1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(evWithClaims);
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('returns 400 missing_certification_claims when a required cert is never claimed', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [], required_fields: [], optional_fields: [],
+            certification_requirements: [{ name: 'osha10', tier: 'required', proof_required: false }],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(ev);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'missing_certification_claims' });
+  });
+
+  it('returns 400 missing_certification_proof with a certs list when a required+proof cert is claimed with no doc', async () => {
+    const evWithClaims = {
+      ...ev,
+      body: JSON.stringify({ certification_claims: [{ name: 'osha30', has: true }] }),
+    } as unknown as APIGatewayProxyEvent;
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [], required_fields: [], optional_fields: [],
+            certification_requirements: [{ name: 'osha30', tier: 'required', proof_required: true }],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(evWithClaims);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'missing_certification_proof', certs: ['osha30'] });
+  });
+
+  it('returns 400 invalid_certification_claims for a malformed certification_claims payload', async () => {
+    const evWithClaims = {
+      ...ev,
+      body: JSON.stringify({ certification_claims: 'not-an-array' }),
+    } as unknown as APIGatewayProxyEvent;
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [], required_fields: [], optional_fields: [],
+            certification_requirements: [{ name: 'osha10', tier: 'required', proof_required: false }],
+          }],
+        });
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(evWithClaims);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_certification_claims' });
+  });
+
+  it('returns 409 certification_document_limit when the snapshot copy hits either 078 trigger cap, not a 500', async () => {
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: ['certification_doc'], optional_docs: [], required_fields: [], optional_fields: [],
+            certification_requirements: null,
+          }],
+        });
+      }
+      if (q.includes('DISTINCT doc_type')) return Promise.resolve({ rows: [{ doc_type: 'certification_doc' }] });
+      if (q.includes('INSERT INTO job_applications')) {
+        return Promise.resolve({ rows: [{ id: 'a1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] });
+      }
+      if (q.includes('INSERT INTO worker_documents')) {
+        const err = Object.assign(new Error('trigger cap'), { code: '23514', constraint: 'certification_document_name_limit' });
+        return Promise.reject(err);
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(ev);
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({ error: 'certification_document_limit' });
+    // A graceful RESULT, not a thrown error -- applyWorkerToJob's own catch
+    // block already turned the 23514 into this status (see
+    // applications.test.ts for that unit-level coverage), so the handler's
+    // normal COMMIT path runs here, same as every other graceful apply
+    // error (missing_documents, invalid_answers, ...). No ROLLBACK.
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(mockQuery).not.toHaveBeenCalledWith('ROLLBACK');
+  });
+
+  it('rolls back the whole apply (500) when the worker_application_defaults upsert fails, never swallowed', async () => {
+    const evWithAnswers = { ...ev, body: JSON.stringify({ answers: { work_authorization: true } }) } as unknown as APIGatewayProxyEvent;
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs') && !q.includes('INSERT')) {
+        return Promise.resolve({
+          rows: [{
+            id: 'job-1', required_docs: [], optional_docs: [], required_fields: ['work_authorization'], optional_fields: [],
+            certification_requirements: null,
+          }],
+        });
+      }
+      if (q.includes('INSERT INTO worker_application_defaults')) {
+        return Promise.reject(new Error('defaults write failed'));
+      }
+      return Promise.resolve({});
+    });
+    const res = await handler(evWithAnswers);
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    // The job_applications INSERT must never have run -- the defaults
+    // failure aborts before the apply itself is persisted.
+    expect(mockQuery.mock.calls.some(([q]) => String(q).includes('INSERT INTO job_applications'))).toBe(false);
+  });
+
   it('passes answers through to applyWorkerToJob and persists them on success', async () => {
     const evWithAnswers = { ...ev, body: JSON.stringify({ answers: { work_authorization: true } }) } as unknown as APIGatewayProxyEvent;
     const calls: Array<[string, unknown[]]> = [];

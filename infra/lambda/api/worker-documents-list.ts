@@ -34,8 +34,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     await setInternalUserRlsContext(client, workerId);
 
+    // `id` and `cert_name` were added together (BE-T3): the frontend's
+    // WorkerVaultDoc.id is required and cert-proof matching keys off
+    // cert_name (see certification-match.ts's matchCertProof) -- adding
+    // cert_name alone, without id, would make doc_ids serialize as [null]
+    // for every matched cert since proofFilesFromVault reads match.id.
     const docsRes = await client.query(
-      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at
+      `SELECT id, doc_type, s3_key, file_name, file_size, uploaded_at, cert_name
        FROM worker_documents
        WHERE worker_id = $1 AND job_id IS NULL`,
       [workerId],

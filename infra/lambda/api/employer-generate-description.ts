@@ -13,6 +13,7 @@ const dynamo = new DynamoDBClient({});
 const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
 
 const MAX_FIELD_LENGTH = 200;
+const MAX_EMPLOYER_NOTES_LENGTH = 500;
 const MAX_PAY_DOLLARS = 9999;
 const MAX_DESCRIPTION_LENGTH = 4000;
 const DEFAULT_DAILY_LIMIT = 10;
@@ -34,6 +35,7 @@ const GROUNDING: Record<string, GroundingEntry | undefined> = require('../ai/dat
 interface GenerateDescriptionRequestBody {
   title?: unknown;
   trade_category?: unknown;
+  trade_category_other?: unknown;
   city?: unknown;
   state?: unknown;
   pay_min?: unknown;
@@ -41,15 +43,16 @@ interface GenerateDescriptionRequestBody {
   pay_interval?: unknown;
   expected_duration?: unknown;
   shift_schedule?: unknown;
+  employer_notes?: unknown;
 }
 
 type FieldResult<T> = { ok: true; value: T | undefined } | { ok: false; error: string };
 
-function optionalBoundedString(value: unknown, field: string): FieldResult<string> {
+function optionalBoundedString(value: unknown, field: string, maxLength: number = MAX_FIELD_LENGTH): FieldResult<string> {
   if (value === undefined || value === null) return { ok: true, value: undefined };
   if (typeof value !== 'string') return { ok: false, error: `invalid_${field}` };
   const trimmed = value.trim();
-  if (trimmed.length > MAX_FIELD_LENGTH) return { ok: false, error: `invalid_${field}` };
+  if (trimmed.length > maxLength) return { ok: false, error: `invalid_${field}` };
   return { ok: true, value: trimmed.length > 0 ? trimmed : undefined };
 }
 
@@ -120,6 +123,37 @@ function buildGroundingText(entry: GroundingEntry): string {
   ].join('\n');
 }
 
+const PROMPT_PREAMBLE =
+  'You write employer-voiced, bilingual (English and Spanish) job postings for blue-collar trade jobs. ';
+const PROMPT_OUTPUT_CONTRACT =
+  'Keep the tone practical and direct for blue-collar workers. Return ONLY valid JSON with exactly two ' +
+  'keys, "description_en" and "description_es", each a short (2-4 sentence) job posting description. ' +
+  'No markdown, no commentary.';
+
+function buildGroundedSystemPrompt(entry: GroundingEntry): string {
+  return (
+    PROMPT_PREAMBLE +
+    'Ground every claim ONLY in the occupational reference given below -- do not invent tools, ' +
+    'qualifications, licensing, or duties that are not supported by that reference or the job details. ' +
+    PROMPT_OUTPUT_CONTRACT +
+    `\n\nOccupational reference:\n${buildGroundingText(entry)}`
+  );
+}
+
+// No O*NET grounding exists for a custom ('other') trade. The custom trade
+// NAME itself must never land here (it is untrusted employer free text --
+// it belongs in the <job_details> block instead); this literal
+// "<trade_category_other>" token is a fixed instruction, not an
+// interpolation of the employer-supplied value.
+function buildUngroundedSystemPrompt(): string {
+  return (
+    PROMPT_PREAMBLE +
+    'No occupational reference is available for this trade; ground every claim only in the job details ' +
+    'provided; do not invent duties beyond what a <trade_category_other> role plausibly involves. ' +
+    PROMPT_OUTPUT_CONTRACT
+  );
+}
+
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   try {
     const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
@@ -143,17 +177,29 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       };
     }
 
-    const groundingEntry = GROUNDING[tradeCategory];
-    if (tradeCategory === 'other' || !groundingEntry) {
-      // 'other' is a real TRADE_CATEGORIES member (job-fields.ts) but has no
-      // mapped SOC code / occupational reference in description-grounding.json.
-      // Generating a posting for it would mean grounding the model in
-      // nothing, which violates this endpoint's "grounded ONLY in the
-      // provided reference" contract -- so it is out of scope here rather
-      // than silently ungrounded. The `!groundingEntry` half is defense in
-      // depth against any future drift between TRADE_CATEGORIES and this
-      // grounding file.
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unsupported_trade_category' }) };
+    // Three distinct branches, deliberately not collapsed into one condition:
+    //  (a) trade_category === 'other' AND a valid trade_category_other is
+    //      given -> generate ungrounded, using the custom trade name.
+    //  (b) trade_category === 'other' WITHOUT a valid trade_category_other
+    //      -> still unsupported (no name to label or ground the posting
+    //      with; no separate error code is exposed for this half).
+    //  (c) a non-'other' trade with no grounding entry -> still unsupported
+    //      (defense in depth against future drift between TRADE_CATEGORIES
+    //      and description-grounding.json; unchanged from before).
+    let groundingEntry: GroundingEntry | undefined;
+    let customTradeCategory: string | undefined;
+
+    if (tradeCategory === 'other') {
+      const tradeCategoryOther = optionalBoundedString(body.trade_category_other, 'trade_category_other');
+      if (!tradeCategoryOther.ok || !tradeCategoryOther.value) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unsupported_trade_category' }) };
+      }
+      customTradeCategory = tradeCategoryOther.value;
+    } else {
+      groundingEntry = GROUNDING[tradeCategory];
+      if (!groundingEntry) {
+        return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'unsupported_trade_category' }) };
+      }
     }
 
     const title = optionalBoundedString(body.title, 'title');
@@ -166,6 +212,8 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (!expectedDuration.ok) return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: expectedDuration.error }) };
     const shiftSchedule = optionalBoundedString(body.shift_schedule, 'shift_schedule');
     if (!shiftSchedule.ok) return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: shiftSchedule.error }) };
+    const employerNotes = optionalBoundedString(body.employer_notes, 'employer_notes', MAX_EMPLOYER_NOTES_LENGTH);
+    if (!employerNotes.ok) return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: employerNotes.error }) };
 
     const payMin = optionalPay(body.pay_min, 'pay_min');
     if (!payMin.ok) return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: payMin.error }) };
@@ -196,6 +244,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const jobDetailsLines = [
       title.value ? `title: ${title.value}` : null,
       `trade_category: ${tradeCategory}`,
+      // trade_category_other is only meaningful (and only ever populated)
+      // on the 'other' branch above; a non-'other' trade never reaches
+      // this line even if the request body happened to include one.
+      customTradeCategory ? `trade_category_other: ${customTradeCategory}` : null,
       city.value ? `city: ${city.value}` : null,
       state.value ? `state: ${state.value}` : null,
       payMin.value !== undefined ? `pay_min: ${payMin.value}` : null,
@@ -203,16 +255,14 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       payInterval ? `pay_interval: ${payInterval}` : null,
       expectedDuration.value ? `expected_duration: ${expectedDuration.value}` : null,
       shiftSchedule.value ? `shift_schedule: ${shiftSchedule.value}` : null,
+      // Employer free text, same injection posture as title -- delimited
+      // inside <job_details> below, never in the system prompt.
+      employerNotes.value ? `employer_notes: ${employerNotes.value}` : null,
     ].filter((line): line is string => line !== null);
 
-    const systemPrompt =
-      'You write employer-voiced, bilingual (English and Spanish) job postings for blue-collar trade jobs. ' +
-      'Ground every claim ONLY in the occupational reference given below -- do not invent tools, ' +
-      'qualifications, licensing, or duties that are not supported by that reference or the job details. ' +
-      'Keep the tone practical and direct for blue-collar workers. Return ONLY valid JSON with exactly two ' +
-      'keys, "description_en" and "description_es", each a short (2-4 sentence) job posting description. ' +
-      'No markdown, no commentary.\n\n' +
-      `Occupational reference:\n${buildGroundingText(groundingEntry)}`;
+    const systemPrompt = groundingEntry
+      ? buildGroundedSystemPrompt(groundingEntry)
+      : buildUngroundedSystemPrompt();
 
     // Delimiting language mirrors trust-scorer.ts's <answers> pattern: the
     // employer-supplied job specifics are wrapped and explicitly declared

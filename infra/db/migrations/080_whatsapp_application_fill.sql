@@ -1,4 +1,6 @@
--- 077_whatsapp_application_fill.sql
+-- 080_whatsapp_application_fill.sql
+-- (Renumbered from 077 after merging main, which took 077-079 for the
+-- job-flow redesign.)
 -- WhatsApp application-fill flow (spec: docs/superpowers/specs/
 -- 2026-08-19-whatsapp-application-fill-design.md §5).
 -- 1. jale_whatsapp gains DELETE on worker_documents: the fill's doc write is

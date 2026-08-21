@@ -144,14 +144,54 @@ export function setRequirementState(
   return { ...map, [key]: state };
 }
 
-export function countRequirements(map: RequirementsMap): { required: number; optional: number } {
+/**
+ * Per-certification requirement (job-flow redesign, FE-T2): each named
+ * certification the employer typed gets its own tier and its own
+ * proof-required toggle, independent of the legacy `certification_doc`
+ * three-state row.
+ */
+export type CertificationTier = 'required' | 'optional';
+export type CertificationRequirement = {
+  name: string;
+  tier: CertificationTier;
+  proof_required: boolean;
+};
+
+export function countRequirements(
+  map: RequirementsMap,
+  certs?: readonly CertificationRequirement[],
+): { required: number; optional: number } {
   let required = 0;
   let optional = 0;
   for (const key of REQUIREMENT_KEYS) {
+    // 2-arg mode: certs carry their own tier, so certification_doc's map
+    // state is not part of this tally (see deriveCertificationDocTier).
+    if (certs !== undefined && key === 'certification_doc') continue;
     if (map[key] === 'required') required += 1;
     else if (map[key] === 'optional') optional += 1;
   }
+  if (certs !== undefined) {
+    for (const cert of certs) {
+      if (cert.tier === 'required') required += 1;
+      else if (cert.tier === 'optional') optional += 1;
+    }
+  }
   return { required, optional };
+}
+
+/**
+ * Display-only summary of what the per-cert proof settings imply for the
+ * legacy certification_doc concept. NEVER used to build the write payload --
+ * new-shape jobs must OMIT certification_doc from required/optional docs
+ * entirely (the backend rejects the combination); this exists for the count
+ * badge and locked-mode rendering only.
+ */
+export function deriveCertificationDocTier(
+  certs: readonly CertificationRequirement[],
+): RequirementState {
+  if (certs.some((cert) => cert.tier === 'required' && cert.proof_required)) return 'required';
+  if (certs.some((cert) => cert.proof_required)) return 'optional';
+  return 'off';
 }
 
 /** The picker's field sub-groups (design: "Identity & contact / Availability & pay / Background / Experience"). */
@@ -161,9 +201,6 @@ export const FIELD_GROUPS: Record<'identity' | 'availability' | 'background' | '
   background: ['worked_here_before', 'education', 'military_service'],
   experience: ['references', 'work_history'],
 };
-
-/** Fields whose row carries the "sensitive" marker (muted badge + tooltip). */
-export const SENSITIVE_FIELD_KEYS: readonly RequirementFieldKey[] = ['date_of_birth', 'home_address'];
 
 /**
  * The certification_doc row's hint: when the row is not Off and the

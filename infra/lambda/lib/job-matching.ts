@@ -51,6 +51,10 @@ export interface MatchableJobRow {
   number_of_workers_needed?: string | number | null;
   workers_hired?: string | number | null;
   trade_category?: string | null;
+  /** Free text (migration 077), only meaningful when trade_category = 'other'.
+   * Read by `scoreProfession` so a custom trade ("Welder") is still
+   * matchable -- see the comment there and on `matchableJobColumns`. */
+  trade_category_other?: string | null;
   required_experience_years?: string | number | null;
   certifications?: string[] | null;
   latitude: string | number | null;
@@ -283,7 +287,19 @@ function scoreProfession(job: MatchableJobRow, context: WorkerProfessionContext,
     return 50;
   }
 
-  const jobText = normalizeProfessionText(`${job.title} ${job.trade_category ?? ''} ${job.description ?? ''}`);
+  // trade_category_other (migration 077) folds into the SAME text pool as
+  // title/trade_category/description, normalized the same way -- mirroring
+  // how the worker side lets `main_trade_other` participate in matching
+  // (see `workerProfessionTerms` above). No new mechanism needed: `terms`/
+  // `strongTerms` (including whatever the trade_aliases cache resolved) are
+  // already matched against this whole string generically, so a worker
+  // whose alias expansion includes "welder" now reaches a
+  // trade_category='other', trade_category_other='Welder' job automatically.
+  // `?? ''` guards a NULL 'other' job (legacy rows predate 077 and never
+  // backfilled this column) from ever interpolating the literal word "null".
+  const jobText = normalizeProfessionText(
+    `${job.title} ${job.trade_category ?? ''} ${job.description ?? ''} ${job.trade_category_other ?? ''}`,
+  );
 
   // (b) A single but strong (length >= 4) alias/canonical term CONFIRMED by
   // a matched trade_aliases row, appearing as a whole word/phrase, is exact
@@ -756,6 +772,16 @@ export async function listMatchedJobsForWorker(
     .map(({ score, components, reasons, ...job }) => job);
 }
 
+// trade_category_other (077) -- the first column from that migration this
+// file reads -- is selected unconditionally (like pay_interval/033 and
+// certifications) rather than through the coordinateSelects()
+// information_schema probe: that probe exists only for the coordinate
+// columns' pre-064/068 rollout gap. 077 ships in this sprint's base
+// (a550a40) and migrations run before the Lambda deploys, so an
+// unconditional SELECT is safe here, same as the other post-023 columns
+// already listed below. Per 077's own header: "jale_matching (010) and
+// jale_whatsapp (004) both hold TABLE-level SELECT on jobs already, so no
+// grant change is needed for either" -- this SELECT needs no new grant.
 function matchableJobColumns(jobCoordinates: { latitude: string; longitude: string }): string {
   return `j.id,
             j.title,
@@ -778,6 +804,7 @@ function matchableJobColumns(jobCoordinates: { latitude: string; longitude: stri
             j.number_of_workers_needed,
             j.workers_hired,
             j.trade_category,
+            j.trade_category_other,
             j.required_experience_years,
             j.certifications,
             ${jobCoordinates.latitude} AS latitude,

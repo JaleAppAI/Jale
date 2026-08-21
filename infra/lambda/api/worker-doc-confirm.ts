@@ -3,7 +3,8 @@ import { createHash } from 'crypto';
 import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getDbPool } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
-import { DOC_TYPES, MAX_CERTIFICATION_FILES } from '../lib/job-fields';
+import { DOC_TYPES, MAX_CERTIFICATION_FILES, MAX_CERTIFICATION_FILES_PER_NAME } from '../lib/job-fields';
+import { validateCertName } from '../lib/cert-name';
 
 const CORS_HEADERS = corsHeaders();
 const VALID_DOC_TYPES: readonly string[] = DOC_TYPES;
@@ -12,6 +13,12 @@ const s3 = new S3Client({});
 const UNIQUE_VIOLATION = '23505';
 const CHECK_VIOLATION = '23514';
 const CERTIFICATION_DOC_LIMIT_CONSTRAINT = 'certification_document_limit';
+// Introduced by 078_worker_documents_cert_name.sql alongside the total-cap
+// raise (5 -> 20) -- a DIFFERENT constraint name than the one above on
+// purpose, so this catch block can tell "too many files in this slot" apart
+// from "too many files under this one name/label" and answer each with its
+// own error code (see the per-name pre-check below for the full rationale).
+const CERTIFICATION_DOC_NAME_LIMIT_CONSTRAINT = 'certification_document_name_limit';
 
 function sanitizeFileName(fileName: string): string {
   return fileName
@@ -34,6 +41,7 @@ export const handler = async (
       file_name?: string;
       file_size?: number;
       mime_type?: string;
+      cert_name?: string | null;
     };
     try {
       body = JSON.parse(event.body ?? '{}');
@@ -45,7 +53,7 @@ export const handler = async (
       };
     }
 
-    const { token, s3_key, doc_type, file_name, file_size, mime_type } = body;
+    const { token, s3_key, doc_type, file_name, file_size, mime_type, cert_name } = body;
     if (!token || !s3_key || !doc_type || !file_name || file_size == null || !mime_type) {
       return {
         statusCode: 400,
@@ -60,6 +68,27 @@ export const handler = async (
         body: JSON.stringify({ error: 'invalid_doc_type' }),
       };
     }
+    // cert_name is OPTIONAL on this (tokenized) surface's certification_doc
+    // confirm -- deliberately asymmetric with worker-doc-confirm-auth.ts,
+    // where it's required. This is the WhatsApp-sent upload-link flow
+    // (/upload/[token]): it collects no label UI today, so an omitted
+    // cert_name inserts NULL and lands in 078's unlabeled bucket (still
+    // capped at 5 via `cert_name IS NOT DISTINCT FROM NULL`, same ceiling
+    // this surface has always had). A non-blank cert_name is still forbidden
+    // on every other doc_type -- mirrors worker_documents_cert_name_valid.
+    // If a labeled-upload UI is ever added to this tokenized surface, tighten
+    // `required` to true here to match the authed confirm. Ivan's WhatsApp
+    // flows reach documents through this tokenized path, so any labeling
+    // work on the WhatsApp side interacts with this exact toggle.
+    const certResult = validateCertName(doc_type, cert_name, false);
+    if (!certResult.ok) {
+      return {
+        statusCode: 400,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: certResult.error }),
+      };
+    }
+    const certName = certResult.certName;
 
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const pool = await getDbPool();
@@ -152,6 +181,14 @@ export const handler = async (
     // uses app.current_user_id; internal UUID flows use this separate setting.
     await client.query("SELECT set_config('app.current_internal_user_id', $1, true)", [worker_id]);
 
+    // Entry point note for the WhatsApp side (Ivan's team): the
+    // applications.ts snapshot-copy path (copyRequiredDocumentSnapshots)
+    // writes worker_documents rows through the SAME
+    // enforce_certification_document_limit() trigger the pre-checks and
+    // catch-mapping below defend against -- there is no separate cap for that
+    // insert path, so any WhatsApp-originated certification_doc write is
+    // subject to the identical total (20) and per-name (5) caps, and can
+    // raise the identical two constraint names.
     if (isCertification) {
       // Defense-in-depth cap, mirrored by the DB trigger added in
       // 075_worker_documents_multi_certification.sql (errcode 23514, constraint
@@ -169,6 +206,30 @@ export const handler = async (
           statusCode: 409,
           headers: CORS_HEADERS,
           body: JSON.stringify({ error: 'certification_document_limit' }),
+        };
+      }
+
+      // Per-name cap, added by 078_worker_documents_cert_name.sql alongside
+      // the total-cap raise above (5 -> 20). `cert_name IS NOT DISTINCT FROM`
+      // (not `=`) is required: cert_name is nullable, and every unlabeled
+      // certification_doc row in this slot -- every legacy row, and any
+      // future upload that omits a label -- shares ONE bucket under NULL, so
+      // `=` would silently never match and this cap would never fire for the
+      // unlabeled case. See 078's header NULL-GROUPING SEMANTIC section for
+      // the full empirical verification. This is also defense-in-depth: the
+      // insert's catch below maps the same trigger's certification_document_name_limit
+      // constraint (errcode 23514) as a TOCTOU backstop.
+      const nameCountResult = await client.query(
+        `SELECT COUNT(*)::int AS count FROM worker_documents WHERE worker_id = $1 AND job_id = $2 AND doc_type = 'certification_doc' AND cert_name IS NOT DISTINCT FROM $3`,
+        [worker_id, slot.job_id, certName],
+      );
+      if (nameCountResult.rows[0].count >= MAX_CERTIFICATION_FILES_PER_NAME) {
+        await client.query('ROLLBACK');
+        transactionStarted = false;
+        return {
+          statusCode: 409,
+          headers: CORS_HEADERS,
+          body: JSON.stringify({ error: 'certification_document_name_limit' }),
         };
       }
     }
@@ -253,9 +314,14 @@ export const handler = async (
       head.ContentLength,
       confirmed.expected_mime_type,
       s3VersionId,
+      certName,
     ];
-    const insertSql = `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, s3_version_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    // cert_name is always NULL here for non-certification doc_types
+    // (validateCertName rejects any non-blank value on them, above) --
+    // included for column symmetry with the certification-path insert, not
+    // because it's ever non-NULL on those rows.
+    const insertSql = `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, s3_version_id, cert_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`;
 
     if (isCertification) {
@@ -265,13 +331,20 @@ export const handler = async (
         const pgErr = insertErr as { code?: string; constraint?: string };
         const isCertLimit = pgErr?.code === UNIQUE_VIOLATION
           || (pgErr?.code === CHECK_VIOLATION && pgErr?.constraint === CERTIFICATION_DOC_LIMIT_CONSTRAINT);
-        if (isCertLimit) {
+        // TOCTOU backstop for the per-name pre-check above: two concurrent
+        // confirms can each pass the pre-check's count and then collide in
+        // the trigger, same race the total cap already accepts (078's header).
+        const isCertNameLimit = pgErr?.code === CHECK_VIOLATION
+          && pgErr?.constraint === CERTIFICATION_DOC_NAME_LIMIT_CONSTRAINT;
+        if (isCertLimit || isCertNameLimit) {
           await client.query('ROLLBACK');
           transactionStarted = false;
           return {
             statusCode: 409,
             headers: CORS_HEADERS,
-            body: JSON.stringify({ error: 'certification_document_limit' }),
+            body: JSON.stringify({
+              error: isCertNameLimit ? CERTIFICATION_DOC_NAME_LIMIT_CONSTRAINT : CERTIFICATION_DOC_LIMIT_CONSTRAINT,
+            }),
           };
         }
         throw insertErr;

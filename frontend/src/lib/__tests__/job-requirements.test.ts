@@ -9,9 +9,10 @@ import {
   setRequirementState,
   countRequirements,
   certificationHintNames,
+  deriveCertificationDocTier,
   FIELD_GROUPS,
-  SENSITIVE_FIELD_KEYS,
   type RequirementsMap,
+  type CertificationRequirement,
 } from '@/lib/job-requirements';
 
 describe('initialRequirements', () => {
@@ -153,6 +154,61 @@ describe('countRequirements', () => {
     for (const key of REQUIREMENT_KEYS) map[key] = 'off';
     expect(countRequirements(map)).toEqual({ required: 0, optional: 0 });
   });
+
+  it('1-arg mode is unchanged when certification_doc carries a state (byte-identical to today)', () => {
+    let map = initialRequirements(); // 4 required, 0 optional out of the box
+    map = setRequirementState(map, 'certification_doc', 'required');
+    expect(countRequirements(map)).toEqual({ required: 5, optional: 0 });
+  });
+
+  it('2-arg mode: excludes certification_doc from the map tally and adds each cert by its own tier', () => {
+    let map = initialRequirements(); // 4 required, 0 optional
+    map = setRequirementState(map, 'certification_doc', 'required'); // must NOT be tallied in 2-arg mode
+    const certs: CertificationRequirement[] = [
+      { name: 'OSHA 10', tier: 'required', proof_required: true },
+      { name: 'CPR', tier: 'optional', proof_required: false },
+      { name: 'Forklift', tier: 'optional', proof_required: true },
+    ];
+    // 4 required fields + 1 required cert = 5; 2 optional certs = 2. The
+    // certification_doc map key's own 'required' state is excluded, not added.
+    expect(countRequirements(map, certs)).toEqual({ required: 5, optional: 2 });
+  });
+
+  it('2-arg mode with an empty certs array still excludes certification_doc from the tally', () => {
+    let map = initialRequirements();
+    map = setRequirementState(map, 'certification_doc', 'optional');
+    expect(countRequirements(map, [])).toEqual({ required: 4, optional: 0 });
+  });
+});
+
+describe('deriveCertificationDocTier', () => {
+  it('returns off for an empty certs list', () => {
+    expect(deriveCertificationDocTier([])).toBe('off');
+  });
+
+  it('returns required when any entry is tier=required with proof_required=true', () => {
+    const certs: CertificationRequirement[] = [
+      { name: 'CPR', tier: 'optional', proof_required: false },
+      { name: 'OSHA 10', tier: 'required', proof_required: true },
+    ];
+    expect(deriveCertificationDocTier(certs)).toBe('required');
+  });
+
+  it('returns optional when a required-tier entry has no proof required but another entry does', () => {
+    const certs: CertificationRequirement[] = [
+      { name: 'OSHA 10', tier: 'required', proof_required: false },
+      { name: 'Forklift', tier: 'optional', proof_required: true },
+    ];
+    expect(deriveCertificationDocTier(certs)).toBe('optional');
+  });
+
+  it('returns off when no entry anywhere has proof_required set, regardless of tier', () => {
+    const certs: CertificationRequirement[] = [
+      { name: 'OSHA 10', tier: 'required', proof_required: false },
+      { name: 'CPR', tier: 'optional', proof_required: false },
+    ];
+    expect(deriveCertificationDocTier(certs)).toBe('off');
+  });
 });
 
 describe('certificationHintNames', () => {
@@ -178,9 +234,5 @@ describe('vocabulary shape', () => {
     const grouped = Object.values(FIELD_GROUPS).flat();
     expect(grouped.sort()).toEqual([...REQUIREMENT_FIELD_KEYS].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
-  });
-
-  it('marks exactly date_of_birth and home_address as sensitive', () => {
-    expect([...SENSITIVE_FIELD_KEYS].sort()).toEqual(['date_of_birth', 'home_address']);
   });
 });

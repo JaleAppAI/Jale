@@ -298,6 +298,120 @@ describe('job-matching pure scoring', () => {
     expect(result.components.profession).toBe(50);
   });
 
+  describe('BE-T6: trade_category_other job-side text pool', () => {
+    const welderRow: TradeAliasRow = {
+      trade_key: 'welder',
+      canonical_en: 'Welder',
+      canonical_es: 'Soldador',
+      aliases: ['welder', 'welding', 'weld', 'soldador', 'soldadura'],
+      trade_category: null,
+    };
+
+    it("rule (a) enum-to-enum matching for non-'other' jobs is unaffected by trade_category_other handling", () => {
+      const w = worker({ main_trade: 'carpenter', main_trade_other: null }) as never;
+
+      const result = scoreJobCandidate(
+        w,
+        job({
+          id: 'job-carpenter-2',
+          title: 'Site Crew Position #7788',
+          description: 'General labor at a residential build site.',
+          trade_category: 'carpenter',
+          trade_category_other: null,
+        }) as never,
+        now,
+      );
+
+      expect(result.components.profession).toBe(50);
+      expect(result.reasons).toContain('profession_exact_or_alias');
+    });
+
+    it('NULL trade_category_other on an other job contributes no profession score and does not throw', () => {
+      const context = buildWorkerProfessionContext(worker({ main_trade_other: 'Soldador' }) as never, [welderRow]);
+      let result: ReturnType<typeof scoreJobCandidate> | undefined;
+
+      expect(() => {
+        result = scoreJobCandidate(
+          worker({ main_trade_other: 'Soldador' }) as never,
+          job({
+            id: 'job-other-null',
+            title: 'Site Crew Position #1200',
+            description: 'General labor at a residential build site.',
+            trade_category: 'other',
+            trade_category_other: null,
+          }) as never,
+          now,
+          context,
+        );
+      }).not.toThrow();
+
+      expect(result!.components.profession).toBe(0);
+    });
+
+    it('hostile trade_category_other text (very long, regex metacharacters) is contained and never throws', () => {
+      const context = buildWorkerProfessionContext(worker({ main_trade_other: 'Soldador' }) as never, [welderRow]);
+      const veryLong = 'x'.repeat(50_000);
+      const metacharsOnly = '.*+?()[]{}^$|\\';
+      const metacharsWithWelder = '.*welder.*[](){}';
+
+      let longResult: ReturnType<typeof scoreJobCandidate> | undefined;
+      let metaResult: ReturnType<typeof scoreJobCandidate> | undefined;
+      let metaWelderResult: ReturnType<typeof scoreJobCandidate> | undefined;
+
+      expect(() => {
+        longResult = scoreJobCandidate(
+          worker({ main_trade_other: 'Soldador' }) as never,
+          job({
+            id: 'job-hostile-long',
+            title: 'Site Crew Position #3300',
+            description: 'General labor at a residential build site.',
+            trade_category: 'other',
+            trade_category_other: veryLong,
+          }) as never,
+          now,
+          context,
+        );
+      }).not.toThrow();
+
+      expect(() => {
+        metaResult = scoreJobCandidate(
+          worker({ main_trade_other: 'Soldador' }) as never,
+          job({
+            id: 'job-hostile-meta',
+            title: 'Site Crew Position #3301',
+            description: 'General labor at a residential build site.',
+            trade_category: 'other',
+            trade_category_other: metacharsOnly,
+          }) as never,
+          now,
+          context,
+        );
+      }).not.toThrow();
+
+      expect(() => {
+        metaWelderResult = scoreJobCandidate(
+          worker({ main_trade_other: 'Soldador' }) as never,
+          job({
+            id: 'job-hostile-meta-welder',
+            title: 'Site Crew Position #3302',
+            description: 'General labor at a residential build site.',
+            trade_category: 'other',
+            trade_category_other: metacharsWithWelder,
+          }) as never,
+          now,
+          context,
+        );
+      }).not.toThrow();
+
+      // Neutral hostile text (no trade word) contributes nothing...
+      expect(longResult!.components.profession).toBe(0);
+      expect(metaResult!.components.profession).toBe(0);
+      // ...but symbol-stripping must not eat a real trade word hiding inside
+      // hostile text -- "contained" must mean sanitized, not silently broken.
+      expect(metaWelderResult!.components.profession).toBe(50);
+    });
+  });
+
   it('buildWorkerProfessionContext keeps strongTerms empty on an alias-cache miss (no unwarranted whole-word upgrade)', () => {
     const w: WorkerMatchProfile = {
       id: 'worker-1',
@@ -583,6 +697,62 @@ describe('listMatchedJobsForWorker', () => {
     expect(result).toHaveLength(1);
     expect(result[0].match_components.profession).toBe(50);
     expect(result[0].match_reasons).not.toContain('referred_job');
+  });
+
+  it("BE-T6: makes a trade_category='other' job matchable via trade_category_other (feed visibility)", async () => {
+    // The live gap this closes: an 'other' job's custom trade text was never
+    // read at all, so a matching worker never even SAW the job -- it wasn't
+    // just scored lower, it was dropped entirely by the
+    // `workerHasProfessionData` filter in `listMatchedJobsForWorker`. Title
+    // and description are deliberately free of any welder-adjacent word (no
+    // "weld"/"welder"/"welding" substring) so the only possible signal is
+    // `trade_category_other` itself; `attributed_job_id` is null so the
+    // referral pin can't paper over a scoring miss.
+    const welderRow: TradeAliasRow = {
+      trade_key: 'welder',
+      canonical_en: 'Welder',
+      canonical_es: 'Soldador',
+      aliases: ['welder', 'welding', 'weld', 'soldador', 'soldadura'],
+      trade_category: null,
+    };
+
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker({ main_trade_other: 'Soldador', attributed_job_id: null })),
+      tradeAliasesRoute([welderRow]),
+      jobsListRoute([job({
+        id: 'job-other-welder',
+        title: 'Site Crew Position #4471',
+        description: 'General labor at a residential build site.',
+        trade_category: 'other',
+        trade_category_other: 'Welder',
+      })]),
+    ]);
+
+    const result = await listMatchedJobsForWorker(
+      { query } as never,
+      'worker-1',
+      { limit: 5, channel: 'whatsapp' },
+    );
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('job-other-welder');
+    expect(result[0].match_components.profession).toBe(50);
+    expect(result[0].match_reasons).toContain('profession_exact_or_alias');
+  });
+
+  it('BE-T6: SELECTs trade_category_other in the jobs query (jale_matching already holds table-level SELECT on jobs, migration 010)', async () => {
+    const query = buildQuery([
+      coordinateColumnsRoute(),
+      workerRoute(worker()),
+      tradeAliasesRoute([]),
+      jobsListRoute([]),
+    ]);
+
+    await listMatchedJobsForWorker({ query } as never, 'worker-1', { limit: 5, channel: 'api' });
+
+    const jobsCall = findCall(query, /FROM jobs j/);
+    expect(jobsCall?.[0]).toContain('j.trade_category_other');
   });
 
   it('folds accents so "Albañil" resolves the seeded concrete trade_aliases row', async () => {

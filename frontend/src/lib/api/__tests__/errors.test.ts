@@ -137,6 +137,23 @@ describe('parseApiError', () => {
     expect(err.code).toBe('missing_required_docs');
   });
 
+  it('allowlists certs so the worker apply flow can render the missing-proof list', async () => {
+    const err = await parseApiError(
+      jsonResponse(400, { error: 'missing_certification_proof', certs: ['osha30', 'welding'] }),
+      'apply_failed',
+    );
+    expect(err.payload.certs).toEqual(['osha30', 'welding']);
+  });
+
+  it('drops a malformed certs value rather than handing the UI something it cannot render', async () => {
+    const err = await parseApiError(
+      jsonResponse(400, { error: 'missing_certification_proof', certs: 'osha30' }),
+      'apply_failed',
+    );
+    expect(err.payload.certs).toBeUndefined();
+    expect(err.code).toBe('missing_certification_proof');
+  });
+
   it('keeps the legal-wall payload fields the accept page reads', async () => {
     const err = await parseApiError(
       jsonResponse(403, { error: 'legal_required', requiredVersion: 'v3', currentVersion: 'v2', required: ['tos'] }),

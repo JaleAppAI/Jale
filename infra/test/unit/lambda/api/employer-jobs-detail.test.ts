@@ -112,6 +112,14 @@ describe('employer-jobs-detail', () => {
     const body = JSON.parse(res.body);
 
     expect(capturedSql).toMatch(/city_key,\s*city,\s*state,\s*latitude::float8 AS latitude,\s*longitude::float8 AS longitude/);
+    // Regression pin for an integration gap caught in adversarial review:
+    // this endpoint feeds jobToForm for the edit modal, and the update path
+    // writes the six 077 columns exact-replace (absent -> NULL). Omitting
+    // them from this SELECT made every edit of a structured job silently
+    // NULL its structured fields on save.
+    for (const col of ['trade_category_other', 'expected_duration_bucket', 'work_days', 'shift_start', 'shift_end', 'certification_requirements']) {
+      expect(capturedSql).toContain(col);
+    }
     expect(body).toMatchObject({
       city_key: 'houston-tx',
       city: 'Houston',

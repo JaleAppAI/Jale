@@ -75,6 +75,7 @@ describe('employer-worker-docs Lambda', () => {
             file_size: 1024,
             uploaded_at: new Date().toISOString(),
             s3_version_id: 'version-1',
+            cert_name: null,
           },
         ],
       }) // docs query
@@ -96,6 +97,33 @@ describe('employer-worker-docs Lambda', () => {
     expect(queries.some((q) => q.includes('JOIN job_applications ja ON ja.worker_id = wd.worker_id'))).toBe(true);
     expect(queries.some((q) => q.includes('JOIN jobs j ON j.id = ja.job_id'))).toBe(true);
     expect(queries.some((q) => q.includes('JOIN users employer ON employer.id = j.employer_id'))).toBe(true);
+    const docsSql = queries.find((q) => q.includes('FROM worker_documents wd'));
+    expect(docsSql).toContain('cert_name');
     expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('surfaces cert_name to the employer for a labeled certification_doc snapshot (additive response field)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({}) // BEGIN
+      .mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }) // applicant relationship
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            doc_type: 'certification_doc',
+            s3_key: 'documents/j1/w1/certification_doc/uuid.pdf',
+            file_name: 'osha30.pdf',
+            file_size: 2048,
+            uploaded_at: new Date().toISOString(),
+            s3_version_id: null,
+            cert_name: 'OSHA 30',
+          },
+        ],
+      }) // docs query
+      .mockResolvedValueOnce({}); // COMMIT
+
+    const res = await handler(makeEvent('emp-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.documents[0].cert_name).toBe('OSHA 30');
   });
 });

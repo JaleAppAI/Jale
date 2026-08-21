@@ -108,6 +108,39 @@ describe('worker-jobs-detail', () => {
     expect(jobsSql).toContain('j.city_key');
   });
 
+  it('exposes the six 077 structured fields on the job detail response (apply flow reads certification_requirements from here)', async () => {
+    // Regression pin for an integration gap caught in adversarial review: the
+    // apply flow's certification-claims step and the structured facts rows
+    // source these fields EXCLUSIVELY from this endpoint. Omitting them from
+    // the SELECT made every required-tier certification job un-applyable
+    // (backend gate fires, UI never prompts for claims).
+    const certReqs = [{ name: 'OSHA 30', tier: 'required', proof_required: true }];
+    const job = { id: 'job-1', title: 'T', location: 'L', job_type: 'full-time', description: 'D',
+                  required_docs: [], created_at: 'ts', company_name: 'Acme',
+                  trade_category_other: 'Welder', expected_duration_bucket: '1_3m',
+                  work_days: ['mon', 'wed'], shift_start: '07:00:00', shift_end: '16:00:00',
+                  certification_requirements: certReqs };
+    mockQuery.mockImplementation((q: string) => {
+      if (q.trim().startsWith('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'worker-id' }] });
+      if (q.includes('FROM jobs')) return Promise.resolve({ rows: [job] });
+      if (q.includes('FROM job_applications')) return Promise.resolve({ rows: [] });
+      return Promise.resolve({});
+    });
+    const res = await handler(baseEvent);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trade_category_other).toBe('Welder');
+    expect(body.expected_duration_bucket).toBe('1_3m');
+    expect(body.work_days).toEqual(['mon', 'wed']);
+    expect(body.shift_start).toBe('07:00:00');
+    expect(body.shift_end).toBe('16:00:00');
+    expect(body.certification_requirements).toEqual(certReqs);
+    const jobsSql = String(mockQuery.mock.calls.find(([q]) => String(q).includes('FROM jobs'))?.[0]);
+    for (const col of ['j.trade_category_other', 'j.expected_duration_bucket', 'j.work_days', 'j.shift_start', 'j.shift_end', 'j.certification_requirements']) {
+      expect(jobsSql).toContain(col);
+    }
+  });
+
   it('normalizes nullable required_docs for the frontend contract', async () => {
     const job = {
       id: 'job-1',

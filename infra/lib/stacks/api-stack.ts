@@ -201,6 +201,22 @@ export class ApiStack extends cdk.Stack {
     });
     props.dbSecret.grantRead(workerProfileLambda.function);
 
+    // Worker application defaults — worker auth, DB access. Prefill data
+    // for a new application (worker_application_defaults,
+    // 079_worker_application_defaults.sql).
+    const workerApplicationDefaultsGetLambda = new JaleLambdaFunction(this, 'WorkerApplicationDefaultsGetLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-application-defaults-get.ts'),
+      description: 'Worker application defaults endpoint',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      environment: {
+        DB_SECRET_ARN: props.dbSecret.secretArn,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    props.dbSecret.grantRead(workerApplicationDefaultsGetLambda.function);
+
     // Employer profile — employer auth, DB access
     const employerProfileLambda = new JaleLambdaFunction(this, 'EmployerProfileLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-profile.ts'),
@@ -668,6 +684,13 @@ export class ApiStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     workerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(workerProfileUpdateLambda.function), {
+      authorizer: workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    });
+
+    // GET /worker/application-defaults — prefill data for a new application
+    const workerApplicationDefaultsResource = workerResource.addResource('application-defaults');
+    workerApplicationDefaultsResource.addMethod('GET', new apigateway.LambdaIntegration(workerApplicationDefaultsGetLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
