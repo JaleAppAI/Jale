@@ -20,9 +20,12 @@
  *      recover→clears
  *      fail again→new deadline
  *  - exact processed/failure field assertions
+ *  - unknown customer → terminal skip (row + SQS message both terminal)
+ *  - handler(): SQS message disposition per outcome (delete vs. redeliver)
  */
 
-import { processEnvelope } from '../../../lambda/billing/processor';
+import type { Context, SQSEvent } from 'aws-lambda';
+import { handler, processEnvelope } from '../../../lambda/billing/processor';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -1020,8 +1023,9 @@ describe('billing processor: processEnvelope()', () => {
     expect(failedMark).toContain('unknown_price');
   });
 
-  it('fails with unknown_customer when billing_customers has no matching row', async () => {
-    const failedMarks: unknown[][] = [];
+  it('terminally SKIPS (never fails) when billing_customers has no matching row', async () => {
+    const marks: unknown[][] = [];
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { queryMock } = makeDbMock();
 
     queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
@@ -1036,7 +1040,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [] }); // no customer mapping
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
-        failedMarks.push(params);
+        marks.push(params);
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -1047,12 +1051,24 @@ describe('billing processor: processEnvelope()', () => {
     const rawJson = makeSubEvent({ id: EVT1 });
     const result = await processEnvelope(makeEnvelope(rawJson));
 
-    expect(result.outcome).toBe('failed');
-    expect(result.errorCode).toBe('unknown_customer');
+    // An unmapped Stripe customer is permanently unactionable, so 'failed'
+    // would only burn 3 SQS receives and land the event in the DLQ, firing
+    // BillingWebhookDlqDepth for something no redrive can ever fix.
+    expect(result).toEqual({ outcome: 'skipped', errorCode: 'unknown_customer' });
+    expect(marks.some((p) => Array.isArray(p) && p.includes('failed'))).toBe(false);
 
-    const failedMark = failedMarks.find(p => Array.isArray(p) && p.includes('failed'));
-    expect(failedMark).toBeDefined();
-    expect(failedMark).toContain('unknown_customer');
+    const skippedMark = marks.find(p => Array.isArray(p) && p.includes('skipped'));
+    expect(skippedMark).toBeDefined();
+    expect(skippedMark).toContain('unknown_customer');
+
+    // This log line is the ONLY signal for the skip (nothing else reads
+    // billing_webhook_events). BillingStack greps this exact literal out of
+    // the processor log group into Jale/Billing/BillingUnknownCustomerSkipped,
+    // so the string is a cross-file contract — assert it literally.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('billing_unknown_customer_skipped');
+    expect(String(warn.mock.calls[0][0])).toContain(EVT1);
+    warn.mockRestore();
   });
 
   // ── Grace semantics with explicit timestamps ──────────────────────────
@@ -1214,8 +1230,10 @@ describe('billing processor: processEnvelope()', () => {
     expect(processedMark![3]).toBeInstanceOf(Date);
   });
 
-  it('marks processing_status=failed with exact error code on unknown_customer', async () => {
-    const failedMarkParams: unknown[][] = [];
+  it('marks processing_status=skipped with the unknown_customer code and a decision timestamp', async () => {
+    const markParams: unknown[][] = [];
+    // Silences the metric line only; its content is asserted above.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { queryMock } = makeDbMock();
 
     queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
@@ -1230,7 +1248,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [] }); // no customer
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
-        failedMarkParams.push(params);
+        markParams.push(params);
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -1239,15 +1257,77 @@ describe('billing processor: processEnvelope()', () => {
     mockStripe(makeStripeSubscription());
     const rawJson = makeSubEvent({ id: EVT1 });
     const result = await processEnvelope(makeEnvelope(rawJson));
-    expect(result.outcome).toBe('failed');
+    expect(result.outcome).toBe('skipped');
 
-    // Exact parameter check: $1=eventId, $2='failed', $3='unknown_customer', $4=null
-    const mark = failedMarkParams.find(p => Array.isArray(p) && p.includes('failed'));
+    // Exact parameter check: $1=eventId, $2='skipped', $3='unknown_customer',
+    // $4=<Date>. The last two are deliberate deviations from every other
+    // 'skipped' write in this processor (which passes null/null): the error
+    // code keeps the reason forensically recoverable from the inbox row, and
+    // processed_at records WHEN we terminally decided — not that we mirrored
+    // any Stripe state.
+    const mark = markParams.find(p => Array.isArray(p) && p.includes('skipped'));
     expect(mark).toBeDefined();
     expect(mark![0]).toBe(EVT1);
-    expect(mark![1]).toBe('failed');
+    expect(mark![1]).toBe('skipped');
     expect(mark![2]).toBe('unknown_customer');
-    expect(mark![3]).toBeNull();
+    expect(mark![3]).toBeInstanceOf(Date);
+    warn.mockRestore();
+  });
+
+  // ── handler(): SQS message disposition ────────────────────────────────
+  //
+  // A ProcessResult only reaches production behavior through the SQS handler.
+  // With reportBatchItemFailures on a batchSize-1 source, a resolved void
+  // return reports no failed items → the message is DELETED; a throw →
+  // redelivery, and after maxReceiveCount=3 the DLQ (BillingWebhookDlqDepth).
+  // These two cases pin that boundary, which is what makes the
+  // unknown_customer skip terminal at the *message* level and not just at the
+  // row level.
+  describe('handler() SQS message disposition', () => {
+    /** The handler reads only `record.body`; the rest of the SQS shape is noise here. */
+    function invoke(rawJson: string): Promise<unknown> {
+      const sqsEvent = {
+        Records: [{
+          messageId: 'msg-0001',
+          eventSource: 'aws:sqs',
+          body: JSON.stringify(makeEnvelope(rawJson)),
+        }],
+      } as unknown as SQSEvent;
+      return Promise.resolve(handler(sqsEvent, {} as Context, () => undefined));
+    }
+
+    /** Fresh inbox claim (INSERT returns a row), then the given customer lookup + price. */
+    function setupInbox(customerRows: unknown[], priceId: string) {
+      const { queryMock } = makeDbMock();
+      queryMock.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) {
+          return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+        }
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: customerRows });
+        return Promise.resolve({ rows: [] });
+      });
+      mockStripe(makeStripeSubscription({ priceId }));
+      return { queryMock };
+    }
+
+    it('resolves (message deleted) for the terminal unknown_customer skip', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      setupInbox([], PRICE_PRO);
+
+      // Void resolution — not a { batchItemFailures } response — is what tells
+      // SQS the whole batch succeeded and the message can go away.
+      await expect(invoke(makeSubEvent({ id: EVT1 }))).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('billing_unknown_customer_skipped');
+      warn.mockRestore();
+    });
+
+    it('throws (message redelivered → DLQ) for a failed outcome such as unknown_price', async () => {
+      setupInbox([{ user_id: USER1 }], 'price_different_999');
+
+      await expect(invoke(makeSubEvent({ id: EVT1, priceId: 'price_different_999' })))
+        .rejects.toThrow('unknown_price');
+    });
   });
 
   // ── DB failure after Stripe fetch → SQS retry resumes ────────────────
