@@ -1069,7 +1069,12 @@
       "questions_summary": "{count} preguntas rápidas",
       "questions_required": "{count} requeridas",
       "estimate": "Postularse — unos {minutes} minutos",
-      "vault_check_failed": "No podemos revisar su bóveda en este momento"
+      "vault_check_failed": "No podemos revisar su bóveda en este momento",
+      "hint_doc_required": "Necesita subir esto para postularse.",
+      "hint_doc_optional": "Opcional — puede postularse sin esto.",
+      "hint_cert_required_proof": "Confirmará que la tiene y adjuntará el comprobante.",
+      "hint_cert_required_attest": "Solo confirmará que la tiene — no necesita subir nada.",
+      "hint_cert_optional": "Compártala si la tiene — no bloquea su postulación."
     },
     "apply_flow": {
       "steps": {
@@ -1094,6 +1099,8 @@
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",
       "cert_unverified_note": "Puede postularse sin comprobante — se mostrará como declarado, sin verificar.",
+      "cert_attest_note": "No necesita subir nada — el empleador puede pedirle verla en persona.",
+      "cert_proof_note": "Suba una foto o un archivo de esta certificación para continuar.",
       "cert_from_vault": "de su bóveda",
       "review_answers": "{answered} de {total} preguntas respondidas",
       "review_skipped": "{label} (opcional) — omitido",
@@ -1270,7 +1277,12 @@
       "proof_toggle_label": "Subir comprobante",
       "proof_hint": "Pide al postulante adjuntar el certificado con su postulación.",
       "no_certifications_yet": "No se han seleccionado certificaciones. Agréguelas en Pago y horario.",
-      "cert_tier_aria": "Nivel de requisito de {name}"
+      "cert_tier_aria": "Nivel de requisito de {name}",
+      "cert_hint_required_proof": "Los postulantes deben subir el comprobante de esta certificación con su postulación inicial.",
+      "cert_hint_required_attest": "Los postulantes confirmarán que tienen esta certificación — no necesitan subir nada. Puede pedir verla en persona.",
+      "cert_hint_optional": "Los postulantes pueden compartirla si la tienen. Nunca bloquea una postulación.",
+      "doc_hint_required": "Los postulantes deben subir este documento para postularse.",
+      "doc_hint_optional": "Los postulantes pueden adjuntarlo — no es necesario para postularse."
     },
     "groups": {
       "documents": "Documentos",

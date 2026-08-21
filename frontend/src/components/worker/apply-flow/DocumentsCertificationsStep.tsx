@@ -7,7 +7,7 @@ import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Spinner } from '@/components/ui/spinner';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
-import { REQUIREMENT_DOC_KEYS } from '@/lib/job-requirements';
+import { REQUIREMENT_DOC_KEYS, whatYouNeedHintKey, workerCertNoteKey } from '@/lib/job-requirements';
 import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
 import type { CertClaim } from '@/lib/certification-claims';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
@@ -313,6 +313,19 @@ function SingleDocRow({
   const t = useTranslations('job_requirements');
   const tDocs = useTranslations('worker_profile.documents');
   const tFlow = useTranslations('worker_job_detail.apply_flow');
+  // Same worker-voiced hint the pre-apply "What you'll need" panel shows for
+  // this document, so the promise made on the job page and the explanation
+  // given inside the flow are one string, not two that can drift. Suppressed
+  // once the vault already has the file or the blocking error is showing --
+  // both of those lines are more specific than the generic explanation.
+  const tWhatYouNeed = useTranslations('worker_job_detail.what_you_need');
+  const hintKey = whatYouNeedHintKey({
+    kind: 'doc',
+    tier: required ? 'required' : 'optional',
+    proofRequired: false,
+    satisfied: Boolean(existing),
+    blockingError: missing,
+  });
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
@@ -336,6 +349,9 @@ function SingleDocRow({
           <p className="mt-1 text-xs font-semibold text-[var(--jale-danger)]">
             {tFlow('errors.required_doc', { label: docLabel(docType) })}
           </p>
+        ) : null}
+        {hintKey ? (
+          <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{tWhatYouNeed(hintKey)}</p>
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -405,7 +421,10 @@ function CertificationDocRow({
  * + proof_required cert claimed yes with no proof renders the blocking
  * `errors.cert_proof` message once the worker has attempted to continue.
  * A cert with `proof_required === false` shows no proof area at all -- the
- * claim itself is the whole requirement.
+ * claim itself is the whole requirement, and `cert_attest_note` now says so
+ * out loud once the worker answers yes (see `workerCertNoteKey`), because
+ * "no upload appeared" is not by itself a legible answer to "does this job
+ * want a photo of my card?".
  */
 export function CertClaimRow({
   cert, claim, onSetHas, vaultDocs, uploading, onUpload, missingClaim, missingProof,
@@ -430,6 +449,21 @@ export function CertClaimRow({
   const fileCount = countVaultDocsForCert(cert.name, vaultDocs);
   const atMax = fileCount >= MAX_CERT_FILES_PER_NAME;
   const showProofArea = claim.has === true && cert.proof_required;
+  // What happens after "yes" -- the attestation-only case (proof_required
+  // false) had NO render site at all before this: the entire explanation of
+  // what the claim commits the worker to lived inside `showProofArea`, so a
+  // cert the employer is happy to eyeball in person answered "yes" and then
+  // said nothing. `workerCertNoteKey` also stays silent on the cases another
+  // line already owns (proof attached, optional-tier `cert_unverified_note`,
+  // and the blocking `errors.cert_proof`), so the row never stacks two
+  // sentences that contradict or repeat each other.
+  const certNoteKey = workerCertNoteKey({
+    claimed: claim.has,
+    tier: cert.tier,
+    proofRequired: cert.proof_required,
+    hasProof: Boolean(matchDoc),
+    blockingError: missingProof,
+  });
 
   return (
     <div className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4">
@@ -450,6 +484,10 @@ export function CertClaimRow({
         <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">
           {tFlow('errors.required_cert', { name: cert.name })}
         </p>
+      ) : null}
+
+      {certNoteKey ? (
+        <p className="mt-2 text-xs text-[var(--jale-ink-2)]">{tFlow(certNoteKey)}</p>
       ) : null}
 
       {showProofArea ? (
