@@ -9,6 +9,10 @@ import {
   setRequirementState,
   countRequirements,
   certificationHintNames,
+  certificationHintKey,
+  docHintKey,
+  workerCertNoteKey,
+  whatYouNeedHintKey,
   deriveCertificationDocTier,
   FIELD_GROUPS,
   type RequirementsMap,
@@ -221,6 +225,125 @@ describe('certificationHintNames', () => {
   it('returns an empty array for blank input', () => {
     expect(certificationHintNames('')).toEqual([]);
     expect(certificationHintNames('   ')).toEqual([]);
+  });
+});
+
+describe('certificationHintKey', () => {
+  it('required + proof_required asks for an upload with the initial application', () => {
+    expect(certificationHintKey('required', true)).toBe('picker.cert_hint_required_proof');
+  });
+
+  it('required WITHOUT proof_required is attestation-only (no upload path exists)', () => {
+    expect(certificationHintKey('required', false)).toBe('picker.cert_hint_required_attest');
+  });
+
+  it('optional never blocks, so the proof flag cannot change its hint', () => {
+    // Mirrors certification-claims.ts: an optional cert never blocks submit
+    // regardless of proof_required, so the hint must not promise otherwise.
+    expect(certificationHintKey('optional', false)).toBe('picker.cert_hint_optional');
+    expect(certificationHintKey('optional', true)).toBe('picker.cert_hint_optional');
+  });
+});
+
+describe('docHintKey', () => {
+  it('required means the file upload is mandatory at apply', () => {
+    expect(docHintKey('required')).toBe('picker.doc_hint_required');
+  });
+
+  it('optional means it never blocks', () => {
+    expect(docHintKey('optional')).toBe('picker.doc_hint_optional');
+  });
+
+  it('off returns undefined so the row renders no hint sentence at all', () => {
+    expect(docHintKey('off')).toBeUndefined();
+  });
+});
+
+describe('workerCertNoteKey', () => {
+  const base = {
+    claimed: true as boolean | null,
+    tier: 'required' as CertificationRequirement['tier'],
+    proofRequired: false,
+    hasProof: false,
+    blockingError: false,
+  };
+
+  it('renders nothing until the worker has answered yes', () => {
+    expect(workerCertNoteKey({ ...base, claimed: null })).toBeUndefined();
+    expect(workerCertNoteKey({ ...base, claimed: false })).toBeUndefined();
+  });
+
+  it('claimed yes with no proof required reassures that no upload is coming, either tier', () => {
+    expect(workerCertNoteKey({ ...base })).toBe('cert_attest_note');
+    expect(workerCertNoteKey({ ...base, tier: 'optional' })).toBe('cert_attest_note');
+  });
+
+  it('claimed yes on a required + proof cert with nothing attached asks for the upload', () => {
+    expect(workerCertNoteKey({ ...base, proofRequired: true })).toBe('cert_proof_note');
+  });
+
+  it('says nothing once proof is attached', () => {
+    expect(workerCertNoteKey({ ...base, proofRequired: true, hasProof: true })).toBeUndefined();
+  });
+
+  it('stays silent on an optional + proof cert -- cert_unverified_note owns that case', () => {
+    // An optional cert never blocks, so "upload ... to continue" would be a
+    // lie stacked directly on top of cert_unverified_note's "you can apply
+    // without proof".
+    expect(workerCertNoteKey({ ...base, tier: 'optional', proofRequired: true })).toBeUndefined();
+  });
+
+  it('yields to the blocking error rather than stacking two "to continue" sentences', () => {
+    expect(
+      workerCertNoteKey({ ...base, proofRequired: true, blockingError: true }),
+    ).toBeUndefined();
+  });
+});
+
+describe('whatYouNeedHintKey', () => {
+  const base = {
+    kind: 'doc' as const,
+    tier: 'required' as CertificationRequirement['tier'],
+    proofRequired: false,
+    satisfied: false,
+    blockingError: false,
+  };
+
+  it('describes the upload obligation for a required document', () => {
+    expect(whatYouNeedHintKey({ ...base })).toBe('hint_doc_required');
+  });
+
+  it('describes an optional document as skippable', () => {
+    expect(whatYouNeedHintKey({ ...base, tier: 'optional' })).toBe('hint_doc_optional');
+  });
+
+  it('splits a required cert by its proof flag', () => {
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: true })).toBe(
+      'hint_cert_required_proof',
+    );
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: false })).toBe(
+      'hint_cert_required_attest',
+    );
+  });
+
+  it('gives an optional cert one never-blocks hint regardless of its proof flag', () => {
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', tier: 'optional', proofRequired: true })).toBe(
+      'hint_cert_optional',
+    );
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', tier: 'optional', proofRequired: false })).toBe(
+      'hint_cert_optional',
+    );
+  });
+
+  it('suppresses the hint when the vault already satisfies the row', () => {
+    expect(whatYouNeedHintKey({ ...base, satisfied: true })).toBeUndefined();
+    expect(
+      whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: true, satisfied: true }),
+    ).toBeUndefined();
+  });
+
+  it('suppresses the hint when a blocking error is already showing on the row', () => {
+    expect(whatYouNeedHintKey({ ...base, blockingError: true })).toBeUndefined();
   });
 });
 
