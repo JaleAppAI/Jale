@@ -395,6 +395,48 @@ describe('BillingStack', () => {
     });
   });
 
+  // ── Unknown-customer terminal skip (compensating observability) ──────────
+  //
+  // processor.ts terminally skips events whose Stripe customer has no
+  // billing_customers row: the inbox row goes 'skipped' and the SQS message is
+  // deleted, so the event never reaches the DLQ and BillingWebhookDlqDepth
+  // stays silent. This metric filter is the ONLY signal that an unmapped
+  // customer is sending us events.
+
+  test('BillingUnknownCustomerSkipped metric filter reads the PROCESSOR log group for the skip literal', () => {
+    const filters = template.findResources('AWS::Logs::MetricFilter', {
+      Properties: { FilterPattern: '"billing_unknown_customer_skipped"' },
+    });
+    const matching = Object.values(filters);
+    expect(matching).toHaveLength(1);
+    const props = (matching[0] as any).Properties;
+
+    // Load-bearing: wiring this filter to the email sweeper's log group (the
+    // block it is modelled on) would still satisfy a pattern-and-namespace-only
+    // assertion while silently never firing in production, because the
+    // processor is the only Lambda that emits this literal.
+    expect(JSON.stringify(props.LogGroupName)).toMatch(/BillingProcessorLambdaLogGroup/);
+    expect(props.MetricTransformations).toEqual([expect.objectContaining({
+      MetricNamespace: 'Jale/Billing',
+      MetricName: 'BillingUnknownCustomerSkipped',
+      MetricValue: '1',
+    })]);
+  });
+
+  test('BillingUnknownCustomerSkipped alarm fires on >= 1 skip in a 5-minute period, missing data not breaching', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'BillingUnknownCustomerSkipped',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      Period: 300,
+      Statistic: 'Sum',
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      TreatMissingData: 'notBreaching',
+      MetricName: 'BillingUnknownCustomerSkipped',
+      Namespace: 'Jale/Billing',
+    });
+  });
+
   // ── Checkout error taxonomy (config vs. provider) ───────────────────────
 
   test('CheckoutConfigError metric filter matches the configuration-error log literal into Jale/Billing', () => {
@@ -472,7 +514,11 @@ describe('BillingStack', () => {
     const alarms = template.findResources('AWS::CloudWatch::Alarm', {
       Properties: { AlarmName: Match.anyValue() },
     });
-    for (const alarmName of ['BillingWebhookDlqDepth', 'BillingProcessorThrottles']) {
+    for (const alarmName of [
+      'BillingWebhookDlqDepth',
+      'BillingProcessorThrottles',
+      'BillingUnknownCustomerSkipped',
+    ]) {
       const matching = Object.values(alarms).filter(
         (a: any) => a.Properties.AlarmName === alarmName,
       );
@@ -624,7 +670,11 @@ describe('BillingStack — imported alarm topic', () => {
     const alarms = template.findResources('AWS::CloudWatch::Alarm', {
       Properties: { AlarmName: Match.anyValue() },
     });
-    for (const alarmName of ['BillingWebhookDlqDepth', 'BillingProcessorThrottles']) {
+    for (const alarmName of [
+      'BillingWebhookDlqDepth',
+      'BillingProcessorThrottles',
+      'BillingUnknownCustomerSkipped',
+    ]) {
       const matching = Object.values(alarms).filter(
         (a: any) => a.Properties.AlarmName === alarmName,
       );
