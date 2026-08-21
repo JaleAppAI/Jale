@@ -1092,6 +1092,13 @@ export class ApiStack extends cdk.Stack {
         // rate 5). Kept as specified; a burst below the sustained rate simply
         // means the bucket capacity, not the rate, is the effective cap. Flip
         // the pair if the intent was to mirror the siblings exactly.
+        //
+        // Concretely: the sustained rate here is 2x the sibling unauthenticated
+        // -write tier (10/s vs 5/s) while the burst is half. That is acceptable
+        // rather than merely inconsistent, because a forged or malformed token
+        // is rejected by verifyUnsubscribeToken BEFORE any DB connection is
+        // opened -- so the exposure of the looser rate is wasted Lambda
+        // invocations, not database load and not data.
         {
           ResourcePath: '/public/employer-digest/unsubscribe',
           HttpMethod: 'POST',

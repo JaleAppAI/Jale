@@ -182,9 +182,23 @@ export const handler = async (): Promise<DigestRunSummary> => {
         for (const job of activeJobs.rows) {
           // Literal 100: MAX_API_LIMIT is not exported, and `limit: 0` is
           // silently coerced to 100 by listEmployerCandidates anyway -- being
-          // explicit keeps the intent readable. Consequence worth knowing: a
-          // job with more than 100 new applicants in one window under-reports
-          // its count, which is a display inaccuracy, not a missed digest.
+          // explicit keeps the intent readable.
+          //
+          // KNOWN LIMITATION of reusing the ranking helper here. It shortlists
+          // the 150 MOST RECENT applications, scores them, then keeps the top
+          // 100 BY SCORE. Two consequences on a busy job:
+          //   * more than 100 new applicants in one window under-reports the
+          //     count (a display inaccuracy), and
+          //   * a NEW but LOW-SCORING applicant can be displaced out of that
+          //     top-100 by older high-scoring ones, in which case they are
+          //     never mentioned -- and because a job that yields zero new
+          //     applicants commits WITHOUT advancing the watermark only when
+          //     EVERY job is empty, a later sweep will not surface them
+          //     either. Silent under-reporting, never a missed digest.
+          // Accepted deliberately: sharing this helper is what keeps the digest
+          // ordering identical to what the employer sees on the candidates
+          // screen. Fixing it properly needs an applied_at-windowed query of
+          // its own, which is a change to the ranking lib (out of scope here).
           const ranked = await listEmployerCandidates(client, job.id, { limit: 100, includeContact: true });
           // shouldEnqueueRerank / sourceHash intentionally unused -- see the
           // module header.

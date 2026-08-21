@@ -129,6 +129,15 @@ jobs:
                 # hard-fails a push that touches infra/db/migrations/ at all.
                 # Apply 080 BEFORE dispatching this scope, or the producer will
                 # fail on every sweep with an undefined-function error.
+                #
+                # OPERATOR NOTE -- this scope is NOT narrow. Because there is no
+                # --exclusively, `cdk deploy` also walks JaleApiStack's
+                # dependencies, which today reach Referrals/Billing/Legal/
+                # WhatsApp/Documents/Auth/Matching/Ai -- effectively the whole
+                # backend. That is inherited from the `referrals` scope above,
+                # not introduced here, and it is the price of the Methods living
+                # in the ApiStack template. Expect a full-backend changeset diff
+                # and review it before confirming.
                 echo "deploy-stacks=JaleDatabaseStack JaleApiStack JaleNotificationsStack" >> "$GITHUB_OUTPUT"
                 echo "cdk-extra-args=" >> "$GITHUB_OUTPUT"
                 ;;
