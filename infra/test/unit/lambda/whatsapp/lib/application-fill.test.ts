@@ -30,8 +30,22 @@ jest.mock('../../../../../lambda/lib/application-answers', () => {
   return { ...actual, validateApplicationAnswers: jest.fn(actual.validateApplicationAnswers) };
 });
 
+// Task 8: media.ts's uploadDocumentToS3 makes a real S3 PutObjectCommand
+// call -- mocked so doc-step tests never hit AWS. sniffDocumentType,
+// MediaTooLargeError, ALLOWED_DOCUMENT_TYPES stay REAL (pure, no I/O) so the
+// magic-byte sniff and the mismatch/error-type checks under test are
+// authentic, not asserted-by-mock. downloadTwilioMediaBounded is never
+// imported here -- application-fill.ts only calls it indirectly via the
+// injected `deps.downloadMedia`, so it needs no mock of its own.
+jest.mock('../../../../../lambda/whatsapp/lib/media', () => {
+  const actual = jest.requireActual('../../../../../lambda/whatsapp/lib/media');
+  return { ...actual, uploadDocumentToS3: jest.fn() };
+});
+
 import {
   computeNextStep,
+  countRemainingRequirements,
+  seedAnswersFromDefaults,
   handleFillMessage,
   promptNextStep,
   isFillCancel,
@@ -45,7 +59,9 @@ import { setInternalUserRlsContext } from '../../../../../lambda/lib/db';
 import { validateApplicationAnswers } from '../../../../../lambda/lib/application-answers';
 import type { IncomingMessage } from '../../../../../lambda/whatsapp/lib/conversation-router';
 import type { ExtractionClient } from '../../../../../lambda/whatsapp/lib/application-fill-extraction';
-import { fieldQuestion, fieldRetryHint, fillMessage } from '../../../../../lambda/whatsapp/lib/application-fill-prompts';
+import { fieldQuestion, fieldRetryHint, fillMessage, docPrompt } from '../../../../../lambda/whatsapp/lib/application-fill-prompts';
+import { uploadDocumentToS3, MediaTooLargeError } from '../../../../../lambda/whatsapp/lib/media';
+import { t } from '../../../../../lambda/whatsapp/lib/templates';
 
 const APPLICATION_ID = 'aaaaaaaa-0000-0000-0000-00000000000a';
 const WORKER_ID = 'bbbbbbbb-0000-0000-0000-00000000000b';
@@ -359,6 +375,8 @@ function fakeExtraction(json: unknown): ExtractionClient {
   return { invoke: async () => JSON.stringify(json) };
 }
 
+const DOCUMENTS_BUCKET = 'test-documents-bucket';
+
 function makeDeps(ctx: FillContext, overrides: Partial<FillDeps> = {}): FillDeps {
   return {
     extraction: fakeExtraction({}),
@@ -368,9 +386,18 @@ function makeDeps(ctx: FillContext, overrides: Partial<FillDeps> = {}): FillDeps
       Object.assign(ctx.stateContext, patch);
     }),
     nowMs: () => NOW_MS,
+    downloadMedia: jest.fn(async () => Buffer.from('unused-default-fixture')),
+    documentsBucket: DOCUMENTS_BUCKET,
     ...overrides,
   };
 }
+
+// Magic-byte fixtures for sniffDocumentType (media.ts) -- real bytes, not
+// asserted-by-mock, since sniffDocumentType runs for real in every test
+// below.
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+const PDF_BYTES = Buffer.from('%PDF-1.4\n%mock-pdf-body');
 
 function mockJobIdRow(jobId: string = JOB_ID) {
   mockQuery.mockResolvedValueOnce({ rows: [{ job_id: jobId }], rowCount: 1 });
@@ -829,6 +856,735 @@ describe('handleFillMessage', () => {
     expect(result).toEqual({ handled: true });
     expect(mockQuery).toHaveBeenCalledTimes(2); // no UPDATE
     expect(lastReply(deps)).toBe(fieldRetryHint('desired_pay', 'en'));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// handleFillMessage — document steps (Task 8). Real S3 key format:
+// documents/${jobId}/${workerId}/${docType}/${uuid}.${ext} (worker-doc-
+// upload-url.ts:93 scheme). copyRequiredDocumentSnapshots (applications.ts)
+// runs FOR REAL here (not mocked) so its own INSERT...SELECT queries flow
+// through the same mockQuery chain -- only uploadDocumentToS3 (media.ts,
+// real S3 I/O) is mocked.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('handleFillMessage — document steps (Task 8)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('media at doc step (non-cert): sniff ok -> S3 put -> SAVEPOINT -> DELETE-then-INSERT with version id -> snapshot copy -> next prompt', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-123' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
+    mockDocRows([]); // [2] -- resume missing -> doc:resume
+    mockUpdateOk(); // [3] SAVEPOINT
+    mockUpdateOk(); // [4] DELETE
+    mockUpdateOk(); // [5] INSERT
+    mockUpdateOk(); // [6] copyRequiredDocumentSnapshots (non-cert branch, 1 query)
+    mockUpdateOk(); // [7] RELEASE
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [8] promptNextStep's computeNextStep
+    mockDocRows(['resume']); // [9] -- driver_license now missing
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(uploadDocumentToS3).toHaveBeenCalledWith(
+      DOCUMENTS_BUCKET,
+      expect.stringMatching(new RegExp(`^documents/${JOB_ID}/${WORKER_ID}/resume/[0-9a-f-]+\\.jpg$`)),
+      JPEG_BYTES,
+      'image/jpeg',
+    );
+
+    const [deleteSql, deleteParams] = mockQuery.mock.calls[4];
+    expect(deleteSql).toMatch(/DELETE FROM worker_documents WHERE worker_id = \$1 AND job_id = \$2 AND doc_type = \$3/);
+    expect(deleteParams).toEqual([WORKER_ID, JOB_ID, 'resume']);
+
+    const [insertSql, insertParams] = mockQuery.mock.calls[5];
+    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    expect(insertParams).toEqual([
+      WORKER_ID, JOB_ID, 'resume',
+      expect.stringContaining('documents/'),
+      'resume.jpg',
+      JPEG_BYTES.length,
+      'image/jpeg',
+      'v-123',
+      null, // cert_name -- always NULL for non-cert doc types (078's CHECK requires it)
+    ]);
+
+    expect(mockQuery).toHaveBeenCalledTimes(10);
+    expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
+  });
+
+  it('certification_doc: plain INSERT (no DELETE), replies entry_another (cert loop), arms fill_cert_more_pending, does NOT advance', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-456' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc'] })); // [1]
+    mockDocRows([]); // [2] -- doc:certification_doc
+    mockUpdateOk(); // [3] SAVEPOINT
+    mockUpdateOk(); // [4] INSERT (no DELETE for certification_doc)
+    mockUpdateOk(); // [5] copyRequiredDocumentSnapshots (cert branch, 1 query)
+    mockUpdateOk(); // [6] RELEASE
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    for (const [sql] of mockQuery.mock.calls) {
+      expect(sql).not.toMatch(/DELETE FROM worker_documents/);
+    }
+    const [insertSql, insertParams] = mockQuery.mock.calls[4];
+    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    expect(insertParams).toEqual([
+      WORKER_ID, JOB_ID, 'certification_doc',
+      expect.stringContaining('documents/'),
+      'certification_doc.jpg',
+      JPEG_BYTES.length,
+      'image/jpeg',
+      'v-456',
+      null, // cert_name -- WhatsApp never collects a label; NULL lands in 078's unlabeled bucket
+    ]);
+
+    // promptNextStep never ran: no 8th/9th query re-deriving the step.
+    expect(mockQuery).toHaveBeenCalledTimes(7);
+    expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
+    expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
+  });
+
+  it.each(['certification_document_limit', 'certification_document_name_limit'])(
+    'cert cap (%s): 23514 -> ROLLBACK TO SAVEPOINT -> cert_cap message -> advances',
+    async (constraintName) => {
+      const ctx = makeCtx();
+      const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+      const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+      (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-789' });
+
+      mockJobIdRow(); // [0]
+      mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc', 'driver_license'] })); // [1]
+      mockDocRows([]); // [2] -- doc:certification_doc
+      mockUpdateOk(); // [3] SAVEPOINT
+      const capError = Object.assign(new Error('cap reached'), { code: '23514', constraint: constraintName });
+      mockQuery.mockRejectedValueOnce(capError); // [4] INSERT rejects
+      mockUpdateOk(); // [5] ROLLBACK TO SAVEPOINT
+      mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc', 'driver_license'] })); // [6] promptNextStep
+      mockDocRows(['certification_doc']); // [7] -- cap implies existing rows; driver_license now next
+
+      const result = await handleFillMessage(client, ctx, msg, deps);
+
+      expect(result).toEqual({ handled: true });
+      expect(mockQuery.mock.calls[5][0]).toMatch(/ROLLBACK TO SAVEPOINT/);
+      const replies = (deps.queueReplyText as jest.Mock).mock.calls.map((c) => c[3]);
+      expect(replies).toEqual([fillMessage('cert_cap', 'en'), docPrompt('driver_license', 'en')]);
+    },
+  );
+
+  it('non-cert 23505 -> ROLLBACK TO SAVEPOINT -> treated satisfied -> advances silently (first-write-wins)', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-abc' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
+    mockDocRows([]); // [2] -- doc:resume
+    mockUpdateOk(); // [3] SAVEPOINT
+    mockUpdateOk(); // [4] DELETE
+    const raceError = Object.assign(new Error('duplicate'), { code: '23505' });
+    mockQuery.mockRejectedValueOnce(raceError); // [5] INSERT rejects
+    mockUpdateOk(); // [6] ROLLBACK TO SAVEPOINT
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [7] promptNextStep
+    mockDocRows(['resume']); // [8] -- a concurrent write already landed it
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(mockQuery.mock.calls[6][0]).toMatch(/ROLLBACK TO SAVEPOINT/);
+    // No cert_cap / error reply -- exactly one reply, the advanced next-step prompt.
+    expect((deps.queueReplyText as jest.Mock).mock.calls).toHaveLength(1);
+    expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
+  });
+
+  it('other SQLSTATE -> ROLLBACK TO SAVEPOINT -> rethrows (never mapped to satisfied/stay_pending)', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-def' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+    mockUpdateOk(); // [3] SAVEPOINT
+    mockUpdateOk(); // [4] DELETE
+    const weirdError = Object.assign(new Error('server exploded'), { code: 'XX000' });
+    mockQuery.mockRejectedValueOnce(weirdError); // [5] INSERT rejects
+    mockUpdateOk(); // [6] ROLLBACK TO SAVEPOINT
+
+    await expect(handleFillMessage(client, ctx, msg, deps)).rejects.toThrow('server exploded');
+
+    expect(mockQuery.mock.calls[6][0]).toMatch(/ROLLBACK TO SAVEPOINT/);
+    expect(mockQuery).toHaveBeenCalledTimes(7); // never reached promptNextStep
+    expect(deps.queueReplyText).not.toHaveBeenCalled();
+  });
+
+  it('sniff mismatch vs claimed type -> doc_invalid_type reply, step stays pending, no S3 put', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PNG_BYTES) }); // real bytes sniff to image/png
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' }); // claimed jpeg
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(uploadDocumentToS3).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(3); // no SAVEPOINT/writes, no promptNextStep re-derive
+    expect(lastReply(deps)).toBe(fillMessage('doc_invalid_type', 'en'));
+  });
+
+  it('oversize buffer (MediaTooLargeError) -> doc_too_large reply, no S3 put', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => { throw new MediaTooLargeError(); }) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(uploadDocumentToS3).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(lastReply(deps)).toBe(fillMessage('doc_too_large', 'en'));
+  });
+
+  it('downloadMedia throws a generic error -> doc_download_failed reply, no S3 put, NO rethrow (turn commits)', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => { throw new Error('twilio 502'); }) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true }); // never rejects -- the turn commits
+    expect(uploadDocumentToS3).not.toHaveBeenCalled();
+    expect(lastReply(deps)).toBe(fillMessage('doc_download_failed', 'en'));
+  });
+
+  it('NumMedia>1 -> processes the first attachment, prepends doc_take_first to the resulting reply', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    const msg = incomingMsg('', { numMedia: 2, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-multi' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [1]
+    mockDocRows([]); // [2]
+    mockUpdateOk(); // [3] SAVEPOINT
+    mockUpdateOk(); // [4] DELETE
+    mockUpdateOk(); // [5] INSERT
+    mockUpdateOk(); // [6] copy snapshot
+    mockUpdateOk(); // [7] RELEASE
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] })); // [8]
+    mockDocRows(['resume']); // [9]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(uploadDocumentToS3).toHaveBeenCalledWith(DOCUMENTS_BUCKET, expect.any(String), JPEG_BYTES, 'image/jpeg');
+    expect(lastReply(deps)).toBe(`${fillMessage('doc_take_first', 'en')}\n\n${docPrompt('driver_license', 'en')}`);
+  });
+
+  it('audio content type at a doc step -> voice_note_not_supported (templates.ts key, not v2_voice_not_supported), no download attempted', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'audio/ogg' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(deps.downloadMedia).not.toHaveBeenCalled();
+    expect(uploadDocumentToS3).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(lastReply(deps)).toBe(t('voice_note_not_supported', 'en'));
+  });
+
+  it('media at a FIELD step -> field_step_media reply, nothing written', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg' });
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: ['work_authorization'], application_answers: {} })); // [1] -- field kind, no docs query
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(deps.downloadMedia).not.toHaveBeenCalled();
+    expect(deps.updateStateContext).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(lastReply(deps)).toBe(fillMessage('field_step_media', 'en'));
+  });
+
+  it('free text at a doc step -> re-sends the doc prompt when outside the reprompt cooldown', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+    const msg = incomingMsg('hola');
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(lastReply(deps)).toBe(docPrompt('resume', 'en'));
+    expect(ctx.stateContext.fill_last_prompt_at).toBe(NOW_MS);
+  });
+
+  it('free text at a doc step within the reprompt cooldown -> absorbed silently, no duplicate prompt', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_last_prompt_at: NOW_MS - 1000 },
+    });
+    const deps = makeDeps(ctx);
+    const msg = incomingMsg('hola');
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(deps.queueReplyText).not.toHaveBeenCalled();
+  });
+
+  it('outcome contract: stay_pending never triggers promptNextStep; stored does', async () => {
+    // Scenario A: stay_pending (invalid type) -- only the 3 derive-step
+    // queries run, no SAVEPOINT/write, no second computeNextStep call.
+    const ctxA = makeCtx();
+    const depsA = makeDeps(ctxA, { downloadMedia: jest.fn(async () => PNG_BYTES) });
+    mockJobIdRow();
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume'] }));
+    mockDocRows([]);
+    await handleFillMessage(client, ctxA, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg',
+    }), depsA);
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    expect(lastReply(depsA)).toBe(fillMessage('doc_invalid_type', 'en'));
+
+    jest.clearAllMocks();
+
+    // Scenario B: stored -- promptNextStep DOES run (2 extra queries, and a
+    // DIFFERENT reply -- the next doc's prompt, not a doc-step error).
+    const ctxB = makeCtx();
+    const depsB = makeDeps(ctxB, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-contract' });
+    mockJobIdRow();
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] }));
+    mockDocRows([]);
+    mockUpdateOk(); // SAVEPOINT
+    mockUpdateOk(); // DELETE
+    mockUpdateOk(); // INSERT
+    mockUpdateOk(); // copy snapshot
+    mockUpdateOk(); // RELEASE
+    mockAppRow(appRow({ required_fields: [], required_docs: ['resume', 'driver_license'] }));
+    mockDocRows(['resume']);
+    await handleFillMessage(client, ctxB, incomingMsg('', {
+      numMedia: 1, mediaUrl: 'https://twilio.example/media/1', mediaContentType: 'image/jpeg',
+    }), depsB);
+    expect(mockQuery).toHaveBeenCalledTimes(10);
+    expect(lastReply(depsB)).toBe(docPrompt('driver_license', 'en'));
+  });
+
+  it('cert loop: fill_cert_more_pending routes the next media straight to certification_doc, bypassing computeNextStep', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PDF_BYTES) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/2', mediaContentType: 'application/pdf' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-second-cert' });
+
+    mockJobIdRow(); // [0]
+    mockUpdateOk(); // [1] SAVEPOINT
+    mockUpdateOk(); // [2] INSERT (no DELETE for certification_doc)
+    mockUpdateOk(); // [3] copy snapshot
+    mockUpdateOk(); // [4] RELEASE
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    // computeNextStep never ran -- no job_applications/jobs join query.
+    for (const [sql] of mockQuery.mock.calls) {
+      expect(sql).not.toMatch(/FROM job_applications ja/);
+    }
+    expect(mockQuery).toHaveBeenCalledTimes(5);
+    const [insertSql, insertParams] = mockQuery.mock.calls[2];
+    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    expect(insertParams[2]).toBe('certification_doc');
+    expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
+    expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
+  });
+
+  it('cert loop: "2 no" clears fill_cert_more_pending and advances (promptNextStep runs)', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx);
+    const msg = incomingMsg('2 no');
+
+    mockJobIdRow(); // [0]
+    mockAppRow(appRow({ required_fields: [], required_docs: ['driver_license'] })); // [1]
+    mockDocRows([]); // [2]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(ctx.stateContext.fill_cert_more_pending).toBeFalsy();
+    expect(lastReply(deps)).toBe(docPrompt('driver_license', 'en'));
+  });
+
+  // Review fix (Critical, bug A): "1"/"si" is the exact affirmative
+  // entry_another's own copy invites ("Responde con 1 o 2") -- it must NOT
+  // be treated the same as "no". The flag stays armed and the worker gets
+  // told to send the file, with NO advance (no promptNextStep call, i.e.
+  // no computeNextStep-derived query beyond the jobId lookup).
+  it.each(['1', '1 si', 'si', 'yes'])('cert loop: "%s" keeps fill_cert_more_pending armed and re-sends docPrompt(certification_doc), no advance', async (body) => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx);
+
+    mockJobIdRow(); // [0] -- no computeNextStep call at all
+
+    const result = await handleFillMessage(client, ctx, incomingMsg(body), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
+    expect(lastReply(deps)).toBe(docPrompt('certification_doc', 'en'));
+  });
+
+  it('cert loop: unclear text re-echoes (fillMessage reconfirm) and keeps the flag armed', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx);
+
+    mockJobIdRow(); // [0]
+
+    const result = await handleFillMessage(client, ctx, incomingMsg('maybe later'), deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
+    expect(lastReply(deps)).toBe(fillMessage('reconfirm', 'en'));
+  });
+
+  // Review fix (Critical, bug B) -- the important regression test: a
+  // retryable error (invalid type here) on a SECOND cert attempt must NOT
+  // clear the loop flag. Before the fix, the flag was cleared unconditionally
+  // whenever the outcome wasn't 'stored', so the worker's next (valid) retry
+  // would route through computeNextStep to whatever's ACTUALLY next and get
+  // stored under the WRONG doc_type instead of certification_doc.
+  it('cert loop: invalid file during an active loop keeps the flag armed; the next valid upload still stores as certification_doc', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => PNG_BYTES) }); // claimed pdf, sniffs png -> mismatch
+    const badMsg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/bad', mediaContentType: 'application/pdf' });
+
+    mockJobIdRow(); // [0] -- flag bypasses computeNextStep
+
+    const badResult = await handleFillMessage(client, ctx, badMsg, deps);
+
+    expect(badResult).toEqual({ handled: true });
+    expect(uploadDocumentToS3).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledTimes(1); // no SAVEPOINT/write, no promptNextStep re-derive
+    expect(lastReply(deps)).toBe(fillMessage('doc_invalid_type', 'en'));
+    expect(ctx.stateContext.fill_cert_more_pending).toBe(true); // NOT cleared
+
+    jest.clearAllMocks();
+    (deps.downloadMedia as jest.Mock).mockImplementation(async () => JPEG_BYTES);
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-retry-good' });
+    const goodMsg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/good', mediaContentType: 'image/jpeg' });
+
+    mockJobIdRow(); // [0]
+    mockUpdateOk(); // [1] SAVEPOINT
+    mockUpdateOk(); // [2] INSERT (no DELETE for certification_doc)
+    mockUpdateOk(); // [3] copy snapshot
+    mockUpdateOk(); // [4] RELEASE
+
+    const goodResult = await handleFillMessage(client, ctx, goodMsg, deps);
+
+    expect(goodResult).toEqual({ handled: true });
+    // Still routed as certification_doc, NOT mis-routed to some other doc
+    // type via computeNextStep.
+    for (const [sql] of mockQuery.mock.calls) {
+      expect(sql).not.toMatch(/FROM job_applications ja/);
+    }
+    const [insertSql, insertParams] = mockQuery.mock.calls[2];
+    expect(insertSql).toMatch(/INSERT INTO worker_documents/);
+    expect(insertParams[2]).toBe('certification_doc');
+    expect(lastReply(deps)).toBe(fillMessage('entry_another', 'en'));
+    expect(ctx.stateContext.fill_cert_more_pending).toBe(true);
+  });
+
+  it('cert loop: hitting the cap mid-loop (satisfied) clears the flag and advances', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx, { downloadMedia: jest.fn(async () => JPEG_BYTES) });
+    const msg = incomingMsg('', { numMedia: 1, mediaUrl: 'https://twilio.example/media/cap', mediaContentType: 'image/jpeg' });
+    (uploadDocumentToS3 as jest.Mock).mockResolvedValueOnce({ versionId: 'v-cap' });
+
+    mockJobIdRow(); // [0] -- flag bypasses computeNextStep
+    mockUpdateOk(); // [1] SAVEPOINT
+    const capError = Object.assign(new Error('cap reached'), { code: '23514', constraint: 'certification_document_limit' });
+    mockQuery.mockRejectedValueOnce(capError); // [2] INSERT rejects
+    mockUpdateOk(); // [3] ROLLBACK TO SAVEPOINT
+    mockAppRow(appRow({ required_fields: [], required_docs: ['certification_doc', 'driver_license'] })); // [4] promptNextStep
+    mockDocRows(['certification_doc']); // [5]
+
+    const result = await handleFillMessage(client, ctx, msg, deps);
+
+    expect(result).toEqual({ handled: true });
+    expect(ctx.stateContext.fill_cert_more_pending).toBeFalsy();
+    const replies = (deps.queueReplyText as jest.Mock).mock.calls.map((c) => c[3]);
+    expect(replies).toEqual([fillMessage('cert_cap', 'en'), docPrompt('driver_license', 'en')]);
+  });
+
+  it('CANCELAR also clears fill_cert_more_pending', async () => {
+    const ctx = makeCtx({
+      stateContext: { fill_application_id: APPLICATION_ID, fill_cert_more_pending: true },
+    });
+    const deps = makeDeps(ctx);
+
+    await handleFillMessage(client, ctx, incomingMsg('cancelar'), deps);
+
+    expect(ctx.stateContext.fill_cert_more_pending).toBeFalsy();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// seedAnswersFromDefaults (Task 9). Called directly (not through
+// handleFillMessage) with a worker's `worker_application_defaults.answers`
+// bag -- `deps.setRls` is the injected mock (never itself touches
+// `mockQuery`, matching every other FillDeps test above), so the SELECT/
+// UPDATE call-count assertions below count ONLY this function's own
+// `client.query` calls: [0] defaults SELECT, [1] job_applications SELECT
+// (skipped entirely when there is no defaults row), [2] the batched UPDATE
+// (skipped entirely when nothing validates).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('seedAnswersFromDefaults', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (validateApplicationAnswers as jest.Mock).mockImplementation(
+      jest.requireActual('../../../../../lambda/lib/application-answers').validateApplicationAnswers,
+    );
+  });
+
+  function mockDefaultsRow(answers: Record<string, unknown> | null) {
+    mockQuery.mockResolvedValueOnce(
+      answers ? { rows: [{ answers }], rowCount: 1 } : { rows: [], rowCount: 0 },
+    );
+  }
+
+  function mockCurrentAnswers(answers: Record<string, unknown>) {
+    mockQuery.mockResolvedValueOnce({ rows: [{ application_answers: answers }], rowCount: 1 });
+  }
+
+  function mockSeedUpdateOk() {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+  }
+
+  it('seeds a default field absent from application_answers and returns its key', async () => {
+    const ctx = makeCtx({ stateContext: { fill_application_id: APPLICATION_ID } });
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow({ work_authorization: true });
+    mockCurrentAnswers({});
+    mockSeedUpdateOk();
+
+    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
+
+    expect(seeded).toEqual(['work_authorization']);
+    expect(mockQuery).toHaveBeenCalledTimes(3);
+    const [, updateParams] = mockQuery.mock.calls[2];
+    expect(JSON.parse((updateParams as unknown[])[0] as string)).toEqual({ work_authorization: true });
+    expect((updateParams as unknown[])[1]).toBe(APPLICATION_ID);
+  });
+
+  it('never overwrites a key already present in application_answers, even if the default disagrees', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow({ work_authorization: false });
+    mockCurrentAnswers({ work_authorization: true });
+
+    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
+
+    expect(seeded).toEqual([]);
+    expect(mockQuery).toHaveBeenCalledTimes(2); // defaults + current answers -- no UPDATE
+  });
+
+  it('skips a key whose stored default fails validation, silently -- never seeded, never an error', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow({ work_authorization: 'yes' }); // not a boolean -- fails validateWorkAuthorization
+    mockCurrentAnswers({});
+
+    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
+
+    expect(seeded).toEqual([]);
+    expect(mockQuery).toHaveBeenCalledTimes(2); // no UPDATE -- nothing validated
+  });
+
+  it('batches every seeded key (required + optional) into exactly one UPDATE', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow({ work_authorization: true, date_available: '2026-09-01', education: 'college' });
+    mockCurrentAnswers({ education: 'ged' }); // already answered -- must not be touched
+    mockSeedUpdateOk();
+
+    const seeded = await seedAnswersFromDefaults(
+      client,
+      ctx,
+      ['work_authorization', 'date_available'],
+      ['education'],
+      deps,
+    );
+
+    expect(seeded.sort()).toEqual(['date_available', 'work_authorization']);
+    expect(mockQuery).toHaveBeenCalledTimes(3); // defaults + current + ONE update
+    const [, updateParams] = mockQuery.mock.calls[2];
+    expect(JSON.parse((updateParams as unknown[])[0] as string)).toEqual({
+      work_authorization: true,
+      date_available: '2026-09-01',
+    });
+  });
+
+  it('worker with no defaults row: seeds nothing and never queries job_applications', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow(null);
+
+    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
+
+    expect(seeded).toEqual([]);
+    expect(mockQuery).toHaveBeenCalledTimes(1); // the defaults SELECT only
+  });
+
+  it('an empty defaults answers bag ({}) also seeds nothing without a second query', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow({});
+
+    const seeded = await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
+
+    expect(seeded).toEqual([]);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs deps.setRls before any SELECT (call-order)', async () => {
+    const ctx = makeCtx();
+    const deps = makeDeps(ctx);
+
+    mockDefaultsRow({ work_authorization: true });
+    mockCurrentAnswers({});
+    mockSeedUpdateOk();
+
+    await seedAnswersFromDefaults(client, ctx, ['work_authorization'], [], deps);
+
+    expect(deps.setRls).toHaveBeenCalledWith(client, WORKER_ID);
+    const setRlsOrder = (deps.setRls as jest.Mock).mock.invocationCallOrder[0];
+    const firstQueryOrder = mockQuery.mock.invocationCallOrder[0];
+    expect(setRlsOrder).toBeLessThan(firstQueryOrder);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// countRemainingRequirements (Task 9) -- the fill-arm intro's N/M counts.
+// One combined SELECT (job_applications JOIN jobs + a correlated
+// worker_documents subquery), matching computeNextStep's own two data
+// sources but returning COUNTS rather than the first gap.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('countRemainingRequirements', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function mockCountRow(overrides: Partial<{
+    application_answers: Record<string, unknown>;
+    required_fields: string[];
+    required_docs: string[];
+    have_docs: string[];
+  }> = {}) {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        application_answers: {},
+        required_fields: [],
+        required_docs: [],
+        have_docs: [],
+        ...overrides,
+      }],
+      rowCount: 1,
+    });
+  }
+
+  it('counts unanswered required fields and undelivered required docs', async () => {
+    mockCountRow({
+      application_answers: { work_authorization: true },
+      required_fields: ['work_authorization', 'date_available', 'desired_pay'],
+      required_docs: ['resume', 'driver_license'],
+      have_docs: ['resume'],
+    });
+
+    const counts = await countRemainingRequirements(client, APPLICATION_ID);
+
+    expect(counts).toEqual({ nFields: 2, nDocs: 1, uncollectable: [] });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports uncollectable doc types (e.g. legacy ssn) separately, never counted in nDocs', async () => {
+    mockCountRow({ required_docs: ['ssn'], have_docs: [] });
+
+    const counts = await countRemainingRequirements(client, APPLICATION_ID);
+
+    expect(counts).toEqual({ nFields: 0, nDocs: 0, uncollectable: ['ssn'] });
+  });
+
+  it('zero counts when every field is answered and every doc is on file', async () => {
+    mockCountRow({
+      application_answers: { work_authorization: true },
+      required_fields: ['work_authorization'],
+      required_docs: ['resume'],
+      have_docs: ['resume'],
+    });
+
+    const counts = await countRemainingRequirements(client, APPLICATION_ID);
+
+    expect(counts).toEqual({ nFields: 0, nDocs: 0, uncollectable: [] });
   });
 });
 

@@ -70,9 +70,21 @@ import {
   detectMediaCategory,
   buildS3Key,
   downloadTwilioMedia,
+  downloadTwilioMediaBounded,
   uploadMediaToS3,
   MAX_VOICE_BYTES,
+  MAX_DOCUMENT_BYTES,
 } from './lib/media';
+import {
+  computeNextStep,
+  countRemainingRequirements,
+  seedAnswersFromDefaults,
+  promptNextStep,
+  type FillContext,
+  type FillDeps,
+} from './lib/application-fill';
+import { fillMessage } from './lib/application-fill-prompts';
+import { makeBedrockExtractionClient } from './lib/application-fill-extraction';
 import {
   parseVoiceTranscriptEvent,
   type VoiceEventV2,
@@ -1886,6 +1898,42 @@ async function handleJobButton(
   await handleJobAction(client, conv, bareJobId, payload.action, from, inboundMessageSid);
 }
 
+/**
+ * Task 9: real `FillDeps` wiring for `handleJobAction`'s accept path -- the
+ * only call site that arms the application-fill flow today (Task 10's
+ * dispatch tail is a separate, not-yet-wired seam). Built fresh per accept
+ * (cheap: `makeBedrockExtractionClient`/`downloadMedia` are never actually
+ * invoked during arming -- only text prompts go out here -- so there is no
+ * real cost to not memoizing this at module scope).
+ *
+ * `updateStateContext`'s contract (application-fill.ts's `FillDeps` jsdoc,
+ * binding) is BOTH a DB write AND an in-place mutation of `conv.state_context`
+ * -- the closure below captures `conv` so a second read of `conv.state_context`
+ * later in the SAME turn (e.g. this function's own anchor-switch check, or a
+ * later call into `sendNextStepPrompt`) sees the patched value without a
+ * second DB round trip. `updateConversation`'s `state_context` column write
+ * is a full JSONB replace (see that function), so the merge happens here,
+ * not there.
+ */
+function buildFillDeps(conv: ConversationRow): FillDeps {
+  return {
+    extraction: makeBedrockExtractionClient(),
+    queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
+    setRls: setInternalUserRlsContext,
+    async updateStateContext(client, conversationId, patch) {
+      const merged = { ...(conv.state_context as unknown as Record<string, unknown>), ...patch };
+      await updateConversation(client, conversationId, { state_context: merged as unknown as ProfileStateContext });
+      conv.state_context = merged as unknown as ProfileStateContext;
+    },
+    nowMs: () => Date.now(),
+    downloadMedia: async (mediaUrl: string) => {
+      const twilioSecret = await getTwilioSecret();
+      return downloadTwilioMediaBounded(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken, MAX_DOCUMENT_BYTES);
+    },
+    documentsBucket: process.env.DOCUMENTS_BUCKET!,
+  };
+}
+
 async function handleJobAction(
   client: PoolClient,
   conv: ConversationRow,
@@ -1899,6 +1947,8 @@ async function handleJobAction(
     location: string;
     pay_min: number | null; pay_max: number | null; pay_interval: string | null;
     pay_raw: string | null;
+    required_fields: string[] | null;
+    optional_fields: string[] | null;
   }>(
     `SELECT id,
             title,
@@ -1907,7 +1957,9 @@ async function handleJobAction(
             pay_min,
             pay_max,
             pay_interval,
-            pay AS pay_raw
+            pay AS pay_raw,
+            required_fields,
+            optional_fields
        FROM jobs
       WHERE id = $1
         AND status = 'active'`,
@@ -1921,23 +1973,108 @@ async function handleJobAction(
     await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     return;
   }
+  const workerId = conv.user_id;
 
   if (action === 'accept') {
     const applyResult = await applyWorkerToJob(client, {
-      workerId: conv.user_id,
+      workerId,
       jobId,
       surface: 'whatsapp',
     });
 
-    if (applyResult.status === 'applied') {
-      await queueReply(client, inboundMessageSid, from, 'job_accepted', conv.language);
-    } else if (applyResult.status === 'already_applied') {
-      await queueReply(client, inboundMessageSid, from, 'job_already_applied', conv.language);
-    } else if (applyResult.status === 'missing_documents') {
-      await queueReply(client, inboundMessageSid, from, 'job_documents_required', conv.language, {
-        missing_docs: localizeDocList(applyResult.missing_docs, conv.language),
-      });
+    if (applyResult.status === 'applied' || applyResult.status === 'already_applied') {
+      const applicationId = (applyResult.application as { id: string }).id;
+      // Captured BEFORE the arm write below mutates conv.state_context --
+      // this is what makes a mid-fill accept on a DIFFERENT application a
+      // "switch" (spec §6 item 8 / task brief requirement 3). fill_* keys
+      // are not part of ProfileStateContext's typed shape (they belong to
+      // this feature's own loose Record<string, unknown> convention -- see
+      // FillContext's jsdoc in application-fill.ts), hence the cast.
+      const previousApplicationId = (conv.state_context as unknown as Record<string, unknown> | undefined)
+        ?.fill_application_id as string | undefined;
+
+      const deps = buildFillDeps(conv);
+      const ctx: FillContext = {
+        conversationId: conv.id,
+        workerId,
+        jobId,
+        lang: conv.language,
+        // fill_application_id is set here on the in-memory ctx (not yet
+        // persisted) so seedAnswersFromDefaults' merge choke point --
+        // reused from the same code path handleFillMessage uses -- can
+        // resolve the target application before the real arm write below.
+        stateContext: {
+          ...(conv.state_context as unknown as Record<string, unknown>),
+          fill_application_id: applicationId,
+        },
+      };
+
+      await seedAnswersFromDefaults(
+        client,
+        ctx,
+        job.rows[0].required_fields ?? [],
+        job.rows[0].optional_fields ?? [],
+        deps,
+      );
+
+      const nextStep = await computeNextStep(client, applicationId);
+
+      if (nextStep.kind === 'field' || nextStep.kind === 'doc') {
+        // Arm (or re-arm/switch) the fill. Anchor-switch scrub (Task 8
+        // forward note): pending_picker/fill_pending/fill_cert_more_pending
+        // are cleared unconditionally at every fill entry, whether this is
+        // a fresh arm, a same-application re-arm, or a switch to a
+        // different application.
+        await deps.updateStateContext(client, conv.id, {
+          fill_application_id: applicationId,
+          pending_picker: null,
+          fill_pending: null,
+          fill_cert_more_pending: null,
+        });
+
+        const isSwitch = previousApplicationId !== undefined && previousApplicationId !== applicationId;
+        if (isSwitch) {
+          await queueText(client, inboundMessageSid, from, fillMessage('switched_job', conv.language));
+        }
+
+        const counts = await countRemainingRequirements(client, applicationId);
+        let introBody = fillMessage('intro', conv.language, {
+          n_fields: String(counts.nFields),
+          n_docs: String(counts.nDocs),
+        });
+        if (nextStep.uncollectable.length > 0) {
+          introBody += `\n\n${fillMessage('web_handoff', conv.language, {
+            doc: localizeDocList(nextStep.uncollectable, conv.language),
+          })}`;
+        }
+        await queueText(client, inboundMessageSid, from, introBody);
+
+        await promptNextStep(client, ctx, inboundMessageSid, from, deps);
+        return;
+      }
+
+      // No collectable gaps remain -- legacy behavior exactly as today, fill
+      // NOT armed.
+      await queueReply(
+        client,
+        inboundMessageSid,
+        from,
+        applyResult.status === 'applied' ? 'job_accepted' : 'job_already_applied',
+        conv.language,
+      );
+    } else if (applyResult.status === 'guard_blocked') {
+      // 'generic_error' does not exist in templates.ts / the TemplateKey
+      // union queueReply is typed on -- this comes from the fill-prompts
+      // module via the outbox text helper instead.
+      await queueText(client, inboundMessageSid, from, fillMessage('guard_error', conv.language));
     } else {
+      // applyWorkerToJob can still return job_closed/forbidden/
+      // certification_document_limit (none reachable for whatsapp's
+      // bypassed answers/cert-claims gates, but forbidden/job_closed remain
+      // possible races) -- same fallback the pre-Task-9 code used for every
+      // non-applied/already_applied/guard_blocked status. `missing_documents`
+      // is never reachable here (applyWorkerToJob's surface==='whatsapp'
+      // branch bypasses that gate entirely -- see applications.ts).
       await queueReply(client, inboundMessageSid, from, 'job_not_found', conv.language);
     }
   } else if (action === 'decline') {

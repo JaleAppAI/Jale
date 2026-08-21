@@ -24,9 +24,14 @@
  *     exits as `application_gone`.
  */
 import type { PoolClient } from 'pg';
+import { randomUUID } from 'crypto';
 import { setInternalUserRlsContext } from '../../lib/db';
 import { DOC_TYPES, type PayInterval } from '../../lib/job-fields';
 import { validateApplicationAnswers } from '../../lib/application-answers';
+import {
+  copyRequiredDocumentSnapshots,
+  CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS,
+} from '../../lib/applications';
 import {
   fieldQuestion,
   fieldRetryHint,
@@ -34,10 +39,19 @@ import {
   fillMessage,
   type FillFieldKey,
   type CollectableDocType,
+  type FillMessageKey,
 } from './application-fill-prompts';
 import { extractFieldAnswer, type ExtractionClient } from './application-fill-extraction';
 import type { IncomingMessage } from './conversation-router';
-import type { Lang } from './templates';
+import { t, type Lang } from './templates';
+import { REPROMPT_COOLDOWN_MS } from './onboarding-language';
+import {
+  sniffDocumentType,
+  uploadDocumentToS3,
+  MediaTooLargeError,
+  ALLOWED_DOCUMENT_TYPES,
+  detectMediaCategory,
+} from './media';
 
 export type NextStep =
   | { kind: 'field'; key: FillFieldKey; uncollectable: string[] }
@@ -111,13 +125,74 @@ export async function computeNextStep(client: PoolClient, applicationId: string)
   return { kind: 'complete', uncollectable };
 }
 
+export interface FillCounts {
+  nFields: number;
+  nDocs: number;
+  uncollectable: string[];
+}
+
+/**
+ * Task 9: the intro's "N preguntas y M documentos" counts. A deliberately
+ * SEPARATE query from `computeNextStep` (which only ever answers "what's
+ * the very next gap", not "how many remain") -- one targeted SELECT that
+ * mirrors computeNextStep's own two-query shape (job_applications JOIN jobs,
+ * plus the worker_documents presence check) but folded into a single round
+ * trip via a correlated subquery, since counting (unlike computeNextStep's
+ * early-return walk) always needs both halves. Simplest-correct choice
+ * (task brief): one extra SELECT, not N calls to computeNextStep in a loop.
+ *
+ * Callers MUST have already set the `app.current_internal_user_id` RLS GUC
+ * this turn (worker_documents is FORCE RLS, 005_document_vault.sql, exactly
+ * as in computeNextStep) -- this function does not set it itself, since by
+ * the time the fill-arm intro is being built the caller
+ * (`handleJobAction`/`seedAnswersFromDefaults` in processor.ts) always
+ * already has.
+ */
+export async function countRemainingRequirements(
+  client: PoolClient,
+  applicationId: string,
+): Promise<FillCounts> {
+  const res = await client.query<{
+    application_answers: Record<string, unknown> | null;
+    required_fields: string[] | null;
+    required_docs: string[] | null;
+    have_docs: string[] | null;
+  }>(
+    `SELECT ja.application_answers, j.required_fields, j.required_docs,
+            COALESCE((
+              SELECT array_agg(DISTINCT wd.doc_type)
+                FROM worker_documents wd
+               WHERE wd.worker_id = ja.worker_id
+                 AND (wd.job_id IS NULL OR wd.job_id = ja.job_id)
+            ), '{}') AS have_docs
+       FROM job_applications ja JOIN jobs j ON j.id = ja.job_id
+      WHERE ja.id = $1`,
+    [applicationId],
+  );
+  const row = res.rows[0];
+  if (!row) return { nFields: 0, nDocs: 0, uncollectable: [] };
+
+  const answers = row.application_answers ?? {};
+  const requiredFields = row.required_fields ?? [];
+  const requiredDocs = row.required_docs ?? [];
+  const have = new Set(row.have_docs ?? []);
+
+  const nFields = requiredFields.filter(
+    (key) => !Object.prototype.hasOwnProperty.call(answers, key),
+  ).length;
+  const uncollectable = requiredDocs.filter((d) => !COLLECTABLE.has(d));
+  const nDocs = requiredDocs.filter((d) => COLLECTABLE.has(d) && !have.has(d)).length;
+
+  return { nFields, nDocs, uncollectable };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Task 7: `handleFillMessage` -- field-step collection (parse, extract,
-// confirm). Media handling (Task 8) and escapes/dispatch-order (Task 10)
-// are NOT implemented here -- both are structured as early `{handled:
-// false}` returns so the processor falls back to normal routing until
-// those tasks land. Complete/exit prompting (Task 11) is a minimal
-// placeholder (see `sendNextStepPrompt`).
+// confirm). Task 8 adds document collection (media turns, doc-step free
+// text). Escapes/dispatch-order (Task 10) are still NOT implemented here --
+// structured as an early `{handled: false}` return so the processor falls
+// back to normal routing until that task lands. Complete/exit prompting
+// (Task 11) is a minimal placeholder (see `sendNextStepPrompt`).
 //
 // INVARIANT (binding, from Task 6 review): `handleFillMessage` and
 // `promptNextStep` always run INSIDE the processor's per-turn transaction
@@ -153,6 +228,19 @@ export interface FillDeps {
   setRls(client: PoolClient, workerId: string): Promise<void>; // setInternalUserRlsContext
   updateStateContext(client: PoolClient, conversationId: string, patch: Record<string, unknown>): Promise<void>;
   nowMs(): number;
+  // Task 8: downloads one Twilio media attachment, already bounded to the
+  // document size cap. The real wiring (processor.ts) passes
+  // `downloadTwilioMediaBounded(mediaUrl, accountSid, authToken,
+  // MAX_DOCUMENT_BYTES)` (media.ts) -- this module never talks to Twilio
+  // directly, only through this injected function, so it stays unit-
+  // testable without a live Twilio credential. Throws MediaTooLargeError on
+  // overage, or a plain Error on any other download failure -- both are
+  // caught by `handleDocUpload` and turned into a reply, never rethrown.
+  downloadMedia(mediaUrl: string): Promise<Buffer>;
+  // Task 8: the S3 bucket documents are uploaded to (real wiring:
+  // `process.env.DOCUMENTS_BUCKET`, the bucket `uploadDocumentToS3`
+  // (media.ts) targets -- see documents-stack.ts).
+  documentsBucket: string;
 }
 
 /**
@@ -169,7 +257,9 @@ export interface FillContext {
   lang: Lang;
   // Includes (not exhaustive -- other keys belong to other lanes):
   // fill_application_id, fill_pending?, fill_last_prompt_at?,
-  // fill_relay_override?, fill_offer_application_id?
+  // fill_relay_override?, fill_offer_application_id?, fill_cert_more_pending?
+  // (Task 8 -- see handleFillMediaTurn's jsdoc for why certification_doc
+  // needs its OWN loop flag distinct from fill_pending)
   stateContext: Record<string, unknown>;
 }
 
@@ -398,6 +488,30 @@ function mapExtractionFailure(
 type MergeResult = { ok: true } | { ok: false; reason: 'invalid' | 'too_large' };
 
 /**
+ * THE single UPDATE statement that ever writes `job_applications
+ * .application_answers` from this module -- both `mergeAnswer` (one
+ * worker-confirmed key per call) and `seedAnswersFromDefaults` (Task 9, a
+ * batch of pre-seeded keys in one call) go through this, so the `||`-merge
+ * SQL text exists in exactly one place. Caller is responsible for having
+ * already called `deps.setRls` in this turn (job_applications UPDATEs are
+ * not RLS-gated the way worker_documents is, but every write in this module
+ * runs after the RLS GUC is set anyway, by convention -- see mergeAnswer's
+ * own call order test).
+ */
+async function persistMergedAnswers(
+  client: PoolClient,
+  applicationId: string,
+  mergedJson: string,
+): Promise<void> {
+  await client.query(
+    `UPDATE job_applications
+        SET application_answers = application_answers || $1::jsonb, updated_at = now()
+      WHERE id = $2`,
+    [mergedJson, applicationId],
+  );
+}
+
+/**
  * The ONLY path from an extracted/parsed value to the DB. Re-validates
  * (defense in depth -- extraction/deterministic parsing already produced a
  * plausible value, but this is the last gate before a write) via
@@ -419,13 +533,90 @@ async function mergeAnswer(
   const merged = JSON.stringify({ [key]: (validated.value as Record<string, unknown>)[key] });
   if (merged.length > 8192) return { ok: false, reason: 'too_large' };
   await deps.setRls(client, ctx.workerId);
-  await client.query(
-    `UPDATE job_applications
-        SET application_answers = application_answers || $1::jsonb, updated_at = now()
-      WHERE id = $2`,
-    [merged, ctx.stateContext.fill_application_id],
-  );
+  await persistMergedAnswers(client, ctx.stateContext.fill_application_id as string, merged);
   return { ok: true };
+}
+
+/**
+ * Task 9: pre-fills an application's answers from the worker's saved
+ * `worker_application_defaults` row (079_worker_application_defaults.sql;
+ * read access for jale_whatsapp added by 081, keyed on
+ * `app.current_internal_user_id` -- see task-9a-report.md's RLS analysis),
+ * so a worker who already answered these questions on a past application is
+ * not re-asked. Called once at fill-arm time (`handleJobAction`'s accept
+ * path in processor.ts), BEFORE `computeNextStep`/the intro counts, for both
+ * fresh accepts and re-arms.
+ *
+ * Contract (binding, from the task brief):
+ *   - `deps.setRls` runs FIRST, before any SELECT (worker_application_defaults
+ *     is FORCE RLS -- see 079/081).
+ *   - Only a key that is (a) present in `requiredFields`/`optionalFields` --
+ *     i.e. actually relevant to THIS job, (b) present in the defaults row,
+ *     and (c) ABSENT (via `hasOwnProperty`, matching `computeNextStep`'s own
+ *     presence convention -- a stored `false`/`null` answer already counts
+ *     as answered) from the application's CURRENT `application_answers` is a
+ *     seed candidate.
+ *   - Each candidate is re-validated via the same single-key
+ *     `validateApplicationAnswers([key], [], {[key]: value})` shape
+ *     `mergeAnswer` uses -- a defaults row is worker-supplied history, not a
+ *     trusted-by-construction value (a validator can also legitimately
+ *     tighten between when the default was saved and now). A key that fails
+ *     validation is skipped SILENTLY (never an error to the worker -- the
+ *     bot simply asks the question, exactly as if no default existed).
+ *   - All keys that DO validate are merged in exactly ONE UPDATE (via
+ *     `persistMergedAnswers`, the same choke point `mergeAnswer` uses) --
+ *     batching one call is straightforward here since every seeded key is
+ *     already known before any write happens (unlike the confirm-per-turn
+ *     flow `mergeAnswer` serves), so there is no reason to prefer N
+ *     round-trips over one.
+ *
+ * Returns the seeded key NAMES ONLY (spec §11: metadata-only logging) --
+ * never the values. Short-circuits (no `job_applications` SELECT, no
+ * UPDATE) when the worker has no defaults row, or the row's `answers` is
+ * empty -- the common case for a worker's very first application.
+ */
+export async function seedAnswersFromDefaults(
+  client: PoolClient,
+  ctx: FillContext,
+  requiredFields: readonly string[],
+  optionalFields: readonly string[],
+  deps: FillDeps,
+): Promise<string[]> {
+  await deps.setRls(client, ctx.workerId);
+
+  const defaultsRes = await client.query<{ answers: Record<string, unknown> }>(
+    `SELECT answers FROM worker_application_defaults WHERE worker_id = $1`,
+    [ctx.workerId],
+  );
+  const defaults = defaultsRes.rows[0]?.answers ?? {};
+  if (Object.keys(defaults).length === 0) return [];
+
+  const applicationId = ctx.stateContext.fill_application_id as string;
+  const appRes = await client.query<{ application_answers: Record<string, unknown> }>(
+    `SELECT application_answers FROM job_applications WHERE id = $1`,
+    [applicationId],
+  );
+  const currentAnswers = appRes.rows[0]?.application_answers ?? {};
+
+  const seeded: string[] = [];
+  const toMerge: Record<string, unknown> = {};
+  for (const key of [...requiredFields, ...optionalFields]) {
+    if (!Object.prototype.hasOwnProperty.call(defaults, key)) continue;
+    if (Object.prototype.hasOwnProperty.call(currentAnswers, key)) continue;
+    const validated = validateApplicationAnswers([key], [], { [key]: defaults[key] });
+    if (!validated.ok) {
+      logStep(key, 'seed_skipped', 'invalid_default');
+      continue;
+    }
+    toMerge[key] = (validated.value as Record<string, unknown>)[key];
+    seeded.push(key);
+  }
+
+  if (seeded.length === 0) return [];
+
+  await persistMergedAnswers(client, applicationId, JSON.stringify(toMerge));
+  for (const key of seeded) logStep(key, 'seeded');
+  return seeded;
 }
 
 /** Maps a merge failure to the caller-facing message (brief's caller
@@ -513,6 +704,316 @@ export async function promptNextStep(
   deps: FillDeps,
 ): Promise<void> {
   await sendNextStepPrompt(client, ctx, inboundSid, from, deps);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 8: document collection (spec §8). `handleDocUpload` does the actual
+// download/sniff/S3-put/DB-write for ONE attachment; `handleFillMediaTurn`
+// is the media-branch dispatcher `handleFillMessage` delegates to, and
+// `handleDocStepText` covers the free-text-at-a-doc-step case (spec §6
+// item 7's doc-step carve-out, §6 item 1 covers the media branch itself).
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Wraps `deps.queueReplyText` so every reply queued THROUGH the returned
+ * copy gets `leadIn` prepended -- used for the NumMedia>1 "we only used the
+ * first file" note (spec §6 item 1), which must land ahead of whatever
+ * reply the doc-upload path (success prompt or an error reply) ends up
+ * sending, without threading a leadIn parameter through every call site.
+ */
+function withLeadIn(deps: FillDeps, leadIn: string): FillDeps {
+  return {
+    ...deps,
+    queueReplyText: (client, inboundSid, to, body) =>
+      deps.queueReplyText(client, inboundSid, to, `${leadIn}\n\n${body}`),
+  };
+}
+
+// Outcome contract: 'stored' (row written) | 'satisfied' (requirement
+// already met: cert cap, non-cert 23505 first-write-wins) | 'stay_pending'
+// (an error reply was already sent, step unchanged -- recovery is the
+// worker resending, a new message SID, per spec §8/§12). The CALLER
+// (`handleFillMediaTurn`) runs `promptNextStep` only for stored/satisfied --
+// NEVER for stay_pending, since the error reply already told the worker
+// what to do next. `handleFillMessage` (and therefore this function) always
+// runs INSIDE the processor's per-turn transaction -- the SAVEPOINT below
+// depends on that; never call this standalone/autocommit.
+async function handleDocUpload(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  docType: CollectableDocType,
+  deps: FillDeps,
+): Promise<'stored' | 'satisfied' | 'stay_pending'> {
+  const reply = (key: FillMessageKey) =>
+    deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage(key, ctx.lang));
+
+  let buf: Buffer;
+  try {
+    buf = await deps.downloadMedia(msg.mediaUrl!);
+  } catch (err) {
+    // Spec §12: caught -> the turn still commits + an error reply;
+    // recovery is the worker resending (never rethrown -- a download
+    // hiccup must not abort the whole turn transaction).
+    if (err instanceof MediaTooLargeError) {
+      await reply('doc_too_large');
+      logStep(docType, 'doc_too_large');
+      return 'stay_pending';
+    }
+    await reply('doc_download_failed');
+    logStep(docType, 'doc_download_failed');
+    return 'stay_pending';
+  }
+
+  const sniffed = sniffDocumentType(buf);
+  const claimed = msg.mediaContentType;
+  // Trust the SNIFF as authoritative. Only reject when Twilio's claimed
+  // content type is itself one of our allowed types but disagrees with the
+  // real magic bytes (a mismatch/spoof) -- a claimed type outside our
+  // allowlist (e.g. Twilio reports something we don't recognize) never
+  // blocks an otherwise-valid sniff result.
+  if (
+    !sniffed ||
+    (claimed !== undefined && (ALLOWED_DOCUMENT_TYPES as readonly string[]).includes(claimed) && sniffed !== claimed)
+  ) {
+    await reply('doc_invalid_type');
+    logStep(docType, 'doc_invalid_type');
+    return 'stay_pending';
+  }
+
+  const ext = sniffed === 'application/pdf' ? 'pdf' : sniffed === 'image/png' ? 'png' : 'jpg';
+  // S3 key scheme matches worker-doc-upload-url.ts's tokenized-upload path
+  // (documents/${jobId}/${workerId}/${docType}/${uuid}.${ext}) -- S3 PUT
+  // happens BEFORE any DB write (spec §4.3's orphan-tolerated invariant: an
+  // S3 object with no DB row is harmless and unreachable; a DB row pointing
+  // at a missing S3 object would not be).
+  const key = `documents/${ctx.jobId}/${ctx.workerId}/${docType}/${randomUUID()}.${ext}`;
+  const { versionId } = await uploadDocumentToS3(deps.documentsBucket, key, buf, sniffed);
+
+  await deps.setRls(client, ctx.workerId);
+  await client.query('SAVEPOINT fill_doc');
+  try {
+    if (docType !== 'certification_doc') {
+      // Non-cert doc types are one-row-per-slot (007/075's partial unique
+      // indexes exclude certification_doc) -- DELETE-then-INSERT is the
+      // "replace", mirroring worker-doc-confirm.ts (080's header: no
+      // ON CONFLICT arbiter is used here or there, since 075 narrowed the
+      // per-job/vault unique indexes' predicates and an arbiter's WHERE
+      // clause must match an index predicate exactly).
+      await client.query(
+        `DELETE FROM worker_documents WHERE worker_id = $1 AND job_id = $2 AND doc_type = $3`,
+        [ctx.workerId, ctx.jobId, docType],
+      );
+    }
+    // Column list + cert_name=NULL decision: see this file's header comment
+    // above handleFillMediaTurn and the task report for the full rationale
+    // (078_worker_documents_cert_name.sql: cert_name is nullable, no
+    // default, and NULL is a first-class "no label supplied" value, not an
+    // error -- worker-doc-confirm.ts's tokenized upload path already treats
+    // an omitted cert_name the same way).
+    await client.query(
+      `INSERT INTO worker_documents (worker_id, job_id, doc_type, s3_key, file_name, file_size, mime_type, s3_version_id, cert_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [ctx.workerId, ctx.jobId, docType, key, `${docType}.${ext}`, buf.length, sniffed, versionId, null],
+    );
+    await copyRequiredDocumentSnapshots(client, ctx.workerId, ctx.jobId, [docType]);
+    await client.query('RELEASE SAVEPOINT fill_doc');
+    logStep(docType, 'stored');
+    return 'stored';
+  } catch (err: any) {
+    await client.query('ROLLBACK TO SAVEPOINT fill_doc');
+    // Both 078 cert-cap constraint names (total-per-slot and per-cert-name)
+    // collapse to the same graceful result -- see
+    // CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS's own comment
+    // (applications.ts) for why neither is actionable from this chat flow.
+    if (err?.code === '23514' && CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS.has(err?.constraint)) {
+      await reply('cert_cap');
+      logStep(docType, 'cert_cap');
+      return 'satisfied';
+    }
+    // Non-cert unique-violation race (two turns for the same slot landing
+    // concurrently, e.g. a retried/duplicated inbound) -- first write wins,
+    // silently: the requirement is satisfied either way, and surfacing an
+    // error here would be confusing (nothing is actually wrong from the
+    // worker's point of view).
+    if (err?.code === '23505' && docType !== 'certification_doc') {
+      logStep(docType, 'first_write_wins');
+      return 'satisfied';
+    }
+    throw err;
+  }
+}
+
+/**
+ * Free text at a doc step (spec §6 item 7's doc-step carve-out): text is
+ * NEVER interpreted as a document -- it just re-sends the current doc
+ * prompt, cooldown-guarded by the SAME `fill_last_prompt_at` timestamp
+ * `sendNextStepPrompt` stamps (`REPROMPT_COOLDOWN_MS`, lifted from
+ * onboarding-language.ts per spec §6 item 9) so a chatty worker sending
+ * several stray texts in a row doesn't get the prompt spammed back at them.
+ */
+async function handleDocStepText(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  docType: CollectableDocType,
+): Promise<FillResult> {
+  const last = ctx.stateContext.fill_last_prompt_at as number | undefined;
+  if (last !== undefined && deps.nowMs() - last < REPROMPT_COOLDOWN_MS) {
+    logStep(docType, 'doc_text_cooldown');
+    return { handled: true };
+  }
+  await deps.updateStateContext(client, ctx.conversationId, { fill_last_prompt_at: deps.nowMs() });
+  await deps.queueReplyText(client, msg.messageSid, msg.from, docPrompt(docType, ctx.lang));
+  logStep(docType, 'doc_text_reprompt');
+  return { handled: true };
+}
+
+/**
+ * Media-branch dispatcher (spec §6 item 1) -- `handleFillMessage` delegates
+ * here whenever `msg.numMedia > 0`, BEFORE the CANCELAR guard and before any
+ * text parsing (a captioned photo's caption must never leak to the text
+ * parser).
+ *
+ * `fill_cert_more_pending` (stateContext): certification_doc is the ONE doc
+ * type that does not simply advance on a successful upload (spec §8) -- it
+ * loops "Tienes otro certificado?" and only moves on once the worker sends
+ * something that is NOT another file. But `computeNextStep` cannot express
+ * "still open to more certs": its presence check (`have.has(docType)`)
+ * already reads certification_doc as satisfied the instant ONE row exists,
+ * so a second cert upload would otherwise get mis-routed to whatever
+ * `computeNextStep` says is ACTUALLY next (a different doc, a field, or
+ * complete). This flag is how the loop stays addressable across turns: set
+ * the instant a cert is stored, it makes the very next MEDIA turn skip
+ * `computeNextStep` entirely and go straight back to the cert slot. A TEXT
+ * reply while it's armed is gated through `parseFillConfirmation` by
+ * `resolveCertLoopPending` (`handleFillMessage` delegates there) -- 'yes'
+ * keeps it armed, 'no' clears it, unclear text re-echoes and keeps it
+ * armed; only a genuine cap hit ('satisfied', below) clears it from THIS
+ * function's side, never a retryable 'stay_pending'. This is why the flag
+ * lives SEPARATELY from `fill_pending`: that type is field-key-shaped only
+ * (`FillPendingState.key: FillFieldKey`), and its resolver
+ * (`resolveFillPending`) assumes a field's confirm/entry_another/collecting
+ * shape throughout -- reusing it for a doc type would require it to also
+ * understand DB document writes, which is out of scope here.
+ */
+async function handleFillMediaTurn(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  applicationId: string,
+): Promise<FillResult> {
+  let docType: CollectableDocType;
+  if (ctx.stateContext.fill_cert_more_pending) {
+    docType = 'certification_doc';
+  } else {
+    const nextStep = await computeNextStep(client, applicationId);
+    if (nextStep.kind === 'field') {
+      await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('field_step_media', ctx.lang));
+      logStep(nextStep.key, 'field_step_media');
+      return { handled: true };
+    }
+    if (nextStep.kind !== 'doc') {
+      // complete/exit: Task 11 territory, not dispatched from here.
+      return { handled: false };
+    }
+    docType = nextStep.docType;
+  }
+
+  // Audio at a doc step: never a valid document, so never even attempt a
+  // download. Deliberately the READY-WORKER templates.ts key
+  // ('voice_note_not_supported'), NOT the v2 onboarding-voice key
+  // ('v2_voice_not_supported') -- this flow is unrelated to onboarding-v2's
+  // voice lane.
+  if (msg.mediaContentType && detectMediaCategory(msg.mediaContentType) === 'voice') {
+    await deps.queueReplyText(client, msg.messageSid, msg.from, t('voice_note_not_supported', ctx.lang));
+    logStep(docType, 'voice_note_not_supported');
+    return { handled: true };
+  }
+
+  const takeFirstNote = msg.numMedia > 1 ? fillMessage('doc_take_first', ctx.lang) : undefined;
+  const effectiveDeps = takeFirstNote ? withLeadIn(deps, takeFirstNote) : deps;
+
+  const outcome = await handleDocUpload(client, ctx, msg, docType, effectiveDeps);
+
+  if (docType === 'certification_doc' && outcome === 'stored') {
+    // Arm the loop and ask "tienes otro?" INSTEAD of promptNextStep -- see
+    // this function's jsdoc for why certification_doc does not simply
+    // advance like every other doc type. Reuses 'entry_another'
+    // (application-fill-prompts.ts) rather than minting a dedicated key:
+    // its Si/No copy is already exactly this question's shape, and the
+    // prompts module documents it as the shared "add another?" gate.
+    await deps.updateStateContext(client, ctx.conversationId, { fill_cert_more_pending: true });
+    await effectiveDeps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('entry_another', ctx.lang));
+    logStep(docType, 'cert_stored_loop');
+    return { handled: true };
+  }
+
+  // Review fix (Critical, bug B): only a GENUINE loop exit clears the flag
+  // -- the cap being hit ('satisfied'). 'stay_pending' (invalid type,
+  // oversize, download failure) on a retry WHILE the loop is armed must
+  // leave it armed: the error reply already tells the worker to resend,
+  // and clearing here would silently re-route their next attempt through
+  // computeNextStep to whatever's ACTUALLY next, storing their retried
+  // cert file under the WRONG doc_type. 'stored' is handled entirely by
+  // the branch above (returns before reaching here) and always keeps the
+  // flag armed, never clears it.
+  if (outcome === 'satisfied' && ctx.stateContext.fill_cert_more_pending) {
+    await deps.updateStateContext(client, ctx.conversationId, { fill_cert_more_pending: null });
+  }
+
+  if (outcome === 'stored' || outcome === 'satisfied') {
+    await promptNextStep(client, ctx, msg.messageSid, msg.from, effectiveDeps);
+  }
+  return { handled: true };
+}
+
+/**
+ * Review fix (Critical, bug A): a TEXT reply while `fill_cert_more_pending`
+ * is armed is an ANSWER to "tienes otro certificado?", not a free pass to
+ * advance regardless of content -- the previous version cleared the flag
+ * and fell through unconditionally, so "1"/"si" (the exact affirmative
+ * `entry_another`'s own copy invites) was silently treated the same as
+ * "no". Gated through `parseFillConfirmation` exactly like the array-entry
+ * loop's `entry_another` stage (`resolveFillPending`):
+ *   - 'yes' -> keep the flag armed, re-send `docPrompt('certification_doc')`
+ *     (tell them to send it) -- no fill_pending-style state update needed,
+ *     the flag itself already carries "still in the loop".
+ *   - 'no' -> clear the flag (genuine exit) and fall through to
+ *     `promptNextStep`, exactly like the media-path's 'satisfied' exit.
+ *   - null (unclear) -> re-echo via the same generic `fillMessage(
+ *     'reconfirm', ...)` `resolveFillPending` uses for its own unclear-text
+ *     case, per that same precedent; the flag is untouched (kept).
+ * CANCELAR (and, once Task 10 lands, other escapes) run BEFORE this point
+ * in `handleFillMessage` and already scrub `fill_cert_more_pending`
+ * themselves -- this function only ever runs for a plain, unescaped text
+ * reply.
+ */
+async function resolveCertLoopPending(
+  client: PoolClient,
+  ctx: FillContext,
+  msg: IncomingMessage,
+  deps: FillDeps,
+  body: string,
+): Promise<FillResult> {
+  const answer = parseFillConfirmation(body);
+  if (answer === null) {
+    await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('reconfirm', ctx.lang));
+    logStep('certification_doc', 'cert_loop_reconfirm');
+    return { handled: true };
+  }
+  if (answer === 'yes') {
+    await deps.queueReplyText(client, msg.messageSid, msg.from, docPrompt('certification_doc', ctx.lang));
+    logStep('certification_doc', 'cert_loop_send_more');
+    return { handled: true };
+  }
+  // answer === 'no' -- genuine exit.
+  await deps.updateStateContext(client, ctx.conversationId, { fill_cert_more_pending: null });
+  logStep('certification_doc', 'cert_loop_advance');
+  await promptNextStep(client, ctx, msg.messageSid, msg.from, deps);
+  return { handled: true };
 }
 
 // ── fill_pending resolution (spec §6 item 6) ────────────────────────────
@@ -726,14 +1227,21 @@ async function handleFieldStep(
  * returns `{handled:false}` immediately otherwise so the processor's normal
  * routing takes over.
  *
- * Order implemented here (spec §6, Task 7's slice of it):
- *   1. Media stub (Task 8 owns real handling) -> `{handled:false}`.
- *   2. CANCELAR guard.
- *   3. jobId surfaced onto `ctx` (see `FillContext`'s jsdoc).
+ * Order implemented here (spec §6, Tasks 7+8's slice of it):
+ *   1. Media turn (`handleFillMediaTurn`) -- BEFORE the CANCELAR guard and
+ *      before any text parsing (a captioned photo's caption never leaks to
+ *      the text parser). jobId is surfaced here too, independently of the
+ *      text path's own refresh in step 3.
+ *   2. CANCELAR guard (also scrubs the cert-loop flag, `fill_cert_more_pending`).
+ *   3. jobId surfaced onto `ctx` (see `FillContext`'s jsdoc); if the
+ *      cert-loop flag is armed, the text is a yes/no answer to it
+ *      (`resolveCertLoopPending`), not a general-purpose advance.
  *   4. `fill_pending` resolution (confirm/discard/entry-loop).
- *   5. Current-step field handling (deterministic parse or extraction).
- * Escapes, the picker/relay interruption precedence, and doc-step text are
- * Task 10's dispatch-order work -- not implemented here.
+ *   5. Current-step handling: doc-step free text re-sends the doc prompt
+ *      (cooldown-guarded); field-step text goes through deterministic parse
+ *      or extraction.
+ * Escapes and the picker/relay interruption precedence are Task 10's
+ * dispatch-order work -- not implemented here.
  */
 export async function handleFillMessage(
   client: PoolClient,
@@ -744,9 +1252,16 @@ export async function handleFillMessage(
   const applicationId = ctx.stateContext.fill_application_id as string | undefined;
   if (!applicationId) return { handled: false };
 
-  // Media-first (spec §6 item 1) is Task 8's -- this dispatcher only
-  // understands text turns today.
-  if (msg.numMedia > 0) return { handled: false };
+  // Media-first (spec §6 item 1) -- BEFORE the CANCELAR guard and before any
+  // text parsing: a captioned photo's caption must never leak to the text
+  // parser, so a media turn never even reads `msg.body`. jobId is refreshed
+  // here too (see FillContext's jsdoc) since Task 8's doc writes below
+  // consume ctx.jobId, and this branch never reaches the text path's own
+  // refresh further down.
+  if (msg.numMedia > 0) {
+    ctx.jobId = (await fetchApplicationJobId(client, applicationId)) ?? ctx.jobId;
+    return handleFillMediaTurn(client, ctx, msg, deps, applicationId);
+  }
 
   const body = msg.body ?? '';
 
@@ -755,6 +1270,7 @@ export async function handleFillMessage(
     await deps.updateStateContext(client, ctx.conversationId, {
       fill_application_id: null,
       fill_pending: null,
+      fill_cert_more_pending: null,
     });
     await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('canceled', ctx.lang));
     logStep('cancel', 'canceled');
@@ -765,15 +1281,28 @@ export async function handleFillMessage(
   // step handling -- Task 8's doc writes consume ctx.jobId.
   ctx.jobId = (await fetchApplicationJobId(client, applicationId)) ?? ctx.jobId;
 
+  // Task 8's cert loop (see handleFillMediaTurn's jsdoc; review fix, bug A):
+  // a TEXT reply while the loop is armed is the worker's yes/no answer to
+  // "tienes otro certificado?", NOT an unconditional advance -- gate it
+  // through the same confirm semantics the array-entry loop uses.
+  if (ctx.stateContext.fill_cert_more_pending) {
+    return resolveCertLoopPending(client, ctx, msg, deps, body);
+  }
+
   const pending = ctx.stateContext.fill_pending as FillPendingState | undefined;
   if (pending) {
     return resolveFillPending(client, ctx, msg, deps, pending, applicationId, body);
   }
 
   const nextStep = await computeNextStep(client, applicationId);
+  if (nextStep.kind === 'doc') {
+    // Free text at a doc step (spec §6 item 7): never interpreted as a
+    // document -- re-send the doc prompt, cooldown-guarded.
+    return handleDocStepText(client, ctx, msg, deps, nextStep.docType);
+  }
   if (nextStep.kind !== 'field') {
-    // Doc-step text, and complete/exit prompting outside a direct
-    // response, are not dispatched from here (Task 8/Task 10/Task 11).
+    // complete/exit prompting outside a direct response is not dispatched
+    // from here (Task 11).
     return { handled: false };
   }
 

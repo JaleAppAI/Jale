@@ -53,7 +53,7 @@ const MAX_MERGED_ANSWERS_JSON_LENGTH = 16384;
 // snapshot COPY, not a fresh worker upload) neither is something the
 // worker can act on from the apply screen, so there is no value in
 // surfacing them as two different codes.
-const CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS = new Set([
+export const CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS = new Set([
   'certification_document_limit',
   'certification_document_name_limit',
 ]);
@@ -97,7 +97,7 @@ const CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS = new Set([
 //   INSERTs below, same as every other worker_documents column here: this
 //   function only ever copies existing rows verbatim, never invents or
 //   edits a label.
-async function copyRequiredDocumentSnapshots(
+export async function copyRequiredDocumentSnapshots(
   client: PoolClient,
   workerId: string,
   jobId: string,
