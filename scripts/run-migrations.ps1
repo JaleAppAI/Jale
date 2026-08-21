@@ -126,6 +126,7 @@ $MigrationFiles = @(
     '074_job_optional_requirements.sql'
     '075_worker_documents_multi_certification.sql'
     '076_ai_extraction_asr_metadata.sql'
+    '077_whatsapp_application_fill.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
