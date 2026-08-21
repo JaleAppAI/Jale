@@ -14,6 +14,8 @@ export function authErrorKey(err: unknown): string {
   if (code === 'CodeMismatchException') return 'errors.invalid_code';
   if (code === 'ExpiredCodeException') return 'errors.expired_code';
   if (code === 'LimitExceededException' || code === 'TooManyRequestsException') return 'errors.too_many_attempts';
+  if (message.includes('too many') || message.includes('rate limit')) return 'errors.too_many_attempts';
+  if (message.includes('unable to send a verification code right now')) return 'errors.too_many_attempts';
   if (code === 'UserNotFoundException') return 'errors.account_not_found';
   if (code === 'NotAuthorizedException') return 'errors.invalid_credentials';
 

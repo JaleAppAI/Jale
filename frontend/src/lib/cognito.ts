@@ -131,6 +131,16 @@ export function employerConfirmSignUp(email: string, code: string): Promise<void
     return confirm(getEmployerPool(), email.trim().toLowerCase(), code);
 }
 
+export function employerResendConfirmationCode(email: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: getEmployerPool() });
+        user.resendConfirmationCode((err) => {
+            if (err) reject(err);
+            else resolve();
+        });
+    });
+}
+
 export function employerSignIn(email: string, password: string): Promise<AuthTokens> {
     return new Promise((resolve, reject) => {
         const user = new CognitoUser({ Username: email, Pool: getEmployerPool() });
