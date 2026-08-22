@@ -260,7 +260,9 @@ export function DocumentsCertificationsStep({
           <span className="font-semibold">
             {unsupportedDocs.map((doc) => (doc === 'ssn' ? tDetail('doc_labels.ssn') : doc)).join(', ')}
           </span>
-          {' — '}
+          {/* A colon, not another em dash: the sentence itself already carries
+              one, and two in one line read as a broken clause. */}
+          {': '}
           {tFlow('legacy_doc_notice')}
         </InlineFeedback>
       ) : null}

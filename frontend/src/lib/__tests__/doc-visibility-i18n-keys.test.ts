@@ -79,4 +79,15 @@ describe('doc visibility i18n keys', () => {
         }
         expect(missing).toEqual([]);
     });
+
+    it('has a doc_labels.ssn label the apply-flow notice can name the legacy doc with', () => {
+        // Pre-existing key (so NOT in ADDED_KEY_PATHS above), but the legacy
+        // notice is a new consumer of it: it is the one place the unsupported
+        // doc's human name comes from, and losing it would print the bare
+        // 'ssn' enum key inside the sentence explaining the requirement.
+        for (const tree of [en, es]) {
+            const value = resolve(tree as MessageNode, 'worker_job_detail.doc_labels.ssn');
+            expect(typeof value === 'string' && value.trim() !== '').toBe(true);
+        }
+    });
 });
