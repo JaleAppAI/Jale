@@ -1125,6 +1125,7 @@
       "back_to_jobs": "Back to jobs",
       "progress_saved": "Your progress is saved.",
       "prefilled_hint": "From your last application — edit if needed",
+      "legacy_doc_notice": "This can’t be uploaded online — the employer may ask for it in person.",
       "cert_question": "Do you have {name}?",
       "cert_use_vault": "Use {file} from your vault",
       "cert_upload_new": "Upload new",

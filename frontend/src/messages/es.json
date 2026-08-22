@@ -1125,6 +1125,7 @@
       "back_to_jobs": "Volver a trabajos",
       "progress_saved": "Su progreso está guardado.",
       "prefilled_hint": "De su última postulación — edite si es necesario",
+      "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírselo en persona.",
       "cert_question": "¿Tiene {name}?",
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",

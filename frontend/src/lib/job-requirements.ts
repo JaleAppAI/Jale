@@ -15,6 +15,42 @@ export const REQUIREMENT_DOC_KEYS = [
 ] as const;
 export type RequirementDocKey = typeof REQUIREMENT_DOC_KEYS[number];
 
+/**
+ * Split a job's `required_docs` into the keys this app can actually ask for
+ * and the keys it cannot.
+ *
+ * `required_docs` arrives straight off the `jobs` row, and that column's
+ * CHECK constraint still accepts legacy 'ssn' for rows written before it left
+ * the app-layer vocabulary (see `DOC_TYPES` in infra/lambda/lib/job-fields.ts
+ * and 032_work_authorization_required.sql). The apply flow renders only
+ * `REQUIREMENT_DOC_KEYS`, so before this split an unknown key was an
+ * INVISIBLE gate: nothing on screen to upload, and Continue blocked forever
+ * with no way for the worker to discover why.
+ *
+ * Order-preserving on both sides, no dedupe (a duplicated key is a data
+ * problem, not this function's to hide), and never throws -- every caller
+ * feeds it un-validated wire data.
+ *
+ * Deliberately says nothing about job SHAPE. The apply-flow gates exclude
+ * `certification_doc` when a job carries named `certification_requirements`;
+ * that rule stays layered on top of this partition, because
+ * `certification_doc` is a perfectly supported key here.
+ */
+export function partitionRequiredDocs(
+  requiredDocs: readonly string[],
+): { supported: RequirementDocKey[]; unsupported: string[] } {
+  const supported: RequirementDocKey[] = [];
+  const unsupported: string[] = [];
+  for (const doc of requiredDocs) {
+    if ((REQUIREMENT_DOC_KEYS as readonly string[]).includes(doc)) {
+      supported.push(doc as RequirementDocKey);
+    } else {
+      unsupported.push(doc);
+    }
+  }
+  return { supported, unsupported };
+}
+
 export const REQUIREMENT_FIELD_KEYS = [
   'work_authorization',
   'date_available',
