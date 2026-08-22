@@ -1958,12 +1958,26 @@ async function handleJobAction(
   }
 }
 
-function localizeDocList(docTypes: string[], lang: Lang): string {
+/**
+ * Localized, comma-joined labels for a `missing_docs` list.
+ *
+ * Exported for unit tests only -- the `job_documents_required` call site above
+ * is unchanged. An unlabeled key deliberately falls back to the raw key rather
+ * than being dropped: a customer-facing "you still need X" message that
+ * silently omits X is worse than one printing an ugly identifier, and the
+ * fallback is pinned by a test so a new `DOC_TYPES` member surfaces as an
+ * obvious raw string instead of a missing requirement.
+ */
+export function localizeDocList(docTypes: string[], lang: Lang): string {
   const labels: Record<string, Record<Lang, string>> = {
     resume: { en: 'Resume', es: 'Resume' },
     driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
     // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
     ssn: { en: 'SSN card / ITIN', es: 'Tarjeta SSN / ITIN' },
+    // Added by migration 074 to DOC_TYPES; both were reaching workers as the
+    // raw enum string inside the job_documents_required reply.
+    work_auth_doc: { en: 'Work authorization document', es: 'Documento de autorización de trabajo' },
+    certification_doc: { en: 'Certification', es: 'Certificación' },
   };
   return docTypes.map((docType) => labels[docType]?.[lang] ?? docType).join(', ');
 }

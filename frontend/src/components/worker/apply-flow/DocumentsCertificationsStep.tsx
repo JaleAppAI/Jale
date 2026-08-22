@@ -7,7 +7,7 @@ import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Spinner } from '@/components/ui/spinner';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
-import { REQUIREMENT_DOC_KEYS, whatYouNeedHintKey, workerCertNoteKey } from '@/lib/job-requirements';
+import { REQUIREMENT_DOC_KEYS, partitionRequiredDocs, whatYouNeedHintKey, workerCertNoteKey } from '@/lib/job-requirements';
 import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
 import type { CertClaim } from '@/lib/certification-claims';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
@@ -132,6 +132,10 @@ export function DocumentsCertificationsStep({
   onVaultChanged: () => void | Promise<void>;
 }) {
   const t = useTranslations('job_requirements');
+  // `worker_job_detail` (not the apply_flow sub-namespace) for the one thing
+  // only it has: `doc_labels.ssn`, the human name of the legacy doc type the
+  // notice below reports.
+  const tDetail = useTranslations('worker_job_detail');
   const tFlow = useTranslations('worker_job_detail.apply_flow');
   const tWhatYouNeed = useTranslations('worker_job_detail.what_you_need');
   const tCommon = useTranslations('common');
@@ -163,15 +167,26 @@ export function DocumentsCertificationsStep({
     return requiredDocs.includes(key) || optionalDocs.includes(key);
   }) as JobDocType[];
 
+  // A `required_docs` key outside REQUIREMENT_DOC_KEYS (legacy 'ssn', still
+  // valid in the jobs CHECK for old rows) has no upload control anywhere in
+  // this app -- `docsToShow` above already filters it out. Gating on it was
+  // therefore an invisible dead end: Continue blocked forever with nothing on
+  // screen to fix. Those keys stop blocking here and are surfaced as a visible
+  // notice below instead, so the requirement is neither silently dropped nor
+  // silently unsatisfiable.
+  const { supported: supportedDocs, unsupported: unsupportedDocs } = partitionRequiredDocs(requiredDocs);
+
   const hasDoc = (docType: JobDocType) => vaultDocs?.some((d) => d.doc_type === docType) ?? false;
-  // Defensive belt-and-suspenders: per `job-requirements.ts`, a new-shape job
-  // must never carry 'certification_doc' in `required_docs` -- this filter
-  // guards against a malformed/legacy payload violating that invariant, so a
-  // stray entry cannot double-count as both the legacy gate and a named-cert
-  // gate. `vaultDocs === null` (vault fetch failed) fails CLOSED: a required
-  // doc's presence cannot be verified, so it counts as still missing rather
-  // than silently letting the worker past a check that never actually ran.
-  const missingLegacyDocs = requiredDocs.filter(
+  // Layered ON TOP of that partition, not folded into it: `certification_doc`
+  // IS a supported key and this is a separate rule. Defensive
+  // belt-and-suspenders: per `job-requirements.ts`, a new-shape job must never
+  // carry 'certification_doc' in `required_docs` -- this filter guards against
+  // a malformed/legacy payload violating that invariant, so a stray entry
+  // cannot double-count as both the legacy gate and a named-cert gate.
+  // `vaultDocs === null` (vault fetch failed) fails CLOSED: a required doc's
+  // presence cannot be verified, so it counts as still missing rather than
+  // silently letting the worker past a check that never actually ran.
+  const missingLegacyDocs = supportedDocs.filter(
     (doc) => (hasCerts ? doc !== 'certification_doc' : true) && !hasDoc(doc as JobDocType),
   );
 
@@ -233,6 +248,22 @@ export function DocumentsCertificationsStep({
               {tCommon('retry')}
             </Button>
           </span>
+        </InlineFeedback>
+      ) : null}
+
+      {/* OUTSIDE the docs list below, deliberately: in the case this exists for
+          (`required_docs: ['ssn']`) `docsToShow` is empty and that whole block
+          renders nothing, so a notice nested inside it would be invisible
+          exactly when it is the only explanation the worker gets. */}
+      {unsupportedDocs.length > 0 ? (
+        <InlineFeedback tone="warning">
+          <span className="font-semibold">
+            {unsupportedDocs.map((doc) => (doc === 'ssn' ? tDetail('doc_labels.ssn') : doc)).join(', ')}
+          </span>
+          {/* A colon, not another em dash: the sentence itself already carries
+              one, and two in one line read as a broken clause. */}
+          {': '}
+          {tFlow('legacy_doc_notice')}
         </InlineFeedback>
       ) : null}
 
