@@ -13,6 +13,7 @@ import {
   docHintKey,
   workerCertNoteKey,
   whatYouNeedHintKey,
+  partitionRequiredDocs,
   deriveCertificationDocTier,
   FIELD_GROUPS,
   type RequirementsMap,
@@ -372,4 +373,53 @@ describe('vocabulary shape', () => {
     expect(grouped.sort()).toEqual([...REQUIREMENT_FIELD_KEYS].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
   });
+});
+
+describe('partitionRequiredDocs', () => {
+    // A job's `required_docs` comes straight off the DB row, whose CHECK
+    // constraint still accepts legacy 'ssn' for old rows even though the
+    // app-layer vocabulary (REQUIREMENT_DOC_KEYS / the backend's DOC_TYPES)
+    // dropped it. The apply flow renders only keys it knows, so an unknown
+    // key used to be an invisible, unsatisfiable gate: nothing on screen to
+    // upload, and Continue blocked forever. Splitting the list is what lets
+    // the gate ignore those keys while the UI still names them out loud.
+    it('returns two empty lists for an empty input', () => {
+        expect(partitionRequiredDocs([])).toEqual({ supported: [], unsupported: [] });
+    });
+
+    it('treats every REQUIREMENT_DOC_KEYS member as supported', () => {
+        const { supported, unsupported } = partitionRequiredDocs([...REQUIREMENT_DOC_KEYS]);
+        expect(supported).toEqual([...REQUIREMENT_DOC_KEYS]);
+        expect(unsupported).toEqual([]);
+    });
+
+    it("splits a legacy 'ssn' entry out of a mixed list", () => {
+        expect(partitionRequiredDocs(['resume', 'ssn', 'work_auth_doc'])).toEqual({
+            supported: ['resume', 'work_auth_doc'],
+            unsupported: ['ssn'],
+        });
+    });
+
+    it('routes an unrecognized garbage key to unsupported rather than throwing', () => {
+        expect(partitionRequiredDocs(['not_a_doc_type', 'driver_license'])).toEqual({
+            supported: ['driver_license'],
+            unsupported: ['not_a_doc_type'],
+        });
+    });
+
+    it('preserves the order each side was given in', () => {
+        const { supported, unsupported } = partitionRequiredDocs([
+            'certification_doc', 'ssn', 'driver_license', 'mystery', 'resume',
+        ]);
+        expect(supported).toEqual(['certification_doc', 'driver_license', 'resume']);
+        expect(unsupported).toEqual(['ssn', 'mystery']);
+    });
+
+    it('keeps certification_doc supported -- the hasCerts exclusion is a separate rule', () => {
+        // The apply-flow gates exclude certification_doc themselves when a job
+        // carries named certification_requirements. That exclusion must stay
+        // layered on top of this partition, not be folded into it: this helper
+        // answers "does the app know this key", nothing about job shape.
+        expect(partitionRequiredDocs(['certification_doc']).supported).toEqual(['certification_doc']);
+    });
 });

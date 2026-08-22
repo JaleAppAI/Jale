@@ -36,6 +36,12 @@ const ADDED_KEY_PATHS = [
     // but the profile page offered no slot for it, so a job requiring it was
     // unsatisfiable from the web.
     'worker_profile.documents.types.work_auth_doc',
+
+    // The apply flow's notice for a `required_docs` entry the app has no
+    // upload path for (legacy 'ssn'). Those keys no longer block Continue, so
+    // this sentence is the ONLY thing telling the worker the requirement is
+    // real and handled off-platform.
+    'worker_job_detail.apply_flow.legacy_doc_notice',
 ] as const;
 
 describe('doc visibility i18n keys', () => {
