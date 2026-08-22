@@ -1466,6 +1466,7 @@
       "types": {
         "resume": "Resume",
         "driver_license": "Driver's License",
+        "work_auth_doc": "Work Authorization Document",
         "ssn": "SSN"
       },
       "not_uploaded": "Not uploaded",

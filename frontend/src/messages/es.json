@@ -1466,6 +1466,7 @@
       "types": {
         "resume": "Currículum",
         "driver_license": "Licencia de conducir",
+        "work_auth_doc": "Documento de autorización de trabajo",
         "ssn": "SSN"
       },
       "not_uploaded": "No subido",
