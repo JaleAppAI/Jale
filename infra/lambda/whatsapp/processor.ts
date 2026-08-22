@@ -1958,7 +1958,17 @@ async function handleJobAction(
   }
 }
 
-function localizeDocList(docTypes: string[], lang: Lang): string {
+/**
+ * Localized, comma-joined labels for a `missing_docs` list.
+ *
+ * Exported for unit tests only -- the `job_documents_required` call site above
+ * is unchanged. An unlabeled key deliberately falls back to the raw key rather
+ * than being dropped: a customer-facing "you still need X" message that
+ * silently omits X is worse than one printing an ugly identifier, and the
+ * fallback is pinned by a test so a new `DOC_TYPES` member surfaces as an
+ * obvious raw string instead of a missing requirement.
+ */
+export function localizeDocList(docTypes: string[], lang: Lang): string {
   const labels: Record<string, Record<Lang, string>> = {
     resume: { en: 'Resume', es: 'Resume' },
     driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
