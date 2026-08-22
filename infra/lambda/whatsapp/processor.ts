@@ -1974,6 +1974,10 @@ export function localizeDocList(docTypes: string[], lang: Lang): string {
     driver_license: { en: "Driver's license", es: 'Licencia de conducir' },
     // SSN is no longer offered for new jobs, but legacy jobs may still require it — keep the label.
     ssn: { en: 'SSN card / ITIN', es: 'Tarjeta SSN / ITIN' },
+    // Added by migration 074 to DOC_TYPES; both were reaching workers as the
+    // raw enum string inside the job_documents_required reply.
+    work_auth_doc: { en: 'Work authorization document', es: 'Documento de autorización de trabajo' },
+    certification_doc: { en: 'Certification', es: 'Certificación' },
   };
   return docTypes.map((docType) => labels[docType]?.[lang] ?? docType).join(', ');
 }
