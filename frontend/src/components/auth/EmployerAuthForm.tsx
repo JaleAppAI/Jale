@@ -294,7 +294,10 @@ export default function EmployerAuthForm() {
             setConfirmationCode('');
             setConfirmOrigin('signup');
             setResendSuccess(false);
-            setResendCooldown(0);
+            // Sign-up itself just sent a code, so it counts as the first send:
+            // start the cooldown now rather than letting an immediate resend
+            // spend a second attempt against Cognito's hourly cap.
+            setResendCooldown(RESEND_COOLDOWN_SECONDS);
             setStep('confirm');
         } catch (err) {
             setError(t(authErrorKey(err)));
@@ -575,6 +578,10 @@ export default function EmployerAuthForm() {
                             the one place they must not end up: submitting it hits
                             "an account already exists for this email". */}
                         <BackButton label={t('back')} onClick={() => goToStep(confirmOrigin === 'signin' ? 'login' : 'signup')} />
+                        {/* Normalised the same way the Cognito calls normalise it, so a
+                            typo'd address is visible here — before the user burns resend
+                            attempts on an inbox that will never receive anything. */}
+                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('confirm_subtitle', { email: email.trim().toLowerCase() })}</p>
                         <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
                         <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('check_spam')}</p>
                         <div className="flex justify-end">
@@ -601,7 +608,9 @@ export default function EmployerAuthForm() {
                             <InlineFeedback tone="success">{t('code_sent', { email: email.trim().toLowerCase() })}</InlineFeedback>
                         )}
                         {error && <FormError>{error}</FormError>}
-                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4} loading={isLoading} loadingLabel={tCommon('loading')}>
+                        {/* A resend in flight may be about to invalidate the code in the
+                            box — hold Confirm until we know which code is current. */}
+                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4 || isResending} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('confirm_account')}
                         </Button>
                     </div>

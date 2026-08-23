@@ -38,6 +38,10 @@ const ADDED_KEY_PATHS = [
     'auth.employer.code_sent',
     'auth.employer.check_spam',
 
+    // auth.employer — confirm step shows which address the code went to
+    // (ported from PR #49's version of the resend feature)
+    'auth.employer.confirm_subtitle',
+
     // auth.employer — recovery-origin confirm step heading
     'auth.employer.recovery_title',
     'auth.employer.recovery_subtitle',
