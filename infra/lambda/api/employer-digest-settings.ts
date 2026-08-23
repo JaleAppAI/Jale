@@ -22,7 +22,7 @@ import { checkCompliance } from '../legal/check-compliance';
  * timezone every time they toggled `enabled`.
  *
  * ── GET never writes ─────────────────────────────────────────────
- * Migration 080's header is explicit that creating a settings row must never
+ * migration 082's header is explicit that creating a settings row must never
  * by itself start sending mail. GET is therefore a pure SELECT that reports
  * the opt-out defaults (enabled=false) when no row exists; the row is only
  * created by an actual PATCH.
@@ -33,7 +33,7 @@ import { checkCompliance } from '../legal/check-compliance';
  * pg_timezone_names in both directions (it omits 'UTC', which PostgreSQL
  * accepts, and includes legacy aliases such as 'Asia/Calcutta'), so using it
  * would both reject valid input and admit values the DB refuses. The
- * authoritative check is migration 080's BEFORE trigger against
+ * authoritative check is migration 082's BEFORE trigger against
  * pg_catalog.pg_timezone_names, which raises 23514 with constraint
  * 'timezone_iana_valid'; that error is mapped back to a 400 here — the same
  * site-local constraint mapping lib/applications.ts:439 does — because without

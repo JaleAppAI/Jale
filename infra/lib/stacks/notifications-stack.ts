@@ -26,7 +26,7 @@ export interface NotificationsStackProps extends cdk.StackProps {
    * shared `dbSecret`, exactly like every ApiStack Lambda, because the tables
    * they touch (employer_digest_settings, jobs, job_applications, email_outbox)
    * carry RLS policies written TO jale_admin, and the one cross-tenant read
-   * they need is fenced behind migration 080's SECURITY DEFINER functions
+   * they need is fenced behind migration 082's SECURITY DEFINER functions
    * rather than behind a role of their own. A dedicated SG would suggest an
    * isolation boundary that does not exist here.
    */

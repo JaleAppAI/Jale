@@ -1,7 +1,7 @@
 /**
  * digest-settings.integration.test.ts
  *
- * PostgreSQL-backed suite for migration 080 (employer_digest_settings, the
+ * PostgreSQL-backed suite for migration 082 (employer_digest_settings, the
  * IANA timezone guard trigger, the email_outbox INSERT policy for jale_admin,
  * and the jale_digest_enumerator SECURITY DEFINER functions).
  *
@@ -177,7 +177,7 @@ async function resetFixtures(): Promise<void> {
   });
 }
 
-maybeDescribe('employer_digest_settings integration (migration 080)', () => {
+maybeDescribe('employer_digest_settings integration (migration 082)', () => {
   beforeAll(async () => {
     if (!databaseUrl) return;
     superuserUrl = databaseUrl;
@@ -1120,7 +1120,7 @@ maybeDescribe('employer_digest_settings integration (migration 080)', () => {
   // -------------------------------------------------------------------------
   describe('re-apply idempotence (migration text executed a second time)', () => {
     const migrationPath = path.join(
-      __dirname, '..', '..', '..', 'db', 'migrations', '080_employer_digest_settings.sql',
+      __dirname, '..', '..', '..', 'db', 'migrations', '082_employer_digest_settings.sql',
     );
 
     it('re-executing the whole migration over a jale_admin connection succeeds', async () => {
@@ -1240,7 +1240,7 @@ if (!databaseUrl) {
   test('CONCERN: digest-settings-integration PostgreSQL gate was not run -- JALE_TEST_DATABASE_URL not set', () => {
     // eslint-disable-next-line no-console
     console.warn(
-      '[digest-settings.integration] DONE_WITH_CONCERNS: The PostgreSQL gate for migration 080 was skipped ' +
+      '[digest-settings.integration] DONE_WITH_CONCERNS: The PostgreSQL gate for migration 082 was skipped ' +
         'because JALE_TEST_DATABASE_URL is not set in this environment. Run with a local Postgres 16 ' +
         'container (via infra/db/local/bootstrap-testbed.sh) to validate all digest-settings assertions.',
     );

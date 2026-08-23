@@ -235,7 +235,7 @@ export class ApiStack extends cdk.Stack {
 
     // Employer digest settings — employer auth, DB access. GET + PATCH on one
     // Lambda (employer-profile precedent). Reads/writes
-    // employer_digest_settings (080_employer_digest_settings.sql).
+    // employer_digest_settings (082_employer_digest_settings.sql).
     const employerDigestSettingsLambda = new JaleLambdaFunction(this, 'EmployerDigestSettingsLambda', {
       entry: path.join(__dirname, '../../lambda/api/employer-digest-settings.ts'),
       description: 'Employer digest settings endpoint',

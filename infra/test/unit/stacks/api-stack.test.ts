@@ -511,7 +511,7 @@ describe('ApiStack', () => {
     // 5th PATCH is ReferralsStack's /employer/jobs/{jobId}/public-listing
     // consent toggle (migration 057) — the Method lands in this template
     // because the resource node it hangs off belongs to ApiStack.
-    // 6th is /employer/settings/digest (migration 080), declared in ApiStack.
+    // 6th is /employer/settings/digest (migration 082), declared in ApiStack.
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
       HttpMethod: 'PATCH',
       AuthorizationType: 'COGNITO_USER_POOLS',
@@ -914,7 +914,7 @@ describe('ApiStack', () => {
     });
   });
 
-  // ── S20 T-2b: employer digest settings (migration 080) ───────────────────
+  // ── S20 T-2b: employer digest settings (migration 082) ───────────────────
 
   test('Employer digest settings Lambda function exists', () => {
     template.hasResourceProperties('AWS::Lambda::Function', {

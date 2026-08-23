@@ -26,6 +26,12 @@ const SUITE_053 = 'test/unit/db/whatsapp-onboarding-053.integration.test.ts';
 // database enforces bind counts, so this suite is the regression gate.
 const SUITE_RESET = 'test/unit/db/whatsapp-onboarding-reset.integration.test.ts';
 const SUITE_RETRIGGER = 'test/unit/db/retrigger-sweep-definer.integration.test.ts';
+// migration 080 (2026-08-20): WhatsApp application-fill DB contract --
+// jale_whatsapp DELETE-then-INSERT on worker_documents under RLS, the 073
+// application_answers column grant, the 022 guard's transaction-local GUC
+// bypass, the 075/078 cert caps (both constraint names) under RLS including
+// the RLS-scoped-COUNT footgun, and the snapshot-copy savepoint rollback.
+const SUITE_080 = 'test/unit/db/whatsapp-application-fill-080.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -43,7 +49,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
   it('invokes exactly the migration-042, concurrency, migration-049, and profile-constraint suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
-    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_053, SUITE_RESET, SUITE_RETRIGGER]);
+    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_053, SUITE_RESET, SUITE_RETRIGGER, SUITE_080]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(

@@ -14,7 +14,7 @@
  * silently dropped requirement.
  */
 
-import { localizeDocList } from '../../../../lambda/whatsapp/processor';
+import { localizeDocList } from '../../../../lambda/whatsapp/lib/application-fill';
 
 describe('localizeDocList', () => {
   describe('English labels', () => {

@@ -137,7 +137,7 @@ describe('employer-digest-settings', () => {
       timezone: 'America/Chicago',
       language: 'en',
     });
-    // Migration 080 is explicit that creating a settings row must never by
+    // migration 082 is explicit that creating a settings row must never by
     // itself start sending mail: the read path must not write at all.
     const statements = mockQuery.mock.calls.map((c) => String(c[0]));
     expect(statements.some((s) => s.includes('INSERT INTO employer_digest_settings'))).toBe(false);

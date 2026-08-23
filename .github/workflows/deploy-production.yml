@@ -82,7 +82,11 @@ jobs:
           full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
-          admin_stack_list="JaleDatabaseStack JaleWhatsAppStack JaleAdminStack"
+          # JaleDocumentsStack precedes JaleWhatsAppStack: the WhatsApp
+          # processor imports the documents bucket/key exports (application-
+          # fill doc uploads), and --exclusively deploys only the stacks
+          # named here.
+          admin_stack_list="JaleDatabaseStack JaleDocumentsStack JaleWhatsAppStack JaleAdminStack"
           billing_prerequisites_stack_list="JaleNetworkStack JaleDatabaseStack"
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
@@ -124,7 +128,7 @@ jobs:
                 # template, so NO --exclusively. DatabaseStack is included
                 # because both Lambdas read the jale_admin DB secret it owns.
                 #
-                # Migration 080 is NOT applied by this scope -- production
+                # migration 082 is NOT applied by this scope -- production
                 # migrations go through the manual runbook, and this workflow
                 # hard-fails a push that touches infra/db/migrations/ at all.
                 # Apply 080 BEFORE dispatching this scope, or the producer will

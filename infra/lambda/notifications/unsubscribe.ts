@@ -10,7 +10,7 @@ import { verifyUnsubscribeToken } from '../lib/unsubscribe-token';
  * authorizer on this route on purpose: the recipient of a digest email is
  * clicking a link, not holding a session, so the HMAC-signed token IS the
  * credential. lib/unsubscribe-token.ts verifies it BEFORE anything touches the
- * database — migration 080's `unsubscribe_employer` header says explicitly
+ * database — migration 082's `unsubscribe_employer` header says explicitly
  * that the function does not authenticate its caller and that
  * `p_token_version` must not be treated as an authenticator.
  *

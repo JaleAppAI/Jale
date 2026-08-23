@@ -1,4 +1,4 @@
--- 080_employer_digest_settings.sql
+-- 082_employer_digest_settings.sql
 -- Employer daily-digest email preferences plus the least-privilege machinery a
 -- scheduled producer needs to enumerate "who is due a digest right now" without
 -- being handed the users table.
@@ -148,7 +148,7 @@
 -- GRANT UPDATE (enabled). That is the whole of what unsubscribe needs. It
 -- cannot change a timezone, a send hour, a language, or a token version.
 --
--- Run AFTER 079_worker_application_defaults.sql, connected as jale_admin (NOT
+-- Run AFTER 081_whatsapp_application_defaults_read.sql, connected as jale_admin (NOT
 -- the RDS master user). Forward-only (ADR-005).
 
 BEGIN;

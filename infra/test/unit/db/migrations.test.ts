@@ -112,6 +112,8 @@ describe('database migrations', () => {
       '078',
       '079',
       '080',
+      '081',
+      '082',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -693,15 +695,15 @@ describe('database migrations', () => {
 
   // These are literal-string invariants in the same spirit as the 036/038/020b
   // assertions above, and they exist for one specific reason: on RDS there is
-  // no Jest. Migration 080's own terminal DO block is the ONLY thing that
+  // no Jest. migration 082's own terminal DO block is the ONLY thing that
   // verifies its role machinery in production, so if someone deletes those
   // in-file invariants (as an earlier revision of 080 in fact did), no
   // PostgreSQL-backed suite can catch it -- the database would simply be
   // unverified rather than wrong. Pinning the error strings here means the
   // deletion fails a test that runs everywhere, with no database at all.
-  it('keeps migration 080 self-verifying: the in-file invariants that are the only RDS-side check', () => {
+  it('keeps migration 082 self-verifying: the in-file invariants that are the only RDS-side check', () => {
     const migration = fs.readFileSync(
-      path.join(migrationsDir, '080_employer_digest_settings.sql'),
+      path.join(migrationsDir, '082_employer_digest_settings.sql'),
       'utf8',
     );
 
@@ -744,9 +746,9 @@ describe('database migrations', () => {
     expect(migration).toContain('p.polroles = ARRAY[(');
   });
 
-  it('keeps migration 080 resilient to a stored timezone leaving tzdata', () => {
+  it('keeps migration 082 resilient to a stored timezone leaving tzdata', () => {
     const migration = fs.readFileSync(
-      path.join(migrationsDir, '080_employer_digest_settings.sql'),
+      path.join(migrationsDir, '082_employer_digest_settings.sql'),
       'utf8',
     );
 

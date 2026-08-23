@@ -19,7 +19,7 @@ import { mintUnsubscribeToken } from '../lib/unsubscribe-token';
  *
  * ── Who is due ───────────────────────────────────────────────────
  * Answered entirely by jale_digest_internal.due_digest_employers(now())
- * (migration 080), a SECURITY DEFINER function owned by the NOLOGIN
+ * (migration 082), a SECURITY DEFINER function owned by the NOLOGIN
  * jale_digest_enumerator role. This Lambda has NO employer identity when it
  * asks, and deliberately holds no cross-tenant read of its own: the function
  * is the only place that sees every employer's row, and it hands back exactly

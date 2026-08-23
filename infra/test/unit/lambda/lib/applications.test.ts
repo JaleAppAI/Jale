@@ -194,6 +194,7 @@ describe('applyWorkerToJob', () => {
           required_fields: ['work_authorization', 'date_available'], optional_fields: [],
         }],
       })
+      .mockResolvedValueOnce({ rows: [] }) // set_config('app.allow_incomplete_docs', ...)
       .mockResolvedValueOnce({ rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] });
 
     const result = await applyWorkerToJob(makeClient(query), {
@@ -203,7 +204,7 @@ describe('applyWorkerToJob', () => {
     });
 
     expect(result.status).toBe('applied');
-    const insertCall = query.mock.calls[2];
+    const insertCall = query.mock.calls[3];
     expect(insertCall[1]).toEqual(['job-1', 'worker-1', JSON.stringify({})]);
   });
 
@@ -213,6 +214,7 @@ describe('applyWorkerToJob', () => {
       .mockResolvedValueOnce({
         rows: [{ id: 'job-1', required_docs: [], optional_docs: [], required_fields: [], optional_fields: [] }],
       })
+      .mockResolvedValueOnce({ rows: [] }) // set_config('app.allow_incomplete_docs', ...)
       .mockResolvedValueOnce({ rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] });
 
     const result = await applyWorkerToJob(makeClient(query), {
@@ -223,8 +225,70 @@ describe('applyWorkerToJob', () => {
     });
 
     expect(result.status).toBe('applied');
-    const insertCall = query.mock.calls[2];
+    const insertCall = query.mock.calls[3];
     expect(insertCall[1]).toEqual(['job-1', 'worker-1', JSON.stringify({})]);
+  });
+
+  it('whatsapp surface skips the missing-documents bounce and inserts', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] }) // internal RLS context
+      .mockResolvedValueOnce({
+        rows: [{ id: 'job-1', required_docs: ['resume'], optional_docs: [], required_fields: [], optional_fields: [] }],
+      })
+      .mockResolvedValueOnce({ rows: [] }) // missing-docs check -- worker has no documents
+      .mockResolvedValueOnce({ rows: [] }) // set_config('app.allow_incomplete_docs', ...)
+      .mockResolvedValueOnce({ rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] })
+      .mockResolvedValueOnce({ rowCount: 0 }); // snapshot copy finds nothing to copy -- worker has no docs
+
+    const result = await applyWorkerToJob(makeClient(query), {
+      workerId: 'worker-1',
+      jobId: 'job-1',
+      surface: 'whatsapp',
+    });
+
+    expect(result.status).toBe('applied');
+    const queries = query.mock.calls.map(([sql]) => String(sql));
+    expect(queries).toContainEqual(expect.stringContaining("set_config('app.allow_incomplete_docs'"));
+  });
+
+  it('web surface still bounces on missing documents', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] }) // internal RLS context
+      .mockResolvedValueOnce({
+        rows: [{ id: 'job-1', required_docs: ['resume'], optional_docs: [], required_fields: [], optional_fields: [] }],
+      })
+      .mockResolvedValueOnce({ rows: [] }); // missing-docs check -- worker has no documents
+
+    const result = await applyWorkerToJob(makeClient(query), {
+      workerId: 'worker-1',
+      jobId: 'job-1',
+      surface: 'web',
+    });
+
+    expect(result).toEqual({ status: 'missing_documents', missing_docs: ['resume'] });
+  });
+
+  it('maps 23514 job_applications_required_docs_check to guard_blocked', async () => {
+    const guardError = Object.assign(new Error('check constraint violated'), {
+      code: '23514',
+      constraint: 'job_applications_required_docs_check',
+    });
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [] }) // internal RLS context
+      .mockResolvedValueOnce({
+        rows: [{ id: 'job-1', required_docs: ['resume'], optional_docs: [], required_fields: [], optional_fields: [] }],
+      })
+      .mockResolvedValueOnce({ rows: [] }) // missing-docs check -- worker has no documents
+      .mockResolvedValueOnce({ rows: [] }) // set_config('app.allow_incomplete_docs', ...)
+      .mockRejectedValueOnce(guardError);
+
+    const result = await applyWorkerToJob(makeClient(query), {
+      workerId: 'worker-1',
+      jobId: 'job-1',
+      surface: 'whatsapp',
+    });
+
+    expect(result).toEqual({ status: 'guard_blocked' });
   });
 
   it('already_applied never patches application_answers, even with valid answers supplied', async () => {
