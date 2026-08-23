@@ -275,6 +275,10 @@
       "confirm_title": "Confirma tu cuenta",
       "otp_title": "Ingresa el codigo de 6 digitos",
       "code_sent": "SMS enviado a {phone}",
+      "resend_prompt": "¿No recibiste el código?",
+      "resend_code": "Enviarlo de nuevo",
+      "resend_wait": "Intenta de nuevo en {seconds}s",
+      "resend_success": "Enviamos un código nuevo.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
       "password_note": "Los trabajadores no necesitan contrasena. Iniciaras sesion con tu telefono y un codigo de verificacion.",
@@ -319,6 +323,7 @@
         "expired_code": "Ese codigo expiro. Pide un codigo nuevo e intenta de nuevo.",
         "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
         "invalid_credentials": "No pudimos iniciar sesion con ese telefono.",
+        "account_not_confirmed": "Tu cuenta aun no esta confirmada. Pide un codigo nuevo e intenta de nuevo.",
         "password_requirements": "La contrasena no cumple los requisitos.",
         "invalid_email": "Ingresa un correo valido.",
         "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
@@ -335,6 +340,7 @@
       "hero": "Contrate trabajadores calificados rápido.",
       "signup_title": "Bienvenido a Jale",
       "signup_subtitle": "Verifiquemos su correo para que pueda empezar a contratar.",
+      "confirm_subtitle": "Ingrese el código que enviamos a {email}.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
       "signup_prompt": "¿Nuevo aquí?",
@@ -353,6 +359,14 @@
       "forgot_confirm_subtitle": "Ingrese el código que enviamos a {email}",
       "set_password": "Establecer nueva contraseña",
       "reset_success": "Contraseña actualizada — inicie sesión abajo.",
+      "never_received_code": "No recibí mi código de confirmación",
+      "recovery_title": "Confirme su cuenta",
+      "recovery_subtitle": "Ingrese el código de confirmación que le enviamos por correo para terminar de iniciar sesión.",
+      "resend_code": "Reenviar código",
+      "resend_cooldown": "Podrá reenviar en {seconds}s",
+      "code_sent": "Enviamos un código nuevo a {email}. Ingrese el código más reciente.",
+      "check_spam": "Puede tardar un minuto en llegar. Revise su carpeta de spam o correo no deseado.",
+      "confirmed_sign_in": "Su cuenta está confirmada — inicie sesión abajo.",
       "fields": {
         "company_name": "Nombre de la empresa",
         "contact_name": "Nombre de contacto",
@@ -394,6 +408,10 @@
         "expired_code": "Ese código de confirmación expiró. Pida uno nuevo e intente de nuevo.",
         "too_many_attempts": "Demasiados intentos. Espere unos minutos e intente de nuevo.",
         "invalid_credentials": "El correo o la contraseña no son correctos.",
+        "account_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código nuevo a su correo — revise su bandeja de entrada y la carpeta de spam.",
+        "already_confirmed": "Esta cuenta ya está confirmada — inicie sesión.",
+        "resend_limit": "Demasiadas solicitudes de código. Intente más tarde — puede que deba esperar hasta una hora.",
+        "code_delivery_failed": "No pudimos enviar un código a ese correo. Revise la dirección o contacte a soporte.",
         "invalid_signup": "Revise los datos de la cuenta e intente de nuevo.",
         "signup_failed": "No pudimos crear la cuenta. Revise los campos e intente de nuevo.",
         "required": "Este campo es obligatorio.",
@@ -457,6 +475,36 @@
       "errors": {
         "required": "Obligatorio.",
         "missing_summary": "Por favor agregue: {fields}"
+      }
+    },
+    "digest": {
+      "title": "Notificaciones",
+      "description": "Reciba un correo al día con el resumen de los nuevos candidatos de sus empleos abiertos. No se envía nada los días sin actividad.",
+      "toggle_aria": "Correo diario de resumen de candidatos",
+      "state_on": "Resumen diario activado",
+      "state_off": "Resumen diario desactivado",
+      "hour_label": "Hora de envío",
+      "hour_hint": "El resumen se envía a esta hora en la zona horaria de abajo.",
+      "timezone_label": "Zona horaria",
+      "language_label": "Idioma del correo",
+      "language_hint": "Esto cambia solo el correo del resumen, no el idioma de este sitio.",
+      "language_group_aria": "Idioma del correo de resumen",
+      "language_option": {
+        "en": "Inglés",
+        "es": "Español"
+      },
+      "load_error": "No se pudieron cargar sus preferencias de notificación. Intente de nuevo.",
+      "save_error": "No se pudieron guardar sus preferencias de notificación. Intente de nuevo.",
+      "timezones": {
+        "america_new_york": "Hora del Este — Nueva York",
+        "america_chicago": "Hora del Centro — Chicago",
+        "america_denver": "Hora de la Montaña — Denver",
+        "america_phoenix": "Hora de la Montaña, sin horario de verano — Phoenix",
+        "america_los_angeles": "Hora del Pacífico — Los Ángeles",
+        "america_anchorage": "Hora de Alaska — Anchorage",
+        "pacific_honolulu": "Hora de Hawái — Honolulú",
+        "america_mexico_city": "Hora del Centro — Ciudad de México",
+        "america_puerto_rico": "Hora del Atlántico — Puerto Rico"
       }
     }
   },
@@ -1056,7 +1104,12 @@
       "questions_summary": "{count} preguntas rápidas",
       "questions_required": "{count} requeridas",
       "estimate": "Postularse — unos {minutes} minutos",
-      "vault_check_failed": "No podemos revisar su bóveda en este momento"
+      "vault_check_failed": "No podemos revisar su bóveda en este momento",
+      "hint_doc_required": "Necesita subir esto para postularse.",
+      "hint_doc_optional": "Opcional — puede postularse sin esto.",
+      "hint_cert_required_proof": "Confirmará que la tiene y adjuntará el comprobante.",
+      "hint_cert_required_attest": "Solo confirmará que la tiene — no necesita subir nada.",
+      "hint_cert_optional": "Compártala si la tiene — no bloquea su postulación."
     },
     "apply_flow": {
       "steps": {
@@ -1077,10 +1130,13 @@
       "back_to_jobs": "Volver a trabajos",
       "progress_saved": "Su progreso está guardado.",
       "prefilled_hint": "De su última postulación — edite si es necesario",
+      "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírselo en persona.",
       "cert_question": "¿Tiene {name}?",
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",
       "cert_unverified_note": "Puede postularse sin comprobante — se mostrará como declarado, sin verificar.",
+      "cert_attest_note": "No necesita subir nada — el empleador puede pedirle verla en persona.",
+      "cert_proof_note": "Suba una foto o un archivo de esta certificación para continuar.",
       "cert_from_vault": "de su bóveda",
       "review_answers": "{answered} de {total} preguntas respondidas",
       "review_skipped": "{label} (opcional) — omitido",
@@ -1257,7 +1313,12 @@
       "proof_toggle_label": "Subir comprobante",
       "proof_hint": "Pide al postulante adjuntar el certificado con su postulación.",
       "no_certifications_yet": "No se han seleccionado certificaciones. Agréguelas en Pago y horario.",
-      "cert_tier_aria": "Nivel de requisito de {name}"
+      "cert_tier_aria": "Nivel de requisito de {name}",
+      "cert_hint_required_proof": "Los postulantes deben subir el comprobante de esta certificación con su postulación inicial.",
+      "cert_hint_required_attest": "Los postulantes confirmarán que tienen esta certificación — no necesitan subir nada. Puede pedir verla en persona.",
+      "cert_hint_optional": "Los postulantes pueden compartirla si la tienen. Nunca bloquea una postulación.",
+      "doc_hint_required": "Los postulantes deben subir este documento para postularse.",
+      "doc_hint_optional": "Los postulantes pueden adjuntarlo — no es necesario para postularse."
     },
     "groups": {
       "documents": "Documentos",
@@ -1411,6 +1472,7 @@
       "types": {
         "resume": "Currículum",
         "driver_license": "Licencia de conducir",
+        "work_auth_doc": "Documento de autorización de trabajo",
         "ssn": "SSN"
       },
       "not_uploaded": "No subido",
@@ -1544,5 +1606,15 @@
     "worker_nav_main": "Menú",
     "primary_nav": "Navegación principal",
     "mobile_nav": "Navegación móvil"
+  },
+  "digest_unsubscribe": {
+    "title": "Correos de resumen diario",
+    "body": "Confirme abajo y dejaremos de enviarle el resumen diario de candidatos.",
+    "button": "Cancelar suscripción",
+    "success_title": "Su suscripción fue cancelada",
+    "success_body": "No le enviaremos más correos con el resumen diario de candidatos.",
+    "success_settings_hint": "Puede volver a activar el resumen diario cuando quiera en Notificaciones, dentro de su configuración de Jale.",
+    "error_title": "Este enlace ya no es válido",
+    "error_body": "Puede administrar los correos de resumen en Notificaciones, dentro de su configuración de Jale."
   }
 }

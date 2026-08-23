@@ -251,8 +251,47 @@ async function handleSubscriptionEvent(
     [customerId],
   );
   if (customerRes.rows.length === 0) {
-    await markInboxStatus(eventId, 'failed', 'unknown_customer', null);
-    return { outcome: 'failed', errorCode: 'unknown_customer' };
+    // Terminal skip — NOT a retryable failure.
+    //
+    // A Stripe customer with no billing_customers row is permanently
+    // unactionable: the mapping row is committed BEFORE any Stripe Checkout
+    // session for that customer can exist (lambda/billing/checkout.ts →
+    // persistBillingCustomer COMMITs before stripe.checkout.sessions.create),
+    // and a mapping, once written, cannot go away: the users FK is ON DELETE
+    // RESTRICT and migration 034 grants no role DELETE on billing_customers.
+    // So a customer we already know can never regress to unknown. The residual
+    // unknowns are dashboard-created, test-mode, or orphaned (the losing side
+    // of a concurrent checkout) customers. Marking them
+    // 'failed' only burned 3 SQS receives per event and pushed them into the
+    // DLQ, firing BillingWebhookDlqDepth for something no redrive can fix.
+    //
+    // 'skipped' is terminal at BOTH levels, which is what makes this safe:
+    //   - row:     claimInboxRow reports terminalDuplicate for 'skipped', and
+    //              persistInboxFailure's WHERE excludes it, so a redelivery or
+    //              a corrupted body can never reopen the row.
+    //   - message: processSqsRecord does not throw on 'skipped', so with
+    //              reportBatchItemFailures the void return reports no failed
+    //              items and SQS deletes the message.
+    // Only this branch is special-cased; the throw site in processSqsRecord
+    // must stay generic, since suppressing the throw there would delete the
+    // message while leaving a resumable 'failed' row behind.
+    //
+    // Two deliberate deviations from every other 'skipped' write here (which
+    // pass null/null), both for forensics rather than for control flow:
+    //   - last_error_code is non-null on a 'skipped' row for the first time,
+    //     so the reason stays recoverable from the inbox itself.
+    //   - processed_at is non-null on a 'skipped' row for the first time: it
+    //     records WHEN we terminally decided, not that we mirrored any state.
+    // markInboxStatus already accepts both, the CHECK constraint (migration
+    // 034) only constrains processing_status, and nothing outside this Lambda
+    // reads billing_webhook_events, so no consumer can be surprised.
+    await markInboxStatus(eventId, 'skipped', 'unknown_customer', new Date());
+    // Because the skip is otherwise completely silent (no DLQ, no alarm, no
+    // reader of the inbox table), this literal is the only signal. BillingStack
+    // greps it out of this Lambda's log group into the Jale/Billing
+    // BillingUnknownCustomerSkipped metric + alarm — keep the string in sync.
+    console.warn(JSON.stringify({ metric: 'billing_unknown_customer_skipped', eventId }));
+    return { outcome: 'skipped', errorCode: 'unknown_customer' };
   }
   const userId: string = String(customerRes.rows[0].user_id);
 

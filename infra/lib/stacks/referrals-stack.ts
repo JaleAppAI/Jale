@@ -28,8 +28,29 @@ export interface ReferralsStackProps extends cdk.StackProps {
    * use this credential, not referralsDbSecret.
    */
   readonly appDbSecret: secretsmanager.ISecret;
-  /** Shared REST API from ApiStack */
+  /**
+   * Shared REST API from ApiStack.
+   *
+   * Now that /public arrives pre-built via `publicResource` below, this stack
+   * no longer dereferences `props.api` anywhere. Kept on the interface
+   * deliberately rather than removed: it documents that this stack mounts onto
+   * ApiStack's API rather than owning one, and dropping it would churn
+   * bin/jale-app.ts plus two test harnesses for no behavioural gain. Remove it
+   * in a dedicated cleanup if that trade stops being worth it.
+   */
   readonly api: apigateway.RestApi;
+  /**
+   * /public resource from ApiStack — every route in this stack's public lane
+   * hangs off it.
+   *
+   * This stack used to call `props.api.root.addResource('public')` itself. That
+   * became unsafe the moment a second stack (NotificationsStack) needed the
+   * same node: two stacks calling addResource with the same path part on one
+   * RestApi is a construct-id collision at synth, and which stack "owns" it
+   * depends entirely on instantiation order in bin/jale-app.ts. Same
+   * reuse-don't-redeclare rule as workerJobResource / employerJobResource.
+   */
+  readonly publicResource: apigateway.Resource;
   /** Worker Cognito authorizer from ApiStack */
   readonly workerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   /** /worker resource from ApiStack — worker-referrals hangs off it */
@@ -493,8 +514,10 @@ export class ReferralsStack extends cdk.Stack {
     // Both UNAUTHENTICATED — options argument omitted entirely, matching the
     // DocumentsStack/LegalStack precedent for downstream stacks adding
     // unauthenticated methods to the shared API.
-    const publicResource = props.api.root.addResource('public');
-    const publicJobsResource = publicResource.addResource('jobs');
+    // /public comes from ApiStack — reused, never re-declared here. See the
+    // publicResource prop doc for why the old inline addResource('public') was
+    // an order-dependent synth hazard.
+    const publicJobsResource = props.publicResource.addResource('jobs');
 
     // GET /public/jobs — unauthenticated index (SEO/search), on the SAME
     // parent resource as {code} below, not a newly-declared one.

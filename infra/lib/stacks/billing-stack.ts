@@ -375,5 +375,32 @@ export class BillingStack extends cdk.Stack {
       alarm.addAlarmAction(alarmAction);
       alarm.addOkAction(alarmAction);
     }
+
+    // ── Unknown-customer terminal skip ──
+    // processor.ts terminally skips a Stripe event whose customer has no
+    // billing_customers row: the inbox row goes 'skipped' and the SQS message
+    // is deleted, so the event never reaches the DLQ and
+    // BillingWebhookDlqDepth stays silent. Nothing reads
+    // billing_webhook_events either, so this filter over the PROCESSOR's log
+    // group (not the sweeper's) is the only signal that an unmapped customer
+    // is sending us events. The literal must match the console.warn payload in
+    // lambda/billing/processor.ts.
+    const unknownCustomerSkipFilter = new logs.MetricFilter(this, 'BillingUnknownCustomerSkippedMetricFilter', {
+      logGroup: processorLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'BillingUnknownCustomerSkipped',
+      filterPattern: logs.FilterPattern.literal('"billing_unknown_customer_skipped"'),
+      metricValue: '1',
+    });
+    const unknownCustomerSkipAlarm = new cloudwatch.Alarm(this, 'BillingUnknownCustomerSkippedAlarm', {
+      metric: unknownCustomerSkipFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'BillingUnknownCustomerSkipped',
+    });
+    unknownCustomerSkipAlarm.addAlarmAction(alarmAction);
+    unknownCustomerSkipAlarm.addOkAction(alarmAction);
   }
 }

@@ -8,6 +8,7 @@ import { ApiStack } from '../../../lib/stacks/api-stack';
 import { AiStack } from '../../../lib/stacks/ai-stack';
 import { LegalStack } from '../../../lib/stacks/legal-stack';
 import { BillingStack } from '../../../lib/stacks/billing-stack';
+import { NotificationsStack } from '../../../lib/stacks/notifications-stack';
 import { ReferralsStack } from '../../../lib/stacks/referrals-stack';
 import { bedrockArns } from '../../../lib/bedrock-arns';
 
@@ -83,11 +84,20 @@ describe('ApiStack', () => {
       referralsDbSecret: database.referralsDbSecret,
       appDbSecret: database.dbSecret,
       api: api.api,
+      publicResource: api.publicResource,
       workerAuthorizer: api.workerAuthorizer,
       workerResource: api.workerResource,
       workerJobResource: api.workerJobResource,
       employerAuthorizer: api.employerAuthorizer,
       employerJobResource: api.employerJobResource,
+    });
+    // NotificationsStack must be created so its unauthenticated
+    // /public/employer-digest/unsubscribe Method is visible in this template.
+    new NotificationsStack(app, 'TestNotificationsStack', {
+      vpc: network.vpc,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      publicResource: api.publicResource,
     });
     apiStack = api;
     template = Template.fromStack(api);
@@ -501,13 +511,14 @@ describe('ApiStack', () => {
     // 5th PATCH is ReferralsStack's /employer/jobs/{jobId}/public-listing
     // consent toggle (migration 057) — the Method lands in this template
     // because the resource node it hangs off belongs to ApiStack.
+    // 6th is /employer/settings/digest (migration 082), declared in ApiStack.
     template.resourcePropertiesCountIs('AWS::ApiGateway::Method', {
       HttpMethod: 'PATCH',
       AuthorizationType: 'COGNITO_USER_POOLS',
       AuthorizerId: Match.objectLike({
         Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
       }),
-    }, 5);
+    }, 6);
   });
 
   // ── A6: CORS Idempotency-Key header ──────────────────────────────────────
@@ -902,6 +913,120 @@ describe('ApiStack', () => {
       },
     });
   });
+
+  // ── S20 T-2b: employer digest settings (migration 082) ───────────────────
+
+  test('Employer digest settings Lambda function exists', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Employer digest settings endpoint',
+      Environment: {
+        Variables: Match.objectLike({
+          DB_SECRET_ARN: Match.anyValue(),
+          REQUIRED_TOS_VERSION: Match.anyValue(),
+          ALLOWED_ORIGIN: Match.anyValue(),
+        }),
+      },
+    });
+  });
+
+  test('settings/digest path-part resources hang off /employer', () => {
+    const rootId = restApiRootLogicalId();
+    const [employerLogicalId] = childrenOf(rootId, 'employer')[0];
+    const settingsChildren = childrenOf(employerLogicalId, 'settings');
+    expect(settingsChildren).toHaveLength(1);
+    const [settingsLogicalId] = settingsChildren[0];
+    const digestChildren = childrenOf(settingsLogicalId, 'digest');
+    expect(digestChildren).toHaveLength(1);
+  });
+
+  test('GET and PATCH /employer/settings/digest are both wired to the digest resource with EmployerAuthorizer', () => {
+    const rootId = restApiRootLogicalId();
+    const [employerLogicalId] = childrenOf(rootId, 'employer')[0];
+    const [settingsLogicalId] = childrenOf(employerLogicalId, 'settings')[0];
+    const [digestLogicalId] = childrenOf(settingsLogicalId, 'digest')[0];
+
+    for (const httpMethod of ['GET', 'PATCH']) {
+      template.hasResourceProperties('AWS::ApiGateway::Method', {
+        HttpMethod: httpMethod,
+        ResourceId: { Ref: digestLogicalId },
+        AuthorizationType: 'COGNITO_USER_POOLS',
+        AuthorizerId: Match.objectLike({
+          Ref: Match.stringLikeRegexp('EmployerAuthorizer'),
+        }),
+      });
+    }
+
+    // PUT must not exist — corsHeaders() does not advertise it.
+    const methodsOnDigest = Object.values(template.findResources('AWS::ApiGateway::Method'))
+      .filter((m: any) => (m.Properties?.ResourceId?.Ref ?? null) === digestLogicalId)
+      .map((m: any) => m.Properties.HttpMethod)
+      .sort();
+    expect(methodsOnDigest).toEqual(['GET', 'OPTIONS', 'PATCH']);
+  });
+
+  // ── S20 T-2b: /public promoted to an ApiStack export ─────────────────────
+
+  test('ApiStack exposes publicResource, and exactly one /public node exists under the root', () => {
+    expect(apiStack.publicResource).toBeDefined();
+    const rootId = restApiRootLogicalId();
+    expect(childrenOf(rootId, 'public')).toHaveLength(1);
+  });
+
+  test('/public has exactly the two expected children: jobs (referrals) and employer-digest (notifications)', () => {
+    const rootId = restApiRootLogicalId();
+    const [publicLogicalId] = childrenOf(rootId, 'public')[0];
+    const pathParts = childrenOf(publicLogicalId).map(([, res]) => res.Properties.PathPart).sort();
+    expect(pathParts).toEqual(['employer-digest', 'jobs']);
+  });
+
+  test('POST /public/employer-digest/unsubscribe is UNAUTHENTICATED and on its own resource', () => {
+    const rootId = restApiRootLogicalId();
+    const [publicLogicalId] = childrenOf(rootId, 'public')[0];
+    const [digestLogicalId] = childrenOf(publicLogicalId, 'employer-digest')[0];
+    const unsubscribeChildren = childrenOf(digestLogicalId, 'unsubscribe');
+    expect(unsubscribeChildren).toHaveLength(1);
+    const [unsubscribeLogicalId] = unsubscribeChildren[0];
+
+    const methods = Object.values(template.findResources('AWS::ApiGateway::Method'))
+      .filter((m: any) => (m.Properties?.ResourceId?.Ref ?? null) === unsubscribeLogicalId);
+    const post = methods.find((m: any) => m.Properties.HttpMethod === 'POST') as any;
+    expect(post).toBeDefined();
+    expect(post.Properties.AuthorizationType).toBe('NONE');
+    expect(post.Properties.AuthorizerId).toBeUndefined();
+  });
+
+  test('centralized MethodSettings includes exactly one POST /public/employer-digest/unsubscribe throttle entry', () => {
+    const stages = template.findResources('AWS::ApiGateway::Stage');
+    const stageIds = Object.keys(stages);
+    expect(stageIds).toHaveLength(1);
+    const methodSettings: any[] = (stages[stageIds[0]] as any).Properties.MethodSettings;
+
+    const matches = methodSettings.filter(
+      (s) => s.ResourcePath === '/public/employer-digest/unsubscribe' && s.HttpMethod === 'POST',
+    );
+    expect(matches).toHaveLength(1);
+    // The unauthenticated-WRITE tier: identical to POST
+    // /public/jobs/{code}/apply-intent and POST /auth/worker/signup. Burst >=
+    // rate is the shape every sibling uses; a harvested valid token replayed
+    // reaches pool.connect() on every request, so the sustained rate is a real
+    // database-connection brake, not just a Lambda-invocation one.
+    expect(matches[0]).toEqual(expect.objectContaining({
+      ThrottlingBurstLimit: 10,
+      ThrottlingRateLimit: 5,
+    }));
+    const applyIntent = methodSettings.find(
+      (s) => s.ResourcePath === '/public/jobs/{code}/apply-intent' && s.HttpMethod === 'POST',
+    );
+    expect(matches[0].ThrottlingBurstLimit).toBe(applyIntent.ThrottlingBurstLimit);
+    expect(matches[0].ThrottlingRateLimit).toBe(applyIntent.ThrottlingRateLimit);
+  });
+
+  test('NotificationsStack adds no MethodSettings array of its own — ApiStack owns the only one', () => {
+    // Already asserted by the exactly-one-stage checks above; restated here as
+    // the invariant a downstream stack could break with
+    // addPropertyOverride('MethodSettings').
+    expect(Object.keys(template.findResources('AWS::ApiGateway::Stage'))).toHaveLength(1);
+  });
 });
 
 describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () => {
@@ -971,6 +1096,7 @@ describe('ApiStack phase-1 rename deploy (-c workerJobsRenamePhase1=true)', () =
       referralsDbSecret: database.referralsDbSecret,
       appDbSecret: database.dbSecret,
       api: phase1Api.api,
+      publicResource: phase1Api.publicResource,
       workerAuthorizer: phase1Api.workerAuthorizer,
       workerResource: phase1Api.workerResource,
       workerJobResource: phase1Api.workerJobResource,
