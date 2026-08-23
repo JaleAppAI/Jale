@@ -5,6 +5,7 @@ import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
 import { missingRequiredFields } from '@/lib/application-answers-form';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
+import { partitionRequiredDocs } from '@/lib/job-requirements';
 import type { ApplicationDefaults, JobDetail, WorkerVaultDoc } from '@/lib/api/worker';
 import { ApplyStepNav } from './ApplyStepNav';
 import { QuestionsStep } from './QuestionsStep';
@@ -140,10 +141,17 @@ export function ApplyFlow({
 
   const proofFiles = proofFilesFromVault(certs, vaultDocs);
   const hasDoc = (docType: string) => vaultDocs?.some((d) => d.doc_type === docType) ?? false;
-  // Same defensive exclusion `DocumentsCertificationsStep` applies: a
-  // new-shape job must never carry 'certification_doc' in `required_docs`
-  // once it has named certs (job-requirements.ts's own invariant).
-  const missingLegacyDocs = requiredDocs.filter(
+  // Only keys the flow can actually offer an upload for may gate it: a legacy
+  // 'ssn' entry (still valid in the jobs CHECK for old rows) is filtered out
+  // of `DocumentsCertificationsStep`'s render list, so gating on it blocked
+  // the step forever with nothing on screen to fix. The step surfaces the
+  // unsupported keys as a visible notice instead.
+  const { supported: supportedDocs } = partitionRequiredDocs(requiredDocs);
+  // Layered ON TOP of that partition, not folded into it: `certification_doc`
+  // is a supported key, and this is the separate defensive exclusion -- a
+  // new-shape job must never carry it in `required_docs` once it has named
+  // certs (job-requirements.ts's own invariant).
+  const missingLegacyDocs = supportedDocs.filter(
     (doc) => (hasCerts ? doc !== 'certification_doc' : true) && !hasDoc(doc),
   );
   const canAdvanceFromDocuments = (

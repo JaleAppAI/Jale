@@ -323,6 +323,7 @@
         "expired_code": "That code expired. Request a new code and try again.",
         "too_many_attempts": "Too many attempts. Wait a few minutes, then try again.",
         "invalid_credentials": "We could not sign you in with that phone number.",
+        "account_not_confirmed": "Your account is not confirmed yet. Request a new code and try again.",
         "password_requirements": "The password does not meet the requirements.",
         "invalid_email": "Enter a valid email address.",
         "invalid_signup": "Check the account details and try again.",
@@ -362,6 +363,14 @@
       "forgot_confirm_subtitle": "Enter the code we sent to {email}",
       "set_password": "Set new password",
       "reset_success": "Password updated — sign in below.",
+      "never_received_code": "I never received my confirmation code",
+      "recovery_title": "Confirm your account",
+      "recovery_subtitle": "Enter the confirmation code we emailed you to finish signing in.",
+      "resend_code": "Resend code",
+      "resend_cooldown": "Resend available in {seconds}s",
+      "code_sent": "We sent a new code to {email}. Enter the newest code.",
+      "check_spam": "It can take a minute to arrive. Check your spam or junk folder.",
+      "confirmed_sign_in": "Your account is confirmed — sign in below.",
       "fields": {
         "company_name": "Company name",
         "contact_name": "Contact name",
@@ -403,6 +412,10 @@
         "expired_code": "That confirmation code expired. Request a new code and try again.",
         "too_many_attempts": "Too many attempts. Wait a few minutes, then try again.",
         "invalid_credentials": "The email or password is incorrect.",
+        "account_not_confirmed": "Your account isn't confirmed yet. We sent a new code to your email — check your inbox and spam folder.",
+        "already_confirmed": "This account is already confirmed — sign in.",
+        "resend_limit": "Too many code requests. Try again later — you may need to wait up to an hour.",
+        "code_delivery_failed": "We could not send a code to that email address. Check the address, or contact support.",
         "invalid_signup": "Check the account details and try again.",
         "signup_failed": "We could not create the account. Check the fields and try again.",
         "required": "This field is required.",
@@ -466,6 +479,36 @@
       "errors": {
         "required": "Required.",
         "missing_summary": "Please add: {fields}"
+      }
+    },
+    "digest": {
+      "title": "Notifications",
+      "description": "Get one email a day summarizing new applicants across your open jobs. Nothing is sent on a day with no activity.",
+      "toggle_aria": "Daily applicant digest email",
+      "state_on": "Daily digest on",
+      "state_off": "Daily digest off",
+      "hour_label": "Send time",
+      "hour_hint": "The digest goes out at this hour in the time zone below.",
+      "timezone_label": "Time zone",
+      "language_label": "Email language",
+      "language_hint": "This changes the digest email only, not the language of this site.",
+      "language_group_aria": "Digest email language",
+      "language_option": {
+        "en": "English",
+        "es": "Spanish"
+      },
+      "load_error": "Couldn’t load your notification settings. Please try again.",
+      "save_error": "Couldn’t save your notification settings. Please try again.",
+      "timezones": {
+        "america_new_york": "Eastern time — New York",
+        "america_chicago": "Central time — Chicago",
+        "america_denver": "Mountain time — Denver",
+        "america_phoenix": "Mountain time, no DST — Phoenix",
+        "america_los_angeles": "Pacific time — Los Angeles",
+        "america_anchorage": "Alaska time — Anchorage",
+        "pacific_honolulu": "Hawaii time — Honolulu",
+        "america_mexico_city": "Central time — Mexico City",
+        "america_puerto_rico": "Atlantic time — Puerto Rico"
       }
     }
   },
@@ -1065,7 +1108,12 @@
       "questions_summary": "{count} quick questions",
       "questions_required": "{count} required",
       "estimate": "Apply — about {minutes} minutes",
-      "vault_check_failed": "Can’t check your vault right now"
+      "vault_check_failed": "Can’t check your vault right now",
+      "hint_doc_required": "You’ll need to upload this to apply.",
+      "hint_doc_optional": "Optional — you can apply without it.",
+      "hint_cert_required_proof": "You’ll confirm you have this and attach proof.",
+      "hint_cert_required_attest": "You’ll just confirm you have this — no upload needed.",
+      "hint_cert_optional": "Share it if you have it — it won’t block your application."
     },
     "apply_flow": {
       "steps": {
@@ -1086,10 +1134,13 @@
       "back_to_jobs": "Back to jobs",
       "progress_saved": "Your progress is saved.",
       "prefilled_hint": "From your last application — edit if needed",
+      "legacy_doc_notice": "This can’t be uploaded online — the employer may ask for it in person.",
       "cert_question": "Do you have {name}?",
       "cert_use_vault": "Use {file} from your vault",
       "cert_upload_new": "Upload new",
       "cert_unverified_note": "You can apply without proof — it will show as claimed, unverified.",
+      "cert_attest_note": "No upload needed — the employer may ask to see this in person.",
+      "cert_proof_note": "Upload a photo or file of this certification to continue.",
       "cert_from_vault": "from your vault",
       "review_answers": "{answered} of {total} questions answered",
       "review_skipped": "{label} (optional) — skipped",
@@ -1266,7 +1317,12 @@
       "proof_toggle_label": "Proof upload",
       "proof_hint": "Asks the applicant to attach the certificate with their application.",
       "no_certifications_yet": "No certifications selected. Add them in Pay and schedule.",
-      "cert_tier_aria": "{name} requirement level"
+      "cert_tier_aria": "{name} requirement level",
+      "cert_hint_required_proof": "Applicants must upload proof of this certification with their initial application.",
+      "cert_hint_required_attest": "Applicants will confirm they have this certification — no upload needed. You can ask to see it in person.",
+      "cert_hint_optional": "Applicants can share this if they have it. It never blocks an application.",
+      "doc_hint_required": "Applicants must upload this document to apply.",
+      "doc_hint_optional": "Applicants may attach this — not needed to apply."
     },
     "groups": {
       "documents": "Documents",
@@ -1420,6 +1476,7 @@
       "types": {
         "resume": "Resume",
         "driver_license": "Driver's License",
+        "work_auth_doc": "Work Authorization Document",
         "ssn": "SSN"
       },
       "not_uploaded": "Not uploaded",
@@ -1553,5 +1610,15 @@
     "worker_nav_main": "Menu",
     "primary_nav": "Main navigation",
     "mobile_nav": "Mobile navigation"
+  },
+  "digest_unsubscribe": {
+    "title": "Daily digest emails",
+    "body": "Confirm below and we’ll stop sending you the daily applicant digest.",
+    "button": "Unsubscribe",
+    "success_title": "You’re unsubscribed",
+    "success_body": "We won’t send you any more daily applicant digest emails.",
+    "success_settings_hint": "You can turn the daily digest back on at any time under Notifications in your Jale settings.",
+    "error_title": "This link is no longer valid",
+    "error_body": "You can manage digest emails under Notifications in your Jale settings."
   }
 }

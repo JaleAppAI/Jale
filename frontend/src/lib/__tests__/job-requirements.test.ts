@@ -9,6 +9,11 @@ import {
   setRequirementState,
   countRequirements,
   certificationHintNames,
+  certificationHintKey,
+  docHintKey,
+  workerCertNoteKey,
+  whatYouNeedHintKey,
+  partitionRequiredDocs,
   deriveCertificationDocTier,
   FIELD_GROUPS,
   type RequirementsMap,
@@ -224,6 +229,139 @@ describe('certificationHintNames', () => {
   });
 });
 
+describe('certificationHintKey', () => {
+  it('required + proof_required asks for an upload with the initial application', () => {
+    expect(certificationHintKey('required', true)).toBe('picker.cert_hint_required_proof');
+  });
+
+  it('required WITHOUT proof_required is attestation-only (no upload path exists)', () => {
+    expect(certificationHintKey('required', false)).toBe('picker.cert_hint_required_attest');
+  });
+
+  it('optional never blocks, so the proof flag cannot change its hint', () => {
+    // Mirrors certification-claims.ts: an optional cert never blocks submit
+    // regardless of proof_required, so the hint must not promise otherwise.
+    expect(certificationHintKey('optional', false)).toBe('picker.cert_hint_optional');
+    expect(certificationHintKey('optional', true)).toBe('picker.cert_hint_optional');
+  });
+});
+
+describe('docHintKey', () => {
+  it('required means the file upload is mandatory at apply', () => {
+    expect(docHintKey('required')).toBe('picker.doc_hint_required');
+  });
+
+  it('optional means it never blocks', () => {
+    expect(docHintKey('optional')).toBe('picker.doc_hint_optional');
+  });
+
+  it('off returns undefined so the row renders no hint sentence at all', () => {
+    expect(docHintKey('off')).toBeUndefined();
+  });
+});
+
+describe('workerCertNoteKey', () => {
+  const base = {
+    claimed: true as boolean | null,
+    tier: 'required' as CertificationRequirement['tier'],
+    proofRequired: false,
+    hasProof: false,
+    blockingError: false,
+  };
+
+  it('renders nothing until the worker has answered yes', () => {
+    expect(workerCertNoteKey({ ...base, claimed: null })).toBeUndefined();
+    expect(workerCertNoteKey({ ...base, claimed: false })).toBeUndefined();
+  });
+
+  it('claimed yes with no proof required reassures that no upload is coming, either tier', () => {
+    expect(workerCertNoteKey({ ...base })).toBe('cert_attest_note');
+    expect(workerCertNoteKey({ ...base, tier: 'optional' })).toBe('cert_attest_note');
+  });
+
+  it('claimed yes on a required + proof cert with nothing attached asks for the upload', () => {
+    expect(workerCertNoteKey({ ...base, proofRequired: true })).toBe('cert_proof_note');
+  });
+
+  it('says nothing once proof is attached', () => {
+    expect(workerCertNoteKey({ ...base, proofRequired: true, hasProof: true })).toBeUndefined();
+  });
+
+  it('stays silent on an optional + proof cert -- cert_unverified_note owns that case', () => {
+    // An optional cert never blocks, so "upload ... to continue" would be a
+    // lie stacked directly on top of cert_unverified_note's "you can apply
+    // without proof".
+    expect(workerCertNoteKey({ ...base, tier: 'optional', proofRequired: true })).toBeUndefined();
+  });
+
+  it('yields to the blocking error rather than stacking two "to continue" sentences', () => {
+    expect(
+      workerCertNoteKey({ ...base, proofRequired: true, blockingError: true }),
+    ).toBeUndefined();
+  });
+});
+
+describe('whatYouNeedHintKey', () => {
+  const base = {
+    kind: 'doc' as const,
+    tier: 'required' as CertificationRequirement['tier'],
+    proofRequired: false,
+    satisfied: false,
+    blockingError: false,
+  };
+
+  it('describes the upload obligation for a required document', () => {
+    expect(whatYouNeedHintKey({ ...base })).toBe('hint_doc_required');
+  });
+
+  it('describes an optional document as skippable', () => {
+    expect(whatYouNeedHintKey({ ...base, tier: 'optional' })).toBe('hint_doc_optional');
+  });
+
+  it('splits a required cert by its proof flag', () => {
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: true })).toBe(
+      'hint_cert_required_proof',
+    );
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: false })).toBe(
+      'hint_cert_required_attest',
+    );
+  });
+
+  it('gives an optional cert one never-blocks hint regardless of its proof flag', () => {
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', tier: 'optional', proofRequired: true })).toBe(
+      'hint_cert_optional',
+    );
+    expect(whatYouNeedHintKey({ ...base, kind: 'cert', tier: 'optional', proofRequired: false })).toBe(
+      'hint_cert_optional',
+    );
+  });
+
+  it('suppresses the hint when the vault already satisfies the row', () => {
+    expect(whatYouNeedHintKey({ ...base, satisfied: true })).toBeUndefined();
+    expect(
+      whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: true, satisfied: true }),
+    ).toBeUndefined();
+  });
+
+  it('still explains an attest-only cert whose vault match does NOT satisfy it', () => {
+    // A vault file satisfies an upload requirement, but an attest-only cert
+    // is satisfied by the worker's yes/no answer in the flow -- the file is
+    // beside the point. The panel still badges that row "already in your
+    // vault", so suppressing the hint here would leave the ONE row where the
+    // badge actively misleads with no explanation at all.
+    expect(
+      whatYouNeedHintKey({ ...base, kind: 'cert', proofRequired: false, satisfied: true }),
+    ).toBe('hint_cert_required_attest');
+    expect(
+      whatYouNeedHintKey({ ...base, kind: 'cert', tier: 'optional', proofRequired: false, satisfied: true }),
+    ).toBe('hint_cert_optional');
+  });
+
+  it('suppresses the hint when a blocking error is already showing on the row', () => {
+    expect(whatYouNeedHintKey({ ...base, blockingError: true })).toBeUndefined();
+  });
+});
+
 describe('vocabulary shape', () => {
   it('has exactly 4 doc keys and 11 field keys, matching the backend vocab', () => {
     expect(REQUIREMENT_DOC_KEYS).toHaveLength(4);
@@ -235,4 +373,53 @@ describe('vocabulary shape', () => {
     expect(grouped.sort()).toEqual([...REQUIREMENT_FIELD_KEYS].sort());
     expect(new Set(grouped).size).toBe(grouped.length);
   });
+});
+
+describe('partitionRequiredDocs', () => {
+    // A job's `required_docs` comes straight off the DB row, whose CHECK
+    // constraint still accepts legacy 'ssn' for old rows even though the
+    // app-layer vocabulary (REQUIREMENT_DOC_KEYS / the backend's DOC_TYPES)
+    // dropped it. The apply flow renders only keys it knows, so an unknown
+    // key used to be an invisible, unsatisfiable gate: nothing on screen to
+    // upload, and Continue blocked forever. Splitting the list is what lets
+    // the gate ignore those keys while the UI still names them out loud.
+    it('returns two empty lists for an empty input', () => {
+        expect(partitionRequiredDocs([])).toEqual({ supported: [], unsupported: [] });
+    });
+
+    it('treats every REQUIREMENT_DOC_KEYS member as supported', () => {
+        const { supported, unsupported } = partitionRequiredDocs([...REQUIREMENT_DOC_KEYS]);
+        expect(supported).toEqual([...REQUIREMENT_DOC_KEYS]);
+        expect(unsupported).toEqual([]);
+    });
+
+    it("splits a legacy 'ssn' entry out of a mixed list", () => {
+        expect(partitionRequiredDocs(['resume', 'ssn', 'work_auth_doc'])).toEqual({
+            supported: ['resume', 'work_auth_doc'],
+            unsupported: ['ssn'],
+        });
+    });
+
+    it('routes an unrecognized garbage key to unsupported rather than throwing', () => {
+        expect(partitionRequiredDocs(['not_a_doc_type', 'driver_license'])).toEqual({
+            supported: ['driver_license'],
+            unsupported: ['not_a_doc_type'],
+        });
+    });
+
+    it('preserves the order each side was given in', () => {
+        const { supported, unsupported } = partitionRequiredDocs([
+            'certification_doc', 'ssn', 'driver_license', 'mystery', 'resume',
+        ]);
+        expect(supported).toEqual(['certification_doc', 'driver_license', 'resume']);
+        expect(unsupported).toEqual(['ssn', 'mystery']);
+    });
+
+    it('keeps certification_doc supported -- the hasCerts exclusion is a separate rule', () => {
+        // The apply-flow gates exclude certification_doc themselves when a job
+        // carries named certification_requirements. That exclusion must stay
+        // layered on top of this partition, not be folded into it: this helper
+        // answers "does the app know this key", nothing about job shape.
+        expect(partitionRequiredDocs(['certification_doc']).supported).toEqual(['certification_doc']);
+    });
 });

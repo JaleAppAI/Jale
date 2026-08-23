@@ -3,6 +3,7 @@ import { getApplications, getJob as getWorkerJob, getJobs as getWorkerJobs } fro
 import {
     getBilling,
     getConversation,
+    getEmployerDigestSettings,
     getInbox,
     getJob as getEmployerJob,
     getJobApplicants,
@@ -126,6 +127,7 @@ describe('AbortSignal forwarding in the API modules', () => {
             ['employer getWorkerProfile', (s) => getWorkerProfile('t', 'w-1', 'job-1', s)],
             ['employer getWorkerDocuments', (s) => getWorkerDocuments('t', 'w-1', 'job-1', s)],
             ['employer getBilling', (s) => getBilling('t', s)],
+            ['employer getEmployerDigestSettings', (s) => getEmployerDigestSettings('t', s)],
         ];
 
         it.each(cases)('%s aborts when the caller does', async (_name, call) => {

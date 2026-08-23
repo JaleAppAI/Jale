@@ -18,6 +18,7 @@ import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Select } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { CheckboxCard } from '@/components/ui/checkbox-card';
+import { DigestSettingsPanel } from '@/components/employer/DigestSettingsPanel';
 import {
     getEmployerProfile,
     updateEmployerProfile,
@@ -222,6 +223,15 @@ export default function EmployerProfilePage() {
                                 </div>
                             )}
                         </DashboardPanel>
+
+                        {/* This route IS the employer's settings screen — the
+                            nav's "Settings" tab points here, and the shell is
+                            titled with `nav.settings` above. The digest panel
+                            owns its own fetch and its own error surface rather
+                            than joining the profile's `usePageData` call: a
+                            failed notification read must not take the profile
+                            down with it, and vice versa. */}
+                        <DigestSettingsPanel />
                     </div>
                 )}
             </div>
