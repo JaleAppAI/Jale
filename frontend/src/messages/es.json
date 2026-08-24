@@ -1553,5 +1553,32 @@
     "worker_nav_main": "Menú",
     "primary_nav": "Navegación principal",
     "mobile_nav": "Navegación móvil"
+  },
+  "media_board": {
+    "title": "Mi trabajo",
+    "subtitle": "Muestra a los empleadores fotos de trabajos que has hecho.",
+    "empty": "Aún no hay publicaciones. Comparte fotos de tu trabajo para que los empleadores vean tu experiencia.",
+    "new_post": "Nueva publicación",
+    "hidden_badge": "Oculto para empleadores",
+    "caption_placeholder": "Describe este trabajo (opcional)",
+    "publish": "Publicar",
+    "publishing": "Publicando…",
+    "cancel": "Cancelar",
+    "delete": "Eliminar publicación",
+    "delete_confirm": "¿Eliminar esta publicación? Esto no se puede deshacer.",
+    "select_photos": "Seleccionar fotos",
+    "max_photos_error": "Puedes agregar hasta 10 fotos por publicación.",
+    "file_type_error": "Solo se permiten fotos JPG, PNG o WebP.",
+    "upload_error": "Error al subir. Inténtalo de nuevo.",
+    "published_toast": "Publicación creada",
+    "published_flagged_toast": "Publicación creada. Algunas fotos quedaron ocultas en revisión.",
+    "deleted_toast": "Publicación eliminada",
+    "employer_title": "Fotos de trabajo",
+    "prev": "Foto anterior",
+    "next": "Siguiente foto",
+    "close": "Cerrar",
+    "open_post": "Abrir publicación",
+    "remove_photo": "Quitar foto {n}",
+    "load_more": "Ver publicaciones anteriores"
   }
 }

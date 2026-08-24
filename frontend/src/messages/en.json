@@ -1553,5 +1553,32 @@
     "worker_nav_main": "Menu",
     "primary_nav": "Main navigation",
     "mobile_nav": "Mobile navigation"
+  },
+  "media_board": {
+    "title": "My work",
+    "subtitle": "Show employers photos of jobs you have done.",
+    "empty": "No posts yet. Share photos of your work so employers can see your experience.",
+    "new_post": "New post",
+    "hidden_badge": "Hidden from employers",
+    "caption_placeholder": "Describe this work (optional)",
+    "publish": "Publish",
+    "publishing": "Publishing…",
+    "cancel": "Cancel",
+    "delete": "Delete post",
+    "delete_confirm": "Delete this post? This cannot be undone.",
+    "select_photos": "Select photos",
+    "max_photos_error": "You can add up to 10 photos per post.",
+    "file_type_error": "Only JPG, PNG, or WebP photos are allowed.",
+    "upload_error": "Upload failed. Please try again.",
+    "published_toast": "Post published",
+    "published_flagged_toast": "Post published. Some photos were hidden pending review.",
+    "deleted_toast": "Post deleted",
+    "employer_title": "Work photos",
+    "prev": "Previous photo",
+    "next": "Next photo",
+    "close": "Close",
+    "open_post": "Open post",
+    "remove_photo": "Remove photo {n}",
+    "load_more": "Show older posts"
   }
 }
