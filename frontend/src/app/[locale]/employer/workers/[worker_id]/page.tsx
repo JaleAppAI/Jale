@@ -21,8 +21,11 @@ import { KVList, type KVItem } from '@/components/ui/kv-list';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
 import { Select } from '@/components/ui/select';
+import { MediaBoardGrid } from '@/components/media-board/MediaBoardGrid';
+import { PostLightbox } from '@/components/media-board/PostLightbox';
 import {
     createUploadToken,
+    getEmployerWorkerPosts,
     getWorkerDocuments,
     getWorkerProfile,
     updateApplicantStatus,
@@ -30,6 +33,7 @@ import {
     type WorkerDocument,
     type WorkerProfile,
 } from '@/lib/api/employer';
+import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
 import { tradeLabel } from '@/lib/trades';
 
@@ -51,10 +55,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** How long "Link copied" stays on the share button before reverting. */
 const COPIED_RESET_MS = 3000;
 
-/** What one load of this page consists of: the applicant, and their documents. */
+/** What one load of this page consists of: the applicant, their documents, and their media posts. */
 type ApplicantView = {
     profile: WorkerProfile;
     documents: WorkerDocument[];
+    posts: WorkerPost[];
 };
 
 /**
@@ -86,6 +91,7 @@ export default function WorkerProfilePage() {
     // `worker_profile.*` keys those surfaces also read.
     const tShared = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
+    const tMedia = useTranslations('media_board');
     const errorMessage = useErrorMessage();
 
     const { idToken } = useAuth();
@@ -124,7 +130,15 @@ export default function WorkerProfilePage() {
                 getWorkerProfile(token, workerId, jobId, signal),
                 getWorkerDocuments(token, workerId, jobId, signal),
             ]);
-            return { profile, documents: docs.documents };
+            // Best-effort: the media board is auxiliary and must never sink
+            // the applicant view if the posts fetch fails.
+            let posts: WorkerPost[] = [];
+            try {
+                posts = (await getEmployerWorkerPosts(token, workerId, signal)).posts;
+            } catch {
+                // Applicant profile still renders without the board.
+            }
+            return { profile, documents: docs.documents, posts };
         },
         legalReturnUrl: returnUrl,
         deps: [workerId, jobId, linkValid],
@@ -132,6 +146,8 @@ export default function WorkerProfilePage() {
 
     const profile = data?.profile ?? null;
     const documents = data?.documents ?? [];
+    const posts = data?.posts ?? [];
+    const [selectedPost, setSelectedPost] = useState<WorkerPost | null>(null);
 
     /*
      * The select is a draft over the loaded status rather than a second copy of
@@ -534,6 +550,23 @@ export default function WorkerProfilePage() {
                                 </ul>
                             </DashboardPanel>
                         </div>
+                    )}
+
+                    {posts.length > 0 && (
+                        <DashboardPanel className="mt-5">
+                            <PanelHeader title={tMedia('employer_title')} />
+                            <div className="px-5 py-5">
+                                <MediaBoardGrid posts={posts} editable={false} onSelect={setSelectedPost} />
+                            </div>
+                        </DashboardPanel>
+                    )}
+
+                    {selectedPost && (
+                        <PostLightbox
+                            post={selectedPost}
+                            editable={false}
+                            onClose={() => setSelectedPost(null)}
+                        />
                     )}
 
                     <DashboardPanel className="mt-5">
