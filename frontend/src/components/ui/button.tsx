@@ -132,10 +132,20 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function 
       {...props}
     >
       <span className="grid items-center justify-items-center">
-        <span className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? "invisible" : ""}`}>
+        {/* aria-hidden mirrors `invisible`: visibility:hidden already excludes
+            the hidden copy from the accessible name in browsers, but jsdom has
+            no stylesheet, so without it the button's name duplicates
+            ("Publish Publish") and getByRole(..., {name}) queries break. */}
+        <span
+          aria-hidden={loading || undefined}
+          className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? "invisible" : ""}`}
+        >
           {children}
         </span>
-        <span className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? "" : "invisible"}`}>
+        <span
+          aria-hidden={!loading || undefined}
+          className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? "" : "invisible"}`}
+        >
           <Spinner size="md" />
           <span>{loadingLabel ?? children}</span>
         </span>

@@ -14,25 +14,6 @@ vi.mock('@/lib/api/worker', async (importOriginal) => ({
   uploadFileToS3: vi.fn(),
 }));
 vi.mock('@/lib/image-resize', () => ({ downscaleImage: vi.fn(async (f: File) => f) }));
-// Pre-existing issues in ui/button.tsx and ui/spinner.tsx, unrelated to this
-// task and out of its touch scope (NewPostModal files only) to fix:
-//   1. ui/spinner.tsx has no `import * as React from 'react'`, so under this
-//      repo's classic-JSX vitest transform, mounting the real <Button> (which
-//      always renders <Spinner>, just CSS-`invisible` when not loading)
-//      throws "ReferenceError: React is not defined".
-//   2. Even with that patched, <Button> renders its `children` twice (once
-//      visible, once inside the CSS-`invisible` loading-label fallback span).
-//      Without a loaded stylesheet, jsdom's accessible-name computation does
-//      not honor `visibility:hidden`, so `getByRole('button', { name: ... })`
-//      computes e.g. "Publish Publish" and never matches "Publish".
-// A minimal passthrough mock sidesteps both without touching product code.
-// See task-10-report.md.
-vi.mock('@/components/ui/button', () => ({
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button {...props}>{children}</button>
-  ),
-}));
-
 const wrap = (ui: React.ReactElement) => (
   <NextIntlClientProvider locale="en" messages={en}>{ui}</NextIntlClientProvider>
 );
