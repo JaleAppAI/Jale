@@ -79,6 +79,21 @@ export interface RouterDeps {
     input: { workerId: string; documentVersion: string },
   ) => Promise<{ verified: boolean }>;
   requiredLegalVersion: string;
+  /**
+   * Task 15 (step 4.3, media-board post lane spec §4 "draft ⊥ focused
+   * relay"): discards a dormant `post_draft` (with the lane's own notice) if
+   * one exists on `conv.state_context`, no-op otherwise. Injected rather
+   * than implemented here because building the real `PostDeps` (S3/Twilio/
+   * moderation wiring) is processor-owned -- this module stays unit-testable
+   * without those mocks, exactly like `updateConversation`/`queueLegalPrompt`
+   * above.
+   */
+  discardActivePostDraft(
+    client: PoolClient,
+    conv: ConversationRow,
+    messageSid: string,
+    from: string,
+  ): Promise<void>;
 }
 
 export function isLikelyOtpCode(body: string): boolean {
@@ -264,6 +279,15 @@ export async function tryConversationRelay(
   // Must be intercepted here so it never reaches relayWorkerFreeText which
   // would attempt to route "CHATS" as a job message.
   if (isChatsKeyword(msg.body)) {
+    // I1(a) (final-review): CHATS/MENSAJES always routes to the picker below
+    // (never through `setFocusedConversation`, since no thread is focused
+    // yet here), so a dormant `post_draft` was never discarded on this path
+    // -- it would survive into the picker flow with no way back to it once a
+    // thread gets picked. `deps.discardActivePostDraft` mirrors the same
+    // guarded call `setFocusedConversation` makes (no-op, no notice, when
+    // there is no draft) -- see its own jsdoc / `discardStalePostDraft` in
+    // processor.ts.
+    await deps.discardActivePostDraft(client, conv, msg.messageSid, msg.from);
     if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ChatsKeywordLegalHold')) !== 'accepted') {
       return workerId;
     }
@@ -302,6 +326,18 @@ export async function tryConversationRelay(
  * so `handleFillMessage`'s consume step returns `handled:false` and the
  * message (e.g. the worker's actual field answer) is silently swallowed
  * instead of either relaying or feeding the fill.
+ *
+ * Task 15 (step 4.3, media-board spec §4 "draft ⊥ focused relay"): focusing
+ * a REAL thread here means every subsequent free-text message (including a
+ * photo) routes to that employer conversation instead of ever reaching
+ * `handleIdle`'s post-lane entry again — a dormant `post_draft` would
+ * otherwise become unreachable, sitting forever with no way to complete or
+ * discard it. Discard eagerly the moment focus is armed, using this single
+ * set-site so every caller (CHATS auto-focus, the CHATS/disambiguation
+ * picker resolution, employer conversation open buttons/text actions) is
+ * covered without duplicating the check at each one. Never on a
+ * `conversationId === null` clear — that returns the worker to idle, where
+ * drafting is reachable again, so there is nothing to discard.
  */
 async function setFocusedConversation(
   client: PoolClient,
@@ -310,6 +346,9 @@ async function setFocusedConversation(
   messageSid: string,
   deps: RouterDeps,
 ): Promise<void> {
+  if (conversationId !== null) {
+    await deps.discardActivePostDraft(client, conv, messageSid, conv.whatsapp_number);
+  }
   const { pending_picker: _drop, ...restContext } =
     (conv.state_context ?? {}) as FillStateContext;
   const fillArmed = conversationId !== null && typeof restContext.fill_application_id === 'string';
@@ -644,6 +683,16 @@ export async function relayWorkerFreeText(
   );
   if (result.status === 'routed') {
     if (conv.focused_job_conversation_id !== result.conversationId) {
+      // Task 15 review fix (Critical): `recordWorkerConversationReply` can
+      // auto-resolve and arm focus here (e.g. exactly one open thread) WITHOUT
+      // ever going through `setFocusedConversation` -- its own guarded
+      // discard above only fires on THAT set-site, so a worker's free text
+      // would otherwise relay straight to the employer as a chat message
+      // while a draft sits dormant, with no discard notice. Mirror the same
+      // guard here, scoped to an actual focus CHANGE exactly like
+      // `setFocusedConversation`'s own `conversationId !== null` guard (a
+      // no-op relay to an ALREADY-focused thread never arms anything new).
+      await deps.discardActivePostDraft(client, conv, msg.messageSid, msg.from);
       await deps.updateConversation(client, conv.id, {
         focused_job_conversation_id: result.conversationId,
         last_processed_message_sid: msg.messageSid,
