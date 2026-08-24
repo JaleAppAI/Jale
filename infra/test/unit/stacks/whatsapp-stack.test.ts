@@ -537,6 +537,37 @@ describe('event-driven outbox wake queues', () => {
     });
   });
 
+  // I2 (final-review): lib/moderation.ts's moderateImage() fails OPEN and
+  // logs a plain-text `console.error` (not the `{ metric: ... }` JSON
+  // convention the other filters use) on a Rekognition service fault —
+  // previously invisible to any alarm. Installed on the PROCESSOR log group
+  // (the processor is the moderation caller in this stack; MediaBoardStack's
+  // WorkerPostCreate lambda gets the equivalent filter/alarm separately).
+  test('moderation fail-open metric filter + alarm exist on the processor log group', () => {
+    const processorLogGroupId = (() => {
+      const fns = template.findResources('AWS::Lambda::Function');
+      const [logicalId] = Object.entries(fns).find(([, r]: [string, any]) =>
+        /SQS processor/i.test(r.Properties?.Description ?? ''))!;
+      const fnResource = (fns as Record<string, any>)[logicalId];
+      return fnResource.Properties.LoggingConfig?.LogGroup?.Ref;
+    })();
+    expect(processorLogGroupId).toBeDefined();
+
+    const filters = template.findResources('AWS::Logs::MetricFilter');
+    const failOpenFilter = Object.values(filters).find((f: any) =>
+      f.Properties.MetricTransformations?.some((t: any) =>
+        t.MetricName === 'ModerationFailOpen' && t.MetricNamespace === 'Jale/WhatsApp'));
+    expect(failOpenFilter).toBeDefined();
+    expect((failOpenFilter as any).Properties.LogGroupName.Ref).toBe(processorLogGroupId);
+    expect((failOpenFilter as any).Properties.FilterPattern).toContain('moderateImage service fault (fail-open)');
+
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'WhatsAppModerationFailOpen',
+      Threshold: 1,
+      AlarmActions: Match.anyValue(),
+    });
+  });
+
   // ── C7: scheduled domain-event drain, release wiring, operational alarms ──
   describe('C7: DomainOutboxDrainLambda', () => {
     const findFunctionByDescription = (regex: RegExp): [string, any] => {
@@ -794,6 +825,15 @@ describe('event-driven outbox wake queues', () => {
             }),
           ]),
         },
+      });
+    });
+
+    // Task 7: worker_post_media.s3_version_id pins moderated bytes — a
+    // presigned PUT is multi-use for its 900s TTL, so an unversioned key
+    // could be swapped AFTER Rekognition approval without this.
+    test('Media bucket has versioning enabled', () => {
+      template.hasResourceProperties('AWS::S3::Bucket', {
+        VersioningConfiguration: { Status: 'Enabled' },
       });
     });
 
