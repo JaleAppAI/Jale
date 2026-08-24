@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -19,8 +19,11 @@ import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { ProfileEditForm } from '@/components/worker/ProfileEditForm';
 import { DocumentSlot } from '@/components/worker/DocumentSlot';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
-import { getVaultDocuments, updateWorkerProfile } from '@/lib/api/worker';
-import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType } from '@/lib/api/worker';
+import { MediaBoardGrid } from '@/components/media-board/MediaBoardGrid';
+import { PostLightbox } from '@/components/media-board/PostLightbox';
+import { NewPostModal } from '@/components/media-board/NewPostModal';
+import { getVaultDocuments, updateWorkerProfile, getWorkerPosts, deleteWorkerPost } from '@/lib/api/worker';
+import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType, WorkerPost } from '@/lib/api/worker';
 import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/referral-return';
 
 export const dynamic = 'force-dynamic';
@@ -33,6 +36,9 @@ const AVAILABILITY_KEYS = ['full_time', 'part_time', 'weekends', 'flexible'];
 type WorkerProfilePageData = {
     profile: WorkerProfileData;
     docs: WorkerVaultDoc[];
+    posts: WorkerPost[];
+    next_before: string | null;
+    next_before_id: string | null;
 };
 
 /**
@@ -58,9 +64,18 @@ export default function WorkerProfilePage() {
     const router = useRouter();
     const t = useTranslations('worker_profile');
     const tCommon = useTranslations('common');
+    const tMedia = useTranslations('media_board');
 
     const [editing, setEditing] = useState(false);
     const [saved, setSaved] = useState(false);
+    const [selectedPost, setSelectedPost] = useState<WorkerPost | null>(null);
+    const [composing, setComposing] = useState(false);
+    const [postFeedback, setPostFeedback] = useState<string | null>(null);
+
+    // Local pagination state for "load more": posts fetched beyond the
+    // page's initial batch, plus the keyset cursor to fetch the next one.
+    const [extraPosts, setExtraPosts] = useState<WorkerPost[]>([]);
+    const [cursor, setCursor] = useState<{ before: string; before_id: string } | null>(null);
 
     const { phase, data, errorKind, refreshError, retry, refresh } = usePageData<WorkerProfilePageData>({
         fetcher: async ({ token, signal }) => {
@@ -69,6 +84,7 @@ export default function WorkerProfilePage() {
             let profile = toWorkerProfile(await res.json());
             const d = await getVaultDocuments(token, signal);
             const docs = d.documents;
+            const postsRes = await getWorkerPosts(token, undefined, signal);
 
             const pending = sessionStorage.getItem('pendingWorkerProfile');
             if (pending) {
@@ -91,13 +107,50 @@ export default function WorkerProfilePage() {
                     // Returning (rather than falling through) keeps the redirect
                     // the last thing this path does, exactly as before: the page
                     // hands over its data and the router takes the screen.
-                    return { profile, docs };
+                    return {
+                        profile,
+                        docs,
+                        posts: postsRes.posts,
+                        next_before: postsRes.next_before,
+                        next_before_id: postsRes.next_before_id,
+                    };
                 }
             }
-            return { profile, docs };
+            return {
+                profile,
+                docs,
+                posts: postsRes.posts,
+                next_before: postsRes.next_before,
+                next_before_id: postsRes.next_before_id,
+            };
         },
         legalReturnUrl: '/worker/profile',
     });
+
+    // Re-initialize load-more state whenever fresh page data lands: a first
+    // load, a retry, or a post-create/delete refresh must all start the
+    // cursor fresh so `allPosts` below can't double-show rows.
+    useEffect(() => {
+        setExtraPosts([]);
+        setCursor(
+            data?.next_before && data?.next_before_id
+                ? { before: data.next_before, before_id: data.next_before_id }
+                : null,
+        );
+    }, [data]);
+
+    const allPosts = [...(data?.posts ?? []), ...extraPosts];
+
+    async function loadMore() {
+        if (!cursor || !idToken) return;
+        const page = await getWorkerPosts(idToken, cursor);
+        setExtraPosts((prev) => [...prev, ...page.posts]);
+        setCursor(
+            page.next_before && page.next_before_id
+                ? { before: page.next_before, before_id: page.next_before_id }
+                : null,
+        );
+    }
 
     async function handleSave(patch: WorkerProfilePatch) {
         if (!idToken) return;
@@ -264,6 +317,61 @@ export default function WorkerProfilePage() {
                                 </div>
                             </DashboardPanel>
                         </div>
+
+                        <div id="media-board">
+                            <DashboardPanel>
+                                <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+                                    <h2 className="text-base font-extrabold text-[var(--jale-ink)]">{tMedia('title')}</h2>
+                                    <Button variant="outline" size="sm" onClick={() => setComposing(true)}>
+                                        {tMedia('new_post')}
+                                    </Button>
+                                </div>
+                                <div className="space-y-4 px-5 py-5">
+                                    <p className="text-xs text-[var(--jale-ink-2)]">{tMedia('subtitle')}</p>
+                                    {postFeedback && (
+                                        <InlineFeedback tone="success" onDismiss={() => setPostFeedback(null)}>
+                                            {postFeedback}
+                                        </InlineFeedback>
+                                    )}
+                                    <MediaBoardGrid posts={allPosts} editable onSelect={setSelectedPost} />
+                                    {cursor && (
+                                        <div className="flex justify-center">
+                                            <Button variant="outline" size="sm" onClick={loadMore}>
+                                                {tMedia('load_more')}
+                                            </Button>
+                                        </div>
+                                    )}
+                                </div>
+                            </DashboardPanel>
+                        </div>
+
+                        {composing && idToken && (
+                            <NewPostModal
+                                token={idToken}
+                                onClose={() => setComposing(false)}
+                                onCreated={async (flaggedCount) => {
+                                    setComposing(false);
+                                    setPostFeedback(
+                                        flaggedCount > 0 ? tMedia('published_flagged_toast') : tMedia('published_toast'),
+                                    );
+                                    await refresh();
+                                }}
+                            />
+                        )}
+
+                        {selectedPost && (
+                            <PostLightbox
+                                post={selectedPost}
+                                editable
+                                onClose={() => setSelectedPost(null)}
+                                onDelete={async (postId) => {
+                                    await deleteWorkerPost(idToken!, postId);
+                                    setSelectedPost(null);
+                                    setPostFeedback(tMedia('deleted_toast'));
+                                    await refresh();
+                                }}
+                            />
+                        )}
                     </div>
                 )}
             </main>
