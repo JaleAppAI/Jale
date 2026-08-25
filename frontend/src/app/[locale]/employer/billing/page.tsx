@@ -27,6 +27,7 @@ import {
     startCheckout,
 } from '@/lib/api/employer';
 import type { EmployerBilling } from '@/lib/api/employer';
+import { SUBSCRIPTION_STATUS_KEYS } from '@/lib/plan-limit';
 import { formatLongDate } from '@/lib/date';
 
 export const dynamic = 'force-dynamic';
@@ -39,16 +40,9 @@ type BannerKind = 'success' | 'cancel' | null;
 type ActionErrorKind = 'expired_session' | 'provider_unavailable' | 'provider_error' | 'generic';
 
 // Subscription status enum from `subscriptions.status` (infra/db/migrations/034).
-const SUBSCRIPTION_STATUS_KEYS: Record<string, string> = {
-    incomplete: 'status.incomplete',
-    incomplete_expired: 'status.incomplete_expired',
-    trialing: 'status.trialing',
-    active: 'status.active',
-    past_due: 'status.past_due',
-    canceled: 'status.canceled',
-    unpaid: 'status.unpaid',
-    paused: 'status.paused',
-};
+// SUBSCRIPTION_STATUS_KEYS now lives in `@/lib/plan-limit`, which shares it with
+// the subscription-signage model; the keys stay relative to this page's
+// `useTranslations('billing')` namespace.
 
 /**
  * Dot colour per subscription status. The dot carries no information the

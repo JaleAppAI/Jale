@@ -684,6 +684,7 @@
       "refresh": "Actualizar",
       "showing": "Mostrando {shown} de {total}",
       "post_success": "Empleo publicado",
+      "template_not_saved_after_post": "Empleo publicado. Su plantilla no se guardó (límite del plan: {limit}).",
       "back_to_dashboard": "← Volver al panel",
       "empty_title": "No se encontraron empleos",
       "empty_body": "Ninguna publicación coincide con esta búsqueda o filtro. Bórrelos para ver su tablero de nuevo.",
@@ -851,9 +852,9 @@
       "template_save_toggle": "Guardar como plantilla",
       "template_name_placeholder": "Nombre de la plantilla",
       "template_check_city": "Revise la ciudad antes de publicar",
-      "template_limit_reached": "Límite de plantillas alcanzado — mejore su plan para más",
-      "template_limit_reached_n": "Alcanzó el límite de {limit} plantillas — mejore su plan para más",
-      "template_name_taken": "Ya tiene una plantilla con ese nombre"
+      "template_name_taken": "Ya tiene una plantilla con ese nombre",
+      "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
+      "post_without_template": "Publicar sin guardar plantilla"
     },
     "worker_profile": {
       "doc_resume": "Currículum",
@@ -893,6 +894,12 @@
       "col_name": "Nombre",
       "col_details": "Detalles",
       "manage_link": "Administrar plantillas"
+    },
+    "usage": {
+      "jobs": "Empleos activos {used}/{limit}",
+      "templates": "Plantillas {used}/{limit}",
+      "jobs_plain": "{used} empleos activos",
+      "view_plan": "Ver plan"
     }
   },
   "employer_worker_profile": {
@@ -1230,8 +1237,9 @@
       "no_required_documents": "Este empleo no requiere documentos."
     },
     "actions": {
-      "activate": "Marcar activa",
-      "close": "Marcar cerrada",
+      "activate": "Reanudar empleo",
+      "pause": "Pausar empleo",
+      "close": "Cerrar empleo",
       "edit": "Editar empleo",
       "delete": "Eliminar",
       "delete_error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
@@ -1239,7 +1247,9 @@
       "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puedes reactivarlo después, según el límite de trabajos activos de tu plan.",
       "close_confirm_cta": "Cerrar trabajo",
       "close_cancel": "Cancelar",
-      "close_pending": "Cerrando…"
+      "close_pending": "Cerrando…",
+      "pause_pending": "Pausando…",
+      "pause_success": "Empleo pausado"
     },
     "closed_notice": "Este trabajo no está activo. El enlace público ahora muestra un aviso de \"ya no acepta postulaciones\" en lugar de la publicación.",
     "metrics": {
@@ -1594,9 +1604,34 @@
       "title": "Información de facturación no disponible",
       "body": "No pudimos cargar los detalles de su facturación en este momento."
     },
+    "limit_dialog": {
+      "title": "Alcanzó el límite de su plan",
+      "body_jobs": "Su plan permite {limit} publicación(es) de empleo activa(s), y tiene {used} activa(s) ahora mismo.",
+      "body_jobs_zero": "Su plan actual no incluye publicaciones de empleo activas. Mejore su plan para publicar este empleo.",
+      "body_templates": "Su plan permite {limit} plantilla(s) guardada(s). Elimine una o mejore su plan para guardar esta.",
+      "body_templates_zero": "Su plan actual no incluye plantillas guardadas.",
+      "blocking_heading": "Ocupando su(s) espacio(s) activo(s) ahora",
+      "and_more": "y {count} más",
+      "hint_jobs": "Pausar o cerrar un empleo activo libera su espacio de inmediato.",
+      "hint_templates": "Eliminar una plantilla guardada libera un espacio de inmediato.",
+      "cta_upgrade": "Mejorar plan",
+      "cta_pause_job": "Pausar otro empleo",
+      "cta_manage_templates": "Administrar plantillas",
+      "dismiss": "Ahora no"
+    },
     "limit_reached": {
       "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",
       "cta": "Mejorar plan"
+    },
+    "signage": {
+      "free_title": "Está en el plan Gratis",
+      "free_body": "El plan Gratis incluye {jobLimit} publicación(es) de empleo activa(s) y {templateLimit} plantilla(s). Mejore su plan para publicar más a la vez.",
+      "free_cta": "Mejorar plan",
+      "lapsed_title": "Su suscripción no está activa",
+      "lapsed_body": "Estado de la suscripción: {status}. Vuelva a suscribirse para recuperar los límites del plan Pro.",
+      "lapsed_body_grace": "Su último pago falló. Actualice su método de pago antes del {date} para conservar sus límites Pro — todavía no ha cambiado nada.",
+      "lapsed_cta": "Volver a suscribirse",
+      "lapsed_cta_grace": "Actualizar método de pago"
     }
   },
   "app_shell": {

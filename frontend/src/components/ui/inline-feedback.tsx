@@ -58,7 +58,8 @@ export function InlineFeedback({
                 className,
             ].join(' ')}
         >
-            <span className="min-w-0 flex-1">{children}</span>
+            {/* A <div>, not a <span>: callers put block content (lists, paragraphs) in here. */}
+            <div className="min-w-0 flex-1">{children}</div>
 
             {onDismiss ? (
                 <button
