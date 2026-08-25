@@ -670,6 +670,19 @@ export async function deleteJobTemplate(token: string, templateId: string): Prom
   if (!res.ok) throw await parseApiError(res, 'delete_failed');
 }
 
+/**
+ * Reported by PostJobModal to the dashboard when the job posted but a side
+ * effect did not happen.
+ *
+ * "Save as template" is a secondary action on the post-job form: if the job
+ * itself succeeded, hitting the template cap must not read as a failed post.
+ * The modal closes on the success it did achieve and hands the dashboard the
+ * shortfall to surface separately.
+ */
+export type JobCreatedOutcome = {
+  templateNotSaved?: { templateLimit: number };
+};
+
 export async function getJobApplicants(
   token: string,
   jobId: string,

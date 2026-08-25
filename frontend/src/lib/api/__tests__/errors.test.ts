@@ -98,8 +98,11 @@ describe('parseApiError', () => {
   });
 
   it('keeps allowlisted payload fields and drops everything else', async () => {
+    // 403, not 409: all three backend limit gates (employer-jobs-create.ts:230,
+    // employer-jobs-update.ts:118, employer-templates-save.ts:175) answer with
+    // `statusCode: 403`.
     const err = await parseApiError(
-      jsonResponse(409, {
+      jsonResponse(403, {
         error: 'job_limit_reached',
         plan_code: 'employer_free',
         active_job_limit: 1,
@@ -135,6 +138,62 @@ describe('parseApiError', () => {
     expect(err.missing_docs).toBeUndefined();
     expect(err.payload.missing_docs).toBeUndefined();
     expect(err.code).toBe('missing_required_docs');
+  });
+
+  // -------------------------------------------------------------------------
+  // blocking_jobs: forward-compat. No backend sends it yet -- the limit dialog
+  // derives the list client-side from the employer's jobs -- but once one does,
+  // the payload has to arrive already validated: the dialog renders one row per
+  // entry, so a malformed value would crash it rather than degrade it.
+  // -------------------------------------------------------------------------
+
+  it('allowlists a well-formed blocking_jobs list', async () => {
+    const err = await parseApiError(
+      jsonResponse(403, {
+        error: 'job_limit_reached',
+        blocking_jobs: [
+          { id: 'job-a', title: 'Landscape Maintenance Tech' },
+          { id: 'job-b', title: 'Concrete Finisher' },
+        ],
+      }),
+      'create_failed',
+    );
+    expect(err.payload.blocking_jobs).toEqual([
+      { id: 'job-a', title: 'Landscape Maintenance Tech' },
+      { id: 'job-b', title: 'Concrete Finisher' },
+    ]);
+  });
+
+  it('caps blocking_jobs at the dialog\'s display limit', async () => {
+    const err = await parseApiError(
+      jsonResponse(403, {
+        error: 'job_limit_reached',
+        blocking_jobs: Array.from({ length: 9 }, (_unused, i) => ({ id: `job-${i}`, title: `Job ${i}` })),
+      }),
+      'create_failed',
+    );
+    expect(err.payload.blocking_jobs).toHaveLength(3);
+    expect(err.payload.blocking_jobs?.[0]).toEqual({ id: 'job-0', title: 'Job 0' });
+  });
+
+  it.each([
+    ['a non-array', 'job-a'],
+    ['an object', { id: 'job-a', title: 'Landscape' }],
+    ['an array of strings', ['job-a', 'job-b']],
+    ['an entry with a non-string id', [{ id: 5, title: 'Landscape' }]],
+    ['an entry with a null title', [{ id: 'job-a', title: null }]],
+    ['an entry missing title entirely', [{ id: 'job-a' }]],
+    ['a null entry', [null]],
+    ['one bad entry among good ones', [{ id: 'job-a', title: 'Landscape' }, { id: 'job-b' }]],
+  ])('drops blocking_jobs when it is %s', async (_label, blocking_jobs) => {
+    const err = await parseApiError(
+      jsonResponse(403, { error: 'job_limit_reached', blocking_jobs }),
+      'create_failed',
+    );
+    // The whole key is dropped -- a partially-valid list is still a list the
+    // dialog cannot trust, so it falls back to the client-derived one.
+    expect(err.payload.blocking_jobs).toBeUndefined();
+    expect(err.code).toBe('job_limit_reached');
   });
 
   it('allowlists certs so the worker apply flow can render the missing-proof list', async () => {
@@ -233,8 +292,30 @@ describe('classifyError', () => {
   });
 
   it('surfaces the ApiError payload for the caller', () => {
-    const err = new ApiError(409, 'job_limit_reached', { active_job_limit: 1 });
+    const err = new ApiError(403, 'job_limit_reached', { active_job_limit: 1 });
     expect(classifyError(err).payload).toEqual({ active_job_limit: 1 });
+  });
+
+  it('classifies a plan-limit 403 as `forbidden` while preserving its payload', () => {
+    // The plan-limit codes arrive as 403, so the classifier calls them
+    // `forbidden` -- the same kind as a genuine permission denial. That is
+    // deliberate: `useErrorMessage` overrides are keyed by kind, so a new kind
+    // here would change copy for every unrelated 403. Callers that want the
+    // limit dialog branch on `err.code` BEFORE classifying (see lib/plan-limit).
+    const err = new ApiError(403, 'job_limit_reached', {
+      plan_code: 'employer_free',
+      active_job_limit: 1,
+      active_jobs: 1,
+    });
+    const classified = classifyError(err);
+
+    expect(classified.kind).toBe('forbidden');
+    expect(classified.retryable).toBe(false);
+    expect(classified.payload).toEqual({
+      plan_code: 'employer_free',
+      active_job_limit: 1,
+      active_jobs: 1,
+    });
   });
 
   it('maps an unmapped status (e.g. 418) to unknown', () => {
