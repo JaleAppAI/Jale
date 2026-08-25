@@ -356,13 +356,17 @@ export function DashboardSkeleton() {
                                 <div className="mt-2 flex h-[16.5px] items-center">
                                     <Skeleton className="h-2.5 w-24" />
                                 </div>
-                                <div className="mt-1">
-                                    {['w-full', 'w-1/2'].map((w, i) => (
-                                        <div key={i} className="flex h-4 items-center">
-                                            <Skeleton tone="paper" className={`h-3 ${w}`} />
-                                        </div>
-                                    ))}
+                                {/* `time_to_fill_hint` is just "{title}" — one
+                                    line for any ordinary job title here. */}
+                                <div className="mt-1 flex h-4 items-center">
+                                    <Skeleton tone="paper" className="h-3 w-3/4" />
                                 </div>
+                            </div>
+                            {/* `posted_on` renders whenever an open job exists —
+                                the same account this archetype already assumes by
+                                drawing three job rows. */}
+                            <div className="mt-4 flex h-4 items-center">
+                                <Skeleton className="h-3 w-2/5" />
                             </div>
                         </div>
                     </DashboardPanel>
@@ -421,8 +425,10 @@ function SkeletonJobRow() {
         <li className="@container">
             <div className="grid grid-cols-1 items-start gap-2 px-4 py-4 md:px-5 @[600px]:grid-cols-[minmax(0,1fr)_auto_auto_auto] @[600px]:items-center @[600px]:gap-4">
                 <div className="min-w-0">
-                    {/* title `text-sm leading-snug` -> 19.25px */}
-                    <div className="flex h-[19.25px] items-center">
+                    {/* The title Link is `text-sm leading-snug` (19.25px), but it
+                        is an inline-block in a div that inherits 16px/1.5 and the
+                        STRUT is taller: the line box is 24px, not 19.25px. */}
+                    <div className="flex h-6 items-center">
                         <Skeleton className="h-3.5 w-2/5" />
                     </div>
                     <div className="mt-0.5 flex h-4 items-center">
