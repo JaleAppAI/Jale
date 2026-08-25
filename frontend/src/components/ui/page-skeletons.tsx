@@ -262,11 +262,28 @@ export function DashboardSkeleton() {
                                 </div>
                             </div>
 
-                            {/* Exactly two children, matching the real row: the
-                                showing-count and the ghost Refresh button. */}
+                            {/* Count row. Two children, the first of which is a
+                                wrapping group: the showing-count and the plan
+                                usage meter, both `text-xs` (16px boxes), with the
+                                ghost Refresh pill outside it on the right.
+
+                                The wrap is left to flex rather than pinned with
+                                fixed heights, so it happens at the same widths as
+                                the real row. The group's max-content is
+                                112 + 16 + 208 = 336px against the 326px this block
+                                offers at 390px: the meter drops under the count,
+                                the filled group then leaves no room for the pill,
+                                and the row is 16 + 4 + 16 + 8 + 36 = 80px. From
+                                `md` up the whole row fits one line and the pill
+                                sets its 36px. */}
                             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex h-4 items-center">
-                                    <Skeleton className="h-3.5 w-28" />
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                                    <div className="flex h-4 items-center">
+                                        <Skeleton className="h-3.5 w-28" />
+                                    </div>
+                                    <div className="flex h-4 items-center">
+                                        <Skeleton className="h-3.5 w-52" />
+                                    </div>
                                 </div>
                                 <Skeleton className="h-9 w-20 rounded-full" />
                             </div>
