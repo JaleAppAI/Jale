@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -44,16 +44,58 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  * mount would paint the board first and then push it down when the banner
  * arrives -- so all three are awaited together and land in the same commit.
  *
- * Only jobs can fail the page. A billing or templates request that fails
- * degrades to `null`, which the banner reads as "nothing to say" and the meter
- * as "show the plain count": the employer's jobs are not worth hiding over a
- * secondary request.
+ * Only jobs can fail the page, and only jobs can make it WAIT: the two
+ * best-effort calls are raced against BEST_EFFORT_DEADLINE_MS, so a slow
+ * /employer/billing cannot hold the board behind it (see `withDeadline`).
+ * Whichever way they come up short -- rejected or too slow -- they degrade to
+ * `null`, which the banner reads as "nothing to say" and the meter as "show
+ * the plain count".
+ *
+ * On a REFRESH those nulls are then healed from the last good values instead
+ * of being written through: `usePageData` guarantees a background refresh can
+ * only ever add (usePageData.ts:28-31), and blanking the plan segments of a
+ * page the employer is reading is the opposite of that.
  */
 type DashboardData = {
     jobs: Job[];
     billing: EmployerBilling | null;
     templateCount: number | null;
 };
+
+/**
+ * How long the jobs commit may wait on the signage around it.
+ *
+ * `apiFetch`'s own budget is 15s per attempt (lib/api.ts DEFAULT_TIMEOUT_MS) --
+ * a fine ceiling for a request the page cannot render without, and far too
+ * long for one it can. 2.5s is generous for a warm call and short enough that
+ * a hung one is simply not part of this paint.
+ */
+const BEST_EFFORT_DEADLINE_MS = 2_500;
+
+/**
+ * `promise`, or `null` if it has not settled within `ms`.
+ *
+ * Losing the race does not cancel the request (nothing here can: the fetch
+ * carries the page's abort signal, and cancelling it would abort a call that
+ * may still be about to answer) -- it only stops the page waiting on it. A
+ * rejection resolves `null` too, so the caller has one shape to handle. The
+ * timer is cleared on settle so a resolved call leaves no pending timeout.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+    return new Promise<T | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), ms);
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            () => {
+                clearTimeout(timer);
+                resolve(null);
+            },
+        );
+    });
+}
 
 /** Percentage of `total` that `part` represents, safe at total = 0. */
 function share(part: number, total: number): number {
@@ -93,6 +135,16 @@ export default function EmployerDashboardPage() {
     const [templateNotice, setTemplateNotice] = useState<{ limit: number } | null>(null);
 
     /**
+     * The last billing/template numbers that actually arrived. A refresh whose
+     * best-effort calls fail or time out reads from here rather than writing
+     * `null` through -- the signage the employer is looking at stays put.
+     */
+    const lastGoodRef = useRef<{ billing: EmployerBilling | null; templateCount: number | null }>({
+        billing: null,
+        templateCount: null,
+    });
+
+    /**
      * One fetch for the whole page.
      *
      * `deps` is deliberately EMPTY. Search and the status filter are derived
@@ -113,13 +165,25 @@ export default function EmployerDashboardPage() {
         setData,
     } = usePageData<DashboardData>({
         fetcher: async ({ token, signal }) => {
-            const [jobList, billing, templateCount] = await Promise.all([
+            // Best-effort, both of them: `.catch` (not a rejected Promise.all)
+            // keeps a billing outage off the board, and `withDeadline` keeps a
+            // SLOW one off it too -- without the deadline the jobs commit waits
+            // out apiFetch's 15s budget for signage it can render without.
+            // (`listJobTemplates` takes no signal; that is a lib limitation.)
+            const [jobList, freshBilling, freshTemplateCount] = await Promise.all([
                 getJobs(token, signal),
-                // Best-effort: see DashboardData. `.catch` (not a rejected
-                // Promise.all) is what keeps a billing outage off the board.
-                getBilling(token, signal).catch(() => null),
-                listJobTemplates(token).then((list) => list.length).catch(() => null),
+                withDeadline(getBilling(token, signal).catch(() => null), BEST_EFFORT_DEADLINE_MS),
+                withDeadline(
+                    listJobTemplates(token).then((list) => list.length).catch(() => null),
+                    BEST_EFFORT_DEADLINE_MS,
+                ),
             ]);
+
+            // `??`, so a real 0 is kept and only a MISSING answer falls back.
+            const billing = freshBilling ?? lastGoodRef.current.billing;
+            const templateCount = freshTemplateCount ?? lastGoodRef.current.templateCount;
+            lastGoodRef.current = { billing, templateCount };
+
             return { jobs: jobList, billing, templateCount };
         },
         legalReturnUrl: '/employer/dashboard',
