@@ -14,7 +14,10 @@ import { Skeleton, SkeletonCircle, SkeletonLine } from './skeleton';
  *
  *  - ListPageSkeleton      <- WorkerJobCard rows inside a DashboardPanel
  *  - DetailPageSkeleton    <- the `Field` grid on worker/employer profile pages
- *  - DashboardSkeleton     <- MetricCard row + DashboardPanel sections
+ *  - DashboardSkeleton     <- the employer dashboard, in source order: the navy
+ *                            hero <section>, the 4-up KPI band, then the
+ *                            `1.7fr/.8fr` board — jobs panel + quick-post on the
+ *                            left, four status panels on the right
  *  - ThreadSkeleton        <- the employer conversations 3-pane board
  *  - CenteredCardSkeleton  <- the narrow auth/legal single-card pages
  *  - TemplateTableSkeleton <- the employer templates table rows
@@ -159,36 +162,296 @@ export function MetricRowSkeleton({ count = 4 }: { count?: number }) {
     );
 }
 
-/** Dashboard archetype: a 4-up metric row over two content panels. */
+/**
+ * Dashboard archetype: a 1:1 tracing of the employer dashboard's ready state.
+ *
+ * The old version opened with the KPI band, but the real page opens with a navy
+ * hero roughly 400px tall at 390px and 307px at 1440px. Every block below it
+ * therefore landed that much lower once the data arrived — the single largest
+ * layout shift in the app, and the reason this rewrite exists. Both the route's
+ * `loading.tsx` and the page's own in-flight branch render this component, so
+ * the hero has to live here rather than in either call site.
+ *
+ * Where a real block's height is set by TEXT rather than by a box, the tracing
+ * reserves line BOXES (`flex h-[line-height] items-center` around a shorter
+ * bar) instead of guessing with a bar height: the box owns the layout and the
+ * bar only has to look like a word. Line counts come from the real `en`
+ * strings measured against the real available widths, which is why several
+ * blocks carry `md:hidden` rows — the copy wraps to more lines on a phone.
+ */
 export function DashboardSkeleton() {
     return (
         <SkeletonRegion>
+            {/* Hero. `rail` tone throughout: this is the one navy surface in the
+                app and both paper tones are invisible on it. */}
+            <section className="mb-5 overflow-hidden rounded-[var(--radius-card)] bg-[var(--jale-blue-900)] p-5 shadow-[var(--shadow-card)] md:p-7">
+                {/* Eyebrow pill: `py-1` over an 11px line box. `text-[11px]` sets
+                    only the font size, so the line height is the inherited 1.5
+                    -> 16.5 + 8 = 24.5px, not the 20px an `h-5` would reserve. */}
+                <Skeleton tone="rail" className="mb-3 h-[24.5px] w-24 rounded-full" />
+
+                {/* h2 `text-3xl md:text-4xl leading-tight` -> 37.5px and 45px
+                    line boxes. The title wraps to 4 lines inside the 318px hero
+                    at 390px and to 2 inside its own `max-w-3xl` from `md` up. */}
+                <div className="max-w-3xl">
+                    <div className="flex h-[37.5px] items-center md:h-[45px]">
+                        <Skeleton tone="rail" className="h-5 w-[92%] md:h-6 md:w-full" />
+                    </div>
+                    <div className="flex h-[37.5px] items-center md:h-[45px]">
+                        <Skeleton tone="rail" className="h-5 w-[78%] md:h-6 md:w-[52%]" />
+                    </div>
+                    <div className="flex h-[37.5px] items-center md:hidden">
+                        <Skeleton tone="rail" className="h-5 w-[95%]" />
+                    </div>
+                    <div className="flex h-[37.5px] items-center md:hidden">
+                        <Skeleton tone="rail" className="h-5 w-[45%]" />
+                    </div>
+                </div>
+
+                {/* Body `mt-3 text-sm leading-6` -> 24px line boxes; 4 lines at
+                    390px, 2 inside its `max-w-2xl` from `md` up. */}
+                <div className="mt-3 max-w-2xl">
+                    <div className="flex h-6 items-center">
+                        <Skeleton tone="rail" className="h-3.5 w-full" />
+                    </div>
+                    <div className="flex h-6 items-center">
+                        <Skeleton tone="rail" className="h-3.5 w-[93%] md:w-[52%]" />
+                    </div>
+                    <div className="flex h-6 items-center md:hidden">
+                        <Skeleton tone="rail" className="h-3.5 w-[88%]" />
+                    </div>
+                    <div className="flex h-6 items-center md:hidden">
+                        <Skeleton tone="rail" className="h-3.5 w-[62%]" />
+                    </div>
+                </div>
+
+                {/* Two `h-11` CTAs. They fit one row in `en` at 390px with ~5px
+                    to spare; `flex-wrap` matches the real row so a longer
+                    locale wraps here exactly as it does there. */}
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                    <Skeleton tone="rail" className="h-11 w-32 rounded-full" />
+                    <Skeleton tone="rail" className="h-11 w-40 rounded-full" />
+                </div>
+            </section>
+
             <div className="mb-5">
                 <MetricRowSkeleton count={4} />
             </div>
 
-            <div className="grid gap-4 lg:grid-cols-2">
-                {Array.from({ length: 2 }).map((_, panel) => (
-                    <DashboardPanel key={panel}>
-                        <div className="flex items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
-                            <Skeleton className="h-4 w-36" />
-                            <Skeleton className="h-3.5 w-16" />
+            {/* `min-w-0` on both columns for the same reason the real board
+                carries it: without it the panels' min-content width becomes the
+                column floor and the grid overflows a 390px screen. */}
+            <div className="grid gap-5 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,.8fr)]">
+                <div className="min-w-0 space-y-5">
+                    <DashboardPanel className="overflow-hidden">
+                        <SkeletonPanelHead action="button" />
+
+                        <div className="border-b border-[var(--jale-divider)] p-4 md:p-5">
+                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                                <Skeleton className="h-11 w-full rounded-[var(--radius-input)]" />
+                                {/* Five status chips at their real 30px
+                                    (`border` + `py-1.5` + a 16px line box) and
+                                    roughly their real label widths, so they
+                                    wrap to two rows at 390px and sit on one
+                                    beside the input from `md` up — same as the
+                                    real group. */}
+                                <div className="flex flex-wrap gap-2">
+                                    {['w-12', 'w-[70px]', 'w-[70px]', 'w-14', 'w-16'].map((w, i) => (
+                                        <Skeleton key={i} className={`h-[30px] rounded-full ${w}`} />
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Exactly two children, matching the real row: the
+                                showing-count and the ghost Refresh button. */}
+                            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex h-4 items-center">
+                                    <Skeleton className="h-3.5 w-28" />
+                                </div>
+                                <Skeleton className="h-9 w-20 rounded-full" />
+                            </div>
                         </div>
+
                         <ul className="divide-y divide-[var(--jale-divider)]">
                             {Array.from({ length: 3 }).map((_, row) => (
-                                <li key={row} className="flex items-center gap-3 px-5 py-3.5">
-                                    <SkeletonCircle size={32} />
-                                    <div className="min-w-0 flex-1 space-y-2">
-                                        <SkeletonLine width="w-2/5" />
-                                        <SkeletonLine width="w-1/4" tone="paper" />
-                                    </div>
-                                </li>
+                                <SkeletonJobRow key={row} />
                             ))}
                         </ul>
                     </DashboardPanel>
-                ))}
+
+                    <DashboardPanel>
+                        <SkeletonPanelHead />
+                        {/* Quick post. The CTA sits BESIDE the copy from `md`
+                            up, so the block is ~68px there and ~148px stacked
+                            on a phone; a stacked-only tracing would be 60px out
+                            on every desktop load. */}
+                        <div className="grid gap-4 p-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                            <div className="min-w-0">
+                                {/* body `text-sm` -> 20px boxes, 2 lines at 390px */}
+                                <div className="flex h-5 items-center">
+                                    <Skeleton className="h-3.5 w-full md:w-3/4" />
+                                </div>
+                                <div className="flex h-5 items-center md:hidden">
+                                    <Skeleton className="h-3.5 w-2/5" />
+                                </div>
+                                {/* hint `mt-2 text-xs leading-5` -> 20px boxes */}
+                                <div className="mt-2 flex h-5 items-center">
+                                    <Skeleton tone="paper" className="h-3 w-full" />
+                                </div>
+                                <div className="flex h-5 items-center">
+                                    <Skeleton tone="paper" className="h-3 w-3/5" />
+                                </div>
+                            </div>
+                            <Skeleton className="h-11 w-32 rounded-full" />
+                        </div>
+                    </DashboardPanel>
+                </div>
+
+                <div className="min-w-0 space-y-5">
+                    {/* WhatsApp thread */}
+                    <DashboardPanel>
+                        <SkeletonPanelHead action="link" />
+                        <div className="p-5">
+                            <div className="flex h-5 items-center">
+                                <Skeleton className="h-3.5 w-3/5" />
+                            </div>
+                            {/* body `mt-2 text-xs leading-5`, 3 lines at the
+                                ~309px this column gives it */}
+                            <div className="mt-2">
+                                {['w-full', 'w-full', 'w-2/3'].map((w, i) => (
+                                    <div key={i} className="flex h-5 items-center">
+                                        <Skeleton tone="paper" className={`h-3 ${w}`} />
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </DashboardPanel>
+
+                    {/* Job progress */}
+                    <DashboardPanel>
+                        <SkeletonPanelHead />
+                        <div className="p-5">
+                            <div className="flex min-w-0 items-end justify-between gap-4">
+                                <div className="min-w-0">
+                                    <div className="flex h-[16.5px] items-center">
+                                        <Skeleton className="h-2.5 w-24" />
+                                    </div>
+                                    {/* `text-3xl leading-none` -> a flat 30px */}
+                                    <Skeleton className="mt-2 h-[30px] w-20" />
+                                </div>
+                                <Skeleton className="h-6 w-20 shrink-0 rounded-full" />
+                            </div>
+                            <div className="mt-4">
+                                <Skeleton className="h-2 w-full rounded-full" />
+                            </div>
+                        </div>
+                    </DashboardPanel>
+
+                    {/* Time to fill — a real MetricCard, hint included */}
+                    <DashboardPanel>
+                        <SkeletonPanelHead />
+                        <div className="p-5">
+                            <div className="min-w-0 py-1">
+                                <Skeleton className="h-[30px] w-16" />
+                                <div className="mt-2 flex h-[16.5px] items-center">
+                                    <Skeleton className="h-2.5 w-24" />
+                                </div>
+                                {/* `time_to_fill_hint` is just "{title}" — one
+                                    line for any ordinary job title here. */}
+                                <div className="mt-1 flex h-4 items-center">
+                                    <Skeleton tone="paper" className="h-3 w-3/4" />
+                                </div>
+                            </div>
+                            {/* `posted_on` renders whenever an open job exists —
+                                the same account this archetype already assumes by
+                                drawing three job rows. */}
+                            <div className="mt-4 flex h-4 items-center">
+                                <Skeleton className="h-3 w-2/5" />
+                            </div>
+                        </div>
+                    </DashboardPanel>
+
+                    {/* Hiring status — four ProgressRows */}
+                    <DashboardPanel>
+                        <SkeletonPanelHead />
+                        <div className="space-y-4 p-5">
+                            {Array.from({ length: 4 }).map((_, i) => (
+                                <div key={i}>
+                                    <div className="mb-2 flex h-4 items-center justify-between gap-3">
+                                        <Skeleton className="h-3 w-16" />
+                                        <Skeleton className="h-3 w-6" />
+                                    </div>
+                                    <Skeleton className="h-2 w-full rounded-full" />
+                                </div>
+                            ))}
+                        </div>
+                    </DashboardPanel>
+                </div>
             </div>
         </SkeletonRegion>
+    );
+}
+
+/**
+ * `PanelHeader`'s row, to the pixel. The title is wrapped in a 24px box because
+ * the real title is `text-base` (a 24px line box) — a bare `h-4` bar would make
+ * every actionless panel header 8px short, and there are four of them stacked
+ * in the dashboard's right column.
+ */
+function SkeletonPanelHead({ action }: { action?: 'button' | 'link' }) {
+    return (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--jale-divider)] px-5 py-4">
+            <div className="flex h-6 items-center">
+                <Skeleton className="h-4 w-36" />
+            </div>
+            {action === 'button' ? <Skeleton className="h-9 w-24 rounded-full" /> : null}
+            {action === 'link' ? (
+                <div className="flex h-4 items-center">
+                    <Skeleton className="h-3 w-24" />
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+/**
+ * One `JobPostingCard` row. The `@container` lives on the `<li>` and the grid on
+ * the child, exactly as in the real card, so the row switches to its four-column
+ * form on the panel's OWN width (~741px at a 1440px viewport) rather than the
+ * viewport's — which is the whole reason that card uses a container query.
+ */
+function SkeletonJobRow() {
+    return (
+        <li className="@container">
+            <div className="grid grid-cols-1 items-start gap-2 px-4 py-4 md:px-5 @[600px]:grid-cols-[minmax(0,1fr)_auto_auto_auto] @[600px]:items-center @[600px]:gap-4">
+                <div className="min-w-0">
+                    {/* The title Link is `text-sm leading-snug` (19.25px), but it
+                        is an inline-block in a div that inherits 16px/1.5 and the
+                        STRUT is taller: the line box is 24px, not 19.25px. */}
+                    <div className="flex h-6 items-center">
+                        <Skeleton className="h-3.5 w-2/5" />
+                    </div>
+                    <div className="mt-0.5 flex h-4 items-center">
+                        <Skeleton tone="paper" className="h-3 w-1/4" />
+                    </div>
+                </div>
+
+                <div className="flex h-4 items-center">
+                    <Skeleton className="h-3 w-24" />
+                </div>
+
+                {/* Badge: a 7px dot beside an 11px `leading-tight` label */}
+                <div className="flex h-[13.75px] items-center gap-1.5">
+                    <SkeletonCircle size={7} />
+                    <Skeleton className="h-3 w-12" />
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                    <Skeleton className="h-9 w-20 rounded-full" />
+                    <Skeleton className="h-9 w-9 rounded-full" />
+                </div>
+            </div>
+        </li>
     );
 }
 
