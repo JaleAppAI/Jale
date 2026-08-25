@@ -19,6 +19,16 @@ import type { SubscriptionSignage } from '@/lib/plan-limit';
  * next session, and `dismissKey` is keyed by the billing state, so a move from
  * past_due to canceled re-shows the banner within the same session too.
  */
+function readDismissed(dismissKey: string | null): boolean {
+  if (dismissKey === null || typeof window === 'undefined') return false;
+  try {
+    return window.sessionStorage.getItem(dismissKey) === '1';
+  } catch {
+    // Private mode / storage disabled -- show the banner rather than crash.
+    return false;
+  }
+}
+
 export function SubscriptionBanner({
   signage,
   locale,
@@ -28,23 +38,16 @@ export function SubscriptionBanner({
 }) {
   const tBilling = useTranslations('billing');
   const dismissKey = signage?.dismissKey ?? null;
-  const [dismissed, setDismissed] = useState(false);
+  // Seeded synchronously on first render, then re-read whenever the billing
+  // state (and so the key) changes. Reading storage in the initializer is
+  // hydration-safe HERE because this component only renders inside the
+  // dashboard's client-only `ready` branch, which never exists in server HTML;
+  // it is what stops a banner dismissed earlier in the session from painting
+  // for a frame and then vanishing (a flash plus a layout shift on every visit).
+  const [dismissed, setDismissed] = useState(() => readDismissed(dismissKey));
 
-  // Read AFTER mount, never during render: `sessionStorage` does not exist on
-  // the server, and a render that read it would hydrate differently than the
-  // HTML. Re-runs on `dismissKey`, so a new billing state starts undismissed.
   useEffect(() => {
-    if (dismissKey === null) {
-      setDismissed(false);
-      return;
-    }
-    let stored = false;
-    try {
-      stored = window.sessionStorage.getItem(dismissKey) === '1';
-    } catch {
-      // Private mode / storage disabled -- show the banner rather than crash.
-    }
-    setDismissed(stored);
+    setDismissed(readDismissed(dismissKey));
   }, [dismissKey]);
 
   if (signage === null || dismissed) return null;
