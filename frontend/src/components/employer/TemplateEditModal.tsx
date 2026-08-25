@@ -1,19 +1,19 @@
 'use client';
 import { useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { ApiError, saveJobTemplate, type JobTemplate } from '@/lib/api/employer';
 import {
   type JobForm, initialForm, jobFormFromTemplatePayload, jobFormToCreatePayload,
   validateFullJobForm, applyLocationToJobForm,
 } from '@/lib/job-form';
+import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { Button } from '@/components/ui/button';
-import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { JobFormFields } from '@/components/employer/JobFormFields';
 import { Modal } from '@/components/ui/modal';
+import { PlanLimitNotice } from '@/components/employer/PlanLimitDialog';
 
 /**
  * Create or edit a job template: a name plus the full job form (minus the
@@ -34,7 +34,6 @@ interface Props {
 export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
-  const tBilling = useTranslations('billing');
   const tReq = useTranslations('job_requirements');
   const { idToken } = useAuth();
 
@@ -44,7 +43,10 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [nameError, setNameError] = useState('');
-  const [limitReached, setLimitReached] = useState(false);
+  // The template cap is not a "save failed" sentence -- it is a plan decision
+  // with its own copy, its own way out, and no dismiss. `lib/plan-limit` owns
+  // all three; this modal only decides where the notice sits.
+  const [limitModel, setLimitModel] = useState<PlanLimitModel | null>(null);
 
   // The name is this form's one field the job form does not have; it is also
   // where editing starts, so the Modal lands initial focus on it.
@@ -64,7 +66,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
     // inheriting the limit branch's upgrade CTA and tooltip.
     setNameError('');
     setError('');
-    setLimitReached(false);
+    setLimitModel(null);
     if (!name.trim()) return setNameError(t('templates.name_required'));
     // `validateFullJobForm` replaces this modal's own inline checks -- no
     // `minWorkers` floor here, unlike EditJobModal: a template has no hired
@@ -104,11 +106,7 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
       if (err instanceof ApiError && err.code === 'template_name_taken') {
         setNameError(t('modal.template_name_taken'));
       } else if (err instanceof ApiError && err.code === 'template_limit_reached') {
-        const limit = err.payload.template_limit ?? null;
-        setError(limit != null
-          ? t('modal.template_limit_reached_n', { limit })
-          : t('modal.template_limit_reached'));
-        setLimitReached(true);
+        setLimitModel(planLimitModel(err));
       } else if (err instanceof ApiError && err.code === 'city_required') {
         // Same requirements-picker-adjacent 400 PostJobModal/EditJobModal
         // classify -- a template's payload goes through the identical
@@ -136,20 +134,13 @@ export function TemplateEditModal({ open, template, onClose, onSaved }: Props) {
       footer={
         <div className="flex w-full flex-col gap-3">
           {error ? (
-            <InlineFeedback tone="danger" onDismiss={limitReached ? undefined : () => setError('')}>
+            <InlineFeedback tone="danger" onDismiss={() => setError('')}>
               <span className="block">{error}</span>
-              {limitReached ? (
-                <Link
-                  href="/employer/billing"
-                  onClick={onClose}
-                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-                >
-                  <Icon name="spark" />
-                  {tBilling('limit_reached.cta')}
-                </Link>
-              ) : null}
             </InlineFeedback>
           ) : null}
+          {/* Not dismissible, as before: the cap is still true after you wave it
+              away, and this is the only thing explaining why nothing saved. */}
+          <PlanLimitNotice model={limitModel} onNavigate={onClose} />
           <div className="flex gap-2">
             <Button variant="ghost" onClick={handleClose} disabled={loading} className="flex-1">
               {t('modal.cancel')}

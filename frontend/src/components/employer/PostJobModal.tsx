@@ -1,12 +1,16 @@
 'use client';
 import type React from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
-import { ApiError, createJob, listJobTemplates, saveJobTemplate, Job, JobTemplate } from '@/lib/api/employer';
+import {
+  ApiError, createJob, getBilling, listJobTemplates, saveJobTemplate,
+  type Job, type JobCreatedOutcome, type JobTemplate,
+} from '@/lib/api/employer';
+import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import {
   LANGUAGE_OPTIONS,
   type JobForm, type WorkDay,
@@ -19,12 +23,12 @@ import { CheckboxCard } from '@/components/ui/checkbox-card';
 import { DescriptionHelper } from '@/components/employer/DescriptionHelper';
 import { DurationField } from '@/components/employer/DurationField';
 import { ExperienceStepper } from '@/components/employer/ExperienceStepper';
-import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Input } from '@/components/ui/input';
 import { LocationPicker } from '@/components/ui/LocationPicker';
 import { Modal } from '@/components/ui/modal';
 import { PayFields } from '@/components/employer/PayFields';
+import { PlanLimitNotice } from '@/components/employer/PlanLimitDialog';
 import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { RequirementsPicker } from '@/components/employer/RequirementsPicker';
 import { ScheduleFields } from '@/components/employer/ScheduleFields';
@@ -35,7 +39,13 @@ import { TradeCategoryField } from '@/components/employer/TradeCategoryField';
 interface Props {
   open: boolean;
   onClose: () => void;
-  onJobCreated: (job: Job) => void;
+  /**
+   * `outcome` reports what the post did NOT achieve. The only member today is
+   * `templateNotSaved`: the job posted, the modal closed on that success, and
+   * the template hit the plan cap on the way -- a shortfall the caller has to
+   * surface because this modal is gone by the time it is known.
+   */
+  onJobCreated: (job: Job, outcome?: JobCreatedOutcome) => void;
 }
 
 type Step = 1 | 2 | 3;
@@ -73,14 +83,17 @@ const STEP_KEYS: Record<Step, 'basics' | 'details' | 'documents'> = {
  *    is CLASSIFIED (`useErrorMessage`), never `err.message`, which is a backend
  *    error code and not a sentence.
  *
- * The `job_limit_reached` path keeps its own message and its billing link:
- * that failure is not "something went wrong", it is a plan decision with one
- * specific way out.
+ * The two plan limits (`job_limit_reached`, `template_limit_reached`) are not
+ * "something went wrong": they are plan decisions with specific ways out, so
+ * they render as `PlanLimitNotice` off `lib/plan-limit`'s model rather than as
+ * error sentences. The template one is also checked BEFORE the wire, because
+ * the cap is knowable from `getBilling` and the loaded template list -- posting
+ * a job and only then admitting the template was dropped is a worse trade than
+ * asking first.
  */
 export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const t = useTranslations('employer_dashboard');
   const tCommon = useTranslations('common');
-  const tBilling = useTranslations('billing');
   const tReq = useTranslations('job_requirements');
   const { idToken } = useAuth();
   // `enabled: false` — the DASHBOARD owns the sign-in redirect for this route.
@@ -98,7 +111,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
   const [form, setForm] = useState<JobForm>(initialForm);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [limitReached, setLimitReached] = useState(false);
+  // The active-job cap, as a model rather than a sentence. Rendered beside
+  // `error` (never instead of it) because the two can only ever be set by
+  // different branches of the same catch.
+  const [jobLimit, setJobLimit] = useState<PlanLimitModel | null>(null);
   // Freezes the description Textarea while `DescriptionHelper`'s Generate
   // call is in flight -- otherwise a manual edit made mid-flight would be
   // silently overwritten seconds later by the eventual success response.
@@ -132,6 +148,17 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       .catch(() => {
         // Templates are an enhancement; the modal must work without them.
       });
+    // The cap the pre-check compares the loaded list against. Without it the
+    // wizard only learns the number from a 403 -- that is, after the save the
+    // pre-check exists to prevent. Swallowed for the same reason: a billing
+    // read that fails costs the pre-check, never the post.
+    getBilling(idToken)
+      .then((billing) => {
+        if (!cancelled) setTemplateLimit(billing.templateLimit);
+      })
+      .catch(() => {
+        // No cap known; the server 403 remains the backstop.
+      });
     return () => {
       cancelled = true;
     };
@@ -147,10 +174,30 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
   // A failure below the fold is a failure the user does not know about. The
   // banner has `role="alert"` for screen readers; this is the visual half.
+  // `jobLimit` shares the slot, so it has to share the scroll.
   useEffect(() => {
-    if (!error) return;
+    if (!error && !jobLimit) return;
     feedbackRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [error]);
+  }, [error, jobLimit]);
+
+  /**
+   * The template cap as a plan-limit model.
+   *
+   * Synthesised rather than stored: both routes into `templateNotice === 'limit'`
+   * (the pre-check, and the server's 403 during the save) leave the cap in
+   * `templateLimit`, so one derivation covers both. No `plan_code` -- the
+   * pre-check has none to give, and `planLimitModel` renders the copy without
+   * a plan name rather than guessing one.
+   */
+  const templateLimitModel = useMemo(
+    () =>
+      templateNotice === 'limit'
+        ? planLimitModel(
+            new ApiError(403, 'template_limit_reached', { template_limit: templateLimit ?? 0 }),
+          )
+        : null,
+    [templateNotice, templateLimit],
+  );
 
   const update = <K extends keyof JobForm>(key: K, value: JobForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -161,7 +208,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     setMaxVisitedStep(1);
     setForm(initialForm);
     setError('');
-    setLimitReached(false);
+    setJobLimit(null);
     setCheckCity(false);
     setSaveAsTemplate(false);
     setTemplateName('');
@@ -270,7 +317,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     if (target === step) return;
     if (target < step) {
       setError('');
-      setLimitReached(false);
+      setJobLimit(null);
       setStep(target);
       return;
     }
@@ -283,12 +330,23 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       }
     }
     setError('');
-    setLimitReached(false);
+    setJobLimit(null);
     setStep(target);
     setMaxVisitedStep((current) => (current > target ? current : target));
   };
 
-  const handleSubmit = async () => {
+  /**
+   * `skipTemplate` is the "Post without saving template" escape hatch.
+   *
+   * It cannot be expressed as `setSaveAsTemplate(false)` before a re-submit:
+   * this closure captures the CURRENT render's `saveAsTemplate`, so the
+   * pre-check would fire again on the stale `true` and nothing would ever post.
+   * The flag overrides the state for this one call instead.
+   */
+  const handleSubmit = async (opts?: { skipTemplate?: boolean }) => {
+    const wantsTemplate = opts?.skipTemplate ? false : saveAsTemplate;
+
+    setJobLimit(null);
     const validationError = validationMessage(validateFullJobForm(form));
     if (validationError) {
       setError(validationError);
@@ -305,18 +363,37 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     // has nowhere left to surface. Catching the collision here keeps it
     // fixable; the server 409 below remains the backstop for stale lists.
     if (
-      saveAsTemplate && name &&
+      wantsTemplate && name &&
       templates.some((tpl) => tpl.name === name && tpl.id !== savedTemplateIdRef.current)
     ) {
       setTemplateNotice('name_taken');
       return;
     }
+    // And pre-check the CAP the same way, for the same reason: the template
+    // save runs before the post, so hitting the cap on the wire means the job
+    // goes out with the template silently dropped. Nothing is submitted until
+    // the employer has decided which they want.
+    //
+    // Skipped once this run has already saved a template: that save is an
+    // upsert by id and the row is already in `templates`, so counting it again
+    // would refuse a resubmit (after a failed post) that costs no new slot.
+    if (
+      wantsTemplate && name &&
+      savedTemplateIdRef.current === null &&
+      templateLimit !== null && templates.length >= templateLimit
+    ) {
+      setTemplateNotice('limit');
+      return;
+    }
     setLoading(true);
     setError('');
-    setLimitReached(false);
     setTemplateNotice('');
 
-    if (saveAsTemplate && name) {
+    // What the post did not achieve, carried past `handleClose` to the caller:
+    // the modal is gone by the time the dashboard can say anything about it.
+    let templateShortfall: JobCreatedOutcome['templateNotSaved'];
+
+    if (wantsTemplate && name) {
       try {
         const saved = await saveJobTemplate(idToken!, {
           ...(savedTemplateIdRef.current ? { id: savedTemplateIdRef.current } : {}),
@@ -329,8 +406,12 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
         // Template failures never block the job post -- surface the notice
         // and keep going.
         if (err instanceof ApiError && err.code === 'template_limit_reached') {
+          // The backstop for a cap the pre-check could not know (billing read
+          // failed, or the list went stale under a second tab).
+          const limit = err.payload.template_limit ?? templateLimit ?? 0;
           setTemplateNotice('limit');
-          setTemplateLimit(err.payload.template_limit ?? null);
+          setTemplateLimit(limit);
+          templateShortfall = { templateLimit: limit };
         } else if (err instanceof ApiError && err.code === 'template_name_taken') {
           setTemplateNotice('name_taken');
         }
@@ -339,7 +420,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
     try {
       const job = await createJob(idToken!, jobFormToCreatePayload(form));
-      onJobCreated(job);
+      onJobCreated(job, templateShortfall ? { templateNotSaved: templateShortfall } : undefined);
       handleClose();
     } catch (err) {
       try {
@@ -351,7 +432,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       }
 
       // The typed `job_limit_reached` code is the one failure with its own
-      // story: the plan's ceiling, and the page that lifts it. `city_required`
+      // story: the plan's ceiling, the jobs holding the slots, and the two ways
+      // out -- all of which `lib/plan-limit` models, so it renders as a notice
+      // rather than as an error sentence with a link stapled on. `city_required`
       // and `requirements_tier_overlap` are the two create-time 400s the
       // requirements picker can provoke (a create with no picked city; a key
       // landing in both a required and an optional array -- should not
@@ -360,10 +443,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
       // classified into the app's shared, bilingual failure sentences —
       // `modal.error` stays as the override for the genuinely unclassifiable.
       if (err instanceof ApiError && err.code === 'job_limit_reached') {
-        setLimitReached(true);
-        setError(tBilling('limit_reached.modal_message', {
-          limit: err.payload.active_job_limit ?? 0,
-        }));
+        setJobLimit(planLimitModel(err));
       } else if (err instanceof ApiError && err.code === 'city_required') {
         setError(tReq('errors.city_required'));
       } else if (err instanceof ApiError && err.code === 'requirements_tier_overlap') {
@@ -412,7 +492,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           ) : (
             <Button
               variant="primary"
-              onClick={handleSubmit}
+              // Wrapped, not passed directly: `handleSubmit` now takes an
+              // options object, and a bare handler would hand it a MouseEvent.
+              onClick={() => void handleSubmit()}
               loading={loading}
               loadingLabel={tCommon('loading')}
               className="flex-1"
@@ -703,44 +785,40 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           {templateNotice === 'name_taken' && (
             <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">{t('modal.template_name_taken')}</p>
           )}
-          {templateNotice === 'limit' && (
-            <div className="mt-2">
-              <InlineFeedback tone="danger">
-                <span className="block">
-                  {templateLimit != null
-                    ? t('modal.template_limit_reached_n', { limit: templateLimit })
-                    : t('modal.template_limit_reached')}
-                </span>
-                <Link
-                  href="/employer/billing"
-                  onClick={handleClose}
-                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-                >
-                  <Icon name="spark" />
-                  {tBilling('limit_reached.cta')}
-                </Link>
-              </InlineFeedback>
-            </div>
-          )}
+          {/* Deliberately NOT "Plan limit reached": the job still posts. The
+              only thing at stake is the template, and the button beside the
+              CTAs is the one-click way to accept that and carry on. */}
+          <PlanLimitNotice
+            model={templateLimitModel}
+            className="mt-2"
+            title={t('modal.template_not_saved', { limit: templateLimit ?? 0 })}
+            onNavigate={handleClose}
+            actions={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setTemplateNotice('');
+                  setSaveAsTemplate(false);
+                  void handleSubmit({ skipTemplate: true });
+                }}
+              >
+                {t('modal.post_without_template')}
+              </Button>
+            }
+          />
         </div>
         </div>
       )}
 
-      {error ? (
-        <div ref={feedbackRef} className="mt-5">
-          <InlineFeedback tone="danger">
-            <span className="block">{error}</span>
-            {limitReached ? (
-              <Link
-                href="/employer/billing"
-                onClick={handleClose}
-                className="mt-2 inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
-              >
-                <Icon name="spark" />
-                {tBilling('limit_reached.cta')}
-              </Link>
-            ) : null}
-          </InlineFeedback>
+      {error || jobLimit ? (
+        <div ref={feedbackRef} className="mt-5 flex flex-col gap-2">
+          {error ? (
+            <InlineFeedback tone="danger">
+              <span className="block">{error}</span>
+            </InlineFeedback>
+          ) : null}
+          <PlanLimitNotice model={jobLimit} onNavigate={handleClose} />
         </div>
       ) : null}
     </Modal>
