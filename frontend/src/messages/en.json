@@ -684,6 +684,7 @@
       "refresh": "Refresh",
       "showing": "Showing {shown} of {total}",
       "post_success": "Job posted",
+      "template_not_saved_after_post": "Job posted. Your template wasn't saved (plan limit: {limit}).",
       "back_to_dashboard": "← Back to Dashboard",
       "empty_title": "No jobs found",
       "empty_body": "No posting matches this search or filter. Clear them to see your board again.",
@@ -853,7 +854,9 @@
       "template_check_city": "Check the city before posting",
       "template_limit_reached": "Template limit reached — upgrade for more",
       "template_limit_reached_n": "You've reached your plan's limit of {limit} templates — upgrade for more",
-      "template_name_taken": "You already have a template with that name"
+      "template_name_taken": "You already have a template with that name",
+      "template_not_saved": "Your template won't be saved — your plan allows {limit} template(s).",
+      "post_without_template": "Post without saving template"
     },
     "worker_profile": {
       "doc_resume": "Resume",
@@ -893,6 +896,12 @@
       "col_name": "Name",
       "col_details": "Details",
       "manage_link": "Manage templates"
+    },
+    "usage": {
+      "jobs": "Active jobs {used}/{limit}",
+      "templates": "Templates {used}/{limit}",
+      "jobs_plain": "{used} active jobs",
+      "view_plan": "View plan"
     }
   },
   "employer_worker_profile": {
@@ -1230,8 +1239,9 @@
       "no_required_documents": "No documents are required for this job."
     },
     "actions": {
-      "activate": "Mark active",
-      "close": "Mark closed",
+      "activate": "Resume job",
+      "pause": "Pause job",
+      "close": "Close job",
       "edit": "Edit job",
       "delete": "Delete",
       "delete_error_hired": "This job has hired workers and can't be deleted. Close it instead.",
@@ -1239,7 +1249,9 @@
       "close_confirm_body": "\"{title}\" will stop accepting applications and leave workers' job feeds. Workers who already applied will still see the posting, marked as closed. You can reopen it later, subject to your plan's active-job limit.",
       "close_confirm_cta": "Close job",
       "close_cancel": "Cancel",
-      "close_pending": "Closing…"
+      "close_pending": "Closing…",
+      "pause_pending": "Pausing…",
+      "pause_success": "Job paused"
     },
     "closed_notice": "This job is not active. The public link now shows a \"no longer accepting applications\" notice instead of the posting.",
     "metrics": {
@@ -1594,9 +1606,34 @@
       "title": "Billing information unavailable",
       "body": "We couldn't load your billing details right now."
     },
+    "limit_dialog": {
+      "title": "Plan limit reached",
+      "body_jobs": "Your plan allows {limit} active job posting(s), and you have {used} active right now.",
+      "body_jobs_zero": "Your current plan doesn't include any active job postings. Upgrade to publish this job.",
+      "body_templates": "Your plan allows {limit} saved template(s). Delete one, or upgrade to save this one.",
+      "body_templates_zero": "Your current plan doesn't include saved templates.",
+      "blocking_heading": "Using your active slot(s) right now",
+      "and_more": "and {count} more",
+      "hint_jobs": "Pausing or closing an active job frees its slot immediately.",
+      "hint_templates": "Deleting a saved template frees a slot immediately.",
+      "cta_upgrade": "Upgrade plan",
+      "cta_pause_job": "Pause another job",
+      "cta_manage_templates": "Manage templates",
+      "dismiss": "Not now"
+    },
     "limit_reached": {
       "modal_message": "You've reached your plan's limit of {limit} active job posting(s). Upgrade to post more.",
       "cta": "Upgrade plan"
+    },
+    "signage": {
+      "free_title": "You're on the Free plan",
+      "free_body": "Free includes {jobLimit} active job posting(s) and {templateLimit} template(s). Upgrade to post more at once.",
+      "free_cta": "Upgrade plan",
+      "lapsed_title": "Your subscription isn't active",
+      "lapsed_body": "Your subscription is {status}. Re-subscribe to get your Pro limits back.",
+      "lapsed_body_grace": "Your last payment failed. Update your payment method by {date} to keep your Pro limits — nothing has changed yet.",
+      "lapsed_cta": "Re-subscribe",
+      "lapsed_cta_grace": "Update payment method"
     }
   },
   "app_shell": {
