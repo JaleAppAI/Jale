@@ -305,9 +305,36 @@ export default function JobDetailPage() {
     // model again and pop the dialog back open over the page.
     const planLimitFetchRef = useRef(0);
 
+    /*
+     * `Modal`'s own focus restore cannot work for THIS dialog, so the page does it.
+     *
+     * The control that opens it -- Resume/Pause -- is `disabled` the instant the
+     * request starts, and disabling the focused element blurs it: by the time the
+     * 403 mounts the Modal, `document.activeElement` is <body>, which is what
+     * `ui/modal.tsx` captures as the opener. Its restore is then a no-op and a
+     * keyboard user is dropped at the top of the document. Every other Modal here
+     * is opened by a control that stays enabled, which is why only this one needs
+     * the trigger captured BEFORE `setPendingStatus` disables it.
+     */
+    const planLimitOpenerRef = useRef<HTMLElement | null>(null);
+
+    const handlePlanLimitClose = useCallback(() => {
+        setPlanLimit(null);
+        const opener = planLimitOpenerRef.current;
+        planLimitOpenerRef.current = null;
+        // Next frame: the button is still `disabled` in the current commit (and
+        // unfocusable), and the Modal's own restore-to-body has to land first.
+        requestAnimationFrame(() => opener?.focus());
+    }, []);
+
     const handleSetJobStatus = useCallback(
         async (status: WritableJobStatus) => {
             if (!idToken || !job || pendingStatus) return;
+            // Captured BEFORE the button disables itself below -- see
+            // `planLimitOpenerRef`. Harmless on every path that never opens the
+            // dialog; `handlePlanLimitClose` is the only reader.
+            planLimitOpenerRef.current =
+                document.activeElement instanceof HTMLElement ? document.activeElement : null;
             setPendingStatus(status);
             setActionFeedback(null);
             try {
@@ -842,7 +869,10 @@ export default function JobDetailPage() {
                 open={planLimit !== null}
                 model={planLimit}
                 loadingJobs={planLimitLoading}
-                onClose={() => setPlanLimit(null)}
+                // Every dismissal route (Escape, backdrop, X, "Not now") and every
+                // CTA navigation funnels through here, so the opener ref is cleared
+                // exactly once however the dialog leaves.
+                onClose={handlePlanLimitClose}
             />
 
             {/* Mounted, not conditionally rendered: `Modal` drives focus-in and
