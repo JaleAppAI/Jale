@@ -257,7 +257,15 @@ export default function EmployerDashboardPage() {
             retry();
             return;
         }
-        setData((prev) => ({ ...prev, jobs: [job, ...prev.jobs] }));
+        setData((prev) => ({
+            ...prev,
+            jobs: [job, ...prev.jobs],
+            // The meter counts templates from this snapshot; a post that saved a
+            // new one must move it without a round-trip to /employer/templates.
+            templateCount: outcome?.templateSaved && prev.templateCount !== null
+                ? prev.templateCount + 1
+                : prev.templateCount,
+        }));
     }
 
     function openDeleteDialog(job: Job) {

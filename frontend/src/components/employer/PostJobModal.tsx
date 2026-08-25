@@ -392,6 +392,7 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
     // What the post did not achieve, carried past `handleClose` to the caller:
     // the modal is gone by the time the dashboard can say anything about it.
     let templateShortfall: JobCreatedOutcome['templateNotSaved'];
+    let templateSavedNew = false;
 
     if (wantsTemplate && name) {
       try {
@@ -400,6 +401,9 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
           name,
           payload: jobFormToCreatePayload(form),
         });
+        // A new id means a new row on the templates list; a resubmit after a
+        // failed post overwrites the same template and adds nothing.
+        templateSavedNew = savedTemplateIdRef.current === null;
         savedTemplateIdRef.current = saved.id;
         setTemplates((current) => [saved, ...current.filter((tpl) => tpl.id !== saved.id)]);
       } catch (err) {
@@ -420,7 +424,10 @@ export function PostJobModal({ open, onClose, onJobCreated }: Props) {
 
     try {
       const job = await createJob(idToken!, jobFormToCreatePayload(form));
-      onJobCreated(job, templateShortfall ? { templateNotSaved: templateShortfall } : undefined);
+      const outcome: JobCreatedOutcome = {};
+      if (templateShortfall) outcome.templateNotSaved = templateShortfall;
+      if (templateSavedNew) outcome.templateSaved = true;
+      onJobCreated(job, templateShortfall || templateSavedNew ? outcome : undefined);
       handleClose();
     } catch (err) {
       try {

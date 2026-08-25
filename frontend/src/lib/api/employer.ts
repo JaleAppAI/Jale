@@ -681,6 +681,8 @@ export async function deleteJobTemplate(token: string, templateId: string): Prom
  */
 export type JobCreatedOutcome = {
   templateNotSaved?: { templateLimit: number };
+  /** True when this post created a NEW saved template (not an overwrite of one already counted). */
+  templateSaved?: boolean;
 };
 
 export async function getJobApplicants(
