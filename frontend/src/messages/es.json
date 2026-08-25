@@ -1630,7 +1630,7 @@
       "free_body": "El plan Gratis incluye {jobLimit} publicación(es) de empleo activa(s) y {templateLimit} plantilla(s). Mejore su plan para publicar más a la vez.",
       "free_cta": "Mejorar plan",
       "lapsed_title": "Su suscripción no está activa",
-      "lapsed_body": "Su suscripción está {status}. Vuelva a suscribirse para recuperar los límites del plan Pro.",
+      "lapsed_body": "Estado de la suscripción: {status}. Vuelva a suscribirse para recuperar los límites del plan Pro.",
       "lapsed_body_grace": "Su último pago falló. Actualice su método de pago antes del {date} para conservar sus límites Pro — todavía no ha cambiado nada.",
       "lapsed_cta": "Volver a suscribirse",
       "lapsed_cta_grace": "Actualizar método de pago"

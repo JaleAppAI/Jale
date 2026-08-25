@@ -1630,7 +1630,7 @@
       "free_body": "Free includes {jobLimit} active job posting(s) and {templateLimit} template(s). Upgrade to post more at once.",
       "free_cta": "Upgrade plan",
       "lapsed_title": "Your subscription isn't active",
-      "lapsed_body": "Your subscription is {status}. Re-subscribe to get your Pro limits back.",
+      "lapsed_body": "Subscription status: {status}. Re-subscribe to get your Pro limits back.",
       "lapsed_body_grace": "Your last payment failed. Update your payment method by {date} to keep your Pro limits — nothing has changed yet.",
       "lapsed_cta": "Re-subscribe",
       "lapsed_cta_grace": "Update payment method"
