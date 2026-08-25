@@ -142,20 +142,35 @@ export function DetailPageSkeleton({
  * same geometry twice (once in the page, once in its route skeleton). Three
  * copies of one tracing drift the first time `MetricCard`'s type scale moves.
  */
-export function MetricRowSkeleton({ count = 4 }: { count?: number }) {
+export function MetricRowSkeleton({
+    count = 4,
+    hint = false,
+    gap = 'gap-3',
+}: {
+    count?: number;
+    /** Reserve the `MetricCard` hint line (`mt-1 text-xs` -> a 16px box) the dashboard band renders under every label. */
+    hint?: boolean;
+    /** The real band's gap utility — the dashboard uses `gap-4`, the job page `gap-3`. */
+    gap?: 'gap-3' | 'gap-4';
+}) {
     // Two-up on phones, `count`-up from `md` — the same responsive shape the
     // metric bands themselves use. A fixed N-column grid drew four cramped
     // columns on a 390px screen while the real band showed two, so the band
     // changed height once on every mobile load.
     return (
         <section
-            className="grid grid-cols-2 gap-3 md:[grid-template-columns:repeat(var(--metric-cols),minmax(0,1fr))]"
+            className={`grid grid-cols-2 ${gap} md:[grid-template-columns:repeat(var(--metric-cols),minmax(0,1fr))]`}
             style={{ '--metric-cols': count } as CSSProperties}
         >
             {Array.from({ length: count }).map((_, i) => (
                 <div key={i} className="min-w-0 py-1">
                     <Skeleton className="h-8 w-16" />
                     <Skeleton className="mt-2 h-2.5 w-24" />
+                    {hint ? (
+                        <div className="mt-1 flex h-4 items-center">
+                            <Skeleton tone="paper" className="h-3 w-32" />
+                        </div>
+                    ) : null}
                 </div>
             ))}
         </section>
@@ -235,7 +250,7 @@ export function DashboardSkeleton() {
             </section>
 
             <div className="mb-5">
-                <MetricRowSkeleton count={4} />
+                <MetricRowSkeleton count={4} hint gap="gap-4" />
             </div>
 
             {/* `min-w-0` on both columns for the same reason the real board
