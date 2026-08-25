@@ -852,8 +852,6 @@
       "template_save_toggle": "Guardar como plantilla",
       "template_name_placeholder": "Nombre de la plantilla",
       "template_check_city": "Revise la ciudad antes de publicar",
-      "template_limit_reached": "Límite de plantillas alcanzado — mejore su plan para más",
-      "template_limit_reached_n": "Alcanzó el límite de {limit} plantillas — mejore su plan para más",
       "template_name_taken": "Ya tiene una plantilla con ese nombre",
       "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
       "post_without_template": "Publicar sin guardar plantilla"
