@@ -250,7 +250,7 @@ describe('planLimitModel -- case 7: the template limit', () => {
     expect(model!.bodyParams).toEqual({ limit: 2, used: 2 });
     expect(model!.hintKey).toBe('limit_dialog.hint_templates');
     expect(model!.ctas.map((cta) => cta.kind)).toEqual(['manage_templates', 'upgrade']);
-    expect(model!.overflowCount).toBe(2);
+    expect(model!.overflowCount).toBe(0); // nothing is named for a template limit, so nothing overflows
   });
 
   it('never names blocking jobs for a template limit, even when jobs are supplied', () => {

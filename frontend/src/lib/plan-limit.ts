@@ -169,7 +169,8 @@ export function planLimitModel(
       bodyParams: { limit, used: limit },
       planNameKey,
       blockingJobs: [],
-      overflowCount: limit,
+      // No jobs are named for a template limit, so there is nothing to overflow.
+      overflowCount: 0,
       hintKey: 'limit_dialog.hint_templates',
       ctas: TEMPLATES_CTAS,
     };
