@@ -158,6 +158,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Require Cognito SES sender variable
+        if: env.AWS_PLAN_ROLE_ARN != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -331,6 +332,15 @@ jobs:
 
       - name: Check Lambda account concurrency
         run: aws lambda get-account-settings
+
+      - name: Require Cognito SES sender variable
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${COGNITO_EMAIL_FROM_ADDRESS:-}" ]]; then
+            echo "::error::vars.COGNITO_EMAIL_FROM_ADDRESS must be set (bare address, e.g. no-reply@jaleapp.ai) before deploying JaleAuthStack."
+            exit 1
+          fi
 
       - name: Run CDK diff after approval
         working-directory: infra

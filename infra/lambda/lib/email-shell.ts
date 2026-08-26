@@ -89,8 +89,10 @@ function lastWhitespaceIndex(text: string, upTo: number): number {
 }
 
 /**
- * Clip raw preheader text to `max` characters on a word boundary, appending
- * ' …' when something was dropped. Raw text in, raw text out — clipping must
+ * Clip raw preheader text on a word boundary so the kept words fit in `max`
+ * characters, then append ' …' when something was dropped (so the result can
+ * run to `max + 2`; the preheader is a soft inbox-preview budget, not a DB or
+ * Cognito cap). Raw text in, raw text out — clipping must
  * happen BEFORE escaping, otherwise the cut can land inside an entity and
  * leave a dangling `&amp` in the inbox preview.
  *

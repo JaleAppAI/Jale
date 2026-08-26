@@ -142,6 +142,20 @@ describe('billing pause template', () => {
     expect(bodyHtml).toContain('+ 950 empleos más');
   });
 
+  it('clips a single pathological title so one job can never breach the outbox caps', () => {
+    // jobs.title has no length CHECK and the create API only rejects blanks, so
+    // a 60k-char title is reachable; halving the list cannot fix a list of one.
+    const huge = `${'Very long title '.repeat(4000)}END`;
+    expect(huge.length).toBeGreaterThan(60_000);
+    const { bodyText, bodyHtml } = renderBillingPauseEmail(model({ pausedTitles: [huge] }));
+    expect(bodyText.length).toBeLessThanOrEqual(100_000);
+    expect(bodyHtml.length).toBeLessThanOrEqual(70_000);
+    expect(bodyText).toContain(`- ${huge.slice(0, 199)}…`);
+    expect(bodyText).not.toContain('END');
+    expect(occurrences(bodyHtml, 'border-top:1px solid #d1d1d1')).toBe(2);
+    expect(bodyText).not.toMatch(/\+ \d+ more job posting/);
+  });
+
   it('omits the overflow line when every paused job is listed', () => {
     const { bodyText, bodyHtml } = renderBillingPauseEmail(model());
     expect(bodyText).not.toMatch(/\+ \d+ more job posting/);

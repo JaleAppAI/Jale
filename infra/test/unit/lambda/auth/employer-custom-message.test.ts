@@ -244,6 +244,24 @@ describe('employer-custom-message — fail-open guards', () => {
     expect(logged).not.toContain(PLACEHOLDER);
   });
 
+  it('falls open when the rendered subject overruns the Cognito 140-char cap', async () => {
+    // Cognito rejects the whole SignUp/ForgotPassword call on an over-long
+    // emailSubject exactly as it does on a bad emailMessage.
+    jest.spyOn(template, 'renderEmployerCodeEmail').mockReturnValue({
+      subject: 's'.repeat(template.CODE_EMAIL_SUBJECT_MAX + 1),
+      html: `<p>${PLACEHOLDER}</p>`,
+    });
+    const event = baseEvent('CustomMessage_SignUp');
+    const before = clone(event);
+
+    const result = await handler(event);
+
+    expect(result).toEqual(before);
+    expect(result.response.emailSubject).toBeNull();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warnSpy.mock.calls)).toContain('141');
+  });
+
   it('falls open when codeParameter is missing', async () => {
     const event = baseEvent('CustomMessage_SignUp', { request: { codeParameter: undefined } });
     const before = clone(event);

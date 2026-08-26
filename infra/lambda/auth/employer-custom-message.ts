@@ -2,6 +2,7 @@ import type { CustomMessageTriggerEvent } from 'aws-lambda';
 
 import {
   CODE_EMAIL_MAX_CHARS,
+  CODE_EMAIL_SUBJECT_MAX,
   codeEmailTriggerFor,
   renderEmployerCodeEmail,
 } from '../lib/employer-code-email-template';
@@ -63,14 +64,19 @@ export const handler = async (
 
     const { subject, html } = renderEmployerCodeEmail(trigger, codeParameter);
 
-    // The two conditions Cognito rejects the whole API call over. Checked here
+    // The three conditions Cognito rejects the whole API call over. Checked here
     // rather than trusted from the template, so a future template edit that
     // drops or duplicates the placeholder degrades to the default email
     // instead of breaking sign-up.
-    if (html.split(codeParameter).length !== 2 || html.length > CODE_EMAIL_MAX_CHARS) {
+    if (
+      html.split(codeParameter).length !== 2
+      || html.length > CODE_EMAIL_MAX_CHARS
+      || subject.length > CODE_EMAIL_SUBJECT_MAX
+    ) {
       console.warn('[employer-custom-message] rendered body failed its self-check; using Cognito default', {
         triggerSource: event.triggerSource,
         htmlLength: html.length,
+        subjectLength: subject.length,
       });
       return event;
     }

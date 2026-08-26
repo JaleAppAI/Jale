@@ -113,6 +113,14 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c em
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c sesVerifiedIdentityArn=');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'COGNITO_EMAIL_FROM_ADDRESS: ${{ vars.COGNITO_EMAIL_FROM_ADDRESS }}');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'Require Cognito SES sender variable');
+// The guard must run in BOTH jobs: the plan job is skipped entirely when no
+// plan role is configured, and the deploy job is the one that can break prod.
+const cognitoSenderGuards = reusableDeploy.match(/- name: Require Cognito SES sender variable/g) ?? [];
+if (cognitoSenderGuards.length !== 2) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must guard COGNITO_EMAIL_FROM_ADDRESS in both the plan and deploy jobs',
+  );
+}
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'WHATSAPP_ALARM_TOPIC_ARN');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'JALE_WHATSAPP_STATUS_CALLBACK_URL');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappStatusCallbackUrl=');

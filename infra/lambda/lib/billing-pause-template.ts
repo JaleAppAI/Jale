@@ -12,7 +12,9 @@
  * 1..100000, body_html NULL or 1..200000. A violation is a 23514 at INSERT
  * time, which aborts the processor's transaction and hands the Stripe event
  * back to SQS for redelivery — an unbounded title list would therefore loop
- * forever. So the list is capped at BILLING_PAUSE_MAX_TITLES, and the render
+ * forever. So every title is clipped to BILLING_PAUSE_MAX_TITLE_CHARS (jobs.title
+ * is unbounded TEXT — shrinking the LIST can never rescue one pathological
+ * title), the list is capped at BILLING_PAUSE_MAX_TITLES, and the render
  * is re-run against a smaller list on the (unreachable in practice) chance
  * that 50 titles still overflow.
  *
@@ -36,6 +38,8 @@ import {
 export const BILLING_PAUSE_SUBJECT = 'Job postings paused · Empleos pausados';
 /** Titles listed per language block before the "+N more" line takes over. */
 export const BILLING_PAUSE_MAX_TITLES = 50;
+/** Per-title clip; longer titles end in '…'. Bounds the body per title, not just per list. */
+export const BILLING_PAUSE_MAX_TITLE_CHARS = 200;
 /** Well under the 200000 body_html ceiling: inboxes clip long HTML anyway. */
 export const BILLING_PAUSE_BODY_HTML_MAX = 70000;
 export const BILLING_PAUSE_BODY_TEXT_MAX = 100000;
@@ -63,6 +67,11 @@ const preheaderText = (count: number): string =>
     : `${count} job postings paused · ${count} empleos pausados`;
 
 const C = EMAIL_COLORS;
+
+const clipTitle = (title: string): string =>
+  title.length > BILLING_PAUSE_MAX_TITLE_CHARS
+    ? `${title.slice(0, BILLING_PAUSE_MAX_TITLE_CHARS - 1)}…`
+    : title;
 
 export interface BillingPauseModel {
   /** Every job the enforcement function paused, in the order it returned them. */
@@ -161,7 +170,7 @@ export function renderBillingPauseEmail(model: BillingPauseModel): RenderedBilli
   let listed = Math.min(total, BILLING_PAUSE_MAX_TITLES);
 
   for (;;) {
-    const shown = model.pausedTitles.slice(0, listed);
+    const shown = model.pausedTitles.slice(0, listed).map(clipTitle);
     const hidden = total - shown.length;
     const bodyText = buildBodyText(model, shown, hidden);
     const bodyHtml = buildBodyHtml(model, shown, hidden);
