@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { authErrorKey, resendErrorKey } from '@/lib/auth-errors';
+import { authErrorKey, confirmErrorKey, resendErrorKey } from '@/lib/auth-errors';
 
 /**
  * `authErrorKey` is the single place where a Cognito failure becomes a
@@ -137,5 +137,58 @@ describe('resendErrorKey', () => {
 
     it('defers to authErrorKey for a non-Cognito input', () => {
         expect(resendErrorKey(null)).toBe('errors.signup_failed');
+    });
+});
+
+/**
+ * `ConfirmSignUp` collides on `NotAuthorizedException` the same way the resend
+ * call does: on `authenticateUser` it means "wrong password", but on a confirm
+ * against an account that is ALREADY confirmed it means "there is nothing left
+ * to confirm". Routing that through `authErrorKey` printed "The email or
+ * password is incorrect" on a screen with no password field — which is how a
+ * wrong-password employer looped through the recovery flow three times.
+ *
+ * Everything else on this call site is an ordinary code/expiry failure, so it
+ * defers to `authErrorKey` rather than growing confirm-only branches there.
+ */
+describe('confirmErrorKey', () => {
+    it('maps NotAuthorizedException to already-confirmed rather than bad credentials', () => {
+        expect(confirmErrorKey(withCode('NotAuthorizedException'))).toBe('errors.already_confirmed');
+    });
+
+    it('maps an already-confirmed error carrying only `name`', () => {
+        expect(confirmErrorKey(withNameOnly('NotAuthorizedException'))).toBe('errors.already_confirmed');
+    });
+
+    it('does not sniff the message text when deciding already-confirmed', () => {
+        // Cognito can return "Incorrect username or password." here as well as
+        // "User cannot be confirmed. Current status is CONFIRMED". Neither is
+        // contractual and neither is localised, so only the code may decide.
+        expect(confirmErrorKey(withCode('NotAuthorizedException', 'Incorrect username or password.')))
+            .toBe('errors.already_confirmed');
+    });
+
+    it.each([
+        ['CodeMismatchException'],
+        ['ExpiredCodeException'],
+        ['LimitExceededException'],
+        ['UserNotFoundException'],
+        ['SomeBrandNewException'],
+    ])('defers to authErrorKey for %s', (code) => {
+        const err = withCode(code);
+        expect(confirmErrorKey(err)).toBe(authErrorKey(err));
+    });
+
+    it('defers to authErrorKey for a non-Cognito input', () => {
+        expect(confirmErrorKey(null)).toBe(authErrorKey(null));
+    });
+
+    it('leaves the shared sign-in mapping alone', () => {
+        // The employer confirm step is the only call site that re-reads this
+        // code, so the fix is a call-site mapper rather than a widened
+        // `authErrorKey`: `WorkerAuthForm` renders that mapper's output
+        // directly and has no already-confirmed copy at all, so widening it
+        // would leave a worker with a bad password staring at a raw key path.
+        expect(authErrorKey(withCode('NotAuthorizedException'))).toBe('errors.invalid_credentials');
     });
 });

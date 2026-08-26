@@ -4,7 +4,7 @@ import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
-import { authErrorKey, resendErrorKey } from '@/lib/auth-errors';
+import { authErrorKey, confirmErrorKey, resendErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
 import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
@@ -228,16 +228,20 @@ export default function EmployerAuthForm() {
     };
 
     /**
-     * The always-available escape hatch, from the login step and from the
-     * forgot-password step. The forgot step matters more than it looks:
-     * Cognito's forgot-password flow reports success for an UNCONFIRMED user
-     * without ever sending anything, so that path otherwise loops forever on
-     * "that code expired" with no way out.
+     * The escape hatch on the forgot-password step, and only there. That step
+     * needs it: Cognito's forgot-password flow reports success for an
+     * UNCONFIRMED user without ever sending anything, so it otherwise loops
+     * forever on "that code expired" with no way out.
      *
-     * It takes the address explicitly because the two steps keep it in
-     * different state (`email` vs `forgotEmail`), and `handleConfirm` reads
-     * `email` — so the forgot step's address has to be promoted, which
-     * `enterRecoveryConfirm` does.
+     * It used to be offered on the login step too. It is not any more — a
+     * user with the right password and an unconfirmed account is recovered
+     * automatically by `handleSignIn`, so the link there could only ever fire
+     * for someone whose password was wrong, and it answered them with a
+     * password error on a screen with no password field.
+     *
+     * It takes the address explicitly because the remaining caller keeps it in
+     * `forgotEmail` while `handleConfirm` reads `email`, so the forgot step's
+     * address has to be promoted — which `enterRecoveryConfirm` does.
      */
     const handleNeverReceivedCode = async (targetEmail: string) => {
         setError(null);
@@ -313,7 +317,22 @@ export default function EmployerAuthForm() {
         try {
             await employerConfirmSignUp(email, confirmationCode);
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            // `confirmErrorKey`, not `authErrorKey`: a confirm against an
+            // ALREADY-CONFIRMED account rejects with `NotAuthorizedException`,
+            // which the shared mapper reads as "the email or password is
+            // incorrect" — a sentence about a field this step does not have.
+            const key = confirmErrorKey(err);
+            if (key === 'errors.already_confirmed') {
+                // Same reasoning as `enterRecoveryConfirm`: there is no code
+                // coming for this account, so the confirm step is a dead end.
+                // Login is the screen the sentence describes. `goToStep` clears
+                // `error`, so the message is set after it.
+                goToStep('login');
+                setResetSuccess(false);
+                setError(t(key));
+            } else {
+                setError(t(key));
+            }
             setIsLoading(false);
             return;
         }
@@ -352,10 +371,17 @@ export default function EmployerAuthForm() {
             // would strand them behind an input that can never succeed again.
             // The confirm itself worked; login is the correct next screen, and
             // it carries the reason the sign-in did not.
+            //
+            // Both lines are shown together, and the bad-credentials sentence
+            // is swapped for one that admits the confirm succeeded: on its own,
+            // "the email or password is incorrect" reads as a denial of the
+            // confirmation that just went through, and sends the user back to
+            // ask for another code they do not need.
             const key = authErrorKey(err);
             goToStep('login');
             setResetSuccess(false);
-            setError(t(key));
+            setConfirmedSuccess(true);
+            setError(t(key === 'errors.invalid_credentials' ? 'errors.confirmed_sign_in_failed' : key));
         } finally {
             setIsLoading(false);
         }
@@ -467,24 +493,31 @@ export default function EmployerAuthForm() {
                                 hideLabel={t('hide_password')}
                             />
                         </Field>
-                        <div className="flex flex-col items-end gap-1.5">
+                        {/* One link here, not two. An "I never received my confirmation
+                            code" link used to sit beneath the forgot-password one and
+                            was REMOVED: it emailed a SIGN-UP code, so entering that
+                            code called ConfirmSignUp on an account that was usually
+                            already confirmed, and Cognito's NotAuthorizedException came
+                            back as "the email or password is incorrect" — on a step
+                            with no password field. A real employer read that as a
+                            reason to request yet another code and looped three times.
+
+                            Nothing is lost by dropping it: the only person it could
+                            help from THIS step has the right password and an
+                            unconfirmed account, and `handleSignIn` already recovers
+                            that case on its own via `UserNotConfirmedException`. So
+                            the link could only ever fire for someone whose password
+                            was wrong — the exact case it answered incoherently.
+
+                            The `forgot_request` step keeps it; that step is a genuine
+                            dead end, and the comment there says why. */}
+                        <div className="flex justify-end">
                             <button
                                 type="button"
                                 onClick={() => { setResetSuccess(false); setForgotEmail(email); goToStep('forgot_request'); }}
                                 className={`text-xs ${LINK_BUTTON}`}
                             >
                                 {t('forgot_link')}
-                            </button>
-                            {/* Always reachable, not just after a failed sign-in: the
-                                user who needs this usually knows the email never
-                                arrived and has no reason to attempt a sign-in first. */}
-                            <button
-                                type="button"
-                                onClick={() => handleNeverReceivedCode(email)}
-                                disabled={isResending}
-                                className={`text-right text-xs ${LINK_BUTTON}`}
-                            >
-                                {t('never_received_code')}
                             </button>
                         </div>
                         {error && <FormError>{error}</FormError>}
