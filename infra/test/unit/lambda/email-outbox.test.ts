@@ -139,6 +139,7 @@ describe('email outbox', () => {
     const client = sendingClient();
     await expect(sendPendingEmails(client as any)).resolves.toBe(1);
     expect(mockSesSend.mock.calls[0][0].input.Source).toBe('Jale <no-reply@jaleapp.ai>');
+    expect(mockSesSend.mock.calls[0][0].input.Source).not.toBe('billing@jaleapp.ai');
   });
 
   it('fails before DB claims or SES calls when sender configuration is missing', async () => {
