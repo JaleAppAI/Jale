@@ -40,8 +40,9 @@ export interface CognitoPoolProps {
      */
     verifyAuthChallengeResponse?: lambda.IFunction;
     /**
-     * Rewrites the subject/body of the verification-code, forgot-password and
-     * MFA emails Cognito sends for this pool. The handler must fail open:
+     * Rewrites the subject/body of the sign-up, resend-code, forgot-password and
+     * attribute-verification emails Cognito sends for this pool (MFA and
+     * admin-create-user messages are left to Cognito). The handler must fail open:
      * Cognito rejects the whole SignUp/ForgotPassword call if this trigger
      * throws or returns a malformed message.
      */
