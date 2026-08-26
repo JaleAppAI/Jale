@@ -66,3 +66,32 @@ export function resendErrorKey(err: unknown): string {
 
   return authErrorKey(err);
 }
+
+/**
+ * Confirm-sign-up failures. The same collision as the resend mapper above, for
+ * the same reason and under the same rule about message text:
+ *
+ * - `NotAuthorizedException` means "wrong password" on `authenticateUser`, but
+ *   `ConfirmSignUp` against an account that is ALREADY CONFIRMED rejects with
+ *   it too ("User cannot be confirmed. Current status is CONFIRMED"). Sending
+ *   that through `authErrorKey` printed "The email or password is incorrect"
+ *   on a step that has no password field, so an employer who reached the
+ *   confirm step with the wrong password had no way to read it as anything but
+ *   an invitation to try the code again — and looped.
+ *
+ * Only that one code is remapped. `InvalidParameterException` is deliberately
+ * NOT carried over from `resendErrorKey`: on a confirm it keeps its ordinary
+ * bad-parameter meaning, and answering "already confirmed" there would just
+ * swap one wrong sentence for another. Everything else — a mistyped or expired
+ * code, the attempt cap — is an ordinary confirm failure and defers to
+ * `authErrorKey`, keeping the shared mapper free of confirm-only branches that
+ * would then also fire on sign-in.
+ */
+export function confirmErrorKey(err: unknown): string {
+  const authErr = err as CognitoLikeError;
+  const code = authErr?.code ?? authErr?.name ?? '';
+
+  if (code === 'NotAuthorizedException') return 'errors.already_confirmed';
+
+  return authErrorKey(err);
+}

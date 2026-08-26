@@ -300,6 +300,12 @@ export const handler = async (): Promise<DigestRunSummary> => {
           // synth cycle (see the note at whatsapp-stack.ts:174-183) and would
           // also mail an API origin to a human.
           unsubscribeUrl: `${baseUrl}/${language}/digest-unsubscribe?token=${token}`,
+          settingsUrl: `${baseUrl}/${language}/employer/profile`,
+          // The SAME null watermark the candidate filter branched on above, so
+          // the intro sentence can never describe a window the query did not
+          // use. Deriving it from row.last_sent_at a second time would let the
+          // two drift if the watermark handling ever changes.
+          firstDigest: watermarkMs === null,
         });
 
         await queueEmail(client, {

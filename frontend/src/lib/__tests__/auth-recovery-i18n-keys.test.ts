@@ -58,6 +58,10 @@ const ADDED_KEY_PATHS = [
     'auth.employer.errors.resend_limit',
     'auth.employer.errors.code_delivery_failed',
 
+    // auth.employer.errors — confirm succeeded but the sign-in behind it did
+    // not, so the confirmed banner and this sentence are shown together
+    'auth.employer.errors.confirmed_sign_in_failed',
+
     // auth.worker.errors — authErrorKey is shared with WorkerAuthForm
     'auth.worker.errors.account_not_confirmed',
 ] as const;

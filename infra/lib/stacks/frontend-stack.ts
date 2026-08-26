@@ -270,6 +270,23 @@ function handler(event) {
       queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
     });
 
+    // Brand assets referenced from transactional emails (Cognito code email,
+    // employer digest) and the site itself. Next.js serves public/ with
+    // `Cache-Control: public, max-age=0`, so a managed policy with minTtl=1s
+    // would cache for one second (see the minTtl note on publicPagesCachePolicy).
+    // Pin a one-day edge TTL; email assets are versioned by filename.
+    const brandAssetsCachePolicy = new cloudfront.CachePolicy(this, 'BrandAssetsCache', {
+      comment: 'One-day edge cache for /brand/* assets; origin max-age=0 cannot defeat it',
+      minTtl: cdk.Duration.days(1),
+      defaultTtl: cdk.Duration.days(1),
+      maxTtl: cdk.Duration.days(1),
+      enableAcceptEncodingGzip: true,
+      enableAcceptEncodingBrotli: true,
+      cookieBehavior: cloudfront.CacheCookieBehavior.none(),
+      headerBehavior: cloudfront.CacheHeaderBehavior.none(),
+      queryStringBehavior: cloudfront.CacheQueryStringBehavior.none(),
+    });
+
     const additionalBehaviors: Record<string, cloudfront.BehaviorOptions> = {
       // Backend API → existing API Gateway
       '/api/*': {
@@ -293,6 +310,23 @@ function handler(event) {
         origin: lambdaOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        compress: true,
+        functionAssociations: [
+          {
+            function: stripFrontendAuthorization,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+        ],
+      },
+      // Brand assets (email wordmark, logos) served from the Next.js public/
+      // directory. Emails are opened long after a deploy and can be opened many
+      // times, so these must never fall through to the default CACHING_DISABLED
+      // behavior and invoke the Lambda on every open.
+      '/brand/*': {
+        origin: lambdaOrigin,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        cachePolicy: brandAssetsCachePolicy,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_GET_HEAD,
         compress: true,
         functionAssociations: [
           {
