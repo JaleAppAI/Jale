@@ -111,6 +111,10 @@ async function reachConfirmStepViaSignIn(user: ReturnType<typeof userEvent.setup
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // jsdom hands every file in this environment the same storage, so a stale
+    // key would make the "must not stage a profile patch" assertion pass or
+    // fail for reasons belonging to an earlier test.
+    sessionStorage.clear();
 });
 
 afterEach(() => {
@@ -173,6 +177,11 @@ describe('EmployerAuthForm — confirm step', () => {
         // another attempt against Cognito's 5-per-hour cap.
         expect(cognito.employerResendConfirmationCode).toHaveBeenCalledTimes(1);
         expect(push).not.toHaveBeenCalled();
+        // A recovery confirm has no signup form behind it, so it must never
+        // stage a profile patch: the patch always carries `hiring_trades` and
+        // `typical_job_types`, and the API reads a present key as intentional,
+        // so staging one here would empty a real employer's trades.
+        expect(sessionStorage.getItem('pendingEmployerProfile')).toBeNull();
     });
 
     it('says the confirm worked when only the sign-in behind it failed', async () => {
@@ -197,6 +206,29 @@ describe('EmployerAuthForm — confirm step', () => {
         expect(screen.queryByText(message('auth.employer.errors.invalid_credentials'))).not.toBeInTheDocument();
         expect(setTokens).not.toHaveBeenCalled();
         expect(push).not.toHaveBeenCalled();
+    });
+
+    it('keeps the real reason when the post-confirm sign-in failed for some other cause', async () => {
+        const user = userEvent.setup();
+        render(<EmployerAuthForm />);
+        await reachConfirmStepViaSignIn(user);
+
+        cognito.employerConfirmSignUp.mockResolvedValueOnce(undefined);
+        cognito.employerSignIn.mockRejectedValueOnce({
+            code: 'TooManyRequestsException',
+            name: 'TooManyRequestsException',
+        });
+        await user.type(screen.getByRole('textbox'), '123456');
+        await user.click(screen.getByRole('button', { name: new RegExp(`^${message('auth.employer.confirm_account')}`) }));
+
+        expect(await screen.findByText(LOGIN_MARKER)).toBeInTheDocument();
+        // Only a credentials failure gets the password apology. Blaming the
+        // password for a rate limit would send a user who typed it correctly
+        // off to reset a password that was never the problem.
+        expect(screen.getByText(message('auth.employer.errors.too_many_attempts'))).toBeInTheDocument();
+        expect(screen.queryByText(message('auth.employer.errors.confirmed_sign_in_failed'))).not.toBeInTheDocument();
+        // The confirm still worked, so the banner still belongs on screen.
+        expect(screen.getByText(message('auth.employer.confirmed_sign_in'))).toBeInTheDocument();
     });
 });
 

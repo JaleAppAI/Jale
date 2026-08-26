@@ -310,6 +310,24 @@ export default function EmployerAuthForm() {
         }
     };
 
+    /**
+     * Hands the signup form's answers to the next successful sign-in, which is
+     * what consumes them. ONLY a signup-origin confirm has a filled-in form
+     * behind it.
+     *
+     * Writing it on a recovery confirm was actively destructive: the patch
+     * always carries `hiring_trades` and `typical_job_types` keys, and the API
+     * treats a PRESENT key as an intentional value (employer-profile.ts gates
+     * those two columns on `hasOwnProperty`, not on emptiness). An employer who
+     * signed in unconfirmed would have both arrays emptied and `company_size`
+     * reset to the '1-10' default the moment they entered their code — losing
+     * real profile data to fix an email problem.
+     */
+    const savePendingSignupProfile = () => {
+        if (confirmOrigin !== 'signup') return;
+        sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(pendingProfile()));
+    };
+
     const handleConfirm = async () => {
         setError(null);
         setResendSuccess(false);
@@ -327,6 +345,14 @@ export default function EmployerAuthForm() {
                 // coming for this account, so the confirm step is a dead end.
                 // Login is the screen the sentence describes. `goToStep` clears
                 // `error`, so the message is set after it.
+                //
+                // The answers are persisted first. This refusal means the
+                // account IS confirmed — it just was not confirmed by THIS
+                // submit (a second tab, or a code entered elsewhere) — so a
+                // signup still owes its profile patch to the sign-in that
+                // follows. Routing to login without it would strand the form's
+                // answers on a step the user can no longer get back to.
+                savePendingSignupProfile();
                 goToStep('login');
                 setResetSuccess(false);
                 setError(t(key));
@@ -337,18 +363,7 @@ export default function EmployerAuthForm() {
             return;
         }
 
-        // Only a signup-origin confirm has a filled-in form behind it.
-        //
-        // Writing it on a recovery confirm was actively destructive: the patch
-        // always carries `hiring_trades` and `typical_job_types` keys, and the
-        // API treats a PRESENT key as an intentional value (employer-profile.ts
-        // gates those two columns on `hasOwnProperty`, not on emptiness). An
-        // employer who signed in unconfirmed would have both arrays emptied and
-        // `company_size` reset to the '1-10' default the moment they entered
-        // their code — losing real profile data to fix an email problem.
-        if (confirmOrigin === 'signup') {
-            sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(pendingProfile()));
-        }
+        savePendingSignupProfile();
 
         // The recovery entry points collect an email and nothing else, so there
         // is no password to sign in with. The account IS confirmed now, so send
