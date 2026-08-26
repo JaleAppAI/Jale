@@ -1,5 +1,6 @@
 import {
   DIGEST_BODY_HTML_MAX,
+  DIGEST_BODY_HTML_SOFT_MAX,
   DIGEST_BODY_TEXT_MAX,
   DIGEST_SUBJECT_MAX,
   renderEmployerDigest,
@@ -8,12 +9,28 @@ import {
 
 const DASHBOARD_URL = 'https://jaleapp.ai/en/employer/dashboard';
 const UNSUBSCRIBE_URL = 'https://jaleapp.ai/en/digest-unsubscribe?token=abc.def';
+const SETTINGS_URL = 'https://jaleapp.ai/en/employer/profile';
+const JOB_URL = 'https://jaleapp.ai/en/employer/jobs/11111111-2222-4333-8444-555555555555';
 
+/**
+ * Measured when the branded shell landed (the budget tests at the bottom pin
+ * the invariants these numbers imply):
+ *   empty-card shell + footer ....... 3,153 chars
+ *   intro row (count + sentence) ....   620 chars
+ *   card tail (divider + dashboard) .   236 chars
+ *   one 10-candidate job block ...... 10,012 chars
+ *   whole body, no jobs ............. 3,483 chars
+ * So SIX 10-candidate jobs fit under DIGEST_BODY_HTML_SOFT_MAX (70 kB); a
+ * 50-job render lands at 64,360 chars. Most of a job block is the candidate
+ * rows, which repeat the font stack on every <td> because Outlook inherits it
+ * from neither the body nor a parent cell.
+ */
 function model(overrides: Partial<EmployerDigestModel> = {}): EmployerDigestModel {
   return {
     language: 'en',
     dashboardUrl: DASHBOARD_URL,
     unsubscribeUrl: UNSUBSCRIBE_URL,
+    settingsUrl: SETTINGS_URL,
     jobs: [
       {
         jobId: '11111111-2222-4333-8444-555555555555',
@@ -28,6 +45,13 @@ function model(overrides: Partial<EmployerDigestModel> = {}): EmployerDigestMode
     ],
     ...overrides,
   };
+}
+
+/** The off-screen inbox-preview text the shell hides at the top of the document. */
+function preheaderOf(bodyHtml: string): string {
+  const match = /mso-hide:all;">([\s\S]*?)<\/div>/.exec(bodyHtml);
+  if (!match) throw new Error('no preheader block in the rendered document');
+  return match[1];
 }
 
 describe('employer digest template', () => {
@@ -189,9 +213,19 @@ describe('employer digest template', () => {
     expect(bodyText.length).toBeLessThanOrEqual(DIGEST_BODY_TEXT_MAX);
     expect(bodyHtml.length).toBeGreaterThan(0);
     expect(bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_MAX);
+    // Gmail clips a message at ~102 kB of the transfer-ENCODED part, well
+    // before the 200 kB column limit, so the soft cap is the real budget.
+    expect(bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
+    // A useful digest, not one job and a "the rest lives elsewhere" note.
+    // Deliberate tripwire: this fixture's blocks (150-char titles, 10 long
+    // names and locations) measure ~11 kB, so the render lands on EXACTLY 6
+    // jobs at 67,584 chars — 2,416 spare. Any card change adding ~400 bytes
+    // per block turns this red, which is when the soft cap wants re-examining.
+    expect((bodyHtml.match(/<h2/g) ?? []).length).toBeGreaterThanOrEqual(6);
     // The reader must be told the list was cut, and where the rest lives.
     expect(bodyText).toMatch(/dashboard/i);
     expect(bodyHtml).toContain(DASHBOARD_URL);
+    expect(bodyHtml).toContain('Some job postings are not shown in this email.');
     // The unsubscribe footer survives truncation — it is not optional.
     expect(bodyText).toContain(UNSUBSCRIBE_URL);
     expect(bodyHtml).toContain(UNSUBSCRIBE_URL);
@@ -209,5 +243,246 @@ describe('employer digest template', () => {
     expect(subject.length).toBeGreaterThan(0);
     expect(bodyText.length).toBeGreaterThan(0);
     expect(bodyHtml.length).toBeGreaterThan(0);
+  });
+
+  // ── Branded shell ─────────────────────────────────────────────────────────
+
+  it('renders the HTML body inside the shared branded shell', () => {
+    const { bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).toContain('<title>2 new applicants — Jale</title>');
+    expect(bodyHtml).toContain('https://jaleapp.ai/brand/email/wordmark-white-2x.png');
+    expect(bodyHtml).toContain('alt="Jale"');
+    expect(bodyHtml).toContain('Daily digest');
+    expect(bodyHtml).toContain('color-scheme');
+  });
+
+  it('drops the greeting and the rank numbers from the HTML while the text body keeps both', () => {
+    const { bodyText, bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).not.toContain('Hello,');
+    expect(bodyHtml).not.toMatch(/>\s*1\.\s/);
+    expect(bodyText.startsWith('Hello,')).toBe(true);
+    expect(bodyText).toContain('1. Maria Lopez');
+  });
+
+  it('leads the card with the total count in a 72px gutter beside the intro sentence', () => {
+    const { bodyText, bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).toMatch(/width:72px[\s\S]{0,400}?>2</);
+    for (const body of [bodyText, bodyHtml]) {
+      expect(body).toContain(
+        'You have 2 new applicants on 1 active job posting since your last digest.',
+      );
+    }
+  });
+
+  it('links the job title from an h2 under a blue new-applicant eyebrow', () => {
+    const { bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).toContain(
+      '<h2 style="margin:4px 0 8px;font-size:20px;line-height:26px;font-weight:700;letter-spacing:-0.02em;">'
+      + `<a href="${JOB_URL}" style="color:#181855;text-decoration:none;">Journeyman Electrician</a></h2>`,
+    );
+    expect(bodyHtml).toMatch(/color:#0050ad;">2 new applicants</);
+  });
+
+  it('renders each candidate as a name/location row with a score and a band dot', () => {
+    const { bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).toContain(
+      '<div style="font-size:15px;line-height:22px;font-weight:600;color:#181855;">Maria Lopez</div>',
+    );
+    expect(bodyHtml).toContain(
+      '<div style="font-size:13px;line-height:18px;color:#5b6480;">Austin, TX</div>',
+    );
+    expect(bodyHtml).toContain(
+      '<div style="font-size:16px;line-height:22px;font-weight:800;color:#181855;'
+      + 'font-variant-numeric:tabular-nums;">82</div>',
+    );
+    expect(bodyHtml).toContain('<span style="color:#1f7a44;">●</span> strong match');
+    expect(bodyHtml).toContain('<span style="color:#0064d6;">●</span> good match');
+  });
+
+  it('uses the muted dot for a fair match', () => {
+    const { bodyHtml } = renderEmployerDigest(model({
+      jobs: [{
+        ...model().jobs[0],
+        newApplicantCount: 1,
+        candidates: [{ displayName: 'Ana Diaz', matchScore: 31, scoreBand: 'fair', location: null }],
+      }],
+    }));
+    expect(bodyHtml).toContain('<span style="color:#5b6480;">●</span> fair match');
+  });
+
+  it('omits the location line entirely when a candidate has no location', () => {
+    // Juan Perez has location: null — an empty <div> would draw a phantom
+    // second line under his name.
+    const { bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).not.toContain('<div style="font-size:13px;line-height:18px;color:#5b6480;"></div>');
+  });
+
+  it('ends each job block with a full-width Review this job button', () => {
+    const { bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).toContain('bgcolor="#0064d6"');
+    expect(bodyHtml).toContain(`href="${JOB_URL}"`);
+    expect(bodyHtml).toContain('>Review this job</a>');
+  });
+
+  it('closes the card with the dashboard link', () => {
+    const { bodyHtml } = renderEmployerDigest(model());
+    expect(bodyHtml).toContain(
+      `<a href="${DASHBOARD_URL}" style="color:#0050ad;font-weight:600;">View your dashboard →</a>`,
+    );
+  });
+
+  it('puts the settings link, the unsubscribe link and the legal line in the footer', () => {
+    const { bodyHtml, bodyText } = renderEmployerDigest(model());
+    expect(bodyHtml).toContain(`href="${SETTINGS_URL}"`);
+    expect(bodyHtml).toContain('Notification settings');
+    expect(bodyHtml).toContain(`href="${UNSUBSCRIBE_URL}"`);
+    expect(bodyHtml).toContain('Turn off the daily digest');
+    expect(bodyHtml).toContain(
+      'You are receiving this because the daily digest is on for your Jale employer account.',
+    );
+    expect(bodyHtml).toContain('/legal/terms');
+    expect(bodyHtml).toContain('/legal/privacy');
+    expect(bodyHtml).toContain('© 2026 Jale');
+    // The plain-text body is untouched by the restyle: it never learned about
+    // the settings page, and gaining it would change bytes we promised to keep.
+    expect(bodyText).not.toContain(SETTINGS_URL);
+  });
+
+  it('renders the Spanish HTML in formal usted', () => {
+    const { bodyHtml } = renderEmployerDigest(model({ language: 'es' }));
+    expect(bodyHtml).toContain('Resumen diario');
+    expect(bodyHtml).toContain('Revise este puesto');
+    expect(bodyHtml).toContain('Vea su panel →');
+    expect(bodyHtml).toContain('Configuración de notificaciones');
+    expect(bodyHtml).toContain('Desactivar el resumen diario');
+    expect(bodyHtml).toContain('coincidencia excelente');
+    expect(bodyHtml).not.toMatch(/\btus?\b|\btienes\b/i);
+  });
+
+  // ── Inbox preview (preheader) ─────────────────────────────────────────────
+
+  it('builds the inbox preview from every job in the model', () => {
+    const { bodyHtml } = renderEmployerDigest(model({
+      jobs: [
+        model().jobs[0],
+        { ...model().jobs[0], title: 'Plumber', newApplicantCount: 1, candidates: [] },
+      ],
+    }));
+    expect(preheaderOf(bodyHtml)).toBe('Journeyman Electrician · 2 new · Plumber · 1 new');
+  });
+
+  it('counts the Spanish inbox preview in Spanish', () => {
+    const { bodyHtml } = renderEmployerDigest(model({
+      language: 'es',
+      jobs: [
+        model().jobs[0],
+        { ...model().jobs[0], title: 'Plomero', newApplicantCount: 1, candidates: [] },
+      ],
+    }));
+    expect(preheaderOf(bodyHtml)).toBe('Journeyman Electrician · 2 nuevos · Plomero · 1 nuevo');
+  });
+
+  it('clips a runaway job title out of the inbox preview', () => {
+    const { bodyHtml } = renderEmployerDigest(model({
+      jobs: [{ ...model().jobs[0], title: 'T'.repeat(300) }],
+    }));
+    const preheader = preheaderOf(bodyHtml);
+    expect(preheader.length).toBeLessThanOrEqual(92);
+    expect(preheader.endsWith('…')).toBe(true);
+  });
+
+  it('escapes the inbox preview, so a hostile title cannot open a tag anywhere in the document', () => {
+    const { bodyHtml } = renderEmployerDigest(model({
+      jobs: [{ ...model().jobs[0], title: '<script>alert(1)</script>' }],
+    }));
+    expect(bodyHtml).toContain('&lt;script&gt;');
+    expect(bodyHtml).not.toMatch(/<script/i);
+  });
+
+  // ── Degenerate shapes ─────────────────────────────────────────────────────
+
+  it('renders a job whose candidates were all filtered out as a bare "+N more" link', () => {
+    const { bodyHtml } = renderEmployerDigest(model({
+      jobs: [{ ...model().jobs[0], newApplicantCount: 5, candidates: [] }],
+    }));
+    expect(bodyHtml).toContain('>5 new applicants<');
+    expect(bodyHtml).toContain('+ 5 more new applicants');
+    expect(bodyHtml).not.toContain('border-top:1px solid #d1d1d1');
+    expect(bodyHtml).toContain('>Review this job</a>');
+  });
+
+  it('tells a first-time recipient the window started when they turned the digest on', () => {
+    const first = renderEmployerDigest(model({ firstDigest: true }));
+    expect(first.bodyText).toContain('since you turned on the daily digest');
+    expect(first.bodyHtml).toContain('since you turned on the daily digest');
+    const firstEs = renderEmployerDigest(model({ language: 'es', firstDigest: true }));
+    expect(firstEs.bodyText).toContain('desde que activó el resumen diario');
+    expect(firstEs.bodyHtml).toContain('desde que activó el resumen diario');
+    const repeat = renderEmployerDigest(model());
+    expect(repeat.bodyText).toContain('since your last digest');
+    expect(repeat.bodyHtml).toContain('since your last digest');
+  });
+
+  it('says there is nothing new when the model carries no jobs', () => {
+    const en = renderEmployerDigest(model({ jobs: [] }));
+    expect(en.subject).toBe('No new applicants — Jale');
+    expect(en.bodyHtml).toContain('No new applicants to report.');
+    expect(en.bodyHtml).not.toContain('<h2');
+    const es = renderEmployerDigest(model({ jobs: [], language: 'es' }));
+    expect(es.subject).toBe('Sin postulantes nuevos — Jale');
+    expect(es.bodyHtml).toContain('No hay postulantes nuevos por informar.');
+  });
+
+  it('escapes an apostrophe in the HTML title and leaves it raw in the text body', () => {
+    const rendered = renderEmployerDigest(model({
+      jobs: [{ ...model().jobs[0], title: "Plumber's Helper" }],
+    }));
+    expect(rendered.bodyHtml).toContain('Plumber&#39;s Helper');
+    expect(rendered.bodyText).toContain("Plumber's Helper");
+  });
+
+  // ── Byte budget ───────────────────────────────────────────────────────────
+
+  it('leaves room under the soft cap for a realistic digest after the shell', () => {
+    const empty = renderEmployerDigest(model({ jobs: [] })).bodyHtml.length;
+    expect(empty).toBeLessThan(8_000);
+    // The shell must not eat the budget: 3,483 chars spent leaves 66,517, and
+    // a real 10-candidate block measures ~10 kB, so six of them still land.
+    expect(DIGEST_BODY_HTML_SOFT_MAX - empty).toBeGreaterThanOrEqual(6 * 8_000);
+  });
+
+  it('keeps the soft cap at or under the hard email_outbox cap', () => {
+    expect(DIGEST_BODY_HTML_SOFT_MAX).toBeLessThanOrEqual(DIGEST_BODY_HTML_MAX);
+  });
+
+  it('includes the last job that fits under the soft cap and drops the first that does not', () => {
+    // Titles longer than the 90-char preheader budget all clip to the same
+    // preview, so the ONLY thing that varies with the title length is the job
+    // block itself, and inclusion is therefore monotonic in it — which is what
+    // makes the binary search below valid.
+    const render = (titleLength: number) => renderEmployerDigest(model({
+      jobs: [{ ...model().jobs[0], title: 'T'.repeat(titleLength) }],
+    }));
+    let fitting = 100;
+    let overflowing = 70_000;
+    while (overflowing - fitting > 1) {
+      const mid = Math.floor((fitting + overflowing) / 2);
+      if (render(mid).bodyHtml.includes('<h2')) fitting = mid;
+      else overflowing = mid;
+    }
+    expect(overflowing).toBe(fitting + 1);
+
+    const fits = render(fitting);
+    expect(fits.bodyHtml).toContain('<h2');
+    expect(fits.bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
+    expect(fits.bodyHtml).not.toContain('not shown');
+
+    const over = render(overflowing);
+    expect(over.bodyHtml).not.toContain('<h2');
+    expect(over.bodyHtml).toContain('Some job postings are not shown in this email.');
+    expect(over.bodyText).toContain('Some job postings are not shown in this email.');
+    expect(over.bodyHtml).toContain(DASHBOARD_URL);
+    expect(over.bodyText).toContain(UNSUBSCRIBE_URL);
+    expect(over.bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
   });
 });

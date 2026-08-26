@@ -721,4 +721,49 @@ describe('employer-digest-producer', () => {
     await handler();
     expect(mockQueueEmail.mock.calls[0][1].subject.length).toBeLessThanOrEqual(200);
   });
+
+  // ── Branded-shell model fields ────────────────────────────────────────────
+
+  it('links the notification settings page in the HTML footer', async () => {
+    configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] } });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    await handler();
+    expect(mockQueueEmail.mock.calls[0][1].bodyHtml)
+      .toContain(`href="${BASE_URL}/en/employer/profile"`);
+
+    jest.clearAllMocks();
+    mockQueueEmail.mockResolvedValue('outbox-id');
+    mockMintUnsubscribeToken.mockResolvedValue('tok.sig');
+    mockGetUnsubscribeSecret.mockResolvedValue('signing-secret');
+    configureDb({
+      due: [dueRow({ language: 'es' })],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electricista' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    await handler();
+    expect(mockQueueEmail.mock.calls[0][1].bodyHtml)
+      .toContain(`href="${BASE_URL}/es/employer/profile"`);
+  });
+
+  it('tells a first-time recipient the window is since they turned the digest on', async () => {
+    // The intro must describe the SAME window the candidate filter used, and
+    // that filter keys off last_sent_at being null — not off a separate flag
+    // that could drift away from it.
+    configureDb({
+      due: [dueRow({ last_sent_at: null })],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    await handler();
+    expect(mockQueueEmail.mock.calls[0][1].bodyText).toMatch(/since you turned on the daily digest/);
+
+    jest.clearAllMocks();
+    mockQueueEmail.mockResolvedValue('outbox-id');
+    mockMintUnsubscribeToken.mockResolvedValue('tok.sig');
+    mockGetUnsubscribeSecret.mockResolvedValue('signing-secret');
+    configureDb({ due: [dueRow()], jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] } });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([candidate()]));
+    await handler();
+    expect(mockQueueEmail.mock.calls[0][1].bodyText).toMatch(/since your last digest/);
+  });
 });
