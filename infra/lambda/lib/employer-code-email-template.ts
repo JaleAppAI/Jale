@@ -118,8 +118,9 @@ const COPY: Record<CodeEmailTrigger, TriggerCopy> = {
 };
 
 /**
- * All copy below is a compile-time constant containing no `< > & " '`, so it is
- * inserted verbatim into the TRUSTED cardHtml fragment. Do NOT route it through
+ * All copy below is a compile-time constant containing no `< > & "` (the lone
+ * apostrophe in "didn't" is fine in a text node), so it is inserted verbatim into
+ * the TRUSTED cardHtml fragment. Do NOT route it through
  * escapeHtml(): that would turn the apostrophe in "didn't" into `&#39;`.
  */
 const SAFETY_EN =
