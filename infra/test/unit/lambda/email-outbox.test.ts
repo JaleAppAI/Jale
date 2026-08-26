@@ -134,6 +134,13 @@ describe('email outbox', () => {
     log.mockRestore();
   });
 
+  it('passes a display-name sender through to SES verbatim', async () => {
+    process.env.EMAIL_FROM_ADDRESS = 'Jale <no-reply@jaleapp.ai>';
+    const client = sendingClient();
+    await expect(sendPendingEmails(client as any)).resolves.toBe(1);
+    expect(mockSesSend.mock.calls[0][0].input.Source).toBe('Jale <no-reply@jaleapp.ai>');
+  });
+
   it('fails before DB claims or SES calls when sender configuration is missing', async () => {
     delete process.env.EMAIL_FROM_ADDRESS;
     const query = jest.fn();

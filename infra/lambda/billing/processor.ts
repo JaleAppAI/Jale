@@ -35,6 +35,7 @@ import { getDbPool } from '../lib/db';
 import { getStripe, getStripeSecret } from '../lib/stripe-client';
 import { resolveEntitlements } from '../lib/entitlements';
 import { queueEmail } from '../lib/email-outbox';
+import { renderBillingPauseEmail } from '../lib/billing-pause-template';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -401,23 +402,20 @@ async function handleSubscriptionEvent(
           throw new Error('billing_job_enforcement_invalid_titles');
         }
         console.info('paused_over_limit_jobs', { userId, pausedCount });
-        const bulletList = titles.map((title) => `- ${title}`).join('\n');
         const origin = (process.env.ALLOWED_ORIGIN ?? '').replace(/\/$/, '');
         if (!origin) throw new Error('billing_allowed_origin_missing');
         const englishBillingUrl = `${origin}/en/employer/billing`;
         const spanishBillingUrl = `${origin}/es/employer/billing`;
+        const rendered = renderBillingPauseEmail({
+          pausedTitles: titles,
+          englishBillingUrl,
+          spanishBillingUrl,
+        });
         await queueEmail(client, {
           recipientEmail: result.employer_email,
-          subject: 'Job posting update / Actualización de empleos',
-          bodyText: [
-            'Your subscription changed and these job postings were paused to match your active-job limit:',
-            bulletList,
-            `Manage billing: ${englishBillingUrl}`,
-            '',
-            'Tu suscripción cambió y estas ofertas de trabajo se pausaron para respetar tu límite de empleos activos:',
-            bulletList,
-            `Administrar facturación: ${spanishBillingUrl}`,
-          ].join('\n\n'),
+          subject: rendered.subject,
+          bodyText: rendered.bodyText,
+          bodyHtml: rendered.bodyHtml,
           sourceType: 'billing_pause',
           sourceId: persistedSubscriptionId,
           idempotencyKey: `billing-pause:${persistedSubscriptionId}:${eventId}`,
