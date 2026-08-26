@@ -39,6 +39,13 @@ export interface CognitoPoolProps {
      * name matching CDK's expected key.
      */
     verifyAuthChallengeResponse?: lambda.IFunction;
+    /**
+     * Rewrites the subject/body of the verification-code, forgot-password and
+     * MFA emails Cognito sends for this pool. The handler must fail open:
+     * Cognito rejects the whole SignUp/ForgotPassword call if this trigger
+     * throws or returns a malformed message.
+     */
+    customMessage?: lambda.IFunction;
   };
   /** IAM role for SMS sending */
   smsRole?: iam.IRole;
@@ -89,6 +96,7 @@ export class CognitoPool extends Construct {
             createAuthChallenge: props.lambdaTriggers.createAuthChallenge,
             // CDK key is `verifyAuthChallengeResponse`, NOT `verifyAuthChallenge`
             verifyAuthChallengeResponse: props.lambdaTriggers.verifyAuthChallengeResponse,
+            customMessage: props.lambdaTriggers.customMessage,
           }
         : undefined,
       smsRole: props.smsRole,

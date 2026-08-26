@@ -122,8 +122,8 @@ describe('AuthStack', () => {
   });
 
   // ── Custom Auth Challenge (Phase 2) ──────────────────────────────
-  test('Stack contains 5 Lambda functions (post-confirmation + 3 auth challenge + OTP callback)', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 5);
+  test('Stack contains 6 Lambda functions (post-confirmation + 3 auth challenge + OTP callback + employer CustomMessage)', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 6);
   });
 
   test('Worker pool has all 4 Lambda triggers wired', () => {
@@ -138,10 +138,10 @@ describe('AuthStack', () => {
     });
   });
 
-  test('Employer pool has ONLY post-confirmation trigger (no auth challenge triggers)', () => {
+  test('Employer pool has post-confirmation + CustomMessage triggers only (no auth challenge triggers)', () => {
     // CDK emits an undefined key as absent from the CFN template.
-    // We assert the employer pool has PostConfirmation but NOT the three
-    // auth challenge triggers.
+    // We assert the employer pool has PostConfirmation and CustomMessage but
+    // NOT the three auth challenge triggers.
     const pools = template.findResources('AWS::Cognito::UserPool', {
       Properties: {
         UserPoolName: 'jale-employer-pool',
@@ -150,9 +150,78 @@ describe('AuthStack', () => {
     const employerPool = Object.values(pools)[0] as any;
     expect(employerPool.Properties.LambdaConfig).toBeDefined();
     expect(employerPool.Properties.LambdaConfig.PostConfirmation).toBeDefined();
+    expect(employerPool.Properties.LambdaConfig.CustomMessage).toBeDefined();
     expect(employerPool.Properties.LambdaConfig.DefineAuthChallenge).toBeUndefined();
     expect(employerPool.Properties.LambdaConfig.CreateAuthChallenge).toBeUndefined();
     expect(employerPool.Properties.LambdaConfig.VerifyAuthChallengeResponse).toBeUndefined();
+  });
+
+  test('Employer pool CustomMessage trigger is wired through the pool construct', () => {
+    // The construct re-maps lambdaTriggers key by key, so a key it does not
+    // list is dropped in silence. Pinned to the employer pool by name:
+    // hasResourceProperties passes on ANY matching pool otherwise.
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserPoolName: 'jale-employer-pool',
+      LambdaConfig: Match.objectLike({
+        PostConfirmation: Match.anyValue(),
+        CustomMessage: Match.anyValue(),
+      }),
+    });
+  });
+
+  test('Worker pool has NO CustomMessage trigger', () => {
+    // Workers verify by SMS OTP through the custom auth challenge; the pool
+    // sends no verification email, so a branded email trigger there would be
+    // dead code with a live blast radius.
+    template.hasResourceProperties('AWS::Cognito::UserPool', {
+      UserPoolName: 'jale-worker-pool',
+      LambdaConfig: Match.objectLike({
+        CustomMessage: Match.absent(),
+      }),
+    });
+  });
+
+  test('Employer CustomMessage Lambda: 5 s timeout, Node 20, no environment', () => {
+    // 5 s, not the construct's 30 s default: Cognito abandons a CustomMessage
+    // trigger at 5 seconds. A longer timeout cannot rescue a slow render — it
+    // only hides the failure mode behind a Lambda still running after Cognito
+    // has already given up and sent its own copy.
+    //
+    // Environment must stay absent. EMPLOYER_CUSTOM_MESSAGE_DISABLED is an
+    // emergency lever set by hand on the live function and cleared by the next
+    // deploy; declaring it here would let CDK re-assert a stale value.
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: Match.stringLikeRegexp('CustomMessage'),
+      Runtime: 'nodejs20.x',
+      Timeout: 5,
+      Environment: Match.absent(),
+    });
+  });
+
+  test('Cognito may invoke exactly six trigger Lambdas across both pools', () => {
+    // Five before this change (4 worker triggers + employer post-confirmation);
+    // the employer CustomMessage trigger is the sixth. Pinned as an absolute
+    // number so an accidental extra invoke grant shows up as a failure.
+    template.resourcePropertiesCountIs(
+      'AWS::Lambda::Permission',
+      { Principal: 'cognito-idp.amazonaws.com' },
+      6,
+    );
+  });
+
+  test('Employer CustomMessage errors raise a CloudWatch alarm with no actions', () => {
+    // The handler fails open, so an error here is invisible to the employer —
+    // they just get Cognito's plain default copy. The alarm is the only signal.
+    // No AlarmActions: this stack wires none (see the Worker OTP alarms).
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'EmployerCustomMessageErrors',
+      Namespace: 'AWS/Lambda',
+      MetricName: 'Errors',
+      Threshold: 1,
+      EvaluationPeriods: 1,
+      TreatMissingData: 'notBreaching',
+      AlarmActions: Match.absent(),
+    });
   });
 
   test('CreateAuthChallenge Lambda has TWILIO_SECRET_ARN env var pointing at Secrets Manager', () => {
@@ -418,6 +487,20 @@ describe('AuthStack — employer SES email', () => {
     expect(workerPool.Properties.EmailConfiguration).toBeUndefined();
   });
 
+  test('Employer pool keeps its CustomMessage trigger under SES developer sending', () => {
+    // The branded template and the SES envelope are independent knobs on the
+    // same pool: adding EmailConfiguration must not drop LambdaConfig, and the
+    // trigger must not push the pool back onto COGNITO_DEFAULT. Both are
+    // asserted together because the failure that matters is losing one.
+    const pools = sesTemplate.findResources('AWS::Cognito::UserPool', {
+      Properties: { UserPoolName: 'jale-employer-pool' },
+    });
+    const employerPool = Object.values(pools)[0] as any;
+    expect(employerPool.Properties.LambdaConfig.CustomMessage).toBeDefined();
+    expect(employerPool.Properties.EmailConfiguration.EmailSendingAccount).toBe('DEVELOPER');
+    expect(String(employerPool.Properties.EmailConfiguration.From)).toContain('Jale <');
+  });
+
   test('Synthesized template contains no plaintext SES credentials or API keys', () => {
     // SES DEVELOPER mode uses IAM/resource-policy; no API key or secret
     // should appear in the synthesized template.
@@ -426,5 +509,50 @@ describe('AuthStack — employer SES email', () => {
     expect(templateJson).not.toContain('SES_SECRET');
     expect(templateJson).not.toContain('AWS_ACCESS_KEY_ID');
     expect(templateJson).not.toContain('AWS_SECRET_ACCESS_KEY');
+  });
+});
+
+// ── Employer pool: SES context validation is fail-closed ──────────────────────
+describe('AuthStack — SES context validation', () => {
+  const buildAuthStack = (idPrefix: string, sesContext: Record<string, unknown>) => {
+    const app = new cdk.App({
+      context: {
+        environment: 'production',
+        otpSmsFromNumber: '+15125550123',
+        otpSmsRequestTimeoutMs: 3500,
+        otpSmsValidityPeriodSeconds: 180,
+        ...sesContext,
+      },
+    });
+    const network = new NetworkStack(app, `${idPrefix}NetworkStack`);
+    const database = new DatabaseStack(app, `${idPrefix}DatabaseStack`, { network });
+    return new AuthStack(app, `${idPrefix}AuthStack`, {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+  };
+
+  test('an empty sesEmailFromAddress fails the synth instead of silently falling back', () => {
+    // '' is not `undefined`. A blank -c flag, or a CI variable that expanded to
+    // nothing, must not read as "no SES configured" and quietly downgrade
+    // employer mail to Cognito's shared sender — that regression is invisible
+    // until someone inspects a received email's headers.
+    expect(() => buildAuthStack('SesEmptyFrom', {
+      sesEmailFromAddress: '',
+      sesEmailRegion: 'us-east-1',
+    })).toThrow(/sesEmailFromAddress must be a valid email address/);
+  });
+
+  test('an SES region Cognito cannot send from fails the synth', () => {
+    // Cognito accepts a SES SourceArn only from us-east-1, us-west-2 or
+    // eu-west-1. us-east-2 is where these stacks deploy, which makes it the
+    // most tempting wrong answer — and it would surface as a send-time failure
+    // on live sign-ups, not as a deploy error.
+    expect(() => buildAuthStack('SesBadRegion', {
+      sesEmailFromAddress: 'ci-synth@jaleapp.ai',
+      sesEmailRegion: 'us-east-2',
+    })).toThrow(/sesEmailRegion must be one of/);
   });
 });
