@@ -1668,6 +1668,7 @@
     "cancel": "Cancel",
     "delete": "Delete post",
     "delete_confirm": "Delete this post? This cannot be undone.",
+    "delete_error": "Could not delete the post. Please try again.",
     "select_photos": "Select photos",
     "max_photos_error": "You can add up to 10 photos per post.",
     "file_type_error": "Only JPG, PNG, or WebP photos are allowed.",
@@ -1681,7 +1682,8 @@
     "close": "Close",
     "open_post": "Open post",
     "remove_photo": "Remove photo {n}",
-    "load_more": "Show older posts"
+    "load_more": "Show older posts",
+    "load_more_error": "Could not load older posts. Please try again."
   },
   "digest_unsubscribe": {
     "title": "Daily digest emails",

@@ -83,6 +83,7 @@ export default function WorkerProfilePage() {
     // page's initial batch, plus the keyset cursor to fetch the next one.
     const [extraPosts, setExtraPosts] = useState<WorkerPost[]>([]);
     const [cursor, setCursor] = useState<{ before: string; before_id: string } | null>(null);
+    const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
 
     const { phase, data, errorKind, refreshError, retry, refresh } = usePageData<WorkerProfilePageData>({
         fetcher: async ({ token, signal }) => {
@@ -144,19 +145,25 @@ export default function WorkerProfilePage() {
                 ? { before: data.next_before, before_id: data.next_before_id }
                 : null,
         );
+        setLoadMoreError(null);
     }, [data]);
 
     const allPosts = [...(data?.posts ?? []), ...extraPosts];
 
     async function loadMore() {
         if (!cursor || !idToken) return;
-        const page = await getWorkerPosts(idToken, cursor);
-        setExtraPosts((prev) => [...prev, ...page.posts]);
-        setCursor(
-            page.next_before && page.next_before_id
-                ? { before: page.next_before, before_id: page.next_before_id }
-                : null,
-        );
+        setLoadMoreError(null);
+        try {
+            const page = await getWorkerPosts(idToken, cursor);
+            setExtraPosts((prev) => [...prev, ...page.posts]);
+            setCursor(
+                page.next_before && page.next_before_id
+                    ? { before: page.next_before, before_id: page.next_before_id }
+                    : null,
+            );
+        } catch {
+            setLoadMoreError(tMedia('load_more_error'));
+        }
     }
 
     async function handleSave(patch: WorkerProfilePatch) {
@@ -342,10 +349,13 @@ export default function WorkerProfilePage() {
                                     )}
                                     <MediaBoardGrid posts={allPosts} editable onSelect={setSelectedPost} />
                                     {cursor && (
-                                        <div className="flex justify-center">
+                                        <div className="flex flex-col items-center gap-2">
                                             <Button variant="outline" size="sm" onClick={loadMore}>
                                                 {tMedia('load_more')}
                                             </Button>
+                                            {loadMoreError && (
+                                                <InlineFeedback tone="danger">{loadMoreError}</InlineFeedback>
+                                            )}
                                         </div>
                                     )}
                                 </div>

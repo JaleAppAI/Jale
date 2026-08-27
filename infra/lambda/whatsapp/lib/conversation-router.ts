@@ -626,6 +626,16 @@ export function parseDisambiguationPick(body: string): number | null {
 }
 
 /**
+ * The SAME `state_context.post_draft` truthiness check `discardStalePostDraft`
+ * (processor.ts) makes before discarding a dormant draft — reused here (not
+ * reimplemented differently) so the relay guard below and the discard call
+ * sites agree on exactly what counts as "an active draft".
+ */
+function hasActivePostDraft(conv: ConversationRow): boolean {
+  return Boolean((conv.state_context as unknown as Record<string, unknown> | null)?.post_draft);
+}
+
+/**
  * Free-text relay for a resolved worker. Returns workerId when the message
  * was handled (routed OR disambiguation prompt sent), null to fall through.
  */
@@ -636,6 +646,16 @@ export async function relayWorkerFreeText(
   workerId: string,
   deps: RouterDeps,
 ): Promise<string | null> {
+  // PR54 review fix — ordering hazard: `routeReadyWorkerCommands`
+  // (processor.ts) runs this relay BEFORE `handleIdle`'s post lane. A worker
+  // mid-post (photos uploaded, awaiting caption/confirm) is talking to the
+  // post lane, not an employer: without this guard, their caption or
+  // "publicar" would relay straight into an employer thread via
+  // `recordWorkerConversationReply` below (and, worse, get treated as a
+  // focus-arming reply that discards the draft along the way). Fall through
+  // (`null`) instead so the post lane gets first look at the text.
+  if (hasActivePostDraft(conv)) return null;
+
   // Legal wall (V2 plan §4.5): messaging is compliance-gated. Workers who
   // never accepted (or declined) the ToS get the legal prompt, not a relay.
   if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ConversationRelayLegalHold')) !== 'accepted') {
@@ -683,16 +703,6 @@ export async function relayWorkerFreeText(
   );
   if (result.status === 'routed') {
     if (conv.focused_job_conversation_id !== result.conversationId) {
-      // Task 15 review fix (Critical): `recordWorkerConversationReply` can
-      // auto-resolve and arm focus here (e.g. exactly one open thread) WITHOUT
-      // ever going through `setFocusedConversation` -- its own guarded
-      // discard above only fires on THAT set-site, so a worker's free text
-      // would otherwise relay straight to the employer as a chat message
-      // while a draft sits dormant, with no discard notice. Mirror the same
-      // guard here, scoped to an actual focus CHANGE exactly like
-      // `setFocusedConversation`'s own `conversationId !== null` guard (a
-      // no-op relay to an ALREADY-focused thread never arms anything new).
-      await deps.discardActivePostDraft(client, conv, msg.messageSid, msg.from);
       await deps.updateConversation(client, conv.id, {
         focused_job_conversation_id: result.conversationId,
         last_processed_message_sid: msg.messageSid,

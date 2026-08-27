@@ -4,6 +4,8 @@ import { useState } from 'react';
 import { useTranslations, useFormatter } from 'next-intl';
 import { ChevronLeft, ChevronRight, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
+import { Modal } from '@/components/ui/modal';
 import type { WorkerPost } from '@/lib/api/worker';
 
 export function PostLightbox({
@@ -21,30 +23,30 @@ export function PostLightbox({
   const format = useFormatter();
   const [index, setIndex] = useState(0);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const media = post.media;
   const current = media[index];
 
   async function handleDelete() {
     if (!onDelete || !window.confirm(t('delete_confirm'))) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       await onDelete(post.id);
+    } catch {
+      setDeleteError(t('delete_error'));
     } finally {
       setDeleting(false);
     }
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-[var(--radius-card)] bg-[var(--jale-card)]"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal open onClose={onClose} size="md">
+      {/* Negative margins cancel Modal's own content padding so the image
+          bleeds to the panel's edges (and rounded corners) exactly as this
+          dialog did before it moved onto Modal; only this block opts out —
+          the caption/meta section below keeps Modal's standard padding. */}
+      <div className="-mx-5 -mt-4">
         <div className="relative aspect-square bg-black">
           {current && (
             <img src={current.url} alt={post.caption ?? ''} className="h-full w-full object-contain" />
@@ -93,21 +95,22 @@ export function PostLightbox({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="space-y-2 px-4 py-3">
-          {post.caption && <p className="text-sm text-[var(--jale-ink)]">{post.caption}</p>}
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-[var(--jale-ink-2)]">
-              {format.dateTime(new Date(post.created_at), { dateStyle: 'medium' })}
-            </span>
-            {editable && onDelete && (
-              <Button variant="outline" size="sm" onClick={handleDelete} disabled={deleting}>
-                <Trash2 className="mr-1 h-3.5 w-3.5" />
-                {t('delete')}
-              </Button>
-            )}
-          </div>
-        </div>
       </div>
-    </div>
+      <div className="space-y-2 pt-3">
+        {post.caption && <p className="text-sm text-[var(--jale-ink)]">{post.caption}</p>}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-[var(--jale-ink-2)]">
+            {format.dateTime(new Date(post.created_at), { dateStyle: 'medium' })}
+          </span>
+          {editable && onDelete && (
+            <Button variant="outline" size="sm" onClick={handleDelete} disabled={deleting}>
+              <Trash2 className="mr-1 h-3.5 w-3.5" />
+              {t('delete')}
+            </Button>
+          )}
+        </div>
+        {deleteError && <InlineFeedback tone="danger">{deleteError}</InlineFeedback>}
+      </div>
+    </Modal>
   );
 }

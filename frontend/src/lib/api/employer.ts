@@ -823,6 +823,14 @@ export interface WorkerProfile {
       safety_awareness: number;
       communication_clarity: number;
     } | null;
+    /**
+     * The SSM-hot-editable scoring rubric's version (see trust-scorer.ts's
+     * RUBRIC_CACHE_TTL_MS), coerced to a number by the API. `null` for a
+     * pre-rollout row or a client not yet updated to select the column.
+     * See page.tsx's KNOWN_RUBRIC_VERSION / TRUST_DIMENSIONS for how this
+     * is used to detect a rebalanced rubric and degrade the score bars.
+     */
+    rubric_version: number | null;
     answers: unknown; // normalized client-side via normalizeAnswers
     scored_at: string | null;
   } | null;
