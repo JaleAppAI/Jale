@@ -402,5 +402,35 @@ export class BillingStack extends cdk.Stack {
     });
     unknownCustomerSkipAlarm.addAlarmAction(alarmAction);
     unknownCustomerSkipAlarm.addOkAction(alarmAction);
+
+    // ── Known-but-skipped subscription lifecycle event ──
+    // processor.ts recognises customer.subscription.trial_will_end but
+    // deliberately mirrors nothing for it, marking the inbox row 'skipped'
+    // and letting SQS delete the message. Like the unknown-customer skip
+    // above, that is silent at every level — no DLQ, no inbox reader — so
+    // this filter over the PROCESSOR's log group is the only signal that a
+    // billing lifecycle event is being dropped. It stays quiet until someone
+    // configures a trial price, which is exactly when we want to be told.
+    // (invoice.finalized is skipped too but intentionally NOT logged: it
+    // fires on every invoice and would keep this alarm permanently
+    // breached.) The literal must match the console.warn call in
+    // lambda/billing/processor.ts.
+    const knownEventSkipFilter = new logs.MetricFilter(this, 'BillingKnownEventSkippedMetricFilter', {
+      logGroup: processorLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'BillingKnownEventSkipped',
+      filterPattern: logs.FilterPattern.literal('"billing_event_skipped_known"'),
+      metricValue: '1',
+    });
+    const knownEventSkipAlarm = new cloudwatch.Alarm(this, 'BillingKnownEventSkippedAlarm', {
+      metric: knownEventSkipFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'BillingKnownEventSkipped',
+    });
+    knownEventSkipAlarm.addAlarmAction(alarmAction);
+    knownEventSkipAlarm.addOkAction(alarmAction);
   }
 }

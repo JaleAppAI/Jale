@@ -58,6 +58,24 @@ interface WebhookEnvelope {
  */
 const INBOX_LEASE_MS = 5 * 60 * 1000;
 
+/**
+ * The statuses excluded from the partial unique index
+ * subscriptions_one_current_per_user (migration 034):
+ *
+ *   CREATE UNIQUE INDEX subscriptions_one_current_per_user
+ *       ON subscriptions (user_id)
+ *    WHERE status NOT IN ('canceled', 'incomplete_expired');
+ *
+ * A row in one of these statuses does NOT occupy the user's single
+ * "current subscription" slot.
+ *
+ * Deliberately NOT the same set as `reducingStatuses` in
+ * handleSubscriptionEvent: that one drives job-limit enforcement and also
+ * lists 'unpaid' and 'paused', both of which this index still counts as
+ * current. Do not merge the two — they answer different questions.
+ */
+const TERMINAL_SUBSCRIPTION_STATUSES: readonly string[] = ['canceled', 'incomplete_expired'];
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
@@ -151,6 +169,15 @@ export async function processEnvelope(envelope: WebhookEnvelope): Promise<Proces
     'customer.subscription.created',
     'customer.subscription.updated',
     'customer.subscription.deleted',
+    // paused/resumed are mirrored, not skipped: the handler already routes
+    // every 'customer.subscription.*' type through the mirror path, and
+    // reducingStatuses below already lists 'paused'. Omitting them here made
+    // them fall through to a SILENT 'skipped', so a paused subscription kept
+    // its Pro entitlements until some unrelated event happened to arrive.
+    'customer.subscription.paused',
+    'customer.subscription.resumed',
+    // Known, but deliberately not mirrored — see the explicit skip below.
+    'customer.subscription.trial_will_end',
     'invoice.payment_succeeded',
     'invoice.payment_failed',
     'invoice.finalized',
@@ -165,6 +192,22 @@ export async function processEnvelope(envelope: WebhookEnvelope): Promise<Proces
   // invoice.finalized is a known type but we explicitly skip it
   if (eventType === 'invoice.finalized') {
     await markInboxStatus(eventId, 'skipped', null, null);
+    return { outcome: 'skipped' };
+  }
+
+  // trial_will_end carries no state worth mirroring (the subscription is
+  // still trialing; the status change arrives as its own event), so it is
+  // skipped like invoice.finalized — but unlike invoice.finalized it is
+  // ALARMED. BillingStack greps this literal out of this Lambda's log group
+  // into the Jale/Billing BillingKnownEventSkipped metric + alarm; keep the
+  // string in sync. The asymmetry is deliberate: invoice.finalized fires on
+  // every single invoice, so alarming on it would leave the alarm
+  // permanently breached, whereas trial_will_end cannot occur until someone
+  // configures a trial price — at which point we DO want to be told that a
+  // billing lifecycle event is being dropped on the floor.
+  if (eventType === 'customer.subscription.trial_will_end') {
+    await markInboxStatus(eventId, 'skipped', null, null);
+    console.warn('billing_event_skipped_known', { eventType });
     return { outcome: 'skipped' };
   }
 
@@ -331,6 +374,57 @@ async function handleSubscriptionEvent(
     const graceFragment = status === 'past_due' && existing?.status === 'past_due' && existing?.grace_ends_at
       ? existing.grace_ends_at  // preserve — use literal timestamp
       : null;
+
+    // Retire any OTHER row still occupying this user's single current-
+    // subscription slot, so the upsert below cannot violate
+    // subscriptions_one_current_per_user.
+    //
+    // The upsert's conflict target is (provider_subscription_id). When a user
+    // acquires a NEW provider_subscription_id while an older row is still
+    // non-terminal — re-subscribe after a cancel_at_period_end lapse,
+    // test→live cutover, duplicate checkout — that target does not match, so
+    // the statement INSERTs and trips the partial unique index with a 23505.
+    // That error is retryable in form but not in substance: it burns all
+    // three SQS receives and parks the event in the DLQ, where no redrive can
+    // ever succeed because the collision is permanent. Running here keeps the
+    // supersede in the SAME transaction as the upsert, so the two commit or
+    // roll back together, and the row locks this statement takes make a
+    // concurrent mirror for the same user block rather than race.
+    //
+    // Guarded on the INCOMING status: a late 'canceled'/'incomplete_expired'
+    // event for an already-lapsed OLD subscription is not competing for the
+    // slot, and must never retire the user's CURRENT one.
+    //
+    // Superseded rows deliberately do NOT trigger
+    // billing_pause_over_limit_jobs — enforcement stays decided by the
+    // incoming subscription's own status below, exactly as before.
+    if (!TERMINAL_SUBSCRIPTION_STATUSES.includes(status)) {
+      // IS DISTINCT FROM, not <>: provider_subscription_id is nullable
+      // (migration 034), and a NULL-valued row still occupies the slot while
+      // a <> comparison against it evaluates to NULL and would skip it —
+      // leaving exactly the 23505 this guard exists to prevent.
+      const supersededRes = await client.query<{ id: string }>(
+        `UPDATE subscriptions
+            SET status               = 'canceled',
+                cancel_at_period_end = false,
+                grace_ends_at        = NULL,
+                updated_at           = now()
+          WHERE user_id = $1
+            AND provider_subscription_id IS DISTINCT FROM $2
+            AND status NOT IN ('canceled', 'incomplete_expired')
+          RETURNING id`,
+        [userId, providerSubId],
+      );
+      const supersededCount = supersededRes.rows.length;
+      if (supersededCount > 0) {
+        // No PII: internal user id and Stripe subscription id only.
+        console.info('superseded_prior_subscription', {
+          userId,
+          supersededCount,
+          newProviderSubId: providerSubId,
+        });
+      }
+    }
 
     const upsertRes = await client.query<{ id: string }>(
       `INSERT INTO subscriptions (

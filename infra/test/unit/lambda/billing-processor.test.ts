@@ -22,6 +22,11 @@
  *  - exact processed/failure field assertions
  *  - unknown customer → terminal skip (row + SQS message both terminal)
  *  - handler(): SQS message disposition per outcome (delete vs. redeliver)
+ *  - supersede: the user's prior current subscription is retired, in the
+ *      same transaction, BEFORE the upsert that would otherwise violate
+ *      subscriptions_one_current_per_user
+ *  - customer.subscription.paused/resumed are mirrored (not silently
+ *      skipped); trial_will_end is known-but-skipped and alarmed
  */
 
 import type { Context, SQSEvent } from 'aws-lambda';
@@ -1455,5 +1460,258 @@ describe('billing processor: processEnvelope()', () => {
     const result = await processEnvelope(makeEnvelope(rawJson));
     expect(result.outcome).toBe('processed');
     expect(insertedSubs.length).toBeGreaterThan(0);
+  });
+
+  // ── Shared mirror-path DB mock (supersede + lifecycle suites) ─────────
+  //
+  // Deliberately distinct from setupEntitlementReduction: these suites need a
+  // branch for the supersede `UPDATE subscriptions` statement, and they assert
+  // on statement ORDER, so they need the claim to be a fresh INSERT (one
+  // statement) rather than the insert/select/claim-update sequence.
+  function setupMirrorPath(opts: {
+    /** Rows RETURNed by the supersede UPDATE = prior current rows retired. */
+    supersededRows?: unknown[];
+    /** Rows returned by the grace lock-read for the INCOMING subscription. */
+    existingForIncoming?: unknown[];
+    pausedCount?: number;
+  } = {}) {
+    const { queryMock } = makeDbMock();
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO billing_webhook_events')) {
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // fresh claim
+      }
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
+        return Promise.resolve({ rows: opts.existingForIncoming ?? [] });
+      }
+      if (sql.includes('UPDATE subscriptions')) {
+        return Promise.resolve({ rows: opts.supersededRows ?? [] });
+      }
+      if (sql.includes('INSERT INTO subscriptions')) {
+        return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
+      }
+      if (sql.includes('billing_pause_over_limit_jobs')) {
+        return Promise.resolve({ rows: [{
+          paused_count: opts.pausedCount ?? 0,
+          employer_email: 'employer@example.com',
+          paused_titles: [],
+        }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    return { queryMock };
+  }
+
+  /** Index of the first issued statement containing `needle` (-1 if never). */
+  function sqlIndex(queryMock: jest.Mock, needle: string): number {
+    return queryMock.mock.calls.findIndex(([sql]) => String(sql).includes(needle));
+  }
+
+  function sqlList(queryMock: jest.Mock): string[] {
+    return queryMock.mock.calls.map(([sql]) => String(sql));
+  }
+
+  // ── B1: supersede the prior current subscription before the upsert ─────
+  //
+  // subscriptions_one_current_per_user (migration 034) is a PARTIAL unique
+  // index on (user_id) WHERE status NOT IN ('canceled','incomplete_expired').
+  // The upsert conflict target is (provider_subscription_id), so when a user
+  // who still has a non-terminal row acquires a NEW provider_subscription_id
+  // — re-subscribe after a cancel_at_period_end lapse, test→live cutover,
+  // duplicate checkout — the statement INSERTs and violates that partial
+  // index: 23505 → 3 SQS receives → DLQ, with no code path that can ever
+  // drain it. The processor must retire the user's other non-terminal rows
+  // first, in the SAME transaction as the upsert.
+
+  describe('supersede prior current subscription (partial unique index guard)', () => {
+    const SUB_NEW = 'sub_test001';
+
+    function checkoutEvent(subId: string) {
+      return JSON.stringify({
+        id: EVT1,
+        object: 'event',
+        type: 'checkout.session.completed',
+        data: {
+          object: {
+            id: 'cs_test001',
+            object: 'checkout.session',
+            subscription: subId,
+            customer: CUS1,
+          },
+        },
+      });
+    }
+
+    it('retires the user’s other current rows BEFORE the upsert when a new provider_subscription_id arrives', async () => {
+      const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath({ supersededRows: [{ id: 'sub-old-row-uuid' }] });
+      mockStripe(makeStripeSubscription({ id: SUB_NEW, status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(checkoutEvent(SUB_NEW)));
+      expect(result.outcome).toBe('processed');
+
+      const supersedeIdx = sqlIndex(queryMock, 'UPDATE subscriptions');
+      const upsertIdx = sqlIndex(queryMock, 'INSERT INTO subscriptions');
+      expect(supersedeIdx).toBeGreaterThan(-1);
+      expect(upsertIdx).toBeGreaterThan(-1);
+      // Load-bearing: after the INSERT the 23505 has already been raised, so
+      // ordering — not mere presence — is what fixes the defect.
+      expect(supersedeIdx).toBeLessThan(upsertIdx);
+
+      // ...and it runs inside the mirror transaction, so a later failure
+      // rolls the supersede back with the upsert.
+      const sqls = sqlList(queryMock);
+      expect(sqls.lastIndexOf('BEGIN')).toBeLessThan(supersedeIdx);
+      expect(supersedeIdx).toBeLessThan(sqls.lastIndexOf('COMMIT'));
+
+      const [supersedeSql, supersedeParams] = queryMock.mock.calls[supersedeIdx];
+      expect(supersedeParams).toEqual([USER1, SUB_NEW]);
+      // Whitespace-insensitive: the SET list is column-aligned like the
+      // upsert's, so only the assignments themselves are asserted.
+      expect(supersedeSql).toMatch(/status\s+=\s+'canceled'/);
+      expect(supersedeSql).toMatch(/cancel_at_period_end\s+=\s+false/);
+      expect(supersedeSql).toMatch(/grace_ends_at\s+=\s+NULL/);
+      expect(supersedeSql).toMatch(/updated_at\s+=\s+now\(\)/);
+      // Never touches the incoming subscription, nor already-terminal rows.
+      expect(supersedeSql).toMatch(/provider_subscription_id IS DISTINCT FROM \$2/);
+      expect(supersedeSql).toMatch(/status NOT IN \('canceled', 'incomplete_expired'\)/);
+
+      expect(infoLog).toHaveBeenCalledWith('superseded_prior_subscription', {
+        userId: USER1,
+        supersededCount: 1,
+        newProviderSubId: SUB_NEW,
+      });
+
+      // Superseding must NOT run job enforcement for the retired rows: the
+      // NEW subscription's status decides enforcement, and it is active here.
+      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+      infoLog.mockRestore();
+    });
+
+    it.each(['canceled', 'incomplete_expired'])(
+      'does NOT supersede when the INCOMING status is itself terminal (%s)',
+      async (status) => {
+        const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+        // Non-empty on purpose: the guard, not an empty result set, is what
+        // must stop this — a late `canceled` event for a lapsed OLD
+        // subscription would otherwise cancel the user's CURRENT one.
+        const { queryMock } = setupMirrorPath({ supersededRows: [{ id: 'sub-new-row-uuid' }] });
+        mockStripe(makeStripeSubscription({ id: SUB1, status }));
+
+        const result = await processEnvelope(makeEnvelope(makeSubEvent({
+          subId: SUB1,
+          status,
+          type: 'customer.subscription.updated',
+        })));
+        expect(result.outcome).toBe('processed');
+
+        expect(sqlIndex(queryMock, 'UPDATE subscriptions')).toBe(-1);
+        expect(infoLog).not.toHaveBeenCalledWith(
+          'superseded_prior_subscription',
+          expect.anything(),
+        );
+        infoLog.mockRestore();
+      },
+    );
+
+    it('issues the supersede UPDATE but changes nothing when the user has no other current row', async () => {
+      const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath({ supersededRows: [] });
+      mockStripe(makeStripeSubscription({ id: SUB1, status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({ subId: SUB1, status: 'active' })));
+      expect(result.outcome).toBe('processed');
+
+      // The statement is unconditional for a non-terminal incoming status...
+      expect(sqlIndex(queryMock, 'UPDATE subscriptions')).toBeGreaterThan(-1);
+      // ...but 0 RETURNed rows means: no log line, and nothing else changes.
+      expect(infoLog).not.toHaveBeenCalledWith(
+        'superseded_prior_subscription',
+        expect.anything(),
+      );
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+      expect(queryMock).toHaveBeenCalledWith('COMMIT');
+      expect(sqlList(queryMock)).not.toContain('ROLLBACK');
+      infoLog.mockRestore();
+    });
+  });
+
+  // ── B2: paused / resumed / trial_will_end ─────────────────────────────
+  //
+  // The mirror path (eventType.startsWith('customer.subscription.')) and
+  // reducingStatuses (which already lists 'paused') handle these, but
+  // knownSubscriptionEvents omitted them, so they fell to a SILENT 'skipped':
+  // a paused subscription kept its Pro job limit until some other event
+  // arrived.
+
+  describe('known subscription lifecycle events', () => {
+    it('mirrors customer.subscription.paused and enforces the resolved job limit', async () => {
+      const { queryMock } = setupMirrorPath();
+      const { retrieve } = mockStripe(makeStripeSubscription({ status: 'paused' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        type: 'customer.subscription.paused',
+        status: 'paused',
+      })));
+
+      expect(result.outcome).toBe('processed');
+      expect(retrieve).toHaveBeenCalledWith(SUB1);
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      // 'paused' is a reducing status, so enforcement must actually run.
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
+      expect(queryMock).toHaveBeenCalledWith(
+        expect.stringContaining('billing_pause_over_limit_jobs'),
+        [USER1, 1],
+      );
+    });
+
+    it('mirrors customer.subscription.resumed without enforcing', async () => {
+      const { queryMock } = setupMirrorPath();
+      const { retrieve } = mockStripe(makeStripeSubscription({ status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        type: 'customer.subscription.resumed',
+        status: 'active',
+      })));
+
+      expect(result.outcome).toBe('processed');
+      expect(retrieve).toHaveBeenCalledWith(SUB1);
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      expect(mockResolveEntitlements).not.toHaveBeenCalled();
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+    });
+
+    it('skips customer.subscription.trial_will_end as a KNOWN type and warns for the alarm', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath();
+      const { retrieve } = mockStripe(makeStripeSubscription());
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        type: 'customer.subscription.trial_will_end',
+      })));
+
+      expect(result.outcome).toBe('skipped');
+      expect(retrieve).not.toHaveBeenCalled();
+
+      // Inbox row marked terminally skipped: no error code, no processed_at.
+      const markIdx = queryMock.mock.calls.findIndex(([sql]) =>
+        String(sql).includes('UPDATE billing_webhook_events')
+        && String(sql).includes('processing_status'));
+      expect(markIdx).toBeGreaterThan(-1);
+      expect(queryMock.mock.calls[markIdx][1]).toEqual([EVT1, 'skipped', null, null]);
+
+      // BillingStack greps this literal out of the processor log group into
+      // the Jale/Billing BillingKnownEventSkipped metric + alarm — the only
+      // signal that Stripe started sending a lifecycle event we drop. Unlike
+      // invoice.finalized (which fires on every invoice and must stay
+      // silent), trial_will_end only appears if a trial gets configured.
+      expect(warn).toHaveBeenCalledWith('billing_event_skipped_known', {
+        eventType: 'customer.subscription.trial_will_end',
+      });
+      warn.mockRestore();
+    });
   });
 });
