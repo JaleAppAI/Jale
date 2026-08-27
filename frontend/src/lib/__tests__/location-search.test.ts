@@ -26,6 +26,12 @@ describe('slugCityKey', () => {
     expect(slugCityKey('Winston-Salem', 'NC')).toBe('winston-salem-nc');
     expect(slugCityKey(' Austin ', 'tx')).toBe('austin-tx');
   });
+
+  it('folds diacritics to ASCII before slugging', () => {
+    expect(slugCityKey('Bayamón', 'PR')).toBe('bayamon-pr');
+    expect(slugCityKey('Española', 'NM')).toBe('espanola-nm');
+    expect(slugCityKey('El Paso', 'TX')).toBe('el-paso-tx');
+  });
 });
 
 describe('searchLocations', () => {

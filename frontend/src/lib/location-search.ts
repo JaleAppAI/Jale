@@ -33,6 +33,8 @@ export interface LocationSuggestion {
  */
 export function slugCityKey(city: string, state: string): string {
   const citySlug = city
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')  // fold diacritics before the dash pass
     .replace(/[^a-zA-Z0-9]+/g, '-')   // strip first, then lower — must match the SQL backfill order
     .toLowerCase()
     .replace(/^-+|-+$/g, '');
