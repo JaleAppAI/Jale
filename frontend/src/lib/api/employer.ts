@@ -754,6 +754,19 @@ export interface WorkerProfile {
   city: string | null;
   application_status: ApplicationStatus;
   applied_at: string | null;
+  trust_assessment: {
+    profession_key: string;
+    status: 'pending' | 'scoring' | 'scored' | 'failed';
+    competency_score: number | null;
+    score_components: {
+      specific_knowledge: number;
+      practical_experience: number;
+      safety_awareness: number;
+      communication_clarity: number;
+    } | null;
+    answers: unknown; // normalized client-side via normalizeAnswers
+    scored_at: string | null;
+  } | null;
 }
 
 export async function getWorkerProfile(
