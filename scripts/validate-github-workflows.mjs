@@ -90,6 +90,10 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesEmailRegion=us-east-1');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappAlarmTopicArn=');
+// BillingStack alarms reuse the same monitored ops topic as the WhatsApp/AI/
+// referrals alarms; without this context key the stack falls back to creating
+// a bare jale-billing-alarms topic that has no subscribers.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c billingAlarmTopicArn=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
@@ -125,6 +129,23 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'WHATS
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'JALE_WHATSAPP_STATUS_CALLBACK_URL');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappAlarmTopicArn=');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c billingAlarmTopicArn=');
+// Billing alarms are routed to the same monitored ops topic the WhatsApp
+// alarms use (vars.WHATSAPP_ALARM_TOPIC_ARN). The paired match also pins the
+// flag immediately after whatsappAlarmTopicArn, so a single dropped flag in
+// one of the 4 plan/diff/deploy commands fails here instead of silently
+// re-creating the unsubscribed jale-billing-alarms topic in production.
+const productionBillingAlarmTopicContexts =
+  reusableDeploy.match(
+    /-c whatsappAlarmTopicArn="\$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="\$WHATSAPP_ALARM_TOPIC_ARN"/g,
+  ) ?? [];
+if (productionBillingAlarmTopicContexts.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must route billing alarms to the ops SNS topic '
+      + '(-c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" immediately after whatsappAlarmTopicArn) '
+      + 'in all 4 production CDK plan/diff/deploy commands',
+  );
+}
 const productionFifoTransportContexts =
   reusableDeploy.match(/-c whatsappInboundV2TransportEnabled=true/g) ?? [];
 if (productionFifoTransportContexts.length !== 4) {
