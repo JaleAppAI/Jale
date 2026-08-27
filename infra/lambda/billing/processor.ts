@@ -16,7 +16,9 @@
  *  2. Persist claim/attempt state in a short transaction.
  *  3. Fetch authoritative Stripe state OUTSIDE any DB transaction.
  *  4. Mirror subscription state + mark processed (clearing the lease) in a
- *     final transaction.
+ *     final transaction. That transaction can instead end in 'skipped' when
+ *     the event turns out to concern a subscription that is NOT the user's
+ *     current one — see the decision table in handleSubscriptionEvent.
  *
  * Lease semantics guard against duplicate SQS delivery of the same Stripe
  * event running two concurrent processor invocations (maxConcurrency 3):
@@ -75,6 +77,20 @@ const INBOX_LEASE_MS = 5 * 60 * 1000;
  * current. Do not merge the two — they answer different questions.
  */
 const TERMINAL_SUBSCRIPTION_STATUSES: readonly string[] = ['canceled', 'incomplete_expired'];
+
+/**
+ * Event types that, by construction, concern the NEWEST subscription a user
+ * has at the moment they arrive — and are therefore the only ones allowed to
+ * retire that user's other current subscription rows.
+ *
+ * Everything else (updated / paused / resumed / invoice.*) can just as easily
+ * describe a stale subscription that Stripe is still dunning, so it gets no
+ * such authority. See the decision table in handleSubscriptionEvent.
+ */
+const SUPERSEDING_EVENT_TYPES = new Set([
+  'checkout.session.completed',
+  'customer.subscription.created',
+]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -375,54 +391,109 @@ async function handleSubscriptionEvent(
       ? existing.grace_ends_at  // preserve — use literal timestamp
       : null;
 
-    // Retire any OTHER row still occupying this user's single current-
-    // subscription slot, so the upsert below cannot violate
-    // subscriptions_one_current_per_user.
+    // ── Which subscription is this user's CURRENT one? ───────────────────
     //
-    // The upsert's conflict target is (provider_subscription_id). When a user
-    // acquires a NEW provider_subscription_id while an older row is still
-    // non-terminal — re-subscribe after a cancel_at_period_end lapse,
-    // test→live cutover, duplicate checkout — that target does not match, so
-    // the statement INSERTs and trips the partial unique index with a 23505.
-    // That error is retryable in form but not in substance: it burns all
-    // three SQS receives and parks the event in the DLQ, where no redrive can
-    // ever succeed because the collision is permanent. Running here keeps the
-    // supersede in the SAME transaction as the upsert, so the two commit or
-    // roll back together, and the row locks this statement takes make a
-    // concurrent mirror for the same user block rather than race.
+    // subscriptions_one_current_per_user (migration 034) lets a user hold
+    // exactly one row whose status is not 'canceled'/'incomplete_expired'.
+    // The upsert below conflicts on (provider_subscription_id), so when a
+    // SECOND provider_subscription_id shows up for a user who still has a
+    // current row, that target does not match, the statement INSERTs, and it
+    // trips the partial index with a 23505.
     //
-    // Guarded on the INCOMING status: a late 'canceled'/'incomplete_expired'
-    // event for an already-lapsed OLD subscription is not competing for the
-    // slot, and must never retire the user's CURRENT one.
+    // Two live subscriptions is a REACHABLE steady state, not merely a race.
+    // The checkout guard (lambda/lib/billing-operations.ts) only refuses a
+    // new Checkout Session while the existing subscription is active,
+    // trialing, or past_due within grace. A user whose subscription is
+    // unpaid, paused, incomplete, or past_due beyond grace can legitimately
+    // subscribe again, and Stripe then keeps BOTH alive: dunning goes on
+    // emitting invoice.payment_failed / customer.subscription.updated for the
+    // OLD one for weeks.
+    //
+    // So "is this row the current one?" cannot be answered from status alone
+    // — it needs recency, and the only recency signal available here without
+    // extra Stripe calls is the EVENT TYPE. checkout.session.completed and
+    // customer.subscription.created are, by construction, about the newest
+    // subscription for that user at the moment they arrive. Every other type
+    // is just as likely to concern a stale one. Hence:
+    //
+    //   incoming status terminal   → upsert as before. A terminal row sits
+    //                                outside the partial index, so it can
+    //                                neither collide nor need to retire
+    //                                anything.
+    //   no other current row       → upsert as before.
+    //   created / checkout done    → newest by construction: retire the
+    //                                others, then upsert.
+    //   any other type, others     → this event is about a subscription that
+    //   exist                        is NOT the user's current one. Upserting
+    //                                would 23505; retiring the others would
+    //                                strip a PAYING employer down to free
+    //                                entitlements and then pause their jobs.
+    //                                Neither is acceptable, so skip it.
     //
     // Superseded rows deliberately do NOT trigger
     // billing_pause_over_limit_jobs — enforcement stays decided by the
     // incoming subscription's own status below, exactly as before.
+    //
+    // Concurrency remains a separate and self-healing matter: two invocations
+    // racing here can still deadlock (40P01) or collide (23505). Either
+    // aborts one transaction, marks that inbox row failed, and SQS redelivers
+    // it — by which time the committed state sends the retry down the right
+    // branch.
     if (!TERMINAL_SUBSCRIPTION_STATUSES.includes(status)) {
+      // Terminal incoming statuses skip this read altogether: same outcome as
+      // reading it and ignoring the result, minus the locks.
+      //
       // IS DISTINCT FROM, not <>: provider_subscription_id is nullable
       // (migration 034), and a NULL-valued row still occupies the slot while
-      // a <> comparison against it evaluates to NULL and would skip it —
-      // leaving exactly the 23505 this guard exists to prevent.
-      const supersededRes = await client.query<{ id: string }>(
-        `UPDATE subscriptions
-            SET status               = 'canceled',
-                cancel_at_period_end = false,
-                grace_ends_at        = NULL,
-                updated_at           = now()
+      // a <> comparison against it evaluates to NULL and would miss it.
+      const othersRes = await client.query<{ id: string; provider_subscription_id: string | null }>(
+        `SELECT id, provider_subscription_id FROM subscriptions
           WHERE user_id = $1
             AND provider_subscription_id IS DISTINCT FROM $2
             AND status NOT IN ('canceled', 'incomplete_expired')
-          RETURNING id`,
+          ORDER BY updated_at DESC
+          FOR UPDATE`,
         [userId, providerSubId],
       );
-      const supersededCount = supersededRes.rows.length;
-      if (supersededCount > 0) {
-        // No PII: internal user id and Stripe subscription id only.
+      const others = othersRes.rows;
+
+      if (others.length > 0 && SUPERSEDING_EVENT_TYPES.has(eventType)) {
+        // Retire by primary key: the SELECT above already locked exactly
+        // these rows in this transaction, so re-checking status here would
+        // be redundant.
+        await client.query(
+          `UPDATE subscriptions
+              SET status               = 'canceled',
+                  cancel_at_period_end = false,
+                  grace_ends_at        = NULL,
+                  updated_at           = now()
+            WHERE id = ANY($1::uuid[])`,
+          [others.map((row) => row.id)],
+        );
+        // No PII: internal user id and Stripe subscription ids only.
         console.info('superseded_prior_subscription', {
           userId,
-          supersededCount,
+          supersededCount: others.length,
           newProviderSubId: providerSubId,
         });
+      } else if (others.length > 0) {
+        // This also skips an out-of-order 'updated' that arrives before its
+        // own creation event — harmless, since the creation event does the
+        // superseding and later events refresh the row. The stale row heals
+        // itself as well: once Stripe terminalizes the old subscription, the
+        // incoming status is terminal and the branch above upserts it.
+        //
+        // BillingStack greps this literal out of this Lambda's log group into
+        // the Jale/Billing BillingKnownEventSkipped metric; keep it in sync.
+        console.warn('billing_superseded_subscription_event', {
+          userId,
+          eventType,
+          providerSubId,
+          currentProviderSubId: others[0].provider_subscription_id,
+        });
+        await markInboxStatusWithClient(client, eventId, 'skipped', 'superseded_subscription', null);
+        await client.query('COMMIT');
+        return { outcome: 'skipped' };
       }
     }
 

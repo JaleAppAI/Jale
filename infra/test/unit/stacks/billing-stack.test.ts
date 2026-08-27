@@ -437,14 +437,17 @@ describe('BillingStack', () => {
     });
   });
 
-  // processor.ts recognises customer.subscription.trial_will_end and
-  // deliberately mirrors nothing for it. That skip is silent at every level
-  // (no DLQ, no inbox reader), so this filter is the only signal that a
-  // billing lifecycle event is being dropped on the floor.
+  // processor.ts terminally skips two recognised events without mirroring
+  // them: customer.subscription.trial_will_end, and any event about a
+  // subscription that is not the user's current one. Both skips are silent at
+  // every level (no DLQ, no inbox reader), so this filter is the only signal
+  // that a billing lifecycle event is being dropped on the floor. One filter
+  // matches BOTH literals via anyTerm, so a regression that drops either
+  // literal from the pattern fails here.
 
-  test('BillingKnownEventSkipped metric filter reads the PROCESSOR log group for the known-skip literal', () => {
+  test('BillingKnownEventSkipped metric filter reads the PROCESSOR log group for both known-skip literals', () => {
     const filters = template.findResources('AWS::Logs::MetricFilter', {
-      Properties: { FilterPattern: '"billing_event_skipped_known"' },
+      Properties: { FilterPattern: '?"billing_event_skipped_known" ?"billing_superseded_subscription_event"' },
     });
     const matching = Object.values(filters);
     expect(matching).toHaveLength(1);
