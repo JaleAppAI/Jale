@@ -94,7 +94,7 @@ jobs:
 
       - name: CDK synth backend stacks
         working-directory: infra
-        run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c whatsappBusinessNumber=15550000000 --output "$RUNNER_TEMP/jale-cdk-synth-backend"
+        run: npx cdk synth --all -c environment=${{ inputs.cdk-environment }} -c skipFrontend=true -c emailFromAddress=ci-synth@jaleapp.ai -c sesVerifiedIdentityArn=arn:aws:ses:${{ inputs.aws-region }}:111111111111:identity/jaleapp.ai -c sesEmailFromAddress=ci-synth@jaleapp.ai -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=https://api.example.invalid/whatsapp/status-callback -c whatsappAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c billingAlarmTopicArn=arn:aws:sns:${{ inputs.aws-region }}:111111111111:jale-ci-whatsapp-alarms -c publicSiteBaseUrl=https://ci-synth.example.invalid -c whatsappBusinessNumber=15550000000 --output "$RUNNER_TEMP/jale-cdk-synth-backend"
 
       - name: Upload backend synth artifact
         uses: actions/upload-artifact@v4

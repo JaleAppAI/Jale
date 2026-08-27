@@ -402,5 +402,39 @@ export class BillingStack extends cdk.Stack {
     });
     unknownCustomerSkipAlarm.addAlarmAction(alarmAction);
     unknownCustomerSkipAlarm.addOkAction(alarmAction);
+
+    // ── Known-but-skipped subscription events ──
+    // processor.ts recognises two events it deliberately mirrors nothing for,
+    // marking the inbox row 'skipped' and letting SQS delete the message:
+    //   billing_event_skipped_known         — customer.subscription.trial_will_end
+    //   billing_superseded_subscription_event — an event about a subscription
+    //       that is NOT the user's current one (the user holds two live Stripe
+    //       subscriptions and Stripe is still dunning the stale one)
+    // Like the unknown-customer skip above, both are silent at every level —
+    // no DLQ, no inbox reader — so this filter over the PROCESSOR's log group
+    // is the only signal that a billing lifecycle event is being dropped. One
+    // metric covers both: the operator response is the same (look at why a
+    // lifecycle event went unmirrored), so a second alarm would only add
+    // noise. (invoice.finalized is skipped too but intentionally NOT logged:
+    // it fires on every invoice and would keep this alarm permanently
+    // breached.) Both literals must match the console.warn calls in
+    // lambda/billing/processor.ts.
+    const knownEventSkipFilter = new logs.MetricFilter(this, 'BillingKnownEventSkippedMetricFilter', {
+      logGroup: processorLambda.logGroup,
+      metricNamespace: 'Jale/Billing',
+      metricName: 'BillingKnownEventSkipped',
+      filterPattern: logs.FilterPattern.anyTerm('billing_event_skipped_known', 'billing_superseded_subscription_event'),
+      metricValue: '1',
+    });
+    const knownEventSkipAlarm = new cloudwatch.Alarm(this, 'BillingKnownEventSkippedAlarm', {
+      metric: knownEventSkipFilter.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'BillingKnownEventSkipped',
+    });
+    knownEventSkipAlarm.addAlarmAction(alarmAction);
+    knownEventSkipAlarm.addOkAction(alarmAction);
   }
 }
