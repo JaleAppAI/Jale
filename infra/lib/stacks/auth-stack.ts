@@ -311,6 +311,47 @@ export class AuthStack extends cdk.Stack {
         })
       : undefined;
 
+    // ── Employer pool CustomMessage trigger — branded verification email ──
+    // Replaces Cognito's plain-text code email on SignUp, ResendConfirmationCode
+    // and ForgotPassword. The handler fails open by design: if it throws or
+    // returns a malformed body, Cognito fails the ENTIRE API call, so every
+    // uncertain path there returns the event untouched and the employer gets
+    // the default copy instead of a blocked sign-up.
+    //
+    // No `environment`: EMPLOYER_CUSTOM_MESSAGE_DISABLED is an emergency lever
+    // set by hand with `aws lambda update-function-configuration` and cleared by
+    // the next deploy. Declaring it here would let CDK re-assert a stale value
+    // over the operator's change.
+    const employerCustomMessageLambda = new JaleLambdaFunction(this, 'EmployerCustomMessageLambda', {
+      entry: path.join(__dirname, '../../lambda/auth/employer-custom-message.ts'),
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      // Seconds. Cognito abandons a CustomMessage trigger at 5 s, so the
+      // construct's 30 s default cannot help — it would only leave a Lambda
+      // running after Cognito has already sent its own copy, hiding the
+      // latency problem instead of surfacing it as an error.
+      timeout: 5,
+      description: 'Employer pool CustomMessage — branded bilingual code email',
+    });
+
+    // Fail-open means an employer never sees this break: they just receive the
+    // plain Cognito email. This alarm is the only signal that the branded
+    // template stopped rendering. No actions, matching the OTP alarms above.
+    new cloudwatch.Alarm(this, 'EmployerCustomMessageErrorAlarm', {
+      alarmName: 'EmployerCustomMessageErrors',
+      alarmDescription:
+        'Employer CustomMessage trigger threw — Cognito default email is being sent (fail-open); check the Lambda logs',
+      metric: employerCustomMessageLambda.function.metricErrors({
+        period: cdk.Duration.minutes(5),
+        statistic: 'Sum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     // ── Employer Cognito Pool ──
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
       poolName: 'jale-employer-pool',
@@ -333,6 +374,9 @@ export class AuthStack extends cdk.Stack {
       autoVerify: { email: true },
       lambdaTriggers: {
         postConfirmation: postConfirmationLambda.function,
+        // Employer pool only — the worker pool verifies by SMS OTP and sends
+        // no verification email at all.
+        customMessage: employerCustomMessageLambda.function,
       },
       email: employerPoolEmail,
     });

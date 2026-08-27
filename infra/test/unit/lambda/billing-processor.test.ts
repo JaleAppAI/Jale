@@ -282,8 +282,14 @@ describe('billing processor: processEnvelope()', () => {
       sourceType: 'billing_pause',
       sourceId: 'subscription-row-uuid',
       idempotencyKey: `billing-pause:subscription-row-uuid:${EVT1}`,
-      bodyText: expect.stringMatching(/Older overflow[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/billing[\s\S]*Tu suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/billing/),
+      subject: 'Job postings paused · Empleos pausados',
+      bodyText: expect.stringMatching(/Older overflow[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/billing[\s\S]*Su suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/billing/),
+      bodyHtml: expect.stringContaining('Older overflow'),
     }));
+    const queued = mockQueueEmail.mock.calls[0][1];
+    expect(queued.bodyHtml).toContain('<html');
+    expect(queued.bodyHtml).toContain('href="https://jaleapp.ai/es/employer/billing"');
+    expect(queued.bodyText).not.toMatch(/\btus?\b|\btienes\b/i);
     expect(infoLog).toHaveBeenCalledWith('paused_over_limit_jobs', { userId: USER1, pausedCount: 2 });
     infoLog.mockRestore();
   });

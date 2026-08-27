@@ -84,6 +84,10 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');
+// Cognito employer-pool SES sender: CI synth must exercise the auth-stack SES
+// branch (it is dead code unless sesEmailFromAddress is supplied).
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesEmailFromAddress=');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesEmailRegion=us-east-1');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappAlarmTopicArn=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
@@ -107,6 +111,16 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLI
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLING_SES_VERIFIED_IDENTITY_ARN');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c sesVerifiedIdentityArn=');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'COGNITO_EMAIL_FROM_ADDRESS: ${{ vars.COGNITO_EMAIL_FROM_ADDRESS }}');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'Require Cognito SES sender variable');
+// The guard must run in BOTH jobs: the plan job is skipped entirely when no
+// plan role is configured, and the deploy job is the one that can break prod.
+const cognitoSenderGuards = reusableDeploy.match(/- name: Require Cognito SES sender variable/g) ?? [];
+if (cognitoSenderGuards.length !== 2) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must guard COGNITO_EMAIL_FROM_ADDRESS in both the plan and deploy jobs',
+  );
+}
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'WHATSAPP_ALARM_TOPIC_ARN');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'JALE_WHATSAPP_STATUS_CALLBACK_URL');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappStatusCallbackUrl=');
@@ -117,6 +131,16 @@ if (productionFifoTransportContexts.length !== 4) {
   fail(
     '.github/workflows/_reusable-deploy.yml must enable WhatsApp v2 FIFO transport ' +
       'for all 4 production CDK plan/diff/deploy commands',
+  );
+}
+// Cognito + SES is only supported in us-east-1/us-west-2/eu-west-1, so the
+// sender region is a literal (the stacks themselves deploy to us-east-2).
+const productionCognitoSesContexts =
+  reusableDeploy.match(/-c sesEmailFromAddress="\$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1/g) ?? [];
+if (productionCognitoSesContexts.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must pass the Cognito SES sender ' +
+      '(sesEmailFromAddress + sesEmailRegion=us-east-1) to all 4 production CDK plan/diff/deploy commands',
   );
 }
 
