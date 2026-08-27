@@ -883,15 +883,20 @@ describe('setFocusedConversation null-focus call sites do not arm fill_relay_ove
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Task 15 review fix (Critical): `recordWorkerConversationReply` can
-// auto-resolve and arm focus in `relayWorkerFreeText`'s 'routed' branch
-// WITHOUT ever going through `setFocusedConversation` (e.g. exactly one open
-// thread auto-routes there directly) -- that branch now calls
-// `deps.discardActivePostDraft` itself, scoped to an actual focus CHANGE,
-// mirroring `setFocusedConversation`'s own `conversationId !== null` guard.
-// Case (a) covers `setFocusedConversation`'s own call sites (via the
-// `conversation:focus`/decline buttons); case (b) covers the routed-branch
-// fix directly.
+// Task 15 review fix (Critical): case (a) covers `setFocusedConversation`'s
+// own call sites (via the `conversation:focus`/decline buttons) discarding a
+// dormant `post_draft` the moment a real thread gets focused.
+//
+// `relayWorkerFreeText`'s 'routed' branch used to make an equivalent
+// `deps.discardActivePostDraft` call of its own, since `recordWorkerConversationReply`
+// can auto-resolve and arm focus there WITHOUT ever going through
+// `setFocusedConversation` (e.g. exactly one open thread auto-routes
+// directly). PR54 review fix: that call is now unreachable and has been
+// removed — the new post-draft guard at the top of `relayWorkerFreeText`
+// (see the describe block below) returns before this branch is ever entered
+// with a draft active, so there is nothing left for it to discard. Case (b)
+// here now just confirms the routed-branch focus persistence itself still
+// works when there is no draft in play.
 // ─────────────────────────────────────────────────────────────────────────
 
 describe('Task 15 review fix: discardActivePostDraft on focus-arming (Critical)', () => {
@@ -930,20 +935,21 @@ describe('Task 15 review fix: discardActivePostDraft on focus-arming (Critical)'
     expect(deps.discardActivePostDraft).not.toHaveBeenCalled();
   });
 
-  // (b) relayWorkerFreeText's 'routed' branch: called only when focus actually
-  // CHANGES (the auto-resolve arm that never touches setFocusedConversation).
-  it('(b) routed auto-focus (focus CHANGES) discards the active post draft before persisting the new focus', async () => {
+  // (b) relayWorkerFreeText's 'routed' branch, no draft in play: focus still
+  // auto-arms (and persists) exactly as before; discardActivePostDraft is
+  // never called from here any more (see the block comment above).
+  it('(b) routed auto-focus (focus CHANGES) persists the new focus; does not call discardActivePostDraft', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // tos check
     (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
       { status: 'routed', conversationId: CONV_A });
     const conv = {
       ...baseConv,
       focused_job_conversation_id: null, // not yet focused -> auto-resolve arms CONV_A
-      state_context: { post_draft: { post_id: 'post-1', stage: 'confirm' } },
+      state_context: {},
     };
     const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
     expect(routed).toBe(WORKER);
-    expect(deps.discardActivePostDraft).toHaveBeenCalledWith(client, conv, msg.messageSid, msg.from);
+    expect(deps.discardActivePostDraft).not.toHaveBeenCalled();
     const focusUpdate = (deps.updateConversation as jest.Mock).mock.calls.find(
       (c: any[]) => 'focused_job_conversation_id' in c[2]);
     expect(focusUpdate).toBeDefined();
@@ -951,14 +957,14 @@ describe('Task 15 review fix: discardActivePostDraft on focus-arming (Critical)'
     expect(conv.focused_job_conversation_id).toBe(CONV_A);
   });
 
-  it('(b) routed with focus UNCHANGED (already focused on that conversation) does NOT discard or re-persist focus', async () => {
+  it('(b) routed with focus UNCHANGED (already focused on that conversation) does NOT re-persist focus', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // tos check
     (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
       { status: 'routed', conversationId: CONV_A });
     const conv = {
       ...baseConv,
       focused_job_conversation_id: CONV_A, // already focused on the SAME thread
-      state_context: { post_draft: { post_id: 'post-1', stage: 'confirm' } },
+      state_context: {},
     };
     const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
     expect(routed).toBe(WORKER);
@@ -966,6 +972,62 @@ describe('Task 15 review fix: discardActivePostDraft on focus-arming (Critical)'
     const focusUpdate = (deps.updateConversation as jest.Mock).mock.calls.find(
       (c: any[]) => 'focused_job_conversation_id' in c[2]);
     expect(focusUpdate).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// PR54 review fix: `routeReadyWorkerCommands` (processor.ts) runs
+// `tryConversationRelay` -> `relayWorkerFreeText` BEFORE `handleIdle`'s post
+// lane. With no guard, a worker mid-post (photos uploaded, awaiting
+// caption/confirm) who also has exactly one open employer thread would have
+// their caption/"publicar" text relayed straight into the employer
+// conversation via `recordWorkerConversationReply` -- and, worse, the old
+// discard call in the 'routed' branch would then throw away their draft
+// (photos and all) as a side effect of a relay the worker never intended.
+// The fix: `relayWorkerFreeText` now checks for an active post draft FIRST,
+// using the exact same `state_context.post_draft` truthiness check
+// `discardStalePostDraft` (processor.ts) uses, and returns `null` (not
+// handled) so the caller falls through to `handleIdle`'s post lane instead.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('post-draft guard: relay must not steal text from an active post draft', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('free text is NOT relayed while a post draft is active — the post lane consumes it', async () => {
+    const conv = {
+      ...baseConv,
+      focused_job_conversation_id: null,
+      state_context: { post_draft: { post_id: 'post-1', stage: 'collecting' } },
+    };
+    const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
+    expect(routed).toBeNull();
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+    expect(deps.discardActivePostDraft).not.toHaveBeenCalled();
+    expect(deps.updateConversation).not.toHaveBeenCalled();
+    // Draft untouched — still there for the post lane to pick up.
+    expect(conv.state_context.post_draft).toEqual({ post_id: 'post-1', stage: 'collecting' });
+  });
+
+  it('the guard applies through tryConversationRelay too (the real free-text entrypoint)', async () => {
+    const conv = {
+      ...baseConv,
+      conversation_state: 'idle',
+      focused_job_conversation_id: null,
+      state_context: { post_draft: { post_id: 'post-1', stage: 'confirm' } },
+    };
+    const routed = await tryConversationRelay(client, conv, msg, deps);
+    expect(routed).toBeNull();
+    expect(recordWorkerConversationReply).not.toHaveBeenCalled();
+  });
+
+  it('free text with no active draft still relays (existing behavior unchanged)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // tos check
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
+      { status: 'routed', conversationId: CONV_A });
+    const conv = { ...baseConv, focused_job_conversation_id: null, state_context: {} };
+    const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
+    expect(routed).toBe(WORKER);
+    expect(recordWorkerConversationReply).toHaveBeenCalled();
   });
 });
 
