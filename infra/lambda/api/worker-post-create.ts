@@ -123,24 +123,36 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // are external network calls (S3, Rekognition) and must never hold a
     // DB transaction open while they run. ──
     const verified: VerifiedItem[] = [];
-    for (const item of items) {
+    // All HeadObjects are issued concurrently (they're independent reads),
+    // but results are inspected in strict array order below so the 400
+    // returned for an invalid batch always names the FIRST offending item,
+    // regardless of which S3 call happens to settle first.
+    const heads = await Promise.all(
+      items.map((item) =>
+        s3.send(new HeadObjectCommand({ Bucket: process.env.MEDIA_BUCKET!, Key: item.s3_key! }))
+          .then((head) => ({ ok: true as const, head }))
+          .catch((err) => ({ ok: false as const, err })),
+      ),
+    );
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      const result = heads[i];
       let head;
-      try {
-        head = await s3.send(new HeadObjectCommand({ Bucket: process.env.MEDIA_BUCKET!, Key: item.s3_key! }));
-      } catch (err) {
+      if (!result.ok) {
         // Only a genuine "object doesn't exist" is the caller's fault
         // (400). Anything else (throttling, access denied, transient
         // network fault) is ours to fix — rethrow to the 500 path rather
         // than mislabeling it as a bad upload.
-        if ((err as { name?: string }).name === 'NotFound') {
+        if ((result.err as { name?: string }).name === 'NotFound') {
           return {
             statusCode: 400,
             headers: CORS_HEADERS,
             body: JSON.stringify({ error: 'uploaded_object_not_found', s3_key: item.s3_key }),
           };
         }
-        throw err;
+        throw result.err;
       }
+      head = result.head;
       const contentType = head.ContentType ?? '';
       if (!POST_IMAGE_MIME_TO_EXT[contentType] || !head.ContentLength || head.ContentLength <= 0) {
         return {

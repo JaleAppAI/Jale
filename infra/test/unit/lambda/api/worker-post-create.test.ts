@@ -114,6 +114,84 @@ describe('worker-post-create Lambda', () => {
     expect(res.statusCode).toBe(500);
   });
 
+  it('verifies a 3-item batch successfully with per-item HeadObject results, even when they settle out of array order', async () => {
+    const A = KEY('a.jpg');
+    const B = KEY('b.jpg');
+    const C = KEY('c.jpg');
+    // Delays are inverted relative to array order (C settles first, A last)
+    // to prove the persisted media rows follow items[] order, not S3
+    // settlement order.
+    mockHeadSend.mockImplementation((cmd: { input: { Key: string } }) => {
+      const key = cmd.input.Key;
+      const delay = key === A ? 30 : key === B ? 20 : 10;
+      return new Promise((resolve) => {
+        setTimeout(() => resolve({ ContentLength: 1000, ContentType: 'image/jpeg', VersionId: `v-${key}` }), delay);
+      });
+    });
+
+    const res = await handler(makeEvent({
+      post_id: POST_ID,
+      items: [
+        { s3_key: A, sort_order: 0 },
+        { s3_key: B, sort_order: 1 },
+        { s3_key: C, sort_order: 2 },
+      ],
+    }));
+
+    expect(res.statusCode).toBe(201);
+    expect(JSON.parse(res.body).flagged_count).toBe(0);
+    expect(moderateImage).toHaveBeenCalledTimes(3);
+    const mediaInserts = mockQuery.mock.calls.filter(([sql]) => String(sql).includes('INSERT INTO worker_post_media'));
+    expect(mediaInserts).toHaveLength(3);
+    // params: [post_id, worker_id, s3_key, s3_version_id, sort_order, ...]
+    expect(mediaInserts[0][1]).toEqual(expect.arrayContaining([A, 0]));
+    expect(mediaInserts[1][1]).toEqual(expect.arrayContaining([B, 1]));
+    expect(mediaInserts[2][1]).toEqual(expect.arrayContaining([C, 2]));
+  });
+
+  it('reports the first-array-order NotFound item even when its HeadObject settles last, and issues all HeadObjects concurrently', async () => {
+    const A = KEY('a.jpg');
+    const B = KEY('b.jpg');
+    const C = KEY('c.jpg');
+    const order: string[] = [];
+    mockHeadSend.mockImplementation((cmd: { input: { Key: string } }) => {
+      const key = cmd.input.Key;
+      order.push(`send:${key}`);
+      // The invalid item (C, index 2) is given the LONGEST delay so it
+      // settles last -- if the 400 still names C, the implementation is
+      // reading results in array order, not first-settled order.
+      const delay = key === C ? 30 : key === B ? 20 : 10;
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          order.push(`settle:${key}`);
+          if (key === C) reject(Object.assign(new Error('nope'), { name: 'NotFound' }));
+          else resolve({ ContentLength: 1000, ContentType: 'image/jpeg', VersionId: `v-${key}` });
+        }, delay);
+      });
+    });
+
+    const res = await handler(makeEvent({
+      post_id: POST_ID,
+      items: [
+        { s3_key: A, sort_order: 0 },
+        { s3_key: B, sort_order: 1 },
+        { s3_key: C, sort_order: 2 },
+      ],
+    }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'uploaded_object_not_found', s3_key: C });
+
+    // All three HeadObject sends must occur before any of them settles --
+    // proof the loop issues the calls concurrently (Promise.all) rather
+    // than awaiting each one serially before starting the next. Against
+    // the old serial implementation this would interleave as
+    // send:A, settle:A, send:B, settle:B, ... and this assertion would fail.
+    const firstSettleIdx = order.findIndex((e) => e.startsWith('settle:'));
+    const sendCountBeforeFirstSettle = order.slice(0, firstSettleIdx).filter((e) => e.startsWith('send:')).length;
+    expect(sendCountBeforeFirstSettle).toBe(3);
+  });
+
   it('creates the post, moderates every image, reports flagged_count', async () => {
     (moderateImage as jest.Mock).mockResolvedValueOnce('approved').mockResolvedValueOnce('flagged');
     const res = await handler(makeEvent({
