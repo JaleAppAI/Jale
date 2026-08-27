@@ -509,6 +509,64 @@ describe('LocationResolver.resolve', () => {
   it('returns null for unrecognized input', () => {
     expect(location.resolve('???')).toBeNull();
   });
+
+  it('resolves a full English state name', () => {
+    const result = location.resolve('El Paso, Texas');
+    expect(result?.source).toBe('city_state');
+    expect(result?.city).toBe('El Paso');
+    expect(result?.state).toBe('TX');
+  });
+
+  it('resolves an accented Spanish state name', () => {
+    const result = location.resolve('Santa Fe, Nuevo México');
+    expect(result?.city).toBe('Santa Fe');
+    expect(result?.state).toBe('NM');
+  });
+
+  it('resolves an unaccented Spanish state name', () => {
+    const result = location.resolve('santa fe, nuevo mexico');
+    expect(result?.city).toBe('santa fe');
+    expect(result?.state).toBe('NM');
+  });
+
+  it('resolves the colloquial alias "Tejas"', () => {
+    const result = location.resolve('El Paso, Tejas');
+    expect(result?.city).toBe('El Paso');
+    expect(result?.state).toBe('TX');
+  });
+
+  it('resolves a full state name regardless of case', () => {
+    const result = location.resolve('el paso, TEXAS');
+    expect(result?.city).toBe('el paso');
+    expect(result?.state).toBe('TX');
+  });
+
+  it('accepts an accented city name', () => {
+    const result = location.resolve('Española, NM');
+    expect(result?.city).toBe('Española');
+    expect(result?.state).toBe('NM');
+  });
+
+  it('returns null for an unrecognized state name', () => {
+    expect(location.resolve('El Paso, Tex')).toBeNull();
+  });
+
+  it.each([
+    ['Honolulu, Hawái', 'HI'],
+    ['Nueva Orleans, Luisiana', 'LA'],
+    ['St. Louis, Misuri', 'MO'],
+    ['Jackson, Misisipi', 'MS'],
+    ['Filadelfia, Pensilvania', 'PA'],
+  ])('resolves Spanish transliteration "%s" -> %s', (input, expected) => {
+    const result = location.resolve(input);
+    expect(result?.state).toBe(expected);
+  });
+
+  it('resolves "Washington, D.C." with periods in the state abbreviation', () => {
+    const result = location.resolve('Washington, D.C.');
+    expect(result?.city).toBe('Washington');
+    expect(result?.state).toBe('DC');
+  });
 });
 
 // ── TrustQuestionGenerator ───────────────────────────────────────────────

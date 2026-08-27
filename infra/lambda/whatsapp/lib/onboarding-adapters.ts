@@ -272,7 +272,101 @@ export interface LocationResolver {
 }
 
 const ZIP_RE = /^\d{5}$/;
-const CITY_STATE_RE = /^([A-Za-z][A-Za-z .'-]*),\s*([A-Za-z]{2})$/;
+const CITY_PART_RE = /^\p{L}[\p{L} .'-]*$/u;
+const TWO_LETTER_CODE_RE = /^[A-Za-z]{2}$/;
+
+// Full US state (+ DC, PR) names, in English and Spanish, mapped to their
+// 2-letter USPS abbreviation. Keys MUST be pre-normalized: lowercase, no
+// diacritics, single spaces (see `normalizeStateName`) — Spanish entries are
+// therefore written WITHOUT accents (e.g. "nuevo mexico", not "nuevo méxico").
+const STATE_NAME_TO_ABBREV: Record<string, string> = {
+  // English
+  alabama: 'AL',
+  alaska: 'AK',
+  arizona: 'AZ',
+  arkansas: 'AR',
+  california: 'CA',
+  colorado: 'CO',
+  connecticut: 'CT',
+  delaware: 'DE',
+  florida: 'FL',
+  georgia: 'GA',
+  hawaii: 'HI',
+  idaho: 'ID',
+  illinois: 'IL',
+  indiana: 'IN',
+  iowa: 'IA',
+  kansas: 'KS',
+  kentucky: 'KY',
+  louisiana: 'LA',
+  maine: 'ME',
+  maryland: 'MD',
+  massachusetts: 'MA',
+  michigan: 'MI',
+  minnesota: 'MN',
+  mississippi: 'MS',
+  missouri: 'MO',
+  montana: 'MT',
+  nebraska: 'NE',
+  nevada: 'NV',
+  'new hampshire': 'NH',
+  'new jersey': 'NJ',
+  'new mexico': 'NM',
+  'new york': 'NY',
+  'north carolina': 'NC',
+  'north dakota': 'ND',
+  ohio: 'OH',
+  oklahoma: 'OK',
+  oregon: 'OR',
+  pennsylvania: 'PA',
+  'rhode island': 'RI',
+  'south carolina': 'SC',
+  'south dakota': 'SD',
+  tennessee: 'TN',
+  texas: 'TX',
+  utah: 'UT',
+  vermont: 'VT',
+  virginia: 'VA',
+  washington: 'WA',
+  'west virginia': 'WV',
+  wisconsin: 'WI',
+  wyoming: 'WY',
+  'district of columbia': 'DC',
+  'puerto rico': 'PR',
+  // Colloquial alias
+  tejas: 'TX',
+  // Spanish (unaccented keys only — differing from English above)
+  'nuevo hampshire': 'NH',
+  'nueva jersey': 'NJ',
+  'nuevo mexico': 'NM',
+  'nueva york': 'NY',
+  'carolina del norte': 'NC',
+  'dakota del norte': 'ND',
+  'carolina del sur': 'SC',
+  'dakota del sur': 'SD',
+  'virginia occidental': 'WV',
+  'distrito de columbia': 'DC',
+  dc: 'DC',
+  // Spanish transliterations that differ from the English name by more than
+  // accents (so they do NOT collapse onto the English key after
+  // `normalizeStateName`'s diacritic strip — verified individually):
+  hawai: 'HI',
+  luisiana: 'LA',
+  misuri: 'MO',
+  misisipi: 'MS',
+  pensilvania: 'PA',
+};
+
+function normalizeStateName(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/\./g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export function createLocationResolver(): LocationResolver {
   return {
@@ -281,16 +375,29 @@ export function createLocationResolver(): LocationResolver {
       if (ZIP_RE.test(trimmed)) {
         return { city: null, state: null, postalCode: trimmed, source: 'zip' };
       }
-      const match = CITY_STATE_RE.exec(trimmed);
-      if (match) {
-        return {
-          city: match[1].trim(),
-          state: match[2].toUpperCase(),
-          postalCode: null,
-          source: 'city_state',
-        };
+
+      const lastComma = trimmed.lastIndexOf(',');
+      if (lastComma === -1) return null;
+
+      const cityPart = trimmed.slice(0, lastComma).trim();
+      const statePart = trimmed.slice(lastComma + 1).trim();
+      if (!CITY_PART_RE.test(cityPart)) return null;
+
+      let stateAbbrev: string | null = null;
+      if (TWO_LETTER_CODE_RE.test(statePart)) {
+        stateAbbrev = statePart.toUpperCase();
+      } else {
+        const normalized = normalizeStateName(statePart);
+        stateAbbrev = STATE_NAME_TO_ABBREV[normalized] ?? null;
       }
-      return null;
+      if (!stateAbbrev) return null;
+
+      return {
+        city: cityPart,
+        state: stateAbbrev,
+        postalCode: null,
+        source: 'city_state',
+      };
     },
   };
 }
