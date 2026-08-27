@@ -44,8 +44,25 @@ export function buildPromptForStep(
       return { templateName: '', variables: {}, fallbackBody: t('v2_voice_processing_wait', lang) };
     case 'profile.name':
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_name', lang) };
-    case 'profile.location':
+    case 'profile.location': {
+      // A pending bare-city confirm (v2LocationPendingConfirm, set by
+      // handleProfileLocation) must survive gate interruptions (help/back/
+      // greeting/media all repeat the prompt via this function) — otherwise
+      // the worker sees the generic "where do you work?" ask while their
+      // retyped city lands in the pending-confirm branch, a wedge loop.
+      const pending = stateContext?.v2LocationPendingConfirm as
+        | { city: string; state: string }
+        | null
+        | undefined;
+      if (pending) {
+        return {
+          templateName: '',
+          variables: {},
+          fallbackBody: t('v2_location_confirm', lang, { city: pending.city, state: pending.state }),
+        };
+      }
       return { templateName: '', variables: {}, fallbackBody: t('v2_ask_location', lang) };
+    }
     case 'profile.trade': {
       const options = TRADE_ORDER.map((trade) => TRADE_LABELS[trade][lang]);
       return buildV2TradePrompt(lang, t('v2_ask_trade', lang), options);
