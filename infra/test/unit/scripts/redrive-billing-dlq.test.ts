@@ -14,6 +14,9 @@ const SOURCE_URL = 'https://sqs.us-east-2.amazonaws.com/123456789012/billing-web
 const DLQ_ARN = 'arn:aws:sqs:us-east-2:123456789012:billing-webhook-dlq';
 const SOURCE_ARN = 'arn:aws:sqs:us-east-2:123456789012:billing-webhook-queue';
 const TASK_HANDLE = 'eyJ0YXNrSWQiOiJmYWtlLXRhc2staWQifQ==';
+// A real, live queue that is NOT this DLQ's source — what a mistyped
+// --source-url would plausibly hit.
+const UNRELATED_DLQ_ARN = 'arn:aws:sqs:us-east-2:123456789012:whatsapp-inbound-dlq.fifo';
 
 // A Stripe webhook body is the exact thing this tool must never surface.
 const SECRET_BODY = '{"id":"evt_1PfakeSecret","type":"invoice.paid","customer":"cus_SsEcReT"}';
@@ -34,6 +37,12 @@ interface FakeClientOptions {
   failStartWith?: Error;
   /** Drop `QueueArn` from one queue's attribute response. */
   omitQueueArn?: 'dlq' | 'source';
+  /**
+   * Destination queue's `RedrivePolicy`: `bound` (default) dead-letters into
+   * this DLQ; `mismatch` targets a different DLQ; `omit` has no policy at all
+   * (a queue with no DLQ configured); `invalid` returns unparsable JSON.
+   */
+  redrivePolicy?: 'bound' | 'mismatch' | 'omit' | 'invalid';
   taskHandle?: string;
 }
 
@@ -62,6 +71,15 @@ function fakeClient(options: FakeClientOptions = {}): {
         if (isDlq) {
           if (visible !== undefined) attributes.ApproximateNumberOfMessages = visible;
           attributes.ApproximateNumberOfMessagesNotVisible = notVisible;
+        } else {
+          const policy = options.redrivePolicy ?? 'bound';
+          if (policy === 'bound') {
+            attributes.RedrivePolicy = JSON.stringify({ deadLetterTargetArn: DLQ_ARN, maxReceiveCount: 3 });
+          } else if (policy === 'mismatch') {
+            attributes.RedrivePolicy = JSON.stringify({ deadLetterTargetArn: UNRELATED_DLQ_ARN, maxReceiveCount: 3 });
+          } else if (policy === 'invalid') {
+            attributes.RedrivePolicy = '{"deadLetterTargetArn": truncated';
+          }
         }
         return { Attributes: attributes };
       }
@@ -259,12 +277,51 @@ describe('run — dry run (default)', () => {
     expect(names(commands)).not.toContain('StartMessageMoveTaskCommand');
   });
 
-  it('issues exactly one AWS call: GetQueueAttributes on the DLQ', async () => {
+  it('issues only reads — two GetQueueAttributes calls and nothing else', async () => {
     const { commands } = await invoke(makeArgs());
 
-    expect(commands).toHaveLength(1);
-    expect(commands[0].name).toBe('GetQueueAttributesCommand');
-    expect(commands[0].input.QueueUrl).toBe(DLQ_URL);
+    expect(names(commands)).toEqual(['GetQueueAttributesCommand', 'GetQueueAttributesCommand']);
+    expect(commands.map((c) => c.input.QueueUrl)).toEqual([DLQ_URL, SOURCE_URL]);
+  });
+
+  it('reports the binding as verified without failing, and never prints the policy ARN', async () => {
+    const { kind, out } = await invoke(makeArgs(), { redrivePolicy: 'bound' });
+
+    expect(kind).toBe('dry_run');
+    expect(out).toMatch(/binding: verified/);
+    expect(out).not.toContain(DLQ_ARN);
+  });
+
+  it.each<['mismatch' | 'omit' | 'invalid']>([['mismatch'], ['omit'], ['invalid']])(
+    'reports a %s binding as unverified but still succeeds (dry run stays tolerant)',
+    async (policy) => {
+      const { kind, out } = await invoke(makeArgs(), { redrivePolicy: policy });
+
+      expect(kind).toBe('dry_run');
+      expect(resolveExitCode({ kind: 'dry_run' })).toBe(0);
+      expect(out).toMatch(/binding: unverified/);
+      expect(out).not.toContain(UNRELATED_DLQ_ARN);
+    },
+  );
+
+  it('reports the binding as unverified rather than failing when the destination read errors', async () => {
+    const { client, commands } = fakeClient();
+    const guarded: SqsCommandClient = {
+      send: async (command: unknown) => {
+        const name = (command as { constructor: { name: string } }).constructor.name;
+        const url = (command as { input?: Record<string, unknown> }).input?.QueueUrl;
+        if (name === 'GetQueueAttributesCommand' && url === SOURCE_URL) {
+          throw Object.assign(new Error('AccessDenied'), { name: 'AccessDenied' });
+        }
+        return client.send(command);
+      },
+    };
+    const lines: string[] = [];
+    const result = await run({ client: guarded, args: makeArgs(), log: (l) => lines.push(l), logError: (l) => lines.push(l) });
+
+    expect(result.kind).toBe('dry_run');
+    expect(lines.join('\n')).toMatch(/binding: unverified/);
+    expect(names(commands)).not.toContain('StartMessageMoveTaskCommand');
   });
 
   it('prints queue names only — never a full queue URL or the account id', async () => {
@@ -381,6 +438,42 @@ describe('run — --execute', () => {
     },
   );
 
+  it('starts the move task when the destination genuinely dead-letters into the DLQ', async () => {
+    const { kind, commands } = await invoke(makeArgs({ execute: true }), {
+      visible: '7',
+      redrivePolicy: 'bound',
+    });
+
+    expect(kind).toBe('executed');
+    expect(names(commands)).toContain('StartMessageMoveTaskCommand');
+  });
+
+  it.each<['mismatch' | 'omit' | 'invalid']>([['mismatch'], ['omit'], ['invalid']])(
+    'refuses with QueueBindingMismatch when the destination RedrivePolicy is %s',
+    async (policy) => {
+      const { kind, out, commands } = await invoke(makeArgs({ execute: true }), {
+        visible: '7',
+        redrivePolicy: policy,
+      });
+
+      expect(kind).toBe('binding_mismatch');
+      expect(resolveExitCode({ kind: 'binding_mismatch' })).toBe(1);
+      expect(out).toContain('QueueBindingMismatch');
+      expect(out).toContain('billing-webhook-queue');
+      expect(out).toContain('billing-webhook-dlq');
+      expect(names(commands)).not.toContain('StartMessageMoveTaskCommand');
+    },
+  );
+
+  it('names queues only in the mismatch refusal — never the policy ARN or account id', async () => {
+    const { out } = await invoke(makeArgs({ execute: true }), { visible: '7', redrivePolicy: 'mismatch' });
+
+    expect(out).not.toContain(UNRELATED_DLQ_ARN);
+    expect(out).not.toContain(DLQ_ARN);
+    expect(out).not.toContain(SOURCE_ARN);
+    expect(out).not.toContain('123456789012');
+  });
+
   it('still prints the depth before mutating', async () => {
     const { out } = await invoke(makeArgs({ execute: true }), { visible: '7', notVisible: '2' });
 
@@ -458,6 +551,7 @@ describe('run — message bodies are unreachable', () => {
 
     const allowed = new Set([
       'QueueArn',
+      'RedrivePolicy',
       'ApproximateNumberOfMessages',
       'ApproximateNumberOfMessagesNotVisible',
     ]);
@@ -470,9 +564,11 @@ describe('run — message bodies are unreachable', () => {
 });
 
 describe('resolveExitCode', () => {
-  it('maps dry_run and executed to 0, aws_error to 1', () => {
+  it('maps dry_run, executed and nothing_to_redrive to 0; aws_error and binding_mismatch to 1', () => {
     expect(resolveExitCode({ kind: 'dry_run' })).toBe(0);
     expect(resolveExitCode({ kind: 'executed' })).toBe(0);
+    expect(resolveExitCode({ kind: 'nothing_to_redrive' })).toBe(0);
     expect(resolveExitCode({ kind: 'aws_error' })).toBe(1);
+    expect(resolveExitCode({ kind: 'binding_mismatch' })).toBe(1);
   });
 });

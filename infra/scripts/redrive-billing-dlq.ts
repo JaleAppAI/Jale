@@ -27,6 +27,13 @@
  *   - AWS failures print the error's `name` and nothing else; SDK error
  *     messages routinely quote the offending queue URL or ARN.
  *   - `--execute` is refused when the DLQ reports 0 available messages.
+ *   - `--execute` is refused unless the destination queue genuinely
+ *     dead-letters INTO this DLQ (its `RedrivePolicy.deadLetterTargetArn`
+ *     must equal the DLQ's ARN). SQS validates that `SourceArn` is a DLQ but
+ *     not that `DestinationArn` is that DLQ's real source, so without this
+ *     guard a mistyped `--source-url` naming some other live queue would be
+ *     accepted and Stripe webhooks would be delivered to the wrong consumer.
+ *     The dry run reports the binding but never fails on it.
  *
  * Usage:
  *   cd infra
@@ -69,7 +76,12 @@ export type ParseRedriveArgsResult =
   | { ok: true; value: RedriveArgs }
   | { ok: false; error: string };
 
-export type RedriveResultKind = 'dry_run' | 'executed' | 'nothing_to_redrive' | 'aws_error';
+export type RedriveResultKind =
+  | 'dry_run'
+  | 'executed'
+  | 'nothing_to_redrive'
+  | 'binding_mismatch'
+  | 'aws_error';
 
 export interface RedriveResult {
   kind: RedriveResultKind;
@@ -98,7 +110,7 @@ const DLQ_ATTRIBUTE_NAMES: QueueAttributeName[] = [
   'ApproximateNumberOfMessages',
   'ApproximateNumberOfMessagesNotVisible',
 ];
-const SOURCE_ATTRIBUTE_NAMES: QueueAttributeName[] = ['QueueArn'];
+const SOURCE_ATTRIBUTE_NAMES: QueueAttributeName[] = ['QueueArn', 'RedrivePolicy'];
 
 const UNKNOWN_QUEUE_NAME = '(unnamed queue)';
 const UNAVAILABLE = 'unavailable';
@@ -236,13 +248,59 @@ async function getQueueAttributes(
 }
 
 /**
+ * True only when this queue's redrive policy names `dlqArn` as its
+ * dead-letter target. Absent, malformed, or differently-targeted policies all
+ * return false: the binding must be positively proven, never assumed.
+ */
+function redriveTargetsDlq(rawPolicy: string | undefined, dlqArn: string): boolean {
+  if (rawPolicy === undefined) return false;
+  let policy: unknown;
+  try {
+    policy = JSON.parse(rawPolicy);
+  } catch {
+    return false;
+  }
+  if (policy === null || typeof policy !== 'object') return false;
+  return (policy as { deadLetterTargetArn?: unknown }).deadLetterTargetArn === dlqArn;
+}
+
+type SourceQueueProbe =
+  | { ok: true; sourceArn: string | undefined; bound: boolean }
+  | { ok: false; errorName: string };
+
+/**
+ * Reads the destination queue's ARN and redrive policy in one call, mirroring
+ * `validateQueueBinding` in scripts/replay-whatsapp-inbound.ts. Never throws:
+ * the caller decides whether a failed probe is fatal (`--execute`) or merely
+ * reported as unverified (dry run).
+ */
+async function probeSourceQueue(
+  client: SqsCommandClient,
+  sourceUrl: string,
+  dlqArn: string | undefined,
+): Promise<SourceQueueProbe> {
+  try {
+    const attributes = await getQueueAttributes(client, sourceUrl, SOURCE_ATTRIBUTE_NAMES);
+    return {
+      ok: true,
+      sourceArn: attributes.QueueArn,
+      bound: dlqArn !== undefined && redriveTargetsDlq(attributes.RedrivePolicy, dlqArn),
+    };
+  } catch (error) {
+    return { ok: false, errorName: errorName(error) };
+  }
+}
+
+/**
  * Reads the DLQ's depth, prints it, and — only under `--execute` — starts an
  * SQS message move task from the DLQ to the source queue.
  *
  * Both ARNs are resolved from the supplied URLs via `GetQueueAttributes`
  * rather than being constructed from region/account guesses, so a typo'd URL
  * fails as `QueueDoesNotExist` instead of silently targeting a real queue that
- * the operator did not name.
+ * the operator did not name. A typo that happens to name a *real* queue is
+ * caught by the redrive-policy binding check, which `--execute` requires and
+ * the dry run merely reports.
  */
 export async function run(deps: RedriveDeps): Promise<RedriveResult> {
   const { client, args } = deps;
@@ -256,6 +314,12 @@ export async function run(deps: RedriveDeps): Promise<RedriveResult> {
     const dlqAttributes = await getQueueAttributes(client, args.dlqUrl, DLQ_ATTRIBUTE_NAMES);
     const visibleRaw = dlqAttributes.ApproximateNumberOfMessages;
     const notVisibleRaw = dlqAttributes.ApproximateNumberOfMessagesNotVisible;
+    const dlqArn = dlqAttributes.QueueArn;
+
+    // Probed on both paths so the dry run can tell the operator up front
+    // whether `--execute` would be refused, instead of letting them discover
+    // it only after deciding to mutate.
+    const source = await probeSourceQueue(client, args.sourceUrl, dlqArn);
 
     // State is always printed before anything is mutated, so an aborted or
     // failed run still leaves the operator with the depth they asked about.
@@ -269,6 +333,8 @@ export async function run(deps: RedriveDeps): Promise<RedriveResult> {
         args.maxPerSecond === undefined ? 'unset (SQS default rate)' : String(args.maxPerSecond)
       }`,
     );
+    // Names only — a RedrivePolicy quotes an ARN, which carries the account id.
+    log(`binding: ${source.ok && source.bound ? 'verified' : 'unverified'}`);
     log('-----------------------------------');
 
     if (!args.execute) {
@@ -296,18 +362,26 @@ export async function run(deps: RedriveDeps): Promise<RedriveResult> {
       return { kind: 'nothing_to_redrive' };
     }
 
-    const dlqArn = dlqAttributes.QueueArn;
-    const sourceArn = (
-      await getQueueAttributes(client, args.sourceUrl, SOURCE_ATTRIBUTE_NAMES)
-    ).QueueArn;
-    if (!dlqArn || !sourceArn) {
+    // A dry run tolerates an unreadable destination queue; `--execute` does not.
+    if (!source.ok) {
+      logError(source.errorName);
+      return { kind: 'aws_error' };
+    }
+    if (!dlqArn || !source.sourceArn) {
       logError('QueueArnUnavailable');
       return { kind: 'aws_error' };
+    }
+    if (!source.bound) {
+      logError(
+        `QueueBindingMismatch: ${sourceName} does not dead-letter into ${dlqName}; `
+          + 'refusing to start a move task',
+      );
+      return { kind: 'binding_mismatch' };
     }
 
     const input: StartMessageMoveTaskCommandInput = {
       SourceArn: dlqArn,
-      DestinationArn: sourceArn,
+      DestinationArn: source.sourceArn,
     };
     // Set only when requested: an explicit `undefined` would still serialize
     // the field, and SQS rejects a null rate.
@@ -328,13 +402,17 @@ export async function run(deps: RedriveDeps): Promise<RedriveResult> {
   }
 }
 
+// A refused redrive is a failure the operator must see: `binding_mismatch`
+// means they named the wrong destination queue.
+const FAILURE_KINDS = new Set<RedriveResultKind>(['aws_error', 'binding_mismatch']);
+
 /**
  * An empty DLQ exits 0: the desired end state already holds and nothing is
  * wrong, the same reason replay-domain-event.ts maps `already_completed` to 0.
- * Only a genuine AWS failure is a non-zero exit.
+ * An AWS failure or a rejected queue binding is a non-zero exit.
  */
 export function resolveExitCode(result: RedriveResult): number {
-  return result.kind === 'aws_error' ? 1 : 0;
+  return FAILURE_KINDS.has(result.kind) ? 1 : 0;
 }
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
