@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Modal } from '@/components/ui/modal';
 import {
   getPostUploadUrls,
   createPost,
@@ -84,15 +85,23 @@ export function NewPostModal({
   }
 
   return (
-    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div className="w-full max-w-lg space-y-4 rounded-2xl bg-[var(--jale-surface,white)] p-5" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-extrabold text-[var(--jale-ink)]">{t('new_post')}</h3>
-          <button type="button" aria-label={t('close')} onClick={onClose}>
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
+    <Modal
+      open
+      onClose={onClose}
+      title={t('new_post')}
+      size="md"
+      footer={
+        <>
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
+            {t('cancel')}
+          </Button>
+          <Button size="sm" onClick={handlePublish} disabled={busy || picked.length === 0}>
+            {busy ? t('publishing') : t('publish')}
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
         <label className="block">
           <span className="sr-only">{t('select_photos')}</span>
           <input
@@ -136,16 +145,7 @@ export function NewPostModal({
         />
 
         {error && <p className="text-sm text-red-600">{error}</p>}
-
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
-            {t('cancel')}
-          </Button>
-          <Button size="sm" onClick={handlePublish} disabled={busy || picked.length === 0}>
-            {busy ? t('publishing') : t('publish')}
-          </Button>
-        </div>
       </div>
-    </div>
+    </Modal>
   );
 }

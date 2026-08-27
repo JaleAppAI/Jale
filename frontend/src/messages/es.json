@@ -1668,6 +1668,7 @@
     "cancel": "Cancelar",
     "delete": "Eliminar publicación",
     "delete_confirm": "¿Eliminar esta publicación? Esto no se puede deshacer.",
+    "delete_error": "No se pudo eliminar la publicación. Inténtalo de nuevo.",
     "select_photos": "Seleccionar fotos",
     "max_photos_error": "Puedes agregar hasta 10 fotos por publicación.",
     "file_type_error": "Solo se permiten fotos JPG, PNG o WebP.",
@@ -1681,7 +1682,8 @@
     "close": "Cerrar",
     "open_post": "Abrir publicación",
     "remove_photo": "Quitar foto {n}",
-    "load_more": "Ver publicaciones anteriores"
+    "load_more": "Ver publicaciones anteriores",
+    "load_more_error": "No se pudieron cargar publicaciones anteriores. Inténtalo de nuevo."
   },
   "digest_unsubscribe": {
     "title": "Correos de resumen diario",
