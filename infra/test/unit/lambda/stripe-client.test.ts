@@ -1,4 +1,10 @@
 import Stripe = require('stripe');
+import { randomBytes } from 'crypto';
+
+// Fixture keys are generated at runtime, never written as literals: a
+// key-shaped literal (rk_live_… / rk_test_… + 24+ chars) trips GitHub push
+// protection even when fake, and there is no reason for one to exist in source.
+const fakeStripeKey = (mode: 'test' | 'live'): string => `rk_${mode}_${randomBytes(24).toString('hex')}`;
 
 const mockSend = jest.fn();
 jest.mock('@aws-sdk/client-secrets-manager', () => ({
@@ -18,7 +24,7 @@ describe('stripe-client', () => {
   let StripeConfigError: any;
 
   const validSecret = {
-    secretKey: 'rk_test_00000000000000000000000000000000000000000000000000',
+    secretKey: fakeStripeKey('test'),
     priceIdEmployerPro: 'price_00000000000000',
     portalConfigurationId: 'bpc_00000000000000',
   };
@@ -292,6 +298,101 @@ describe('stripe-client', () => {
       const stripe2 = await getStripe();
 
       expect(stripe1).not.toBe(stripe2);
+    });
+
+    // ── operator key rotation on a warm container ──────────────────────────
+    // getStripeSecret() re-reads Secrets Manager every CACHE_TTL_MS, so a
+    // rotation must reach the memoized Stripe client too: a warm container
+    // that keeps its old client keeps transacting with the retired key.
+    const rotatedSecret = {
+      ...validSecret,
+      secretKey: fakeStripeKey('live'),
+    };
+
+    // The SDK keeps the key an instance was constructed with on
+    // `_authenticator._apiKey`. Like the `_api.version` reach-in above this is
+    // a private internal, and it is the only way to observe which key a
+    // constructed client will actually authenticate with.
+    const keyOf = (stripe: any): string => stripe._authenticator._apiKey;
+
+    it('does not rebuild the client while the secret keeps returning the same key', async () => {
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(validSecret) });
+
+      const stripe1 = await getStripe();
+      const stripe2 = await getStripe();
+
+      expect(stripe2).toBe(stripe1);
+      expect(keyOf(stripe2)).toBe(validSecret.secretKey);
+    });
+
+    it('rebuilds the client with the rotated key once the secret TTL expires', async () => {
+      const dateSpy = jest.spyOn(Date, 'now');
+      const baseTime = 1_000_000;
+      dateSpy.mockReturnValue(baseTime);
+
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(validSecret) });
+      const stripe1 = await getStripe();
+      expect(keyOf(stripe1)).toBe(validSecret.secretKey);
+
+      // Operator rotates rk_test_ -> rk_live_ in Secrets Manager.
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(rotatedSecret) });
+      dateSpy.mockReturnValue(baseTime + 5 * 60 * 1000 + 1);
+
+      const stripe2 = await getStripe();
+
+      expect(stripe2).not.toBe(stripe1);
+      expect(keyOf(stripe2)).toBe(rotatedSecret.secretKey);
+      // The rebuilt client keeps the compile-time API version pin.
+      expect((stripe2 as any)._api.version).toBe('2026-06-24.dahlia');
+      expect(mockSend).toHaveBeenCalledTimes(2);
+      dateSpy.mockRestore();
+    });
+
+    it('does not rebuild the client within the TTL even if Secrets Manager would now return a different key', async () => {
+      const dateSpy = jest.spyOn(Date, 'now');
+      const baseTime = 1_000_000;
+      dateSpy.mockReturnValue(baseTime);
+
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(validSecret) });
+      const stripe1 = await getStripe();
+
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(rotatedSecret) });
+      dateSpy.mockReturnValue(baseTime + 5 * 60 * 1000 - 1);
+
+      const stripe2 = await getStripe();
+
+      // The secret cache is authoritative for the TTL window, so no extra
+      // Secrets Manager read and no needless client rebuild.
+      expect(stripe2).toBe(stripe1);
+      expect(keyOf(stripe2)).toBe(validSecret.secretKey);
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      dateSpy.mockRestore();
+    });
+
+    it('propagates a transient Secrets Manager failure raised while refreshing the secret', async () => {
+      const dateSpy = jest.spyOn(Date, 'now');
+      const baseTime = 1_000_000;
+      dateSpy.mockReturnValue(baseTime);
+
+      mockSend.mockResolvedValue({ SecretString: JSON.stringify(validSecret) });
+      await getStripe();
+
+      const smError: any = new Error('Rate exceeded');
+      smError.name = 'ThrottlingException';
+      mockSend.mockRejectedValue(smError);
+      dateSpy.mockReturnValue(baseTime + 5 * 60 * 1000 + 1);
+
+      // The stale client is deliberately NOT served as a fallback — the key it
+      // holds may already be revoked. The error keeps its existing retryable
+      // classification at the caller.
+      try {
+        await getStripe();
+        throw new Error('expected getStripe to reject');
+      } catch (err) {
+        expect(err).not.toBeInstanceOf(StripeConfigError);
+        expect((err as any).name).toBe('ThrottlingException');
+      }
+      dateSpy.mockRestore();
     });
   });
 });

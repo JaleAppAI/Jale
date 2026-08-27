@@ -84,13 +84,22 @@ export async function getStripeSecret(): Promise<StripeApiSecret> {
 }
 
 let stripeClient: Stripe | undefined;
+// The key `stripeClient` was constructed with, so a rotation can be detected.
+let stripeClientKey: string | undefined;
 
 export async function getStripe(): Promise<Stripe> {
-  if (stripeClient) return stripeClient;
+  // Always consult getStripeSecret(): within CACHE_TTL_MS that is a cheap
+  // in-memory read, and once the TTL lapses it is the single Secrets Manager
+  // call that surfaces an operator key rotation. Memoizing the client without
+  // this check left every warm container authenticating with the retired key
+  // (e.g. rk_test_ after a cutover to rk_live_) until it happened to recycle.
   const secret = await getStripeSecret();
+  if (stripeClient && stripeClientKey === secret.secretKey) return stripeClient;
+  // The key changed (or there is no client yet) — rebuild, keeping the pin.
   stripeClient = new Stripe(secret.secretKey, {
     apiVersion: STRIPE_API_VERSION,
   });
+  stripeClientKey = secret.secretKey;
   return stripeClient;
 }
 
@@ -98,4 +107,5 @@ export function clearStripeCache(): void {
   cached = undefined;
   cachedAt = 0;
   stripeClient = undefined;
+  stripeClientKey = undefined;
 }
