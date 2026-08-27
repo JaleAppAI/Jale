@@ -231,7 +231,7 @@ function trustOptionLabel(option: string, lang: Lang): string {
   return TRUST_OPTION_LABELS_ES[option] ?? option;
 }
 
-const TRUST_OPTION_LABELS_ES: Record<string, string> = {
+export const TRUST_OPTION_LABELS_ES: Record<string, string> = {
   Residential: 'Residencial',
   Commercial: 'Comercial',
   Industrial: 'Industrial',

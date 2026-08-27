@@ -57,6 +57,36 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** How long "Link copied" stays on the share button before reverting. */
 const COPIED_RESET_MS = 3000;
 
+type ScoreComponentKey =
+    | 'specific_knowledge'
+    | 'practical_experience'
+    | 'safety_awareness'
+    | 'communication_clarity';
+
+/**
+ * The rubric version this page's hardcoded dimension maxes (30/30/20/20
+ * below) were written against (infra/lambda/ai/trust-scorer.ts's
+ * SSM-hot-editable rubric -- 5-minute cache, see its RUBRIC_CACHE_TTL_MS).
+ * `validateScore` there only checks the four score_components sum to 100,
+ * so a rebalance (e.g. to 25/25/25/25) is a legal rubric that would
+ * silently mislabel these bars -- or push one past 100% -- with nothing to
+ * detect it. When the API's `rubric_version` disagrees with this constant,
+ * the render below falls back to plain numbers instead of painting a bar
+ * against a max that's no longer accurate.
+ */
+const KNOWN_RUBRIC_VERSION = 7;
+
+/**
+ * One row per `score_components` dimension -- also resolves what used to be
+ * four near-identical copy-pasted `ProgressRow`s.
+ */
+const TRUST_DIMENSIONS: ReadonlyArray<{ key: ScoreComponentKey; labelKey: string; max: number }> = [
+    { key: 'specific_knowledge', labelKey: 'trust_dim_specific_knowledge', max: 30 },
+    { key: 'practical_experience', labelKey: 'trust_dim_practical_experience', max: 30 },
+    { key: 'safety_awareness', labelKey: 'trust_dim_safety_awareness', max: 20 },
+    { key: 'communication_clarity', labelKey: 'trust_dim_communication_clarity', max: 20 },
+];
+
 /** What one load of this page consists of: the applicant, their documents, and their media posts. */
 type ApplicantView = {
     profile: WorkerProfile;
@@ -129,18 +159,22 @@ export default function WorkerProfilePage() {
             // to the invalid-link state -- but the fetcher is the only place that
             // can guarantee no doomed request is ever sent.
             if (!linkValid) throw new Error('invalid_link');
+            // Kicked off alongside the profile/documents Promise.all below
+            // (it only needs token/workerId, not either of their results) so
+            // the three requests overlap instead of the page paying for this
+            // one serially. `.catch`-wrapped immediately -- both so it can
+            // never reject anything it's raced against, and so a rejection
+            // here doesn't become an unhandled rejection while the other two
+            // are still in flight -- to preserve the same best-effort
+            // semantics as before: the media board is auxiliary and must
+            // never sink the applicant view if the posts fetch fails.
+            const postsPromise = getEmployerWorkerPosts(token, workerId, signal).catch(() => null);
             const [profile, docs] = await Promise.all([
                 getWorkerProfile(token, workerId, jobId, signal),
                 getWorkerDocuments(token, workerId, jobId, signal),
             ]);
-            // Best-effort: the media board is auxiliary and must never sink
-            // the applicant view if the posts fetch fails.
-            let posts: WorkerPost[] = [];
-            try {
-                posts = (await getEmployerWorkerPosts(token, workerId, signal)).posts;
-            } catch {
-                // Applicant profile still renders without the board.
-            }
+            const postsResult = await postsPromise;
+            const posts: WorkerPost[] = postsResult?.posts ?? [];
             return { profile, documents: docs.documents, posts };
         },
         legalReturnUrl: returnUrl,
@@ -592,26 +626,41 @@ export default function WorkerProfilePage() {
                                                     {trustAssessment.competency_score}/100
                                                 </span>
                                             </div>
-                                            <ProgressRow
-                                                label={t('trust_dim_specific_knowledge')}
-                                                value={`${trustAssessment.score_components.specific_knowledge}/30`}
-                                                percent={(trustAssessment.score_components.specific_knowledge / 30) * 100}
-                                            />
-                                            <ProgressRow
-                                                label={t('trust_dim_practical_experience')}
-                                                value={`${trustAssessment.score_components.practical_experience}/30`}
-                                                percent={(trustAssessment.score_components.practical_experience / 30) * 100}
-                                            />
-                                            <ProgressRow
-                                                label={t('trust_dim_safety_awareness')}
-                                                value={`${trustAssessment.score_components.safety_awareness}/20`}
-                                                percent={(trustAssessment.score_components.safety_awareness / 20) * 100}
-                                            />
-                                            <ProgressRow
-                                                label={t('trust_dim_communication_clarity')}
-                                                value={`${trustAssessment.score_components.communication_clarity}/20`}
-                                                percent={(trustAssessment.score_components.communication_clarity / 20) * 100}
-                                            />
+                                            {(() => {
+                                                const components = trustAssessment.score_components;
+                                                const rubricVersion = trustAssessment.rubric_version;
+                                                // See KNOWN_RUBRIC_VERSION above: a rebalanced rubric is
+                                                // undetectable from the components alone, so a version
+                                                // mismatch degrades to honest numbers instead of a
+                                                // mislabeled (or overflowing) bar.
+                                                const rubricDrifted =
+                                                    rubricVersion != null && rubricVersion !== KNOWN_RUBRIC_VERSION;
+                                                return TRUST_DIMENSIONS.map((dim) => {
+                                                    const value = components[dim.key];
+                                                    if (rubricDrifted) {
+                                                        return (
+                                                            <div
+                                                                key={dim.key}
+                                                                className="flex items-baseline justify-between gap-3 text-xs font-semibold"
+                                                            >
+                                                                <span className="min-w-0 text-current">{t(dim.labelKey)}</span>
+                                                                <span className="shrink-0 tabular-nums text-current opacity-70">
+                                                                    {value} pts
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    const pct = Math.min(100, (value / dim.max) * 100);
+                                                    return (
+                                                        <ProgressRow
+                                                            key={dim.key}
+                                                            label={t(dim.labelKey)}
+                                                            value={`${value}/${dim.max}`}
+                                                            percent={pct}
+                                                        />
+                                                    );
+                                                });
+                                            })()}
                                         </div>
                                     ) : (
                                         <Badge tone={trustAssessment.status === 'failed' ? 'danger' : 'warning'}>

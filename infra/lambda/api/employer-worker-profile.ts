@@ -115,9 +115,22 @@ export const handler = async (
       [jobId, workerId, employerId],
     );
 
+    if (result.rows.length === 0) {
+      await client.query('COMMIT');
+      return {
+        statusCode: 404,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'not_found' }),
+      };
+    }
+
+    // Deliberately run AFTER the 404 check above (not parallelized on the
+    // shared PoolClient, which can't run two queries concurrently) so a
+    // worker/job combination that doesn't resolve to an applicant never pays
+    // for a trust-assessment lookup whose result would just be discarded.
     const assessmentRes = await client.query(
       `SELECT profession_key, status, competency_score, score_components,
-              answers, scored_at
+              answers, scored_at, rubric_version
          FROM worker_trust_assessments
         WHERE user_id = $1
         ORDER BY (status = 'scored') DESC, created_at DESC
@@ -131,20 +144,30 @@ export const handler = async (
           status: ta.status,
           competency_score: ta.status === 'scored' ? ta.competency_score : null,
           score_components: ta.status === 'scored' ? ta.score_components : null,
+          // `rubric_version` is stored as TEXT (it mirrors the SSM parameter's
+          // numeric Version) -- coerced to a number here so the frontend's
+          // `rubric_version !== KNOWN_RUBRIC_VERSION` drift check compares
+          // like types instead of silently always mismatching on a string.
+          // A non-numeric stored value (e.g. the pending-status v2 sentinel
+          // 'v2-trust-rubric-1') must NOT become NaN: JSON.stringify(NaN) is
+          // `null` on the wire, which the frontend drift gate reads as "no
+          // rubric_version reported" and renders bars anyway -- the exact
+          // failure-open case this guard exists to prevent. -1 is used as an
+          // explicit "unparseable version" sentinel instead: it can never
+          // equal KNOWN_RUBRIC_VERSION, so it still degrades to plain
+          // numbers, while true `null` (a pre-versioning legacy row) keeps
+          // meaning "known scale, render bars".
+          rubric_version: (() => {
+            if (ta.rubric_version == null) return null;
+            const rv = Number(ta.rubric_version);
+            return Number.isFinite(rv) ? rv : -1;
+          })(),
           answers: Array.isArray(ta.answers) ? ta.answers : [],
           scored_at: ta.scored_at,
         }
       : null;
 
     await client.query('COMMIT');
-
-    if (result.rows.length === 0) {
-      return {
-        statusCode: 404,
-        headers: CORS_HEADERS,
-        body: JSON.stringify({ error: 'not_found' }),
-      };
-    }
 
     return {
       statusCode: 200,

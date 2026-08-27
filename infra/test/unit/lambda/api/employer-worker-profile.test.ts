@@ -125,6 +125,19 @@ describe('employer-worker-profile Lambda', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
+  it('returns 404 without ever running the trust-assessment query', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({ profile: { rows: [] } });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body).error).toBe('not_found');
+    const assessmentCalled = mockQuery.mock.calls.some(([queryText]) =>
+      String(queryText).includes('FROM worker_trust_assessments'),
+    );
+    expect(assessmentCalled).toBe(false);
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
   it('returns trust_assessment with score and components but never rationales', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const scoredAssessment = {
@@ -184,14 +197,51 @@ describe('employer-worker-profile Lambda', () => {
       communication_clarity: 12,
     });
     expect(body.trust_assessment.answers).toHaveLength(2);
+    // rubric_version is now deliberately included -- it's what lets the
+    // frontend detect a rebalanced (SSM-hot-edited) rubric and degrade its
+    // hardcoded 30/30/20/20 bars to plain numbers instead of mislabeling them.
+    expect(body.trust_assessment.rubric_version).toBe(7);
+    // score_rationale and scoring_model_id remain excluded -- the privacy
+    // contract for this endpoint.
     expect(JSON.stringify(body)).not.toContain('score_rationale');
-    expect(JSON.stringify(body)).not.toContain('rubric_version');
     expect(JSON.stringify(body)).not.toContain('scoring_model_id');
 
     const assessmentQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM worker_trust_assessments'))?.[0];
+    expect(assessmentQuery).toContain('rubric_version');
     expect(assessmentQuery).not.toContain('score_rationale');
-    expect(assessmentQuery).not.toContain('rubric_version');
     expect(assessmentQuery).not.toContain('scoring_model_id');
+  });
+
+  it('coerces a non-numeric stored rubric_version to the -1 sentinel instead of NaN', async () => {
+    // rubric_version is TEXT in the DB. A non-numeric stored value (e.g. the
+    // v2 onboarding flow's string sentinel) must not become NaN --
+    // JSON.stringify(NaN) serializes as `null`, which the frontend drift
+    // gate reads as "no rubric_version reported" (known scale) and renders
+    // bars anyway. -1 can never equal the frontend's KNOWN_RUBRIC_VERSION,
+    // so it still correctly degrades to plain numbers.
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    const scoredAssessment = {
+      profession_key: 'electrician',
+      status: 'scored',
+      competency_score: 72,
+      score_components: {
+        specific_knowledge: 24,
+        practical_experience: 22,
+        safety_awareness: 14,
+        communication_clarity: 12,
+      },
+      rubric_version: 'v2-trust-rubric-1',
+      answers: [],
+      scored_at: '2026-08-20T00:00:00.000Z',
+    };
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [scoredAssessment] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trust_assessment.rubric_version).toBe(-1);
   });
 
   it('returns trust_assessment: null when the worker has no assessment', async () => {
@@ -240,6 +290,7 @@ describe('employer-worker-profile Lambda', () => {
     expect(ta.status).toBe('pending');
     expect(ta.competency_score).toBeNull();
     expect(ta.score_components).toBeNull();
+    expect(ta.rubric_version).toBeNull();
     expect(ta.answers.length).toBeGreaterThan(0);
   });
 });
