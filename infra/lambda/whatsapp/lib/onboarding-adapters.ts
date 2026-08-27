@@ -42,6 +42,8 @@ import {
   buildTrustQuestion,
 } from './flows';
 import { upsertWorkerProfileFromUsers } from './profile-flow';
+import { slugCityKey } from '../../lib/city-fields';
+import { UNAMBIGUOUS_CITY_TO_STATE } from './city-state-data';
 
 // ── Local constants ────────────────────────────────────────────────────
 //
@@ -402,6 +404,20 @@ export function createLocationResolver(): LocationResolver {
   };
 }
 
+/**
+ * Bare-city inference: "El Paso" → { city: 'El Paso', state: 'TX' } when the
+ * name maps to exactly one US state in the generated dataset. Strictly a
+ * fallback for input the comma-requiring resolver rejects — never called
+ * for input containing a comma or digits, and the result is only applied
+ * after the worker confirms (1/2) in handleProfileLocation.
+ */
+export function inferCityState(raw: string): { city: string; state: string } | null {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed || trimmed.includes(',') || /\d/.test(trimmed)) return null;
+  const state = UNAMBIGUOUS_CITY_TO_STATE[normalizeStateName(trimmed)];
+  return state ? { city: trimmed, state } : null;
+}
+
 // ── TrustQuestionGenerator ────────────────────────────────────────────
 
 export interface TrustQuestionGenerator {
@@ -555,6 +571,19 @@ export function createProfilePersistenceAdapter(
           WHERE user_id = $1`,
         [workerId, locationText],
       );
+
+      // Seed the worker's first preferred city so the web job feed is
+      // city-filtered from day one. INSERT-only + ON CONFLICT DO NOTHING:
+      // re-running onboarding never clobbers a list the worker curated in the
+      // web app. ZIP-only answers carry no city (city is null) and seed nothing.
+      if (location.source === 'city_state' && location.city && location.state) {
+        await client.query(
+          `INSERT INTO worker_preferred_cities (user_id, city_key, city, state)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (user_id, city_key) DO NOTHING`,
+          [workerId, slugCityKey(location.city, location.state), location.city, location.state],
+        );
+      }
     },
 
     async saveTrade(client, workerId, trade) {

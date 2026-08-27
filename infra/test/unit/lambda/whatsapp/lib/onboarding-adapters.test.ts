@@ -37,6 +37,7 @@ import {
   createOnboardingV2Adapters,
   standardTrustQuestions,
   normalizeTrade,
+  inferCityState,
   type ReconcileUserRowFn,
 } from '../../../../../lambda/whatsapp/lib/onboarding-adapters';
 
@@ -569,6 +570,21 @@ describe('LocationResolver.resolve', () => {
   });
 });
 
+// ── inferCityState ────────────────────────────────────────────────────────
+
+describe('inferCityState', () => {
+  it('infers the state for an unambiguous bare city', () => {
+    expect(inferCityState('El Paso')).toEqual({ city: 'El Paso', state: 'TX' });
+    expect(inferCityState('  albuquerque ')).toEqual({ city: 'albuquerque', state: 'NM' });
+  });
+  it('returns null for ambiguous, unknown, comma-bearing, or numeric input', () => {
+    expect(inferCityState('Springfield')).toBeNull();
+    expect(inferCityState('Xyzzyville')).toBeNull();
+    expect(inferCityState('El Paso, TX')).toBeNull();
+    expect(inferCityState('79901')).toBeNull();
+  });
+});
+
 // ── TrustQuestionGenerator ───────────────────────────────────────────────
 
 describe('TrustQuestionGenerator.generate', () => {
@@ -712,6 +728,35 @@ describe('ProfilePersistenceAdapter', () => {
     const updateIdx = calls.findIndex((sql) => sql.toUpperCase().includes('UPDATE WORKER_PROFILES'));
     expect(upsertIdx).toBeGreaterThanOrEqual(0);
     expect(updateIdx).toBeGreaterThan(upsertIdx);
+  });
+
+  it('saveLocation seeds worker_preferred_cities for a city_state resolution', async () => {
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: 'El Paso',
+      state: 'TX',
+      postalCode: null,
+      source: 'city_state',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    const insert = calls.find((c) => String(c[0]).includes('INSERT INTO worker_preferred_cities'));
+    expect(insert).toBeDefined();
+    expect(insert![1]).toEqual(['worker-1', 'el-paso-tx', 'El Paso', 'TX']);
+    expect(String(insert![0])).toContain('ON CONFLICT');
+  });
+
+  it('saveLocation does NOT seed preferred cities for a zip resolution', async () => {
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: null,
+      state: null,
+      postalCode: '79901',
+      source: 'zip',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    expect(calls.find((c) => String(c[0]).includes('worker_preferred_cities'))).toBeUndefined();
   });
 
   it('saveTrade writes through the supplied client', async () => {

@@ -224,6 +224,7 @@ MIGRATIONS=(
   "080_whatsapp_application_fill.sql"
   "081_whatsapp_application_defaults_read.sql"
   "082_media_board.sql"
+  "083_preferred_cities_whatsapp_write.sql"
 )
 
 WORKDIR="$(mktemp -d)"

@@ -100,6 +100,15 @@ export class VoiceTranscriptionPipeline extends Construct {
       resultPath: sfn.JsonPath.DISCARD,
     });
 
+    // Any task-level failure — Transcribe API errors, IAM, or the completion
+    // handler itself throwing (e.g. a Bedrock outage) — must still reach
+    // InvokeOnFailed: its status:'FAILED' payload drives the worker-facing
+    // text fallback. Without these catches the execution dies silently and
+    // the worker is stranded on "estamos armando tu perfil".
+    startTranscribeJob.addCatch(invokeOnFailed, { resultPath: '$.error' });
+    getTranscribeJob.addCatch(invokeOnFailed, { resultPath: '$.error' });
+    invokeOnCompleted.addCatch(invokeOnFailed, { resultPath: '$.error' });
+
     const checkStatus = new sfn.Choice(this, 'CheckTranscribeStatus')
       .when(
         sfn.Condition.stringEquals(
