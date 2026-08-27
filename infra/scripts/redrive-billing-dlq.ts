@@ -130,8 +130,14 @@ export function queueNameFromUrl(raw: string): string | null {
     return null;
   }
   const segments = url.pathname.split('/').filter((segment) => segment.length > 0);
-  const name = segments[segments.length - 1];
-  if (name === undefined) return null;
+  // SQS queue URLs are `https://sqs.<region>.amazonaws.com/<12-digit account>/<queue name>`
+  // (localstack/custom endpoints keep the same two-segment path). Requiring
+  // the account segment means a URL that stops at the account id can never be
+  // accepted with the account id masquerading as the "queue name" — which
+  // would then be printed.
+  if (segments.length !== 2) return null;
+  const [account, name] = segments;
+  if (!/^[0-9]{12}$/.test(account)) return null;
   // SQS queue names are alphanumerics, hyphens, underscores, and (FIFO) `.fifo`.
   return /^[A-Za-z0-9_.-]+$/.test(name) ? name : null;
 }
@@ -142,6 +148,26 @@ function parseMaxPerSecond(raw: string): number | null {
   const value = Number(raw);
   if (!Number.isSafeInteger(value)) return null;
   return value >= MAX_PER_SECOND_MIN && value <= MAX_PER_SECOND_MAX ? value : null;
+}
+
+/**
+ * Extracts the opaque task id from a StartMessageMoveTask handle without ever
+ * exposing the rest of the handle. Handles are base64 JSON of the shape
+ * `{"taskId":"…","sourceArn":"arn:aws:sqs:…"}`; only `taskId` is returned.
+ * Anything unexpected yields "unavailable" rather than the raw handle.
+ */
+export function taskIdFromHandle(handle: string | undefined): string {
+  if (typeof handle !== 'string' || handle.length === 0) return UNAVAILABLE;
+  try {
+    const decoded = JSON.parse(Buffer.from(handle, 'base64').toString('utf8')) as unknown;
+    if (decoded !== null && typeof decoded === 'object') {
+      const taskId = (decoded as { taskId?: unknown }).taskId;
+      if (typeof taskId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(taskId)) return taskId;
+    }
+  } catch {
+    // fall through
+  }
+  return UNAVAILABLE;
 }
 
 /**
@@ -161,8 +187,11 @@ export function parseArgs(argv: string[]): ParseRedriveArgsResult {
       return { ok: false, error: `Bulk/all operations are not supported: ${arg}` };
     }
     if (!ALL_FLAGS.has(arg)) {
+      // `--dlq-url=<url>` style would otherwise echo the whole URL (account id
+      // included); only the flag name before any `=` is ever reported.
+      const flagName = arg.split('=')[0];
       return arg.startsWith('--')
-        ? { ok: false, error: `Unknown flag: ${arg}` }
+        ? { ok: false, error: `Unknown flag: ${flagName} (use \`${flagName} <value>\`, not \`=\`)` }
         : { ok: false, error: 'Unexpected positional argument (value redacted)' };
     }
     if (arg === '--execute') {
@@ -394,7 +423,13 @@ export async function run(deps: RedriveDeps): Promise<RedriveResult> {
     };
 
     log(`redrive started: moving up to ${depth} message(s) from ${dlqName} to ${sourceName}.`);
-    log(`TaskHandle: ${response.TaskHandle ?? UNAVAILABLE}`);
+    // The raw TaskHandle is base64 JSON that embeds the source queue ARN (and
+    // therefore the account id), so it is never printed. The task id inside it
+    // is enough to identify the task; to cancel, list tasks by source ARN:
+    //   aws sqs list-message-move-tasks --source-arn <dlq arn>
+    //   aws sqs cancel-message-move-task --task-handle <handle from that list>
+    log(`taskId: ${taskIdFromHandle(response.TaskHandle)}`);
+    log('(TaskHandle withheld — it encodes the queue ARN. Cancel via list-message-move-tasks.)');
     return { kind: 'executed' };
   } catch (error) {
     logError(errorName(error));

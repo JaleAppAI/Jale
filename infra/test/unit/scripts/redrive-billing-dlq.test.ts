@@ -13,7 +13,12 @@ const DLQ_URL = 'https://sqs.us-east-2.amazonaws.com/123456789012/billing-webhoo
 const SOURCE_URL = 'https://sqs.us-east-2.amazonaws.com/123456789012/billing-webhook-queue';
 const DLQ_ARN = 'arn:aws:sqs:us-east-2:123456789012:billing-webhook-dlq';
 const SOURCE_ARN = 'arn:aws:sqs:us-east-2:123456789012:billing-webhook-queue';
-const TASK_HANDLE = 'eyJ0YXNrSWQiOiJmYWtlLXRhc2staWQifQ==';
+// Realistic StartMessageMoveTask handle: base64 JSON that EMBEDS the source
+// ARN (and so the account id). The tool must never print it raw.
+const TASK_ID = 'fake-task-id-1234';
+const TASK_HANDLE = Buffer.from(
+  JSON.stringify({ taskId: TASK_ID, sourceArn: 'arn:aws:sqs:us-east-2:123456789012:billing-webhook-dlq' }),
+).toString('base64');
 // A real, live queue that is NOT this DLQ's source — what a mistyped
 // --source-url would plausibly hit.
 const UNRELATED_DLQ_ARN = 'arn:aws:sqs:us-east-2:123456789012:whatsapp-inbound-dlq.fifo';
@@ -240,6 +245,30 @@ describe('parseArgs', () => {
     expect(result.ok).toBe(false);
   });
 
+  it.each([
+    ['account id only (would otherwise print the account id as the queue name)', 'https://sqs.us-east-2.amazonaws.com/123456789012'],
+    ['non-numeric account segment', 'https://sqs.us-east-2.amazonaws.com/notanaccount/billing-webhook-queue'],
+    ['three path segments', 'https://sqs.us-east-2.amazonaws.com/123456789012/extra/billing-webhook-queue'],
+  ])('rejects a --source-url with %s, without echoing it', (_label, url) => {
+    const result = parseArgs(['--dlq-url', DLQ_URL, '--source-url', url]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toContain('123456789012');
+      expect(result.error).not.toContain(url);
+    }
+  });
+
+  it('rejects the --flag=value form without echoing the value', () => {
+    const result = parseArgs([`--dlq-url=${DLQ_URL}`, '--source-url', SOURCE_URL]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain('--dlq-url');
+      expect(result.error).not.toContain('123456789012');
+      expect(result.error).not.toContain(DLQ_URL);
+      expect(result.error).not.toContain('amazonaws');
+    }
+  });
+
   it('rejects an unparseable URL without echoing it', () => {
     const result = parseArgs(['--dlq-url', 'not a url', '--source-url', SOURCE_URL]);
     expect(result.ok).toBe(false);
@@ -362,7 +391,7 @@ describe('run — dry run (default)', () => {
 });
 
 describe('run — --execute', () => {
-  it('starts the move task with the DLQ ARN as source and the queue ARN as destination, and prints the TaskHandle', async () => {
+  it('starts the move task with the DLQ ARN as source and the queue ARN as destination, and prints only the task id', async () => {
     const { kind, out, commands } = await invoke(makeArgs({ execute: true }), { visible: '7' });
 
     expect(kind).toBe('executed');
@@ -370,7 +399,19 @@ describe('run — --execute', () => {
     const start = commands.find((c) => c.name === 'StartMessageMoveTaskCommand');
     expect(start).toBeDefined();
     expect(start!.input).toEqual({ SourceArn: DLQ_ARN, DestinationArn: SOURCE_ARN });
-    expect(out).toContain(TASK_HANDLE);
+    expect(out).toContain(`taskId: ${TASK_ID}`);
+    // The raw handle base64-decodes to the source ARN + account id: never printed.
+    expect(out).not.toContain(TASK_HANDLE);
+    expect(out).not.toContain('123456789012');
+    expect(out).not.toContain(DLQ_ARN);
+    expect(out).not.toContain(SOURCE_ARN);
+  });
+
+  it('prints "unavailable" instead of a malformed or missing TaskHandle', async () => {
+    const malformed = await invoke(makeArgs({ execute: true }), { visible: '7', taskHandle: 'not-base64-json' });
+    expect(malformed.kind).toBe('executed');
+    expect(malformed.out).toContain('taskId: unavailable');
+    expect(malformed.out).not.toContain('not-base64-json');
   });
 
   it('resolves both ARNs via GetQueueAttributes (never hardcodes or derives them)', async () => {
