@@ -115,6 +115,27 @@ export const handler = async (
       [jobId, workerId, employerId],
     );
 
+    const assessmentRes = await client.query(
+      `SELECT profession_key, status, competency_score, score_components,
+              answers, scored_at
+         FROM worker_trust_assessments
+        WHERE user_id = $1
+        ORDER BY (status = 'scored') DESC, created_at DESC
+        LIMIT 1`,
+      [workerId],
+    );
+    const ta = assessmentRes.rows[0] ?? null;
+    const trust_assessment = ta
+      ? {
+          profession_key: ta.profession_key,
+          status: ta.status,
+          competency_score: ta.status === 'scored' ? ta.competency_score : null,
+          score_components: ta.status === 'scored' ? ta.score_components : null,
+          answers: Array.isArray(ta.answers) ? ta.answers : [],
+          scored_at: ta.scored_at,
+        }
+      : null;
+
     await client.query('COMMIT');
 
     if (result.rows.length === 0) {
@@ -128,7 +149,7 @@ export const handler = async (
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify(result.rows[0]),
+      body: JSON.stringify({ ...result.rows[0], trust_assessment }),
     };
   } catch (err) {
     if (client) {

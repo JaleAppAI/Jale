@@ -2,6 +2,7 @@ import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
 import type { ScoreBand } from '../match';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
+import type { WorkerPost } from './worker';
 export type { ApplicationStatus } from '../status';
 
 // The typed-error layer now lives in `./errors` (it is shared with worker.ts
@@ -812,6 +813,19 @@ export interface WorkerProfile {
   city: string | null;
   application_status: ApplicationStatus;
   applied_at: string | null;
+  trust_assessment: {
+    profession_key: string;
+    status: 'pending' | 'scoring' | 'scored' | 'failed';
+    competency_score: number | null;
+    score_components: {
+      specific_knowledge: number;
+      practical_experience: number;
+      safety_awareness: number;
+      communication_clarity: number;
+    } | null;
+    answers: unknown; // normalized client-side via normalizeAnswers
+    scored_at: string | null;
+  } | null;
 }
 
 export async function getWorkerProfile(
@@ -859,6 +873,16 @@ export async function getWorkerDocuments(
     token,
   );
   if (!res.ok) throw await parseApiError(res, 'docs_fetch_failed');
+  return res.json();
+}
+
+export async function getEmployerWorkerPosts(
+  token: string,
+  workerId: string,
+  signal?: AbortSignal,
+): Promise<{ posts: WorkerPost[]; next_before: string | null; next_before_id: string | null }> {
+  const res = await apiFetch(`/employer/workers/${workerId}/posts`, { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 

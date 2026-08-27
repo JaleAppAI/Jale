@@ -14,6 +14,8 @@ export default defineConfig({
     // DOM per file is not free. Component suites opt in with a
     // `// @vitest-environment jsdom` comment on their first line.
     environment: 'node',
+    environmentMatchGlobs: [['**/*.test.tsx', 'jsdom']],
+    setupFiles: ['./src/test/setup.ts'],
   },
   resolve: {
     alias: {

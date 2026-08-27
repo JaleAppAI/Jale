@@ -177,7 +177,7 @@ async function extractProfileFromTranscript(
     `{\n` +
     `  "extracted_fields": {\n` +
     `    "full_name": string or null,\n` +
-    `    "city": string or null,\n` +
+    `    "city": "City, ST" format using 2-letter US state abbreviation (e.g., "El Paso, TX"), infer state for unnamed US cities, null if no location or not a US location,\n` +
     `    "main_trade": one of ["electrician","plumber","carpenter","concrete","painting","other"] or null,\n` +
     `    "main_trade_other": string or null (only if main_trade is "other"),\n` +
     `    "years_experience": one of ["0-1","2-4","5-9","10+"] or null,\n` +

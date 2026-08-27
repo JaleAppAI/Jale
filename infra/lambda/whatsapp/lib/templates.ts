@@ -98,7 +98,10 @@ export type TemplateKey =
   | 'v2_voice_processing_ack'
   | 'v2_voice_processing_wait'
   | 'v2_voice_summary'
-  | 'v2_voice_fallback';
+  | 'v2_voice_fallback'
+  | 'v2_voice_retry_offer'
+  // ── V2 location (Task 6: bare-city inference confirmation) ──
+  | 'v2_location_confirm';
 
 const templates: Record<TemplateKey, Record<Lang, string>> = {
   start_prompt: {
@@ -407,6 +410,14 @@ const templates: Record<TemplateKey, Record<Lang, string>> = {
   v2_voice_fallback: {
     es: 'No pudimos terminar de armar tu perfil con la nota de voz. Sigamos con unas preguntas rapidas.',
     en: 'We could not finish building your profile from the voice note. Let\'s continue with a few quick questions.',
+  },
+  v2_voice_retry_offer: {
+    es: 'No pudimos procesar tu nota de voz. Intenta de nuevo con otra nota de voz, o escribe cualquier mensaje para continuar con preguntas rapidas.',
+    en: 'We could not process your voice note. Try again with another voice note, or type any message to continue with quick questions.',
+  },
+  v2_location_confirm: {
+    es: 'Te refieres a {{city}}, {{state}}?\n1. Si\n2. No\nResponde con 1 o 2.',
+    en: 'Did you mean {{city}}, {{state}}?\n1. Yes\n2. No\nReply with 1 or 2.',
   },
 };
 

@@ -79,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
+          full_stack_list="JaleNetworkStack JaleDatabaseStack JaleAuthStack JaleAiStack JaleMatchingStack JaleApiStack JaleReferralsStack JaleNotificationsStack JaleBillingStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack JaleMediaBoardStack JaleAdminCertStack JaleAdminStack JaleFrontendStack"
           frontend_stack_list="JaleFrontendStack"
           admin_prerequisites_stack_list="JaleDatabaseStack JaleAdminCertStack"
           # JaleDocumentsStack precedes JaleWhatsAppStack: the WhatsApp

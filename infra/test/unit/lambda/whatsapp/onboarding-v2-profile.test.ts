@@ -564,6 +564,53 @@ describe('profile.location', () => {
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
     expect(adapters._saveLocationCalls).toHaveLength(0);
   });
+
+  it('a bare unambiguous city asks for 1/2 confirmation and saves on 1', async () => {
+    const { deps, gateRepo, adapters, gateway } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-bare-city-yes', currentStepKey: 'profile.location' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const asked = await routeOnboardingV2(client, session, makeMsg('El Paso'), deps);
+    expect(asked).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveLocationCalls).toHaveLength(0);
+    const confirmCall = gateway.calls.find((c) => c.sourceType.includes('v2_location_confirm'));
+    expect(confirmCall).toBeDefined();
+
+    const confirmed = await routeOnboardingV2(client, session, makeMsg('1'), deps);
+    expect(confirmed.stepKey).not.toBe('profile.location');
+    expect(adapters._saveLocationCalls).toHaveLength(1);
+    expect(adapters._saveLocationCalls[0].location).toEqual({
+      city: 'El Paso', state: 'TX', postalCode: null, source: 'city_state',
+    });
+  });
+
+  it('replying 2 discards the inference and re-asks', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-bare-city-no', currentStepKey: 'profile.location' });
+    const session = makeSession({ user_id: gate.userId });
+
+    await routeOnboardingV2(client, session, makeMsg('El Paso'), deps);
+    const declined = await routeOnboardingV2(client, session, makeMsg('2'), deps);
+    expect(declined).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveLocationCalls).toHaveLength(0);
+
+    // A fresh "El Paso, TX" typed reply still works end-to-end afterward.
+    const typed = await routeOnboardingV2(client, session, makeMsg('El Paso, TX'), deps);
+    expect(typed.stepKey).not.toBe('profile.location');
+    expect(adapters._saveLocationCalls).toHaveLength(1);
+  });
+
+  it('an ambiguous or unknown bare city just re-asks (no confirm sent)', async () => {
+    const { deps, gateRepo, adapters, gateway } = makeDeps();
+    const gate = seedActiveGate(gateRepo, { userId: 'user-ambiguous-city', currentStepKey: 'profile.location' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('Springfield'), deps);
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.location' });
+    expect(adapters._saveLocationCalls).toHaveLength(0);
+    const confirmCall = gateway.calls.find((c) => c.sourceType.includes('v2_location_confirm'));
+    expect(confirmCall).toBeUndefined();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════

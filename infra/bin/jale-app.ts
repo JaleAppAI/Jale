@@ -12,6 +12,7 @@ import { AiStack } from '../lib/stacks/ai-stack';
 import { WhatsAppStack } from '../lib/stacks/whatsapp-stack';
 import { BastionStack } from '../lib/stacks/bastion-stack';
 import { DocumentsStack } from '../lib/stacks/documents-stack';
+import { MediaBoardStack } from '../lib/stacks/media-board-stack';
 import { AdminStack } from '../lib/stacks/admin-stack';
 import { AdminCertStack } from '../lib/stacks/admin-cert-stack';
 import { BillingStack } from '../lib/stacks/billing-stack';
@@ -212,7 +213,10 @@ const documents = new DocumentsStack(app, 'JaleDocumentsStack', {
   requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
 });
 
-new WhatsAppStack(app, 'JaleWhatsAppStack', {
+// Captured (not just instantiated): MediaBoardStack below consumes
+// `whatsapp.mediaBucket` — that dependency makes ordering load-bearing,
+// this stack must be instantiated before MediaBoardStack.
+const whatsapp = new WhatsAppStack(app, 'JaleWhatsAppStack', {
   env,
   vpc: network.vpc,
   privateSubnets: network.privateSubnets,
@@ -227,6 +231,20 @@ new WhatsAppStack(app, 'JaleWhatsAppStack', {
   statusCallbackUrl: whatsappStatusCallbackUrl,
   alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   documentsBucket: documents.bucket,
+});
+
+new MediaBoardStack(app, 'JaleMediaBoardStack', {
+  env,
+  network,
+  api,
+  dbSecret: database.dbSecret,
+  mediaBucket: whatsapp.mediaBucket,
+  allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
+  requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
+  // Same shared alarm topic as AiStack/WhatsAppStack/ReferralsStack so the
+  // create-lambda's moderation fail-open alarm (I2, final-review) actually
+  // pages someone.
+  alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
 });
 
 // AdminStack - secure internal ops console at admin.jaleapp.ai.

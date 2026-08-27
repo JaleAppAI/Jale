@@ -86,6 +86,7 @@ const deps = {
   queueLegalPrompt: jest.fn(),
   recordLegalAcceptance: jest.fn(),
   requiredLegalVersion: '1.0',
+  discardActivePostDraft: jest.fn(),
 };
 const baseConv: any = {
   id: 'wa-conv-1', user_id: WORKER, whatsapp_number: '+1512', language: 'es',
@@ -587,6 +588,31 @@ describe('CHATS/MENSAJES keyword in tryConversationRelay', () => {
     expect(recordWorkerConversationReply).not.toHaveBeenCalled();
   });
 
+  // I1(a) (final-review): the isChatsKeyword branch always routes to the
+  // picker (never through setFocusedConversation, since nothing is focused
+  // yet), so it never had its own discard call — a dormant post_draft would
+  // survive into the picker flow with no way back to it. Mirrors the (a)/(b)
+  // cases in the "Task 15 review fix" describe block below.
+  it('CHATS keyword with an active post_draft discards it before showing the picker', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }) // ToS check
+      .mockResolvedValueOnce({ rows: [
+        { id: 'conv-a', job_title: 'Plomero', company: 'ACME', worker_thread_number: 1 },
+      ], rowCount: 1 }); // sendChatsPickerOrAutoFocus
+    const conv = {
+      ...baseConv,
+      user_id: WORKER,
+      state_context: { post_draft: { post_id: 'post-1', stage: 'collecting' } },
+    };
+    const routed = await tryConversationRelay(client, conv, { ...msg, body: 'CHATS' }, deps);
+    expect(routed).toBe(WORKER);
+    expect(deps.discardActivePostDraft).toHaveBeenCalledWith(client, conv, msg.messageSid, msg.from);
+    // Picker is still sent (1 open thread, autoFocusSingle=false for the
+    // explicit CHATS keyword) -- the discard does not short-circuit it.
+    const sent = (queueOutboxText as jest.Mock).mock.calls[0][3];
+    expect(sent).toContain('1. ACME');
+  });
+
   it('isChatsKeyword: exact match only', () => {
     expect(isChatsKeyword('CHATS')).toBe(true);
     expect(isChatsKeyword('MENSAJES')).toBe(true);
@@ -853,6 +879,93 @@ describe('setFocusedConversation null-focus call sites do not arm fill_relay_ove
       (c: any[]) => 'focused_job_conversation_id' in c[2] && c[2].focused_job_conversation_id === null);
     expect(focusClear).toBeDefined();
     expect('fill_relay_override' in (focusClear![2].state_context ?? {})).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Task 15 review fix (Critical): `recordWorkerConversationReply` can
+// auto-resolve and arm focus in `relayWorkerFreeText`'s 'routed' branch
+// WITHOUT ever going through `setFocusedConversation` (e.g. exactly one open
+// thread auto-routes there directly) -- that branch now calls
+// `deps.discardActivePostDraft` itself, scoped to an actual focus CHANGE,
+// mirroring `setFocusedConversation`'s own `conversationId !== null` guard.
+// Case (a) covers `setFocusedConversation`'s own call sites (via the
+// `conversation:focus`/decline buttons); case (b) covers the routed-branch
+// fix directly.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('Task 15 review fix: discardActivePostDraft on focus-arming (Critical)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  // (a) setFocusedConversation itself: called on a real arm, not on a clear.
+  it('(a) conversation:focus button (real conversationId) discards the active post draft', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'conv-b' }], rowCount: 1 }); // thread validation
+    const conv = {
+      ...baseConv,
+      user_id: WORKER,
+      focused_job_conversation_id: null,
+      state_context: { post_draft: { post_id: 'post-1', stage: 'collecting' } },
+    };
+    const routed = await handleEmployerConversationButton(
+      client, conv, msg, { action: 'focus', conversationId: 'conv-b' }, deps);
+    expect(routed).toBe(WORKER);
+    // setFocusedConversation only has `messageSid` in hand (not the full
+    // inbound message), so it stands in `conv.whatsapp_number` for `from`
+    // (see its own call site / jsdoc) -- NOT `msg.from`.
+    expect(deps.discardActivePostDraft).toHaveBeenCalledWith(
+      client, conv, msg.messageSid, conv.whatsapp_number);
+  });
+
+  it('(a) decline button (conversationId cleared to null) does NOT discard the active post draft', async () => {
+    (declineWorkerConversationFromButton as jest.Mock).mockResolvedValueOnce(true);
+    const conv = {
+      ...baseConv,
+      user_id: WORKER,
+      focused_job_conversation_id: CONV_A,
+      state_context: { post_draft: { post_id: 'post-1', stage: 'collecting' } },
+    };
+    const routed = await handleEmployerConversationButton(
+      client, conv, msg, { action: 'decline', conversationId: CONV_A }, deps);
+    expect(routed).toBeNull();
+    expect(deps.discardActivePostDraft).not.toHaveBeenCalled();
+  });
+
+  // (b) relayWorkerFreeText's 'routed' branch: called only when focus actually
+  // CHANGES (the auto-resolve arm that never touches setFocusedConversation).
+  it('(b) routed auto-focus (focus CHANGES) discards the active post draft before persisting the new focus', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // tos check
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
+      { status: 'routed', conversationId: CONV_A });
+    const conv = {
+      ...baseConv,
+      focused_job_conversation_id: null, // not yet focused -> auto-resolve arms CONV_A
+      state_context: { post_draft: { post_id: 'post-1', stage: 'confirm' } },
+    };
+    const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
+    expect(routed).toBe(WORKER);
+    expect(deps.discardActivePostDraft).toHaveBeenCalledWith(client, conv, msg.messageSid, msg.from);
+    const focusUpdate = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusUpdate).toBeDefined();
+    expect(focusUpdate![2].focused_job_conversation_id).toBe(CONV_A);
+    expect(conv.focused_job_conversation_id).toBe(CONV_A);
+  });
+
+  it('(b) routed with focus UNCHANGED (already focused on that conversation) does NOT discard or re-persist focus', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ tos_version: '1.0' }], rowCount: 1 }); // tos check
+    (recordWorkerConversationReply as jest.Mock).mockResolvedValueOnce(
+      { status: 'routed', conversationId: CONV_A });
+    const conv = {
+      ...baseConv,
+      focused_job_conversation_id: CONV_A, // already focused on the SAME thread
+      state_context: { post_draft: { post_id: 'post-1', stage: 'confirm' } },
+    };
+    const routed = await relayWorkerFreeText(client, conv, msg, WORKER, deps);
+    expect(routed).toBe(WORKER);
+    expect(deps.discardActivePostDraft).not.toHaveBeenCalled();
+    const focusUpdate = (deps.updateConversation as jest.Mock).mock.calls.find(
+      (c: any[]) => 'focused_job_conversation_id' in c[2]);
+    expect(focusUpdate).toBeUndefined();
   });
 });
 
