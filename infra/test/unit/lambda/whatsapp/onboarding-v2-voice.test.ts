@@ -520,40 +520,68 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     expect(h.getState().stateContext.v2TrustQuestions).toHaveLength(3);
   });
 
-  it('a FAILED extraction falls back to the text flow without writing any field', async () => {
-    const h = await toVoiceChoice('+15552230014');
+  it('a FAILED extraction offers one retry and returns to voice_choice', async () => {
+    const h = await toVoiceChoice('+15552230071');
     await h.sendVoiceNote();
-
     const result = await h.injectVoiceIntakeResult(0, { status: 'FAILED' });
-
-    expect(findSend(h, 'v2_voice_fallback')).toBeDefined();
-    expect(result.stepKey).toBe('profile.name');
-    expect(h.getWorkerProfile()).toBeNull();
+    expect(findSend(h, 'v2_voice_retry_offer')).toBeDefined();
+    expect(findSend(h, 'v2_voice_fallback')).toBeUndefined();
+    expect(result.stepKey).toBe('profile.voice_choice');
   });
 
-  it('a COMPLETED result with null fields (extraction threw) falls back exactly like FAILED', async () => {
-    const h = await toVoiceChoice('+15552230015');
+  it('a second FAILED extraction after the retry falls back to the text flow', async () => {
+    const h = await toVoiceChoice('+15552230072');
     await h.sendVoiceNote();
-
-    const result = await h.injectVoiceIntakeResult(0, { status: 'COMPLETED', fields: null });
-
+    await h.injectVoiceIntakeResult(0, { status: 'FAILED' });
+    await h.sendVoiceNote({ messageSid: 'MMretry0000000000000000000000002' });
+    const result = await h.injectVoiceIntakeResult(1, { status: 'FAILED' });
     expect(findSend(h, 'v2_voice_fallback')).toBeDefined();
     expect(result.stepKey).toBe('profile.name');
   });
 
-  it('a COMPLETED result whose fields all fail confidence/enum checks (zero writes) falls back exactly like FAILED', async () => {
-    const h = await toVoiceChoice('+15552230016');
+  it('zero-writes extraction also offers the retry once', async () => {
+    const h = await toVoiceChoice('+15552230073');
     await h.sendVoiceNote();
-
     const result = await h.injectVoiceIntakeResult(0, {
       status: 'COMPLETED',
       fields: { years_experience: '3 years' }, // invalid enum -> zero writes
       confidences: { years_experience: 0.9 },
       summaryEn: 'summary', summaryEs: 'resumen',
     });
+    expect(findSend(h, 'v2_voice_retry_offer')).toBeDefined();
+    expect(result.stepKey).toBe('profile.voice_choice');
+  });
 
+  it('processing timeout offers the retry once, then falls back on a second timeout', async () => {
+    const h = await toVoiceChoice('+15552230074');
+    await h.sendVoiceNote();
+    h.advanceTime(6 * 60 * 1000);
+    const first = await h.sendText('hola?');
+    expect(findSend(h, 'v2_voice_retry_offer')).toBeDefined();
+    expect(first.stepKey).toBe('profile.voice_choice');
+    await h.sendVoiceNote({ messageSid: 'MMretry0000000000000000000000003' });
+    h.advanceTime(6 * 60 * 1000);
+    const second = await h.sendText('hola??');
     expect(findSend(h, 'v2_voice_fallback')).toBeDefined();
+    expect(second.stepKey).toBe('profile.name');
+  });
+
+  it('typing anything after the retry offer continues to the text flow', async () => {
+    const h = await toVoiceChoice('+15552230075');
+    await h.sendVoiceNote();
+    await h.injectVoiceIntakeResult(0, { status: 'FAILED' });
+    const result = await h.sendText('2');
     expect(result.stepKey).toBe('profile.name');
+  });
+
+  it('a COMPLETED result with null fields (extraction threw) offers the retry exactly like FAILED', async () => {
+    const h = await toVoiceChoice('+15552230015');
+    await h.sendVoiceNote();
+
+    const result = await h.injectVoiceIntakeResult(0, { status: 'COMPLETED', fields: null });
+
+    expect(findSend(h, 'v2_voice_retry_offer')).toBeDefined();
+    expect(result.stepKey).toBe('profile.voice_choice');
   });
 
   it('a stale completion (execution arn mismatch) is silently discarded', async () => {
@@ -578,11 +606,12 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     const h = await toVoiceChoice('+15552230018');
     await h.sendVoiceNote();
 
-    // The timeout escape moves the run off profile.voice_processing before
-    // the (now stale) completion event arrives.
+    // The timeout escape (first failure -> retry offer) moves the run off
+    // profile.voice_processing before the (now stale) completion event
+    // arrives.
     h.advanceTime(6 * 60 * 1000);
     await h.sendText('anything');
-    expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
 
     const sentBefore = h.getSentMessages().length;
     const result = await h.injectVoiceIntakeResult(0, {
@@ -592,7 +621,7 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     });
 
     expect(h.getSentMessages()).toHaveLength(sentBefore);
-    expect(result.stepKey).toBe('profile.name');
+    expect(result.stepKey).toBe('profile.voice_choice');
     expect(h.getWorkerProfile()).toBeNull();
   });
 
@@ -633,16 +662,16 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
       expect(h.getSentMessages()).toHaveLength(sentBefore); // cooldown-guarded
     });
 
-    it('after the timeout, the run falls back to the text flow (anti-strand guarantee)', async () => {
+    it('after the timeout, the run offers one retry (anti-strand guarantee)', async () => {
       const h = await toVoiceChoice('+15552230021');
       await h.sendVoiceNote();
 
       h.advanceTime(6 * 60 * 1000); // > VOICE_PROCESSING_TIMEOUT_MS (5 min)
       const result = await h.sendText('hello?');
 
-      expect(findSend(h, 'v2_voice_fallback')).toBeDefined();
-      expect(result.stepKey).toBe('profile.name');
-      expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+      expect(findSend(h, 'v2_voice_retry_offer')).toBeDefined();
+      expect(result.stepKey).toBe('profile.voice_choice');
+      expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
     });
 
     // Task 6/B4 fix: a MISSING/unparseable `v2VoiceStartedAt` used to coerce
@@ -651,7 +680,7 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     // `--set-step` landing here (now excluded, but a belt-and-suspenders
     // fix regardless: the run itself could reach this state via any anchor
     // loss). The fallback must now be immediate, no clock advance needed.
-    it('a missing v2VoiceStartedAt anchor escapes to the text flow on the very next inbound message, no timeout wait needed', async () => {
+    it('a missing v2VoiceStartedAt anchor escapes to a retry offer on the very next inbound message, no timeout wait needed', async () => {
       const h = await toVoiceChoice('+15552230022');
       await h.sendVoiceNote();
       expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
@@ -660,9 +689,9 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
 
       const result = await h.sendText('hello?');
 
-      expect(findSend(h, 'v2_voice_fallback')).toBeDefined();
-      expect(result.stepKey).toBe('profile.name');
-      expect(h.getState().gate?.currentStepKey).toBe('profile.name');
+      expect(findSend(h, 'v2_voice_retry_offer')).toBeDefined();
+      expect(result.stepKey).toBe('profile.voice_choice');
+      expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
     });
   });
 

@@ -45,6 +45,22 @@ function definitionText(template: Template): string {
   return JSON.stringify(machine.Properties.DefinitionString);
 }
 
+/** Parse the DefinitionString's Fn::Join fragments into the actual ASL
+ * definition object. Non-string fragments (Ref/Fn::GetAtt, e.g. the
+ * completion Lambda's ARN) are synth-time intrinsics rather than literal
+ * text, so they're swapped for a placeholder before JSON.parse — state
+ * names, Next/Catch/ResultPath wiring, and other literal ASL structure are
+ * unaffected. */
+function extractStateMachineDefinition(template: Template): any {
+  const machines = template.findResources('AWS::StepFunctions::StateMachine');
+  const [machine] = Object.values(machines) as any[];
+  const fragments = machine.Properties.DefinitionString['Fn::Join'][1] as unknown[];
+  const joined = fragments
+    .map((fragment) => (typeof fragment === 'string' ? fragment : 'PLACEHOLDER'))
+    .join('');
+  return JSON.parse(joined);
+}
+
 describe('VoiceTranscriptionPipeline construct', () => {
   test('synths exactly one Standard state machine', () => {
     const { stateMachineCount } = synthPipeline('jale-es-us-trades');
@@ -94,5 +110,16 @@ describe('VoiceTranscriptionPipeline construct', () => {
     // literal backslash before each quote around the key, not a bare `"`.
     expect(text).toContain('\\"IdentifyMultipleLanguages\\":true');
     expect(text).toContain('LanguageOptions');
+  });
+
+  test('routes task failures to InvokeOnFailed via Catch so the worker still gets the fallback', () => {
+    const { template } = synthPipeline('jale-es-us-trades');
+    const definition = extractStateMachineDefinition(template);
+    for (const stateName of ['StartTranscribeJob', 'GetTranscribeJob', 'InvokeOnCompleted']) {
+      const state = definition.States[stateName];
+      expect(state.Catch).toBeDefined();
+      expect(state.Catch[0].Next).toBe('InvokeOnFailed');
+      expect(state.Catch[0].ResultPath).toBe('$.error');
+    }
   });
 });

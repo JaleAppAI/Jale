@@ -8,6 +8,8 @@ import {
   MAX_DOCUMENT_BYTES,
   sniffDocumentType,
   uploadDocumentToS3,
+  uploadMediaToS3,
+  sniffPhotoType,
   downloadTwilioMediaBounded,
   MediaTooLargeError,
 } from '../../../../../lambda/whatsapp/lib/media';
@@ -134,6 +136,50 @@ describe('uploadDocumentToS3', () => {
     const res = await uploadDocumentToS3('bkt', 'k', Buffer.from('%PDF-'), 'application/pdf');
 
     expect(res.versionId).toBeNull();
+  });
+});
+
+describe('sniffPhotoType', () => {
+  it('detects jpeg', () => {
+    expect(sniffPhotoType(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe('image/jpeg');
+  });
+  it('detects png', () => {
+    expect(sniffPhotoType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]))).toBe('image/png');
+  });
+  it('detects webp (RIFF....WEBP)', () => {
+    const buf = Buffer.concat([Buffer.from('RIFF'), Buffer.from([0, 0, 0, 0]), Buffer.from('WEBP')]);
+    expect(sniffPhotoType(buf)).toBe('image/webp');
+  });
+  it('rejects a PDF', () => {
+    expect(sniffPhotoType(Buffer.from('%PDF-1.4'))).toBeNull();
+  });
+});
+
+describe('uploadMediaToS3', () => {
+  beforeEach(() => {
+    sendMock.mockReset();
+  });
+
+  it('sends the media bucket AES256 SSE header and returns the VersionId from the PutObject response', async () => {
+    sendMock.mockResolvedValueOnce({ VersionId: 'v-123' });
+
+    const versionId = await uploadMediaToS3('media-bkt', 'k', Buffer.from('abc'), 'image/jpeg');
+
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    const input = sendMock.mock.calls[0][0].input;
+    expect(input.ServerSideEncryption).toBe('AES256');
+    expect(input.Bucket).toBe('media-bkt');
+    expect(input.Key).toBe('k');
+    expect(input.ContentType).toBe('image/jpeg');
+    expect(versionId).toBe('v-123');
+  });
+
+  it('returns null when the S3 response has no VersionId (unversioned bucket)', async () => {
+    sendMock.mockResolvedValueOnce({});
+
+    const versionId = await uploadMediaToS3('media-bkt', 'k', Buffer.from('abc'), 'image/jpeg');
+
+    expect(versionId).toBeNull();
   });
 });
 

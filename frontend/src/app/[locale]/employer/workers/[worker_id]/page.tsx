@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
-import { useTranslations } from 'next-intl';
+import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRequireAuth } from '@/hooks/useRequireAuth';
@@ -20,9 +20,13 @@ import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedba
 import { KVList, type KVItem } from '@/components/ui/kv-list';
 import { DetailPageSkeleton } from '@/components/ui/page-skeletons';
 import { PanelHeader } from '@/components/ui/panel-header';
+import { ProgressRow } from '@/components/ui/progress-row';
 import { Select } from '@/components/ui/select';
+import { MediaBoardGrid } from '@/components/media-board/MediaBoardGrid';
+import { PostLightbox } from '@/components/media-board/PostLightbox';
 import {
     createUploadToken,
+    getEmployerWorkerPosts,
     getWorkerDocuments,
     getWorkerProfile,
     updateApplicantStatus,
@@ -30,8 +34,10 @@ import {
     type WorkerDocument,
     type WorkerProfile,
 } from '@/lib/api/employer';
+import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
 import { tradeLabel } from '@/lib/trades';
+import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,10 +57,41 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** How long "Link copied" stays on the share button before reverting. */
 const COPIED_RESET_MS = 3000;
 
-/** What one load of this page consists of: the applicant, and their documents. */
+type ScoreComponentKey =
+    | 'specific_knowledge'
+    | 'practical_experience'
+    | 'safety_awareness'
+    | 'communication_clarity';
+
+/**
+ * The rubric version this page's hardcoded dimension maxes (30/30/20/20
+ * below) were written against (infra/lambda/ai/trust-scorer.ts's
+ * SSM-hot-editable rubric -- 5-minute cache, see its RUBRIC_CACHE_TTL_MS).
+ * `validateScore` there only checks the four score_components sum to 100,
+ * so a rebalance (e.g. to 25/25/25/25) is a legal rubric that would
+ * silently mislabel these bars -- or push one past 100% -- with nothing to
+ * detect it. When the API's `rubric_version` disagrees with this constant,
+ * the render below falls back to plain numbers instead of painting a bar
+ * against a max that's no longer accurate.
+ */
+const KNOWN_RUBRIC_VERSION = 7;
+
+/**
+ * One row per `score_components` dimension -- also resolves what used to be
+ * four near-identical copy-pasted `ProgressRow`s.
+ */
+const TRUST_DIMENSIONS: ReadonlyArray<{ key: ScoreComponentKey; labelKey: string; max: number }> = [
+    { key: 'specific_knowledge', labelKey: 'trust_dim_specific_knowledge', max: 30 },
+    { key: 'practical_experience', labelKey: 'trust_dim_practical_experience', max: 30 },
+    { key: 'safety_awareness', labelKey: 'trust_dim_safety_awareness', max: 20 },
+    { key: 'communication_clarity', labelKey: 'trust_dim_communication_clarity', max: 20 },
+];
+
+/** What one load of this page consists of: the applicant, their documents, and their media posts. */
 type ApplicantView = {
     profile: WorkerProfile;
     documents: WorkerDocument[];
+    posts: WorkerPost[];
 };
 
 /**
@@ -86,12 +123,14 @@ export default function WorkerProfilePage() {
     // `worker_profile.*` keys those surfaces also read.
     const tShared = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
+    const tMedia = useTranslations('media_board');
     const errorMessage = useErrorMessage();
 
     const { idToken } = useAuth();
     const { handleLegalWall } = useRequireAuth();
     const params = useParams();
     const searchParams = useSearchParams();
+    const locale = useLocale();
 
     const workerId = (params.worker_id as string | undefined)?.trim() ?? '';
     const jobId = (searchParams.get('job_id') ?? '').trim();
@@ -120,11 +159,23 @@ export default function WorkerProfilePage() {
             // to the invalid-link state -- but the fetcher is the only place that
             // can guarantee no doomed request is ever sent.
             if (!linkValid) throw new Error('invalid_link');
+            // Kicked off alongside the profile/documents Promise.all below
+            // (it only needs token/workerId, not either of their results) so
+            // the three requests overlap instead of the page paying for this
+            // one serially. `.catch`-wrapped immediately -- both so it can
+            // never reject anything it's raced against, and so a rejection
+            // here doesn't become an unhandled rejection while the other two
+            // are still in flight -- to preserve the same best-effort
+            // semantics as before: the media board is auxiliary and must
+            // never sink the applicant view if the posts fetch fails.
+            const postsPromise = getEmployerWorkerPosts(token, workerId, signal).catch(() => null);
             const [profile, docs] = await Promise.all([
                 getWorkerProfile(token, workerId, jobId, signal),
                 getWorkerDocuments(token, workerId, jobId, signal),
             ]);
-            return { profile, documents: docs.documents };
+            const postsResult = await postsPromise;
+            const posts: WorkerPost[] = postsResult?.posts ?? [];
+            return { profile, documents: docs.documents, posts };
         },
         legalReturnUrl: returnUrl,
         deps: [workerId, jobId, linkValid],
@@ -132,6 +183,11 @@ export default function WorkerProfilePage() {
 
     const profile = data?.profile ?? null;
     const documents = data?.documents ?? [];
+    const posts = data?.posts ?? [];
+    const [selectedPost, setSelectedPost] = useState<WorkerPost | null>(null);
+
+    const trustAssessment = profile?.trust_assessment ?? null;
+    const trustAnswers = trustAssessment ? normalizeAnswers(trustAssessment.answers) : [];
 
     /*
      * The select is a draft over the loaded status rather than a second copy of
@@ -535,6 +591,114 @@ export default function WorkerProfilePage() {
                             </DashboardPanel>
                         </div>
                     )}
+
+                    {posts.length > 0 && (
+                        <DashboardPanel className="mt-5">
+                            <PanelHeader title={tMedia('employer_title')} />
+                            <div className="px-5 py-5">
+                                <MediaBoardGrid posts={posts} editable={false} onSelect={setSelectedPost} />
+                            </div>
+                        </DashboardPanel>
+                    )}
+
+                    {selectedPost && (
+                        <PostLightbox
+                            post={selectedPost}
+                            editable={false}
+                            onClose={() => setSelectedPost(null)}
+                        />
+                    )}
+
+                    <DashboardPanel className="mt-5">
+                        <PanelHeader title={t('trust_title')} />
+                        <div className="px-5 py-4">
+                            {!trustAssessment ? (
+                                <p className="text-sm text-[var(--jale-ink-2)]">{t('trust_empty')}</p>
+                            ) : (
+                                <>
+                                    {trustAssessment.status === 'scored' && trustAssessment.score_components ? (
+                                        <div className="space-y-4">
+                                            <div className="flex items-baseline justify-between gap-3">
+                                                <span className="text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)]">
+                                                    {t('trust_score_label')}
+                                                </span>
+                                                <span className="tabular-nums text-sm font-semibold text-[var(--jale-ink)]">
+                                                    {trustAssessment.competency_score}/100
+                                                </span>
+                                            </div>
+                                            {(() => {
+                                                const components = trustAssessment.score_components;
+                                                const rubricVersion = trustAssessment.rubric_version;
+                                                // See KNOWN_RUBRIC_VERSION above: a rebalanced rubric is
+                                                // undetectable from the components alone, so a version
+                                                // mismatch degrades to honest numbers instead of a
+                                                // mislabeled (or overflowing) bar.
+                                                const rubricDrifted =
+                                                    rubricVersion != null && rubricVersion !== KNOWN_RUBRIC_VERSION;
+                                                return TRUST_DIMENSIONS.map((dim) => {
+                                                    const value = components[dim.key];
+                                                    if (rubricDrifted) {
+                                                        return (
+                                                            <div
+                                                                key={dim.key}
+                                                                className="flex items-baseline justify-between gap-3 text-xs font-semibold"
+                                                            >
+                                                                <span className="min-w-0 text-current">{t(dim.labelKey)}</span>
+                                                                <span className="shrink-0 tabular-nums text-current opacity-70">
+                                                                    {value} pts
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    const pct = Math.min(100, (value / dim.max) * 100);
+                                                    return (
+                                                        <ProgressRow
+                                                            key={dim.key}
+                                                            label={t(dim.labelKey)}
+                                                            value={`${value}/${dim.max}`}
+                                                            percent={pct}
+                                                        />
+                                                    );
+                                                });
+                                            })()}
+                                        </div>
+                                    ) : (
+                                        <Badge tone={trustAssessment.status === 'failed' ? 'danger' : 'warning'}>
+                                            {t(`trust_status_${trustAssessment.status}`)}
+                                        </Badge>
+                                    )}
+
+                                    {trustAnswers.length > 0 && (
+                                        <ul className="mt-4 space-y-3">
+                                            {trustAnswers.map((a) => {
+                                                const ans = displayAnswer(a, locale);
+                                                return (
+                                                    <li
+                                                        key={a.q_en}
+                                                        className="rounded-[10px] border border-[var(--jale-divider)] p-3"
+                                                    >
+                                                        <p className="whitespace-pre-wrap text-sm font-semibold text-[var(--jale-ink)]">
+                                                            {displayQuestion(a, locale)}
+                                                        </p>
+                                                        <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
+                                                            {ans.kind === 'menu'
+                                                                ? `${t('trust_selected_prefix')} ${ans.text}`
+                                                                : ans.text}
+                                                        </p>
+                                                        {ans.kind === 'voice' ? (
+                                                            <span className="mt-1 inline-block text-[10px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
+                                                                {t('trust_voice_badge')}
+                                                            </span>
+                                                        ) : null}
+                                                    </li>
+                                                );
+                                            })}
+                                        </ul>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </DashboardPanel>
 
                     <DashboardPanel className="mt-5">
                         {/* `items-start` rather than `items-end`: the feedback below

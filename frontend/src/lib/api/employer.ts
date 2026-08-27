@@ -2,6 +2,7 @@ import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
 import type { ScoreBand } from '../match';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
+import type { WorkerPost } from './worker';
 export type { ApplicationStatus } from '../status';
 
 // The typed-error layer now lives in `./errors` (it is shared with worker.ts
@@ -812,6 +813,27 @@ export interface WorkerProfile {
   city: string | null;
   application_status: ApplicationStatus;
   applied_at: string | null;
+  trust_assessment: {
+    profession_key: string;
+    status: 'pending' | 'scoring' | 'scored' | 'failed';
+    competency_score: number | null;
+    score_components: {
+      specific_knowledge: number;
+      practical_experience: number;
+      safety_awareness: number;
+      communication_clarity: number;
+    } | null;
+    /**
+     * The SSM-hot-editable scoring rubric's version (see trust-scorer.ts's
+     * RUBRIC_CACHE_TTL_MS), coerced to a number by the API. `null` for a
+     * pre-rollout row or a client not yet updated to select the column.
+     * See page.tsx's KNOWN_RUBRIC_VERSION / TRUST_DIMENSIONS for how this
+     * is used to detect a rebalanced rubric and degrade the score bars.
+     */
+    rubric_version: number | null;
+    answers: unknown; // normalized client-side via normalizeAnswers
+    scored_at: string | null;
+  } | null;
 }
 
 export async function getWorkerProfile(
@@ -859,6 +881,16 @@ export async function getWorkerDocuments(
     token,
   );
   if (!res.ok) throw await parseApiError(res, 'docs_fetch_failed');
+  return res.json();
+}
+
+export async function getEmployerWorkerPosts(
+  token: string,
+  workerId: string,
+  signal?: AbortSignal,
+): Promise<{ posts: WorkerPost[]; next_before: string | null; next_before_id: string | null }> {
+  const res = await apiFetch(`/employer/workers/${workerId}/posts`, { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return res.json();
 }
 

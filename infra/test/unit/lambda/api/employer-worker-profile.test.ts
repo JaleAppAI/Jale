@@ -12,6 +12,35 @@ const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 
+// Query-text-dispatching mock: matches each client.query() call by a
+// distinctive substring of its SQL so adding new queries (e.g. the
+// trust_assessment lookup) never shifts positional call order.
+type QueryStubs = {
+  employer?: unknown;
+  jobOwnership?: unknown;
+  profile?: unknown;
+  assessment?: unknown;
+};
+
+function setupMockQuery(overrides: QueryStubs = {}) {
+  const {
+    employer = { rows: [{ id: 'employer-id' }] },
+    jobOwnership = { rows: [{ id: 'job-uuid' }] },
+    profile = { rows: [] },
+    assessment = { rows: [] },
+  } = overrides;
+
+  mockQuery.mockImplementation((text: string) => {
+    const t = String(text);
+    if (t.includes('FROM users WHERE cognito_sub')) return Promise.resolve(employer);
+    if (t.includes('FROM jobs WHERE id')) return Promise.resolve(jobOwnership);
+    if (t.includes('FROM job_applications ja')) return Promise.resolve(profile);
+    if (t.includes('FROM worker_trust_assessments')) return Promise.resolve(assessment);
+    // BEGIN / COMMIT / ROLLBACK and anything else
+    return Promise.resolve({});
+  });
+}
+
 describe('employer-worker-profile Lambda', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -29,6 +58,24 @@ describe('employer-worker-profile Lambda', () => {
       pathParameters: { worker_id: workerId },
       queryStringParameters: { job_id: jobId },
     }) as unknown as APIGatewayProxyEvent;
+
+  const mockProfile = {
+    worker_id: 'worker-uuid',
+    full_name: 'Maria G',
+    phone: '555-1234',
+    skills: ['Forklift'],
+    availability: 'immediate',
+    years_experience: 3,
+    experience_months: 36,
+    location: 'LA',
+    certifications: ['OSHA 10'],
+    main_trade: 'electrician',
+    main_trade_other: null,
+    has_transportation: true,
+    city: 'Los Angeles',
+    application_status: 'pending',
+    applied_at: new Date().toISOString(),
+  };
 
   it('returns 401 if cognitoSub is missing', async () => {
     const res = await handler(makeEvent(null));
@@ -48,10 +95,7 @@ describe('employer-worker-profile Lambda', () => {
 
   it('returns 403 if employer does not own the job', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
-    mockQuery
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
-      .mockResolvedValueOnce({ rows: [] }); // job ownership check
+    setupMockQuery({ jobOwnership: { rows: [] } });
     const res = await handler(makeEvent('employer-sub'));
     expect(res.statusCode).toBe(403);
     expect(JSON.parse(res.body).error).toBe('forbidden');
@@ -59,32 +103,13 @@ describe('employer-worker-profile Lambda', () => {
 
   it('returns 200 with worker profile including safe onboarding facts', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
-    const mockProfile = {
-      worker_id: 'worker-uuid',
-      full_name: 'Maria G',
-      phone: '555-1234',
-      skills: ['Forklift'],
-      availability: 'immediate',
-      years_experience: 3,
-      experience_months: 36,
-      location: 'LA',
-      certifications: ['OSHA 10'],
-      main_trade: 'electrician',
-      main_trade_other: null,
-      has_transportation: true,
-      city: 'Los Angeles',
-      application_status: 'pending',
-      applied_at: new Date().toISOString(),
-    };
-    mockQuery
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
-      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] }) // job ownership
-      .mockResolvedValueOnce({ rows: [mockProfile] }) // profile query
-      .mockResolvedValueOnce({}); // COMMIT
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [] },
+    });
     const res = await handler(makeEvent('employer-sub'));
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual(mockProfile);
+    expect(JSON.parse(res.body)).toEqual({ ...mockProfile, trust_assessment: null });
     const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
     expect(profileQuery).toContain('FROM worker_skills ws');
     expect(profileQuery).toContain('WHERE ws.worker_id = ja.worker_id');
@@ -100,21 +125,172 @@ describe('employer-worker-profile Lambda', () => {
     expect(mockRelease).toHaveBeenCalled();
   });
 
-  it('does not expose scoring or rubric internals in the SQL query', async () => {
+  it('returns 404 without ever running the trust-assessment query', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
-    mockQuery
-      .mockResolvedValueOnce({}) // BEGIN
-      .mockResolvedValueOnce({ rows: [{ id: 'employer-id' }] }) // employer lookup
-      .mockResolvedValueOnce({ rows: [{ id: 'job-uuid' }] }) // job ownership
-      .mockResolvedValueOnce({ rows: [{ worker_id: 'w', full_name: null, phone: null, skills: [], availability: null, years_experience: null, experience_months: null, location: null, certifications: [], main_trade: null, main_trade_other: null, has_transportation: null, city: null, application_status: 'pending', applied_at: null }] }) // profile query
-      .mockResolvedValueOnce({}); // COMMIT
-    await handler(makeEvent('employer-sub'));
-    const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
-    expect(profileQuery).not.toContain('trade_competency_score');
-    expect(profileQuery).not.toContain('trust_signals');
-    expect(profileQuery).not.toContain('worker_trust_assessments');
-    expect(profileQuery).not.toContain('score_components');
-    expect(profileQuery).not.toContain('score_rationale');
-    expect(profileQuery).not.toContain('confidence_scores');
+    setupMockQuery({ profile: { rows: [] } });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body).error).toBe('not_found');
+    const assessmentCalled = mockQuery.mock.calls.some(([queryText]) =>
+      String(queryText).includes('FROM worker_trust_assessments'),
+    );
+    expect(assessmentCalled).toBe(false);
+    expect(mockRelease).toHaveBeenCalled();
+  });
+
+  it('returns trust_assessment with score and components but never rationales', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    const scoredAssessment = {
+      profession_key: 'electrician',
+      status: 'scored',
+      competency_score: 72,
+      score_components: {
+        specific_knowledge: 24,
+        practical_experience: 22,
+        safety_awareness: 14,
+        communication_clarity: 12,
+      },
+      // Realistic values for the sensitive fields that the handler's SELECT
+      // must not request and must not serialize. Their presence here (as if
+      // a broader SELECT/spread regression returned them) is what gives the
+      // not-contains assertions below actual teeth.
+      score_rationale: {
+        specific_knowledge: 'Mentions taping and leveling.',
+        practical_experience: 'Describes ten years on residential rewires.',
+        safety_awareness: 'References lockout/tagout procedure.',
+        communication_clarity: 'Answers are concise and on-topic.',
+      },
+      rubric_version: 7,
+      scoring_model_id: 'us.amazon.nova-lite-v1:0',
+      answers: [
+        {
+          question_index: 0,
+          q_en: 'How many years have you worked as an electrician?',
+          q_es: '¿Cuántos años ha trabajado como electricista?',
+          answer_text: 'Ten years',
+          answer_source: 'voice',
+          answered_at: '2026-08-19T00:00:00.000Z',
+        },
+        {
+          question_index: 1,
+          q_en: 'Reply with the number of your answer.\n1. Yes\n2. No',
+          q_es: null,
+          answer_text: '1',
+          answer_source: 'text',
+          answered_at: '2026-08-19T00:05:00.000Z',
+        },
+      ],
+      scored_at: '2026-08-20T00:00:00.000Z',
+    };
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [scoredAssessment] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trust_assessment.competency_score).toBe(72);
+    expect(body.trust_assessment.score_components).toEqual({
+      specific_knowledge: 24,
+      practical_experience: 22,
+      safety_awareness: 14,
+      communication_clarity: 12,
+    });
+    expect(body.trust_assessment.answers).toHaveLength(2);
+    // rubric_version is now deliberately included -- it's what lets the
+    // frontend detect a rebalanced (SSM-hot-edited) rubric and degrade its
+    // hardcoded 30/30/20/20 bars to plain numbers instead of mislabeling them.
+    expect(body.trust_assessment.rubric_version).toBe(7);
+    // score_rationale and scoring_model_id remain excluded -- the privacy
+    // contract for this endpoint.
+    expect(JSON.stringify(body)).not.toContain('score_rationale');
+    expect(JSON.stringify(body)).not.toContain('scoring_model_id');
+
+    const assessmentQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM worker_trust_assessments'))?.[0];
+    expect(assessmentQuery).toContain('rubric_version');
+    expect(assessmentQuery).not.toContain('score_rationale');
+    expect(assessmentQuery).not.toContain('scoring_model_id');
+  });
+
+  it('coerces a non-numeric stored rubric_version to the -1 sentinel instead of NaN', async () => {
+    // rubric_version is TEXT in the DB. A non-numeric stored value (e.g. the
+    // v2 onboarding flow's string sentinel) must not become NaN --
+    // JSON.stringify(NaN) serializes as `null`, which the frontend drift
+    // gate reads as "no rubric_version reported" (known scale) and renders
+    // bars anyway. -1 can never equal the frontend's KNOWN_RUBRIC_VERSION,
+    // so it still correctly degrades to plain numbers.
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    const scoredAssessment = {
+      profession_key: 'electrician',
+      status: 'scored',
+      competency_score: 72,
+      score_components: {
+        specific_knowledge: 24,
+        practical_experience: 22,
+        safety_awareness: 14,
+        communication_clarity: 12,
+      },
+      rubric_version: 'v2-trust-rubric-1',
+      answers: [],
+      scored_at: '2026-08-20T00:00:00.000Z',
+    };
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [scoredAssessment] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trust_assessment.rubric_version).toBe(-1);
+  });
+
+  it('returns trust_assessment: null when the worker has no assessment', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).trust_assessment).toBeNull();
+  });
+
+  it('nulls score fields for a non-scored assessment but still returns answers', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    const pendingAssessment = {
+      profession_key: 'electrician',
+      status: 'pending',
+      competency_score: null,
+      score_components: null,
+      // Not-yet-scored realistically has no rationale/rubric/model yet, but a
+      // regression could still return leftover values from a prior scoring
+      // attempt (e.g. re-queued row) — assert they never leak either way.
+      score_rationale: null,
+      rubric_version: null,
+      scoring_model_id: null,
+      answers: [
+        {
+          question_index: 0,
+          q_en: 'How many years have you worked as an electrician?',
+          q_es: '¿Cuántos años ha trabajado como electricista?',
+          answer_text: 'Ten years',
+          answer_source: 'voice',
+          answered_at: '2026-08-19T00:00:00.000Z',
+        },
+      ],
+      scored_at: null,
+    };
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [pendingAssessment] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    const ta = JSON.parse(res.body).trust_assessment;
+    expect(ta.status).toBe('pending');
+    expect(ta.competency_score).toBeNull();
+    expect(ta.score_components).toBeNull();
+    expect(ta.rubric_version).toBeNull();
+    expect(ta.answers.length).toBeGreaterThan(0);
   });
 });

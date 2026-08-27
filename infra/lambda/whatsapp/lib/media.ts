@@ -51,14 +51,18 @@ export async function downloadTwilioMedia(
 
 const s3 = new S3Client({});
 
-/** Uploads a buffer to S3 at the given key in the media bucket. */
+/**
+ * Uploads a buffer to S3 at the given key in the media bucket. Returns the
+ * S3 object VersionId (or null if the bucket somehow isn't versioned) so
+ * callers can pin presigned GETs / moderation calls to these exact bytes.
+ */
 export async function uploadMediaToS3(
   bucketName: string,
   key: string,
   body: Buffer,
   contentType: string,
-): Promise<void> {
-  await s3.send(
+): Promise<string | null> {
+  const res = await s3.send(
     new PutObjectCommand({
       Bucket: bucketName,
       Key: key,
@@ -67,6 +71,7 @@ export async function uploadMediaToS3(
       ServerSideEncryption: 'AES256',
     }),
   );
+  return res.VersionId ?? null;
 }
 
 // ── Job document category (PDF/JPEG/PNG work documents sent in chat) ──────
@@ -112,6 +117,21 @@ export async function uploadDocumentToS3(
     }),
   );
   return { versionId: res.VersionId ?? null };
+}
+
+export type PhotoMime = 'image/jpeg' | 'image/png' | 'image/webp';
+
+/** Magic-byte sniff for post photos — never trust Twilio's MediaContentType. */
+export function sniffPhotoType(buf: Buffer): PhotoMime | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  const png = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (buf.length >= 8 && png.every((b, i) => buf[i] === b)) return 'image/png';
+  if (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    buf.subarray(8, 12).toString('latin1') === 'WEBP'
+  ) return 'image/webp';
+  return null;
 }
 
 /** Thrown by downloadTwilioMediaBounded when the media exceeds the caller's byte cap. */

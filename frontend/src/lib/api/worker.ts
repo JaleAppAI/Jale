@@ -476,3 +476,71 @@ export async function claimReferral(token: string, shareCode: string): Promise<C
   if (!res.ok) throw await parseApiError(res, 'claim_failed');
   return res.json();
 }
+
+// ── Media board (worker portfolio posts) ─────────────────────────
+
+export type PostMediaItem = {
+  id: string;
+  url: string;
+  sort_order: number;
+  moderation_status: 'approved' | 'flagged';
+};
+
+export type WorkerPost = {
+  id: string;
+  caption: string | null;
+  source: 'web' | 'whatsapp';
+  created_at: string;
+  media: PostMediaItem[];
+};
+
+export async function getPostUploadUrls(
+  token: string,
+  items: { mime_type: string; file_size: number }[],
+): Promise<{ post_id: string; uploads: { url: string; s3_key: string }[] }> {
+  const res = await apiFetch(
+    '/worker/posts/upload-urls',
+    { method: 'POST', body: JSON.stringify({ items }) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'upload_url_failed');
+  return res.json();
+}
+
+export async function createPost(
+  token: string,
+  post_id: string,
+  caption: string | null,
+  items: { s3_key: string; sort_order: number }[],
+): Promise<{ flagged_count: number }> {
+  const res = await apiFetch(
+    '/worker/posts',
+    { method: 'POST', body: JSON.stringify({ post_id, caption, items }) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'confirm_failed');
+  return res.json();
+}
+
+/**
+ * `cursor` drives keyset pagination (`before`/`before_id`, matching the
+ * `(created_at, id)` composite cursor the list endpoint returns) for Task
+ * 11's load-more; omitted entirely for the first page.
+ */
+export async function getWorkerPosts(
+  token: string,
+  cursor?: { before: string; before_id: string },
+  signal?: AbortSignal,
+): Promise<{ posts: WorkerPost[]; next_before: string | null; next_before_id: string | null }> {
+  const qs = cursor
+    ? `?before=${encodeURIComponent(cursor.before)}&before_id=${encodeURIComponent(cursor.before_id)}`
+    : '';
+  const res = await apiFetch(`/worker/posts${qs}`, { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return res.json();
+}
+
+export async function deleteWorkerPost(token: string, post_id: string): Promise<void> {
+  const res = await apiFetch(`/worker/posts/${post_id}`, { method: 'DELETE' }, token);
+  if (!res.ok) throw await parseApiError(res, 'delete_failed');
+}

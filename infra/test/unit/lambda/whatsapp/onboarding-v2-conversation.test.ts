@@ -870,6 +870,15 @@ describe('Stream B: full voice profile intake end to end', () => {
 
     h.advanceTime(6 * 60 * 1000); // > VOICE_PROCESSING_TIMEOUT_MS
     await h.sendText('hello?');
+    // First timeout offers one retry rather than stranding the worker —
+    // it loops back to voice_choice instead of falling to the text flow.
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_choice');
+
+    await h.sendVoiceNote();
+    expect(h.getState().gate?.currentStepKey).toBe('profile.voice_processing');
+
+    h.advanceTime(6 * 60 * 1000); // > VOICE_PROCESSING_TIMEOUT_MS, second failure
+    await h.sendText('hello??');
     expect(h.getState().gate?.currentStepKey).toBe('profile.name'); // fell back, nothing landed
 
     await h.sendText('Jose Martinez');

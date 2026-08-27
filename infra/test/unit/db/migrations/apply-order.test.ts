@@ -91,6 +91,9 @@ const expectedBaselineMigrations = [
   '080_whatsapp_application_fill.sql',
   '081_whatsapp_application_defaults_read.sql',
   '082_employer_digest_settings.sql',
+  '083_media_board.sql',
+  '084_preferred_cities_whatsapp_write.sql',
+  '085_employer_trust_assessment_read.sql',
 ];
 
 function migrationFiles(): string[] {

@@ -191,6 +191,14 @@ describe('planExtractionWrites', () => {
       expect(result.writes).toHaveLength(0);
       expect(result.skipped).toContainEqual({ field: 'city', reason: 'unresolvable_location' });
     });
+
+    it('resolves a spoken full state name instead of skipping as unresolvable', () => {
+      const result = planExtractionWrites({}, { city: 'El Paso, Texas' }, { city: HIGH }, options());
+      expect(result.writes).toEqual([
+        { field: 'location', value: { city: 'El Paso', state: 'TX', postalCode: null, source: 'city_state' } },
+      ]);
+      expect(result.skipped).not.toContainEqual({ field: 'city', reason: 'unresolvable_location' });
+    });
   });
 
   describe('chk_trade_other safety — atomic custom-trade write both directions', () => {

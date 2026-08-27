@@ -75,6 +75,8 @@ export class WhatsAppStack extends cdk.Stack {
   public readonly processorLambda: JaleLambdaFunction;
   public readonly jobAlertLambda: JaleLambdaFunction;
   public readonly adminOutboxDispatcherLambda: JaleLambdaFunction;
+  /** Shared worker media bucket — MediaBoardStack consumes this (Task 7). */
+  public readonly mediaBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: WhatsAppStackProps) {
     super(scope, id, props);
@@ -259,7 +261,17 @@ export class WhatsAppStack extends cdk.Stack {
       // (@smithy/node-http-handler, also used by makeBedrockExtractionClient,
       // does NOT need listing here — only 'pg-native' and '@aws-sdk/*' are
       // externalModules, so esbuild bundles @smithy/* directly.)
-      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
+      //
+      // C1 (final-review, critical): the media-board post lane (below, ~line
+      // 656) makes this lambda call lib/moderation.ts's moderateImage(),
+      // which imports '@aws-sdk/client-rekognition' at module top level --
+      // the exact same "externalized but not runtime-provided" failure this
+      // comment already documents for client-bedrock-runtime. Without this
+      // addition the bundle would contain an unresolvable require() for
+      // client-rekognition, failing EVERY processor invocation (the import
+      // chain is unconditional at the top of processor.ts), not just
+      // moderation-calling turns.
+      nodeModules: ['@aws-sdk/client-bedrock-runtime', '@aws-sdk/client-rekognition'],
     });
     whatsappDbSecret.grantRead(this.processorLambda.function);
     twilioSecret.grantRead(this.processorLambda.function);
@@ -495,9 +507,23 @@ export class WhatsAppStack extends cdk.Stack {
       bucketName: `jale-worker-media-${cdk.Stack.of(this).account}-${cdk.Stack.of(this).region}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
-      versioned: false,
+      // Versioned so worker_post_media.s3_version_id can pin moderated
+      // bytes — presigned PUTs are multi-use for their TTL, so an
+      // unversioned key could be swapped AFTER Rekognition approval.
+      versioned: true,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT],
+          allowedOrigins: [allowedOrigin],
+          allowedHeaders: ['*'],
+        },
+      ],
+      lifecycleRules: [
+        { noncurrentVersionExpiration: cdk.Duration.days(30) },
+      ],
     });
+    this.mediaBucket = mediaBucket;
 
     // ── ai-profile-writer Lambda ─────────────────────────────────
     const aiProfileWriterLambda = new JaleLambdaFunction(this, 'AiProfileWriterLambda', {
@@ -629,6 +655,18 @@ export class WhatsAppStack extends cdk.Stack {
       props.trustAssessmentQueue.queueUrl,
     );
     mediaBucket.grantPut(this.processorLambda.function);
+    // Task 15 (media-board post lane): the processor moderates each worker
+    // post photo via Rekognition DetectModerationLabels, which reads the
+    // object directly from S3 under Rekognition's own service role — the
+    // CALLER (this Lambda) still needs s3:GetObject(Version) on the bucket
+    // for that read to succeed, hence grantRead alongside the existing
+    // grantPut. Every moderation call pins s3_version_id (global constraint),
+    // so GetObjectVersion is exercised, not just GetObject.
+    mediaBucket.grantRead(this.processorLambda.function);
+    this.processorLambda.function.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['rekognition:DetectModerationLabels'],
+      resources: ['*'], // Rekognition API actions do not support resource-level ARNs.
+    }));
     profileVoicePipeline.stateMachine.grantStartExecution(this.processorLambda.function);
     trustVoicePipeline.stateMachine.grantStartExecution(this.processorLambda.function);
     props.trustAssessmentQueue.grantSendMessages(this.processorLambda.function);
@@ -970,6 +1008,28 @@ export class WhatsAppStack extends cdk.Stack {
     alarm(
       'WhatsAppTrustVoicePipelineTimedOutAlarm', 'WhatsAppTrustVoicePipelineTimedOut',
       trustVoicePipeline.stateMachine.metricTimedOut({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
+    ).addAlarmAction(alarmAction);
+
+    // ── I2 (final-review): moderation fail-open alarm ────────────
+    // lib/moderation.ts's moderateImage() fails OPEN (approves the image)
+    // when Rekognition itself is unreachable/erroring after one retry --
+    // spec §5's deliberate choice not to block posting on a Rekognition
+    // outage. It logs `moderateImage service fault (fail-open) key=...` via
+    // plain `console.error` (NOT the `{ metric: ... }` JSON convention the
+    // other filters above key off), so this needs a literal substring
+    // filter pattern instead of `logs.FilterPattern.stringValue`. Without
+    // this, a sustained Rekognition outage would silently auto-approve
+    // every worker photo with nobody paged.
+    const moderationFailOpenMetric = new logs.MetricFilter(this, 'WhatsAppModerationFailOpenMetric', {
+      logGroup: this.processorLambda.logGroup,
+      filterPattern: logs.FilterPattern.literal('"moderateImage service fault (fail-open)"'),
+      metricNamespace: 'Jale/WhatsApp',
+      metricName: 'ModerationFailOpen',
+      metricValue: '1',
+    });
+    alarm(
+      'WhatsAppModerationFailOpenAlarm', 'WhatsAppModerationFailOpen',
+      moderationFailOpenMetric.metric({ period: cdk.Duration.minutes(5), statistic: 'Sum' }),
     ).addAlarmAction(alarmAction);
 
     // ── API Gateway route: POST /whatsapp/webhook ───────────────

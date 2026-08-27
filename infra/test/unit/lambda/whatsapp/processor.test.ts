@@ -53,14 +53,30 @@ jest.mock('@aws-sdk/client-lambda', () => ({
 const mockDetectMediaCategory = jest.fn();
 const mockBuildS3Key = jest.fn((userId: string, mediaId: string, type: string) => `${userId}/${type}/${mediaId}`);
 const mockDownloadTwilioMedia = jest.fn();
+const mockDownloadTwilioMediaBounded = jest.fn();
 const mockUploadMediaToS3 = jest.fn();
+const mockSniffPhotoType = jest.fn();
 jest.mock('../../../../lambda/whatsapp/lib/media', () => ({
   detectMediaCategory: (contentType: unknown) => mockDetectMediaCategory(contentType),
   buildS3Key: (userId: string, mediaId: string, type: string) => mockBuildS3Key(userId, mediaId, type),
   downloadTwilioMedia: (...args: unknown[]) => mockDownloadTwilioMedia(...args),
+  downloadTwilioMediaBounded: (...args: unknown[]) => mockDownloadTwilioMediaBounded(...args),
   uploadMediaToS3: (...args: unknown[]) => mockUploadMediaToS3(...args),
+  // Task 15: the media-board post lane's own photo-magic-byte sniff
+  // (post-creation.ts imports this from the same './media' module).
+  sniffPhotoType: (buf: unknown) => mockSniffPhotoType(buf),
   ALLOWED_PHOTO_TYPES: ['image/jpeg', 'image/png', 'image/webp'],
   ALLOWED_VOICE_TYPES: ['audio/ogg', 'audio/mpeg', 'audio/mp4'],
+  MAX_VOICE_BYTES: 16 * 1024 * 1024,
+  MAX_DOCUMENT_BYTES: 10 * 1024 * 1024,
+}));
+
+// Task 15: the processor's makePostDeps wires moderateImage's real signature
+// (bucket, s3Key, versionId) -> Promise<'approved'|'flagged'>. Mocked so
+// these tests never construct a real RekognitionClient/call AWS.
+const mockModerateImage = jest.fn();
+jest.mock('../../../../lambda/lib/moderation', () => ({
+  moderateImage: (...args: unknown[]) => mockModerateImage(...args),
 }));
 
 const mockQuery = jest.fn();
@@ -3209,6 +3225,348 @@ describe('Processor Lambda', () => {
       expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
       expect(countQueryByPattern(/FROM users\s+WHERE phone/i)).toBe(0);
       expect(countQueryByPattern(/bypass_onboarding_for_web_worker/i)).toBe(0);
+    });
+  });
+
+  // ── Task 15: media-board post lane wiring ───────────────────────────────
+  //
+  // handleIdle's own hook (Step 3) and the discard sites outside it (Step 4)
+  // wire Task 14's pure post-creation.ts lane into the real processor. These
+  // five cases are the task brief's mandatory list; the idle-voice-note
+  // regression lock (case 2 -- no download/secret fetch for audio) is the
+  // PRE-EXISTING "idle (legacy) worker sending a voice note..." test above
+  // (~line 1100), deliberately left untouched.
+  describe('Task 15: media-board post lane wiring', () => {
+    const DISCARD_NOTICE_EN =
+      "(I've set aside your unfinished post — send the photos again anytime.)";
+
+    beforeEach(() => {
+      process.env.MEDIA_BUCKET_NAME = 'jale-worker-media-test';
+    });
+
+    function stateContextUpdates(): Record<string, unknown>[] {
+      return mockQuery.mock.calls
+        .filter(([sql]) => /UPDATE whatsapp_conversations/i.test(sql as string))
+        .map(([, params]) => JSON.parse((params as unknown[])[1] as string) as Record<string, unknown>);
+    }
+
+    /** Dispatches on SQL substrings (only claim + conv-select matter here) --
+     * see the "filters the jobs list to the worker preferred cities" test
+     * above for the same pattern. Every other query (BEGIN/COMMIT, RLS
+     * set_config, the lane's own outbox/state writes, the post-commit
+     * "no pending outbox rows" drain) is content-agnostic to these tests, so
+     * a generic empty-result fallback is safe. */
+    function mockConvRowRouting(conv: unknown): void {
+      mockQuery.mockImplementation((sql: string) => {
+        if (/INSERT INTO whatsapp_processed_messages/i.test(sql)) {
+          return Promise.resolve({ rowCount: 1, rows: [{ message_sid: 'SM-post-lane' }] });
+        }
+        if (/FROM whatsapp_conversations/i.test(sql) && /SELECT/i.test(sql)) {
+          return Promise.resolve({ rowCount: 1, rows: [conv] });
+        }
+        return Promise.resolve({ rowCount: 0, rows: [] });
+      });
+    }
+
+    it('1. idle worker sending a photo with no draft starts one and queues the classify prompt', async () => {
+      mockDetectMediaCategory.mockReturnValue('photo');
+      mockSniffPhotoType.mockReturnValue('image/jpeg');
+      mockDownloadTwilioMediaBounded.mockResolvedValue(Buffer.from('fake-jpeg-bytes'));
+      mockUploadMediaToS3.mockResolvedValue('v-1');
+
+      mockConvRowRouting(convRow({
+        conversation_state: 'idle',
+        user_id: 'user-1',
+        language: 'en',
+        state_context: {},
+      }));
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-post-lane',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          NumMedia: '1',
+          MediaUrl0: 'https://api.twilio.com/media/MEpost1',
+          MediaSid0: 'MEpost1',
+          MediaContentType0: 'image/jpeg',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxTemplates()).toContain('onboarding_photo_type_en');
+      expect(mockDownloadTwilioMediaBounded).toHaveBeenCalledTimes(1);
+      expect(mockUploadMediaToS3).toHaveBeenCalledWith(
+        'jale-worker-media-test',
+        expect.stringMatching(/^user-1\/posts\/.+\.jpg$/),
+        expect.any(Buffer),
+        'image/jpeg',
+      );
+      const draftWrite = stateContextUpdates().find((sc) => sc.post_draft != null);
+      expect(draftWrite).toBeDefined();
+      const draft = draftWrite!.post_draft as {
+        stage: string;
+        media: { s3_version_id: string | null }[];
+      };
+      expect(draft.stage).toBe('classify');
+      expect(draft.media).toHaveLength(1);
+      expect(draft.media[0].s3_version_id).toBe('v-1');
+    });
+
+    // Case 2 (regression lock: idle worker + audio, no download/secret
+    // fetch) is the pre-existing "idle (legacy) worker sending a voice
+    // note..." test above (~line 1100) -- its CURRENT mock sequence is
+    // deliberately left untouched; it stays green because
+    // handlePostLaneMessage's own category gate (Task 14) returns
+    // `handled: false` for non-photo media before touching `client` or
+    // `deps.downloadMedia` at all.
+
+    it('3. help command with an active draft discards it (with notice) before replying with the help menu', async () => {
+      const draft = {
+        post_id: 'post-1',
+        stage: 'collecting',
+        media: [{
+          s3_key: 'user-1/posts/post-1/a.jpg', s3_version_id: 'v1',
+          content_type: 'image/jpeg', file_size: 100, sort_order: 0,
+        }],
+        caption: null,
+        started_at: new Date().toISOString(),
+      };
+      mockConvRowRouting(convRow({
+        conversation_state: 'idle',
+        user_id: 'user-1',
+        language: 'en',
+        state_context: { post_draft: draft },
+      }));
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-post-lane',
+          From: 'whatsapp:+15125551234',
+          Body: 'help',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxBodies()).toContain(DISCARD_NOTICE_EN);
+      expect(outboxTemplates()).toContain('help_menu_list_en');
+      const discardWrite = stateContextUpdates().find((sc) => sc.post_draft === null);
+      expect(discardWrite).toBeDefined();
+    });
+
+    it('4. jobs keyword with an active draft discards it (with notice) and still lists jobs', async () => {
+      mockListMatchedJobsForWorker.mockResolvedValue([
+        { id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' },
+      ]);
+      const draft = {
+        post_id: 'post-1',
+        stage: 'classify',
+        media: [{
+          s3_key: 'user-1/posts/post-1/a.jpg', s3_version_id: null,
+          content_type: 'image/jpeg', file_size: 10, sort_order: 0,
+        }],
+        caption: null,
+        started_at: new Date().toISOString(),
+      };
+      mockConvRowRouting(convRow({
+        conversation_state: 'idle',
+        user_id: 'user-1',
+        language: 'en',
+        state_context: { post_draft: draft },
+      }));
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-post-lane',
+          From: 'whatsapp:+15125551234',
+          Body: 'jobs',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxBodies()).toContain(DISCARD_NOTICE_EN);
+      expect(outboxTemplates()).toContain('job_alert_en');
+      const discardWrite = stateContextUpdates().find((sc) => sc.post_draft === null);
+      expect(discardWrite).toBeDefined();
+      expect(mockListMatchedJobsForWorker).toHaveBeenCalled();
+    });
+
+    it('5. a job-accept button tap with an active draft discards it (with notice) before arming the fill', async () => {
+      function ok(rowCount = 1): { rowCount: number; rows: unknown[] } {
+        return { rowCount, rows: [] };
+      }
+      // Mirrors "typed accept with missing required docs arms the fill" above
+      // (Task 9/10's proven mock shape for handleJobAction's accept path),
+      // entering via a job-alert BUTTON tap instead of typed text -- the one
+      // path that never reaches handleIdle's own discard hook (Step 3), so
+      // this is the only case that actually exercises step 4.2's guard
+      // inside handleJobAction rather than handleIdle's.
+      function mockSeedNoDefaults(): void {
+        mockQuery.mockResolvedValueOnce(ok()); // deps.setRls
+        mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // worker_application_defaults -- no row
+      }
+      function mockComputeNextStepRow(): void {
+        mockQuery.mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{
+            worker_id: 'user-1', job_id: 'job-1', application_status: 'pending',
+            application_answers: {}, job_status: 'active',
+            required_fields: [], required_docs: ['resume'],
+          }],
+        });
+        // required_fields is empty -> vacuously "all answered" -> computeNextStep
+        // also checks document presence before deciding the gap is 'doc'.
+        mockQuery.mockResolvedValueOnce(ok()); // setInternalUserRlsContext
+        mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // worker_documents presence check -- none
+      }
+
+      const draft = {
+        post_id: 'post-1',
+        stage: 'classify',
+        media: [{
+          s3_key: 'user-1/posts/post-1/a.jpg', s3_version_id: null,
+          content_type: 'image/jpeg', file_size: 10, sort_order: 0,
+        }],
+        caption: null,
+        started_at: new Date().toISOString(),
+      };
+
+      mockQuery
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-accept-draft' }] }) // claim
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [convRow({
+            conversation_state: 'idle',
+            user_id: 'user-1',
+            language: 'en',
+            state_context: { post_draft: draft },
+          })],
+        })
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
+        .mockResolvedValueOnce({
+          rowCount: 1,
+          rows: [{ id: 'job-1', title: 'Electrician', company: 'ABC', location: 'El Paso', pay: '$25/hr' }],
+        }) // handleJobAction's own job SELECT
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // applyWorkerToJob: setInternalUserRlsContext
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'job-1', required_docs: ['resume'] }] }) // applyWorkerToJob: job check
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // missingRequiredDocuments -- worker has none
+        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set_config('app.allow_incomplete_docs', ...)
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'app-1', job_id: 'job-1', status: 'pending', applied_at: 'ts' }] }) // INSERT job application
+        .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // document snapshot copy -- nothing to copy
+      mockSeedNoDefaults();
+      mockComputeNextStepRow(); // gap: doc 'resume', no fields
+      mockQuery.mockResolvedValueOnce(ok()); // discard: UPDATE whatsapp_conversations (post_draft -> null)
+      mockQuery.mockResolvedValueOnce(ok()); // discard: INSERT outbox discarded_for_command reply
+      mockQuery.mockResolvedValueOnce(ok()); // arm: UPDATE whatsapp_conversations (fill_application_id set, ...)
+      mockQuery.mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ application_answers: {}, required_fields: [], required_docs: ['resume'], have_docs: [] }],
+      }); // countRemainingRequirements
+      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox intro
+      mockComputeNextStepRow(); // promptNextStep -> computeNextStep again -> same 'doc' gap
+      mockQuery.mockResolvedValueOnce(ok()); // fill_last_prompt_at stamp
+      mockQuery.mockResolvedValueOnce(ok()); // INSERT outbox doc prompt
+      mockQuery.mockResolvedValueOnce(ok()); // processed db_committed
+      mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // COMMIT
+      mockQuery.mockResolvedValueOnce({ rowCount: 0, rows: [] }); // no pending outbox rows
+      mockQuery.mockResolvedValueOnce(ok()); // markCompleted
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-accept-draft',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          ButtonPayload: 'accept:job-job-1',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      const bodies = outboxBodies();
+      expect(bodies).toContain(DISCARD_NOTICE_EN);
+      expect(bodies).toContain(fillMessage('intro', 'en', { n_fields: '0', n_docs: '1' }));
+      expect(bodies).toContain(docPrompt('resume', 'en'));
+      const discardWrite = stateContextUpdates().find((sc) => sc.post_draft === null);
+      expect(discardWrite).toBeDefined();
+      const armWrite = stateContextUpdates().find((sc) => sc.fill_application_id === 'app-1');
+      expect(armWrite).toBeDefined();
+    });
+
+    // ── C2 (final-review, critical): forward draft <-> relay gap ─────────
+    //
+    // A worker with a focused employer thread OR an armed pending_picker is
+    // mid a structured-input flow that owns their next reply -- the post
+    // lane's entry gate (handleIdle, above the voice-note check) must not
+    // start a draft for either. Before this fix, an empty-body photo from a
+    // focused worker started a draft here; the bot's own solicited
+    // caption/classify prompt text was then indistinguishable from the
+    // worker's actual next message, and `tryConversationRelay` (which only
+    // gates on a non-empty body) would relay it straight to the employer.
+    it('6. idle photo with a focused employer thread does NOT start a draft (falls to existing media handling)', async () => {
+      mockConvRowRouting(convRow({
+        conversation_state: 'idle',
+        user_id: 'user-1',
+        language: 'en',
+        state_context: {},
+        focused_job_conversation_id: 'employer-conv-1',
+      }));
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-post-lane',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          NumMedia: '1',
+          MediaUrl0: 'https://api.twilio.com/media/MEfocused1',
+          MediaSid0: 'MEfocused1',
+          MediaContentType0: 'image/jpeg',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      // Falls through to the pre-existing "not supported here" voice/media
+      // reply instead of ever entering the post lane.
+      expect(outboxTemplates()).not.toContain('onboarding_photo_type_en');
+      expect(outboxBodies()).toContain(t('voice_note_not_supported', 'en'));
+      expect(mockDownloadTwilioMediaBounded).not.toHaveBeenCalled();
+      expect(mockUploadMediaToS3).not.toHaveBeenCalled();
+      const draftWrite = stateContextUpdates().find((sc) => sc.post_draft != null);
+      expect(draftWrite).toBeUndefined();
+    });
+
+    it('7. idle photo with an armed pending_picker does NOT start a draft (falls to existing media handling)', async () => {
+      mockConvRowRouting(convRow({
+        conversation_state: 'idle',
+        user_id: 'user-1',
+        language: 'en',
+        state_context: { pending_picker: { kind: 'chats', threads: [] } },
+      }));
+
+      await handler(
+        makeSqsEvent({
+          MessageSid: 'SM-post-lane',
+          From: 'whatsapp:+15125551234',
+          Body: '',
+          NumMedia: '1',
+          MediaUrl0: 'https://api.twilio.com/media/MEpicker1',
+          MediaSid0: 'MEpicker1',
+          MediaContentType0: 'image/jpeg',
+        }),
+        {} as any,
+        {} as any,
+      );
+
+      expect(outboxTemplates()).not.toContain('onboarding_photo_type_en');
+      expect(outboxBodies()).toContain(t('voice_note_not_supported', 'en'));
+      expect(mockDownloadTwilioMediaBounded).not.toHaveBeenCalled();
+      expect(mockUploadMediaToS3).not.toHaveBeenCalled();
+      const draftWrite = stateContextUpdates().find((sc) => sc.post_draft != null);
+      expect(draftWrite).toBeUndefined();
     });
   });
 });

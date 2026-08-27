@@ -86,6 +86,14 @@ import {
   type FillDeps,
   type FillStateContext,
 } from './lib/application-fill';
+import {
+  handlePostLaneMessage,
+  discardActiveDraft,
+  MAX_POST_PHOTO_BYTES,
+  type PostDeps,
+  type PostCtx,
+} from './lib/post-creation';
+import { moderateImage } from '../lib/moderation';
 import { REPROMPT_COOLDOWN_MS } from './lib/onboarding-language';
 import { fillMessage } from './lib/application-fill-prompts';
 import { makeBedrockExtractionClient } from './lib/application-fill-extraction';
@@ -1437,6 +1445,7 @@ async function routeReadyWorkerCommands(
   }
 
   if (isHelpCommand(msg.body)) {
+    await discardStalePostDraft(client, conv, msg);
     await queueInteractivePrompt(
       client,
       msg.messageSid,
@@ -1447,11 +1456,13 @@ async function routeReadyWorkerCommands(
   }
 
   if (isSupportCommand(msg.body)) {
+    await discardStalePostDraft(client, conv, msg);
     await handleSupportCommand(client, conv, msg);
     return null;
   }
 
   if (isProfileCommand(msg.body)) {
+    await discardStalePostDraft(client, conv, msg);
     await handleProfileCommand(client, conv, msg);
     return null;
   }
@@ -1519,6 +1530,14 @@ const routerDeps: RouterDeps = {
   queueLegalPrompt,
   recordLegalAcceptance: recordCanonicalWhatsAppConsent,
   requiredLegalVersion: process.env.REQUIRED_TOS_VERSION ?? '1.0',
+  // Task 15 (step 4.3): conversation-router.ts's single focus-arming set
+  // site (setFocusedConversation) calls this to discard a dormant post
+  // draft the moment a real employer thread gets focused. `conv.whatsapp_number`
+  // stands in for the inbound message's `from` here (see `reconcileUserRow`'s
+  // own `from: conv.whatsapp_number` precedent above) since the router only
+  // has `messageSid` in hand at that call site, not the full inbound message.
+  discardActivePostDraft: (client, conv, messageSid, from) =>
+    discardStalePostDraft(client, conv, { from, messageSid }),
 };
 
 /**
@@ -1905,6 +1924,58 @@ async function handleIdle(
   conv: ConversationRow,
   msg: IncomingMessage,
 ): Promise<string | null> {
+  // ── Media board post lane (spec 2026-08-22 v2) ─────────────────────
+  // Runs before the voice-note gate below: the lane's own category check
+  // (Task 14) is what actually decides photo vs. not, so an idle voice note
+  // still reaches the `voice_note_not_supported` reply just below with no
+  // download or Twilio-secret fetch (handlePostLaneMessage returns
+  // `handled: false` for it immediately, before touching `client` or
+  // `deps.downloadMedia`).
+  //
+  // C2 (final-review, forward draft <-> relay gap): a worker with a focused
+  // employer thread (`focused_job_conversation_id`) must NEVER enter this
+  // lane -- `tryConversationRelay` only relays messages with a non-empty
+  // body (see its own `if (!msg.body.trim()) return null;` guard at the top
+  // of conversation-router.ts), so an empty-body photo sails straight past
+  // relay into `handleIdle` even while focused. Without this guard the lane
+  // would start a draft here, and the bot's own solicited caption/classify
+  // reply text would then be treated as the worker's NEXT message and
+  // relayed straight to the employer. Same reasoning for `pending_picker`
+  // (spec §4's entry predicate, finding I1(b)): a worker mid disambiguation/
+  // chats-picker/close-reason pick is also mid a structured-input flow that
+  // owns their next reply, so the post lane must not race it for a photo
+  // sent in that window either.
+  const postLaneStateContext = (conv.state_context ?? {}) as unknown as Record<string, unknown>;
+  if (conv.user_id && !conv.focused_job_conversation_id && !postLaneStateContext.pending_picker) {
+    const stateContext = postLaneStateContext;
+    const postCtx: PostCtx = {
+      conversationId: conv.id,
+      workerId: conv.user_id,
+      lang: conv.language,
+      from: msg.from,
+      inboundSid: msg.messageSid,
+      stateContext,
+    };
+    const hasDraft = Boolean(stateContext.post_draft);
+    if (hasDraft && (isJobsKeyword(msg.body) || parseTypedJobAction(msg.body) !== null)) {
+      // A reserved command takes precedence over a dormant draft — discard
+      // it (with notice) and fall through to the command below rather than
+      // returning, so e.g. "trabajos" both clears the stale draft AND still
+      // lists jobs this same turn.
+      await discardActiveDraft(client, makePostDeps(conv), postCtx);
+    } else {
+      const r = await handlePostLaneMessage(client, makePostDeps(conv), postCtx, {
+        numMedia: msg.numMedia,
+        mediaUrl: msg.mediaUrl,
+        mediaContentType: msg.mediaContentType,
+        body: msg.body,
+        buttonPayload: msg.buttonPayload,
+        interactivePayload: msg.interactivePayload,
+      });
+      if (r.handled) return null;
+    }
+  }
+
   // Idle (post-onboarding, ready) workers have no voice handler at all —
   // give the honest "not supported here" reply rather than an unrelated
   // idle_help fallback that never mentions why the voice note went nowhere.
@@ -2045,25 +2116,98 @@ async function handleJobButton(
  * when `patch`'s value is `null` (identical to what the old spread did --
  * `null` is just another enumerable value), so patch semantics are
  * unchanged; only object IDENTITY is preserved now.
+ *
+ * Task 15: extracted so the media-board post lane (`makePostDeps`) shares
+ * the exact same mutate-in-place contract -- both lanes read/write the same
+ * `conv.state_context` object within one turn, so an update from either lane
+ * must be visible to the other without a second DB round trip.
  */
+function makeStateContextUpdater(conv: ConversationRow) {
+  return async (client: PoolClient, conversationId: string, patch: Record<string, unknown>): Promise<void> => {
+    // Defensive only (the DB column defaults to '{}', so this should
+    // never actually be null/undefined in practice) -- if it somehow
+    // were, this establishes the real, mutable object IN PLACE OF the
+    // missing one, once, so every FillContext already built against
+    // `conv.state_context` before this call still ends up sharing it.
+    if (!conv.state_context) conv.state_context = {} as unknown as ProfileStateContext;
+    const target = conv.state_context as unknown as Record<string, unknown>;
+    Object.assign(target, patch);
+    await updateConversation(client, conversationId, { state_context: target as unknown as ProfileStateContext });
+  };
+}
+
+/**
+ * Task 15: real `PostDeps` wiring for the media-board post lane
+ * (post-creation.ts), mirroring `buildFillDeps`'s shape -- built fresh per
+ * call site (I/O-free construction: `downloadMedia`'s Twilio secret fetch is
+ * lazy, exactly like `buildFillDeps`' own `downloadMedia`, so building this
+ * at every discard site below is cheap). No secret is threaded in as a
+ * parameter -- `getTwilioSecret` is module-cached (see its definition above),
+ * so the lazy fetch inside `downloadMedia` costs at most one Secrets Manager
+ * call per invocation, shared with every other lane that also calls
+ * `getTwilioSecret` this turn.
+ */
+function makePostDeps(conv: ConversationRow): PostDeps {
+  return {
+    queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
+    queueInteractivePrompt: (client, inboundSid, to, prompt) => queueInteractivePrompt(client, inboundSid, to, prompt),
+    updateStateContext: makeStateContextUpdater(conv),
+    setRls: setInternalUserRlsContext,
+    downloadMedia: async (mediaUrl: string) => {
+      const twilioSecret = await getTwilioSecret();
+      return downloadTwilioMediaBounded(mediaUrl, twilioSecret.accountSid, twilioSecret.authToken, MAX_POST_PHOTO_BYTES);
+    },
+    uploadMedia: (key, body, contentType) => uploadMediaToS3(process.env.MEDIA_BUCKET_NAME!, key, body, contentType),
+    moderate: (s3Key, versionId) => moderateImage(process.env.MEDIA_BUCKET_NAME!, s3Key, versionId),
+    nowMs: () => Date.now(),
+    newId: () => randomUUID(),
+  };
+}
+
+/**
+ * Task 15: builds the `PostCtx` a post-lane discard site needs from
+ * whatever minimal (from, messageSid) pair it has in hand -- both the full
+ * `IncomingMessage` (routeReadyWorkerCommands' branches, handleIdle) and
+ * `handleJobAction`'s bare `{ from, inboundMessageSid }` params satisfy this
+ * shape structurally, so one helper covers every call site.
+ */
+function postCtxFor(conv: ConversationRow, msg: { from: string; messageSid: string }): PostCtx {
+  return {
+    conversationId: conv.id,
+    workerId: conv.user_id ?? '',
+    lang: conv.language,
+    from: msg.from,
+    inboundSid: msg.messageSid,
+    stateContext: (conv.state_context ?? {}) as unknown as Record<string, unknown>,
+  };
+}
+
+/**
+ * Task 15 (step 4.1/4.2 discard sites): a matched worker command or a fresh
+ * fill-arm both mean the worker has moved on from the photo-drafting flow --
+ * a dormant `post_draft` left behind would otherwise sit forever with no way
+ * to complete or discard it (Task 14's lane only re-enters via `handleIdle`),
+ * or worse, silently eat the next photo/caption the worker sends for the
+ * command/fill they just invoked. Guarded so this is a true no-op (no query,
+ * no notice) when there is no draft to discard -- the overwhelmingly common
+ * case.
+ */
+async function discardStalePostDraft(
+  client: PoolClient,
+  conv: ConversationRow,
+  msg: { from: string; messageSid: string },
+): Promise<void> {
+  if ((conv.state_context as unknown as Record<string, unknown> | null)?.post_draft) {
+    await discardActiveDraft(client, makePostDeps(conv), postCtxFor(conv, msg));
+  }
+}
+
 function buildFillDeps(conv: ConversationRow): FillDeps {
   return {
     extraction: makeBedrockExtractionClient(),
     queueReplyText: (client, inboundSid, to, body) => queueOutboxText(client, inboundSid, to, body),
     setRls: setInternalUserRlsContext,
-    async updateStateContext(client, conversationId, patch) {
-      // Defensive only (the DB column defaults to '{}', so this should
-      // never actually be null/undefined in practice) -- if it somehow
-      // were, this establishes the real, mutable object IN PLACE OF the
-      // missing one, once, so every FillContext already built against
-      // `conv.state_context` before this call still ends up sharing it.
-      if (!conv.state_context) {
-        conv.state_context = {} as unknown as ProfileStateContext;
-      }
-      const target = conv.state_context as unknown as Record<string, unknown>;
-      Object.assign(target, patch);
-      await updateConversation(client, conversationId, { state_context: target as unknown as ProfileStateContext });
-    },
+    updateStateContext: makeStateContextUpdater(conv),
     nowMs: () => Date.now(),
     downloadMedia: async (mediaUrl: string) => {
       const twilioSecret = await getTwilioSecret();
@@ -2159,6 +2303,14 @@ async function handleJobAction(
       const nextStep = await computeNextStep(client, applicationId);
 
       if (nextStep.kind === 'field' || nextStep.kind === 'doc') {
+        // Task 15 (step 4.2): arming the fill here means the worker is about
+        // to answer field/doc prompts with free text and photos -- a
+        // dormant post-board draft left over from before this accept would
+        // otherwise sit forever (this arm point is reachable straight from
+        // a job-alert BUTTON tap, which never passes through handleIdle's
+        // own discard hook above).
+        await discardStalePostDraft(client, conv, { from, messageSid: inboundMessageSid });
+
         // Arm (or re-arm/switch) the fill. Anchor-switch scrub (Task 8
         // forward note): pending_picker/fill_pending/fill_cert_more_pending
         // are cleared unconditionally at every fill entry, whether this is

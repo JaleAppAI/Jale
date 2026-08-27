@@ -79,6 +79,21 @@ export interface RouterDeps {
     input: { workerId: string; documentVersion: string },
   ) => Promise<{ verified: boolean }>;
   requiredLegalVersion: string;
+  /**
+   * Task 15 (step 4.3, media-board post lane spec §4 "draft ⊥ focused
+   * relay"): discards a dormant `post_draft` (with the lane's own notice) if
+   * one exists on `conv.state_context`, no-op otherwise. Injected rather
+   * than implemented here because building the real `PostDeps` (S3/Twilio/
+   * moderation wiring) is processor-owned -- this module stays unit-testable
+   * without those mocks, exactly like `updateConversation`/`queueLegalPrompt`
+   * above.
+   */
+  discardActivePostDraft(
+    client: PoolClient,
+    conv: ConversationRow,
+    messageSid: string,
+    from: string,
+  ): Promise<void>;
 }
 
 export function isLikelyOtpCode(body: string): boolean {
@@ -264,6 +279,15 @@ export async function tryConversationRelay(
   // Must be intercepted here so it never reaches relayWorkerFreeText which
   // would attempt to route "CHATS" as a job message.
   if (isChatsKeyword(msg.body)) {
+    // I1(a) (final-review): CHATS/MENSAJES always routes to the picker below
+    // (never through `setFocusedConversation`, since no thread is focused
+    // yet here), so a dormant `post_draft` was never discarded on this path
+    // -- it would survive into the picker flow with no way back to it once a
+    // thread gets picked. `deps.discardActivePostDraft` mirrors the same
+    // guarded call `setFocusedConversation` makes (no-op, no notice, when
+    // there is no draft) -- see its own jsdoc / `discardStalePostDraft` in
+    // processor.ts.
+    await deps.discardActivePostDraft(client, conv, msg.messageSid, msg.from);
     if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ChatsKeywordLegalHold')) !== 'accepted') {
       return workerId;
     }
@@ -302,6 +326,18 @@ export async function tryConversationRelay(
  * so `handleFillMessage`'s consume step returns `handled:false` and the
  * message (e.g. the worker's actual field answer) is silently swallowed
  * instead of either relaying or feeding the fill.
+ *
+ * Task 15 (step 4.3, media-board spec §4 "draft ⊥ focused relay"): focusing
+ * a REAL thread here means every subsequent free-text message (including a
+ * photo) routes to that employer conversation instead of ever reaching
+ * `handleIdle`'s post-lane entry again — a dormant `post_draft` would
+ * otherwise become unreachable, sitting forever with no way to complete or
+ * discard it. Discard eagerly the moment focus is armed, using this single
+ * set-site so every caller (CHATS auto-focus, the CHATS/disambiguation
+ * picker resolution, employer conversation open buttons/text actions) is
+ * covered without duplicating the check at each one. Never on a
+ * `conversationId === null` clear — that returns the worker to idle, where
+ * drafting is reachable again, so there is nothing to discard.
  */
 async function setFocusedConversation(
   client: PoolClient,
@@ -310,6 +346,9 @@ async function setFocusedConversation(
   messageSid: string,
   deps: RouterDeps,
 ): Promise<void> {
+  if (conversationId !== null) {
+    await deps.discardActivePostDraft(client, conv, messageSid, conv.whatsapp_number);
+  }
   const { pending_picker: _drop, ...restContext } =
     (conv.state_context ?? {}) as FillStateContext;
   const fillArmed = conversationId !== null && typeof restContext.fill_application_id === 'string';
@@ -587,6 +626,16 @@ export function parseDisambiguationPick(body: string): number | null {
 }
 
 /**
+ * The SAME `state_context.post_draft` truthiness check `discardStalePostDraft`
+ * (processor.ts) makes before discarding a dormant draft — reused here (not
+ * reimplemented differently) so the relay guard below and the discard call
+ * sites agree on exactly what counts as "an active draft".
+ */
+function hasActivePostDraft(conv: ConversationRow): boolean {
+  return Boolean((conv.state_context as unknown as Record<string, unknown> | null)?.post_draft);
+}
+
+/**
  * Free-text relay for a resolved worker. Returns workerId when the message
  * was handled (routed OR disambiguation prompt sent), null to fall through.
  */
@@ -597,6 +646,16 @@ export async function relayWorkerFreeText(
   workerId: string,
   deps: RouterDeps,
 ): Promise<string | null> {
+  // PR54 review fix — ordering hazard: `routeReadyWorkerCommands`
+  // (processor.ts) runs this relay BEFORE `handleIdle`'s post lane. A worker
+  // mid-post (photos uploaded, awaiting caption/confirm) is talking to the
+  // post lane, not an employer: without this guard, their caption or
+  // "publicar" would relay straight into an employer thread via
+  // `recordWorkerConversationReply` below (and, worse, get treated as a
+  // focus-arming reply that discards the draft along the way). Fall through
+  // (`null`) instead so the post lane gets first look at the text.
+  if (hasActivePostDraft(conv)) return null;
+
   // Legal wall (V2 plan §4.5): messaging is compliance-gated. Workers who
   // never accepted (or declined) the ToS get the legal prompt, not a relay.
   if ((await ensureWorkerTosAccepted(client, conv, msg, workerId, deps, 'ConversationRelayLegalHold')) !== 'accepted') {

@@ -37,6 +37,7 @@ import {
   createOnboardingV2Adapters,
   standardTrustQuestions,
   normalizeTrade,
+  inferCityState,
   type ReconcileUserRowFn,
 } from '../../../../../lambda/whatsapp/lib/onboarding-adapters';
 
@@ -509,6 +510,79 @@ describe('LocationResolver.resolve', () => {
   it('returns null for unrecognized input', () => {
     expect(location.resolve('???')).toBeNull();
   });
+
+  it('resolves a full English state name', () => {
+    const result = location.resolve('El Paso, Texas');
+    expect(result?.source).toBe('city_state');
+    expect(result?.city).toBe('El Paso');
+    expect(result?.state).toBe('TX');
+  });
+
+  it('resolves an accented Spanish state name', () => {
+    const result = location.resolve('Santa Fe, Nuevo México');
+    expect(result?.city).toBe('Santa Fe');
+    expect(result?.state).toBe('NM');
+  });
+
+  it('resolves an unaccented Spanish state name', () => {
+    const result = location.resolve('santa fe, nuevo mexico');
+    expect(result?.city).toBe('santa fe');
+    expect(result?.state).toBe('NM');
+  });
+
+  it('resolves the colloquial alias "Tejas"', () => {
+    const result = location.resolve('El Paso, Tejas');
+    expect(result?.city).toBe('El Paso');
+    expect(result?.state).toBe('TX');
+  });
+
+  it('resolves a full state name regardless of case', () => {
+    const result = location.resolve('el paso, TEXAS');
+    expect(result?.city).toBe('el paso');
+    expect(result?.state).toBe('TX');
+  });
+
+  it('accepts an accented city name', () => {
+    const result = location.resolve('Española, NM');
+    expect(result?.city).toBe('Española');
+    expect(result?.state).toBe('NM');
+  });
+
+  it('returns null for an unrecognized state name', () => {
+    expect(location.resolve('El Paso, Tex')).toBeNull();
+  });
+
+  it.each([
+    ['Honolulu, Hawái', 'HI'],
+    ['Nueva Orleans, Luisiana', 'LA'],
+    ['St. Louis, Misuri', 'MO'],
+    ['Jackson, Misisipi', 'MS'],
+    ['Filadelfia, Pensilvania', 'PA'],
+  ])('resolves Spanish transliteration "%s" -> %s', (input, expected) => {
+    const result = location.resolve(input);
+    expect(result?.state).toBe(expected);
+  });
+
+  it('resolves "Washington, D.C." with periods in the state abbreviation', () => {
+    const result = location.resolve('Washington, D.C.');
+    expect(result?.city).toBe('Washington');
+    expect(result?.state).toBe('DC');
+  });
+});
+
+// ── inferCityState ────────────────────────────────────────────────────────
+
+describe('inferCityState', () => {
+  it('infers the state for an unambiguous bare city', () => {
+    expect(inferCityState('El Paso')).toEqual({ city: 'El Paso', state: 'TX' });
+    expect(inferCityState('  albuquerque ')).toEqual({ city: 'albuquerque', state: 'NM' });
+  });
+  it('returns null for ambiguous, unknown, comma-bearing, or numeric input', () => {
+    expect(inferCityState('Springfield')).toBeNull();
+    expect(inferCityState('Xyzzyville')).toBeNull();
+    expect(inferCityState('El Paso, TX')).toBeNull();
+    expect(inferCityState('79901')).toBeNull();
+  });
 });
 
 // ── TrustQuestionGenerator ───────────────────────────────────────────────
@@ -654,6 +728,35 @@ describe('ProfilePersistenceAdapter', () => {
     const updateIdx = calls.findIndex((sql) => sql.toUpperCase().includes('UPDATE WORKER_PROFILES'));
     expect(upsertIdx).toBeGreaterThanOrEqual(0);
     expect(updateIdx).toBeGreaterThan(upsertIdx);
+  });
+
+  it('saveLocation seeds worker_preferred_cities for a city_state resolution', async () => {
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: 'El Paso',
+      state: 'TX',
+      postalCode: null,
+      source: 'city_state',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    const insert = calls.find((c) => String(c[0]).includes('INSERT INTO worker_preferred_cities'));
+    expect(insert).toBeDefined();
+    expect(insert![1]).toEqual(['worker-1', 'el-paso-tx', 'El Paso', 'TX']);
+    expect(String(insert![0])).toContain('ON CONFLICT');
+  });
+
+  it('saveLocation does NOT seed preferred cities for a zip resolution', async () => {
+    const client = mockPoolClient();
+    await profile.saveLocation(client, 'worker-1', {
+      city: null,
+      state: null,
+      postalCode: '79901',
+      source: 'zip',
+    });
+
+    const calls = (client.query as jest.Mock).mock.calls;
+    expect(calls.find((c) => String(c[0]).includes('worker_preferred_cities'))).toBeUndefined();
   });
 
   it('saveTrade writes through the supplied client', async () => {

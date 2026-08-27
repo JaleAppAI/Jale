@@ -11,6 +11,8 @@
  * it then announces itself via a `role="status"` wrapper.
  */
 
+import * as React from 'react';
+
 export type SpinnerSize = 'sm' | 'md';
 
 const sizeClasses: Record<SpinnerSize, string> = {

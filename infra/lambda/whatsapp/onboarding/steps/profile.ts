@@ -11,6 +11,7 @@ import { V2_FALLBACK_TRUST_QUESTIONS } from '../../lib/interactive-templates';
 import {
   normalizeTrade,
   standardTrustQuestions,
+  inferCityState,
   type ResolvedLocation,
 } from '../../lib/onboarding-adapters';
 import {
@@ -27,7 +28,7 @@ import {
   V2_TRUST_FALLBACK_VERSION,
   V2_TRUST_RUBRIC_VERSION,
 } from '../constants';
-import { repeatCurrentPrompt } from '../delivery';
+import { repeatCurrentPrompt, sendTemplateMessage } from '../delivery';
 import { advanceProfileToNextStep } from '../transitions';
 
 // ── Bound: profile.name ──────────────────────────────────────────────────
@@ -69,20 +70,135 @@ export async function handleProfileLocation(
   lang: Lang,
   now: Date,
 ): Promise<RouteResult> {
-  const resolved: ResolvedLocation | null = deps.adapters.location.resolve(msg.body ?? '');
-  if (!resolved) {
-    await repeatCurrentPrompt(client, session, deps, gate.userId, 'profile.location', lang, now, gate.runId!, msg.messageSid);
-    return { handled: true, workerId: gate.userId, stepKey: 'profile.location' };
+  const stepKey = 'profile.location' as const;
+  const pending = session.state_context?.v2LocationPendingConfirm as
+    | { city: string; state: string }
+    | null
+    | undefined;
+
+  if (pending) {
+    // Confirm-parsing convention copied from application-fill.ts's
+    // parseFillConfirmation (lines 420-429) — deliberately duplicated
+    // rather than imported across subsystems.
+    const normalized = (msg.body ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/\s+/g, ' ');
+    const yes = normalized === '1' || normalized === '1 si' || normalized === '1 yes' || normalized === 'si' || normalized === 'yes';
+    const no = normalized === '2' || normalized === '2 no' || normalized === 'no';
+
+    if (yes) {
+      session.state_context.v2LocationPendingConfirm = null;
+      await deps.adapters.profile.saveLocation(client, gate.userId, {
+        city: pending.city, state: pending.state, postalCode: null, source: 'city_state',
+      });
+      return advanceProfileToNextStep(
+        client, session, msg, deps, gate, stepKey,
+        { locationSource: 'city_state', v2LocationPendingConfirm: null },
+        'profile_location_confirmed',
+        now,
+      );
+    }
+
+    if (no) {
+      session.state_context.v2LocationPendingConfirm = null;
+      const updated = await deps.repo.advanceWorkflow(client, {
+        runId: gate.runId!,
+        expectedLockVersion: gate.lockVersion!,
+        fromStepKey: stepKey,
+        toStepKey: stepKey,
+        contextPatch: { v2LocationPendingConfirm: null },
+        inboundMessageSid: msg.messageSid,
+        reason: 'profile_location_confirm_declined',
+      });
+      await sendTemplateMessage(
+        client, deps, updated.userId, stepKey, lang, 'v2_location_invalid', {},
+        now, gate.runId!, msg.messageSid, 'location_confirm_declined',
+      );
+      return { handled: true, workerId: updated.userId, stepKey };
+    }
+
+    // Unrecognized reply while confirming: the worker may have simply typed
+    // a NEW location instead of answering 1/2 — try to resolve it before
+    // falling back to re-echoing the stale confirmation, so a retyped
+    // "City, ST" or bare city un-wedges the flow instead of looping forever.
+    const resolvedWhilePending: ResolvedLocation | null = deps.adapters.location.resolve(msg.body ?? '');
+    if (resolvedWhilePending) {
+      session.state_context.v2LocationPendingConfirm = null;
+      await deps.adapters.profile.saveLocation(client, gate.userId, resolvedWhilePending);
+      return advanceProfileToNextStep(
+        client, session, msg, deps, gate, stepKey,
+        { locationSource: resolvedWhilePending.source, v2LocationPendingConfirm: null },
+        'profile_location_set',
+        now,
+      );
+    }
+
+    const reinferred = inferCityState(msg.body ?? '');
+    if (reinferred) {
+      const updated = await deps.repo.advanceWorkflow(client, {
+        runId: gate.runId!,
+        expectedLockVersion: gate.lockVersion!,
+        fromStepKey: stepKey,
+        toStepKey: stepKey,
+        contextPatch: { v2LocationPendingConfirm: reinferred },
+        inboundMessageSid: msg.messageSid,
+        reason: 'profile_location_confirm_pending',
+      });
+      session.state_context.v2LocationPendingConfirm = reinferred;
+      await sendTemplateMessage(
+        client, deps, updated.userId, stepKey, lang, 'v2_location_confirm',
+        { city: reinferred.city, state: reinferred.state },
+        now, gate.runId!, msg.messageSid, 'location_confirm_ask',
+      );
+      return { handled: true, workerId: updated.userId, stepKey };
+    }
+
+    // Neither a confirmation nor a new location: re-echo the confirmation,
+    // don't re-infer.
+    await sendTemplateMessage(
+      client, deps, gate.userId, stepKey, lang, 'v2_location_confirm',
+      { city: pending.city, state: pending.state },
+      now, gate.runId!, msg.messageSid, 'location_confirm_reecho',
+    );
+    return { handled: true, workerId: gate.userId, stepKey };
   }
 
-  await deps.adapters.profile.saveLocation(client, gate.userId, resolved);
-  return advanceProfileToNextStep(
-    client, session, msg, deps, gate,
-    'profile.location',
-    { locationSource: resolved.source },
-    'profile_location_set',
-    now,
-  );
+  const resolved: ResolvedLocation | null = deps.adapters.location.resolve(msg.body ?? '');
+  if (resolved) {
+    await deps.adapters.profile.saveLocation(client, gate.userId, resolved);
+    return advanceProfileToNextStep(
+      client, session, msg, deps, gate, stepKey,
+      { locationSource: resolved.source },
+      'profile_location_set',
+      now,
+    );
+  }
+
+  const inferred = inferCityState(msg.body ?? '');
+  if (inferred) {
+    const updated = await deps.repo.advanceWorkflow(client, {
+      runId: gate.runId!,
+      expectedLockVersion: gate.lockVersion!,
+      fromStepKey: stepKey,
+      toStepKey: stepKey,
+      contextPatch: { v2LocationPendingConfirm: inferred },
+      inboundMessageSid: msg.messageSid,
+      reason: 'profile_location_confirm_pending',
+    });
+    session.state_context.v2LocationPendingConfirm = inferred;
+    await sendTemplateMessage(
+      client, deps, updated.userId, stepKey, lang, 'v2_location_confirm',
+      { city: inferred.city, state: inferred.state },
+      now, gate.runId!, msg.messageSid, 'location_confirm_ask',
+    );
+    return { handled: true, workerId: updated.userId, stepKey };
+  }
+
+  await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);
+  return { handled: true, workerId: gate.userId, stepKey };
 }
 
 // ── Bound: profile.trade (list picker) ───────────────────────────────────

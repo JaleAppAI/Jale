@@ -13,6 +13,8 @@ export interface CityFields {
 // leading/trailing '-'. Order matters for Unicode (e.g. 'İzmir').
 function slugifyCityPart(city: string): string {
   return city
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-zA-Z0-9]+/g, '-')
     .toLowerCase()
     .replace(/^-+|-+$/g, '');

@@ -189,8 +189,7 @@ export async function handleVoiceProcessingStep(
   // after the timeout, give up on voice and fall back to the text flow
   // exactly as a FAILED/empty result would.
   console.warn(JSON.stringify({ metric: 'OnboardingVoiceProcessingTimedOut', stepKey }));
-  await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_fallback', {}, now, gate.runId!, msg.messageSid, 'voice_processing_timeout');
-  return advanceProfileToNextStep(client, session, msg, deps, gate, stepKey, { voiceIntakeTimedOut: true }, 'profile_voice_processing_timeout', now);
+  return offerRetryOrFallBack(client, session, msg, deps, gate, stepKey, lang, now, { voiceIntakeTimedOut: true }, 'voice_processing_timeout', 'profile_voice_processing_timeout');
 }
 
 // ── Voice-pipeline completion re-entry ───────────────────────────────────
@@ -277,6 +276,46 @@ async function applyExtractionWrite(client: PoolClient, deps: OnboardingV2Deps, 
 }
 
 /**
+ * First voice failure of a run: offer ONE retry by looping the step machine
+ * back to profile.voice_choice (plain advanceWorkflow — there is no
+ * forward-only guard). Second failure (v2VoiceRetryOffered already set):
+ * the original fallback — v2_voice_fallback + advance to text intake.
+ * The staleness guard in handleVoiceIntakeResult already discards late
+ * completions from an abandoned first execution, because ingestion
+ * overwrites state_context.v2VoiceExecutionArn per attempt.
+ */
+async function offerRetryOrFallBack(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  fromStepKey: 'profile.voice_choice' | 'profile.voice_processing',
+  lang: Lang,
+  now: Date,
+  contextPatch: Record<string, unknown>,
+  fallbackTag: string,
+  fallbackReason: string,
+): Promise<RouteResult> {
+  if (session.state_context?.v2VoiceRetryOffered === true) {
+    await sendTemplateMessage(client, deps, gate.userId, fromStepKey, lang, 'v2_voice_fallback', {}, now, gate.runId!, msg.messageSid, fallbackTag);
+    return advanceProfileToNextStep(client, session, msg, deps, gate, fromStepKey, contextPatch, fallbackReason, now);
+  }
+  await sendTemplateMessage(client, deps, gate.userId, fromStepKey, lang, 'v2_voice_retry_offer', {}, now, gate.runId!, msg.messageSid, `${fallbackTag}_retry_offer`);
+  const updated = await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId!,
+    expectedLockVersion: gate.lockVersion!,
+    fromStepKey,
+    toStepKey: 'profile.voice_choice',
+    contextPatch: { ...contextPatch, v2VoiceRetryOffered: true },
+    inboundMessageSid: msg.messageSid,
+    reason: `${fallbackReason}_retry_offered`,
+  });
+  session.state_context.v2VoiceRetryOffered = true;
+  return { handled: true, workerId: updated.userId, stepKey: 'profile.voice_choice' };
+}
+
+/**
  * The profile-intake pipeline's completion re-enters here as a synthetic
  * inbound event (see lib/voice-events.ts). Dispatched unconditionally
  * whenever `msg.voiceEvent?.kind === 'profile_intake'`, regardless of the
@@ -311,8 +350,7 @@ export async function handleVoiceIntakeResult(
   const stepKey = 'profile.voice_processing' as const;
 
   if (evt.status === 'FAILED' || !evt.fields) {
-    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_fallback', {}, now, gate.runId!, msg.messageSid, 'voice_intake_failed');
-    return advanceProfileToNextStep(client, session, msg, deps, gate, stepKey, { voiceIntakeFailed: true }, 'profile_voice_intake_failed', now);
+    return offerRetryOrFallBack(client, session, msg, deps, gate, stepKey, lang, now, { voiceIntakeFailed: true }, 'voice_intake_failed', 'profile_voice_intake_failed');
   }
 
   const dbFilled = await loadProfileFromDb(client, gate.userId);
@@ -332,8 +370,7 @@ export async function handleVoiceIntakeResult(
   }));
 
   if (plan.writes.length === 0) {
-    await sendTemplateMessage(client, deps, gate.userId, stepKey, lang, 'v2_voice_fallback', {}, now, gate.runId!, msg.messageSid, 'voice_intake_zero_writes');
-    return advanceProfileToNextStep(client, session, msg, deps, gate, stepKey, { voiceIntakeZeroWrites: true }, 'profile_voice_intake_zero_writes', now);
+    return offerRetryOrFallBack(client, session, msg, deps, gate, stepKey, lang, now, { voiceIntakeZeroWrites: true }, 'voice_intake_zero_writes', 'profile_voice_intake_zero_writes');
   }
 
   for (const write of plan.writes) {
