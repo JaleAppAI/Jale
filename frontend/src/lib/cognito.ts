@@ -131,6 +131,22 @@ export function employerConfirmSignUp(email: string, code: string): Promise<void
     return confirm(getEmployerPool(), email.trim().toLowerCase(), code);
 }
 
+/**
+ * Sends a fresh confirmation code to an unconfirmed employer.
+ *
+ * Unauthenticated by design — the whole point is that the user cannot get in
+ * yet. The app client is created with `generateSecret: false`, so there is no
+ * SecretHash to compute here.
+ *
+ * `resendConfirmationCode` is node-style (a single `(err) => void` callback),
+ * NOT the `{ onSuccess, onFailure }` shape the neighbouring `forgotPassword`
+ * and `confirmPassword` calls use. Passing an object here would leave the
+ * promise pending forever.
+ *
+ * The username is normalised the same way `employerConfirmSignUp` normalises
+ * it, so a user who typed `Foo@Example.com` reaches the same Cognito record on
+ * the resend and on the confirm that follows it.
+ */
 export function employerResendConfirmationCode(email: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const user = new CognitoUser({ Username: email.trim().toLowerCase(), Pool: getEmployerPool() });
@@ -141,10 +157,23 @@ export function employerResendConfirmationCode(email: string): Promise<void> {
     });
 }
 
+/**
+ * The username is normalised exactly as every other employer call normalises it
+ * (`employerSignUp`, `employerConfirmSignUp`, `employerResendConfirmationCode`,
+ * `employerForgotPassword`, `employerConfirmNewPassword`). This was the one
+ * that did not, so a user who typed `Foo@Example.com` had the account created,
+ * the code sent and the confirm applied against `foo@example.com`, and was then
+ * authenticated against a different username string — the confirm succeeded and
+ * the sign-in immediately behind it failed. Both constructors read the same
+ * normalised value; normalising only one of them would still send Cognito a
+ * mismatched pair. The password is untouched: leading and trailing spaces are
+ * legal password characters.
+ */
 export function employerSignIn(email: string, password: string): Promise<AuthTokens> {
+    const username = email.trim().toLowerCase();
     return new Promise((resolve, reject) => {
-        const user = new CognitoUser({ Username: email, Pool: getEmployerPool() });
-        const authDetails = new AuthenticationDetails({ Username: email, Password: password });
+        const user = new CognitoUser({ Username: username, Pool: getEmployerPool() });
+        const authDetails = new AuthenticationDetails({ Username: username, Password: password });
         user.authenticateUser(authDetails, {
             onSuccess: (session) => resolve({
                 accessToken: session.getAccessToken().getJwtToken(),

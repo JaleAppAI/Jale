@@ -16,7 +16,9 @@
  *  2. Persist claim/attempt state in a short transaction.
  *  3. Fetch authoritative Stripe state OUTSIDE any DB transaction.
  *  4. Mirror subscription state + mark processed (clearing the lease) in a
- *     final transaction.
+ *     final transaction. That transaction can instead end in 'skipped' when
+ *     the event turns out to concern a subscription that is NOT the user's
+ *     current one — see the decision table in handleSubscriptionEvent.
  *
  * Lease semantics guard against duplicate SQS delivery of the same Stripe
  * event running two concurrent processor invocations (maxConcurrency 3):
@@ -35,6 +37,7 @@ import { getDbPool } from '../lib/db';
 import { getStripe, getStripeSecret } from '../lib/stripe-client';
 import { resolveEntitlements } from '../lib/entitlements';
 import { queueEmail } from '../lib/email-outbox';
+import { renderBillingPauseEmail } from '../lib/billing-pause-template';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +59,38 @@ interface WebhookEnvelope {
  * after.
  */
 const INBOX_LEASE_MS = 5 * 60 * 1000;
+
+/**
+ * The statuses excluded from the partial unique index
+ * subscriptions_one_current_per_user (migration 034):
+ *
+ *   CREATE UNIQUE INDEX subscriptions_one_current_per_user
+ *       ON subscriptions (user_id)
+ *    WHERE status NOT IN ('canceled', 'incomplete_expired');
+ *
+ * A row in one of these statuses does NOT occupy the user's single
+ * "current subscription" slot.
+ *
+ * Deliberately NOT the same set as `reducingStatuses` in
+ * handleSubscriptionEvent: that one drives job-limit enforcement and also
+ * lists 'unpaid' and 'paused', both of which this index still counts as
+ * current. Do not merge the two — they answer different questions.
+ */
+const TERMINAL_SUBSCRIPTION_STATUSES: readonly string[] = ['canceled', 'incomplete_expired'];
+
+/**
+ * Event types that, by construction, concern the NEWEST subscription a user
+ * has at the moment they arrive — and are therefore the only ones allowed to
+ * retire that user's other current subscription rows.
+ *
+ * Everything else (updated / paused / resumed / invoice.*) can just as easily
+ * describe a stale subscription that Stripe is still dunning, so it gets no
+ * such authority. See the decision table in handleSubscriptionEvent.
+ */
+const SUPERSEDING_EVENT_TYPES = new Set([
+  'checkout.session.completed',
+  'customer.subscription.created',
+]);
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -150,6 +185,15 @@ export async function processEnvelope(envelope: WebhookEnvelope): Promise<Proces
     'customer.subscription.created',
     'customer.subscription.updated',
     'customer.subscription.deleted',
+    // paused/resumed are mirrored, not skipped: the handler already routes
+    // every 'customer.subscription.*' type through the mirror path, and
+    // reducingStatuses below already lists 'paused'. Omitting them here made
+    // them fall through to a SILENT 'skipped', so a paused subscription kept
+    // its Pro entitlements until some unrelated event happened to arrive.
+    'customer.subscription.paused',
+    'customer.subscription.resumed',
+    // Known, but deliberately not mirrored — see the explicit skip below.
+    'customer.subscription.trial_will_end',
     'invoice.payment_succeeded',
     'invoice.payment_failed',
     'invoice.finalized',
@@ -164,6 +208,22 @@ export async function processEnvelope(envelope: WebhookEnvelope): Promise<Proces
   // invoice.finalized is a known type but we explicitly skip it
   if (eventType === 'invoice.finalized') {
     await markInboxStatus(eventId, 'skipped', null, null);
+    return { outcome: 'skipped' };
+  }
+
+  // trial_will_end carries no state worth mirroring (the subscription is
+  // still trialing; the status change arrives as its own event), so it is
+  // skipped like invoice.finalized — but unlike invoice.finalized it is
+  // ALARMED. BillingStack greps this literal out of this Lambda's log group
+  // into the Jale/Billing BillingKnownEventSkipped metric + alarm; keep the
+  // string in sync. The asymmetry is deliberate: invoice.finalized fires on
+  // every single invoice, so alarming on it would leave the alarm
+  // permanently breached, whereas trial_will_end cannot occur until someone
+  // configures a trial price — at which point we DO want to be told that a
+  // billing lifecycle event is being dropped on the floor.
+  if (eventType === 'customer.subscription.trial_will_end') {
+    await markInboxStatus(eventId, 'skipped', null, null);
+    console.warn('billing_event_skipped_known', { eventType });
     return { outcome: 'skipped' };
   }
 
@@ -251,8 +311,47 @@ async function handleSubscriptionEvent(
     [customerId],
   );
   if (customerRes.rows.length === 0) {
-    await markInboxStatus(eventId, 'failed', 'unknown_customer', null);
-    return { outcome: 'failed', errorCode: 'unknown_customer' };
+    // Terminal skip — NOT a retryable failure.
+    //
+    // A Stripe customer with no billing_customers row is permanently
+    // unactionable: the mapping row is committed BEFORE any Stripe Checkout
+    // session for that customer can exist (lambda/billing/checkout.ts →
+    // persistBillingCustomer COMMITs before stripe.checkout.sessions.create),
+    // and a mapping, once written, cannot go away: the users FK is ON DELETE
+    // RESTRICT and migration 034 grants no role DELETE on billing_customers.
+    // So a customer we already know can never regress to unknown. The residual
+    // unknowns are dashboard-created, test-mode, or orphaned (the losing side
+    // of a concurrent checkout) customers. Marking them
+    // 'failed' only burned 3 SQS receives per event and pushed them into the
+    // DLQ, firing BillingWebhookDlqDepth for something no redrive can fix.
+    //
+    // 'skipped' is terminal at BOTH levels, which is what makes this safe:
+    //   - row:     claimInboxRow reports terminalDuplicate for 'skipped', and
+    //              persistInboxFailure's WHERE excludes it, so a redelivery or
+    //              a corrupted body can never reopen the row.
+    //   - message: processSqsRecord does not throw on 'skipped', so with
+    //              reportBatchItemFailures the void return reports no failed
+    //              items and SQS deletes the message.
+    // Only this branch is special-cased; the throw site in processSqsRecord
+    // must stay generic, since suppressing the throw there would delete the
+    // message while leaving a resumable 'failed' row behind.
+    //
+    // Two deliberate deviations from every other 'skipped' write here (which
+    // pass null/null), both for forensics rather than for control flow:
+    //   - last_error_code is non-null on a 'skipped' row for the first time,
+    //     so the reason stays recoverable from the inbox itself.
+    //   - processed_at is non-null on a 'skipped' row for the first time: it
+    //     records WHEN we terminally decided, not that we mirrored any state.
+    // markInboxStatus already accepts both, the CHECK constraint (migration
+    // 034) only constrains processing_status, and nothing outside this Lambda
+    // reads billing_webhook_events, so no consumer can be surprised.
+    await markInboxStatus(eventId, 'skipped', 'unknown_customer', new Date());
+    // Because the skip is otherwise completely silent (no DLQ, no alarm, no
+    // reader of the inbox table), this literal is the only signal. BillingStack
+    // greps it out of this Lambda's log group into the Jale/Billing
+    // BillingUnknownCustomerSkipped metric + alarm — keep the string in sync.
+    console.warn(JSON.stringify({ metric: 'billing_unknown_customer_skipped', eventId }));
+    return { outcome: 'skipped', errorCode: 'unknown_customer' };
   }
   const userId: string = String(customerRes.rows[0].user_id);
 
@@ -291,6 +390,112 @@ async function handleSubscriptionEvent(
     const graceFragment = status === 'past_due' && existing?.status === 'past_due' && existing?.grace_ends_at
       ? existing.grace_ends_at  // preserve — use literal timestamp
       : null;
+
+    // ── Which subscription is this user's CURRENT one? ───────────────────
+    //
+    // subscriptions_one_current_per_user (migration 034) lets a user hold
+    // exactly one row whose status is not 'canceled'/'incomplete_expired'.
+    // The upsert below conflicts on (provider_subscription_id), so when a
+    // SECOND provider_subscription_id shows up for a user who still has a
+    // current row, that target does not match, the statement INSERTs, and it
+    // trips the partial index with a 23505.
+    //
+    // Two live subscriptions is a REACHABLE steady state, not merely a race.
+    // The checkout guard (lambda/lib/billing-operations.ts) only refuses a
+    // new Checkout Session while the existing subscription is active,
+    // trialing, or past_due within grace. A user whose subscription is
+    // unpaid, paused, incomplete, or past_due beyond grace can legitimately
+    // subscribe again, and Stripe then keeps BOTH alive: dunning goes on
+    // emitting invoice.payment_failed / customer.subscription.updated for the
+    // OLD one for weeks.
+    //
+    // So "is this row the current one?" cannot be answered from status alone
+    // — it needs recency, and the only recency signal available here without
+    // extra Stripe calls is the EVENT TYPE. checkout.session.completed and
+    // customer.subscription.created are, by construction, about the newest
+    // subscription for that user at the moment they arrive. Every other type
+    // is just as likely to concern a stale one. Hence:
+    //
+    //   incoming status terminal   → upsert as before. A terminal row sits
+    //                                outside the partial index, so it can
+    //                                neither collide nor need to retire
+    //                                anything.
+    //   no other current row       → upsert as before.
+    //   created / checkout done    → newest by construction: retire the
+    //                                others, then upsert.
+    //   any other type, others     → this event is about a subscription that
+    //   exist                        is NOT the user's current one. Upserting
+    //                                would 23505; retiring the others would
+    //                                strip a PAYING employer down to free
+    //                                entitlements and then pause their jobs.
+    //                                Neither is acceptable, so skip it.
+    //
+    // Superseded rows deliberately do NOT trigger
+    // billing_pause_over_limit_jobs — enforcement stays decided by the
+    // incoming subscription's own status below, exactly as before.
+    //
+    // Concurrency remains a separate and self-healing matter: two invocations
+    // racing here can still deadlock (40P01) or collide (23505). Either
+    // aborts one transaction, marks that inbox row failed, and SQS redelivers
+    // it — by which time the committed state sends the retry down the right
+    // branch.
+    if (!TERMINAL_SUBSCRIPTION_STATUSES.includes(status)) {
+      // Terminal incoming statuses skip this read altogether: same outcome as
+      // reading it and ignoring the result, minus the locks.
+      //
+      // IS DISTINCT FROM, not <>: provider_subscription_id is nullable
+      // (migration 034), and a NULL-valued row still occupies the slot while
+      // a <> comparison against it evaluates to NULL and would miss it.
+      const othersRes = await client.query<{ id: string; provider_subscription_id: string | null }>(
+        `SELECT id, provider_subscription_id FROM subscriptions
+          WHERE user_id = $1
+            AND provider_subscription_id IS DISTINCT FROM $2
+            AND status NOT IN ('canceled', 'incomplete_expired')
+          ORDER BY updated_at DESC
+          FOR UPDATE`,
+        [userId, providerSubId],
+      );
+      const others = othersRes.rows;
+
+      if (others.length > 0 && SUPERSEDING_EVENT_TYPES.has(eventType)) {
+        // Retire by primary key: the SELECT above already locked exactly
+        // these rows in this transaction, so re-checking status here would
+        // be redundant.
+        await client.query(
+          `UPDATE subscriptions
+              SET status               = 'canceled',
+                  cancel_at_period_end = false,
+                  grace_ends_at        = NULL,
+                  updated_at           = now()
+            WHERE id = ANY($1::uuid[])`,
+          [others.map((row) => row.id)],
+        );
+        // No PII: internal user id and Stripe subscription ids only.
+        console.info('superseded_prior_subscription', {
+          userId,
+          supersededCount: others.length,
+          newProviderSubId: providerSubId,
+        });
+      } else if (others.length > 0) {
+        // This also skips an out-of-order 'updated' that arrives before its
+        // own creation event — harmless, since the creation event does the
+        // superseding and later events refresh the row. The stale row heals
+        // itself as well: once Stripe terminalizes the old subscription, the
+        // incoming status is terminal and the branch above upserts it.
+        //
+        // BillingStack greps this literal out of this Lambda's log group into
+        // the Jale/Billing BillingKnownEventSkipped metric; keep it in sync.
+        console.warn('billing_superseded_subscription_event', {
+          userId,
+          eventType,
+          providerSubId,
+          currentProviderSubId: others[0].provider_subscription_id,
+        });
+        await markInboxStatusWithClient(client, eventId, 'skipped', 'superseded_subscription', null);
+        await client.query('COMMIT');
+        return { outcome: 'skipped' };
+      }
+    }
 
     const upsertRes = await client.query<{ id: string }>(
       `INSERT INTO subscriptions (
@@ -362,23 +567,20 @@ async function handleSubscriptionEvent(
           throw new Error('billing_job_enforcement_invalid_titles');
         }
         console.info('paused_over_limit_jobs', { userId, pausedCount });
-        const bulletList = titles.map((title) => `- ${title}`).join('\n');
         const origin = (process.env.ALLOWED_ORIGIN ?? '').replace(/\/$/, '');
         if (!origin) throw new Error('billing_allowed_origin_missing');
         const englishBillingUrl = `${origin}/en/employer/billing`;
         const spanishBillingUrl = `${origin}/es/employer/billing`;
+        const rendered = renderBillingPauseEmail({
+          pausedTitles: titles,
+          englishBillingUrl,
+          spanishBillingUrl,
+        });
         await queueEmail(client, {
           recipientEmail: result.employer_email,
-          subject: 'Job posting update / Actualización de empleos',
-          bodyText: [
-            'Your subscription changed and these job postings were paused to match your active-job limit:',
-            bulletList,
-            `Manage billing: ${englishBillingUrl}`,
-            '',
-            'Tu suscripción cambió y estas ofertas de trabajo se pausaron para respetar tu límite de empleos activos:',
-            bulletList,
-            `Administrar facturación: ${spanishBillingUrl}`,
-          ].join('\n\n'),
+          subject: rendered.subject,
+          bodyText: rendered.bodyText,
+          bodyHtml: rendered.bodyHtml,
           sourceType: 'billing_pause',
           sourceId: persistedSubscriptionId,
           idempotencyKey: `billing-pause:${persistedSubscriptionId}:${eventId}`,

@@ -72,6 +72,7 @@ function MetaLine({ items }: { items: string[] }) {
 
 export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
   const t = useTranslations('worker_home');
+  const tReq = useTranslations('job_requirements');
   const tMatch = useTranslations('match');
   const tPay = useTranslations('pay');
   const locale = useLocale();
@@ -95,9 +96,16 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
       : null,
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 
-  const docLabels = job.required_docs.map((doc) =>
-    KNOWN_DOC_TYPES.includes(doc) ? t(`doc_labels.${doc}`) : doc,
-  );
+  // Same fallback the job detail page applies (`worker/jobs/[id]/page.tsx`):
+  // `work_auth_doc`/`certification_doc` have no `worker_home.doc_labels`
+  // entry -- they live in the shared `job_requirements.docs.*` catalogue --
+  // so without this a job requiring either showed the raw enum key as a
+  // requirement chip. Anything else still falls back to the raw string.
+  const docLabels = job.required_docs.map((doc) => {
+    if (KNOWN_DOC_TYPES.includes(doc)) return t(`doc_labels.${doc}`);
+    if (doc === 'work_auth_doc' || doc === 'certification_doc') return tReq(`docs.${doc}`);
+    return doc;
+  });
 
   return (
     <Link

@@ -15,6 +15,42 @@ export const REQUIREMENT_DOC_KEYS = [
 ] as const;
 export type RequirementDocKey = typeof REQUIREMENT_DOC_KEYS[number];
 
+/**
+ * Split a job's `required_docs` into the keys this app can actually ask for
+ * and the keys it cannot.
+ *
+ * `required_docs` arrives straight off the `jobs` row, and that column's
+ * CHECK constraint still accepts legacy 'ssn' for rows written before it left
+ * the app-layer vocabulary (see `DOC_TYPES` in infra/lambda/lib/job-fields.ts
+ * and 032_work_authorization_required.sql). The apply flow renders only
+ * `REQUIREMENT_DOC_KEYS`, so before this split an unknown key was an
+ * INVISIBLE gate: nothing on screen to upload, and Continue blocked forever
+ * with no way for the worker to discover why.
+ *
+ * Order-preserving on both sides, no dedupe (a duplicated key is a data
+ * problem, not this function's to hide), and never throws -- every caller
+ * feeds it un-validated wire data.
+ *
+ * Deliberately says nothing about job SHAPE. The apply-flow gates exclude
+ * `certification_doc` when a job carries named `certification_requirements`;
+ * that rule stays layered on top of this partition, because
+ * `certification_doc` is a perfectly supported key here.
+ */
+export function partitionRequiredDocs(
+  requiredDocs: readonly string[],
+): { supported: RequirementDocKey[]; unsupported: string[] } {
+  const supported: RequirementDocKey[] = [];
+  const unsupported: string[] = [];
+  for (const doc of requiredDocs) {
+    if ((REQUIREMENT_DOC_KEYS as readonly string[]).includes(doc)) {
+      supported.push(doc as RequirementDocKey);
+    } else {
+      unsupported.push(doc);
+    }
+  }
+  return { supported, unsupported };
+}
+
 export const REQUIREMENT_FIELD_KEYS = [
   'work_authorization',
   'date_available',
@@ -213,4 +249,155 @@ export function certificationHintNames(certifications: string): string[] {
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// Requirements / proof-upload clarity hints
+//
+// Every hint sentence rendered next to a requirement row is CHOSEN here, not
+// in the component: `vitest` runs in the node environment with no DOM, so a
+// pure key-selecting function is the only seam these decisions can be tested
+// through (same reason `certificationHintNames` above lives here rather than
+// inline in `RequirementsPicker`).
+//
+// The return values are literal-union key paths, relative to the namespace
+// the calling component already translates against, so a renamed message key
+// fails typecheck instead of silently rendering the raw path at runtime.
+//
+// The semantics encoded below are the BACKEND's, not a UI preference:
+//   * Legacy docs (`REQUIREMENT_DOC_KEYS`) -- Required means the file upload
+//     itself is mandatory at apply (`missingRequiredDocuments`,
+//     infra/lambda/lib/applications.ts). There is NO attestation path for
+//     these: a worker cannot say "I have it" instead of attaching it.
+//   * Named certifications (`certification_requirements`) -- tier 'required'
+//     means the worker must attest YES; `proof_required` ADDS a file to that
+//     attestation (`missingRequiredCertClaims` / `missingRequiredCertProofs`,
+//     lib/certification-claims.ts). Tier 'optional' NEVER blocks an
+//     application, whatever `proof_required` says -- which is why every
+//     helper here collapses optional to a single "never blocks" sentence
+//     rather than branching on the proof flag.
+// ---------------------------------------------------------------------------
+
+/** Employer-facing hint for one named certification row (namespace: `job_requirements`). */
+export type CertificationHintKey =
+  | 'picker.cert_hint_required_proof'
+  | 'picker.cert_hint_required_attest'
+  | 'picker.cert_hint_optional';
+
+/**
+ * What this tier x proof-toggle combination actually asks of an applicant.
+ *
+ * `optional` deliberately ignores `proofRequired`: an optional cert never
+ * blocks, so promising a mandatory upload there would be a lie the backend
+ * does not enforce.
+ */
+export function certificationHintKey(
+  tier: CertificationTier,
+  proofRequired: boolean,
+): CertificationHintKey {
+  if (tier !== 'required') return 'picker.cert_hint_optional';
+  return proofRequired ? 'picker.cert_hint_required_proof' : 'picker.cert_hint_required_attest';
+}
+
+/** Employer-facing hint for one legacy document row (namespace: `job_requirements`). */
+export type DocHintKey = 'picker.doc_hint_required' | 'picker.doc_hint_optional';
+
+/**
+ * The legacy-doc equivalent, keyed off the three-state row's state.
+ *
+ * `off` returns `undefined` (the row is not asked at all, so there is nothing
+ * to explain) rather than an empty string, so the caller renders no hint
+ * element instead of an empty sentence.
+ *
+ * DOC ROWS ONLY. The copy says "this document" -- do not reuse it for the
+ * picker's question rows, which are not uploads.
+ */
+export function docHintKey(state: RequirementState): DocHintKey | undefined {
+  if (state === 'required') return 'picker.doc_hint_required';
+  if (state === 'optional') return 'picker.doc_hint_optional';
+  return undefined;
+}
+
+/** Worker-facing note on a named-cert claim row (namespace: `worker_job_detail.apply_flow`). */
+export type WorkerCertNoteKey = 'cert_attest_note' | 'cert_proof_note';
+
+/**
+ * What the worker should expect after answering "yes" to a named cert.
+ *
+ * Ordering matters, and every `undefined` branch is load-bearing:
+ *   * Not yet claimed yes -> nothing to say.
+ *   * No proof required -> `cert_attest_note` ("no upload needed"), the case
+ *     that has no render site at all today: the whole proof area is gated on
+ *     `proof_required`, so an attestation-only cert currently shows a yes/no
+ *     control and no explanation of what happens next.
+ *   * Proof already attached -> the vault-match line already says so.
+ *   * Optional tier -> silent, because `cert_unverified_note` ("you can apply
+ *     without proof") owns that row; adding "upload ... to continue" beside
+ *     it would contradict it AND misstate the gate, since an optional cert
+ *     never blocks.
+ *   * `blockingError` (the red `errors.cert_proof`) -> silent, so the row
+ *     never stacks two near-identical "to continue" sentences.
+ */
+export function workerCertNoteKey(args: {
+  claimed: boolean | null;
+  tier: CertificationTier;
+  proofRequired: boolean;
+  hasProof: boolean;
+  blockingError: boolean;
+}): WorkerCertNoteKey | undefined {
+  if (args.claimed !== true) return undefined;
+  if (!args.proofRequired) return 'cert_attest_note';
+  if (args.hasProof) return undefined;
+  if (args.tier !== 'required') return undefined;
+  if (args.blockingError) return undefined;
+  return 'cert_proof_note';
+}
+
+/** Worker-facing requirement-row hint (namespace: `worker_job_detail.what_you_need`). */
+export type WhatYouNeedHintKey =
+  | 'hint_doc_required'
+  | 'hint_doc_optional'
+  | 'hint_cert_required_proof'
+  | 'hint_cert_required_attest'
+  | 'hint_cert_optional';
+
+/**
+ * The worker-voiced counterpart of the two employer helpers above, shared by
+ * the pre-apply "What you'll need" panel (second line of each row) and the
+ * apply flow's document rows.
+ *
+ * Both call sites already render a Required/Optional badge, so this hint
+ * carries the MECHANISM (upload / attest / never blocks), never a restatement
+ * of the tier.
+ *
+ * Suppression, for both surfaces: no hint when the row already carries a
+ * blocking error line (`blockingError`) or a satisfied-by-vault badge
+ * (`satisfied`) -- the row's own status line is more specific than a generic
+ * explanation, and stacking the two reads as a contradiction ("already in
+ * your vault" above "you'll need to upload this").
+ *
+ * The ONE exception, and the whole reason `kind` is a parameter: an
+ * attestation-only certification (`kind: 'cert'`, `proofRequired: false`) is
+ * satisfied by the worker's yes/no answer in the apply flow, NOT by a file.
+ * A vault match still badges that row "already in your vault" (see
+ * `WhatYouNeedPanel`'s `certRows`), which is true about the vault and
+ * misleading about the requirement -- so this is the one row where the hint
+ * must survive `satisfied`, because it is the only thing saying the file is
+ * beside the point.
+ */
+export function whatYouNeedHintKey(args: {
+  kind: 'doc' | 'cert';
+  tier: CertificationTier;
+  proofRequired: boolean;
+  satisfied: boolean;
+  blockingError: boolean;
+}): WhatYouNeedHintKey | undefined {
+  if (args.blockingError) return undefined;
+  const attestOnlyCert = args.kind === 'cert' && !args.proofRequired;
+  if (args.satisfied && !attestOnlyCert) return undefined;
+  if (args.kind === 'doc') {
+    return args.tier === 'required' ? 'hint_doc_required' : 'hint_doc_optional';
+  }
+  if (args.tier !== 'required') return 'hint_cert_optional';
+  return args.proofRequired ? 'hint_cert_required_proof' : 'hint_cert_required_attest';
 }

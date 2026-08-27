@@ -20,9 +20,19 @@
  *      recover→clears
  *      fail again→new deadline
  *  - exact processed/failure field assertions
+ *  - unknown customer → terminal skip (row + SQS message both terminal)
+ *  - handler(): SQS message disposition per outcome (delete vs. redeliver)
+ *  - current-subscription recency: only checkout.session.completed and
+ *      customer.subscription.created may retire a user's other current
+ *      rows (in the same transaction, BEFORE the upsert that would
+ *      otherwise violate subscriptions_one_current_per_user); any other
+ *      event arriving for a non-current subscription is skipped
+ *  - customer.subscription.paused/resumed are mirrored (not silently
+ *      skipped); trial_will_end is known-but-skipped and alarmed
  */
 
-import { processEnvelope } from '../../../lambda/billing/processor';
+import type { Context, SQSEvent } from 'aws-lambda';
+import { handler, processEnvelope } from '../../../lambda/billing/processor';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -226,6 +236,9 @@ describe('billing processor: processEnvelope()', () => {
     queryMock.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
       if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
       if (sql.includes('billing_pause_over_limit_jobs')) return Promise.resolve({ rows: [{
@@ -279,8 +292,14 @@ describe('billing processor: processEnvelope()', () => {
       sourceType: 'billing_pause',
       sourceId: 'subscription-row-uuid',
       idempotencyKey: `billing-pause:subscription-row-uuid:${EVT1}`,
-      bodyText: expect.stringMatching(/Older overflow[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/billing[\s\S]*Tu suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/billing/),
+      subject: 'Job postings paused · Empleos pausados',
+      bodyText: expect.stringMatching(/Older overflow[\s\S]*https:\/\/jaleapp\.ai\/en\/employer\/billing[\s\S]*Su suscripción[\s\S]*https:\/\/jaleapp\.ai\/es\/employer\/billing/),
+      bodyHtml: expect.stringContaining('Older overflow'),
     }));
+    const queued = mockQueueEmail.mock.calls[0][1];
+    expect(queued.bodyHtml).toContain('<html');
+    expect(queued.bodyHtml).toContain('href="https://jaleapp.ai/es/employer/billing"');
+    expect(queued.bodyText).not.toMatch(/\btus?\b|\btienes\b/i);
     expect(infoLog).toHaveBeenCalledWith('paused_over_limit_jobs', { userId: USER1, pausedCount: 2 });
     infoLog.mockRestore();
   });
@@ -306,6 +325,9 @@ describe('billing processor: processEnvelope()', () => {
     queryMock.mockImplementation((sql: string) => {
       if (sql.includes('INSERT INTO billing_webhook_events')) return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
       if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
       if (sql.includes('billing_pause_over_limit_jobs')) return Promise.resolve({ rows: [] });
@@ -441,6 +463,9 @@ describe('billing processor: processEnvelope()', () => {
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
         }
         if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        // Supersede lock-read: the only subscriptions lock-read filtering with IS
+        // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+        if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
         if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
         if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
         return Promise.resolve({ rows: [] });
@@ -469,6 +494,9 @@ describe('billing processor: processEnvelope()', () => {
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
         }
         if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        // Supersede lock-read: the only subscriptions lock-read filtering with IS
+        // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+        if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
         if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
         if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
         return Promise.resolve({ rows: [] });
@@ -493,6 +521,9 @@ describe('billing processor: processEnvelope()', () => {
           return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
         }
         if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+        // Supersede lock-read: the only subscriptions lock-read filtering with IS
+        // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+        if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
         if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
         if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
         if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processed_at')) {
@@ -532,6 +563,9 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
       return Promise.resolve({ rows: [] });
@@ -561,6 +595,9 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // claim succeeds
       }
       if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [] });
       if (sql.includes('INSERT INTO subscriptions')) return Promise.resolve({ rows: [] });
       return Promise.resolve({ rows: [] });
@@ -633,6 +670,9 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
       }
       // subscriptions FOR UPDATE (existing row check)
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [] }); // no existing row
       }
@@ -672,6 +712,9 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
       }
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [] }); // no existing row
       }
@@ -1020,8 +1063,9 @@ describe('billing processor: processEnvelope()', () => {
     expect(failedMark).toContain('unknown_price');
   });
 
-  it('fails with unknown_customer when billing_customers has no matching row', async () => {
-    const failedMarks: unknown[][] = [];
+  it('terminally SKIPS (never fails) when billing_customers has no matching row', async () => {
+    const marks: unknown[][] = [];
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { queryMock } = makeDbMock();
 
     queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
@@ -1036,7 +1080,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [] }); // no customer mapping
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
-        failedMarks.push(params);
+        marks.push(params);
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -1047,12 +1091,24 @@ describe('billing processor: processEnvelope()', () => {
     const rawJson = makeSubEvent({ id: EVT1 });
     const result = await processEnvelope(makeEnvelope(rawJson));
 
-    expect(result.outcome).toBe('failed');
-    expect(result.errorCode).toBe('unknown_customer');
+    // An unmapped Stripe customer is permanently unactionable, so 'failed'
+    // would only burn 3 SQS receives and land the event in the DLQ, firing
+    // BillingWebhookDlqDepth for something no redrive can ever fix.
+    expect(result).toEqual({ outcome: 'skipped', errorCode: 'unknown_customer' });
+    expect(marks.some((p) => Array.isArray(p) && p.includes('failed'))).toBe(false);
 
-    const failedMark = failedMarks.find(p => Array.isArray(p) && p.includes('failed'));
-    expect(failedMark).toBeDefined();
-    expect(failedMark).toContain('unknown_customer');
+    const skippedMark = marks.find(p => Array.isArray(p) && p.includes('skipped'));
+    expect(skippedMark).toBeDefined();
+    expect(skippedMark).toContain('unknown_customer');
+
+    // This log line is the ONLY signal for the skip (nothing else reads
+    // billing_webhook_events). BillingStack greps this exact literal out of
+    // the processor log group into Jale/Billing/BillingUnknownCustomerSkipped,
+    // so the string is a cross-file contract — assert it literally.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('billing_unknown_customer_skipped');
+    expect(String(warn.mock.calls[0][0])).toContain(EVT1);
+    warn.mockRestore();
   });
 
   // ── Grace semantics with explicit timestamps ──────────────────────────
@@ -1081,6 +1137,9 @@ describe('billing processor: processEnvelope()', () => {
         if (sql.includes('billing_customers')) {
           return Promise.resolve({ rows: [{ user_id: USER1 }] });
         }
+        // Supersede lock-read: the only subscriptions lock-read filtering with IS
+        // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+        if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
         if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
           return Promise.resolve({ rows: existingSubRow ? [existingSubRow] : [] });
         }
@@ -1186,6 +1245,9 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
       }
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [] });
       }
@@ -1214,8 +1276,10 @@ describe('billing processor: processEnvelope()', () => {
     expect(processedMark![3]).toBeInstanceOf(Date);
   });
 
-  it('marks processing_status=failed with exact error code on unknown_customer', async () => {
-    const failedMarkParams: unknown[][] = [];
+  it('marks processing_status=skipped with the unknown_customer code and a decision timestamp', async () => {
+    const markParams: unknown[][] = [];
+    // Silences the metric line only; its content is asserted above.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { queryMock } = makeDbMock();
 
     queryMock.mockImplementation((sql: string, params: unknown[] = []) => {
@@ -1230,7 +1294,7 @@ describe('billing processor: processEnvelope()', () => {
         return Promise.resolve({ rows: [] }); // no customer
       }
       if (sql.includes('UPDATE billing_webhook_events') && sql.includes('processing_status')) {
-        failedMarkParams.push(params);
+        markParams.push(params);
         return Promise.resolve({ rows: [] });
       }
       return Promise.resolve({ rows: [] });
@@ -1239,15 +1303,77 @@ describe('billing processor: processEnvelope()', () => {
     mockStripe(makeStripeSubscription());
     const rawJson = makeSubEvent({ id: EVT1 });
     const result = await processEnvelope(makeEnvelope(rawJson));
-    expect(result.outcome).toBe('failed');
+    expect(result.outcome).toBe('skipped');
 
-    // Exact parameter check: $1=eventId, $2='failed', $3='unknown_customer', $4=null
-    const mark = failedMarkParams.find(p => Array.isArray(p) && p.includes('failed'));
+    // Exact parameter check: $1=eventId, $2='skipped', $3='unknown_customer',
+    // $4=<Date>. The last two are deliberate deviations from every other
+    // 'skipped' write in this processor (which passes null/null): the error
+    // code keeps the reason forensically recoverable from the inbox row, and
+    // processed_at records WHEN we terminally decided — not that we mirrored
+    // any Stripe state.
+    const mark = markParams.find(p => Array.isArray(p) && p.includes('skipped'));
     expect(mark).toBeDefined();
     expect(mark![0]).toBe(EVT1);
-    expect(mark![1]).toBe('failed');
+    expect(mark![1]).toBe('skipped');
     expect(mark![2]).toBe('unknown_customer');
-    expect(mark![3]).toBeNull();
+    expect(mark![3]).toBeInstanceOf(Date);
+    warn.mockRestore();
+  });
+
+  // ── handler(): SQS message disposition ────────────────────────────────
+  //
+  // A ProcessResult only reaches production behavior through the SQS handler.
+  // With reportBatchItemFailures on a batchSize-1 source, a resolved void
+  // return reports no failed items → the message is DELETED; a throw →
+  // redelivery, and after maxReceiveCount=3 the DLQ (BillingWebhookDlqDepth).
+  // These two cases pin that boundary, which is what makes the
+  // unknown_customer skip terminal at the *message* level and not just at the
+  // row level.
+  describe('handler() SQS message disposition', () => {
+    /** The handler reads only `record.body`; the rest of the SQS shape is noise here. */
+    function invoke(rawJson: string): Promise<unknown> {
+      const sqsEvent = {
+        Records: [{
+          messageId: 'msg-0001',
+          eventSource: 'aws:sqs',
+          body: JSON.stringify(makeEnvelope(rawJson)),
+        }],
+      } as unknown as SQSEvent;
+      return Promise.resolve(handler(sqsEvent, {} as Context, () => undefined));
+    }
+
+    /** Fresh inbox claim (INSERT returns a row), then the given customer lookup + price. */
+    function setupInbox(customerRows: unknown[], priceId: string) {
+      const { queryMock } = makeDbMock();
+      queryMock.mockImplementation((sql: string) => {
+        if (sql.includes('INSERT INTO billing_webhook_events')) {
+          return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] });
+        }
+        if (sql.includes('billing_customers')) return Promise.resolve({ rows: customerRows });
+        return Promise.resolve({ rows: [] });
+      });
+      mockStripe(makeStripeSubscription({ priceId }));
+      return { queryMock };
+    }
+
+    it('resolves (message deleted) for the terminal unknown_customer skip', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      setupInbox([], PRICE_PRO);
+
+      // Void resolution — not a { batchItemFailures } response — is what tells
+      // SQS the whole batch succeeded and the message can go away.
+      await expect(invoke(makeSubEvent({ id: EVT1 }))).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('billing_unknown_customer_skipped');
+      warn.mockRestore();
+    });
+
+    it('throws (message redelivered → DLQ) for a failed outcome such as unknown_price', async () => {
+      setupInbox([{ user_id: USER1 }], 'price_different_999');
+
+      await expect(invoke(makeSubEvent({ id: EVT1, priceId: 'price_different_999' })))
+        .rejects.toThrow('unknown_price');
+    });
   });
 
   // ── DB failure after Stripe fetch → SQS retry resumes ────────────────
@@ -1266,6 +1392,9 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
       }
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [] });
       }
@@ -1300,6 +1429,9 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
       }
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [] });
       }
@@ -1350,6 +1482,9 @@ describe('billing processor: processEnvelope()', () => {
       if (sql.includes('billing_customers')) {
         return Promise.resolve({ rows: [{ user_id: USER1 }] });
       }
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) return Promise.resolve({ rows: [] });
       if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
         return Promise.resolve({ rows: [] });
       }
@@ -1369,5 +1504,413 @@ describe('billing processor: processEnvelope()', () => {
     const result = await processEnvelope(makeEnvelope(rawJson));
     expect(result.outcome).toBe('processed');
     expect(insertedSubs.length).toBeGreaterThan(0);
+  });
+
+  // ── Shared mirror-path DB mock (supersede + lifecycle suites) ─────────
+  //
+  // Deliberately distinct from setupEntitlementReduction: these suites need a
+  // branch for the supersede `UPDATE subscriptions` statement, and they assert
+  // on statement ORDER, so they need the claim to be a fresh INSERT (one
+  // statement) rather than the insert/select/claim-update sequence.
+  function setupMirrorPath(opts: {
+    /**
+     * Rows returned by the supersede lock-read = the user's OTHER current
+     * subscription rows. Empty means this is the user's only one.
+     */
+    otherCurrentRows?: unknown[];
+    /** Rows returned by the grace lock-read for the INCOMING subscription. */
+    existingForIncoming?: unknown[];
+    pausedCount?: number;
+  } = {}) {
+    const { queryMock } = makeDbMock();
+    queryMock.mockImplementation((sql: string) => {
+      if (sql.includes('INSERT INTO billing_webhook_events')) {
+        return Promise.resolve({ rows: [{ stripe_event_id: EVT1 }] }); // fresh claim
+      }
+      if (sql.includes('billing_customers')) return Promise.resolve({ rows: [{ user_id: USER1 }] });
+      // Supersede lock-read: the only subscriptions lock-read filtering with IS
+      // DISTINCT FROM. Empty = this user has no OTHER current subscription row.
+      if (sql.includes('IS DISTINCT FROM')) {
+        return Promise.resolve({ rows: opts.otherCurrentRows ?? [] });
+      }
+      if (sql.includes('FROM subscriptions') && sql.includes('FOR UPDATE')) {
+        return Promise.resolve({ rows: opts.existingForIncoming ?? [] });
+      }
+      if (sql.includes('UPDATE subscriptions')) {
+        return Promise.resolve({ rows: [] });
+      }
+      if (sql.includes('INSERT INTO subscriptions')) {
+        return Promise.resolve({ rows: [{ id: 'subscription-row-uuid' }] });
+      }
+      if (sql.includes('billing_pause_over_limit_jobs')) {
+        return Promise.resolve({ rows: [{
+          paused_count: opts.pausedCount ?? 0,
+          employer_email: 'employer@example.com',
+          paused_titles: [],
+        }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    return { queryMock };
+  }
+
+  /** Index of the first issued statement containing `needle` (-1 if never). */
+  function sqlIndex(queryMock: jest.Mock, needle: string): number {
+    return queryMock.mock.calls.findIndex(([sql]) => String(sql).includes(needle));
+  }
+
+  function sqlList(queryMock: jest.Mock): string[] {
+    return queryMock.mock.calls.map(([sql]) => String(sql));
+  }
+
+  // ── B1: which subscription is the user's CURRENT one ───────────────────
+  //
+  // subscriptions_one_current_per_user (migration 034) is a PARTIAL unique
+  // index on (user_id) WHERE status NOT IN ('canceled','incomplete_expired').
+  // The upsert conflicts on (provider_subscription_id), so a SECOND
+  // provider_subscription_id for a user who still holds a current row INSERTs
+  // and trips that index with a 23505.
+  //
+  // Retiring "the other rows" unconditionally is not the fix, because two
+  // live subscriptions is a reachable steady state: the checkout guard
+  // (lambda/lib/billing-operations.ts) only refuses re-checkout while the
+  // existing subscription is active / trialing / past_due within grace, so a
+  // user whose subscription is unpaid, paused, incomplete, or past_due beyond
+  // grace can legitimately subscribe again — and Stripe goes on dunning the
+  // old one for weeks. Recency therefore cannot be read off the status; it
+  // comes from the EVENT TYPE. Only checkout.session.completed and
+  // customer.subscription.created may retire a user's other current rows.
+  // Any other event, when another current row exists, is skipped rather than
+  // allowed to demote a paying employer to free entitlements.
+
+  describe('current-subscription recency rules', () => {
+    const SUB_NEW = 'sub_test001';
+    const ROW_OLD = '20000000-0000-4000-8000-000000000001';
+    const ROW_NEW = '20000000-0000-4000-8000-000000000002';
+
+    function checkoutEvent(subId: string) {
+      return JSON.stringify({
+        id: EVT1,
+        object: 'event',
+        type: 'checkout.session.completed',
+        data: {
+          object: {
+            id: 'cs_test001',
+            object: 'checkout.session',
+            subscription: subId,
+            customer: CUS1,
+          },
+        },
+      });
+    }
+
+    // ── (d) checkout.session.completed / customer.subscription.created ───
+    //        newest by construction → retire the others, then upsert
+
+    it('retires the user’s other current rows BEFORE the upsert on checkout.session.completed', async () => {
+      const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath({
+        otherCurrentRows: [{ id: ROW_OLD, provider_subscription_id: SUB1 }],
+      });
+      mockStripe(makeStripeSubscription({ id: SUB_NEW, status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(checkoutEvent(SUB_NEW)));
+      expect(result.outcome).toBe('processed');
+
+      const readIdx = sqlIndex(queryMock, 'IS DISTINCT FROM');
+      const retireIdx = sqlIndex(queryMock, 'UPDATE subscriptions');
+      const upsertIdx = sqlIndex(queryMock, 'INSERT INTO subscriptions');
+      expect(readIdx).toBeGreaterThan(-1);
+      expect(retireIdx).toBeGreaterThan(-1);
+      expect(upsertIdx).toBeGreaterThan(-1);
+      // Load-bearing: after the INSERT the 23505 has already been raised, so
+      // ordering — not mere presence — is what fixes the defect.
+      expect(readIdx).toBeLessThan(retireIdx);
+      expect(retireIdx).toBeLessThan(upsertIdx);
+
+      // ...and both run inside the mirror transaction, so a later failure
+      // rolls them back with the upsert.
+      const sqls = sqlList(queryMock);
+      expect(sqls.lastIndexOf('BEGIN')).toBeLessThan(readIdx);
+      expect(retireIdx).toBeLessThan(sqls.lastIndexOf('COMMIT'));
+
+      // The lock-read scopes by user and excludes both the incoming
+      // subscription and already-terminal rows.
+      const [readSql, readParams] = queryMock.mock.calls[readIdx];
+      expect(readParams).toEqual([USER1, SUB_NEW]);
+      expect(readSql).toMatch(/provider_subscription_id IS DISTINCT FROM \$2/);
+      expect(readSql).toMatch(/status NOT IN \('canceled', 'incomplete_expired'\)/);
+      expect(readSql).toContain('FOR UPDATE');
+
+      // The retire targets those locked rows by primary key — it deliberately
+      // does NOT re-check status, because the lock-read in this same
+      // transaction already pinned exactly this set.
+      const [retireSql, retireParams] = queryMock.mock.calls[retireIdx];
+      expect(retireParams).toEqual([[ROW_OLD]]);
+      expect(retireSql).toMatch(/WHERE id = ANY\(\$1::uuid\[\]\)/);
+      // Whitespace-insensitive: the SET list is column-aligned like the
+      // upsert's, so only the assignments themselves are asserted.
+      expect(retireSql).toMatch(/status\s+=\s+'canceled'/);
+      expect(retireSql).toMatch(/cancel_at_period_end\s+=\s+false/);
+      expect(retireSql).toMatch(/grace_ends_at\s+=\s+NULL/);
+      expect(retireSql).toMatch(/updated_at\s+=\s+now\(\)/);
+
+      expect(infoLog).toHaveBeenCalledWith('superseded_prior_subscription', {
+        userId: USER1,
+        supersededCount: 1,
+        newProviderSubId: SUB_NEW,
+      });
+
+      // Superseding must NOT run job enforcement for the retired rows: the
+      // NEW subscription's status decides enforcement, and it is active here.
+      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+      infoLog.mockRestore();
+    });
+
+    it('retires a past_due prior row on customer.subscription.created for the new subscription', async () => {
+      const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath({
+        otherCurrentRows: [{ id: ROW_OLD, provider_subscription_id: SUB1 }],
+      });
+      mockStripe(makeStripeSubscription({ id: SUB_NEW, status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        subId: SUB_NEW,
+        status: 'active',
+        type: 'customer.subscription.created',
+      })));
+      expect(result.outcome).toBe('processed');
+
+      const retireIdx = sqlIndex(queryMock, 'UPDATE subscriptions');
+      expect(retireIdx).toBeGreaterThan(-1);
+      expect(queryMock.mock.calls[retireIdx][1]).toEqual([[ROW_OLD]]);
+      expect(retireIdx).toBeLessThan(sqlIndex(queryMock, 'INSERT INTO subscriptions'));
+      expect(infoLog).toHaveBeenCalledWith('superseded_prior_subscription', {
+        userId: USER1,
+        supersededCount: 1,
+        newProviderSubId: SUB_NEW,
+      });
+      infoLog.mockRestore();
+    });
+
+    // ── (c) incoming status is itself terminal → upsert, never supersede ──
+
+    it.each(['canceled', 'incomplete_expired'])(
+      'does NOT supersede when the INCOMING status is itself terminal (%s)',
+      async (status) => {
+        const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+        // Non-empty on purpose: the guard, not an empty result set, is what
+        // must stop this — a late `canceled` event for a lapsed OLD
+        // subscription would otherwise cancel the user's CURRENT one.
+        const { queryMock } = setupMirrorPath({
+          otherCurrentRows: [{ id: ROW_NEW, provider_subscription_id: SUB_NEW }],
+        });
+        mockStripe(makeStripeSubscription({ id: SUB1, status }));
+
+        const result = await processEnvelope(makeEnvelope(makeSubEvent({
+          subId: SUB1,
+          status,
+          type: 'customer.subscription.updated',
+        })));
+        expect(result.outcome).toBe('processed');
+
+        // A terminal row is outside the partial index, so it neither collides
+        // nor needs to retire anything — the lock-read is skipped entirely.
+        expect(sqlIndex(queryMock, 'IS DISTINCT FROM')).toBe(-1);
+        expect(sqlIndex(queryMock, 'UPDATE subscriptions')).toBe(-1);
+        expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+        expect(infoLog).not.toHaveBeenCalledWith(
+          'superseded_prior_subscription',
+          expect.anything(),
+        );
+        infoLog.mockRestore();
+      },
+    );
+
+    // ── (b) no other current row → upsert exactly as before ──────────────
+
+    it('issues NO supersede UPDATE when the user has no other current row', async () => {
+      const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath({ otherCurrentRows: [] });
+      mockStripe(makeStripeSubscription({ id: SUB1, status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({ subId: SUB1, status: 'active' })));
+      expect(result.outcome).toBe('processed');
+
+      // The lock-read runs, finds nothing, and nothing else changes.
+      expect(sqlIndex(queryMock, 'IS DISTINCT FROM')).toBeGreaterThan(-1);
+      expect(sqlIndex(queryMock, 'UPDATE subscriptions')).toBe(-1);
+      expect(infoLog).not.toHaveBeenCalledWith(
+        'superseded_prior_subscription',
+        expect.anything(),
+      );
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      expect(sqlIndex(queryMock, 'billing_pause_over_limit_jobs')).toBe(-1);
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+      expect(queryMock).toHaveBeenCalledWith('COMMIT');
+      expect(sqlList(queryMock)).not.toContain('ROLLBACK');
+      infoLog.mockRestore();
+    });
+
+    it('still mirrors customer.subscription.updated for the CURRENT sub when no others exist', async () => {
+      // Regression guard: the recency rule must not turn the ordinary
+      // single-subscription update path into a skip.
+      const { queryMock } = setupMirrorPath({ otherCurrentRows: [] });
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      mockStripe(makeStripeSubscription({ id: SUB1, status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        subId: SUB1,
+        status: 'active',
+        type: 'customer.subscription.updated',
+      })));
+
+      expect(result.outcome).toBe('processed');
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      expect(sqlIndex(queryMock, 'UPDATE subscriptions')).toBe(-1);
+      expect(warn).not.toHaveBeenCalledWith(
+        'billing_superseded_subscription_event',
+        expect.anything(),
+      );
+      warn.mockRestore();
+    });
+
+    // ── (e) any other event while ANOTHER row is current → skip ──────────
+    //
+    // Upserting would 23505; retiring the other row would strip a paying
+    // employer down to free entitlements and then pause their jobs. Neither
+    // is acceptable, so the event is terminally skipped and alarmed.
+
+    it.each([
+      {
+        name: 'customer.subscription.updated',
+        raw: () => makeSubEvent({ subId: SUB1, status: 'past_due', type: 'customer.subscription.updated' }),
+        eventType: 'customer.subscription.updated',
+      },
+      {
+        name: 'invoice.payment_failed',
+        raw: () => makeInvoiceEvent({ id: EVT1, type: 'invoice.payment_failed', subId: SUB1 }),
+        eventType: 'invoice.payment_failed',
+      },
+    ])('skips $name for a subscription that is not the user’s current one', async ({ raw, eventType }) => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const infoLog = jest.spyOn(console, 'info').mockImplementation(() => undefined);
+      // sub_new is the live, healthy subscription; Stripe is still dunning
+      // sub_old, which remains non-terminal on its side.
+      const { queryMock } = setupMirrorPath({
+        otherCurrentRows: [{ id: ROW_NEW, provider_subscription_id: SUB_NEW }],
+      });
+      mockStripe(makeStripeSubscription({ id: SUB1, status: 'past_due' }));
+
+      const result = await processEnvelope(makeEnvelope(raw()));
+      expect(result).toEqual({ outcome: 'skipped' });
+
+      // Neither half of the damage: no upsert (would 23505) and no retire
+      // (would demote the paying employer).
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBe(-1);
+      expect(sqlIndex(queryMock, 'UPDATE subscriptions')).toBe(-1);
+      expect(infoLog).not.toHaveBeenCalledWith(
+        'superseded_prior_subscription',
+        expect.anything(),
+      );
+
+      // BillingStack greps this literal into BillingKnownEventSkipped.
+      expect(warn).toHaveBeenCalledWith('billing_superseded_subscription_event', {
+        userId: USER1,
+        eventType,
+        providerSubId: SUB1,
+        currentProviderSubId: SUB_NEW,
+      });
+
+      // Inbox row marked terminally skipped, with the reason recoverable from
+      // the row itself, and committed rather than rolled back.
+      const markIdx = queryMock.mock.calls.findIndex(([sql]) =>
+        String(sql).includes('UPDATE billing_webhook_events')
+        && String(sql).includes('processing_status'));
+      expect(markIdx).toBeGreaterThan(-1);
+      expect(queryMock.mock.calls[markIdx][1]).toEqual([EVT1, 'skipped', 'superseded_subscription', null]);
+      expect(queryMock).toHaveBeenCalledWith('COMMIT');
+      expect(sqlList(queryMock)).not.toContain('ROLLBACK');
+
+      warn.mockRestore();
+      infoLog.mockRestore();
+    });
+  });
+
+  // ── B2: paused / resumed / trial_will_end ─────────────────────────────
+  //
+  // The mirror path (eventType.startsWith('customer.subscription.')) and
+  // reducingStatuses (which already lists 'paused') handle these, but
+  // knownSubscriptionEvents omitted them, so they fell to a SILENT 'skipped':
+  // a paused subscription kept its Pro job limit until some other event
+  // arrived.
+
+  describe('known subscription lifecycle events', () => {
+    it('mirrors customer.subscription.paused and enforces the resolved job limit', async () => {
+      const { queryMock } = setupMirrorPath();
+      const { retrieve } = mockStripe(makeStripeSubscription({ status: 'paused' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        type: 'customer.subscription.paused',
+        status: 'paused',
+      })));
+
+      expect(result.outcome).toBe('processed');
+      expect(retrieve).toHaveBeenCalledWith(SUB1);
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      // 'paused' is a reducing status, so enforcement must actually run.
+      expect(mockResolveEntitlements).toHaveBeenCalledWith(expect.anything(), USER1);
+      expect(queryMock).toHaveBeenCalledWith(
+        expect.stringContaining('billing_pause_over_limit_jobs'),
+        [USER1, 1],
+      );
+    });
+
+    it('mirrors customer.subscription.resumed without enforcing', async () => {
+      const { queryMock } = setupMirrorPath();
+      const { retrieve } = mockStripe(makeStripeSubscription({ status: 'active' }));
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        type: 'customer.subscription.resumed',
+        status: 'active',
+      })));
+
+      expect(result.outcome).toBe('processed');
+      expect(retrieve).toHaveBeenCalledWith(SUB1);
+      expect(sqlIndex(queryMock, 'INSERT INTO subscriptions')).toBeGreaterThan(-1);
+      expect(mockResolveEntitlements).not.toHaveBeenCalled();
+      expect(mockQueueEmail).not.toHaveBeenCalled();
+    });
+
+    it('skips customer.subscription.trial_will_end as a KNOWN type and warns for the alarm', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { queryMock } = setupMirrorPath();
+      const { retrieve } = mockStripe(makeStripeSubscription());
+
+      const result = await processEnvelope(makeEnvelope(makeSubEvent({
+        type: 'customer.subscription.trial_will_end',
+      })));
+
+      expect(result.outcome).toBe('skipped');
+      expect(retrieve).not.toHaveBeenCalled();
+
+      // Inbox row marked terminally skipped: no error code, no processed_at.
+      const markIdx = queryMock.mock.calls.findIndex(([sql]) =>
+        String(sql).includes('UPDATE billing_webhook_events')
+        && String(sql).includes('processing_status'));
+      expect(markIdx).toBeGreaterThan(-1);
+      expect(queryMock.mock.calls[markIdx][1]).toEqual([EVT1, 'skipped', null, null]);
+
+      // BillingStack greps this literal out of the processor log group into
+      // the Jale/Billing BillingKnownEventSkipped metric + alarm — the only
+      // signal that Stripe started sending a lifecycle event we drop. Unlike
+      // invoice.finalized (which fires on every invoice and must stay
+      // silent), trial_will_end only appears if a trial gets configured.
+      expect(warn).toHaveBeenCalledWith('billing_event_skipped_known', {
+        eventType: 'customer.subscription.trial_will_end',
+      });
+      warn.mockRestore();
+    });
   });
 });

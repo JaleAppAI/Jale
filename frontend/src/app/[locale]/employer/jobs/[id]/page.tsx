@@ -33,6 +33,7 @@ import {
 import { CloseJobDialog } from '@/components/employer/CloseJobDialog';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
 import { EditJobModal } from '@/components/employer/EditJobModal';
+import { PlanLimitDialog } from '@/components/employer/PlanLimitDialog';
 import { PublicListingCard } from '@/components/employer/PublicListingCard';
 import {
     ApiError,
@@ -40,11 +41,13 @@ import {
     getJob,
     getJobApplicants,
     getJobCandidates,
+    getJobs,
     startConversation,
     updateJobStatus,
 } from '@/lib/api/employer';
 import type { Applicant, ApplicantFilters, EmployerJobDetail } from '@/lib/api/employer';
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
+import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
 import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
@@ -285,28 +288,113 @@ export default function JobDetailPage() {
     const [confirmClose, setConfirmClose] = useState(false);
     const [closeError, setCloseError] = useState<string | null>(null);
 
+    /*
+     * Resuming a paused job can be refused by the PLAN, not by permissions.
+     *
+     * The backend answers that with 403 `job_limit_reached`, which
+     * `classifyError` calls `forbidden` -- so before this the employer was told
+     * "You don't have access to this." about their own posting. The fix is the
+     * `planLimitModel` branch below, taken BEFORE `errorMessage`; the dialog it
+     * feeds needs the employer's other active jobs to name what is holding the
+     * slots, which this page never loads, hence the best-effort fetch.
+     */
+    const [planLimit, setPlanLimit] = useState<PlanLimitModel | null>(null);
+    const [planLimitLoading, setPlanLimitLoading] = useState(false);
+    // Fences the jobs list against the dialog it is meant to fill in: without
+    // it, a list that lands after the employer pressed "Not now" would set the
+    // model again and pop the dialog back open over the page.
+    const planLimitFetchRef = useRef(0);
+
+    /*
+     * `Modal`'s own focus restore cannot work for THIS dialog, so the page does it.
+     *
+     * The control that opens it -- Resume/Pause -- is `disabled` the instant the
+     * request starts, and disabling the focused element blurs it: by the time the
+     * 403 mounts the Modal, `document.activeElement` is <body>, which is what
+     * `ui/modal.tsx` captures as the opener. Its restore is then a no-op and a
+     * keyboard user is dropped at the top of the document. Every other Modal here
+     * is opened by a control that stays enabled, which is why only this one needs
+     * the trigger captured BEFORE `setPendingStatus` disables it.
+     */
+    const planLimitOpenerRef = useRef<HTMLElement | null>(null);
+
+    const handlePlanLimitClose = useCallback(() => {
+        setPlanLimit(null);
+        const opener = planLimitOpenerRef.current;
+        planLimitOpenerRef.current = null;
+        // Next frame: the button is still `disabled` in the current commit (and
+        // unfocusable), and the Modal's own restore-to-body has to land first.
+        requestAnimationFrame(() => opener?.focus());
+    }, []);
+
     const handleSetJobStatus = useCallback(
         async (status: WritableJobStatus) => {
             if (!idToken || !job || pendingStatus) return;
+            // Captured BEFORE the button disables itself below -- see
+            // `planLimitOpenerRef`. Harmless on every path that never opens the
+            // dialog; `handlePlanLimitClose` is the only reader.
+            planLimitOpenerRef.current =
+                document.activeElement instanceof HTMLElement ? document.activeElement : null;
             setPendingStatus(status);
             setActionFeedback(null);
             try {
                 const updated = await updateJobStatus(idToken, job.id, status);
                 setData((prev) => ({ ...prev, job: { ...prev.job, ...updated } }));
-                setActionFeedback({ tone: 'success', message: tCommon('feedback.saved') });
+                setActionFeedback({
+                    tone: 'success',
+                    // "Saved" is true but says nothing; the employer just made a
+                    // posting stop accepting applicants and deserves to be told so.
+                    message: updated.status === 'paused'
+                        ? t('actions.pause_success')
+                        : tCommon('feedback.saved'),
+                });
             } catch (err) {
                 // The old page had NO catch here: a failed status change left the
                 // button spinning back to idle and the employer believing it worked.
                 try {
                     handleLegalWall(err, returnUrl);
                 } catch {
+                    // Inside the inner catch, NOT after it: `handleLegalWall`
+                    // rethrows anything that is not a legal wall, so this is the
+                    // only branch a plan-limit 403 ever reaches.
+                    const model = planLimitModel(err);
+                    if (model) {
+                        setPlanLimit(model);
+                        if (model.kind === 'active_jobs' && model.blockingJobs.length === 0) {
+                            // Detached on purpose: awaiting it here would hold the
+                            // outer `finally` -- and so the button's spinner --
+                            // until an entirely secondary request came back.
+                            const fetchId = ++planLimitFetchRef.current;
+                            setPlanLimitLoading(true);
+                            void (async () => {
+                                try {
+                                    const jobs = await getJobs(idToken);
+                                    if (planLimitFetchRef.current !== fetchId) return;
+                                    // Same error, recomputed with the list: the
+                                    // model derives the blocking set from it.
+                                    // Skipped outright if the dialog is already
+                                    // dismissed -- filling one in is not a reason
+                                    // to put it back on screen.
+                                    setPlanLimit((current) =>
+                                        current === null ? null : planLimitModel(err, jobs));
+                                } catch {
+                                    // The dialog is already reporting one failure;
+                                    // it degrades to no job list, never to a
+                                    // second error on top of the first.
+                                } finally {
+                                    if (planLimitFetchRef.current === fetchId) setPlanLimitLoading(false);
+                                }
+                            })();
+                        }
+                        return;
+                    }
                     setActionFeedback({ tone: 'danger', message: errorMessage(err) });
                 }
             } finally {
                 setPendingStatus(null);
             }
         },
-        [errorMessage, handleLegalWall, idToken, job, pendingStatus, returnUrl, setData, tCommon],
+        [errorMessage, handleLegalWall, idToken, job, pendingStatus, returnUrl, setData, t, tCommon],
     );
 
     const handleJobUpdated = useCallback(
@@ -603,9 +691,24 @@ export default function JobDetailPage() {
                                 </div>
 
                                 <div className="flex flex-wrap gap-2 border-t border-[var(--jale-divider)] px-5 py-4">
-                                    {/* The manual "Pause" action is intentionally absent
-                                        (backend status support and the paused-state resume
-                                        UI stay, for billing-auto-paused jobs). */}
+                                    {/* Pausing is the self-service way out of the
+                                        active-job limit, so it has to be reachable from
+                                        the job it applies to -- the limit dialog's own
+                                        "Pause another job" CTA points here. Only an
+                                        ACTIVE job can be paused; the resume button below
+                                        is the same control for the other direction. */}
+                                    {job.status === 'active' ? (
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => void handleSetJobStatus('paused')}
+                                            disabled={statusBusy}
+                                            loading={pendingStatus === 'paused'}
+                                            loadingLabel={t('actions.pause_pending')}
+                                        >
+                                            {t('actions.pause')}
+                                        </Button>
+                                    ) : null}
                                     {job.status !== 'active' ? (
                                         <Button
                                             variant="outline"
@@ -759,6 +862,17 @@ export default function JobDetailPage() {
                     setCloseError(null);
                 }}
                 onConfirm={handleConfirmClose}
+            />
+
+            {/* Driven by `open`, never keyed: see the EditJobModal note below. */}
+            <PlanLimitDialog
+                open={planLimit !== null}
+                model={planLimit}
+                loadingJobs={planLimitLoading}
+                // Every dismissal route (Escape, backdrop, X, "Not now") and every
+                // CTA navigation funnels through here, so the opener ref is cleared
+                // exactly once however the dialog leaves.
+                onClose={handlePlanLimitClose}
             />
 
             {/* Mounted, not conditionally rendered: `Modal` drives focus-in and

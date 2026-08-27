@@ -1,4 +1,4 @@
--- 083_preferred_cities_whatsapp_write.sql
+-- 084_preferred_cities_whatsapp_write.sql
 --
 -- WhatsApp onboarding seeds a worker's first preferred city from the
 -- location they give during onboarding (typed or voice). 066 granted

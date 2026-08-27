@@ -130,10 +130,11 @@ $MigrationFiles = @(
     '078_worker_documents_cert_name.sql'
     '079_worker_application_defaults.sql'
     '080_whatsapp_application_fill.sql',
-    '081_whatsapp_application_defaults_read.sql',
-    '082_media_board.sql',
-    '083_preferred_cities_whatsapp_write.sql',
-    '084_employer_trust_assessment_read.sql'
+    '081_whatsapp_application_defaults_read.sql'
+    '082_employer_digest_settings.sql'
+    '083_media_board.sql'
+    '084_preferred_cities_whatsapp_write.sql'
+    '085_employer_trust_assessment_read.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

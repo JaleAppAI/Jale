@@ -1,5 +1,5 @@
 -- ============================================================
--- 082_media_board.sql
+-- 083_media_board.sql
 -- Run manually AFTER 081_whatsapp_application_defaults_read.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --

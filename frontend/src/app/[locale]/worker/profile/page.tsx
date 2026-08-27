@@ -28,7 +28,14 @@ import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/
 
 export const dynamic = 'force-dynamic';
 
-const DOC_TYPES: DocType[] = ['resume', 'driver_license'];
+// The vault slots offered on this page. `work_auth_doc` is here because the
+// backend has accepted it since migration 074 (canonical DOC_TYPES,
+// infra/lambda/lib/job-fields.ts) and a job may require it -- without a slot,
+// that requirement was unsatisfiable from the web.
+// `certification_doc` is deliberately NOT offered here: it is a multi-file,
+// per-`cert_name` slot (078_worker_documents_cert_name.sql) and this page has
+// no cert_name plumbing -- it is uploaded from inside the apply flow instead.
+const DOC_TYPES: DocType[] = ['resume', 'driver_license', 'work_auth_doc'];
 
 const AVAILABILITY_KEYS = ['full_time', 'part_time', 'weekends', 'flexible'];
 

@@ -3,15 +3,8 @@ import { useEffect, useState, type InputHTMLAttributes, type ReactNode } from 'r
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import {
-    employerConfirmNewPassword,
-    employerConfirmSignUp,
-    employerForgotPassword,
-    employerResendConfirmationCode,
-    employerSignIn,
-    employerSignUp,
-} from '@/lib/cognito';
-import { authErrorKey } from '@/lib/auth-errors';
+import { employerConfirmSignUp, employerSignIn, employerSignUp, employerForgotPassword, employerConfirmNewPassword, employerResendConfirmationCode } from '@/lib/cognito';
+import { authErrorKey, confirmErrorKey, resendErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CompanySize, EmployerJobType, EmployerProfilePatch, EmployerTrade } from '@/lib/api/employer';
 import { validateEmployerSignupFields, type EmployerSignupField } from '@/lib/employer-profile-form';
@@ -27,9 +20,34 @@ import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 const TRADES: EmployerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
 const JOB_TYPES: EmployerJobType[] = ['full-time', 'part-time', 'contract'];
 const COMPANY_SIZES: CompanySize[] = ['1-10', '11-50', '51-200', '200+'];
-const RESEND_CODE_COOLDOWN_SECONDS = 60;
 
 type Step = 'login' | 'signup' | 'confirm' | 'forgot_request' | 'forgot_confirm';
+
+/**
+ * How the user arrived at the `confirm` step. It is not cosmetic: a signup
+ * confirm has a filled-in form behind it and a password to sign in with, while
+ * a recovery confirm has neither, and treating the two the same destroys
+ * profile data (see `handleConfirm`).
+ */
+type ConfirmOrigin = 'signup' | 'signin';
+
+/**
+ * Result of a resend attempt. `skipped` means the cooldown swallowed the call —
+ * distinct from `sent` because it must NOT restart the cooldown (that would let
+ * repeated clicks extend it forever), and distinct from `failed` because the
+ * user's newest code is still on its way, so nothing is wrong.
+ */
+type ResendOutcome =
+    | { status: 'sent' }
+    | { status: 'skipped' }
+    | { status: 'failed'; key: string };
+
+/**
+ * Client-side gap between resend requests. Cognito's real cap is 5 resends per
+ * user per hour, which this cannot enforce — it exists so a user cannot spend
+ * that budget on double-clicks before the first email has even landed.
+ */
+const RESEND_COOLDOWN_SECONDS = 60;
 
 // Maps each missing-field code to the shared "fields.*" label already used to
 // render this form's own inputs, so the summary line and the field labels stay
@@ -73,9 +91,6 @@ export default function EmployerAuthForm() {
     const [error, setError] = useState<string | null>(null);
     const [missingFields, setMissingFields] = useState<EmployerSignupField[]>([]);
     const [isLoading, setIsLoading] = useState(false);
-    const [isResendingCode, setIsResendingCode] = useState(false);
-    const [resendSuccess, setResendSuccess] = useState(false);
-    const [resendCooldownSeconds, setResendCooldownSeconds] = useState(0);
     const [resetSuccess, setResetSuccess] = useState(false);
     const [forgotEmail, setForgotEmail] = useState('');
     const [resetCode, setResetCode] = useState('');
@@ -83,15 +98,23 @@ export default function EmployerAuthForm() {
     const [newPasswordConfirm, setNewPasswordConfirm] = useState('');
     const [showNewPassword, setShowNewPassword] = useState(false);
     const [showNewPasswordConfirm, setShowNewPasswordConfirm] = useState(false);
+    const [confirmOrigin, setConfirmOrigin] = useState<ConfirmOrigin>('signup');
+    const [isResending, setIsResending] = useState(false);
+    const [resendCooldown, setResendCooldown] = useState(0);
+    const [resendSuccess, setResendSuccess] = useState(false);
+    const [confirmedSuccess, setConfirmedSuccess] = useState(false);
     const phone = formatPhoneNumber(phoneCountryCode, phoneLocalNumber);
 
+    // Counts the cooldown down to zero. Depending on `resendCooldown` rather
+    // than on a ref means the interval is torn down the moment it reaches zero
+    // (and on unmount), so nothing keeps ticking behind a navigation.
     useEffect(() => {
-        if (resendCooldownSeconds <= 0) return;
-        const timeoutId = window.setTimeout(() => {
-            setResendCooldownSeconds((seconds) => Math.max(0, seconds - 1));
+        if (resendCooldown <= 0) return undefined;
+        const timer = setInterval(() => {
+            setResendCooldown((seconds) => (seconds <= 1 ? 0 : seconds - 1));
         }, 1000);
-        return () => window.clearTimeout(timeoutId);
-    }, [resendCooldownSeconds]);
+        return () => clearInterval(timer);
+    }, [resendCooldown]);
 
     const pendingProfile = (): EmployerProfilePatch => ({
         company_name: companyName.trim(),
@@ -104,6 +127,72 @@ export default function EmployerAuthForm() {
         company_size: companySize,
         company_description: companyDescription.trim(),
     });
+
+    /**
+     * Asks Cognito for a new confirmation code — the single funnel for all
+     * three entry points (the two recovery links, and the confirm step's own
+     * Resend button), so the cooldown cannot be bypassed by taking a different
+     * route to the same call.
+     *
+     * `skipped` is not a failure: Cognito's cap is 5 resends per user per hour,
+     * and a code sent seconds ago is still the newest one. Without a guard here,
+     * clicking a recovery link a few times — or retrying a sign-in that keeps
+     * failing — would spend that whole budget and lock the user out of the only
+     * recovery path they have for an hour.
+     *
+     * It never throws: every caller needs the user to keep moving whether or
+     * not the resend landed, because someone who already has a valid code must
+     * still reach the input for it.
+     */
+    const requestNewCode = async (targetEmail: string): Promise<ResendOutcome> => {
+        if (resendCooldown > 0 || isResending) return { status: 'skipped' };
+        setIsResending(true);
+        try {
+            await employerResendConfirmationCode(targetEmail);
+            return { status: 'sent' };
+        } catch (err) {
+            return { status: 'failed', key: resendErrorKey(err) };
+        } finally {
+            setIsResending(false);
+        }
+    };
+
+    /**
+     * Enters the confirm step in recovery mode after a resend attempt.
+     *
+     * `goToStep` clears `error`, so the failure message has to be set AFTER it
+     * — otherwise the reset wins and the user gets a silent no-op. Same reason
+     * the success line lives in its own state instead of reusing `error`.
+     *
+     * An already-confirmed account is the one case that does not belong on the
+     * confirm step at all: there is no code coming, so the user is left on
+     * login where the sentence ("already confirmed — sign in") matches the
+     * screen they are looking at.
+     */
+    const enterRecoveryConfirm = (targetEmail: string, outcome: ResendOutcome) => {
+        setEmail(targetEmail);
+        setResetSuccess(false);
+        if (outcome.status === 'failed' && outcome.key === 'errors.already_confirmed') {
+            goToStep('login');
+            setError(t(outcome.key));
+            return;
+        }
+        setConfirmationCode('');
+        setConfirmOrigin('signin');
+        goToStep('confirm');
+        if (outcome.status === 'failed') {
+            setError(t(outcome.key));
+            // A refused resend still spent an attempt against the hourly cap,
+            // so hold the button rather than inviting an immediate retry.
+            setResendCooldown(RESEND_COOLDOWN_SECONDS);
+            return;
+        }
+        // 'sent' and 'skipped' both mean the newest code is already on its way,
+        // so the same confirmation is true for both — but only a call that
+        // actually went out restarts the cooldown.
+        setResendSuccess(true);
+        if (outcome.status === 'sent') setResendCooldown(RESEND_COOLDOWN_SECONDS);
+    };
 
     const handleSignIn = async () => {
         setError(null);
@@ -122,10 +211,68 @@ export default function EmployerAuthForm() {
             // browser console is shared with anything else on the page.
             // `authErrorKey` already turns the code into a translated sentence,
             // which is the only thing anyone needs from it.
-            setError(t(authErrorKey(err)));
+            const key = authErrorKey(err);
+            if (key === 'errors.account_not_confirmed') {
+                // The credentials were fine; the account was simply never
+                // confirmed. Getting a fresh code moving and dropping the user
+                // straight onto the code input is the whole recovery path —
+                // otherwise they are told to check an email they never got,
+                // with no way to ask for another.
+                enterRecoveryConfirm(email, await requestNewCode(email));
+                return;
+            }
+            setError(t(key));
         } finally {
             setIsLoading(false);
         }
+    };
+
+    /**
+     * The escape hatch on the forgot-password step, and only there. That step
+     * needs it: Cognito's forgot-password flow reports success for an
+     * UNCONFIRMED user without ever sending anything, so it otherwise loops
+     * forever on "that code expired" with no way out.
+     *
+     * It used to be offered on the login step too. It is not any more — a
+     * user with the right password and an unconfirmed account is recovered
+     * automatically by `handleSignIn`, so the link there could only ever fire
+     * for someone whose password was wrong, and it answered them with a
+     * password error on a screen with no password field.
+     *
+     * It takes the address explicitly because the remaining caller keeps it in
+     * `forgotEmail` while `handleConfirm` reads `email`, so the forgot step's
+     * address has to be promoted — which `enterRecoveryConfirm` does.
+     */
+    const handleNeverReceivedCode = async (targetEmail: string) => {
+        setError(null);
+        setResendSuccess(false);
+        if (!targetEmail.trim()) {
+            setError(t('errors.required'));
+            return;
+        }
+        enterRecoveryConfirm(targetEmail, await requestNewCode(targetEmail));
+    };
+
+    /** Resend from the confirm step itself. The cooldown lives in `requestNewCode`. */
+    const handleResendCode = async () => {
+        setError(null);
+        setResendSuccess(false);
+        const outcome = await requestNewCode(email);
+        // The cooldown label is already on screen explaining the wait, so a
+        // skipped call needs no second message.
+        if (outcome.status === 'skipped') return;
+        if (outcome.status === 'failed') {
+            setError(t(outcome.key));
+            // Already-confirmed is the one refusal with nothing left to resend,
+            // so it does not hold a button the user should stop using anyway.
+            if (outcome.key !== 'errors.already_confirmed') setResendCooldown(RESEND_COOLDOWN_SECONDS);
+            return;
+        }
+        // The old code may still be live, and we cannot promise either way, so
+        // clear the box rather than leave a stale value looking authoritative.
+        setConfirmationCode('');
+        setResendSuccess(true);
+        setResendCooldown(RESEND_COOLDOWN_SECONDS);
     };
 
     const handleCreateAccount = async () => {
@@ -149,8 +296,12 @@ export default function EmployerAuthForm() {
         try {
             await employerSignUp({ email, password, companyName, contactName, phone });
             setConfirmationCode('');
+            setConfirmOrigin('signup');
             setResendSuccess(false);
-            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+            // Sign-up itself just sent a code, so it counts as the first send:
+            // start the cooldown now rather than letting an immediate resend
+            // spend a second attempt against Cognito's hourly cap.
+            setResendCooldown(RESEND_COOLDOWN_SECONDS);
             setStep('confirm');
         } catch (err) {
             setError(t(authErrorKey(err)));
@@ -159,37 +310,95 @@ export default function EmployerAuthForm() {
         }
     };
 
+    /**
+     * Hands the signup form's answers to the next successful sign-in, which is
+     * what consumes them. ONLY a signup-origin confirm has a filled-in form
+     * behind it.
+     *
+     * Writing it on a recovery confirm was actively destructive: the patch
+     * always carries `hiring_trades` and `typical_job_types` keys, and the API
+     * treats a PRESENT key as an intentional value (employer-profile.ts gates
+     * those two columns on `hasOwnProperty`, not on emptiness). An employer who
+     * signed in unconfirmed would have both arrays emptied and `company_size`
+     * reset to the '1-10' default the moment they entered their code — losing
+     * real profile data to fix an email problem.
+     */
+    const savePendingSignupProfile = () => {
+        if (confirmOrigin !== 'signup') return;
+        sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(pendingProfile()));
+    };
+
     const handleConfirm = async () => {
         setError(null);
         setResendSuccess(false);
         setIsLoading(true);
         try {
             await employerConfirmSignUp(email, confirmationCode);
-            sessionStorage.setItem('pendingEmployerProfile', JSON.stringify(pendingProfile()));
+        } catch (err) {
+            // `confirmErrorKey`, not `authErrorKey`: a confirm against an
+            // ALREADY-CONFIRMED account rejects with `NotAuthorizedException`,
+            // which the shared mapper reads as "the email or password is
+            // incorrect" — a sentence about a field this step does not have.
+            const key = confirmErrorKey(err);
+            if (key === 'errors.already_confirmed') {
+                // Same reasoning as `enterRecoveryConfirm`: there is no code
+                // coming for this account, so the confirm step is a dead end.
+                // Login is the screen the sentence describes. `goToStep` clears
+                // `error`, so the message is set after it.
+                //
+                // The answers are persisted first. This refusal means the
+                // account IS confirmed — it just was not confirmed by THIS
+                // submit (a second tab, or a code entered elsewhere) — so a
+                // signup still owes its profile patch to the sign-in that
+                // follows. Routing to login without it would strand the form's
+                // answers on a step the user can no longer get back to.
+                savePendingSignupProfile();
+                goToStep('login');
+                setResetSuccess(false);
+                setError(t(key));
+            } else {
+                setError(t(key));
+            }
+            setIsLoading(false);
+            return;
+        }
+
+        savePendingSignupProfile();
+
+        // The recovery entry points collect an email and nothing else, so there
+        // is no password to sign in with. The account IS confirmed now, so send
+        // the user to login rather than firing an unauthenticated sign-in that
+        // would report "the email or password is incorrect" over a success.
+        if (!password) {
+            setIsLoading(false);
+            goToStep('login');
+            setResetSuccess(false);
+            setConfirmedSuccess(true);
+            return;
+        }
+
+        try {
             const tokens = await employerSignIn(email, password);
             setTokens(tokens, 'employer');
             router.push('/employer/profile');
         } catch (err) {
-            setError(t(authErrorKey(err)));
+            // The code has been spent, so leaving the user on the confirm step
+            // would strand them behind an input that can never succeed again.
+            // The confirm itself worked; login is the correct next screen, and
+            // it carries the reason the sign-in did not.
+            //
+            // Both lines are shown together, and the bad-credentials sentence
+            // is swapped for one that admits the confirm succeeded: on its own,
+            // "the email or password is incorrect" reads as a denial of the
+            // confirmation that just went through, and sends the user back to
+            // ask for another code they do not need.
+            const key = authErrorKey(err);
+            goToStep('login');
+            setResetSuccess(false);
+            setConfirmedSuccess(true);
+            setError(t(key === 'errors.invalid_credentials' ? 'errors.confirmed_sign_in_failed' : key));
         } finally {
             setIsLoading(false);
-        }
-    };
-
-    const handleResendConfirmationCode = async () => {
-        if (resendCooldownSeconds > 0) return;
-        setError(null);
-        setResendSuccess(false);
-        setIsResendingCode(true);
-        try {
-            await employerResendConfirmationCode(email);
-            setConfirmationCode('');
-            setResendSuccess(true);
-            setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
-        } catch (err) {
-            setError(t(authErrorKey(err)));
-        } finally {
-            setIsResendingCode(false);
         }
     };
 
@@ -240,23 +449,32 @@ export default function EmployerAuthForm() {
     const goToStep = (next: Step) => {
         setError(null);
         setMissingFields([]);
+        // Same reasoning as the field marks: the "we sent a new code" line and
+        // the "your account is confirmed" line each describe one step's last
+        // action. Callers that want them set them again after this returns.
         setResendSuccess(false);
-        setResendCooldownSeconds(0);
+        setConfirmedSuccess(false);
         setStep(next);
     };
 
+    // A recovery confirm is not a signup, so it must not be greeted with
+    // "Welcome to Jale" and "let's verify your email so you can start hiring" —
+    // this user already has an account and is trying to get back into it.
+    const isRecoveryConfirm = step === 'confirm' && confirmOrigin === 'signin';
     const heading =
         step === 'login' ? t('hero')
             : step === 'forgot_request' ? t('forgot_title')
                 : step === 'forgot_confirm' ? t('forgot_confirm_title')
-                    : t('signup_title');
+                    : isRecoveryConfirm ? t('recovery_title')
+                        : t('signup_title');
     // The forgot steps carry their instruction inline, next to the field it is
     // about, so they deliberately have no subtitle here. Rendering an empty <p>
     // for them (the old shape) left a paragraph that existed only as a margin.
     const subheading =
         step === 'login' ? t('title')
             : step === 'forgot_request' || step === 'forgot_confirm' ? ''
-                : t('signup_subtitle');
+                : isRecoveryConfirm ? t('recovery_subtitle')
+                    : t('signup_subtitle');
 
     return (
         <div className="flex w-full flex-col">
@@ -290,6 +508,24 @@ export default function EmployerAuthForm() {
                                 hideLabel={t('hide_password')}
                             />
                         </Field>
+                        {/* One link here, not two. An "I never received my confirmation
+                            code" link used to sit beneath the forgot-password one and
+                            was REMOVED: it emailed a SIGN-UP code, so entering that
+                            code called ConfirmSignUp on an account that was usually
+                            already confirmed, and Cognito's NotAuthorizedException came
+                            back as "the email or password is incorrect" — on a step
+                            with no password field. A real employer read that as a
+                            reason to request yet another code and looped three times.
+
+                            Nothing is lost by dropping it: the only person it could
+                            help from THIS step has the right password and an
+                            unconfirmed account, and `handleSignIn` already recovers
+                            that case on its own via `UserNotConfirmedException`. So
+                            the link could only ever fire for someone whose password
+                            was wrong — the exact case it answered incoherently.
+
+                            The `forgot_request` step keeps it; that step is a genuine
+                            dead end, and the comment there says why. */}
                         <div className="flex justify-end">
                             <button
                                 type="button"
@@ -302,6 +538,9 @@ export default function EmployerAuthForm() {
                         {error && <FormError>{error}</FormError>}
                         {resetSuccess && (
                             <InlineFeedback tone="success">{t('reset_success')}</InlineFeedback>
+                        )}
+                        {confirmedSuccess && (
+                            <InlineFeedback tone="success">{t('confirmed_sign_in')}</InlineFeedback>
                         )}
                         <Button className="w-full mt-1" size="lg" onClick={handleSignIn} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('sign_in')}
@@ -382,50 +621,46 @@ export default function EmployerAuthForm() {
 
                 {step === 'confirm' && (
                     <div className="anim-fade-in flex flex-col gap-4">
-                        <BackButton label={t('back')} onClick={() => goToStep('signup')} />
-                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">
-                            {t('confirm_subtitle', { email })}
-                        </p>
-                        <Field label={t('fields.confirmation_code')}>
-                            <Input
-                                value={confirmationCode}
-                                onChange={(e) => {
-                                    setConfirmationCode(e.target.value);
-                                    setResendSuccess(false);
-                                }}
-                                inputMode="numeric"
-                                autoComplete="one-time-code"
-                            />
-                        </Field>
-                        {error && <FormError>{error}</FormError>}
+                        {/* Back has to follow the origin. Hardcoding 'signup' sent a
+                            recovering employer into an empty signup form, which is
+                            the one place they must not end up: submitting it hits
+                            "an account already exists for this email". */}
+                        <BackButton label={t('back')} onClick={() => goToStep(confirmOrigin === 'signin' ? 'login' : 'signup')} />
+                        {/* Normalised the same way the Cognito calls normalise it, so a
+                            typo'd address is visible here — before the user burns resend
+                            attempts on an inbox that will never receive anything. */}
+                        <p className="text-sm leading-relaxed text-[var(--jale-ink-2)]">{t('confirm_subtitle', { email: email.trim().toLowerCase() })}</p>
+                        <Field label={t('fields.confirmation_code')}><Input value={confirmationCode} onChange={(e) => setConfirmationCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></Field>
+                        <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('check_spam')}</p>
+                        <div className="flex justify-end">
+                            {/* On cooldown this is plain text, not a disabled button:
+                                a disabled link-styled button still answers hover and
+                                reads as clickable. */}
+                            {resendCooldown > 0 ? (
+                                <span className="text-xs text-[var(--jale-ink-2)]">{t('resend_cooldown', { seconds: resendCooldown })}</span>
+                            ) : (
+                                <button
+                                    type="button"
+                                    onClick={handleResendCode}
+                                    disabled={isResending}
+                                    className={`text-xs ${LINK_BUTTON}`}
+                                >
+                                    {t('resend_code')}
+                                </button>
+                            )}
+                        </div>
                         {resendSuccess && (
-                            <InlineFeedback tone="success">{t('resend_success')}</InlineFeedback>
+                            // Normalised the same way the resend normalised it, so the
+                            // banner shows the address the code actually went to
+                            // rather than the casing the user happened to type.
+                            <InlineFeedback tone="success">{t('code_sent', { email: email.trim().toLowerCase() })}</InlineFeedback>
                         )}
-                        <Button
-                            className="w-full mt-1"
-                            size="lg"
-                            onClick={handleConfirm}
-                            disabled={confirmationCode.length < 4 || isResendingCode}
-                            loading={isLoading}
-                            loadingLabel={tCommon('loading')}
-                        >
+                        {error && <FormError>{error}</FormError>}
+                        {/* A resend in flight may be about to invalidate the code in the
+                            box — hold Confirm until we know which code is current. */}
+                        <Button className="w-full mt-1" size="lg" onClick={handleConfirm} disabled={confirmationCode.length < 4 || isResending} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('confirm_account')}
                         </Button>
-                        <p className="text-center text-sm text-[var(--jale-ink-2)]">
-                            {t('resend_prompt')}{' '}
-                            <button
-                                type="button"
-                                onClick={handleResendConfirmationCode}
-                                disabled={isLoading || isResendingCode || resendCooldownSeconds > 0}
-                                className={`text-[length:inherit] disabled:cursor-not-allowed disabled:opacity-60 ${LINK_BUTTON}`}
-                            >
-                                {isResendingCode
-                                    ? tCommon('loading')
-                                    : resendCooldownSeconds > 0
-                                        ? t('resend_wait', { seconds: resendCooldownSeconds })
-                                        : t('resend_code')}
-                            </button>
-                        </p>
                     </div>
                 )}
 
@@ -441,6 +676,21 @@ export default function EmployerAuthForm() {
                                 autoComplete="email"
                             />
                         </Field>
+                        {/* Mirrored here on purpose. Cognito's forgot-password call
+                            reports success for an UNCONFIRMED user without sending
+                            anything, so this step is a dead end for exactly the
+                            people who need recovery — they get "that code expired"
+                            forever. This link is the only real way out of it. */}
+                        <div className="flex justify-end">
+                            <button
+                                type="button"
+                                onClick={() => handleNeverReceivedCode(forgotEmail)}
+                                disabled={isResending}
+                                className={`text-right text-xs ${LINK_BUTTON}`}
+                            >
+                                {t('never_received_code')}
+                            </button>
+                        </div>
                         {error && <FormError>{error}</FormError>}
                         <Button className="w-full mt-1" size="lg" onClick={handleForgotRequest} disabled={!forgotEmail.trim()} loading={isLoading} loadingLabel={tCommon('loading')}>
                             {t('send_code')}

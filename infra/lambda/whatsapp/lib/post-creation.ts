@@ -176,7 +176,7 @@ const CONFIRM_DELETE_WORDS = new Set(['confirmar', 'confirm']);
 /**
  * Sanitizes free-text worker input before it becomes a post caption.
  * worker_posts.caption has `CHECK (char_length(caption) <= 1000)`
- * (migration 082_media_board.sql) — an unsanitized caption over that
+ * (migration 083_media_board.sql) — an unsanitized caption over that
  * length crashes publishDraft's INSERT with an uncaught constraint
  * violation. Global constraint (spec): max 1000 chars, trimmed, control
  * characters stripped. Order: strip control bytes, then trim, then

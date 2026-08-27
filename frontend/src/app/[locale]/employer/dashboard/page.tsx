@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
@@ -23,15 +23,79 @@ import { PanelHeader } from '@/components/ui/panel-header';
 import { ProgressRow } from '@/components/ui/progress-row';
 import { useToast } from '@/components/ui/toast';
 import { JobPostingCard } from '@/components/employer/JobPostingCard';
+import { PlanUsageMeter } from '@/components/employer/PlanUsageMeter';
 import { PostJobModal } from '@/components/employer/PostJobModal';
+import { SubscriptionBanner } from '@/components/employer/SubscriptionBanner';
 import { DeleteJobDialog } from '@/components/employer/DeleteJobDialog';
-import { ApiError, deleteJob, getJobs } from '@/lib/api/employer';
-import type { Job } from '@/lib/api/employer';
+import { ApiError, deleteJob, getBilling, getJobs, listJobTemplates } from '@/lib/api/employer';
+import type { EmployerBilling, Job, JobCreatedOutcome } from '@/lib/api/employer';
 import { errorMessageKey } from '@/lib/api/errors';
+import { subscriptionSignage } from '@/lib/plan-limit';
 import type { JobStatus } from '@/lib/status';
 
 const statusFilters = ['all', 'active', 'paused', 'filled', 'closed'] as const;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Everything the board renders, loaded in ONE pass.
+ *
+ * The jobs list is the page; billing and the template count are the signage
+ * around it (the plan banner, the usage meter). Fetching those separately after
+ * mount would paint the board first and then push it down when the banner
+ * arrives -- so all three are awaited together and land in the same commit.
+ *
+ * Only jobs can fail the page, and only jobs can make it WAIT: the two
+ * best-effort calls are raced against BEST_EFFORT_DEADLINE_MS, so a slow
+ * /employer/billing cannot hold the board behind it (see `withDeadline`).
+ * Whichever way they come up short -- rejected or too slow -- they degrade to
+ * `null`, which the banner reads as "nothing to say" and the meter as "show
+ * the plain count".
+ *
+ * On a REFRESH those nulls are then healed from the last good values instead
+ * of being written through: `usePageData` guarantees a background refresh can
+ * only ever add (usePageData.ts:28-31), and blanking the plan segments of a
+ * page the employer is reading is the opposite of that.
+ */
+type DashboardData = {
+    jobs: Job[];
+    billing: EmployerBilling | null;
+    templateCount: number | null;
+};
+
+/**
+ * How long the jobs commit may wait on the signage around it.
+ *
+ * `apiFetch`'s own budget is 15s per attempt (lib/api.ts DEFAULT_TIMEOUT_MS) --
+ * a fine ceiling for a request the page cannot render without, and far too
+ * long for one it can. 2.5s is generous for a warm call and short enough that
+ * a hung one is simply not part of this paint.
+ */
+const BEST_EFFORT_DEADLINE_MS = 2_500;
+
+/**
+ * `promise`, or `null` if it has not settled within `ms`.
+ *
+ * Losing the race does not cancel the request (nothing here can: the fetch
+ * carries the page's abort signal, and cancelling it would abort a call that
+ * may still be about to answer) -- it only stops the page waiting on it. A
+ * rejection resolves `null` too, so the caller has one shape to handle. The
+ * timer is cleared on settle so a resolved call leaves no pending timeout.
+ */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T | null> {
+    return new Promise<T | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), ms);
+        promise.then(
+            (value) => {
+                clearTimeout(timer);
+                resolve(value);
+            },
+            () => {
+                clearTimeout(timer);
+                resolve(null);
+            },
+        );
+    });
+}
 
 /** Percentage of `total` that `part` represents, safe at total = 0. */
 function share(part: number, total: number): number {
@@ -51,6 +115,7 @@ export default function EmployerDashboardPage() {
     // wall must go to /legal/accept, not show an error the user cannot act on).
     const { handleLegalWall } = useRequireAuth();
     const t = useTranslations('employer_dashboard');
+    const tBilling = useTranslations('billing');
     const tCommon = useTranslations('common');
     const errorMessage = useErrorMessage();
     const toast = useToast();
@@ -62,6 +127,22 @@ export default function EmployerDashboardPage() {
     const [modalOpen, setModalOpen] = useState(false);
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<JobStatus | 'all'>('all');
+    /**
+     * The backstop for a job that posted while its "save as template" box was
+     * ticked and the template limit was already reached. The modal says so too,
+     * but it closes on success -- so the fact would otherwise vanish with it.
+     */
+    const [templateNotice, setTemplateNotice] = useState<{ limit: number } | null>(null);
+
+    /**
+     * The last billing/template numbers that actually arrived. A refresh whose
+     * best-effort calls fail or time out reads from here rather than writing
+     * `null` through -- the signage the employer is looking at stays put.
+     */
+    const lastGoodRef = useRef<{ billing: EmployerBilling | null; templateCount: number | null }>({
+        billing: null,
+        templateCount: null,
+    });
 
     /**
      * One fetch for the whole page.
@@ -82,13 +163,35 @@ export default function EmployerDashboardPage() {
         retry,
         refresh,
         setData,
-    } = usePageData<Job[]>({
-        fetcher: ({ token, signal }) => getJobs(token, signal),
+    } = usePageData<DashboardData>({
+        fetcher: async ({ token, signal }) => {
+            // Best-effort, both of them: `.catch` (not a rejected Promise.all)
+            // keeps a billing outage off the board, and `withDeadline` keeps a
+            // SLOW one off it too -- without the deadline the jobs commit waits
+            // out apiFetch's 15s budget for signage it can render without.
+            // (`listJobTemplates` takes no signal; that is a lib limitation.)
+            const [jobList, freshBilling, freshTemplateCount] = await Promise.all([
+                getJobs(token, signal),
+                withDeadline(getBilling(token, signal).catch(() => null), BEST_EFFORT_DEADLINE_MS),
+                withDeadline(
+                    listJobTemplates(token).then((list) => list.length).catch(() => null),
+                    BEST_EFFORT_DEADLINE_MS,
+                ),
+            ]);
+
+            // `??`, so a real 0 is kept and only a MISSING answer falls back.
+            const billing = freshBilling ?? lastGoodRef.current.billing;
+            const templateCount = freshTemplateCount ?? lastGoodRef.current.templateCount;
+            lastGoodRef.current = { billing, templateCount };
+
+            return { jobs: jobList, billing, templateCount };
+        },
         legalReturnUrl: '/employer/dashboard',
-        isEmpty: (jobs) => jobs.length === 0,
+        isEmpty: (d) => d.jobs.length === 0,
     });
 
-    const jobs = useMemo(() => data ?? [], [data]);
+    const jobs = useMemo(() => data?.jobs ?? [], [data]);
+    const signage = useMemo(() => subscriptionSignage(data?.billing ?? null), [data]);
 
     const filteredJobs = useMemo(() => {
         let result = jobs;
@@ -136,9 +239,17 @@ export default function EmployerDashboardPage() {
         ? formatShortDate(timeToFillJob.created_at, locale)
         : null;
 
-    function handleJobCreated(job: Job) {
+    function handleJobCreated(job: Job, outcome?: JobCreatedOutcome) {
         setModalOpen(false);
         toast.success(t('jobs.post_success'));
+        // Set BEFORE the `data === null` guard below returns: the template was
+        // not saved either way, and that fact must not depend on whether the
+        // list happened to be loaded.
+        // Set (or cleared) on EVERY post, not only the failing ones: a notice
+        // left standing from an earlier post would sit next to a fresh success
+        // toast claiming a template that this post did save was not saved.
+        const notSaved = outcome?.templateNotSaved;
+        setTemplateNotice(notSaved ? { limit: notSaved.templateLimit } : null);
         // `setData` is a no-op while nothing is rendered (a failed or in-flight
         // first load), so in that case ask for the list properly instead of
         // silently dropping the job the employer just posted.
@@ -146,7 +257,15 @@ export default function EmployerDashboardPage() {
             retry();
             return;
         }
-        setData((prev) => [job, ...prev]);
+        setData((prev) => ({
+            ...prev,
+            jobs: [job, ...prev.jobs],
+            // The meter counts templates from this snapshot; a post that saved a
+            // new one must move it without a round-trip to /employer/templates.
+            templateCount: outcome?.templateSaved && prev.templateCount !== null
+                ? prev.templateCount + 1
+                : prev.templateCount,
+        }));
     }
 
     function openDeleteDialog(job: Job) {
@@ -169,7 +288,7 @@ export default function EmployerDashboardPage() {
         setDeleteError(null);
         try {
             await deleteJob(idToken, target.id);
-            setData((cur) => cur.filter((job) => job.id !== target.id));
+            setData((cur) => ({ ...cur, jobs: cur.jobs.filter((job) => job.id !== target.id) }));
             closeDeleteDialog();
             toast.success(t('jobs.delete.success'));
         } catch (err) {
@@ -243,6 +362,12 @@ export default function EmployerDashboardPage() {
                         </DashboardPanel>
                     ) : (
                         <div className="anim-fade-in">
+                            {/* Above the hero, and above the board: billing state
+                                changes what the buttons below it can do, so it is
+                                read first. It arrives with the jobs (one fetch), so
+                                it never pushes an already-read board down. */}
+                            <SubscriptionBanner signage={signage} locale={locale} />
+
                             <section className="mb-5 overflow-hidden rounded-[var(--radius-card)] bg-[var(--jale-blue-900)] p-5 shadow-[var(--shadow-card)] md:p-7">
                                 <p className="mb-3 inline-flex rounded-full bg-[color-mix(in_srgb,var(--primary-fg)_12%,transparent)] px-3 py-1 text-[11px] font-bold uppercase tracking-wider text-[color-mix(in_srgb,var(--primary-fg)_80%,transparent)]">
                                     {t('hero.eyebrow')}
@@ -357,14 +482,25 @@ export default function EmployerDashboardPage() {
                                             </div>
 
                                             <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                                                <p className="text-xs font-semibold tabular-nums text-[var(--jale-ink-2)]">
-                                                    {empty
-                                                        ? t('jobs.empty_first_title')
-                                                        : t('jobs.showing', {
-                                                              shown: filteredJobs.length,
-                                                              total: jobs.length,
-                                                          })}
-                                                </p>
+                                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                                                    <p className="text-xs font-semibold tabular-nums text-[var(--jale-ink-2)]">
+                                                        {empty
+                                                            ? t('jobs.empty_first_title')
+                                                            : t('jobs.showing', {
+                                                                  shown: filteredJobs.length,
+                                                                  total: jobs.length,
+                                                              })}
+                                                    </p>
+                                                    {/* The count says how much of the LIST is
+                                                        shown; the meter says how much of the
+                                                        PLAN is used. Same row, same glance. */}
+                                                    <PlanUsageMeter
+                                                        activeCount={activeCount}
+                                                        billing={data?.billing ?? null}
+                                                        templateCount={data?.templateCount ?? null}
+                                                        loading={phase !== 'ready'}
+                                                    />
+                                                </div>
                                                 <Button
                                                     variant="ghost"
                                                     size="sm"
@@ -376,6 +512,39 @@ export default function EmployerDashboardPage() {
                                                     {t('jobs.refresh')}
                                                 </Button>
                                             </div>
+
+                                            {/* The job posted; the template attached to it did
+                                                not. The modal that said so has already closed,
+                                                so the notice is repeated here with the two
+                                                actions that resolve it. */}
+                                            {templateNotice ? (
+                                                <InlineFeedback
+                                                    tone="warning"
+                                                    className="mt-3"
+                                                    onDismiss={() => setTemplateNotice(null)}
+                                                >
+                                                    <span className="block">
+                                                        {t('jobs.template_not_saved_after_post', {
+                                                            limit: templateNotice.limit,
+                                                        })}
+                                                    </span>
+                                                    <span className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                                                        <Link
+                                                            href="/employer/templates"
+                                                            className="inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+                                                        >
+                                                            {t('templates.manage_link')}
+                                                        </Link>
+                                                        <Link
+                                                            href="/employer/billing"
+                                                            className="inline-flex items-center gap-1.5 text-xs font-bold underline underline-offset-2"
+                                                        >
+                                                            <Icon name="spark" />
+                                                            {tBilling('limit_reached.cta')}
+                                                        </Link>
+                                                    </span>
+                                                </InlineFeedback>
+                                            ) : null}
 
                                             {/* A failed background refresh is a FOOTNOTE.
                                                 `usePageData` cannot let it clear `data`, so

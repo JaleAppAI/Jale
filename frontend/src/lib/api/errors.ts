@@ -29,7 +29,23 @@ export type ApiErrorPayload = {
   detail?: string;
   /** `missing_certification_proof`: the still-unproven certification names. */
   certs?: string[];
+  /**
+   * `job_limit_reached`: the active jobs holding the employer's slots, oldest
+   * first. Forward-compat -- no backend sends this yet, so the limit dialog
+   * derives the list client-side (see `lib/plan-limit`'s `blockingJobsFrom`)
+   * and only prefers this one when it arrives well-formed.
+   */
+  blocking_jobs?: Array<{ id: string; title: string }>;
 };
+
+/**
+ * How many blocking jobs the limit dialog will ever name before collapsing the
+ * rest into an "and N more" count. Declared here rather than in `lib/plan-limit`
+ * because this module does the truncation while parsing, and `lib/plan-limit`
+ * imports this one (the reverse would be a cycle); it is re-exported from there
+ * so callers can keep reading it off the plan-limit model.
+ */
+export const BLOCKING_JOBS_LIMIT = 3;
 
 const ALLOWED_PAYLOAD_KEYS = [
   'plan_code',
@@ -43,6 +59,7 @@ const ALLOWED_PAYLOAD_KEYS = [
   'missing_fields',
   'detail',
   'certs',
+  'blocking_jobs',
 ] as const;
 
 /**
@@ -106,6 +123,14 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     // else is passed through as the backend sent it.
     if ((key === 'missing_docs' || key === 'missing_fields' || key === 'certs') && !isStringArray(value)) continue;
     if (key === 'detail' && typeof value !== 'string') continue;
+    if (key === 'blocking_jobs') {
+      // One bad entry poisons the list: the dialog renders a row per entry, so
+      // a partially-valid list is still one it cannot trust. Drop the whole key
+      // and let the caller fall back to the client-derived list.
+      if (!isBlockingJobArray(value)) continue;
+      (payload as Record<string, unknown>)[key] = value.slice(0, BLOCKING_JOBS_LIMIT);
+      continue;
+    }
     (payload as Record<string, unknown>)[key] = value;
   }
   return payload;
@@ -113,6 +138,15 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isBlockingJobArray(value: unknown): value is Array<{ id: string; title: string }> {
+  return Array.isArray(value) && value.every((entry) => (
+    entry !== null
+    && typeof entry === 'object'
+    && typeof (entry as { id?: unknown }).id === 'string'
+    && typeof (entry as { title?: unknown }).title === 'string'
+  ));
 }
 
 /**

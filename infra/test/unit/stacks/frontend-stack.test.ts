@@ -295,6 +295,64 @@ describeIfDocker('FrontendStack (Lambda + CloudFront)', () => {
     });
   });
 
+  test('CloudFront has a /brand/* behavior with the viewer-request function', () => {
+    template.hasResourceProperties(
+      'AWS::CloudFront::Distribution',
+      Match.objectLike({
+        DistributionConfig: Match.objectLike({
+          CacheBehaviors: Match.arrayWith([
+            Match.objectLike({
+              PathPattern: '/brand/*',
+              FunctionAssociations: Match.arrayWith([
+                Match.objectLike({ EventType: 'viewer-request' }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  test('/brand/* uses the one-day brand cache policy, not a managed policy', () => {
+    const distros = template.findResources('AWS::CloudFront::Distribution');
+    const distro = Object.values(distros)[0] as {
+      Properties: {
+        DistributionConfig: {
+          CacheBehaviors?: Array<{ PathPattern: string; CachePolicyId: string }>;
+        };
+      };
+    };
+    const behaviors = distro.Properties.DistributionConfig.CacheBehaviors ?? [];
+    const CACHING_DISABLED_ID = '4135ea2d-6df8-44a3-9df3-4b5a84be39ad';
+    const CACHING_OPTIMIZED_ID = '658327ea-f89d-4fab-a63d-7e88639e58f6';
+
+    const behavior = behaviors.find((b) => b.PathPattern === '/brand/*');
+    expect(behavior).toBeDefined();
+    expect(behavior?.CachePolicyId).toBeDefined();
+    // CACHING_DISABLED would invoke the Next.js Lambda on every email open, and
+    // the managed CACHING_OPTIMIZED policy has minTtl=1s -- Next.js serves
+    // public/ with `Cache-Control: public, max-age=0`, so CloudFront would
+    // honor that beyond the 1s floor and cache for one second. Neither works.
+    expect(behavior?.CachePolicyId).not.toBe(CACHING_DISABLED_ID);
+    expect(behavior?.CachePolicyId).not.toBe(CACHING_OPTIMIZED_ID);
+  });
+
+  test('brand cache policy pins TTLs at one day and ignores cookies/headers/query strings', () => {
+    template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
+      CachePolicyConfig: Match.objectLike({
+        Comment: Match.stringLikeRegexp('brand'),
+        MinTTL: 86400,
+        DefaultTTL: 86400,
+        MaxTTL: 86400,
+        ParametersInCacheKeyAndForwardedToOrigin: Match.objectLike({
+          CookiesConfig: Match.objectLike({ CookieBehavior: 'none' }),
+          HeadersConfig: Match.objectLike({ HeaderBehavior: 'none' }),
+          QueryStringsConfig: Match.objectLike({ QueryStringBehavior: 'none' }),
+        }),
+      }),
+    });
+  });
+
   test('creates Route 53 A and AAAA records', () => {
     template.hasResourceProperties('AWS::Route53::RecordSet', {
       Type: 'A',

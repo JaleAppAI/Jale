@@ -7,7 +7,7 @@ import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Spinner } from '@/components/ui/spinner';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
-import { REQUIREMENT_DOC_KEYS } from '@/lib/job-requirements';
+import { REQUIREMENT_DOC_KEYS, partitionRequiredDocs, whatYouNeedHintKey, workerCertNoteKey } from '@/lib/job-requirements';
 import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
 import type { CertClaim } from '@/lib/certification-claims';
 import { missingRequiredCertClaims, missingRequiredCertProofs } from '@/lib/certification-claims';
@@ -132,6 +132,10 @@ export function DocumentsCertificationsStep({
   onVaultChanged: () => void | Promise<void>;
 }) {
   const t = useTranslations('job_requirements');
+  // `worker_job_detail` (not the apply_flow sub-namespace) for the one thing
+  // only it has: `doc_labels.ssn`, the human name of the legacy doc type the
+  // notice below reports.
+  const tDetail = useTranslations('worker_job_detail');
   const tFlow = useTranslations('worker_job_detail.apply_flow');
   const tWhatYouNeed = useTranslations('worker_job_detail.what_you_need');
   const tCommon = useTranslations('common');
@@ -163,15 +167,26 @@ export function DocumentsCertificationsStep({
     return requiredDocs.includes(key) || optionalDocs.includes(key);
   }) as JobDocType[];
 
+  // A `required_docs` key outside REQUIREMENT_DOC_KEYS (legacy 'ssn', still
+  // valid in the jobs CHECK for old rows) has no upload control anywhere in
+  // this app -- `docsToShow` above already filters it out. Gating on it was
+  // therefore an invisible dead end: Continue blocked forever with nothing on
+  // screen to fix. Those keys stop blocking here and are surfaced as a visible
+  // notice below instead, so the requirement is neither silently dropped nor
+  // silently unsatisfiable.
+  const { supported: supportedDocs, unsupported: unsupportedDocs } = partitionRequiredDocs(requiredDocs);
+
   const hasDoc = (docType: JobDocType) => vaultDocs?.some((d) => d.doc_type === docType) ?? false;
-  // Defensive belt-and-suspenders: per `job-requirements.ts`, a new-shape job
-  // must never carry 'certification_doc' in `required_docs` -- this filter
-  // guards against a malformed/legacy payload violating that invariant, so a
-  // stray entry cannot double-count as both the legacy gate and a named-cert
-  // gate. `vaultDocs === null` (vault fetch failed) fails CLOSED: a required
-  // doc's presence cannot be verified, so it counts as still missing rather
-  // than silently letting the worker past a check that never actually ran.
-  const missingLegacyDocs = requiredDocs.filter(
+  // Layered ON TOP of that partition, not folded into it: `certification_doc`
+  // IS a supported key and this is a separate rule. Defensive
+  // belt-and-suspenders: per `job-requirements.ts`, a new-shape job must never
+  // carry 'certification_doc' in `required_docs` -- this filter guards against
+  // a malformed/legacy payload violating that invariant, so a stray entry
+  // cannot double-count as both the legacy gate and a named-cert gate.
+  // `vaultDocs === null` (vault fetch failed) fails CLOSED: a required doc's
+  // presence cannot be verified, so it counts as still missing rather than
+  // silently letting the worker past a check that never actually ran.
+  const missingLegacyDocs = supportedDocs.filter(
     (doc) => (hasCerts ? doc !== 'certification_doc' : true) && !hasDoc(doc as JobDocType),
   );
 
@@ -233,6 +248,22 @@ export function DocumentsCertificationsStep({
               {tCommon('retry')}
             </Button>
           </span>
+        </InlineFeedback>
+      ) : null}
+
+      {/* OUTSIDE the docs list below, deliberately: in the case this exists for
+          (`required_docs: ['ssn']`) `docsToShow` is empty and that whole block
+          renders nothing, so a notice nested inside it would be invisible
+          exactly when it is the only explanation the worker gets. */}
+      {unsupportedDocs.length > 0 ? (
+        <InlineFeedback tone="warning">
+          <span className="font-semibold">
+            {unsupportedDocs.map((doc) => (doc === 'ssn' ? tDetail('doc_labels.ssn') : doc)).join(', ')}
+          </span>
+          {/* A colon, not another em dash: the sentence itself already carries
+              one, and two in one line read as a broken clause. */}
+          {': '}
+          {tFlow('legacy_doc_notice')}
         </InlineFeedback>
       ) : null}
 
@@ -313,6 +344,19 @@ function SingleDocRow({
   const t = useTranslations('job_requirements');
   const tDocs = useTranslations('worker_profile.documents');
   const tFlow = useTranslations('worker_job_detail.apply_flow');
+  // Same worker-voiced hint the pre-apply "What you'll need" panel shows for
+  // this document, so the promise made on the job page and the explanation
+  // given inside the flow are one string, not two that can drift. Suppressed
+  // once the vault already has the file or the blocking error is showing --
+  // both of those lines are more specific than the generic explanation.
+  const tWhatYouNeed = useTranslations('worker_job_detail.what_you_need');
+  const hintKey = whatYouNeedHintKey({
+    kind: 'doc',
+    tier: required ? 'required' : 'optional',
+    proofRequired: false,
+    satisfied: Boolean(existing),
+    blockingError: missing,
+  });
   return (
     <div className="flex items-center justify-between gap-3">
       <div className="min-w-0">
@@ -336,6 +380,9 @@ function SingleDocRow({
           <p className="mt-1 text-xs font-semibold text-[var(--jale-danger)]">
             {tFlow('errors.required_doc', { label: docLabel(docType) })}
           </p>
+        ) : null}
+        {hintKey ? (
+          <p className="mt-1 text-xs text-[var(--jale-ink-2)]">{tWhatYouNeed(hintKey)}</p>
         ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -405,7 +452,10 @@ function CertificationDocRow({
  * + proof_required cert claimed yes with no proof renders the blocking
  * `errors.cert_proof` message once the worker has attempted to continue.
  * A cert with `proof_required === false` shows no proof area at all -- the
- * claim itself is the whole requirement.
+ * claim itself is the whole requirement, and `cert_attest_note` now says so
+ * out loud once the worker answers yes (see `workerCertNoteKey`), because
+ * "no upload appeared" is not by itself a legible answer to "does this job
+ * want a photo of my card?".
  */
 export function CertClaimRow({
   cert, claim, onSetHas, vaultDocs, uploading, onUpload, missingClaim, missingProof,
@@ -430,6 +480,21 @@ export function CertClaimRow({
   const fileCount = countVaultDocsForCert(cert.name, vaultDocs);
   const atMax = fileCount >= MAX_CERT_FILES_PER_NAME;
   const showProofArea = claim.has === true && cert.proof_required;
+  // What happens after "yes" -- the attestation-only case (proof_required
+  // false) had NO render site at all before this: the entire explanation of
+  // what the claim commits the worker to lived inside `showProofArea`, so a
+  // cert the employer is happy to eyeball in person answered "yes" and then
+  // said nothing. `workerCertNoteKey` also stays silent on the cases another
+  // line already owns (proof attached, optional-tier `cert_unverified_note`,
+  // and the blocking `errors.cert_proof`), so the row never stacks two
+  // sentences that contradict or repeat each other.
+  const certNoteKey = workerCertNoteKey({
+    claimed: claim.has,
+    tier: cert.tier,
+    proofRequired: cert.proof_required,
+    hasProof: Boolean(matchDoc),
+    blockingError: missingProof,
+  });
 
   return (
     <div className="rounded-[var(--radius-input)] border border-[var(--jale-divider)] p-4">
@@ -450,6 +515,10 @@ export function CertClaimRow({
         <p className="mt-2 text-xs font-semibold text-[var(--jale-danger)]">
           {tFlow('errors.required_cert', { name: cert.name })}
         </p>
+      ) : null}
+
+      {certNoteKey ? (
+        <p className="mt-2 text-xs text-[var(--jale-ink-2)]">{tFlow(certNoteKey)}</p>
       ) : null}
 
       {showProofArea ? (

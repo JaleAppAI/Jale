@@ -102,13 +102,16 @@ describe('ApiError re-export', () => {
   // same class the throwers construct.
   it('is the same class as the shared one in lib/api/errors', () => {
     expect(ApiError).toBe(SharedApiError);
-    expect(new SharedApiError(409, 'job_limit_reached')).toBeInstanceOf(ApiError);
+    expect(new SharedApiError(403, 'job_limit_reached')).toBeInstanceOf(ApiError);
   });
 
   it('keeps message === code and exposes the allowlisted payload PostJobModal reads', () => {
-    const err = new ApiError(409, 'job_limit_reached', { active_job_limit: 1, active_jobs: 1 });
+    // 403 is what the backend actually sends for a reached plan limit
+    // (employer-jobs-create.ts:230, employer-jobs-update.ts:118).
+    const err = new ApiError(403, 'job_limit_reached', { active_job_limit: 1, active_jobs: 1 });
     expect(err.message).toBe('job_limit_reached');
     expect(err.payload.active_job_limit).toBe(1);
+    expect(err.status).toBe(403);
   });
 });
 

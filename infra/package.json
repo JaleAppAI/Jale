@@ -22,6 +22,7 @@
     "whatsapp:controls": "ts-node scripts/whatsapp-runtime-controls.ts",
     "replay:whatsapp-domain-event": "ts-node scripts/replay-domain-event.ts",
     "replay:whatsapp-inbound": "ts-node scripts/replay-whatsapp-inbound.ts",
+    "redrive:billing-dlq": "ts-node scripts/redrive-billing-dlq.ts",
     "export:csv": "ts-node scripts/export-db-to-csv.ts"
   },
   "devDependencies": {

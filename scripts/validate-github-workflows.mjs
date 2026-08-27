@@ -84,8 +84,16 @@ requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'n
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npx cdk synth');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesVerifiedIdentityArn=');
+// Cognito employer-pool SES sender: CI synth must exercise the auth-stack SES
+// branch (it is dead code unless sesEmailFromAddress is supplied).
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesEmailFromAddress=');
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c sesEmailRegion=us-east-1');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c whatsappAlarmTopicArn=');
+// BillingStack alarms reuse the same monitored ops topic as the WhatsApp/AI/
+// referrals alarms; without this context key the stack falls back to creating
+// a bare jale-billing-alarms topic that has no subscribers.
+requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, '-c billingAlarmTopicArn=');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'npm audit --omit=dev --audit-level=high');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'node scripts/validate-github-workflows.mjs');
 requireIncludes('.github/workflows/_reusable-validate.yml', reusableValidate, 'working-directory: admin');
@@ -107,16 +115,53 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLI
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLING_SES_VERIFIED_IDENTITY_ARN');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c emailFromAddress=');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c sesVerifiedIdentityArn=');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'COGNITO_EMAIL_FROM_ADDRESS: ${{ vars.COGNITO_EMAIL_FROM_ADDRESS }}');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'Require Cognito SES sender variable');
+// The guard must run in BOTH jobs: the plan job is skipped entirely when no
+// plan role is configured, and the deploy job is the one that can break prod.
+const cognitoSenderGuards = reusableDeploy.match(/- name: Require Cognito SES sender variable/g) ?? [];
+if (cognitoSenderGuards.length !== 2) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must guard COGNITO_EMAIL_FROM_ADDRESS in both the plan and deploy jobs',
+  );
+}
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'WHATSAPP_ALARM_TOPIC_ARN');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'JALE_WHATSAPP_STATUS_CALLBACK_URL');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappStatusCallbackUrl=');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c whatsappAlarmTopicArn=');
+requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c billingAlarmTopicArn=');
+// Billing alarms are routed to the same monitored ops topic the WhatsApp
+// alarms use (vars.WHATSAPP_ALARM_TOPIC_ARN). The paired match also pins the
+// flag immediately after whatsappAlarmTopicArn, so a single dropped flag in
+// one of the 4 plan/diff/deploy commands fails here instead of silently
+// re-creating the unsubscribed jale-billing-alarms topic in production.
+const productionBillingAlarmTopicContexts =
+  reusableDeploy.match(
+    /-c whatsappAlarmTopicArn="\$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="\$WHATSAPP_ALARM_TOPIC_ARN"/g,
+  ) ?? [];
+if (productionBillingAlarmTopicContexts.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must route billing alarms to the ops SNS topic '
+      + '(-c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" immediately after whatsappAlarmTopicArn) '
+      + 'in all 4 production CDK plan/diff/deploy commands',
+  );
+}
 const productionFifoTransportContexts =
   reusableDeploy.match(/-c whatsappInboundV2TransportEnabled=true/g) ?? [];
 if (productionFifoTransportContexts.length !== 4) {
   fail(
     '.github/workflows/_reusable-deploy.yml must enable WhatsApp v2 FIFO transport ' +
       'for all 4 production CDK plan/diff/deploy commands',
+  );
+}
+// Cognito + SES is only supported in us-east-1/us-west-2/eu-west-1, so the
+// sender region is a literal (the stacks themselves deploy to us-east-2).
+const productionCognitoSesContexts =
+  reusableDeploy.match(/-c sesEmailFromAddress="\$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1/g) ?? [];
+if (productionCognitoSesContexts.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must pass the Cognito SES sender ' +
+      '(sesEmailFromAddress + sesEmailRegion=us-east-1) to all 4 production CDK plan/diff/deploy commands',
   );
 }
 

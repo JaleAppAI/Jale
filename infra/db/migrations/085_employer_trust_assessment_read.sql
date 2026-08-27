@@ -1,4 +1,4 @@
--- 084_employer_trust_assessment_read.sql
+-- 085_employer_trust_assessment_read.sql
 --
 -- Employer worker-profile page shows the applicant's trust assessment.
 -- Until now only the worker's own cognito_sub could read

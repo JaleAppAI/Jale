@@ -323,6 +323,7 @@
         "expired_code": "Ese codigo expiro. Pide un codigo nuevo e intenta de nuevo.",
         "too_many_attempts": "Demasiados intentos. Espera unos minutos e intenta de nuevo.",
         "invalid_credentials": "No pudimos iniciar sesion con ese telefono.",
+        "account_not_confirmed": "Tu cuenta aun no esta confirmada. Pide un codigo nuevo e intenta de nuevo.",
         "password_requirements": "La contrasena no cumple los requisitos.",
         "invalid_email": "Ingresa un correo valido.",
         "invalid_signup": "Revisa los datos de la cuenta e intenta de nuevo.",
@@ -339,13 +340,9 @@
       "hero": "Contrate trabajadores calificados rápido.",
       "signup_title": "Bienvenido a Jale",
       "signup_subtitle": "Verifiquemos su correo para que pueda empezar a contratar.",
-      "confirm_subtitle": "Ingrese el código que enviamos a {email}. Si no lo ve, revise su carpeta de spam o correo no deseado.",
+      "confirm_subtitle": "Ingrese el código que enviamos a {email}.",
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
-      "resend_prompt": "¿No recibió el código?",
-      "resend_code": "Enviarlo de nuevo",
-      "resend_wait": "Intente de nuevo en {seconds}s",
-      "resend_success": "Enviamos un código nuevo. Revise su bandeja de entrada y la carpeta de spam.",
       "signup_prompt": "¿Nuevo aquí?",
       "signup_link": "Cree una cuenta",
       "signin_prompt": "¿Ya tiene cuenta?",
@@ -362,6 +359,14 @@
       "forgot_confirm_subtitle": "Ingrese el código que enviamos a {email}",
       "set_password": "Establecer nueva contraseña",
       "reset_success": "Contraseña actualizada — inicie sesión abajo.",
+      "never_received_code": "No recibí mi código de confirmación",
+      "recovery_title": "Confirme su cuenta",
+      "recovery_subtitle": "Ingrese el código de confirmación que le enviamos por correo para terminar de iniciar sesión.",
+      "resend_code": "Reenviar código",
+      "resend_cooldown": "Podrá reenviar en {seconds}s",
+      "code_sent": "Enviamos un código nuevo a {email}. Ingrese el código más reciente.",
+      "check_spam": "Puede tardar un minuto en llegar. Revise su carpeta de spam o correo no deseado.",
+      "confirmed_sign_in": "Su cuenta está confirmada — inicie sesión abajo.",
       "fields": {
         "company_name": "Nombre de la empresa",
         "contact_name": "Nombre de contacto",
@@ -403,6 +408,11 @@
         "expired_code": "Ese código de confirmación expiró. Pida uno nuevo e intente de nuevo.",
         "too_many_attempts": "Demasiados intentos. Espere unos minutos e intente de nuevo.",
         "invalid_credentials": "El correo o la contraseña no son correctos.",
+        "account_not_confirmed": "Su cuenta aún no está confirmada. Enviamos un código nuevo a su correo — revise su bandeja de entrada y la carpeta de spam.",
+        "already_confirmed": "Esta cuenta ya está confirmada — inicie sesión con su contraseña o use “¿Olvidó su contraseña?”.",
+        "confirmed_sign_in_failed": "Cuenta confirmada — la contraseña era incorrecta.",
+        "resend_limit": "Demasiadas solicitudes de código. Intente más tarde — puede que deba esperar hasta una hora.",
+        "code_delivery_failed": "No pudimos enviar un código a ese correo. Revise la dirección o contacte a soporte.",
         "invalid_signup": "Revise los datos de la cuenta e intente de nuevo.",
         "signup_failed": "No pudimos crear la cuenta. Revise los campos e intente de nuevo.",
         "required": "Este campo es obligatorio.",
@@ -466,6 +476,36 @@
       "errors": {
         "required": "Obligatorio.",
         "missing_summary": "Por favor agregue: {fields}"
+      }
+    },
+    "digest": {
+      "title": "Notificaciones",
+      "description": "Reciba un correo al día con el resumen de los nuevos candidatos de sus empleos abiertos. No se envía nada los días sin actividad.",
+      "toggle_aria": "Correo diario de resumen de candidatos",
+      "state_on": "Resumen diario activado",
+      "state_off": "Resumen diario desactivado",
+      "hour_label": "Hora de envío",
+      "hour_hint": "El resumen se envía a esta hora en la zona horaria de abajo.",
+      "timezone_label": "Zona horaria",
+      "language_label": "Idioma del correo",
+      "language_hint": "Esto cambia solo el correo del resumen, no el idioma de este sitio.",
+      "language_group_aria": "Idioma del correo de resumen",
+      "language_option": {
+        "en": "Inglés",
+        "es": "Español"
+      },
+      "load_error": "No se pudieron cargar sus preferencias de notificación. Intente de nuevo.",
+      "save_error": "No se pudieron guardar sus preferencias de notificación. Intente de nuevo.",
+      "timezones": {
+        "america_new_york": "Hora del Este — Nueva York",
+        "america_chicago": "Hora del Centro — Chicago",
+        "america_denver": "Hora de la Montaña — Denver",
+        "america_phoenix": "Hora de la Montaña, sin horario de verano — Phoenix",
+        "america_los_angeles": "Hora del Pacífico — Los Ángeles",
+        "america_anchorage": "Hora de Alaska — Anchorage",
+        "pacific_honolulu": "Hora de Hawái — Honolulú",
+        "america_mexico_city": "Hora del Centro — Ciudad de México",
+        "america_puerto_rico": "Hora del Atlántico — Puerto Rico"
       }
     }
   },
@@ -645,6 +685,7 @@
       "refresh": "Actualizar",
       "showing": "Mostrando {shown} de {total}",
       "post_success": "Empleo publicado",
+      "template_not_saved_after_post": "Empleo publicado. Su plantilla no se guardó (límite del plan: {limit}).",
       "back_to_dashboard": "← Volver al panel",
       "empty_title": "No se encontraron empleos",
       "empty_body": "Ninguna publicación coincide con esta búsqueda o filtro. Bórrelos para ver su tablero de nuevo.",
@@ -812,9 +853,9 @@
       "template_save_toggle": "Guardar como plantilla",
       "template_name_placeholder": "Nombre de la plantilla",
       "template_check_city": "Revise la ciudad antes de publicar",
-      "template_limit_reached": "Límite de plantillas alcanzado — mejore su plan para más",
-      "template_limit_reached_n": "Alcanzó el límite de {limit} plantillas — mejore su plan para más",
-      "template_name_taken": "Ya tiene una plantilla con ese nombre"
+      "template_name_taken": "Ya tiene una plantilla con ese nombre",
+      "template_not_saved": "Su plantilla no se guardará — su plan permite {limit} plantilla(s).",
+      "post_without_template": "Publicar sin guardar plantilla"
     },
     "worker_profile": {
       "doc_resume": "Currículum",
@@ -854,6 +895,12 @@
       "col_name": "Nombre",
       "col_details": "Detalles",
       "manage_link": "Administrar plantillas"
+    },
+    "usage": {
+      "jobs": "Empleos activos {used}/{limit}",
+      "templates": "Plantillas {used}/{limit}",
+      "jobs_plain": "{used} empleos activos",
+      "view_plan": "Ver plan"
     }
   },
   "employer_worker_profile": {
@@ -1078,7 +1125,12 @@
       "questions_summary": "{count} preguntas rápidas",
       "questions_required": "{count} requeridas",
       "estimate": "Postularse — unos {minutes} minutos",
-      "vault_check_failed": "No podemos revisar su bóveda en este momento"
+      "vault_check_failed": "No podemos revisar su bóveda en este momento",
+      "hint_doc_required": "Necesita subir esto para postularse.",
+      "hint_doc_optional": "Opcional — puede postularse sin esto.",
+      "hint_cert_required_proof": "Confirmará que la tiene y adjuntará el comprobante.",
+      "hint_cert_required_attest": "Solo confirmará que la tiene — no necesita subir nada.",
+      "hint_cert_optional": "Compártala si la tiene — no bloquea su postulación."
     },
     "apply_flow": {
       "steps": {
@@ -1099,10 +1151,13 @@
       "back_to_jobs": "Volver a trabajos",
       "progress_saved": "Su progreso está guardado.",
       "prefilled_hint": "De su última postulación — edite si es necesario",
+      "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírselo en persona.",
       "cert_question": "¿Tiene {name}?",
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",
       "cert_unverified_note": "Puede postularse sin comprobante — se mostrará como declarado, sin verificar.",
+      "cert_attest_note": "No necesita subir nada — el empleador puede pedirle verla en persona.",
+      "cert_proof_note": "Suba una foto o un archivo de esta certificación para continuar.",
       "cert_from_vault": "de su bóveda",
       "review_answers": "{answered} de {total} preguntas respondidas",
       "review_skipped": "{label} (opcional) — omitido",
@@ -1196,8 +1251,9 @@
       "no_required_documents": "Este empleo no requiere documentos."
     },
     "actions": {
-      "activate": "Marcar activa",
-      "close": "Marcar cerrada",
+      "activate": "Reanudar empleo",
+      "pause": "Pausar empleo",
+      "close": "Cerrar empleo",
       "edit": "Editar empleo",
       "delete": "Eliminar",
       "delete_error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
@@ -1205,7 +1261,9 @@
       "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puedes reactivarlo después, según el límite de trabajos activos de tu plan.",
       "close_confirm_cta": "Cerrar trabajo",
       "close_cancel": "Cancelar",
-      "close_pending": "Cerrando…"
+      "close_pending": "Cerrando…",
+      "pause_pending": "Pausando…",
+      "pause_success": "Empleo pausado"
     },
     "closed_notice": "Este trabajo no está activo. El enlace público ahora muestra un aviso de \"ya no acepta postulaciones\" en lugar de la publicación.",
     "metrics": {
@@ -1279,7 +1337,12 @@
       "proof_toggle_label": "Subir comprobante",
       "proof_hint": "Pide al postulante adjuntar el certificado con su postulación.",
       "no_certifications_yet": "No se han seleccionado certificaciones. Agréguelas en Pago y horario.",
-      "cert_tier_aria": "Nivel de requisito de {name}"
+      "cert_tier_aria": "Nivel de requisito de {name}",
+      "cert_hint_required_proof": "Los postulantes deben subir el comprobante de esta certificación con su postulación inicial.",
+      "cert_hint_required_attest": "Los postulantes confirmarán que tienen esta certificación — no necesitan subir nada. Puede pedir verla en persona.",
+      "cert_hint_optional": "Los postulantes pueden compartirla si la tienen. Nunca bloquea una postulación.",
+      "doc_hint_required": "Los postulantes deben subir este documento para postularse.",
+      "doc_hint_optional": "Los postulantes pueden adjuntarlo — no es necesario para postularse."
     },
     "groups": {
       "documents": "Documentos",
@@ -1433,6 +1496,7 @@
       "types": {
         "resume": "Currículum",
         "driver_license": "Licencia de conducir",
+        "work_auth_doc": "Documento de autorización de trabajo",
         "ssn": "SSN"
       },
       "not_uploaded": "No subido",
@@ -1554,9 +1618,34 @@
       "title": "Información de facturación no disponible",
       "body": "No pudimos cargar los detalles de su facturación en este momento."
     },
+    "limit_dialog": {
+      "title": "Alcanzó el límite de su plan",
+      "body_jobs": "Su plan permite {limit} publicación(es) de empleo activa(s), y tiene {used} activa(s) ahora mismo.",
+      "body_jobs_zero": "Su plan actual no incluye publicaciones de empleo activas. Mejore su plan para publicar este empleo.",
+      "body_templates": "Su plan permite {limit} plantilla(s) guardada(s). Elimine una o mejore su plan para guardar esta.",
+      "body_templates_zero": "Su plan actual no incluye plantillas guardadas.",
+      "blocking_heading": "Ocupando su(s) espacio(s) activo(s) ahora",
+      "and_more": "y {count} más",
+      "hint_jobs": "Pausar o cerrar un empleo activo libera su espacio de inmediato.",
+      "hint_templates": "Eliminar una plantilla guardada libera un espacio de inmediato.",
+      "cta_upgrade": "Mejorar plan",
+      "cta_pause_job": "Pausar otro empleo",
+      "cta_manage_templates": "Administrar plantillas",
+      "dismiss": "Ahora no"
+    },
     "limit_reached": {
       "modal_message": "Ha alcanzado el límite de su plan de {limit} publicación(es) de empleo activa(s). Mejore su plan para publicar más.",
       "cta": "Mejorar plan"
+    },
+    "signage": {
+      "free_title": "Está en el plan Gratis",
+      "free_body": "El plan Gratis incluye {jobLimit} publicación(es) de empleo activa(s) y {templateLimit} plantilla(s). Mejore su plan para publicar más a la vez.",
+      "free_cta": "Mejorar plan",
+      "lapsed_title": "Su suscripción no está activa",
+      "lapsed_body": "Estado de la suscripción: {status}. Vuelva a suscribirse para recuperar los límites del plan Pro.",
+      "lapsed_body_grace": "Su último pago falló. Actualice su método de pago antes del {date} para conservar sus límites Pro — todavía no ha cambiado nada.",
+      "lapsed_cta": "Volver a suscribirse",
+      "lapsed_cta_grace": "Actualizar método de pago"
     }
   },
   "app_shell": {
@@ -1593,5 +1682,15 @@
     "open_post": "Abrir publicación",
     "remove_photo": "Quitar foto {n}",
     "load_more": "Ver publicaciones anteriores"
+  },
+  "digest_unsubscribe": {
+    "title": "Correos de resumen diario",
+    "body": "Confirme abajo y dejaremos de enviarle el resumen diario de candidatos.",
+    "button": "Cancelar suscripción",
+    "success_title": "Su suscripción fue cancelada",
+    "success_body": "No le enviaremos más correos con el resumen diario de candidatos.",
+    "success_settings_hint": "Puede volver a activar el resumen diario cuando quiera en Notificaciones, dentro de su configuración de Jale.",
+    "error_title": "Este enlace ya no es válido",
+    "error_body": "Puede administrar los correos de resumen en Notificaciones, dentro de su configuración de Jale."
   }
 }
