@@ -93,7 +93,9 @@ describe('worker-web-signup', () => {
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({});
 
-    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
+    // R2-C4: the request body is PHONE ONLY. The worker's name is asked for
+    // inside the onboarding flow itself, at `profile.name`.
+    const res = await handler(mkEv({ phone: '+19152272188' }));
 
     expect(res.statusCode).toBe(200);
     expect(mockSend.mock.calls[0][0]).toBeInstanceOf(AdminCreateUserCommand);
@@ -110,9 +112,9 @@ describe('worker-web-signup', () => {
         { Name: 'custom:user_type', Value: 'worker' },
       ]),
     }));
-    // The caller-supplied name must NOT reach Cognito from this
-    // unauthenticated endpoint (pre-registration poisoning vector); it
-    // arrives via the authenticated post-OTP profile update instead.
+    // No name reaches Cognito from this unauthenticated endpoint — there is
+    // no name to send any more, and pre-registering a stranger's number
+    // under an attacker-chosen name was the original poisoning vector.
     const createAttrs = mockSend.mock.calls[0][0].input.UserAttributes as Array<{ Name: string }>;
     expect(createAttrs.some((a) => a.Name === 'name')).toBe(false);
     expect(mockSend.mock.calls[1][0]).toBeInstanceOf(AdminGetUserCommand);
@@ -129,19 +131,20 @@ describe('worker-web-signup', () => {
       Password: expect.any(String),
       Permanent: true,
     });
-    // Seeded WITHOUT the caller-supplied name — '' is a safe no-op through
-    // reconcile_worker_signup's NULLIF/COALESCE.
+    // The row is seeded with cognito_sub + phone and NO name — '' is a safe
+    // no-op through reconcile_worker_signup's NULLIF/COALESCE. That row is
+    // what `resolve_worker_internal_id` (086) hands the onboarding engine;
+    // proven end to end against real PostgreSQL in
+    // test/unit/db/web-worker-whatsapp-crossover.integration.test.ts.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
       '',
     ]);
-    // The submitted name IS staged (not written to full_name directly) so
-    // verify-auth-challenge can promote it on the first correct OTP.
-    expect(mockQuery).toHaveBeenCalledWith('SELECT stage_worker_pending_name($1, $2)', [
-      'worker-sub',
-      'Ivan Worker',
-    ]);
+    // ...and that is the ONLY statement this endpoint issues: migration
+    // 052's staging call is gone (BEGIN/COMMIT bracket it, nothing else).
+    const statements = mockQuery.mock.calls.map(([sql]) => sql as string);
+    expect(statements).toEqual(['BEGIN', 'SELECT reconcile_worker_signup($1, $2, $3)', 'COMMIT']);
     expect(mockQuery.mock.invocationCallOrder[1]).toBeLessThan(mockSend.mock.invocationCallOrder[3]);
     expect(mockRelease).toHaveBeenCalled();
   });
@@ -162,29 +165,29 @@ describe('worker-web-signup', () => {
       })
       .mockResolvedValueOnce({});
 
-    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Attacker Rename' }));
+    const res = await handler(mkEv({ phone: '+19152272188' }));
 
     expect(res.statusCode).toBe(200);
     expect(mockSend).toHaveBeenCalledTimes(3);
-    // Neither the attacker-supplied rename NOR the Cognito-stored name is
-    // written from this unauthenticated path — '' preserves whatever
-    // users.full_name already holds (NULLIF/COALESCE no-op) and the
-    // authenticated post-OTP profile update remains the only name writer.
+    // The Cognito-stored name is NOT written from this unauthenticated path
+    // — '' preserves whatever users.full_name already holds (NULLIF/COALESCE
+    // no-op), and `profile.name` inside the flow is the only name writer.
     expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
       'worker-sub',
       '+19152272188',
       '',
     ]);
-    // The attacker-supplied name is staged, not written directly — it can
-    // only ever be promoted by a correct OTP, and only while full_name is
-    // still NULL (promote_worker_pending_name enforces both).
-    expect(mockQuery).toHaveBeenCalledWith('SELECT stage_worker_pending_name($1, $2)', [
-      'worker-sub',
-      'Attacker Rename',
-    ]);
+    const statements = mockQuery.mock.calls.map(([sql]) => sql as string);
+    expect(statements).toEqual(['BEGIN', 'SELECT reconcile_worker_signup($1, $2, $3)', 'COMMIT']);
   });
 
-  it('does not fail signup when staging the pending name throws', async () => {
+  // ── R2-C4: a stale client that still posts fullName ───────────────────
+  //
+  // The redesigned form is phone-only, but a cached bundle may keep sending
+  // a name through the rollout window. That must be a 200 with the field
+  // IGNORED — never a 400 (which would block signup outright) and never a
+  // write, since nothing promotes a staged name any more.
+  it('accepts and ignores a stale client\'s fullName instead of 400ing', async () => {
     mockSend
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({
@@ -192,51 +195,37 @@ describe('worker-web-signup', () => {
       })
       .mockResolvedValueOnce({})
       .mockResolvedValueOnce({});
-
-    mockQuery.mockImplementation(async (sql: string) => {
-      if (sql === 'SELECT stage_worker_pending_name($1, $2)') {
-        throw new Error('staging boom');
-      }
-      return {};
-    });
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
 
     expect(res.statusCode).toBe(200);
-    expect(warnSpy).toHaveBeenCalled();
+    // Logged once, and the value itself never appears in the log line.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('Ivan Worker');
     warnSpy.mockRestore();
+
+    // The name reaches neither Cognito nor the database.
+    expect(JSON.stringify(mockSend.mock.calls)).not.toContain('Ivan Worker');
+    const statements = mockQuery.mock.calls.map(([sql]) => sql as string);
+    expect(statements).toEqual(['BEGIN', 'SELECT reconcile_worker_signup($1, $2, $3)', 'COMMIT']);
+    expect(mockQuery).toHaveBeenCalledWith('SELECT reconcile_worker_signup($1, $2, $3)', [
+      'worker-sub',
+      '+19152272188',
+      '',
+    ]);
   });
 
-  it('does not fail the reconcile-path signup when staging the pending name throws', async () => {
-    mockSend
-      .mockRejectedValueOnce({ name: 'UsernameExistsException' })
-      .mockResolvedValueOnce({
-        Enabled: true,
-        UserStatus: 'CONFIRMED',
-        UserAttributes: [
-          { Name: 'sub', Value: 'worker-sub' },
-          { Name: 'phone_number', Value: '+19152272188' },
-          { Name: 'phone_number_verified', Value: 'true' },
-          { Name: 'custom:user_type', Value: 'worker' },
-          { Name: 'name', Value: 'Stored Worker' },
-        ],
-      })
-      .mockResolvedValueOnce({});
+  it('rejects a body with no phone at all, and never opens a pool', async () => {
+    const res = await handler(mkEv({ fullName: 'Ivan Worker' }));
 
-    mockQuery.mockImplementation(async (sql: string) => {
-      if (sql === 'SELECT stage_worker_pending_name($1, $2)') {
-        throw new Error('staging boom');
-      }
-      return {};
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'invalid_phone',
+      message: 'Phone must be in E.164 format.',
     });
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Attacker Rename' }));
-
-    expect(res.statusCode).toBe(200);
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
   it('returns a generic retryable error when existing-account inspection fails', async () => {
@@ -244,7 +233,7 @@ describe('worker-web-signup', () => {
       .mockRejectedValueOnce({ name: 'UsernameExistsException' })
       .mockRejectedValueOnce(new Error('temporary Cognito failure'));
 
-    const res = await handler(mkEv({ phone: '+19152272188', fullName: 'Ivan Worker' }));
+    const res = await handler(mkEv({ phone: '+19152272188' }));
 
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body)).toEqual({

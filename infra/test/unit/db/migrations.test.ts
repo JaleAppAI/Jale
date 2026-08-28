@@ -118,6 +118,7 @@ describe('database migrations', () => {
       '084',
       '085',
       '086',
+      '087',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain

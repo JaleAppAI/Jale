@@ -107,8 +107,6 @@ import {
   isVoiceIntakeEnabled,
   hashNormalizedPhone,
 } from './lib/runtime-controls';
-import { parseApplyToken } from '../lib/referral-codes';
-import { parkPendingClaim, claimPendingReferral } from './lib/referral-claims';
 import {
   loadPreAuthStateForUpdate,
   savePreAuthState,
@@ -504,69 +502,6 @@ async function updateConversation(
     `UPDATE whatsapp_conversations SET ${sets}, updated_at = now() WHERE id = $1`,
     [id, ...values],
   );
-}
-
-// ── Web-worker bypass (Phase 2.2) ───────────────────────────────
-//
-// Workers who registered via the web app (email/password, tos already accepted)
-// skip the 8-state WhatsApp onboarding on first contact and land directly in
-// `idle` state with a contextual welcome message.
-
-async function findWebRegisteredWorker(
-  client: PoolClient,
-  phone: string,
-): Promise<{ id: string } | null> {
-  const result = await client.query<{ id: string }>(
-    `SELECT id FROM users
-       WHERE phone = $1
-         AND user_type = 'worker'
-         AND tos_accepted_at IS NOT NULL
-         AND email IS NOT NULL
-       LIMIT 1`,
-    [phone],
-  );
-  return result.rowCount ? result.rows[0] : null;
-}
-
-/**
- * Runs the entire bypass atomically through migration 053's SECURITY
- * DEFINER `bypass_onboarding_for_web_worker`: binds the conversation,
- * backfills `users.whatsapp_number` when NULL, upserts onboarding state to
- * `ready`, and inserts a completed workflow run (idempotent on repeat
- * calls) — all re-validated inside the definer, never trusted from this
- * caller's own eligibility check.
- */
-async function bypassOnboardingForWebWorker(
-  client: PoolClient,
-  conv: ConversationRow,
-  msg: IncomingMessage,
-  userId: string,
-): Promise<void> {
-  const lang = detectLanguage(msg.body);
-  await client.query(
-    `SELECT * FROM public.bypass_onboarding_for_web_worker($1, $2, $3, $4, $5)`,
-    [userId, conv.id, String(WHATSAPP_V2_WORKFLOW_VERSION), lang, msg.messageSid],
-  );
-  await updateConversation(client, conv.id, {
-    conversation_state: 'idle',
-    user_id: userId,
-    language: lang,
-    last_processed_message_sid: msg.messageSid,
-  });
-  const welcome =
-    lang === 'en'
-      ? 'Welcome to Jale! Type JOBS to see available job listings.'
-      : '¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.';
-  await queueOutboxText(client, msg.messageSid, msg.from, welcome);
-
-  // Keep the in-memory row consistent with the writes above, mirroring
-  // routeMessage's own post-v2 writeback — any downstream code reached
-  // later in this same turn must see the now-bound conversation, not the
-  // stale unbound snapshot fetched at the top of processRecord.
-  conv.conversation_state = 'idle';
-  conv.user_id = userId;
-  conv.language = lang;
-  conv.last_processed_message_sid = msg.messageSid;
 }
 
 // ── Main SQS handler ────────────────────────────────────────────
@@ -1134,53 +1069,6 @@ async function handleSupportCommand(
   );
 }
 
-/**
- * Job referrals (migration 056) for a website-registered worker.
- *
- * The web-worker bypass above returns before `routeOnboardingV2`, so the
- * referral hook in the start step never runs for these workers — a code in
- * their first WhatsApp message would otherwise be silently lost, and these are
- * exactly the people a referral link sends to the website in the first place.
- *
- * Unlike the pre-auth lane, this worker already has a `users` row and is being
- * moved straight to `ready` here, so there is no later onboarding completion to
- * claim the code at. Park and claim it in one go instead.
- *
- * Isolated behind a SAVEPOINT for the same reason as the start-step hook: this
- * runs inside the caller's open transaction, so an unguarded failure would
- * abort it and cost the worker their welcome message. Logs a static metric
- * only — never the token, the phone number, or the phone hash.
- */
-async function captureReferralForBypassedWorker(
-  client: PoolClient,
-  whatsappNumber: string,
-  workerId: string,
-  msg: IncomingMessage,
-): Promise<void> {
-  const applyToken = parseApplyToken(msg.body);
-  if (!applyToken) return;
-
-  // Both sides key on conv.whatsapp_number, so the park and the claim agree on
-  // the hash. hashNormalizedPhone only trims, so it is byte-sensitive.
-  const phoneHash = hashNormalizedPhone(whatsappNumber);
-  const now = new Date();
-
-  try {
-    await client.query('SAVEPOINT referral_bypass');
-    await parkPendingClaim(client, phoneHash, applyToken, now);
-    await claimPendingReferral(client, phoneHash, workerId, now);
-    await client.query('RELEASE SAVEPOINT referral_bypass');
-  } catch {
-    try {
-      await client.query('ROLLBACK TO SAVEPOINT referral_bypass');
-    } catch {
-      // The transaction is already unusable; the caller's retry/DLQ handling
-      // takes over as it would for any other failed statement.
-    }
-    console.error(JSON.stringify({ metric: 'ReferralBypassCaptureFailed' }));
-  }
-}
-
 async function routeMessage(
   client: PoolClient,
   conv: ConversationRow,
@@ -1194,20 +1082,6 @@ async function routeMessage(
   // control, unrelated to the removed v2/v1 split).
   const runtimeControls = await loadRuntimeControls(client);
   const phoneHash = hashNormalizedPhone(conv.whatsapp_number);
-
-  // Web-registered workers (email + tos_accepted_at already set from the
-  // website signup + OTP flow) skip v2 onboarding entirely on first contact.
-  // Scoped to conversations with no bound user yet — a worker already
-  // mid-onboarding (or already onboarded) must finish/stay on the lane it's
-  // on, and a synthetic voice-pipeline re-entry is never a "first message".
-  if (!conv.user_id && !voiceEvent) {
-    const webWorker = await findWebRegisteredWorker(client, conv.whatsapp_number);
-    if (webWorker) {
-      await bypassOnboardingForWebWorker(client, conv, msg, webWorker.id);
-      await captureReferralForBypassedWorker(client, conv.whatsapp_number, webWorker.id, msg);
-      return webWorker.id;
-    }
-  }
 
   registerOnboardingRenderers();
 
@@ -1660,16 +1534,10 @@ interface WorkerProfileSummary {
   years_experience: string | null;
   has_transportation: boolean | null;
   availability: string | null;
-  trust_signals: unknown;
-  trust_signals_completed_at: string | null;
   trust_assessment_profession_key: string | null;
   trust_assessment_status: string | null;
   trust_assessment_answers: unknown;
   trust_assessment_questions: unknown;
-}
-
-interface StoredTrustAnswer {
-  label?: string;
 }
 
 interface StoredAssessmentAnswer {
@@ -1695,7 +1563,6 @@ async function handleProfileCommand(
   const result = await client.query<WorkerProfileSummary>(
     `SELECT u.phone, u.whatsapp_number, u.full_name, u.city, u.main_trade, u.main_trade_other,
             u.years_experience, u.has_transportation, u.availability,
-            u.trust_signals, u.trust_signals_completed_at,
             wta.profession_key AS trust_assessment_profession_key,
             wta.status AS trust_assessment_status,
             wta.answers AS trust_assessment_answers,
@@ -1735,7 +1602,6 @@ async function handleProfileCommand(
 }
 
 function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string {
-  const trustSignals = parseTrustSignals(profile.trust_signals);
   const assessmentAnswers = parseAssessmentAnswers(profile.trust_assessment_answers);
   const assessmentQuestions = parseAssessmentQuestions(profile.trust_assessment_questions);
   const text = lang === 'es'
@@ -1752,9 +1618,6 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         status: 'Estado',
         trustQuestions: 'Preguntas de confianza',
         answer: 'Respuesta',
-        specialization: 'Especialidad',
-        seniority: 'Nivel',
-        tasks: 'Trabajo principal',
         missing: 'Sin completar',
         yes: 'Si',
         no: 'No',
@@ -1772,9 +1635,6 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         status: 'Status',
         trustQuestions: 'Trust questions',
         answer: 'Answer',
-        specialization: 'Specialty',
-        seniority: 'Level',
-        tasks: 'Main work',
         missing: 'Not set',
         yes: 'Yes',
         no: 'No',
@@ -1815,12 +1675,6 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         );
       });
     }
-  } else if (profile.trust_signals_completed_at && trustSignals) {
-    lines.push(
-      `${text.specialization}: ${trustSignals.specialization?.label ?? text.missing}`,
-      `${text.seniority}: ${trustSignals.seniority?.label ?? text.missing}`,
-      `${text.tasks}: ${trustSignals.tasks?.label ?? text.missing}`,
-    );
   } else {
     lines.push(text.missing);
   }
@@ -1870,21 +1724,6 @@ function assessmentStatusLabel(status: string, lang: Lang): string {
     failed: { es: 'Fallido', en: 'Failed' },
   };
   return labels[status]?.[lang] ?? status;
-}
-
-function parseTrustSignals(value: unknown): Record<string, StoredTrustAnswer> | null {
-  if (!value) return null;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value) as Record<string, StoredTrustAnswer>;
-    } catch {
-      return null;
-    }
-  }
-  if (typeof value === 'object') {
-    return value as Record<string, StoredTrustAnswer>;
-  }
-  return null;
 }
 
 function labelFor(

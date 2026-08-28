@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused WhatsApp v2 PostgreSQL enforcement and
-# concurrency suites (migrations 042/049/080 + onboarding concurrency,
+# concurrency suites (migrations 042/049/080/086 + onboarding concurrency,
 # least-privilege flow coverage, and the 080 application-fill DB contract:
 # worker_documents grants/RLS, the 022 guard's GUC bypass, and the 075/078
 # cert caps).
@@ -34,7 +34,7 @@ exec npx jest --runInBand \
   test/unit/db/whatsapp-flow-049.integration.test.ts \
   test/unit/db/worker-profiles-constraints.integration.test.ts \
   test/unit/db/whatsapp-onboarding-052.integration.test.ts \
-  test/unit/db/whatsapp-onboarding-053.integration.test.ts \
   test/unit/db/whatsapp-onboarding-reset.integration.test.ts \
   test/unit/db/retrigger-sweep-definer.integration.test.ts \
-  test/unit/db/whatsapp-application-fill-080.integration.test.ts
+  test/unit/db/whatsapp-application-fill-080.integration.test.ts \
+  test/unit/db/web-worker-whatsapp-crossover.integration.test.ts
