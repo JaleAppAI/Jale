@@ -137,13 +137,13 @@ describe('AiStack', () => {
 
   it('feeds Bedrock parse/validation failures into one alarmed TrustScorerFailures metric', () => {
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
-      FilterPattern: '{ $.metric = "TrustScorerParseFailure" }',
+      FilterPattern: '"TrustScorerParseFailure"',
       MetricTransformations: [
         { MetricNamespace: 'Jale/Ai', MetricName: 'TrustScorerFailures', MetricValue: '1' },
       ],
     });
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
-      FilterPattern: '{ $.metric = "TrustScorerValidationFailure" }',
+      FilterPattern: '"TrustScorerValidationFailure"',
       MetricTransformations: [
         { MetricNamespace: 'Jale/Ai', MetricName: 'TrustScorerFailures', MetricValue: '1' },
       ],

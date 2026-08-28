@@ -556,3 +556,103 @@ describe('AuthStack — SES context validation', () => {
     })).toThrow(/sesEmailRegion must be one of/);
   });
 });
+
+/**
+ * G1 (sprint 22 R2-G): both live pools carry real registered users, and until
+ * now nothing stopped a mis-scoped `cdk destroy` — or a template change that
+ * replaced the pool — from deleting them. DeletionProtection is driven by the
+ * app-global `deletionProtection` CDK context flag, which
+ * .github/workflows/_reusable-deploy.yml passes as `-c deletionProtection=true`
+ * on all four cdk invocations.
+ *
+ * The resolver is FAIL-SAFE (`!== false`, same as database-stack.ts): only an
+ * explicit false disarms. A synth that forgets the flag entirely must not emit
+ * INACTIVE over two live pools.
+ */
+describe('AuthStack Cognito DeletionProtection', () => {
+  const buildTemplate = (idPrefix: string, deletionProtection?: unknown): Template => {
+    const context: Record<string, unknown> = {
+      environment: 'production',
+      otpSmsFromNumber: '+15125550123',
+    };
+    if (deletionProtection !== undefined) {
+      context.deletionProtection = deletionProtection;
+    }
+    const app = new cdk.App({ context });
+    const network = new NetworkStack(app, `${idPrefix}NetworkStack`);
+    const database = new DatabaseStack(app, `${idPrefix}DatabaseStack`, { network });
+    const auth = new AuthStack(app, `${idPrefix}AuthStack`, {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    return Template.fromStack(auth);
+  };
+
+  const userPools = (template: Template): Array<Record<string, unknown>> =>
+    Object.values(template.findResources('AWS::Cognito::UserPool'))
+      .map((resource) => (resource as { Properties: Record<string, unknown> }).Properties);
+
+  // The CLI hands `-c deletionProtection=true` through as the STRING 'true'.
+  // Testing only the boolean would pass green while prod shipped INACTIVE.
+  // The no-context row is the fail-safe case: a scratch synth or a stack built
+  // outside the app must not plan INACTIVE over a live pool.
+  test.each([
+    ['the string CI actually passes', 'DpOnStr', 'true'],
+    ['a boolean from cdk.json', 'DpOnBool', true],
+    ['no context at all (fail-safe)', 'DpAbsent', undefined],
+    ['an unrecognised value', 'DpOnJunk', 'yes'],
+  ])('every pool is ACTIVE with %s', (_label, idPrefix, value) => {
+    const pools = userPools(buildTemplate(idPrefix, value));
+    expect(pools).toHaveLength(2);
+    for (const pool of pools) {
+      expect(pool.DeletionProtection).toBe('ACTIVE');
+    }
+  });
+
+  // Only an explicit false disarms — and `-c deletionProtection=false` arrives
+  // as the STRING 'false', so both spellings have to be honoured or a
+  // deliberate dev opt-out silently keeps the pool protected.
+  test.each([
+    ['a boolean false (cdk.json dev value)', 'DpFalseBool', false],
+    ['the string a -c flag produces', 'DpFalseStr', 'false'],
+  ])('pools stay disposable with %s', (_label, idPrefix, value) => {
+    const pools = userPools(buildTemplate(idPrefix, value));
+    expect(pools).toHaveLength(2);
+    for (const pool of pools) {
+      expect(pool.DeletionProtection === undefined || pool.DeletionProtection === 'INACTIVE')
+        .toBe(true);
+    }
+  });
+
+  // The deploy risk worth guarding is a REPLACEMENT: CloudFormation replaces a
+  // user pool when UserPoolName, the schema/custom attributes or the alias
+  // configuration change, and a replacement deletes the old pool with every
+  // user in it. Diffing the two synthesized pools proves this change touches
+  // exactly one property and none of those.
+  test('turning DeletionProtection on changes nothing else on either pool', () => {
+    // Identical construct ids in two separate apps: path-derived values (the
+    // SMS role ExternalId, asset hashes) must be equal so a real difference
+    // stands out.
+    const off = buildTemplate('DpDiff', false);
+    const on = buildTemplate('DpDiff', 'true');
+    const offPools = off.findResources('AWS::Cognito::UserPool');
+    const onPools = on.findResources('AWS::Cognito::UserPool');
+    expect(Object.keys(onPools).sort()).toEqual(Object.keys(offPools).sort());
+
+    for (const logicalId of Object.keys(offPools)) {
+      const before = { ...(offPools[logicalId] as any).Properties };
+      const after = { ...(onPools[logicalId] as any).Properties };
+      expect(after.DeletionProtection).toBe('ACTIVE');
+      delete before.DeletionProtection;
+      delete after.DeletionProtection;
+      expect(after).toEqual(before);
+      // Belt and braces on the three replacement triggers.
+      expect(after.UserPoolName).toBe(before.UserPoolName);
+      expect(after.Schema).toEqual(before.Schema);
+      expect(after.AliasAttributes ?? after.UsernameAttributes)
+        .toEqual(before.AliasAttributes ?? before.UsernameAttributes);
+    }
+  });
+});

@@ -264,8 +264,10 @@ export class NotificationsStack extends cdk.Stack {
     // `{ $.metric = "..." }` pattern matches nothing and the alarm is silently
     // disarmed. A quoted term matches the substring inside the JSON.stringify
     // output under BOTH the text and JSON log formats.
-    // billing-stack.ts:364/392 is the precedent; the $.metric idiom used by
-    // AiStack/ReferralsStack/WhatsAppStack is the thing being avoided here.
+    // billing-stack.ts:364/392 is the precedent. AiStack/ReferralsStack/
+    // WhatsAppStack carried the broken $.metric idiom until sprint 22 R2-G
+    // converted them; test/unit/stacks/metric-filter-patterns.test.ts now
+    // fails any stack that reintroduces it.
     //
     // The literals must match what employer-digest-producer.ts writes. A rename
     // on either side silently disarms the alarm, so keep the two in step.

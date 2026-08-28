@@ -741,7 +741,7 @@ describe('ReferralsStack', () => {
 
   test('creates a MetricFilter + alarm for the deliberate VisibilityOutboxDrainSkipped no-op path', () => {
     template.hasResourceProperties('AWS::Logs::MetricFilter', {
-      FilterPattern: '{ $.metric = "VisibilityOutboxDrainSkipped" }',
+      FilterPattern: '"VisibilityOutboxDrainSkipped"',
       MetricTransformations: [
         { MetricNamespace: 'Jale/Referrals', MetricName: 'VisibilityOutboxDrainSkipped', MetricValue: '1' },
       ],
