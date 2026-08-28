@@ -858,9 +858,6 @@
       "post_without_template": "Post without saving template"
     },
     "worker_profile": {
-      "doc_resume": "Resume",
-      "doc_driver_license": "Driver's License",
-      "doc_ssn": "SSN Card",
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
     },
     "post_job_docs": {
@@ -944,6 +941,11 @@
     "trust_status_failed": "Scoring unavailable",
     "trust_voice_badge": "Voice answer",
     "trust_empty": "This worker hasn't completed a trust assessment yet.",
+    "extraction_title": "From their answers",
+    "extraction_pending": "Reading their answers...",
+    "extraction_failed": "We couldn’t summarize these answers — read them below.",
+    "certifications": "Certifications",
+    "experience_months": "{months} months",
     "availability": {
       "immediate": "Immediate",
       "2_weeks": "2 weeks",
@@ -985,11 +987,6 @@
     "success_body": "The employer has been notified.",
     "error_size": "File must be under 10 MB",
     "error_type": "Only JPG, PNG, or PDF files are accepted",
-    "doc_resume": "Resume",
-    "doc_driver_license": "Driver's License",
-    "doc_ssn": "SSN Card / ITIN",
-    "doc_work_auth_doc": "Work Authorization Document",
-    "doc_certification_doc": "Certification",
     "error_upload": "Upload failed. Please try again.",
     "error_submit": "Submission failed. Please try again.",
     "error_already_received": "We already received this document through this link.",
@@ -1045,11 +1042,6 @@
     "no_city_jobs": "Nothing in your cities right now.",
     "required_docs_label": "Documents needed",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
-    "doc_labels": {
-      "resume": "Resume",
-      "driver_license": "Driver's License",
-      "ssn": "SSN Card / ITIN"
-    },
     "job_type": {
       "full-time": "40 hrs/wk",
       "part-time": "Part-time",
@@ -1095,11 +1087,6 @@
     "page_title": "Job details",
     "doc_ok": "Uploaded",
     "doc_missing": "Missing",
-    "doc_labels": {
-      "resume": "Resume",
-      "driver_license": "Driver's License",
-      "ssn": "SSN Card / ITIN"
-    },
     "job_type": {
       "full-time": "Full-time",
       "part-time": "Part-time",
@@ -1151,6 +1138,7 @@
       "progress_saved": "Your progress is saved.",
       "prefilled_hint": "From your last application — edit if needed",
       "legacy_doc_notice": "This can’t be uploaded online — the employer may ask for it in person.",
+      "unknown_doc_notice": "We don’t recognize this requirement — ask the employer what they need before you apply.",
       "cert_question": "Do you have {name}?",
       "cert_use_vault": "Use {file} from your vault",
       "cert_upload_new": "Upload new",
@@ -1279,7 +1267,8 @@
       "empty_body": "Workers who apply to this posting show up here. Share the public link below to reach more people.",
       "filtered_title": "No applicants match these filters",
       "filtered_body": "Change the filters, or clear them to see everyone who applied.",
-      "clear_filters": "Clear filters"
+      "clear_filters": "Clear filters",
+      "trust_pill": "Trust {score}"
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
@@ -1325,6 +1314,14 @@
     "tracked_caption": "Opens and signups from this link are tracked and credited to your business.",
     "fallback_link_label": "Backup link",
     "fallback_link_untracked": "This link works, but opens and signups from it won't be tracked or credited to your business. Try \"Get share link\" again later for a trackable link."
+  },
+  "doc_types": {
+    "resume": "Resume",
+    "driver_license": "Driver's License",
+    "work_auth_doc": "Work Authorization Document",
+    "certification_doc": "Certification",
+    "ssn": "SSN Card / ITIN",
+    "other": "Other document"
   },
   "job_requirements": {
     "picker": {

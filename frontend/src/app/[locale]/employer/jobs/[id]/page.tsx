@@ -49,10 +49,11 @@ import type { Applicant, ApplicantFilters, EmployerJobDetail } from '@/lib/api/e
 import { classifyError, type ErrorKind } from '@/lib/api/errors';
 import { planLimitModel, type PlanLimitModel } from '@/lib/plan-limit';
 import { answerEntries } from '@/lib/format-application-answers';
-import type { ScoreBand } from '@/lib/match';
-import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import type { WritableJobStatus } from '@/lib/status';
 import { formatLongDate, formatStartDate } from '@/lib/date';
+import { buildCandidateMatchMap, type ApplicantMatch } from './candidate-matches';
+import { TrustScorePill } from './TrustScorePill';
+import { docTypeLabel } from '@/lib/doc-types';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,12 +64,6 @@ const DASHBOARD_HREF = '/employer/dashboard';
 
 /** Quiet period after the last filter edit before the reload is sent. */
 const FILTER_DEBOUNCE_MS = 350;
-
-type ApplicantMatch = {
-    match_score: number;
-    score_band: ScoreBand;
-    match_reasons: string[];
-};
 
 /**
  * One load of this page: the posting and the applicant list that belongs to it.
@@ -121,6 +116,7 @@ export default function JobDetailPage() {
     const tMessages = useTranslations('employer_messages');
     const tMatch = useTranslations('match');
     const tCommon = useTranslations('common');
+    const tDocTypes = useTranslations('doc_types');
 
     const returnUrl = `/employer/jobs/${jobId}`;
 
@@ -533,13 +529,6 @@ export default function JobDetailPage() {
         'part-time': tShared('modal.job_type_parttime'),
         contract: tShared('modal.job_type_contract'),
     };
-    const docLabels: Record<string, string> = {
-        resume: tShared('worker_profile.doc_resume'),
-        driver_license: tShared('worker_profile.doc_driver_license'),
-        // SSN is no longer offered for new jobs, but legacy jobs may still require it.
-        ssn: tShared('worker_profile.doc_ssn'),
-    };
-
     const num = (value: string) => <span className="tabular-nums">{value}</span>;
 
     const fields: KVItem[] = [
@@ -678,7 +667,7 @@ export default function JobDetailPage() {
                                             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
                                                 {job.required_docs.map((doc) => (
                                                     <Badge key={doc} tone="info">
-                                                        {docLabels[doc] ?? doc}
+                                                        {docTypeLabel(doc, tDocTypes) ?? doc}
                                                     </Badge>
                                                 ))}
                                             </div>
@@ -1089,6 +1078,11 @@ function ApplicantRow({
                                 label={tMatch(`score_bands.${match.score_band}`)}
                             />
                         ) : null}
+                        {/* Beside the match badge, not instead of it: they answer
+                            two different questions -- how well this worker fits
+                            THIS job, and how they came across when asked about
+                            their trade. */}
+                        <TrustScorePill score={match?.trust_score ?? null} />
                         {availabilityKey ? (
                             <Badge tone="neutral">{t(`filters.availability_${availabilityKey}`)}</Badge>
                         ) : null}
@@ -1171,33 +1165,3 @@ function ApplicantRow({
     );
 }
 
-function buildCandidateMatchMap(
-    candidates: Array<{
-        application_id?: string | null;
-        worker_id: string;
-        match_score: number;
-        score_band: ScoreBand;
-        match_reasons?: string[];
-    }>,
-): Map<string, ApplicantMatch> {
-    const matches = new Map<string, ApplicantMatch>();
-
-    for (const candidate of candidates) {
-        const score = normalizeMatchScore(candidate.match_score);
-        if (score === null) continue;
-
-        const match: ApplicantMatch = {
-            match_score: score,
-            score_band: normalizeScoreBand(candidate.score_band, score),
-            match_reasons: (candidate.match_reasons ?? [])
-                .filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
-                .slice(0, 3)
-                .map((reason) => truncateMatchReason(reason)),
-        };
-
-        if (candidate.application_id) matches.set(candidate.application_id, match);
-        matches.set(candidate.worker_id, match);
-    }
-
-    return matches;
-}

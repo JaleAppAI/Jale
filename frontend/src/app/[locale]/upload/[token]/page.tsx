@@ -20,6 +20,7 @@ import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { KVList } from '@/components/ui/kv-list';
 import { Spinner } from '@/components/ui/spinner';
+import { docTypeLabel } from '@/lib/doc-types';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,6 +70,7 @@ interface UploadedDoc {
 export default function WorkerUploadPage() {
   const t = useTranslations('upload_page');
   const tCommon = useTranslations('common');
+  const tDocTypes = useTranslations('doc_types');
   const errorMessage = useErrorMessage();
   const params = useParams();
   const token = params.token as string;
@@ -83,19 +85,11 @@ export default function WorkerUploadPage() {
   /** S9. Terminal: there is no retry that can bring a spent link back. */
   const [linkDead, setLinkDead] = useState(false);
 
-  // `Partial`, not `Record<DocType, string>`: this anonymous one-token flow
-  // only ever renders `DOC_TYPES` above (resume/driver_license) -- the two
-  // new doc types (`work_auth_doc`/`certification_doc`, migration 074) are
-  // asked for through the authenticated worker vault/apply flow instead, so
-  // this map deliberately stays incomplete rather than growing entries this
-  // page never looks up.
-  const docLabel: Partial<Record<DocType, string>> = {
-    resume: t('doc_resume'),
-    driver_license: t('doc_driver_license'),
-    ssn: t('doc_ssn'),
-    work_auth_doc: t('doc_work_auth_doc'),
-    certification_doc: t('doc_certification_doc'),
-  };
+  // Was a page-local map over five hand-copied `upload_page.doc_*` keys.
+  // `DOC_TYPES` above is the only list this anonymous flow renders, and every
+  // entry in it is a `DOC_TYPE_KEYS` member, so the fallback is unreachable
+  // here -- it exists because the shared helper cannot know that.
+  const docLabel = (docType: DocType) => docTypeLabel(docType, tDocTypes) ?? docType;
 
   const handleFileSelect = async (doc_type: DocType, file: File) => {
     setSlotErrors((prev) => ({ ...prev, [doc_type]: undefined }));
@@ -211,7 +205,7 @@ export default function WorkerUploadPage() {
 
   if (submitted) {
     const receipt = DOC_TYPES.filter((d) => uploads[d]).map((d) => ({
-      label: docLabel[d],
+      label: docLabel(d),
       value: uploads[d]!.file.name,
     }));
 
@@ -277,7 +271,7 @@ export default function WorkerUploadPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-[var(--jale-ink)]">
-                        {docLabel[doc_type]}
+                        {docLabel(doc_type)}
                       </p>
                       <div className="mt-1.5">
                         {uploaded ? (
