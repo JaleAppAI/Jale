@@ -12,7 +12,8 @@
  *           the web door's two SECURITY DEFINER entry points, including the
  *           app.onboarding_bind_user_id guard and idempotency.
  *   Part 3  jobs.certification_requirements default + backfill.
- *   Part 4  the five reseeded, open-ended trade_questions rows.
+ *   Part 4  the five reseeded, open-ended trade_questions rows and the
+ *           purge of the AI-generated (is_seeded = false) cache rows.
  *
  * Roles are assumed with SET LOCAL ROLE from one superuser connection, the
  * same approach as whatsapp-onboarding-053.integration.test.ts: a superuser
@@ -724,18 +725,56 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     }
   });
 
-  it('leaves non-seeded trade_questions rows untouched', async () => {
-    const probeKey = `t86-custom-${randomUUID().slice(0, 8)}`;
+  it('leaves no AI-generated cache row behind (Part 4 purge end state)', async () => {
+    const counts = await one<{ generated: string; seeded: string }>(
+      `SELECT count(*) FILTER (WHERE NOT is_seeded)::text AS generated,
+              count(*) FILTER (WHERE is_seeded)::text     AS seeded
+         FROM trade_questions`,
+    );
+    // The AI cache refills itself from the question-generator Lambda on the
+    // next cache miss, so an empty non-seeded set is the correct end state.
+    expect(counts).toEqual({ generated: '0', seeded: '5' });
+  });
+
+  // Same class of gap as the jobs backfill: the end-state assertion above is
+  // satisfied by a table that never had a non-seeded row to begin with. This
+  // plants one and replays Part 4's DELETE against it, then confirms the five
+  // seeded rows are untouched collateral.
+  it('deletes stale AI-generated rows while leaving the five seeded rows intact', async () => {
+    const probeKey = `t86-stale-${randomUUID().slice(0, 8)}`;
     await setup.query(
-      `INSERT INTO trade_questions (profession_key, profession_raw, questions, is_seeded)
-       VALUES ($1, $1, '[{"q_en":"What is your seniority level?","q_es":"Cual es tu nivel?"}]'::jsonb, false)`,
+      `INSERT INTO trade_questions (profession_key, profession_raw, questions, is_seeded, model_id)
+       VALUES ($1, $1,
+               '[{"q_en":"What is your seniority level?","q_es":"Cual es tu nivel de experiencia?"}]'::jsonb,
+               false, 'us.amazon.nova-lite-v1:0')`,
       [probeKey],
     );
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
     try {
-      const row = await one<{ questions: { q_en: string }[] }>(
-        'SELECT questions FROM trade_questions WHERE profession_key = $1', [probeKey]);
-      expect(row.questions).toHaveLength(1);
+      await client.query('BEGIN');
+      const before = await client.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM trade_questions WHERE is_seeded = false');
+      expect(before.rows[0].count).toBe('1');
+
+      const deleted = await client.query('DELETE FROM trade_questions WHERE is_seeded = false');
+      expect(deleted.rowCount).toBe(1);
+
+      const after = await client.query<{ profession_key: string; n: number }>(
+        `SELECT profession_key, jsonb_array_length(questions) AS n
+           FROM trade_questions ORDER BY profession_key`);
+      expect(after.rows.map((r) => r.profession_key)).toEqual([
+        'carpenter', 'concrete', 'electrician', 'painting', 'plumber',
+      ]);
+      expect(after.rows.every((r) => r.n === 3)).toBe(true);
+
+      await client.query('ROLLBACK');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
     } finally {
+      await client.end();
       await setup.query('DELETE FROM trade_questions WHERE profession_key = $1', [probeKey]);
     }
   });

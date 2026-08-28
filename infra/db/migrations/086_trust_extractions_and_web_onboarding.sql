@@ -32,11 +32,30 @@
 --           bare UPDATE as jale_admin on FORCE-RLS jobs matches zero rows
 --           (the 065 -> 067 lesson).
 --
---   Part 4  Reword the five seeded trade_questions rows (012:36-61). They
---           were written as multiple-choice descriptors for the WhatsApp
---           button flow; the trust panel now wants the worker's own words.
---           All three questions per trade become OPEN questions, and none
---           may ask about years/seniority or offer numbered options.
+--   Part 4  Reword the five seeded trade_questions rows (012:36-61) and
+--           DROP the AI-generated cache rows (is_seeded = false). The seeded
+--           rows were multiple-choice descriptors for the WhatsApp button
+--           flow; the trust panel now wants the worker's own words. All
+--           three questions per trade become OPEN questions, and none may
+--           ask about years/seniority or offer numbered options. The
+--           non-seeded rows were produced by the RETIRED Nova prompt, which
+--           explicitly asked for a seniority/level question, so they carry
+--           the same defect and cannot be reworded by hand -- they are
+--           deleted so the next worker on that trade regenerates through
+--           the new prompt on a cache miss.
+--
+-- >>> DEPLOY ORDER (operator-enforced, this file cannot check it) <<<
+-- Part 4's DELETE is only correct once the sprint-22 R1-A
+-- infra/lambda/ai/question-generator.ts prompt is DEPLOYED. That rewrite is
+-- what forbids years/seniority/level and multiple-choice in generated
+-- questions. The retired prompt actively ASKS for a seniority question
+-- ("ask what level they can work at, such as helper, independently, or
+-- lead"), so applying 086 against the old Lambda would regenerate the exact
+-- defect this removes -- and stamp it as fresh, which is strictly worse than
+-- leaving the stale rows in place. Apply 086 WITH or AFTER that deploy.
+-- There is no marker in the database that identifies which prompt produced a
+-- row, so no self-audit below can enforce this; it is a release-sequencing
+-- constraint on R1 as a whole.
 --
 -- NOT idempotent, by design: Part 1's bare CREATE TABLE aborts the whole
 -- transaction with 42P07 on a second apply rather than silently half-
@@ -426,6 +445,34 @@ UPDATE trade_questions SET questions = '[
 ]'::jsonb
  WHERE is_seeded = true AND profession_key = 'painting';
 
+-- Drop every AI-generated cache row. These came from the retired Nova prompt
+-- (see the DEPLOY ORDER note at the top) and each carries a seniority/level
+-- question the trust scorer cannot grade. There is no way to reword them in
+-- SQL -- they are per-trade free text -- so the cache is emptied and the
+-- generator refills it, one trade at a time, on the next cache miss:
+-- custom-trust.ts / ai-profile-writer.ts both fall through to the
+-- question-generator Lambda when the SELECT returns no row.
+--
+-- Safe to delete:
+--   * No foreign key anywhere references trade_questions (checked across
+--     001-085). 060's trade_aliases only "mirrors" its shape; it is a
+--     separate table keyed on trade_key with no FK and is untouched here.
+--   * In-flight WhatsApp onboarding is unaffected: trust-seed.ts copies the
+--     three questions into worker_workflow_runs.context
+--     (state_context.v2TrustQuestions) at seed time and never re-reads this
+--     table for that run.
+--   * processor.ts's profile summary LEFT JOINs this table purely to render
+--     the question text next to a stored answer, and
+--     displayQuestionForAnswer() already falls back to the q_en captured on
+--     the answer row itself, so an already-assessed worker loses nothing but
+--     the Spanish rendering of a question they have already answered.
+--
+-- jale_admin has no explicit DELETE grant on trade_questions (012:30 grants
+-- only SELECT/INSERT/UPDATE) but OWNS the table, and an owner's implicit
+-- privileges cannot be revoked -- the same reason worker_trust_extractions
+-- relies on RLS rather than grants to keep jale_admin read-only.
+DELETE FROM trade_questions WHERE is_seeded = false;
+
 -- ============================================================
 -- Self-audit. On RDS there is no Jest: these DO blocks are the only thing
 -- that verifies this migration in production.
@@ -548,6 +595,11 @@ BEGIN
   IF v_count <> 0 THEN
     RAISE EXCEPTION 'migration 086: % seeded trade_questions rows are not 3 open q_en/q_es questions', v_count;
   END IF;
+
+  SELECT count(*) INTO v_count FROM public.trade_questions WHERE is_seeded = false;
+  IF v_count <> 0 THEN
+    RAISE EXCEPTION 'migration 086: % AI-generated trade_questions rows survived the cache purge', v_count;
+  END IF;
 END;
 $$;
 
@@ -581,5 +633,8 @@ COMMIT;
 --
 -- SELECT count(*) FROM jobs WHERE certification_requirements IS NULL;  -- 0
 -- SELECT profession_key, jsonb_array_length(questions) FROM trade_questions
---   WHERE is_seeded = true;  -- all 3
+--   WHERE is_seeded = true;  -- 5 rows, all 3
+-- SELECT count(*) FROM trade_questions WHERE is_seeded = false;  -- 0
+--   (refills itself as workers with custom trades come through the
+--    question-generator Lambda)
 -- ============================================================
