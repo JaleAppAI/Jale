@@ -942,7 +942,6 @@
     "trust_status_scoring": "Calificación en curso",
     "trust_status_scored": "Evaluación calificada",
     "trust_status_failed": "Calificación no disponible",
-    "trust_selected_prefix": "Seleccionó:",
     "trust_voice_badge": "Respuesta de voz",
     "trust_empty": "Este trabajador aún no ha completado una evaluación de confianza.",
     "availability": {

@@ -1,19 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeAnswers, isMenuAnswer, displayQuestion, displayAnswer } from '../trust-assessment';
+import { normalizeAnswers, displayQuestion, displayAnswer } from '../trust-assessment';
 
-const MENU_Q = 'One more question so we can recommend better jobs.\nWhat type of work do you do most?\n1. Framing\n2. Finishing\n3. Roofing\nReply with the number.';
-
-describe('isMenuAnswer', () => {
-  it('true only for menu question + text source', () => {
-    expect(isMenuAnswer({ q_en: MENU_Q, answer_text: 'Framing', answer_source: 'text', answered_at: '' })).toBe(true);
-    expect(isMenuAnswer({ q_en: MENU_Q, answer_text: 'yo cuelgo paneles...', answer_source: 'voice', answered_at: '' })).toBe(false);
-    expect(isMenuAnswer({ q_en: 'Describe a common task.', answer_text: 'I hang panels', answer_source: 'text', answered_at: '' })).toBe(false);
-  });
-});
+// A legacy WhatsApp numbered-menu question blob. The menu path is gone, but
+// rows like this are still in the database, so both display helpers have to
+// keep handling them: `displayQuestion` trims the blob to its prompt line, and
+// `displayAnswer` renders the stored answer as plain, untranslated text.
+const NUMBERED_Q = 'One more question so we can recommend better jobs.\nWhat type of work do you do most?\n1. Framing\n2. Finishing\n3. Roofing\nReply with the number.';
 
 describe('displayQuestion', () => {
   it('trims menu blobs to the last non-empty line before the first numbered option', () => {
-    expect(displayQuestion({ q_en: MENU_Q, answer_text: '', answer_source: 'text', answered_at: '' }, 'en'))
+    expect(displayQuestion({ q_en: NUMBERED_Q, answer_text: '', answer_source: 'text', answered_at: '' }, 'en'))
       .toBe('What type of work do you do most?');
   });
   it('prefers q_es for es locale and falls back to q_en', () => {
@@ -24,15 +20,22 @@ describe('displayQuestion', () => {
 });
 
 describe('displayAnswer', () => {
-  it('maps menu labels to Spanish for es locale, raw fallback for unknown', () => {
-    const a = { q_en: MENU_Q, answer_text: 'Finish work', answer_source: 'text' as const, answered_at: '' };
-    expect(displayAnswer(a, 'es')).toEqual({ kind: 'menu', text: 'Acabados' });
-    expect(displayAnswer(a, 'en')).toEqual({ kind: 'menu', text: 'Finish work' });
-    expect(displayAnswer({ ...a, answer_text: 'SomethingUnknown' }, 'es').text).toBe('SomethingUnknown');
+  // No locale argument by design: an answer is never translated, so there is
+  // no Spanish rendering of it to assert.
+  it('renders a text answer verbatim', () => {
+    const a = { q_en: 'Describe a common task.', answer_text: 'I hang panels', answer_source: 'text' as const, answered_at: '' };
+    expect(displayAnswer(a)).toEqual({ kind: 'text', text: 'I hang panels' });
+  });
+  it('renders a legacy numbered-menu answer as plain, untranslated text', () => {
+    const a = { q_en: NUMBERED_Q, answer_text: 'Finish work', answer_source: 'text' as const, answered_at: '' };
+    // 'Finish work' used to be swapped for 'Acabados' on the Spanish locale.
+    expect(displayAnswer(a)).toEqual({ kind: 'text', text: 'Finish work' });
   });
   it('voice answers keep the verbatim transcript with kind voice', () => {
-    const a = { q_en: MENU_Q, answer_text: 'tengo ocho años colgando paneles', answer_source: 'voice' as const, answered_at: '' };
-    expect(displayAnswer(a, 'es')).toEqual({ kind: 'voice', text: 'tengo ocho años colgando paneles' });
+    const a = { q_en: NUMBERED_Q, answer_text: 'tengo ocho años colgando paneles', answer_source: 'voice' as const, answered_at: '' };
+    expect(displayAnswer(a)).toEqual({ kind: 'voice', text: 'tengo ocho años colgando paneles' });
+    expect(displayAnswer({ ...a, q_en: 'Describe a common task.' }))
+      .toEqual({ kind: 'voice', text: 'tengo ocho años colgando paneles' });
   });
 });
 

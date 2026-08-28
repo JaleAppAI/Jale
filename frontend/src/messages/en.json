@@ -942,7 +942,6 @@
     "trust_status_scoring": "Scoring in progress",
     "trust_status_scored": "Assessment scored",
     "trust_status_failed": "Scoring unavailable",
-    "trust_selected_prefix": "Selected:",
     "trust_voice_badge": "Voice answer",
     "trust_empty": "This worker hasn't completed a trust assessment yet.",
     "availability": {
