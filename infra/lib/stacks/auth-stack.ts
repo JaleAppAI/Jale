@@ -207,20 +207,19 @@ export class AuthStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
-    // VerifyAuthChallenge: compares user answer to stored OTP. On a correct
-    // answer it also flips phone_number_verified='true' — the only place
-    // that attribute may become true, because a correct OTP is the only
-    // real proof of phone possession (signup paths create with 'false').
-    // It also promotes any name staged at signup (migration 052) into
-    // users.full_name on that same first-correct-OTP event, hence the
-    // DB_SECRET_ARN/grantRead below — same pattern as postConfirmationLambda.
+    // VerifyAuthChallenge: a pure Cognito trigger — it compares the user's
+    // answer to the stored OTP and, on a correct one, flips
+    // phone_number_verified='true'. That flip is the only side effect, and
+    // it is the only place the attribute may become true, because a correct
+    // OTP is the only real proof of phone possession (signup paths create
+    // with 'false'). No DB, no VPC: it used to promote a name staged at
+    // signup (migration 052) into users.full_name on the same event, but R2
+    // made web signup phone-only — the name is collected at `profile.name`
+    // inside the onboarding flow — so the handler no longer touches the
+    // database at all, and the DB_SECRET_ARN / VPC attachment / grantRead
+    // that existed only for that promotion are gone with it.
     const verifyAuthChallengeLambda = new JaleLambdaFunction(this, 'VerifyAuthChallengeLambda', {
       entry: path.join(__dirname, '../../lambda/auth/verify-auth-challenge.ts'),
-      environment: {
-        DB_SECRET_ARN: props.dbSecret.secretArn,
-      },
-      vpc: props.vpc,
-      securityGroups: [props.lambdaSg],
       description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
     });
 
@@ -237,7 +236,6 @@ export class AuthStack extends cdk.Stack {
         `arn:aws:cognito-idp:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:userpool/*`,
       ],
     }));
-    props.dbSecret.grantRead(verifyAuthChallengeLambda.function);
 
     // ── Worker Cognito Pool ──
     const isProd = this.node.tryGetContext('environment') === 'production';
