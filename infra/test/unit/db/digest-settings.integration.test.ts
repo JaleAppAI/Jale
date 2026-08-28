@@ -1191,7 +1191,15 @@ maybeDescribe('employer_digest_settings integration (migration 082)', () => {
         };
       });
 
+      // Exact, not a superset, on purpose: a stray permissive policy on this
+      // table is a second way in that ORs with every other one. The two
+      // delivery_feedback entries are migration 087's — the bounce handler's
+      // GUC-gated path, which exists because FORCE RLS means even jale_admin
+      // cannot run a service-wide UPDATE here. Adding a name to this list
+      // should always be a deliberate act.
       expect(state.policies).toEqual([
+        'employer_digest_settings_delivery_feedback_select',
+        'employer_digest_settings_delivery_feedback_update',
         'employer_digest_settings_digest_enumerator_select',
         'employer_digest_settings_digest_enumerator_update',
         'employer_digest_settings_self',
