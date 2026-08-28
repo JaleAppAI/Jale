@@ -671,7 +671,7 @@ export default function WorkerProfilePage() {
                                     {trustAnswers.length > 0 && (
                                         <ul className="mt-4 space-y-3">
                                             {trustAnswers.map((a) => {
-                                                const ans = displayAnswer(a, locale);
+                                                const ans = displayAnswer(a);
                                                 return (
                                                     <li
                                                         key={a.q_en}
@@ -681,9 +681,7 @@ export default function WorkerProfilePage() {
                                                             {displayQuestion(a, locale)}
                                                         </p>
                                                         <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--jale-ink-2)]">
-                                                            {ans.kind === 'menu'
-                                                                ? `${t('trust_selected_prefix')} ${ans.text}`
-                                                                : ans.text}
+                                                            {ans.text}
                                                         </p>
                                                         {ans.kind === 'voice' ? (
                                                             <span className="mt-1 inline-block text-[10px] font-bold uppercase tracking-wider text-[var(--jale-ink-2)]">
