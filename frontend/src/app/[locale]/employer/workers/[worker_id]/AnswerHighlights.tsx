@@ -51,7 +51,7 @@ export function AnswerHighlights({ extraction }: { extraction: TrustExtraction |
   // would read as a judgement of the WORKER rather than of our pipeline.
   if (extraction.status !== 'completed') {
     return (
-      <div className="mb-4">
+      <div className="mt-4">
         {eyebrow}
         <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{t('extraction_pending')}</p>
       </div>
@@ -79,7 +79,7 @@ export function AnswerHighlights({ extraction }: { extraction: TrustExtraction |
   if (labels.length === 0 && !summary) return null;
 
   return (
-    <div className="mb-4">
+    <div className="mt-4">
       {eyebrow}
 
       {labels.length > 0 ? (
