@@ -65,7 +65,7 @@ export function WorkStep({
     const groupId = useId();
 
     const rejected = rejection && rejection.stepKey.startsWith('profile.')
-        ? rejectionMessage(rejection.reason)
+        ? rejectionMessage(rejection.reason, rejection.stepKey)
         : null;
     const errorId = `${groupId}-error`;
 

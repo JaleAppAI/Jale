@@ -1794,7 +1794,12 @@
       "generic": "We couldn't accept that — check it and try again.",
       "reason": {
         "too_short": "A little more, please — at least {min} characters.",
-        "too_long": "That's too long — keep it under {max} characters."
+        "too_long": "That's too long — keep it under {max} characters.",
+        "custom_trade": {
+          "too_short": "Tell us your trade in {min}–{max} characters.",
+          "too_long": "Tell us your trade in {min}–{max} characters.",
+          "invalid": "That doesn't look like a trade — plain letters and numbers only."
+        }
       },
       "step_mismatch": "Your progress was updated from another device — check this step and continue."
     },

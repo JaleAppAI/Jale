@@ -1,7 +1,14 @@
 'use client';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
-import { MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, PROGRESS_SEGMENTS, type ScreenKey } from '@/lib/onboarding-flow';
+import {
+    MAX_ANSWER_CHARS,
+    MAX_CUSTOM_TRADE_CHARS,
+    MIN_ANSWER_CHARS,
+    MIN_CUSTOM_TRADE_CHARS,
+    PROGRESS_SEGMENTS,
+    type ScreenKey,
+} from '@/lib/onboarding-flow';
 
 /**
  * The chrome every onboarding screen shares: a back link and step counter on
@@ -124,25 +131,47 @@ export function StepHint({ children }: { children: ReactNode }) {
 }
 
 /**
+ * The bounds each rejected step is measured against. A `too_short` on a trust
+ * answer and a `too_short` on a typed-in trade are the same CODE and wildly
+ * different numbers, so the sentence cannot be written without knowing which
+ * field the engine was talking about.
+ */
+const STEP_BOUNDS: Readonly<Record<string, { min: number; max: number }>> = {
+    'profile.custom_trade': { min: MIN_CUSTOM_TRADE_CHARS, max: MAX_CUSTOM_TRADE_CHARS },
+};
+const DEFAULT_BOUNDS = { min: MIN_ANSWER_CHARS, max: MAX_ANSWER_CHARS };
+
+/**
  * Turns a 422's `reason` into a sentence.
  *
- * The engine's reasons are CODES (`too_short`, `too_long`, ...), not copy, and
- * this app's standing rule is that no backend string is ever rendered raw (see
- * `useErrorMessage`). A code we have copy for is translated; anything else
- * falls back to one reviewed sentence, so a code the backend grows tomorrow
- * degrades to a real sentence instead of leaking an identifier onto the
- * screen. Giving it its own wording is one key in each catalogue:
- * `worker_onboarding.rejection.reason.<code>`.
+ * The engine's reasons are CODES (`too_short`, `too_long`, `invalid`, ...),
+ * not copy, and this app's standing rule is that no backend string is ever
+ * rendered raw (see `useErrorMessage`). A code we have copy for is translated;
+ * anything else falls back to one reviewed sentence, so a code the backend
+ * grows tomorrow degrades to a real sentence instead of leaking an identifier
+ * onto the screen.
  *
- * The bounds are passed to every lookup because the two length reasons name
- * them; a message without those placeholders simply ignores them.
+ * The same code means different things on different fields, so the lookup is
+ * two-deep and the FIELD wins:
+ *
+ *   worker_onboarding.rejection.reason.<field>.<code>   e.g. custom_trade.too_short
+ *   worker_onboarding.rejection.reason.<code>           the shared wording
+ *   worker_onboarding.rejection.generic                 anything unrecognised
+ *
+ * `<field>` is the step key's last segment, so giving a new field its own
+ * wording is a catalogue entry and no code at all.
+ *
+ * The bounds are passed to every lookup because the length reasons name them;
+ * a message without those placeholders simply ignores them.
  */
-export function useRejectionMessage(): (reason: string) => string {
+export function useRejectionMessage(): (reason: string, stepKey?: string) => string {
     const t = useTranslations('worker_onboarding.rejection');
-    return (reason: string) => {
-        const key = `reason.${reason}`;
-        return t.has(key)
-            ? t(key, { min: MIN_ANSWER_CHARS, max: MAX_ANSWER_CHARS })
-            : t('generic');
+    return (reason: string, stepKey?: string) => {
+        const field = stepKey ? stepKey.split('.').pop() : undefined;
+        const values = (stepKey && STEP_BOUNDS[stepKey]) || DEFAULT_BOUNDS;
+        const fieldKey = field ? `reason.${field}.${reason}` : null;
+        if (fieldKey && t.has(fieldKey)) return t(fieldKey, values);
+        const sharedKey = `reason.${reason}`;
+        return t.has(sharedKey) ? t(sharedKey, values) : t('generic');
     };
 }

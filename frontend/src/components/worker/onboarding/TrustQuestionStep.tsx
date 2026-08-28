@@ -71,7 +71,7 @@ export function TrustQuestionStep({
     const ready = answerAcceptable(answer);
     const tooLong = answerTooLong(answer);
     const stepKey = `trust.question.${index}`;
-    const rejected = rejection?.stepKey === stepKey ? rejectionMessage(rejection.reason) : null;
+    const rejected = rejection?.stepKey === stepKey ? rejectionMessage(rejection.reason, stepKey) : null;
     const errorId = `${fieldId}-error`;
     const hintId = `${fieldId}-hint`;
 
