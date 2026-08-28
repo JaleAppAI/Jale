@@ -1284,6 +1284,22 @@ describe('event-driven outbox wake queues', () => {
       expect(match.Properties.AuthorizerId).toBeDefined();
     });
 
+    test('{action} is the ONLY child of /worker/onboarding', () => {
+      // ANY on `{action}` matches every single-segment path under
+      // /worker/onboarding, so a named sibling added later by another stack
+      // would keep its route but lose the traffic to this handler's 404.
+      // Nothing hangs anything off `onboarding` today (it is the only
+      // `addResource('onboarding')` in the repo) and this keeps it that way.
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const [onboardingId] = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === 'onboarding',
+      ) as [string, any];
+      const children = Object.values(resources).filter(
+        (r: any) => JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: onboardingId }),
+      );
+      expect(children.map((c: any) => c.Properties.PathPart)).toEqual(['{action}']);
+    });
+
     test('the door costs ApiStack 10 resources, and the stack has 11 to spare', () => {
       // A regression guard on the thing that actually broke: this stack is
       // one feature away from CloudFormation's hard maximum. If this fails
