@@ -53,6 +53,7 @@ import type { ScoreBand } from '@/lib/match';
 import { normalizeMatchScore, normalizeScoreBand, truncateMatchReason } from '@/lib/match';
 import type { WritableJobStatus } from '@/lib/status';
 import { formatLongDate, formatStartDate } from '@/lib/date';
+import { docTypeLabel } from '@/lib/doc-types';
 
 export const dynamic = 'force-dynamic';
 
@@ -121,6 +122,7 @@ export default function JobDetailPage() {
     const tMessages = useTranslations('employer_messages');
     const tMatch = useTranslations('match');
     const tCommon = useTranslations('common');
+    const tDocTypes = useTranslations('doc_types');
 
     const returnUrl = `/employer/jobs/${jobId}`;
 
@@ -533,13 +535,6 @@ export default function JobDetailPage() {
         'part-time': tShared('modal.job_type_parttime'),
         contract: tShared('modal.job_type_contract'),
     };
-    const docLabels: Record<string, string> = {
-        resume: tShared('worker_profile.doc_resume'),
-        driver_license: tShared('worker_profile.doc_driver_license'),
-        // SSN is no longer offered for new jobs, but legacy jobs may still require it.
-        ssn: tShared('worker_profile.doc_ssn'),
-    };
-
     const num = (value: string) => <span className="tabular-nums">{value}</span>;
 
     const fields: KVItem[] = [
@@ -678,7 +673,7 @@ export default function JobDetailPage() {
                                             <div className="flex flex-wrap gap-x-4 gap-y-1.5">
                                                 {job.required_docs.map((doc) => (
                                                     <Badge key={doc} tone="info">
-                                                        {docLabels[doc] ?? doc}
+                                                        {docTypeLabel(doc, tDocTypes) ?? doc}
                                                     </Badge>
                                                 ))}
                                             </div>

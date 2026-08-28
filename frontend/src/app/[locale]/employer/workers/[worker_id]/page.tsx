@@ -36,6 +36,7 @@ import {
 } from '@/lib/api/employer';
 import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
+import { docTypeLabel } from '@/lib/doc-types';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
 
@@ -124,6 +125,7 @@ export default function WorkerProfilePage() {
     const tShared = useTranslations('employer_dashboard');
     const tCommon = useTranslations('common');
     const tMedia = useTranslations('media_board');
+    const tDocTypes = useTranslations('doc_types');
     const errorMessage = useErrorMessage();
 
     const { idToken } = useAuth();
@@ -272,12 +274,6 @@ export default function WorkerProfilePage() {
         tCommon,
         workerId,
     ]);
-
-    const docLabel: Record<DocType, string> = {
-        resume: tShared('worker_profile.doc_resume'),
-        driver_license: tShared('worker_profile.doc_driver_license'),
-        ssn: tShared('worker_profile.doc_ssn'),
-    };
 
     const availabilityLabel = (value: WorkerProfile['availability']) => {
         if (!value) return t('fallback_availability');
@@ -531,7 +527,7 @@ export default function WorkerProfilePage() {
 
                                                     <div className="min-w-0">
                                                         <p className="text-sm font-semibold text-[var(--jale-ink)]">
-                                                            {docLabel[type]}
+                                                            {docTypeLabel(type, tDocTypes) ?? type}
                                                         </p>
                                                         {doc ? (
                                                             // The size never gets truncated away: it is

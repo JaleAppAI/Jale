@@ -858,9 +858,6 @@
       "post_without_template": "Publicar sin guardar plantilla"
     },
     "worker_profile": {
-      "doc_resume": "Currículum",
-      "doc_driver_license": "Licencia de conducir",
-      "doc_ssn": "Tarjeta SSN",
       "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
     },
     "post_job_docs": {
@@ -985,11 +982,6 @@
     "success_body": "El empleador ha sido notificado.",
     "error_size": "El archivo debe pesar menos de 10 MB",
     "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
-    "doc_resume": "Currículum",
-    "doc_driver_license": "Licencia de conducir",
-    "doc_ssn": "Tarjeta SSN / ITIN",
-    "doc_work_auth_doc": "Documento de autorización de trabajo",
-    "doc_certification_doc": "Certificación",
     "error_upload": "No se pudo subir el archivo. Intente de nuevo.",
     "error_submit": "No se pudo enviar. Intente de nuevo.",
     "error_already_received": "Ya recibimos este documento con este enlace.",
@@ -1045,11 +1037,6 @@
     "no_city_jobs": "Nada en sus ciudades en este momento.",
     "required_docs_label": "Documentos necesarios",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
-    "doc_labels": {
-      "resume": "Currículum",
-      "driver_license": "Licencia de conducir",
-      "ssn": "Tarjeta SSN / ITIN"
-    },
     "job_type": {
       "full-time": "40 hrs/sem",
       "part-time": "Medio tiempo",
@@ -1151,6 +1138,7 @@
       "progress_saved": "Su progreso está guardado.",
       "prefilled_hint": "De su última postulación — edite si es necesario",
       "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírselo en persona.",
+      "unknown_doc_notice": "No reconocemos este requisito — pregúntele al empleador qué necesita antes de postularse.",
       "cert_question": "¿Tiene {name}?",
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",
@@ -1257,7 +1245,7 @@
       "delete": "Eliminar",
       "delete_error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
       "close_confirm_title": "¿Cerrar este trabajo?",
-      "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puedes reactivarlo después, según el límite de trabajos activos de tu plan.",
+      "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puede reactivarlo después, según el límite de trabajos activos de su plan.",
       "close_confirm_cta": "Cerrar trabajo",
       "close_cancel": "Cancelar",
       "close_pending": "Cerrando…",
@@ -1325,6 +1313,13 @@
     "tracked_caption": "Las visitas y registros desde este enlace se rastrean y se acreditan a su negocio.",
     "fallback_link_label": "Enlace de respaldo",
     "fallback_link_untracked": "Este enlace funciona, pero las visitas y registros desde él no se rastrearán ni se acreditarán a su negocio. Intente \"Obtener enlace\" de nuevo más tarde para conseguir un enlace rastreable."
+  },
+  "doc_types": {
+    "resume": "Currículum",
+    "driver_license": "Licencia de conducir",
+    "work_auth_doc": "Documento de autorización de trabajo",
+    "certification_doc": "Certificación",
+    "ssn": "Tarjeta SSN / ITIN"
   },
   "job_requirements": {
     "picker": {

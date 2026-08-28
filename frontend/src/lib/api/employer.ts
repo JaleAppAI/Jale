@@ -651,8 +651,11 @@ export type JobTemplate = {
   updated_at: string;
 };
 
-export async function listJobTemplates(token: string): Promise<JobTemplate[]> {
-  const res = await apiFetch('/employer/templates', {}, token);
+export async function listJobTemplates(
+  token: string,
+  signal?: AbortSignal,
+): Promise<JobTemplate[]> {
+  const res = await apiFetch('/employer/templates', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return (await res.json()).templates;
 }
