@@ -50,6 +50,7 @@ process.env.WHATSAPP_INBOUND_V2_QUEUE_URL = 'https://sqs.us-east-2.amazonaws.com
 
 import { handler } from '../../../../lambda/whatsapp/ai-profile-writer';
 import { parseVoiceTranscriptEvent } from '../../../../lambda/whatsapp/lib/voice-events';
+import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../../../../lambda/lib/worker-vocab';
 
 function makeTranscriptS3Response(text: string) {
   const json = JSON.stringify({ results: { transcripts: [{ transcript: text }] } });
@@ -933,4 +934,48 @@ test('asr_metadata is NULL in the failed extraction INSERT params when the trans
   expect(insertCall![0]).toContain('asr_metadata');
   const params = insertCall![1] as unknown[];
   expect(params[params.length - 1]).toBeNull();
+});
+
+// ── Vocabulary <-> extraction-prompt coupling ──────────────────────
+//
+// The user prompt tells the model which values it may return for main_trade,
+// years_experience and availability. Those three arrays are rendered from
+// `lib/worker-vocab` (the same tuples `buildUserUpdateSql` validates against),
+// so they cannot drift apart -- but they CAN both change silently, and a
+// reordered or renamed key reaching Bedrock is invisible until the model
+// starts returning values the DB CHECK constraint rejects. This pins the
+// rendered fragments, in order.
+test('the extraction prompt lists the worker-vocab options, in vocabulary order', async () => {
+  mockS3Send.mockResolvedValue(makeTranscriptS3Response('I am an electrician in Austin with 5 years experience'));
+  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
+    { city: 'Austin', main_trade: 'electrician' },
+    { city: 0.9, main_trade: 0.95 },
+    'Electrician in Austin.',
+    'Electricista en Austin.',
+  ));
+
+  await handler({
+    userId: 'user-1',
+    conversationId: 'conv-1',
+    inboundMessageSid: 'MMvoice-vocab',
+    whatsappNumber: '+15125551234',
+    language: 'en',
+    mediaBucketName: 'jale-worker-media-test',
+    transcriptOutputKey: 'user-1/transcripts/job-vocab.json',
+    status: 'transcription_complete',
+  }, {} as any, () => {});
+
+  expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+  const converseInput = (mockBedrockSend.mock.calls[0][0] as any).input;
+  const userPrompt = converseInput.messages[0].content[0].text as string;
+
+  expect(userPrompt).toContain(`"main_trade": one of ${JSON.stringify(TRADE_KEYS)} or null`);
+  expect(userPrompt).toContain(`"years_experience": one of ${JSON.stringify(EXPERIENCE_KEYS)} or null`);
+  expect(userPrompt).toContain(`"availability": one of ${JSON.stringify(AVAILABILITY_KEYS)} or null`);
+
+  // Belt and braces: the literal text as it shipped before the vocabularies
+  // were centralised, so this fails if worker-vocab itself is reordered.
+  expect(userPrompt).toContain('"main_trade": one of ["electrician","plumber","carpenter","concrete","painting","other"] or null');
+  expect(userPrompt).toContain('"years_experience": one of ["0-1","2-4","5-9","10+"] or null');
+  expect(userPrompt).toContain('"availability": one of ["full_time","part_time","weekends","flexible"] or null');
 });
