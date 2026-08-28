@@ -8,7 +8,7 @@ import { checkCompliance } from '../legal/check-compliance';
  * PATCH /employer/settings/digest
  *
  * The employer's own read/write path for employer_digest_settings (migration
- * 080). One Lambda serves both verbs, matching api/employer-profile.ts.
+ * 082). One Lambda serves both verbs, matching api/employer-profile.ts.
  *
  * PATCH, not PUT: lib/http.ts's corsHeaders() advertises
  * `GET,POST,PATCH,DELETE,OPTIONS` and PUT is absent, so a PUT would fail
