@@ -307,10 +307,17 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
     // TrustScorerParseFailure / TrustScorerValidationFailure lines; both
     // feed one metric so a single alarm covers "the scorer is producing
     // unusable model output".
+    // LITERAL term pattern, NOT `logs.FilterPattern.stringValue('$.metric',
+    // ...)`: a JSON selector only matches log events that are themselves valid
+    // JSON, and Node 20's default TEXT log format prefixes every console line
+    // with `timestamp<TAB>requestId<TAB>LEVEL<TAB>`. The selector this used to
+    // carry matched nothing, so TrustScorerFailures never left zero and
+    // TrustScorerFailuresAlarm could not fire. See notifications-stack.ts:260
+    // and test/unit/stacks/metric-filter-patterns.test.ts.
     const scorerFailureFilter = (id: string, metricValueEquals: string) =>
       new logs.MetricFilter(this, id, {
         logGroup: trustScorerLambda.logGroup,
-        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
         metricNamespace: 'Jale/Ai',
         metricName: 'TrustScorerFailures',
         metricValue: '1',

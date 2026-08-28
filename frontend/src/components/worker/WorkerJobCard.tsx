@@ -6,6 +6,7 @@ import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { MatchReasonChips, MatchScoreBadge } from '@/components/ui/match-signals';
 import { Link } from '@/i18n/navigation';
 import { formatStartDate } from '@/lib/date';
+import { docTypeLabel } from '@/lib/doc-types';
 import type { Job } from '@/lib/api/worker';
 import { humanizeReasonCode, normalizeMatchScore, scoreBandForScore, truncateMatchReason } from '@/lib/match';
 import { formatPay } from '@/lib/pay';
@@ -42,7 +43,6 @@ const WORKER_REASON_KEYS = new Set([
   'fresh_posting',
 ]);
 
-const KNOWN_DOC_TYPES = ['resume', 'driver_license', 'ssn'];
 const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 
 function jobTypeLabel(t: ReturnType<typeof useTranslations>, type: string) {
@@ -72,9 +72,9 @@ function MetaLine({ items }: { items: string[] }) {
 
 export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
   const t = useTranslations('worker_home');
-  const tReq = useTranslations('job_requirements');
   const tMatch = useTranslations('match');
   const tPay = useTranslations('pay');
+  const tDocTypes = useTranslations('doc_types');
   const locale = useLocale();
 
   const pay = formatPay(job, tPay);
@@ -96,16 +96,13 @@ export function WorkerJobCard({ job, href }: { job: Job; href: string }) {
       : null,
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 
-  // Same fallback the job detail page applies (`worker/jobs/[id]/page.tsx`):
-  // `work_auth_doc`/`certification_doc` have no `worker_home.doc_labels`
-  // entry -- they live in the shared `job_requirements.docs.*` catalogue --
-  // so without this a job requiring either showed the raw enum key as a
-  // requirement chip. Anything else still falls back to the raw string.
-  const docLabels = job.required_docs.map((doc) => {
-    if (KNOWN_DOC_TYPES.includes(doc)) return t(`doc_labels.${doc}`);
-    if (doc === 'work_auth_doc' || doc === 'certification_doc') return tReq(`docs.${doc}`);
-    return doc;
-  });
+  // One catalogue, one lookup. This used to be a three-branch cascade over
+  // `worker_home.doc_labels` and then `job_requirements.docs`, because the
+  // first namespace held only three of the five doc types -- so a job
+  // requiring `work_auth_doc` showed the raw enum key as a requirement chip
+  // until the second branch was bolted on. An unknown key still falls back to
+  // the raw string: a chip is not the place to explain a data problem.
+  const docLabels = job.required_docs.map((doc) => docTypeLabel(doc, tDocTypes) ?? doc);
 
   return (
     <Link

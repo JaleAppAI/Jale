@@ -755,10 +755,20 @@ export class WhatsAppStack extends cdk.Stack {
     }
     const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
+    // LITERAL term patterns, NOT `logs.FilterPattern.stringValue('$.metric',
+    // ...)`. A JSON selector pattern (`{ $.metric = "X" }`) is only evaluated
+    // against log events that are themselves a valid JSON object, and the Node
+    // 20 runtime's default TEXT log format prefixes every console line with
+    // `timestamp<TAB>requestId<TAB>LEVEL<TAB>` -- so the selector matched
+    // NOTHING and every alarm keyed off these filters was silently disarmed. A
+    // quoted term matches the substring inside the JSON.stringify payload under
+    // both the text and JSON log formats. notifications-stack.ts:260 is where
+    // this was first diagnosed; test/unit/stacks/metric-filter-patterns.test.ts
+    // now guards the whole repo against the selector idiom.
     const metricFilter = (id: string, metricValueEquals: string, metricName: string) =>
       new logs.MetricFilter(this, id, {
         logGroup: statusCallbackLambda.logGroup,
-        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
         metricNamespace: 'Jale/WhatsApp',
         metricName,
         metricValue: '1',
@@ -780,7 +790,7 @@ export class WhatsAppStack extends cdk.Stack {
       metricName: string,
     ) => new logs.MetricFilter(this, id, {
       logGroup: workerIntentDrainLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+      filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
       metricNamespace: 'Jale/WhatsApp',
       metricName,
       metricValue: '1',
@@ -886,14 +896,14 @@ export class WhatsAppStack extends cdk.Stack {
 
     const processorWakeFailureMetric = new logs.MetricFilter(this, 'ProcessorOutboxWakeFailureMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOutboxWakeFailure'),
+      filterPattern: logs.FilterPattern.literal('"WhatsAppOutboxWakeFailure"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OutboxWakeFailures',
       metricValue: '1',
     });
     new logs.MetricFilter(this, 'DomainOutboxWakeFailureMetric', {
       logGroup: domainOutboxDrainLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOutboxWakeFailure'),
+      filterPattern: logs.FilterPattern.literal('"WhatsAppOutboxWakeFailure"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OutboxWakeFailures',
       metricValue: '1',
@@ -911,7 +921,7 @@ export class WhatsAppStack extends cdk.Stack {
     const drainMetricFilter = (id: string, metricValueEquals: string, metricName: string) =>
       new logs.MetricFilter(this, id, {
         logGroup: domainOutboxDrainLambda.logGroup,
-        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
         metricNamespace: 'Jale/WhatsApp',
         metricName,
         metricValue: '1',
@@ -958,7 +968,7 @@ export class WhatsAppStack extends cdk.Stack {
     // the processor's log group.
     const otpLockMetric = new logs.MetricFilter(this, 'WhatsAppOtpLockMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOtpLock'),
+      filterPattern: logs.FilterPattern.literal('"WhatsAppOtpLock"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OtpLockRate',
       metricValue: '1',
@@ -975,7 +985,7 @@ export class WhatsAppStack extends cdk.Stack {
     // invisible to operators.
     const trustQuestionGenFailedMetric = new logs.MetricFilter(this, 'WhatsAppTrustQuestionGenFailedMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingTrustQuestionGenerationFailed'),
+      filterPattern: logs.FilterPattern.literal('"OnboardingTrustQuestionGenerationFailed"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'TrustQuestionGenerationFailed',
       metricValue: '1',
@@ -991,14 +1001,14 @@ export class WhatsAppStack extends cdk.Stack {
     // no alarm; drop-off is a product signal, not a page.
     new logs.MetricFilter(this, 'WhatsAppOnboardingStepAdvancedMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingStepAdvanced'),
+      filterPattern: logs.FilterPattern.literal('"OnboardingStepAdvanced"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OnboardingStepAdvanced',
       metricValue: '1',
     });
     new logs.MetricFilter(this, 'WhatsAppOnboardingCompletedMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingCompleted'),
+      filterPattern: logs.FilterPattern.literal('"OnboardingCompleted"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OnboardingCompleted',
       metricValue: '1',
@@ -1031,8 +1041,9 @@ export class WhatsAppStack extends cdk.Stack {
     // spec §5's deliberate choice not to block posting on a Rekognition
     // outage. It logs `moderateImage service fault (fail-open) key=...` via
     // plain `console.error` (NOT the `{ metric: ... }` JSON convention the
-    // other filters above key off), so this needs a literal substring
-    // filter pattern instead of `logs.FilterPattern.stringValue`. Without
+    // other filters above key off), so the term this filter matches is a
+    // message substring rather than a metric name. (Every filter in this stack
+    // is a term pattern now -- see the metricFilter helper above.) Without
     // this, a sustained Rekognition outage would silently auto-approve
     // every worker photo with nobody paged.
     const moderationFailOpenMetric = new logs.MetricFilter(this, 'WhatsAppModerationFailOpenMetric', {

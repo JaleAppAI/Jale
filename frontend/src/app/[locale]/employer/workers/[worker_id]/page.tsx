@@ -14,7 +14,6 @@ import { ApplicationStatusBadge, Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { DashboardPanel } from '@/components/ui/dashboard-panel';
 import { ErrorState } from '@/components/ui/error-state';
-import { Icon } from '@/components/ui/icon';
 import { InitialsAvatar } from '@/components/ui/initials-avatar';
 import { InlineFeedback, type FeedbackTone } from '@/components/ui/inline-feedback';
 import { KVList, type KVItem } from '@/components/ui/kv-list';
@@ -38,11 +37,11 @@ import type { WorkerPost } from '@/lib/api/worker';
 import { normalizeApplicationStatus } from '@/lib/status';
 import { tradeLabel } from '@/lib/trades';
 import { displayAnswer, displayQuestion, normalizeAnswers } from '@/lib/trust-assessment';
+import { AnswerHighlights } from './AnswerHighlights';
+import { DocumentSlots } from './DocumentSlots';
 
 export const dynamic = 'force-dynamic';
 
-type DocType = 'resume' | 'driver_license' | 'ssn';
-const ALL_DOC_TYPES: DocType[] = ['resume', 'driver_license', 'ssn'];
 const APPLICATION_STATUSES: ApplicationStatus[] = [
     'pending',
     'contacted',
@@ -93,27 +92,6 @@ type ApplicantView = {
     documents: WorkerDocument[];
     posts: WorkerPost[];
 };
-
-/**
- * Anchors styled as buttons.
- *
- * `Button` renders a `<button>`, and the document actions are real navigations
- * to a presigned S3 URL (open in a tab / download), so they must be anchors.
- * These two recipes mirror `button.tsx`'s primary/ghost output at `size="sm"`.
- * Same escape hatch, and same TODO, as `StateAction` in `ui/empty-state`.
- */
-const DOC_ACTION_BASE = [
-    'inline-flex h-9 items-center justify-center gap-2 rounded-full px-4',
-    'text-xs font-semibold leading-none whitespace-nowrap select-none',
-    'transition-all duration-150 active:scale-[0.98]',
-    'focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]',
-].join(' ');
-
-const DOC_ACTION_PRIMARY =
-    'bg-[var(--jale-blue-500)] text-white hover:bg-[var(--jale-blue-600)] shadow-[var(--shadow-btn)]';
-
-const DOC_ACTION_GHOST =
-    'border border-[var(--jale-divider)] bg-transparent text-[var(--jale-ink)] hover:bg-[var(--jale-paper-2)]';
 
 export default function WorkerProfilePage() {
     const t = useTranslations('employer_worker_profile');
@@ -188,6 +166,7 @@ export default function WorkerProfilePage() {
 
     const trustAssessment = profile?.trust_assessment ?? null;
     const trustAnswers = trustAssessment ? normalizeAnswers(trustAssessment.answers) : [];
+    const trustExtraction = profile?.trust_extraction ?? null;
 
     /*
      * The select is a draft over the loaded status rather than a second copy of
@@ -273,12 +252,6 @@ export default function WorkerProfilePage() {
         workerId,
     ]);
 
-    const docLabel: Record<DocType, string> = {
-        resume: tShared('worker_profile.doc_resume'),
-        driver_license: tShared('worker_profile.doc_driver_license'),
-        ssn: tShared('worker_profile.doc_ssn'),
-    };
-
     const availabilityLabel = (value: WorkerProfile['availability']) => {
         if (!value) return t('fallback_availability');
         const key = value.replaceAll('-', '_');
@@ -296,6 +269,12 @@ export default function WorkerProfilePage() {
     const skills = profile?.skills ?? [];
     const appliedAt = profile?.applied_at ? profile.applied_at.slice(0, 10) : t('fallback_applied');
     const yearsExperience = profile?.years_experience ?? null;
+    // Both figures come off `worker_profiles` and both have always been on the
+    // wire; only the years were rendered, which reported a 20-month worker as
+    // "1 year". The months are shown ALONGSIDE rather than instead: employers
+    // scan in years, and the exact figure is what settles a close call.
+    const experienceMonths = profile?.experience_months ?? null;
+    const certifications = profile?.certifications ?? [];
     const shellSubtitle = profile
         ? tradeLabel(tCommon, profile.main_trade, profile.main_trade_other)
         : undefined;
@@ -310,11 +289,17 @@ export default function WorkerProfilePage() {
               {
                   label: t('experience'),
                   value:
-                      yearsExperience === null ? (
+                      yearsExperience === null && experienceMonths === null ? (
                           t('fallback_experience')
                       ) : (
                           <span className="tabular-nums">
-                              {tShared('worker_profile.years_experience', { years: yearsExperience })}
+                              {yearsExperience !== null
+                                  ? tShared('worker_profile.years_experience', { years: yearsExperience })
+                                  : null}
+                              {yearsExperience !== null && experienceMonths !== null ? ' · ' : null}
+                              {experienceMonths !== null
+                                  ? t('experience_months', { months: experienceMonths })
+                                  : null}
                           </span>
                       ),
               },
@@ -477,6 +462,27 @@ export default function WorkerProfilePage() {
                                                 {t('fallback_skills')}
                                             </p>
                                         )}
+
+                                        {/* Free-text names the worker typed. Kept
+                                            visually apart from the skills above and
+                                            given no success tone: nobody has checked
+                                            that any of these certificates exist. The
+                                            certification_doc slot on the right is
+                                            where the proof, if any, lives. */}
+                                        {certifications.length > 0 ? (
+                                            <div className="mt-4 border-t border-[var(--jale-divider)] pt-4">
+                                                <p className="text-xs font-bold uppercase tracking-wide text-[var(--jale-ink-2)]">
+                                                    {t('certifications')}
+                                                </p>
+                                                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+                                                    {certifications.map((cert) => (
+                                                        <Badge key={cert} tone="neutral">
+                                                            {cert}
+                                                        </Badge>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ) : null}
                                     </div>
                                 </DashboardPanel>
                             </div>
@@ -506,88 +512,12 @@ export default function WorkerProfilePage() {
                                     </div>
                                 )}
 
-                                <ul className="divide-y divide-[var(--jale-divider)]">
-                                    {ALL_DOC_TYPES.map((type) => {
-                                        const doc = documents.find((entry) => entry.doc_type === type);
-                                        return (
-                                            <li
-                                                key={type}
-                                                className="flex items-start justify-between gap-3 px-5 py-4"
-                                            >
-                                                <div className="flex min-w-0 items-start gap-3">
-                                                    {/* The slot's whole state in one tile: the
-                                                        semantic -bg/-text pairs are the only two
-                                                        tints that stay legible in both themes. */}
-                                                    <span
-                                                        aria-hidden
-                                                        className={`mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
-                                                            doc
-                                                                ? 'bg-[var(--jale-success-bg)] text-[var(--jale-success-text)]'
-                                                                : 'bg-[var(--jale-danger-bg)] text-[var(--jale-danger-text)]'
-                                                        }`}
-                                                    >
-                                                        <Icon name={doc ? 'check' : 'alert'} />
-                                                    </span>
-
-                                                    <div className="min-w-0">
-                                                        <p className="text-sm font-semibold text-[var(--jale-ink)]">
-                                                            {docLabel[type]}
-                                                        </p>
-                                                        {doc ? (
-                                                            // The size never gets truncated away: it is
-                                                            // the one part of this line a reader scans
-                                                            // for, and a long filename would otherwise
-                                                            // eat it whole in the narrow column.
-                                                            <p className="mt-0.5 flex items-baseline gap-1 text-xs text-[var(--jale-ink-2)]">
-                                                                <span className="truncate">{doc.file_name}</span>
-                                                                <span className="shrink-0 tabular-nums">
-                                                                    {' - '}
-                                                                    {Math.round(doc.file_size / 1024)} KB
-                                                                </span>
-                                                            </p>
-                                                        ) : (
-                                                            <p className="mt-0.5 text-xs font-semibold text-[var(--jale-danger-text)]">
-                                                                {t('not_uploaded')}
-                                                            </p>
-                                                        )}
-                                                    </div>
-                                                </div>
-
-                                                {doc ? (
-                                                    <div className="flex shrink-0 gap-2">
-                                                        <a
-                                                            href={doc.url}
-                                                            target="_blank"
-                                                            rel="noreferrer"
-                                                            className={`${DOC_ACTION_BASE} ${DOC_ACTION_PRIMARY}`}
-                                                        >
-                                                            {t('view')}
-                                                        </a>
-                                                        <a
-                                                            href={doc.url}
-                                                            download={doc.file_name}
-                                                            className={`${DOC_ACTION_BASE} ${DOC_ACTION_GHOST}`}
-                                                        >
-                                                            {t('download')}
-                                                        </a>
-                                                    </div>
-                                                ) : (
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="sm"
-                                                        className="shrink-0"
-                                                        onClick={handleShareLink}
-                                                        disabled={shareDisabled}
-                                                        loading={sharingLink}
-                                                        loadingLabel={tCommon('loading')}
-                                                    >
-                                                        {t('request')}
-                                                    </Button>
-                                                )}
-                                            </li>
-                                        );
-                                    })}
-                                </ul>
+                                <DocumentSlots
+                                    documents={documents}
+                                    onRequest={handleShareLink}
+                                    requestDisabled={shareDisabled}
+                                    requesting={sharingLink}
+                                />
                             </DashboardPanel>
                         </div>
                     )}
@@ -667,6 +597,12 @@ export default function WorkerProfilePage() {
                                             {t(`trust_status_${trustAssessment.status}`)}
                                         </Badge>
                                     )}
+
+                                    {/* ABOVE the raw answers, deliberately: the chips
+                                        are the fast way in, and the sentences the
+                                        worker actually said are the evidence one
+                                        scroll below them. */}
+                                    <AnswerHighlights extraction={trustExtraction} />
 
                                     {trustAnswers.length > 0 && (
                                         <ul className="mt-4 space-y-3">

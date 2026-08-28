@@ -269,7 +269,7 @@
       "verify": "Verificar",
       "back": "Volver",
       "signup_title": "Crea tu perfil de trabajador",
-      "signup_subtitle": "Responde las mismas preguntas que hacemos en WhatsApp para conectarte con empleadores.",
+      "signup_subtitle": "Escribe tu numero de telefono. Te enviamos un codigo y luego creamos tu perfil juntos.",
       "signup_prompt": "Nuevo en Jale?",
       "signup_link": "Crea una cuenta",
       "confirm_title": "Confirma tu cuenta",
@@ -282,40 +282,10 @@
       "create_account": "Crear cuenta",
       "confirm_account": "Confirmar cuenta",
       "password_note": "Los trabajadores no necesitan contrasena. Iniciaras sesion con tu telefono y un codigo de verificacion.",
-      "yes": "Si",
-      "no": "No",
       "fields": {
-        "full_name": "Nombre completo",
-        "phone": "Numero de telefono",
-        "city": "Ciudad o codigo postal",
-        "main_trade": "Oficio principal",
-        "main_trade_other": "Oficio",
-        "years_experience": "Anos de experiencia",
-        "has_transportation": "Transporte propio",
-        "availability": "Disponibilidad"
-      },
-      "trades": {
-        "electrician": "Electricista",
-        "plumber": "Plomero",
-        "carpenter": "Carpintero",
-        "concrete": "Concreto",
-        "painting": "Pintura",
-        "other": "Otro"
-      },
-      "experience": {
-        "0-1": "0-1 anos",
-        "2-4": "2-4 anos",
-        "5-9": "5-9 anos",
-        "10plus": "10+ anos"
-      },
-      "availability": {
-        "full_time": "Tiempo completo",
-        "part_time": "Medio tiempo",
-        "weekends": "Fines de semana",
-        "flexible": "Flexible"
+        "phone": "Numero de telefono"
       },
       "errors": {
-        "trade_other_required": "Ingresa tu oficio.",
         "account_exists": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
         "account_not_found": "No pudimos continuar con ese telefono. Revisalo e intenta de nuevo.",
         "invalid_phone": "Ingresa un telefono valido, incluyendo el codigo de area.",
@@ -858,9 +828,6 @@
       "post_without_template": "Publicar sin guardar plantilla"
     },
     "worker_profile": {
-      "doc_resume": "Currículum",
-      "doc_driver_license": "Licencia de conducir",
-      "doc_ssn": "Tarjeta SSN",
       "years_experience": "{years, plural, one {# año de experiencia} other {# años de experiencia}}"
     },
     "post_job_docs": {
@@ -944,6 +911,11 @@
     "trust_status_failed": "Calificación no disponible",
     "trust_voice_badge": "Respuesta de voz",
     "trust_empty": "Este trabajador aún no ha completado una evaluación de confianza.",
+    "extraction_title": "De sus respuestas",
+    "extraction_pending": "Leyendo sus respuestas...",
+    "extraction_failed": "No pudimos resumir estas respuestas — léalas abajo.",
+    "certifications": "Certificaciones",
+    "experience_months": "{months} meses",
     "availability": {
       "immediate": "Inmediata",
       "2_weeks": "2 semanas",
@@ -985,11 +957,6 @@
     "success_body": "El empleador ha sido notificado.",
     "error_size": "El archivo debe pesar menos de 10 MB",
     "error_type": "Solo se aceptan archivos JPG, PNG o PDF",
-    "doc_resume": "Currículum",
-    "doc_driver_license": "Licencia de conducir",
-    "doc_ssn": "Tarjeta SSN / ITIN",
-    "doc_work_auth_doc": "Documento de autorización de trabajo",
-    "doc_certification_doc": "Certificación",
     "error_upload": "No se pudo subir el archivo. Intente de nuevo.",
     "error_submit": "No se pudo enviar. Intente de nuevo.",
     "error_already_received": "Ya recibimos este documento con este enlace.",
@@ -1045,11 +1012,6 @@
     "no_city_jobs": "Nada en sus ciudades en este momento.",
     "required_docs_label": "Documentos necesarios",
     "results_count": "{count, plural, one {# empleo encontrado} other {# empleos encontrados}}",
-    "doc_labels": {
-      "resume": "Currículum",
-      "driver_license": "Licencia de conducir",
-      "ssn": "Tarjeta SSN / ITIN"
-    },
     "job_type": {
       "full-time": "40 hrs/sem",
       "part-time": "Medio tiempo",
@@ -1095,11 +1057,6 @@
     "page_title": "Detalle del empleo",
     "doc_ok": "Subido",
     "doc_missing": "Falta",
-    "doc_labels": {
-      "resume": "Currículum",
-      "driver_license": "Licencia de conducir",
-      "ssn": "Tarjeta SSN / ITIN"
-    },
     "job_type": {
       "full-time": "Tiempo completo",
       "part-time": "Medio tiempo",
@@ -1151,6 +1108,7 @@
       "progress_saved": "Su progreso está guardado.",
       "prefilled_hint": "De su última postulación — edite si es necesario",
       "legacy_doc_notice": "Esto no se puede subir en línea — el empleador puede pedírselo en persona.",
+      "unknown_doc_notice": "No reconocemos este requisito — pregúntele al empleador qué necesita antes de postularse.",
       "cert_question": "¿Tiene {name}?",
       "cert_use_vault": "Usar {file} de su bóveda",
       "cert_upload_new": "Subir nuevo",
@@ -1257,7 +1215,7 @@
       "delete": "Eliminar",
       "delete_error_hired": "Este empleo tiene trabajadores contratados y no se puede eliminar. Ciérrelo en su lugar.",
       "close_confirm_title": "¿Cerrar este trabajo?",
-      "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puedes reactivarlo después, según el límite de trabajos activos de tu plan.",
+      "close_confirm_body": "\"{title}\" dejará de aceptar postulaciones y saldrá del feed de los trabajadores. Quienes ya se postularon seguirán viendo la publicación, marcada como cerrada. Puede reactivarlo después, según el límite de trabajos activos de su plan.",
       "close_confirm_cta": "Cerrar trabajo",
       "close_cancel": "Cancelar",
       "close_pending": "Cerrando…",
@@ -1279,7 +1237,8 @@
       "empty_body": "Los trabajadores que se postulen a esta oferta aparecerán aquí. Comparta el enlace público de abajo para llegar a más personas.",
       "filtered_title": "Ningún postulante coincide con estos filtros",
       "filtered_body": "Cambie los filtros, o quítelos para ver a todos los que se postularon.",
-      "clear_filters": "Quitar filtros"
+      "clear_filters": "Quitar filtros",
+      "trust_pill": "Confianza {score}"
     },
     "ranking": {
       "loading": "Calculando qué tan bien coincide cada postulante con este empleo...",
@@ -1325,6 +1284,14 @@
     "tracked_caption": "Las visitas y registros desde este enlace se rastrean y se acreditan a su negocio.",
     "fallback_link_label": "Enlace de respaldo",
     "fallback_link_untracked": "Este enlace funciona, pero las visitas y registros desde él no se rastrearán ni se acreditarán a su negocio. Intente \"Obtener enlace\" de nuevo más tarde para conseguir un enlace rastreable."
+  },
+  "doc_types": {
+    "resume": "Currículum",
+    "driver_license": "Licencia de conducir",
+    "work_auth_doc": "Documento de autorización de trabajo",
+    "certification_doc": "Certificación",
+    "ssn": "Tarjeta SSN / ITIN",
+    "other": "Otro documento"
   },
   "job_requirements": {
     "picker": {
@@ -1694,5 +1661,144 @@
     "success_settings_hint": "Puede volver a activar el resumen diario cuando quiera en Notificaciones, dentro de su configuración de Jale.",
     "error_title": "Este enlace ya no es válido",
     "error_body": "Puede administrar los correos de resumen en Notificaciones, dentro de su configuración de Jale."
+  },
+  "worker_vocab": {
+    "trade": {
+      "electrician": "Electricista",
+      "plumber": "Plomero",
+      "carpenter": "Carpintero",
+      "concrete": "Concreto",
+      "painting": "Pintura",
+      "other": "Otro"
+    },
+    "experience": {
+      "0-1": "Menos de un año",
+      "2-4": "2–4 años",
+      "5-9": "5–9 años",
+      "10+": "Más de 10 años"
+    },
+    "availability": {
+      "full_time": "Tiempo completo",
+      "part_time": "Medio tiempo",
+      "weekends": "Fines de semana",
+      "flexible": "Flexible"
+    },
+    "transport": {
+      "yes": "Sí",
+      "no": "No"
+    }
+  },
+  "worker_onboarding": {
+    "header": {
+      "language_group": "Idioma",
+      "language_en": "EN",
+      "language_es": "ES"
+    },
+    "progress": {
+      "label": "Paso {current} de {total}",
+      "counter": "{current} / {total}"
+    },
+    "common": {
+      "back": "Atrás",
+      "coming_soon": "Próximamente",
+      "voice_badge": "voz",
+      "typed_badge": "escrito",
+      "go_to_profile": "Ir a mi perfil"
+    },
+    "terms": {
+      "title": "Antes de empezar",
+      "subtitle": "Una lectura rápida. Tus respuestas se comparten solo con los empleadores a los que apliques.",
+      "info_title": "Cómo usa Jale tu información",
+      "info_body": "Tu nombre, oficio, ubicación y respuestas se muestran a los empleadores solo cuando aplicas a su trabajo. Nunca vendemos tus datos.",
+      "messages_title": "Mensajes",
+      "messages_body": "Al continuar aceptas recibir mensajes de trabajo por SMS y WhatsApp. Responde STOP en cualquier momento.",
+      "terms_title": "Términos de servicio",
+      "terms_body": "Términos completos en jaleapp.ai/legal/terms · Privacidad en jaleapp.ai/legal/privacy.",
+      "cta": "Acepto y continúo"
+    },
+    "about": {
+      "title": "Sobre ti",
+      "subtitle": "Los empleadores lo ven en tus aplicaciones.",
+      "first_name": "Nombre",
+      "last_name": "Apellido",
+      "location": "Dónde vives",
+      "location_placeholder": "Ciudad o código postal — p. ej. El Paso o 79901",
+      "location_help": "Elige tu ciudad de la lista, o escribe un código postal de 5 dígitos.",
+      "zip": "Código postal",
+      "clear_location": "Cambiar ubicación",
+      "confirm_title": "¿Quisiste decir {city}, {state}?",
+      "confirm_yes": "Sí, es correcto",
+      "confirm_no": "No, quiero cambiarlo",
+      "cta": "Continuar"
+    },
+    "trade": {
+      "title": "¿Cuál es tu oficio?",
+      "subtitle": "Elige el que más haces.",
+      "other_label": "Tu oficio",
+      "other_placeholder": "Escribe tu oficio, p. ej. soldador, drywall, techador",
+      "cta": "Continuar"
+    },
+    "work": {
+      "title": "Tu trabajo",
+      "years": "Tiempo en este oficio",
+      "transport": "¿Tienes transporte propio?",
+      "availability": "¿Cuándo puedes trabajar?",
+      "cta": "Continuar"
+    },
+    "question": {
+      "eyebrow": "Pregunta {number} de 3",
+      "intro": "Con tus propias palabras. Escribe o toca el micrófono.",
+      "placeholder": "Escribe tu respuesta aquí…",
+      "must": "Los empleadores leen estas tres respuestas para decidir a quién contratar — son obligatorias.",
+      "too_short": "Un poco más, por favor — al menos {count} caracteres.",
+      "chars": "{count} caracteres",
+      "mic_label": "Grabar una nota de voz",
+      "voice_note": "De tu nota de voz — corrige si algo está mal.",
+      "cta": "Siguiente",
+      "last_cta": "Terminar",
+      "too_long": "Es demasiado largo — que no pase de {count} caracteres."
+    },
+    "photo": {
+      "title": "¿Agregar una foto?",
+      "subtitle": "Opcional. Los trabajadores con foto reciben más respuestas.",
+      "add": "Elegir foto",
+      "finish": "Terminar",
+      "skip": "Por ahora no"
+    },
+    "done": {
+      "title": "Todo listo",
+      "subtitle": "Los empleadores ya pueden encontrarte. Esto es lo que verán.",
+      "profile_heading": "Tu perfil",
+      "own_words": "Con tus propias palabras",
+      "working": "Leyendo tus respuestas…",
+      "working_body": "Estamos sacando las habilidades que mencionaste. Toma un momento — puedes seguir.",
+      "extracted": "Extrajimos estas habilidades de tus respuestas. Ya puedes empezar en Jale.",
+      "failed": "Esta vez no pudimos leer tus respuestas. Los empleadores igual las ven con tus propias palabras.",
+      "stalled": "Todavía no terminamos de leer tus respuestas — ya puedes empezar en Jale.",
+      "cta": "Ir a mi perfil",
+      "cta_job": "Continuar al trabajo"
+    },
+    "summary": {
+      "name": "Nombre",
+      "location": "Ubicación",
+      "trade": "Oficio",
+      "experience": "Experiencia",
+      "transportation": "Transporte propio",
+      "availability": "Disponibilidad",
+      "empty": "—"
+    },
+    "rejection": {
+      "generic": "No pudimos aceptar eso — revísalo e inténtalo de nuevo.",
+      "reason": {
+        "too_short": "Un poco más, por favor — al menos {min} caracteres.",
+        "too_long": "Es demasiado largo — que no pase de {max} caracteres."
+      },
+      "step_mismatch": "Tu progreso se actualizó desde otro dispositivo — revisa este paso y continúa."
+    },
+    "blocked": {
+      "suspended": "Esta cuenta está en pausa, así que no podemos continuar. Responde a cualquier mensaje de Jale y lo revisamos.",
+      "not_onboardable": "No podemos configurar esta cuenta ahora mismo. Responde a cualquier mensaje de Jale y te ayudamos."
+    },
+    "stuck": "Termina este paso en WhatsApp o vuelve más tarde."
   }
 }

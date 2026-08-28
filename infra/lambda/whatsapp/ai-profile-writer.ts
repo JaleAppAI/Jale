@@ -17,6 +17,7 @@ import {
   type VoiceExtractionFields,
 } from './lib/voice-events';
 import { hashNormalizedPhone } from './lib/runtime-controls';
+import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../lib/worker-vocab';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const s3 = new S3Client({});
@@ -169,11 +170,16 @@ async function extractProfileFromTranscript(
     `  "extracted_fields": {\n` +
     `    "full_name": string or null,\n` +
     `    "city": "City, ST" format using 2-letter US state abbreviation (e.g., "El Paso, TX"), infer state for unnamed US cities, null if no location or not a US location,\n` +
-    `    "main_trade": one of ["electrician","plumber","carpenter","concrete","painting","other"] or null,\n` +
+    // The three enumerations the model must choose from are rendered from
+    // `lib/worker-vocab` rather than retyped: JSON.stringify of those key
+    // tuples reproduces these arrays byte for byte (no spaces after the
+    // commas), and a vocabulary change now reaches the prompt and the
+    // validator below in the same edit instead of only one of them.
+    `    "main_trade": one of ${JSON.stringify(TRADE_KEYS)} or null,\n` +
     `    "main_trade_other": string or null (only if main_trade is "other"),\n` +
-    `    "years_experience": one of ["0-1","2-4","5-9","10+"] or null,\n` +
+    `    "years_experience": one of ${JSON.stringify(EXPERIENCE_KEYS)} or null,\n` +
     `    "has_transportation": boolean or null,\n` +
-    `    "availability": one of ["full_time","part_time","weekends","flexible"] or null\n` +
+    `    "availability": one of ${JSON.stringify(AVAILABILITY_KEYS)} or null\n` +
     `  },\n` +
     `  "confidence_scores": { same keys, values 0.0-1.0 indicating extraction confidence },\n` +
     `  "summary_en": "1-2 sentence profile summary in English",\n` +
@@ -223,9 +229,12 @@ function buildUserUpdateSql(
   fields: ExtractedFields,
   scores: Record<string, number>,
 ): { sql: string; params: unknown[] } | null {
-  const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
-  const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'];
-  const VALID_AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'];
+  // Widened to readonly string[] on purpose: the callers below hand these
+  // `unknown` values cast to string, which a narrowed literal-union tuple
+  // would reject.
+  const VALID_TRADES: readonly string[] = TRADE_KEYS;
+  const VALID_EXPERIENCE: readonly string[] = EXPERIENCE_KEYS;
+  const VALID_AVAILABILITY: readonly string[] = AVAILABILITY_KEYS;
 
   const setClauses: string[] = [];
   const params: unknown[] = [];

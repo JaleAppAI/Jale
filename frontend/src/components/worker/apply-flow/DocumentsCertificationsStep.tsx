@@ -7,6 +7,7 @@ import { Icon } from '@/components/ui/icon';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Spinner } from '@/components/ui/spinner';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
+import { docTypeLabel } from '@/lib/doc-types';
 import { REQUIREMENT_DOC_KEYS, partitionRequiredDocs, whatYouNeedHintKey, workerCertNoteKey } from '@/lib/job-requirements';
 import type { ApplyFlowAction, ApplyFlowState } from '@/lib/apply-flow-view';
 import type { CertClaim } from '@/lib/certification-claims';
@@ -132,10 +133,10 @@ export function DocumentsCertificationsStep({
   onVaultChanged: () => void | Promise<void>;
 }) {
   const t = useTranslations('job_requirements');
-  // `worker_job_detail` (not the apply_flow sub-namespace) for the one thing
-  // only it has: `doc_labels.ssn`, the human name of the legacy doc type the
-  // notice below reports.
-  const tDetail = useTranslations('worker_job_detail');
+  // The shared doc catalogue names the legacy/unsupported requirements the
+  // notices below report -- it replaced a `worker_job_detail.doc_labels.ssn`
+  // lookup that could only ever name that one key.
+  const tDocTypes = useTranslations('doc_types');
   const tFlow = useTranslations('worker_job_detail.apply_flow');
   const tWhatYouNeed = useTranslations('worker_job_detail.what_you_need');
   const tCommon = useTranslations('common');
@@ -186,9 +187,30 @@ export function DocumentsCertificationsStep({
   // `vaultDocs === null` (vault fetch failed) fails CLOSED: a required doc's
   // presence cannot be verified, so it counts as still missing rather than
   // silently letting the worker past a check that never actually ran.
-  const missingLegacyDocs = supportedDocs.filter(
+  // Deduped: `required_docs` is raw wire data off the `jobs` row and its CHECK
+  // does not forbid a repeat, so a duplicate would count twice in every
+  // `.includes`-driven "still missing" affordance below.
+  const missingLegacyDocs = Array.from(new Set(supportedDocs)).filter(
     (doc) => (hasCerts ? doc !== 'certification_doc' : true) && !hasDoc(doc as JobDocType),
   );
+
+  // Two very different failures used to share one warning line. A key this
+  // app can NAME but not upload (legacy 'ssn') is a known, handled situation:
+  // the employer collects it off-platform. A key it cannot even name is a
+  // requirement the worker has no way to read, let alone satisfy -- printing
+  // its raw enum string inside the reassuring "may ask for it in person"
+  // sentence quietly presented an unknown as a solved problem. They are split
+  // here and given different tones.
+  const unsupportedLabels = Array.from(new Set(unsupportedDocs)).map((doc) => ({
+    doc,
+    label: docTypeLabel(doc, tDocTypes),
+  }));
+  const nameableUnsupported = unsupportedLabels
+    .filter((entry): entry is { doc: string; label: string } => entry.label !== null)
+    .map((entry) => entry.label);
+  const unnameableUnsupported = unsupportedLabels
+    .filter((entry) => entry.label === null)
+    .map((entry) => entry.doc);
 
   const proofFiles = proofFilesFromVault(certs, vaultDocs);
   const missingClaims = missingRequiredCertClaims(certs, state.certClaims);
@@ -251,19 +273,25 @@ export function DocumentsCertificationsStep({
         </InlineFeedback>
       ) : null}
 
-      {/* OUTSIDE the docs list below, deliberately: in the case this exists for
+      {/* OUTSIDE the docs list below, deliberately: in the case these exist for
           (`required_docs: ['ssn']`) `docsToShow` is empty and that whole block
           renders nothing, so a notice nested inside it would be invisible
           exactly when it is the only explanation the worker gets. */}
-      {unsupportedDocs.length > 0 ? (
+      {nameableUnsupported.length > 0 ? (
         <InlineFeedback tone="warning">
-          <span className="font-semibold">
-            {unsupportedDocs.map((doc) => (doc === 'ssn' ? tDetail('doc_labels.ssn') : doc)).join(', ')}
-          </span>
+          <span className="font-semibold">{nameableUnsupported.join(', ')}</span>
           {/* A colon, not another em dash: the sentence itself already carries
               one, and two in one line read as a broken clause. */}
           {': '}
           {tFlow('legacy_doc_notice')}
+        </InlineFeedback>
+      ) : null}
+
+      {unnameableUnsupported.length > 0 ? (
+        <InlineFeedback tone="danger">
+          <span className="font-semibold">{unnameableUnsupported.join(', ')}</span>
+          {': '}
+          {tFlow('unknown_doc_notice')}
         </InlineFeedback>
       ) : null}
 

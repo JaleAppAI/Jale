@@ -9,7 +9,11 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
-import { JaleCognitoPool, CognitoPoolProps } from '../constructs/cognito-pool';
+import {
+  JaleCognitoPool,
+  CognitoPoolProps,
+  resolveCognitoDeletionProtection,
+} from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -237,8 +241,38 @@ export class AuthStack extends cdk.Stack {
 
     // ── Worker Cognito Pool ──
     const isProd = this.node.tryGetContext('environment') === 'production';
+    // Both live pools hold real registered users; a replacement or an
+    // accidental `cdk destroy` would delete them outright. DeletionProtection
+    // is the pool-side backstop, driven by the same app-global
+    // `deletionProtection` context flag the production deploy workflow already
+    // passes for RDS. The resolver is fail-safe (`!== false`), so a stray synth
+    // with no context at all still protects.
+    //
+    // That is NOT a licence to deploy by hand: cdk.json pins
+    // `deletionProtection: false` for dev, and a hand-run `cdk deploy` reads it,
+    // so a manual deploy without `-c deletionProtection=true` disarms these
+    // pools (and the RDS instance) exactly as it did before. Deploy through the
+    // workflow, which passes the flag on all four cdk invocations.
+    //
+    // STANDING CONSTRAINT once this is ACTIVE. CloudFormation REPLACES a user
+    // pool when `UserPoolName`, the schema/custom attributes or the
+    // alias/username configuration change — and a replacement has to delete the
+    // old pool, which DeletionProtection refuses. The update then fails
+    // mid-flight and can leave the stack in UPDATE_ROLLBACK_FAILED /
+    // UPDATE_ROLLBACK_COMPLETE, which the deploy workflow will not deploy over.
+    // Any future change to those three properties must therefore be a
+    // deliberate two-step: deploy with protection off first, then change the
+    // pool, then turn it back on. Adding a Lambda trigger, an email
+    // configuration or a password policy is safe — those update in place.
+    //
+    // Turning it on emits an UpdateUserPool call on the next deploy, which
+    // resets every property to the template — see the construct's note on
+    // resolveCognitoDeletionProtection, and deploy this through the workflow
+    // rather than by hand so the full context set is present.
+    const deletionProtection = resolveCognitoDeletionProtection(this);
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
+      deletionProtection,
       signInAliases: { phone: true },
       mfa: cognito.Mfa.OFF,
       adminUserPassword: !isProd,
@@ -355,6 +389,7 @@ export class AuthStack extends cdk.Stack {
     // ── Employer Cognito Pool ──
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
       poolName: 'jale-employer-pool',
+      deletionProtection,
       signInAliases: { email: true },
       adminUserPassword: !isProd,
       mfa: cognito.Mfa.OPTIONAL,
