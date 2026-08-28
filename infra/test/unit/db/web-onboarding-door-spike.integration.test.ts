@@ -421,6 +421,24 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
   const mainRun: { id: string; session: OnboardingV2Session | null } = { id: '', session: null };
 
   describe('1-2. the door opens: start_web_onboarding_workflow, then loadWorkerGate', () => {
+    test('resolve_worker_internal_id is the door\'s first call: sub -> internal uuid', async () => {
+      // `start_web_onboarding_workflow` returns no user_id, and every RLS
+      // policy the engine relies on keys on `app.current_internal_user_id`.
+      // So the web door's real entry sequence is: resolve the sub, THEN start.
+      const resolved = await asWhatsapp(null, async (client) => {
+        const known = await client.query<{ id: string | null }>(
+          `SELECT public.resolve_worker_internal_id($1) AS id`, [subs.main],
+        );
+        const unknown = await client.query<{ id: string | null }>(
+          `SELECT public.resolve_worker_internal_id($1) AS id`, [`r2c0-nobody-${randomUUID()}`],
+        );
+        return { known: known.rows[0].id, unknown: unknown.rows[0].id };
+      });
+      expect(resolved.known).toBe(ids.main);
+      // "no such worker" and "exists but is an employer" are indistinguishable.
+      expect(resolved.unknown).toBeNull();
+    });
+
     test('jale_whatsapp starts a run for a web worker named only by Cognito sub', async () => {
       const row = await asWhatsapp(null, async (client) => {
         const r = await client.query(
@@ -595,6 +613,15 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(questions[0].en).not.toMatch(/reply with the number/i);
 
       expect(sent[0].payload).toEqual(expectedPromptPayload('profile.experience', 'en', session.state_context));
+
+      // The question SET itself is NOT mirrored into the run's durable
+      // context -- only `state_context` holds it. This single fact is what
+      // WS3's storage decision hangs on: a web door that drops state_context
+      // between requests renders the FALLBACK questions on the next step
+      // while `saveTrustAnswer` records whatever q_en is in scope.
+      expect(row.context.v2TrustQuestions).toBeUndefined();
+      expect(row.context.v2ProfileTrade).toBeUndefined();
+
       record('profile.trade', msg, result, sent, row.lock_version, session);
     });
 
