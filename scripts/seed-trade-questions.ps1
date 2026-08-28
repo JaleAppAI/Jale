@@ -5,6 +5,17 @@
 # (electrician, plumber, carpenter, concrete, painting). Without them the
 # handleBuildingTrustSignal code path silently skips scoring.
 #
+# SOURCE OF TRUTH: infra/db/migrations/086_trust_extractions_and_web_onboarding.sql
+# Part 4. The five question sets below are a copy of 086's, and this script
+# UPSERTs them -- so if they ever drift, an operator rerun silently reverts the
+# migration. infra/test/unit/scripts/seed-trade-questions.test.ts parses both
+# files and fails on any difference. Edit 086 first, then regenerate here.
+#
+# The rewrite in 086 replaced the original multiple-choice descriptors (which
+# included "What is your seniority level?") with three OPEN questions per
+# trade: specialisation + what they did on the last job, how they start an
+# unfamiliar site, and a time something went wrong.
+#
 # Requires: JaleBastionStack deployed, JaleDatabaseStack outputs accessible.
 # Usage:
 #   cd infra; npx cdk deploy JaleBastionStack
@@ -77,29 +88,44 @@ $$;
 INSERT INTO trade_questions (profession_key, profession_raw, questions, is_seeded)
 VALUES
   ('electrician', 'electrician', '[
-    {"q_en":"What type of electrical work do you specialize in?","q_es":"En que tipo de trabajo electrico te especializas?"},
-    {"q_en":"What is your seniority level?","q_es":"Cual es tu nivel de experiencia?"},
-    {"q_en":"What tasks do you do most as an electrician?","q_es":"Que tareas realizas con mas frecuencia como electricista?"}
+    {"q_en":"What kind of electrical work do you specialize in, and what did you install or repair on your last job: panels, circuits, fixtures?",
+     "q_es":"En que tipo de trabajo electrico te especializas y que instalaste o reparaste en tu ultimo trabajo: tableros, circuitos, luminarias?"},
+    {"q_en":"You arrive at a site you have never seen before and the client points at a panel. What is the first thing you do?",
+     "q_es":"Llegas a una obra que nunca has visto y el cliente te senala un tablero. Que es lo primero que haces?"},
+    {"q_en":"Tell us about a time something went wrong on an electrical job: a short, a failed inspection, a wrong circuit. What happened and what did you do?",
+     "q_es":"Cuentanos de una vez que algo salio mal en un trabajo electrico: un corto, una inspeccion reprobada, un circuito equivocado. Que paso y que hiciste?"}
   ]'::jsonb, true),
   ('plumber', 'plumber', '[
-    {"q_en":"What type of plumbing work do you specialize in?","q_es":"En que tipo de trabajo de plomeria te especializas?"},
-    {"q_en":"What is your seniority level?","q_es":"Cual es tu nivel de experiencia?"},
-    {"q_en":"What tasks do you do most as a plumber?","q_es":"Que tareas realizas con mas frecuencia como plomero?"}
+    {"q_en":"What kind of plumbing do you specialize in, and what did you rough-in or install on your last job: supply lines, drains, fixtures?",
+     "q_es":"En que tipo de plomeria te especializas y que instalaste en tu ultimo trabajo: lineas de agua, drenajes, muebles sanitarios?"},
+    {"q_en":"You arrive at a job you have never seen and the owner says there is a leak somewhere. What is the first thing you do?",
+     "q_es":"Llegas a un trabajo que nunca has visto y el dueno te dice que hay una fuga en algun lado. Que es lo primero que haces?"},
+    {"q_en":"Tell us about a time a plumbing job went wrong: a leak after you finished, a fitting that failed, a line you had to open again. What happened and what did you do?",
+     "q_es":"Cuentanos de una vez que un trabajo de plomeria salio mal: una fuga despues de terminar, una conexion que fallo, una linea que tuviste que abrir otra vez. Que paso y que hiciste?"}
   ]'::jsonb, true),
   ('carpenter', 'carpenter', '[
-    {"q_en":"What type of carpentry work do you specialize in?","q_es":"En que tipo de trabajo de carpinteria te especializas?"},
-    {"q_en":"What is your seniority level?","q_es":"Cual es tu nivel de experiencia?"},
-    {"q_en":"What tasks do you do most as a carpenter?","q_es":"Que tareas realizas con mas frecuencia como carpintero?"}
+    {"q_en":"What kind of carpentry do you specialize in, and what did you build on your last job: framing, doors, cabinets, finish trim?",
+     "q_es":"En que tipo de carpinteria te especializas y que construiste en tu ultimo trabajo: estructura, puertas, gabinetes, acabados?"},
+    {"q_en":"You arrive at a site you have never seen with the plans in hand. What is the first thing you do before you cut anything?",
+     "q_es":"Llegas a una obra que nunca has visto con los planos en la mano. Que es lo primero que haces antes de cortar algo?"},
+    {"q_en":"Tell us about a time a carpentry job went wrong: a bad measurement, warped material, something that did not fit. What happened and what did you do?",
+     "q_es":"Cuentanos de una vez que un trabajo de carpinteria salio mal: una medida equivocada, material torcido, algo que no encajo. Que paso y que hiciste?"}
   ]'::jsonb, true),
   ('concrete', 'concrete', '[
-    {"q_en":"What type of concrete work do you specialize in?","q_es":"En que tipo de trabajo de concreto te especializas?"},
-    {"q_en":"What is your seniority level?","q_es":"Cual es tu nivel de experiencia?"},
-    {"q_en":"What tasks do you do most in concrete work?","q_es":"Que tareas realizas con mas frecuencia en trabajo de concreto?"}
+    {"q_en":"What kind of concrete work do you specialize in, and what did you form, pour, or finish on your last job?",
+     "q_es":"En que tipo de trabajo de concreto te especializas y que cimbraste, colaste o acabaste en tu ultimo trabajo?"},
+    {"q_en":"You arrive at a pour you have never seen before. What is the first thing you check before the truck backs in?",
+     "q_es":"Llegas a un colado que nunca has visto. Que es lo primero que revisas antes de que se acerque el camion?"},
+    {"q_en":"Tell us about a time a pour went wrong: the weather turned, a form moved, a slab cracked. What happened and what did you do?",
+     "q_es":"Cuentanos de una vez que un colado salio mal: cambio el clima, se movio una cimbra, se agrieto una losa. Que paso y que hiciste?"}
   ]'::jsonb, true),
   ('painting', 'painting', '[
-    {"q_en":"What type of painting work do you specialize in?","q_es":"En que tipo de trabajo de pintura te especializas?"},
-    {"q_en":"What is your seniority level?","q_es":"Cual es tu nivel de experiencia?"},
-    {"q_en":"What tasks do you do most as a painter?","q_es":"Que tareas realizas con mas frecuencia como pintor?"}
+    {"q_en":"What kind of painting do you specialize in, and what did you prep and coat on your last job: interior walls, exteriors, spray work?",
+     "q_es":"En que tipo de pintura te especializas y que preparaste y pintaste en tu ultimo trabajo: paredes interiores, exteriores, trabajo con pistola?"},
+    {"q_en":"You arrive at a room you have never seen and the walls are in bad shape. What is the first thing you do?",
+     "q_es":"Llegas a un cuarto que nunca has visto y las paredes estan en mal estado. Que es lo primero que haces?"},
+    {"q_en":"Tell us about a time a paint job went wrong: peeling, bleed-through, a color the client rejected. What happened and what did you do?",
+     "q_es":"Cuentanos de una vez que un trabajo de pintura salio mal: se descarapelo, se transparento, o el cliente rechazo el color. Que paso y que hiciste?"}
   ]'::jsonb, true)
 ON CONFLICT (profession_key) DO UPDATE
   SET questions  = EXCLUDED.questions,
