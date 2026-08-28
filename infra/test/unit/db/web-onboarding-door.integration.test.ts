@@ -92,7 +92,8 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
   const ids: Record<string, string> = {};
   const subs: Record<string, string> = {};
   const phones: Record<string, string> = {};
-  const WORKERS = ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'suspended'] as const;
+  const WORKERS = ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'suspended',
+    'batch', 'photo', 'preauth'] as const;
 
   /** The exact shape API Gateway's Cognito authorizer hands the Lambda. */
   function event(
@@ -182,6 +183,11 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
     await rolePool?.end();
     const fixtureIds = Object.values(ids);
     if (fixtureIds.length > 0) {
+      // `worker_domain_outbox.aggregate_id` is a bare UUID with NO foreign key
+      // (042:114), so deleting the users does NOT take these rows with it.
+      // They must go explicitly or they stay pending forever and change what
+      // `lease_worker_domain_events` returns to the concurrency suite.
+      await su.query(`DELETE FROM worker_domain_outbox WHERE aggregate_id = ANY($1::uuid[])`, [fixtureIds]);
       // legal_consent_log's FK is plain RESTRICT; everything else cascades.
       await su.query(`DELETE FROM legal_consent_log WHERE user_id = ANY($1::uuid[])`, [fixtureIds]);
       await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [fixtureIds]);
@@ -733,15 +739,19 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
       expect(transitions.rowCount).toBe(2);
     });
 
-    test('back at legal.review is 422 with the state, not a 500', async () => {
-      const state = (await get('city')).body;
-      // The 'city' worker is past legal, so use a worker still on it.
-      expect(state.run.stepKey).not.toBe('legal.review');
+    test('back with nowhere to go is a 200 NO-OP with the unchanged state, not an error', async () => {
+      // The FE keeps its Back control live on the `about` screen, whose first
+      // step (`profile.name`) has nothing behind it, and `postOnboardingBack`
+      // throws on every non-2xx. A 422 here would put a failure banner in
+      // front of a worker who pressed an enabled button; the run is simply
+      // where it was, so say so with a 200 and let the control read as inert.
       const fresh = (await get('ready')).body;
+      expect(fresh.run.stepKey).toBe('legal.review');
       const response = await back('ready', fresh.run.lockVersion);
-      expect(response.statusCode).toBe(422);
-      expect(response.body).toMatchObject({ error: 'nothing_to_go_back_to', reason: 'nothing_to_go_back_to' });
-      expect(response.body.state.run.stepKey).toBe('legal.review');
+      expect(response.statusCode).toBe(200);
+      expect(response.body.error).toBeUndefined();
+      expect(response.body.run.stepKey).toBe('legal.review');
+      expect(response.body.run.lockVersion).toBe(fresh.run.lockVersion);
     });
 
     test('the language PATCH persists the run column AND the durable override', async () => {
@@ -772,6 +782,158 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
       const response = await language('ready', 'en', state.run.lockVersion + 5);
       expect(response.statusCode).toBe(409);
       expect(response.body.error).toBe('lock_conflict');
+    });
+  });
+
+  // =======================================================================
+  // 7. Parked, corrupted and half-finished runs
+  // =======================================================================
+
+  describe('7. runs the door must repair or refuse, never 500', () => {
+    /** Drives a fresh worker all the way to the LAST trust question. */
+    async function driveToLastTrustQuestion(key: string): Promise<Record<string, any>> {
+      let state = await driveToTrade(key);
+      state = (await answers(key, state.run.lockVersion, [{ stepKey: 'profile.trade', value: 'carpenter' }])).body;
+      state = (await answers(key, state.run.lockVersion, [
+        { stepKey: 'profile.experience', value: '2-4' },
+        { stepKey: 'profile.transportation', value: true },
+        { stepKey: 'profile.availability', value: 'full_time' },
+      ])).body;
+      state = (await answers(key, state.run.lockVersion, [{ stepKey: 'trust.question.1', value: { text: ANSWER_1 } }])).body;
+      state = (await answers(key, state.run.lockVersion, [{ stepKey: 'trust.question.2', value: { text: ANSWER_2 } }])).body;
+      expect(state.run.stepKey).toBe('trust.question.3');
+      return state;
+    }
+
+    test('a batch that COMPLETES and then rejects still pokes the domain-outbox drain', async () => {
+      const state = await driveToLastTrustQuestion('batch');
+
+      wakeCalls.length = 0;
+      // Item 1 completes onboarding; item 2 then hits the `status !== active`
+      // guard. The request is a 422 AND the worker is ready: both outbox rows
+      // are written, so the drain must still be poked or scoring and skill
+      // extraction sit until the cron runs. The post-commit side effects
+      // therefore cannot live only on the 200 path.
+      const response = await answers('batch', state.run.lockVersion, [
+        { stepKey: 'trust.question.3', value: { text: ANSWER_3 } },
+        { stepKey: 'trust.question.3', value: { text: ANSWER_3 } },
+      ]);
+
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({
+        error: 'step_mismatch',
+        rejectedStepKey: 'trust.question.3',
+        reason: 'run_not_active',
+      });
+      // Partial progress is COMMITTED: the first item really did complete.
+      expect(response.body.state.lifecycle).toBe('ready');
+      expect(wakeCalls).toHaveLength(1);
+
+      const outbox = await su.query<{ event_type: string }>(
+        `SELECT event_type FROM worker_domain_outbox WHERE aggregate_id = $1 ORDER BY event_type`,
+        [ids.batch],
+      );
+      expect(outbox.rows.map((r) => r.event_type)).toEqual(['assessment.requested', 'worker.ready']);
+    });
+
+    test('a run PARKED on profile.photo is refused with the state, not the engine terminal throw', async () => {
+      await get('photo');
+      // 050 widened the step CHECK to cover the photo steps before their
+      // handlers existed, so this row is legal SQL and illegal flow. Reaching
+      // `handleProfileAndTrust` with it throws `unhandled bound step` -> 500.
+      await su.query(
+        `UPDATE worker_workflow_runs SET current_step_key = 'profile.photo'
+          WHERE user_id = $1 AND status = 'active'`,
+        [ids.photo],
+      );
+
+      const state = (await get('photo')).body;
+      expect(state.run.stepKey).toBe('profile.photo');
+
+      const response = await answers('photo', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }]);
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({
+        error: 'step_mismatch',
+        rejectedStepKey: 'legal.review',
+        reason: 'run_parked_on_unimplemented_step',
+      });
+      expect(response.body.state.run.stepKey).toBe('profile.photo');
+    });
+
+    test('a bound run parked on a PRE-AUTH step is self-healed to legal.review by the GET', async () => {
+      await get('preauth');
+      // No live path produces this row -- runs are born at legal.review and
+      // never walk back onto a pre-auth key -- but operator tooling once did,
+      // and the WhatsApp door carries the identical repair. Without it the FE
+      // renders a Terms screen whose only post (`legal.review`) would loop on
+      // step_mismatch forever.
+      await su.query(
+        `UPDATE worker_workflow_runs SET current_step_key = 'start.choose_language'
+          WHERE user_id = $1 AND status = 'active'`,
+        [ids.preauth],
+      );
+
+      const state = (await get('preauth')).body;
+      expect(state.run.stepKey).toBe('legal.review');
+
+      const healed = await su.query<{ from_step_key: string; to_step_key: string }>(
+        `SELECT t.from_step_key, t.to_step_key
+           FROM worker_workflow_transitions t
+           JOIN worker_workflow_runs r ON r.id = t.run_id
+          WHERE r.user_id = $1 AND t.reason = 'self_heal_preauth_step'`,
+        [ids.preauth],
+      );
+      expect(healed.rowCount).toBe(1);
+      expect(healed.rows[0]).toMatchObject({
+        from_step_key: 'start.choose_language',
+        to_step_key: 'legal.review',
+      });
+
+      // And the door works immediately afterwards, same request cycle onward.
+      const next = await answers('preauth', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }]);
+      expect(next.statusCode).toBe(200);
+      expect(next.body.run.stepKey).toBe('profile.name');
+    });
+
+    test('the GET never hands the browser a step it has no screen for', async () => {
+      // The FE maps exactly these keys to an answerable screen. 'photo' is
+      // excluded: the test above parks it there on purpose.
+      const ANSWERABLE = [
+        'legal.review', 'profile.name', 'profile.location', 'profile.trade', 'profile.custom_trade',
+        'profile.experience', 'profile.transportation', 'profile.availability',
+        'trust.question.1', 'trust.question.2', 'trust.question.3',
+      ];
+      for (const key of ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'batch', 'preauth']) {
+        const response = await get(key);
+        expect(response.statusCode).toBe(200);
+        const run = response.body.run;
+        if (run.status !== 'active') continue;
+        expect({ key, stepKey: run.stepKey }).toEqual({ key, stepKey: expect.stringMatching(
+          new RegExp(`^(${ANSWERABLE.map((k) => k.replace(/\./g, '\\.')).join('|')})$`),
+        ) });
+      }
+    });
+
+    test('the trust answers rendered are the CURRENT trade\'s, not merely the newest row', async () => {
+      // (user_id, profession_key) is unique per ACTIVE assessment, so a worker
+      // legitimately holds one row per profession. A cross-door RESTART onto a
+      // new trade would otherwise render the abandoned profession's answers
+      // underneath the new trade's questions.
+      await su.query(
+        `INSERT INTO worker_trust_assessments (user_id, profession_key, answers, status, created_at)
+         VALUES ($1, 'plumber', $2::jsonb, 'pending', now() + interval '1 hour')`,
+        [ids.happy, JSON.stringify([{ question_index: 0, answer_text: 'A PLUMBING answer from an abandoned trade.' }])],
+      );
+      try {
+        const state = (await get('happy')).body;
+        expect(state.profile.trade).toEqual({ key: 'carpenter', other: null });
+        expect(state.trust.answers.map((a: any) => a.text)).toEqual([ANSWER_1, ANSWER_2, ANSWER_3]);
+      } finally {
+        await su.query(
+          `DELETE FROM worker_trust_assessments WHERE user_id = $1 AND profession_key = 'plumber'`,
+          [ids.happy],
+        );
+      }
     });
   });
 });

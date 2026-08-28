@@ -45,6 +45,7 @@ import {
   applyBack,
   createWebOnboardingDeps,
   createWebSession,
+  healPreAuthStep,
   isLockConflict,
   setPreferredLanguage,
   type WebAnswerItem,
@@ -206,6 +207,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   // invisible in the flow and only shows up as un-scorable assessments weeks
   // later, so it is worth one operator-facing log line per web run.
   let fallbackSeeded = false;
+  // Every side effect that must happen AFTER the commit and BEFORE the
+  // response, on EVERY committing path. It is a closure rather than a block
+  // at the bottom of `try` because the 422 paths commit and return early:
+  // a batch whose item N completes onboarding and whose item N+1 is rejected
+  // both completes AND 422s, and the drain must still be poked or the
+  // worker's scoring and skill extraction sit until the cron runs.
+  const afterCommit = async (runId: string | null): Promise<void> => {
+    if (fallbackSeeded) {
+      console.warn(JSON.stringify({
+        metric: 'WebOnboardingFallbackQuestionsSeeded',
+        runId,
+        count: 1,
+      }));
+    }
+    if (wakeDomainOutbox) {
+      // Best-effort, exactly as the processor does it.
+      await publishOutboxWakes({ workerIntent: false, domain: true });
+    }
+  };
 
   try {
     const pool = await getDbPool();
@@ -259,6 +279,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       workflowVersion: WHATSAPP_V2_WORKFLOW_VERSION,
     });
 
+    // Before ANY route reads the cursor: a run parked on a pre-auth step is
+    // unanswerable through this door and must be repaired, not rendered.
+    // Runs as the first mutation of every request, including the GET, so the
+    // browser never sees the broken cursor at all.
+    gate = await healPreAuthStep(client, deps, { workerId, gate });
+
     let result: APIGatewayProxyResult | null = null;
 
     if (method === 'GET' && suffix === '') {
@@ -294,6 +320,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
           // progress is kept.
           await client.query('COMMIT');
           committed = true;
+          await afterCommit(fresh.runId);
           return json(422, {
             error: outcome.rejection.code,
             rejectedStepKey: outcome.rejection.stepKey,
@@ -314,10 +341,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       } else {
         const back = await applyBack(client, deps, { gate, now });
         if (!back.moved) {
-          const state = await buildOnboardingState(client, { workerId, gate });
-          await client.query('COMMIT');
-          committed = true;
-          return json(422, { error: 'nothing_to_go_back_to', reason: back.reason, state });
+          // 200 WITH THE UNCHANGED STATE, not an error. The first answerable
+          // step (`profile.name`) has nowhere to go back to, and the FE keeps
+          // its Back control live there (`OnboardingFlow`'s `backHandler` is
+          // null only on terms/photo/done), so this is a button a worker can
+          // legitimately press. `postOnboardingBack` throws on every non-2xx,
+          // and `nothing_to_go_back_to` is outside the FE's handled error
+          // union, so a 422 here would surface a generic failure banner for
+          // pressing an enabled button. Returning the state unchanged makes
+          // the control inert instead: the browser re-hydrates onto the step
+          // it is already on. A client that cares can compare `run.stepKey`.
+          console.info(JSON.stringify({
+            metric: 'WebOnboardingBackNoop',
+            runId: gate.runId,
+            stepKey: gate.currentStepKey,
+            reason: back.reason,
+          }));
         }
       }
     } else if (method === 'PATCH' && suffix === 'language') {
@@ -355,18 +394,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     await client.query('COMMIT');
     committed = true;
 
-    if (fallbackSeeded) {
-      console.warn(JSON.stringify({
-        metric: 'WebOnboardingFallbackQuestionsSeeded',
-        runId: finalGate.runId,
-        count: 1,
-      }));
-    }
-    if (wakeDomainOutbox) {
-      // Post-commit, best-effort, exactly as the processor does it: without
-      // it the worker's scoring and skill extraction wait for the cron.
-      await publishOutboxWakes({ workerIntent: false, domain: true });
-    }
+    await afterCommit(finalGate.runId);
     return json(200, state);
   } catch (err) {
     if (client && !committed) await client.query('ROLLBACK').catch(() => undefined);

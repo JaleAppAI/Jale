@@ -527,6 +527,76 @@ const PROFILE_OR_TRUST_STEP = /^(profile\.|trust\.question\.)/;
 
 export type BackOutcome = { moved: true; gate: WorkerGate } | { moved: false; reason: string };
 
+/**
+ * The two PRE-AUTH step keys. They belong to the `worker_identity_challenges`
+ * lane (`PreAuthState.currentStepKey` is typed as exactly this pair), NOT to
+ * `worker_workflow_runs` — see `healPreAuthStep`.
+ */
+const PRE_AUTH_STEP_KEYS: ReadonlySet<string> = new Set([
+  'start.choose_language',
+  'identity.verify_otp',
+]);
+
+/**
+ * Repair a bound run parked on a pre-auth step, and return the gate to serve
+ * the request from.
+ *
+ * CAN THIS HAPPEN? Not by any live code path. `worker_workflow_runs` rows are
+ * born at `legal.review` and only there: `bind_verified_identity_and_start_
+ * workflow` (WhatsApp, after OTP) and `start_web_onboarding_workflow` (086,
+ * this door) both insert with `current_step_key = 'legal.review'`, and no
+ * handler ever advances a bound run BACKWARD onto a pre-auth key
+ * (`findPreviousStepKey` excludes both from `from_step_key` explicitly). The
+ * pre-auth steps live in a different table entirely. The residual sources are
+ * operator tooling (the reset CLI once seeded exactly this row) and legacy
+ * rows — which is why `routeBoundStepHydrated` carries the identical repair
+ * for the WhatsApp door.
+ *
+ * The web door needs its own copy because it deliberately enters BELOW that
+ * function (`dispatchWebBoundStep` skips the command gate). Without it such a
+ * run would render as a Terms screen the browser can never get past: the FE
+ * maps both keys to Terms, whose only post is `legal.review`, which this
+ * door would answer with `step_mismatch` forever.
+ *
+ * Reason string is `self_heal_preauth_step`, the SAME one the WhatsApp door
+ * writes — deliberately not a web-specific reason. `findPreviousStepKey`'s
+ * contract names that reason as the legitimate producer of pre-auth
+ * `from_step_key` rows; a second string for an identical repair would split
+ * the audit trail for no gain. The DOOR is recorded in the metric line
+ * instead.
+ */
+export async function healPreAuthStep(
+  client: PoolClient,
+  deps: OnboardingV2Deps,
+  input: { workerId: string; gate: WorkerGate },
+): Promise<WorkerGate> {
+  const gate = input.gate;
+  const stepKey = gate.currentStepKey;
+  if (!stepKey || !PRE_AUTH_STEP_KEYS.has(stepKey)) return gate;
+  if (gate.status !== 'active') return gate;
+
+  console.warn(JSON.stringify({
+    metric: 'OnboardingBoundStepSelfHealed',
+    door: 'web',
+    fromStepKey: stepKey,
+    runId: gate.runId,
+  }));
+
+  await deps.repo.advanceWorkflow(client, {
+    runId: gate.runId as string,
+    expectedLockVersion: gate.lockVersion as number,
+    fromStepKey: stepKey as WorkflowStepKey,
+    toStepKey: 'legal.review',
+    contextPatch: {},
+    inboundMessageSid: `web:${randomUUID()}`,
+    reason: 'self_heal_preauth_step',
+  });
+
+  const healed = await deps.repo.loadWorkerGate(client, input.workerId);
+  if (!healed?.runId) throw new Error('worker_gate_missing_after_preauth_heal');
+  return healed;
+}
+
 export async function applyBack(
   client: PoolClient,
   deps: OnboardingV2Deps,

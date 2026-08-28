@@ -147,12 +147,26 @@ export async function buildOnboardingState(
 
   // Column-scoped: `answers` and `status` are granted (012:117 + 049), the
   // score columns are not.
+  //
+  // Scoped to the run's CURRENT trade, not merely to the newest row. A
+  // cross-door RESTART that lands the worker on a different trade leaves the
+  // abandoned profession's assessment as the newest row for this user, and
+  // rendering its answers underneath the new trade's questions (which come
+  // from `v2ProfileTrade`) would show the worker text they wrote about a
+  // different job. `profession_key` is SELECT-granted (012:115) and the bag
+  // already holds the NORMALIZED key — `profile.ts` writes
+  // `v2ProfileTrade = normalizeTrade(professionRaw)`, the same value
+  // `trust.ts` inserts — so this is an equality match, not a re-derivation.
+  const professionKey = typeof runContext.v2ProfileTrade === 'string'
+    ? runContext.v2ProfileTrade
+    : null;
   const assessment = await client.query<{ id: string; answers: unknown }>(
     `SELECT id, answers FROM worker_trust_assessments
       WHERE user_id = $1
+        AND ($2::text IS NULL OR profession_key = $2::text)
       ORDER BY created_at DESC
       LIMIT 1`,
-    [workerId],
+    [workerId, professionKey],
   );
 
   // 086's column-scoped reader grant, under `wte_worker_own_internal`.
