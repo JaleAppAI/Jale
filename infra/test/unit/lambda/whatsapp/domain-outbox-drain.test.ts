@@ -128,6 +128,10 @@ describe('domain-outbox-drain', () => {
     // touched AWS. Unsetting it here makes the default throw before the SDK
     // import, for these tests and for any added later.
     delete process.env.TRUST_EXTRACTION_QUEUE_URL;
+    // Identical hazard on the scorer lane: trust-scorer.test.ts sets
+    // TRUST_ASSESSMENT_QUEUE_URL and never clears it, and the tests below
+    // reach defaultDispatchAssessment.
+    delete process.env.TRUST_ASSESSMENT_QUEUE_URL;
     mockPublishWorkerIntentWake.mockResolvedValue({ sent: 1, failed: 0 });
     logLines = [];
     logSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
@@ -539,6 +543,7 @@ describe('domain-outbox-drain — trust-extraction fan-out', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     delete process.env.TRUST_EXTRACTION_QUEUE_URL;
+    delete process.env.TRUST_ASSESSMENT_QUEUE_URL;
     mockPublishWorkerIntentWake.mockResolvedValue({ sent: 1, failed: 0 });
     logLines = [];
     logSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
@@ -578,6 +583,61 @@ describe('domain-outbox-drain — trust-extraction fan-out', () => {
       professionKey: 'painter',
     });
     expect(order).toEqual(['assessment', 'extraction']);
+  });
+
+  // Awaiting the fan-out INSIDE the transaction only bounded rejections. An
+  // SQS call that hangs instead of rejecting would run to the Lambda timeout
+  // with the transaction still open — the event rolls back and is retried,
+  // and the message that was already sent becomes a duplicate. Committing
+  // first makes a hang cost nothing but the extraction.
+  it('dispatches only AFTER the event is committed, so a slow queue cannot hold the transaction open', async () => {
+    const event = assessmentEvent({ id: 'x-6' });
+    const trace: string[] = [];
+    const dispatchAssessment = jest.fn(async () => { trace.push('dispatchAssessment'); });
+    const dispatchExtraction = jest.fn(async () => { trace.push('dispatchExtraction'); });
+
+    mockQuery.mockReset();
+    mockQuery.mockImplementation(async (sql: string, params: unknown[] = []) => {
+      if (/lease_worker_domain_events/.test(sql)) {
+        const [eventType] = params as [string, number];
+        return { rows: eventType === 'assessment.requested' ? [event] : [] };
+      }
+      trace.push(sql.trim().split('\n')[0].slice(0, 40));
+      if (/SELECT id FROM worker_trust_assessments/.test(sql)) return { rows: [{ id: 'wta-x6' }] };
+      if (/UPDATE worker_domain_outbox/.test(sql)) return { rows: [], rowCount: 1 };
+      return { rows: [] };
+    });
+
+    const result = await runDrain(fakePool, {
+      renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
+    });
+
+    expect(result.completed).toBe(1);
+    const commitIdx = trace.indexOf('COMMIT');
+    expect(commitIdx).toBeGreaterThanOrEqual(0);
+    expect(trace.indexOf('dispatchAssessment')).toBeLessThan(commitIdx);
+    expect(trace.indexOf('dispatchExtraction')).toBeGreaterThan(commitIdx);
+  });
+
+  it('a fan-out that never settles cannot roll back an already-committed event', async () => {
+    const event = assessmentEvent({ id: 'x-7' });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+    // Never settles — the shape of an SQS hang rather than an SQS rejection.
+    const dispatchExtraction = jest.fn(() => new Promise<void>(() => {}));
+    const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x7' } });
+
+    // The drain itself never resolves while the dispatch hangs, so the
+    // assertion is about the DB state at the moment of the hang: the event is
+    // already durably completed and committed before the fan-out is awaited.
+    const pending = runDrain(fakePool, {
+      renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
+    });
+    await Promise.race([pending, new Promise((resolve) => setImmediate(resolve))]);
+
+    expect(dispatchExtraction).toHaveBeenCalledTimes(1);
+    expect(calls.some((c) => /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'completed'/.test(c.sql))).toBe(true);
+    expect(calls.some((c) => /^COMMIT$/.test(c.sql))).toBe(true);
+    expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(false);
   });
 
   it('is fail-OPEN: a thrown extraction dispatch still COMMITs the event, never rolls back and never marks a failure', async () => {

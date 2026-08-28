@@ -20,8 +20,9 @@
 //     Lambda never calls Bedrock and never scores anything itself; jale_ai
 //     (TrustScorer) owns scoring and is idempotent against duplicate
 //     messages. The same payload is ALSO fanned out to the TrustExtractor
-//     queue (R1-X) on a fail-open path: that dispatch is best-effort and its
-//     failure is logged, never retried and never able to fail the event.
+//     queue (R1-X) on a fail-open path, AFTER the commit: that dispatch is
+//     best-effort and its failure — or its hang — is logged, never retried
+//     and never able to fail or delay the event.
 //
 // Renderer: `releaseWorkerReady` needs a `ReleaseRenderer`. C2's
 // `createReleaseRenderer()` (workflow lane) is not merged into this branch
@@ -356,20 +357,6 @@ async function processAssessmentRequested(
 
     await dispatch({ assessmentId, userId: event.aggregate_id, professionKey });
 
-    // R1-X fan-out, FAIL-OPEN. Deliberately swallows everything: this inner
-    // catch is the only thing standing between an extraction-queue outage and
-    // a rolled-back onboarding event. The metric carries safe scalars only —
-    // never the caught message (an SQS error quotes the queue URL, and the
-    // payload carries user ids).
-    try {
-      await dispatchExtraction({ assessmentId, userId: event.aggregate_id, professionKey });
-    } catch {
-      console.log(JSON.stringify({
-        metric: 'WhatsAppExtractionDispatchFailure',
-        event_type: event.event_type,
-      }));
-    }
-
     const completion = await client.query(
       `UPDATE worker_domain_outbox
           SET status='completed', leased_until=NULL, lease_token=NULL,
@@ -379,6 +366,29 @@ async function processAssessmentRequested(
     );
     if (completion.rowCount !== 1) throw new Error('domain_event_lease_lost');
     await client.query('COMMIT');
+
+    // R1-X fan-out, FAIL-OPEN — and deliberately AFTER the COMMIT.
+    //
+    // Inside the transaction this only bounded REJECTIONS: an SQS call that
+    // hangs rather than rejects would run to the Lambda timeout with the
+    // transaction still open, so the event would roll back and be retried
+    // while the message it already sent became a duplicate. Committing first
+    // means the worst a stuck extraction queue can cost is the extraction.
+    //
+    // It is also outside the try/catch below on purpose: reaching that catch
+    // would ROLLBACK (a no-op now) and then markFailure() an event that has
+    // already completed. The inner catch swallows everything and the metric
+    // carries safe scalars only — never the caught message (an SQS error
+    // quotes the queue URL) and never the payload's ids.
+    try {
+      await dispatchExtraction({ assessmentId, userId: event.aggregate_id, professionKey });
+    } catch {
+      console.log(JSON.stringify({
+        metric: 'WhatsAppExtractionDispatchFailure',
+        event_type: event.event_type,
+      }));
+    }
+
     return true;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);

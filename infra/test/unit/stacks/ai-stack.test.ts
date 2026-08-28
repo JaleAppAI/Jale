@@ -230,6 +230,32 @@ describe('AiStack', () => {
     });
   });
 
+  it('grants the extractor`s own role bedrock:InvokeModel on the pinned ARN set', () => {
+    const extractor = Object.keys(template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: EXTRACTOR_DESCRIPTION },
+    }))[0];
+    const roleLogicalId = template.findResources('AWS::Lambda::Function')[extractor]
+      .Properties.Role['Fn::GetAtt'][0];
+    const statements = Object.values(template.findResources('AWS::IAM::Policy'))
+      .filter((policy: any) => (policy.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId))
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement);
+
+    const bedrock = statements.filter((s: any) => s.Action === 'bedrock:InvokeModel');
+    expect(bedrock).toHaveLength(1);
+    expect(bedrock[0].Effect).toBe('Allow');
+    expect(bedrock[0].Resource).toEqual([
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.amazon.nova-lite-v1:0',
+      'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
+      'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
+    ]);
+    // The extractor has no rubric, so it must not carry the scorer's SSM read.
+    const ssm = statements.filter((s: any) => {
+      const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+      return actions.some((a: string) => typeof a === 'string' && a.startsWith('ssm:'));
+    });
+    expect(ssm).toHaveLength(0);
+  });
+
   it('alarms on extractor errors and on trust-extraction DLQ depth, both actioned', () => {
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'TrustExtractorErrors',

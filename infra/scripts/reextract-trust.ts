@@ -11,9 +11,25 @@
  * onto the same TrustExtractor queue. It is also the recovery path after a
  * prolonged extractor outage, where the fan-out messages were lost.
  *
+ * It picks up three kinds of row: assessments with NO extraction row at this
+ * version (a version bump), and rows left `failed` (the DLQ case) or orphaned
+ * in `pending` (a recovery sweep that reset rows and then failed to send).
+ * The extractor's claim accepts `status IN ('pending','failed')`, so all three
+ * are re-claimable; anything `extracting` or `completed` is deliberately left
+ * alone.
+ *
  * This tool never calls Bedrock, never writes `worker_trust_extractions`, and
  * never touches `worker_trust_assessments` or `users`. Everything downstream
  * of the SQS send is the extractor's own idempotent claim.
+ *
+ * CONNECTION ROLE — this matters more than it looks. `worker_trust_assessments`
+ * (012) and `worker_trust_extractions` (086) are both FORCE RLS, and
+ * jale_admin's policies on them are GUC-gated (own-row / employer
+ * relationship). A bastion run as jale_admin sets neither GUC, so the backlog
+ * query returns ZERO rows and the tool exits 0 reporting "nothing to
+ * re-extract" — a silent no-op indistinguishable from success. jale_ai is the
+ * only role with a `USING(true)` SELECT on both tables, so it is the default
+ * and the tool refuses to run as anything else unless `--allow-role` says so.
  *
  * Safety (mirrors scripts/redrive-billing-dlq.ts and replay-domain-event.ts):
  *   - Dry run is the default. `--execute` is required to send anything.
@@ -30,7 +46,7 @@
  *
  * Usage:
  *   cd infra
- *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_admin DB_PASSWORD=<pw> \
+ *   DB_HOST=<host> DB_PORT=5432 DB_NAME=jale DB_USER=jale_ai DB_PASSWORD=<pw> \
  *   AWS_REGION=us-east-2 TRUST_EXTRACTION_QUEUE_URL=<url> \
  *     npm run reextract:trust -- --extractor-version v1                 # dry run
  *   … --extractor-version v1 --limit 50 --execute                        # send
@@ -44,6 +60,9 @@ export interface ReextractArgs {
   extractorVersion: string;
   execute: boolean;
   limit: number;
+  /** Escape hatch for the connection-role guard. Absent (not `undefined`)
+   *  unless the operator explicitly opted out. */
+  allowRole?: string;
 }
 
 export type ParseReextractArgsResult =
@@ -67,6 +86,7 @@ export type ReextractResultKind =
   | 'executed'
   | 'nothing_to_do'
   | 'queue_not_configured'
+  | 'wrong_role'
   | 'aws_error';
 
 export interface ReextractResult {
@@ -86,7 +106,7 @@ export interface ReextractDeps {
   logError?: (line: string) => void;
 }
 
-const VALUE_FLAGS = new Set(['--extractor-version', '--limit']);
+const VALUE_FLAGS = new Set(['--extractor-version', '--limit', '--allow-role']);
 const ALL_FLAGS = new Set([...VALUE_FLAGS, '--execute', '--dry-run']);
 // Same posture as replay-domain-event.ts / redrive-billing-dlq.ts: a flag that
 // implies "everything" means the operator wants a different tool. `--limit` is
@@ -97,11 +117,15 @@ const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 5000;
 /** Conservative: the version is echoed in output, so it must be inert text. */
 const VERSION_PATTERN = /^[A-Za-z0-9._-]{1,32}$/;
+/** The only role whose RLS policies let this query see anything (012, 086). */
+export const REQUIRED_DB_ROLE = 'jale_ai';
+const ROLE_PATTERN = /^[A-Za-z0-9_]{1,63}$/;
 
 /**
  * Assessments that (a) still exist in a state worth extracting, (b) actually
- * contain at least one non-blank answer, and (c) have no extraction row at
- * this version.
+ * contain at least one non-blank answer, and (c) have no USABLE extraction row
+ * at this version — no row at all, or one left `failed`/`pending`. Matching
+ * only the JOIN misses would skip exactly the rows an outage leaves behind.
  *
  * The `answers` column is NEVER selected — only `id`, `user_id` and
  * `profession_key` leave the database, which is what makes "this tool cannot
@@ -120,7 +144,7 @@ export const REEXTRACT_SELECT_SQL = `
       ON e.assessment_id = a.id
      AND e.extractor_version = $1
    WHERE a.status IN ('pending','scoring','scored')
-     AND e.id IS NULL
+     AND (e.id IS NULL OR e.status IN ('failed','pending'))
      AND EXISTS (
            SELECT 1
              FROM jsonb_array_elements(coalesce(a.answers, '[]'::jsonb)) AS answer
@@ -205,7 +229,20 @@ export function parseArgs(argv: string[]): ParseReextractArgsResult {
     limit = parsed;
   }
 
-  return { ok: true, value: { extractorVersion, execute, limit } };
+  const value: ReextractArgs = { extractorVersion, execute, limit };
+
+  const allowRole = values.get('--allow-role');
+  if (allowRole !== undefined) {
+    if (!ROLE_PATTERN.test(allowRole)) {
+      return {
+        ok: false,
+        error: '--allow-role must be 1-63 chars of [A-Za-z0-9_] (value redacted)',
+      };
+    }
+    value.allowRole = allowRole;
+  }
+
+  return { ok: true, value };
 }
 
 /**
@@ -242,6 +279,24 @@ export async function run(deps: ReextractDeps): Promise<ReextractResult> {
         + '(Set it to the trust-extraction-queue URL and retry.)',
     );
     return { kind: 'queue_not_configured', selected: 0, queued: 0 };
+  }
+
+  // Checked before the backlog query: as the wrong role RLS silently returns
+  // zero rows, and "0 rows" is indistinguishable from "all done".
+  const expectedRole = args.allowRole ?? REQUIRED_DB_ROLE;
+  const roleResult = await db.query('SELECT current_user');
+  const actualRole = roleResult.rows[0]?.current_user;
+  if (typeof actualRole !== 'string' || actualRole !== expectedRole) {
+    logError(
+      `connected as ${typeof actualRole === 'string' ? actualRole : '(unknown role)'}, `
+        + `expected ${expectedRole}. worker_trust_assessments and `
+        + 'worker_trust_extractions are FORCE row-level security (RLS) and only '
+        + `${REQUIRED_DB_ROLE} can read them unconditionally, so any other role would `
+        + 'see zero rows and this tool would report "nothing to re-extract" while '
+        + `silently doing nothing. Set DB_USER=${REQUIRED_DB_ROLE}, or pass `
+        + '--allow-role <role> if you really mean it.',
+    );
+    return { kind: 'wrong_role', selected: 0, queued: 0 };
   }
 
   const selected = await db.query(REEXTRACT_SELECT_SQL, [args.extractorVersion, args.limit]);
@@ -299,7 +354,7 @@ export async function run(deps: ReextractDeps): Promise<ReextractResult> {
   };
 }
 
-const FAILURE_KINDS = new Set<ReextractResultKind>(['aws_error', 'queue_not_configured']);
+const FAILURE_KINDS = new Set<ReextractResultKind>(['aws_error', 'queue_not_configured', 'wrong_role']);
 
 /** An empty backlog is the desired end state, so it exits 0. */
 export function resolveExitCode(result: ReextractResult): number {
@@ -319,7 +374,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     host: process.env.DB_HOST ?? 'localhost',
     port: parseInt(process.env.DB_PORT ?? '5432', 10),
     database: process.env.DB_NAME ?? 'jale',
-    user: process.env.DB_USER ?? 'jale_admin',
+    user: process.env.DB_USER ?? REQUIRED_DB_ROLE,
     password: process.env.DB_PASSWORD,
     ssl:
       process.env.DB_SSL === 'true'

@@ -67,7 +67,10 @@ function scriptDb(opts: {
   claimRowCount?: number;
   answers?: unknown[] | null;
   professionKey?: string;
+  rowUserId?: string;
+  assessmentMissing?: boolean;
   completeRowCount?: number;
+  completeThrows?: Error;
   staleRows?: Array<{ id: string; assessment_id: string; user_id: string; profession_key: string }>;
 } = {}) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
@@ -85,15 +88,21 @@ function scriptDb(opts: {
         : { rowCount: 1, rows: [{ id: 'extraction-row-1' }] };
     }
     if (/FROM worker_trust_assessments/i.test(sql) && /SELECT/i.test(sql) && !/JOIN/i.test(sql)) {
+      if (opts.assessmentMissing) return { rowCount: 0, rows: [] };
       return {
         rowCount: 1,
-        rows: [{ answers, profession_key: opts.professionKey ?? 'electrician' }],
+        rows: [{
+          answers,
+          profession_key: opts.professionKey ?? 'electrician',
+          user_id: opts.rowUserId ?? EVENT.userId,
+        }],
       };
     }
     if (/FROM worker_trust_extractions/i.test(sql)) {
       return { rowCount: (opts.staleRows ?? []).length, rows: opts.staleRows ?? [] };
     }
     if (/UPDATE worker_trust_extractions/i.test(sql)) {
+      if (opts.completeThrows && /status = 'completed'/i.test(sql)) throw opts.completeThrows;
       return { rowCount: completeRowCount, rows: [] };
     }
     return { rowCount: 0, rows: [] };
@@ -241,6 +250,26 @@ describe('parseExtraction / validateExtraction', () => {
     );
     expect(tooLong.summary_en).toBe(NOT_ENOUGH_DETAIL_EN);
     expect(tooLong.summary_es).toBe(NOT_ENOUGH_DETAIL_ES);
+  });
+
+  // An off-shape but PARSEABLE object (a derailed model, renamed keys, an
+  // injection-steered reply) used to sail through as an all-empty result and
+  // be written as a terminal `completed` row byte-identical to a legitimate
+  // "not enough detail" extraction. It must be a model failure instead.
+  it('rejects an object carrying none of the five arrays and neither summary', () => {
+    expect(() => validateExtraction({ ok: true }, answered)).toThrow(/validation/i);
+    expect(() => validateExtraction({}, answered)).toThrow(/validation/i);
+    expect(() => validateExtraction({ habilidades: [], resumen: 'x' }, answered))
+      .toThrow(/validation/i);
+    expect(() => parseExtraction('{"ok":true}', answered)).toThrow(/validation/i);
+  });
+
+  it('still accepts a response that carries at least one recognised key', () => {
+    expect(validateExtraction({ skills: [] }, answered).skills).toEqual([]);
+    expect(validateExtraction({ summary_en: 'They do rough-in.' }, answered).summary_en)
+      .toBe('They do rough-in.');
+    expect(validateExtraction({ summary_es: 'Hace instalacion.' }, answered).summary_es)
+      .toBe('Hace instalacion.');
   });
 
   it('rejects unparseable output as a parse failure', () => {
@@ -403,6 +432,44 @@ describe('extractAssessment', () => {
     expect(metrics).toContain('TrustExtractorSkippedReclaimed');
   });
 
+  // RLS on worker_trust_extractions (086) gates reads by user_id, so trusting
+  // the SQS body's userId would let a malformed/replayed message file one
+  // worker's extraction under another worker's id — a cross-worker read.
+  it('sources user_id from the assessment row, not from the SQS message body', async () => {
+    const calls = scriptDb({ rowUserId: 'cccccccc-0000-0000-0000-000000000009' });
+    bedrockReturns(JSON.stringify(VALID_EXTRACTION));
+
+    await extractAssessment({ ...EVENT, userId: 'bbbbbbbb-dead-beef-0000-000000000000' });
+
+    const claim = calls.find((call) => /INSERT INTO worker_trust_extractions/i.test(call.sql));
+    expect(claim!.params).toContain('cccccccc-0000-0000-0000-000000000009');
+    expect(claim!.params).not.toContain('bbbbbbbb-dead-beef-0000-000000000000');
+  });
+
+  it('reads the assessment BEFORE claiming, so a missing assessment claims nothing', async () => {
+    const calls = scriptDb({ assessmentMissing: true });
+
+    await extractAssessment(EVENT);
+
+    expect(calls.some((call) => /INSERT INTO worker_trust_extractions/i.test(call.sql))).toBe(false);
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    expect(loggedMetrics(logSpy).map((m) => m.metric))
+      .toContain('TrustExtractorSkippedMissingAssessment');
+  });
+
+  it('labels an untagged DB error as kind `db`, not `parse`', async () => {
+    const dbError = new Error('connection terminated unexpectedly');
+    const calls = scriptDb({ completeThrows: dbError });
+    bedrockReturns(JSON.stringify(VALID_EXTRACTION));
+
+    await expect(extractAssessment(EVENT)).rejects.toThrow(dbError);
+
+    const failUpdate = calls.find((call) => /status = 'failed'/i.test(call.sql));
+    expect(failUpdate!.params).toContain('db');
+    expect(loggedMetrics(logSpy).find((m) => m.metric === 'TrustExtractorFailed'))
+      .toMatchObject({ kind: 'db' });
+  });
+
   it('never touches worker_trust_assessments or users (fail-open: scoring is independent)', async () => {
     const calls = scriptDb();
     bedrockReturns(JSON.stringify(VALID_EXTRACTION));
@@ -448,6 +515,9 @@ describe('handleRecoveryCron', () => {
     // days: staleness must be measured on updated_at.
     expect(select!.sql).toMatch(/updated_at < now\(\) - interval '15 minutes'/i);
     expect(select!.sql).not.toMatch(/created_at < now\(\)/i);
+    // 'pending' too: a previous sweep that reset rows and then failed to send
+    // leaves orphaned pending rows that nothing else re-queues.
+    expect(select!.sql).toMatch(/status IN \('extracting','pending'\)/i);
 
     // Reset to 'pending' first, or the redelivered message's claim UPDATE
     // (guarded on status IN ('pending','failed')) would refuse it.
@@ -460,6 +530,29 @@ describe('handleRecoveryCron', () => {
       userId: EVENT.userId,
       professionKey: 'electrician',
     });
+  });
+
+  it('resolves the queue URL BEFORE resetting rows, so a misconfig cannot orphan them', async () => {
+    const original = process.env.TRUST_EXTRACTION_QUEUE_URL;
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
+    try {
+      const calls = scriptDb({
+        staleRows: [{
+          id: 'extraction-row-1',
+          assessment_id: EVENT.assessmentId,
+          user_id: EVENT.userId,
+          profession_key: 'electrician',
+        }],
+      });
+
+      await expect(handleRecoveryCron()).rejects.toThrow(/TRUST_EXTRACTION_QUEUE_URL/);
+
+      // The reset must not have happened: rows left 'extracting' are swept
+      // again next run, rows left 'pending' with no message are orphans.
+      expect(calls.some((call) => /UPDATE worker_trust_extractions/i.test(call.sql))).toBe(false);
+    } finally {
+      if (original !== undefined) process.env.TRUST_EXTRACTION_QUEUE_URL = original;
+    }
   });
 
   it('does nothing when no row is stale', async () => {

@@ -82,7 +82,10 @@ interface AnswerRow {
   answer_text?: string;
 }
 
-export type ExtractorFailureKind = 'parse' | 'validation' | 'bedrock';
+/** `db` is the DEFAULT for an untagged throw: everything the extractor awaits
+ *  that is not Bedrock or JSON handling is a database call, and labelling a
+ *  connection drop as 'parse' put a lie in the row's `error` column. */
+export type ExtractorFailureKind = 'parse' | 'validation' | 'bedrock' | 'db';
 
 function extractionQueueUrl(): string {
   const url = process.env.TRUST_EXTRACTION_QUEUE_URL;
@@ -97,10 +100,12 @@ function tagFailureKind(err: unknown, kind: ExtractorFailureKind): unknown {
   return err;
 }
 
+const FAILURE_KINDS: readonly ExtractorFailureKind[] = ['parse', 'validation', 'bedrock', 'db'];
+
 export function failureKindOf(err: unknown): ExtractorFailureKind {
   const kind = (err as { trustExtractorFailureKind?: ExtractorFailureKind })
     ?.trustExtractorFailureKind;
-  return kind === 'validation' || kind === 'bedrock' ? kind : 'parse';
+  return kind !== undefined && FAILURE_KINDS.includes(kind) ? kind : 'db';
 }
 
 function emptyArrays(): ExtractedArrays {
@@ -174,6 +179,21 @@ export function validateExtraction(
   }
   const answered = new Set(answeredIndexes);
   const source = raw as Record<string, unknown>;
+
+  // A parseable object that shares NOT ONE key with the contract is a derailed
+  // model (renamed keys, an injection-steered reply, `{"ok":true}`), not a
+  // worker with little to say. Without this it would be leniently coerced into
+  // all-empty arrays and written as a terminal `completed` row byte-identical
+  // to a legitimate "not enough detail" extraction — a silent wrong answer.
+  // Treat it as a model failure so it retries and lands in the DLQ.
+  const recognised = [...EXTRACTION_ARRAY_KEYS, 'summary_en', 'summary_es']
+    .some((key) => key in source);
+  if (!recognised) {
+    throw tagFailureKind(
+      new Error('trust_extractor_validation_failure: response carries no recognised key'),
+      'validation',
+    );
+  }
   const result = { ...emptyArrays() } as ExtractionResult;
 
   for (const key of EXTRACTION_ARRAY_KEYS) {
@@ -294,12 +314,40 @@ export async function extractAssessment(event: ExtractAssessmentEvent): Promise<
   let extractionId: string | undefined;
 
   try {
+    // The assessment is read BEFORE the claim so the row we insert is keyed on
+    // the assessment's OWN user_id rather than the SQS body's. RLS on
+    // worker_trust_extractions (086) gates reads by that column, so a
+    // malformed or replayed message carrying someone else's userId would
+    // otherwise file this worker's extraction under another worker's id.
+    const assessment = await client.query<{
+      answers: unknown;
+      profession_key: string;
+      user_id: string;
+    }>(
+      'SELECT answers, profession_key, user_id FROM worker_trust_assessments WHERE id = $1',
+      [event.assessmentId],
+    );
+    const assessmentRow = assessment.rows[0];
+    if (!assessmentRow) {
+      // Deleted between the fan-out and now. Nothing to claim, nothing to fail.
+      console.log(JSON.stringify({
+        metric: 'TrustExtractorSkippedMissingAssessment',
+        assessmentId: event.assessmentId,
+        extractor_version: EXTRACTOR_VERSION,
+      }));
+      return;
+    }
+    const answers: AnswerRow[] = Array.isArray(assessmentRow.answers)
+      ? (assessmentRow.answers as AnswerRow[])
+      : [];
+    const professionKey = assessmentRow.profession_key ?? event.professionKey;
+
     // Idempotent claim. 0 rows means the row is already `extracting` or
     // `completed` for this version — a duplicate SQS delivery, or the
     // recovery cron racing a slow first attempt. Either way: do nothing.
     const claim = await client.query<{ id: string }>(CLAIM_SQL, [
       event.assessmentId,
-      event.userId,
+      assessmentRow.user_id,
       EXTRACTOR_VERSION,
     ]);
     if (claim.rowCount === 0) {
@@ -311,15 +359,6 @@ export async function extractAssessment(event: ExtractAssessmentEvent): Promise<
       return;
     }
     extractionId = claim.rows[0].id;
-
-    const assessment = await client.query<{ answers: unknown; profession_key: string }>(
-      'SELECT answers, profession_key FROM worker_trust_assessments WHERE id = $1',
-      [event.assessmentId],
-    );
-    const answers: AnswerRow[] = Array.isArray(assessment.rows[0]?.answers)
-      ? (assessment.rows[0].answers as AnswerRow[])
-      : [];
-    const professionKey = assessment.rows[0]?.profession_key ?? event.professionKey;
 
     // The indexes the model is allowed to cite. Computed over the FULL answers
     // array (not a filtered copy) so an index always means the same answer in
@@ -446,9 +485,18 @@ function logReclaimed(assessmentId: string): void {
  *     current attempt by days and would re-queue live work.
  *   - the rows are reset to `pending` BEFORE re-queueing, because the claim
  *     UPDATE only accepts `status IN ('pending','failed')`.
+ *   - the sweep covers `pending` as well as `extracting`. A previous run that
+ *     reset rows and then failed to send left them `pending` with no message
+ *     in flight, and nothing else in the system re-queues those.
  * `profession_key` lives on the assessment, so the sweep joins it.
+ *
+ * The queue URL is resolved BEFORE the reset for the same reason: a missing
+ * TRUST_EXTRACTION_QUEUE_URL must fail without having flipped any row.
  */
 export async function handleRecoveryCron(): Promise<void> {
+  // Resolved first: throwing here must not leave rows flipped to 'pending'
+  // with nothing in flight to pick them up.
+  const queueUrl = extractionQueueUrl();
   const pool = await getDbPool();
   const client = await pool.connect();
 
@@ -462,7 +510,7 @@ export async function handleRecoveryCron(): Promise<void> {
       `SELECT e.id, e.assessment_id, e.user_id, a.profession_key
          FROM worker_trust_extractions e
          JOIN worker_trust_assessments a ON a.id = e.assessment_id
-        WHERE e.status = 'extracting'
+        WHERE e.status IN ('extracting','pending')
           AND e.updated_at < now() - interval '${STALE_MINUTES} minutes'`,
     );
     if (stale.rows.length === 0) return;
@@ -477,7 +525,7 @@ export async function handleRecoveryCron(): Promise<void> {
     for (const row of stale.rows) {
       await sqsClient.send(
         new SendMessageCommand({
-          QueueUrl: extractionQueueUrl(),
+          QueueUrl: queueUrl,
           MessageBody: JSON.stringify({
             assessmentId: row.assessment_id,
             userId: row.user_id,

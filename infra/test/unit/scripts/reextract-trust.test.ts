@@ -22,15 +22,29 @@ function args(overrides: Partial<ReextractArgs> = {}): ReextractArgs {
   return { extractorVersion: 'v1', execute: false, limit: 200, ...overrides };
 }
 
-function fakeDb(rows: Array<Record<string, unknown>> = ROWS) {
+
+function fakeDb(rows: Array<Record<string, unknown>> = ROWS, role = 'jale_ai') {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const db: Queryable = {
     query: async (text: string, values: unknown[] = []) => {
       calls.push({ text, values });
+      if (/current_user/i.test(text)) {
+        return { rows: [{ current_user: role }], rowCount: 1 };
+      }
       return { rows, rowCount: rows.length };
     },
   };
   return { db, calls };
+}
+
+/** The backlog SELECT, located by content — the role probe runs before it. */
+function selectCall(calls: Array<{ text: string; values: unknown[] }>) {
+  return calls.find((call) => /worker_trust_extractions/i.test(call.text));
+}
+
+/** Queries that are not the role probe — i.e. real work against the tables. */
+function workCalls(calls: Array<{ text: string; values: unknown[] }>) {
+  return calls.filter((call) => !/current_user/i.test(call.text));
 }
 
 function fakeSqs(failOn?: string) {
@@ -90,6 +104,23 @@ describe('parseArgs', () => {
       ok: true,
       value: { extractorVersion: 'v1', execute: true, limit: 50 },
     });
+  });
+
+  it('accepts --allow-role and leaves it unset by default', () => {
+    expect(parseArgs(['--extractor-version', 'v1'])).toEqual({
+      ok: true,
+      value: { extractorVersion: 'v1', execute: false, limit: 200 },
+    });
+    expect(parseArgs(['--extractor-version', 'v1', '--allow-role', 'jale_admin'])).toEqual({
+      ok: true,
+      value: { extractorVersion: 'v1', execute: false, limit: 200, allowRole: 'jale_admin' },
+    });
+  });
+
+  it('rejects a role name that is not inert text (it gets echoed)', () => {
+    const parsed = parseArgs(['--extractor-version', 'v1', '--allow-role', 'x; DROP TABLE users']);
+    expect(parsed.ok).toBe(false);
+    expect((parsed as { error: string }).error).not.toContain('DROP TABLE');
   });
 
   it('rejects --dry-run together with --execute', () => {
@@ -166,19 +197,89 @@ describe('selection SQL', () => {
     expect(REEXTRACT_SELECT_SQL).toMatch(/e\.id IS NULL/i);
   });
 
-  it('requires at least one non-blank answer and excludes failed assessments', () => {
+  it('requires at least one non-blank answer and excludes failed ASSESSMENTS', () => {
     expect(REEXTRACT_SELECT_SQL).toMatch(/jsonb_array_elements/i);
     expect(REEXTRACT_SELECT_SQL).toMatch(/answer_text/);
     expect(REEXTRACT_SELECT_SQL).toMatch(/a\.status IN \('pending','scoring','scored'\)/i);
-    expect(REEXTRACT_SELECT_SQL).not.toMatch(/'failed'/);
+  });
+
+  // `e.id IS NULL` alone made this tool blind to exactly the rows an outage
+  // leaves behind: a `failed` row (the DLQ case) and an orphaned `pending`
+  // row are both re-claimable — the extractor's ON CONFLICT accepts
+  // status IN ('pending','failed') — but neither is a JOIN miss.
+  it('also picks up failed and orphaned-pending EXTRACTION rows, not just misses', () => {
+    expect(REEXTRACT_SELECT_SQL).toMatch(
+      /\(\s*e\.id IS NULL OR e\.status IN \('failed','pending'\)\s*\)/i,
+    );
   });
 
   it('parameterises the version and the limit rather than interpolating them', () => {
     expect(REEXTRACT_SELECT_SQL).toMatch(/LIMIT \$2/);
     const { db, calls } = fakeDb();
     return run({ db, args: args({ limit: 7 }), log: () => {}, logError: () => {} }).then(() => {
-      expect(calls[0].values).toEqual(['v1', 7]);
+      expect(selectCall(calls)!.values).toEqual(['v1', 7]);
     });
+  });
+});
+
+// Both tables are FORCE RLS and jale_admin's only policies are GUC-gated
+// (own-row / employer-relationship), so a bastion run as jale_admin sets
+// neither GUC, sees zero rows, and exits 0 with "nothing to re-extract" — a
+// guaranteed silent no-op that looks exactly like success. jale_ai is the only
+// role with USING(true) SELECT on both tables.
+describe('run — connection role guard', () => {
+  it('proceeds as jale_ai', async () => {
+    const { db, calls } = fakeDb(ROWS, 'jale_ai');
+    const out = capture();
+
+    const result = await run({ db, args: args(), log: out.log, logError: out.logError });
+
+    expect(result.kind).toBe('dry_run');
+    expect(selectCall(calls)).toBeDefined();
+  });
+
+  it('refuses as jale_admin, before running the backlog query, and exits non-zero', async () => {
+    const { db, calls } = fakeDb(ROWS, 'jale_admin');
+    const out = capture();
+
+    const result = await run({ db, args: args(), log: out.log, logError: out.logError });
+
+    expect(result).toEqual({ kind: 'wrong_role', selected: 0, queued: 0 });
+    expect(resolveExitCode(result)).toBe(1);
+    expect(selectCall(calls)).toBeUndefined();
+    const message = out.errors.join('\n');
+    expect(message).toContain('jale_ai');
+    expect(message).toContain('jale_admin');
+    // The operator must be told WHY, or they will read 0 rows as "all done".
+    expect(message).toMatch(/row.level security|RLS/i);
+  });
+
+  it('honours --allow-role for a deliberate override', async () => {
+    const { db, calls } = fakeDb(ROWS, 'jale_admin');
+    const out = capture();
+
+    const result = await run({
+      db, args: args({ allowRole: 'jale_admin' }), log: out.log, logError: out.logError,
+    });
+
+    expect(result.kind).toBe('dry_run');
+    expect(selectCall(calls)).toBeDefined();
+  });
+
+  it('refuses when the role probe returns nothing rather than assuming', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const db: Queryable = {
+      query: async (text: string, values: unknown[] = []) => {
+        calls.push({ text, values });
+        return { rows: [], rowCount: 0 };
+      },
+    };
+    const out = capture();
+
+    const result = await run({ db, args: args(), log: out.log, logError: out.logError });
+
+    expect(result.kind).toBe('wrong_role');
+    expect(selectCall(calls)).toBeUndefined();
   });
 });
 
@@ -191,7 +292,7 @@ describe('run — dry run (default)', () => {
     const result = await run({ db, args: args(), sqs: client, send, queueUrl: QUEUE_URL, log: out.log, logError: out.logError });
 
     expect(result).toEqual({ kind: 'dry_run', selected: 2, queued: 0 });
-    expect(calls).toHaveLength(1);
+    expect(workCalls(calls)).toHaveLength(1);
     expect(bodies).toHaveLength(0);
     expect(out.all()).toContain('2 assessment(s)');
     expect(out.all()).toContain(ROWS[0].id);
@@ -256,7 +357,7 @@ describe('run — --execute', () => {
     const result = await run({ db, args: args({ execute: true }), log: out.log, logError: out.logError });
 
     expect(result).toEqual({ kind: 'queue_not_configured', selected: 0, queued: 0 });
-    expect(calls).toHaveLength(0);
+    expect(calls).toHaveLength(0);  // not even the role probe
     expect(resolveExitCode(result)).toBe(1);
     expect(out.errors.join('\n')).toContain('TRUST_EXTRACTION_QUEUE_URL');
   });
@@ -290,7 +391,7 @@ describe('run — --execute', () => {
       log: out.log, logError: out.logError,
     });
 
-    expect(calls[0].values).toEqual(['v1', 1]);
+    expect(selectCall(calls)!.values).toEqual(['v1', 1]);
   });
 });
 
@@ -301,5 +402,6 @@ describe('resolveExitCode', () => {
     expect(resolveExitCode({ kind: 'nothing_to_do', selected: 0, queued: 0 })).toBe(0);
     expect(resolveExitCode({ kind: 'aws_error', selected: 3, queued: 1 })).toBe(1);
     expect(resolveExitCode({ kind: 'queue_not_configured', selected: 0, queued: 0 })).toBe(1);
+    expect(resolveExitCode({ kind: 'wrong_role', selected: 0, queued: 0 })).toBe(1);
   });
 });
