@@ -21,6 +21,7 @@
  */
 
 import { Client } from 'pg';
+import { DIGEST_SETTINGS_UPSERT_SQL } from '../../../lambda/api/employer-digest-settings';
 import { MAX_EMAIL_SEND_ATTEMPTS } from '../../../lambda/lib/email-outbox';
 
 const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
@@ -447,5 +448,111 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
           ORDER BY column_name`,
       ));
     expect(grants.rows.map((row) => row.column_name)).toEqual(['enabled']);
+  });
+
+  // ── unsubscribe_token_version, both writers (E4 + E3) ────────────────────
+
+  /**
+   * Runs the STATEMENT THE HANDLER SENDS, as the employer, through the same
+   * FORCE-RLS self policy the Lambda sits behind. A mocked assertion on SQL
+   * text cannot show that the CASE fires on the right transition, and this
+   * column now has two writers -- this upsert and 087's bounce definer -- so
+   * the transition semantics are the thing worth pinning.
+   */
+  async function patchAsEmployer(
+    sub: string,
+    enabled: boolean | null,
+  ): Promise<{ enabled: boolean }> {
+    return withClient(adminUrl, async (client) => {
+      await client.query('BEGIN');
+      try {
+        await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [sub]);
+        const result = await client.query<{ enabled: boolean }>(
+          DIGEST_SETTINGS_UPSERT_SQL,
+          [idOf(sub), enabled, null, null, null],
+        );
+        await client.query('COMMIT');
+        return result.rows[0];
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      }
+    });
+  }
+
+  async function versionOf(sub: string): Promise<number> {
+    const row = await withClient(superuserUrl, (client) =>
+      client.query<{ unsubscribe_token_version: number }>(
+        `SELECT unsubscribe_token_version FROM employer_digest_settings WHERE employer_id = $1`,
+        [idOf(sub)],
+      ));
+    return Number(row.rows[0].unsubscribe_token_version);
+  }
+
+  it('bumps the token version when the employer turns the digest back on', async () => {
+    expect(await versionOf(SUB_OFF)).toBe(1);
+    const row = await patchAsEmployer(SUB_OFF, true);
+    expect(row.enabled).toBe(true);
+    expect(await versionOf(SUB_OFF)).toBe(2);
+  });
+
+  it('leaves the version alone on every other transition', async () => {
+    // already ON -> ON
+    expect(await versionOf(SUB_BOUNCED)).toBe(1);
+    await patchAsEmployer(SUB_BOUNCED, true);
+    expect(await versionOf(SUB_BOUNCED)).toBe(1);
+
+    // ON -> OFF: the old links are already no-ops in effect.
+    await patchAsEmployer(SUB_BOUNCED, false);
+    expect(await versionOf(SUB_BOUNCED)).toBe(1);
+
+    // a PATCH that does not mention `enabled` at all
+    await patchAsEmployer(SUB_OFF, null);
+    expect(await versionOf(SUB_OFF)).toBe(1);
+  });
+
+  /**
+   * The point of the bump, end to end: 082's definer refuses a link minted
+   * before it. There is no expiry in the token itself -- BY DESIGN, see
+   * lambda/lib/unsubscribe-token.ts -- so this counter is the only thing that
+   * can ever revoke one.
+   */
+  it('makes every previously mailed link a no-op while the current one still works', async () => {
+    await patchAsEmployer(SUB_OFF, true);
+    expect(await versionOf(SUB_OFF)).toBe(2);
+
+    const stale = await withClient(adminUrl, (client) =>
+      client.query<{ unsubscribed: boolean }>(
+        `SELECT jale_digest_internal.unsubscribe_employer($1::uuid, $2::smallint) AS unsubscribed`,
+        [idOf(SUB_OFF), 1],
+      ));
+    expect(stale.rows[0].unsubscribed).toBe(false);
+    // Still on: the stale link changed nothing.
+    const afterStale = await withClient(superuserUrl, (client) =>
+      client.query<{ enabled: boolean }>(
+        `SELECT enabled FROM employer_digest_settings WHERE employer_id = $1`, [idOf(SUB_OFF)],
+      ));
+    expect(afterStale.rows[0].enabled).toBe(true);
+
+    const current = await withClient(adminUrl, (client) =>
+      client.query<{ unsubscribed: boolean }>(
+        `SELECT jale_digest_internal.unsubscribe_employer($1::uuid, $2::smallint) AS unsubscribed`,
+        [idOf(SUB_OFF), 2],
+      ));
+    expect(current.rows[0].unsubscribed).toBe(true);
+  });
+
+  /** The bounce definer's bump revokes links the same way the re-enable one does. */
+  it('lets a bounce revoke the links that were mailed to the dead address', async () => {
+    await withClient(adminUrl, (client) =>
+      client.query(`SELECT public.disable_digest_for_employer($1::uuid)`, [idOf(SUB_BOUNCED)]));
+    expect(await versionOf(SUB_BOUNCED)).toBe(2);
+
+    const stale = await withClient(adminUrl, (client) =>
+      client.query<{ unsubscribed: boolean }>(
+        `SELECT jale_digest_internal.unsubscribe_employer($1::uuid, $2::smallint) AS unsubscribed`,
+        [idOf(SUB_BOUNCED), 1],
+      ));
+    expect(stale.rows[0].unsubscribed).toBe(false);
   });
 });
