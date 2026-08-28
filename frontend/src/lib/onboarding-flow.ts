@@ -76,6 +76,26 @@ export const MIN_ANSWER_CHARS = 15;
 export const MAX_ANSWER_CHARS = 2000;
 
 /**
+ * The server's bounds for a typed-in trade, mirrored for the same reason:
+ * `profile.custom_trade` is validated (trimmed, 2..60, no control characters)
+ * and answers 422 `step_rejected` with `too_short`, `too_long` or `invalid`.
+ *
+ * Only the LENGTH is mirrored. "No control characters" is not a rule a worker
+ * can break by typing into a single-line box, and guessing at the server's
+ * exact character class here would either reject something it accepts or
+ * promise something it does not -- so `invalid` stays a server verdict with a
+ * sentence of its own.
+ */
+export const MIN_CUSTOM_TRADE_CHARS = 2;
+export const MAX_CUSTOM_TRADE_CHARS = 60;
+
+/** Measured on the trimmed text, exactly as the API measures it. */
+export function customTradeAcceptable(text: string): boolean {
+  const length = text.trim().length;
+  return length >= MIN_CUSTOM_TRADE_CHARS && length <= MAX_CUSTOM_TRADE_CHARS;
+}
+
+/**
  * EVERY engine step key IN THE ORDER THE ENGINE WALKS THEM.
  *
  * Separate from `STEP_SCREEN` on purpose, and longer than it: this list has to
@@ -423,7 +443,7 @@ function draftComplete(screen: ScreenKey, draft: OnboardingDraft): boolean {
         && Boolean(draft.lastName.trim())
         && locationStepValue(draft.location) !== null;
     case 'trade':
-      return draft.trade !== null && (draft.trade !== 'other' || draft.customTrade.trim().length > 0);
+      return draft.trade !== null && (draft.trade !== 'other' || customTradeAcceptable(draft.customTrade));
     case 'work':
       return draft.experience !== null && draft.transportation !== null && draft.availability !== null;
     case 'q1':

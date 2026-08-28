@@ -7,12 +7,14 @@ import { InlineFeedback } from '@/components/ui/inline-feedback';
 import {
     answersForScreen,
     canContinue,
+    customTradeAcceptable,
+    MAX_CUSTOM_TRADE_CHARS,
     type OnboardingAnswerBatch,
     type OnboardingDraft,
 } from '@/lib/onboarding-flow';
 import { TRADE_KEYS, tradeLabelKey, type TradeKey } from '@/lib/worker-vocab';
 import { OptionGrid } from './OptionGrid';
-import { StepBody, StepField, StepFooter, StepHeader, StepLayout, useRejectionMessage, type ExitLink } from './StepHeader';
+import { StepBody, StepField, StepFooter, StepHeader, StepHint, StepLayout, useRejectionMessage, type ExitLink } from './StepHeader';
 
 /**
  * The five standard trades and Other, in the vocabulary's own order — which
@@ -53,9 +55,22 @@ export function TradeStep({
     const fieldId = useId();
 
     const rejected = rejection && (rejection.stepKey === 'profile.trade' || rejection.stepKey === 'profile.custom_trade')
-        ? rejectionMessage(rejection.reason)
+        ? rejectionMessage(rejection.reason, rejection.stepKey)
         : null;
     const errorId = `${fieldId}-error`;
+    const hintId = `${fieldId}-hint`;
+    // The server measures the trimmed text at 2..60 and answers `too_short` /
+    // `too_long`. Saying it BEFORE the save turns a round trip into a sentence
+    // that is already on screen -- and it is the same sentence either way.
+    const outOfBounds = draft.trade === 'other'
+        && draft.customTrade.length > 0
+        && !customTradeAcceptable(draft.customTrade);
+    const boundHint = outOfBounds
+        ? rejectionMessage(
+            draft.customTrade.trim().length > MAX_CUSTOM_TRADE_CHARS ? 'too_long' : 'too_short',
+            'profile.custom_trade',
+        )
+        : null;
 
     return (
         <StepLayout>
@@ -75,10 +90,11 @@ export function TradeStep({
                             value={draft.customTrade}
                             placeholder={t('other_placeholder')}
                             disabled={saving}
-                            aria-invalid={rejected ? true : undefined}
-                            aria-describedby={rejected ? errorId : undefined}
+                            aria-invalid={rejected || outOfBounds ? true : undefined}
+                            aria-describedby={rejected ? errorId : boundHint ? hintId : undefined}
                             onChange={(e) => onDraftChange({ customTrade: e.target.value })}
                         />
+                        {!rejected && boundHint ? <span id={hintId}><StepHint>{boundHint}</StepHint></span> : null}
                     </StepField>
                 ) : rejected ? (
                     <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p>

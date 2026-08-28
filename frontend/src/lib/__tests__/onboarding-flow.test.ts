@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_ANSWER_CHARS,
+  MAX_CUSTOM_TRADE_CHARS,
   MIN_ANSWER_CHARS,
+  MIN_CUSTOM_TRADE_CHARS,
   PROGRESS_SEGMENTS,
   STEP_SCREEN,
   answerLongEnough,
@@ -9,6 +11,7 @@ import {
   answersForScreen,
   canContinue,
   currentScreen,
+  customTradeAcceptable,
   draftFromState,
   initFlowState,
   isTrustScreen,
@@ -307,6 +310,23 @@ describe('when Next is allowed', () => {
       ...emptyDraft, firstName: 'David', lastName: 'C',
       location: { text: '79901', city: null, state: null, zip: null },
     }, 'profile.name')).toBe(true);
+  });
+
+  it('gates the typed-in trade on the server\'s own 2..60, measured trimmed', () => {
+    expect(MIN_CUSTOM_TRADE_CHARS).toBe(2);
+    expect(MAX_CUSTOM_TRADE_CHARS).toBe(60);
+    expect(customTradeAcceptable('w')).toBe(false);
+    expect(customTradeAcceptable(' w ')).toBe(false);
+    expect(customTradeAcceptable('  ')).toBe(false);
+    expect(customTradeAcceptable('welder')).toBe(true);
+    expect(customTradeAcceptable('x'.repeat(MAX_CUSTOM_TRADE_CHARS))).toBe(true);
+    expect(customTradeAcceptable('x'.repeat(MAX_CUSTOM_TRADE_CHARS + 1))).toBe(false);
+    // Trimmed, exactly as the API measures it.
+    expect(customTradeAcceptable(` ${'x'.repeat(MAX_CUSTOM_TRADE_CHARS)} `)).toBe(true);
+
+    // And Continue follows it, so a one-letter trade never reaches a 422.
+    expect(canContinue('trade', { ...emptyDraft, trade: 'other', customTrade: 'w' }, 'profile.trade')).toBe(false);
+    expect(canContinue('trade', { ...emptyDraft, trade: 'other', customTrade: 'welder' }, 'profile.trade')).toBe(true);
   });
 
   it('gates Trade on the free-text box when Other is picked', () => {

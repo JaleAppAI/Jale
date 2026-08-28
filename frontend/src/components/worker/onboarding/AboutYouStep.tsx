@@ -55,8 +55,8 @@ export function AboutYouStep({
     const rejectionMessage = useRejectionMessage();
     const fieldId = useId();
 
-    const nameError = rejection?.stepKey === 'profile.name' ? rejectionMessage(rejection.reason) : null;
-    const locationError = rejection?.stepKey === 'profile.location' ? rejectionMessage(rejection.reason) : null;
+    const nameError = rejection?.stepKey === 'profile.name' ? rejectionMessage(rejection.reason, rejection.stepKey) : null;
+    const locationError = rejection?.stepKey === 'profile.location' ? rejectionMessage(rejection.reason, rejection.stepKey) : null;
     const nameErrorId = `${fieldId}-name-error`;
     const locationErrorId = `${fieldId}-location-error`;
 

@@ -1791,7 +1791,12 @@
       "generic": "No pudimos aceptar eso — revísalo e inténtalo de nuevo.",
       "reason": {
         "too_short": "Un poco más, por favor — al menos {min} caracteres.",
-        "too_long": "Es demasiado largo — que no pase de {max} caracteres."
+        "too_long": "Es demasiado largo — que no pase de {max} caracteres.",
+        "custom_trade": {
+          "too_short": "Escribe tu oficio en {min} a {max} caracteres.",
+          "too_long": "Escribe tu oficio en {min} a {max} caracteres.",
+          "invalid": "Eso no parece un oficio — usa solo letras y números."
+        }
       },
       "step_mismatch": "Tu progreso se actualizó desde otro dispositivo — revisa este paso y continúa."
     },
