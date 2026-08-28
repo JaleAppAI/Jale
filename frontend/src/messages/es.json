@@ -1705,7 +1705,8 @@
       "back": "Atrás",
       "coming_soon": "Próximamente",
       "voice_badge": "voz",
-      "typed_badge": "escrito"
+      "typed_badge": "escrito",
+      "go_to_profile": "Ir a mi perfil"
     },
     "terms": {
       "title": "Antes de empezar",
@@ -1797,6 +1798,7 @@
     "blocked": {
       "suspended": "Esta cuenta está en pausa, así que no podemos continuar. Responde a cualquier mensaje de Jale y lo revisamos.",
       "not_onboardable": "No podemos configurar esta cuenta ahora mismo. Responde a cualquier mensaje de Jale y te ayudamos."
-    }
+    },
+    "stuck": "No podemos continuar tu registro desde aquí. Nada de lo que nos dijiste se perdió — abre tu perfil para terminarlo, o responde a cualquier mensaje de Jale y te ayudamos."
   }
 }

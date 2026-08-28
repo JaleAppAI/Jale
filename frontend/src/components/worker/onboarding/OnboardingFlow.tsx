@@ -13,6 +13,7 @@ import {
 import {
     currentScreen,
     initFlowState,
+    isAnswerableStepKey,
     onboardingFlowReducer,
     questionText,
     trustQuestionIndex,
@@ -21,6 +22,7 @@ import {
 } from '@/lib/onboarding-flow';
 import { clearPendingReferral, readPendingReferral, validateJobId } from '@/lib/referral-return';
 import { tradeLabel } from '@/lib/worker-vocab';
+import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { OnboardingShell, type LanguageChoice } from './OnboardingHeader';
 import { ProgressSegments } from './ProgressSegments';
@@ -52,6 +54,14 @@ import { DoneStep } from './DoneStep';
  * client-side only (there is no photo step to post), so the flow shows it once
  * out of `photoPending` and then moves to the summary.
  *
+ * WHEN THE RUN IS SOMEWHERE THIS DOOR CANNOT GO. `run.stepKey` can name a
+ * step this flow has no screen for -- the two retired photo steps that older
+ * WhatsApp runs are still parked on, or a step a later workflow version adds.
+ * The screen table falls back to the first screen so it stays total, but
+ * SHOWING that screen would be a trap: its Continue posts a step the engine
+ * will refuse, and there is no Back off the first screen. So an unanswerable
+ * step gets the exit panel instead -- their answers are saved either way.
+ *
  * WHY NOT `usePageData`. That hook's legal-wall handling redirects to
  * `/legal/accept` on a `legal_wall` classification -- and accepting the legal
  * terms is a STEP of this flow (`TermsStep`). Wiring it up here would bounce a
@@ -77,11 +87,20 @@ export function OnboardingFlow({
     const tCommon = useTranslations('common');
     const tVocab = useTranslations('worker_vocab');
     const tBlocked = useTranslations('worker_onboarding.blocked');
+    const tOnboarding = useTranslations('worker_onboarding');
     const [flow, dispatch] = useReducer(onboardingFlowReducer, initialState, initFlowState);
     const [languageBusy, setLanguageBusy] = useState(false);
     const [handoffJobId, setHandoffJobId] = useState<string | null>(null);
 
     const screen = currentScreen(flow);
+    // Parked on a step with no screen behind it (see the header comment).
+    // `!== 'ready'` rather than `=== 'onboarding'` so a lifecycle added to the
+    // union later still gets the exit rather than the trap screen; `blocked`
+    // is checked first below and nothing ever clears it, so suspended runs
+    // keep their own message.
+    const stuck = flow.server.lifecycle !== 'ready'
+        && !flow.photoPending
+        && !isAnswerableStepKey(flow.server.run.stepKey);
     const extractionStatus = flow.server.extraction?.status ?? 'pending';
 
     // A referred stranger who signed up from a shared job link still has that
@@ -221,13 +240,27 @@ export function OnboardingFlow({
             languageBusy={languageBusy}
             progress={<ProgressSegments current={screen} />}
         >
-            {flow.blocked ? (
-                <div className="anim-fade-in flex flex-1 items-start pt-6">
-                    <InlineFeedback tone="warning">{tBlocked(flow.blocked)}</InlineFeedback>
-                </div>
-            ) : renderScreen()}
+            {flow.blocked ? exitPanel(tBlocked(flow.blocked))
+                : stuck ? exitPanel(tOnboarding('stuck'))
+                    : renderScreen()}
         </OnboardingShell>
     );
+
+    /**
+     * The one thing every dead end owes the worker: a way out. Suspended,
+     * not onboardable, parked on a step we cannot drive -- in all three the
+     * data is saved and the profile page is reachable, so say so and open it.
+     */
+    function exitPanel(text: string) {
+        return (
+            <div className="anim-fade-in flex flex-1 flex-col items-start gap-4 pt-6">
+                <InlineFeedback tone="warning">{text}</InlineFeedback>
+                <Button variant="secondary" onClick={() => router.replace('/worker/profile')}>
+                    {tOnboarding('common.go_to_profile')}
+                </Button>
+            </div>
+        );
+    }
 
     function renderScreen() {
         const shared = {

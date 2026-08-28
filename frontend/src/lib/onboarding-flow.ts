@@ -106,6 +106,19 @@ export const STEP_SCREEN: Readonly<Record<string, ScreenKey>> = {
   'trust.question.3': 'q3',
 };
 
+/**
+ * Whether this flow can actually ANSWER the step the run is parked on.
+ *
+ * False for the two dead photo keys and for any key a later workflow version
+ * invents. It matters because the fallback below is a total function — it has
+ * to return something — and a screen whose Continue posts a step the engine
+ * will refuse is a dead end with one button on it. `OnboardingFlow` checks
+ * this first and shows a way OUT instead.
+ */
+export function isAnswerableStepKey(stepKey: string): boolean {
+  return Object.prototype.hasOwnProperty.call(STEP_SCREEN, stepKey);
+}
+
 /** Unknown keys (a workflow version we predate) land on the first screen. */
 export function screenForStepKey(stepKey: string): ScreenKey {
   return STEP_SCREEN[stepKey] ?? 'terms';

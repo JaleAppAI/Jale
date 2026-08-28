@@ -1705,7 +1705,8 @@
       "back": "Back",
       "coming_soon": "Coming soon",
       "voice_badge": "voice",
-      "typed_badge": "typed"
+      "typed_badge": "typed",
+      "go_to_profile": "Go to my profile"
     },
     "terms": {
       "title": "Before we start",
@@ -1797,6 +1798,7 @@
     "blocked": {
       "suspended": "This account is on hold, so onboarding cannot continue. Reply to any Jale message and we will look into it.",
       "not_onboardable": "We cannot set up this account right now. Reply to any Jale message and we will help."
-    }
+    },
+    "stuck": "We can't pick your setup up from here. Nothing you told us is lost — open your profile to finish it, or reply to any Jale message and we will help."
   }
 }

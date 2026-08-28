@@ -19,6 +19,7 @@ import {
   onboardingFlowReducer,
   questionText,
   screenForState,
+  isAnswerableStepKey,
   screenForStepKey,
   splitFullName,
   type OnboardingDraft,
@@ -85,6 +86,25 @@ describe('step key → screen mapping', () => {
     expect(STEP_SCREEN['profile.photo']).toBeUndefined();
     expect(STEP_SCREEN['profile.photo_type']).toBeUndefined();
     expect(screenForStepKey('profile.photo')).toBe('terms');
+  });
+
+  it('flags the steps whose screen is only a fallback, so the flow can offer an exit', () => {
+    // `screenForStepKey` is total by design -- it always names a screen. That
+    // makes it useless for telling "the run is here" from "we had to guess",
+    // and the difference matters: the guess is the FIRST screen, whose
+    // Continue posts `legal.review` and which has no Back. Runs really are
+    // parked on the retired photo steps, so this is the flag that gets them
+    // out instead of leaving them on a button that can only 422.
+    expect(isAnswerableStepKey('profile.photo')).toBe(false);
+    expect(isAnswerableStepKey('profile.photo_type')).toBe(false);
+    expect(isAnswerableStepKey('some.future.step')).toBe(false);
+    expect(isAnswerableStepKey('')).toBe(false);
+    expect(isAnswerableStepKey('legal.review')).toBe(true);
+    expect(isAnswerableStepKey('profile.voice_choice')).toBe(true);
+    expect(isAnswerableStepKey('trust.question.3')).toBe(true);
+    // Not fooled by what every object inherits.
+    expect(isAnswerableStepKey('toString')).toBe(false);
+    expect(isAnswerableStepKey('constructor')).toBe(false);
   });
 
   it('sends the three profile screens their own steps', () => {

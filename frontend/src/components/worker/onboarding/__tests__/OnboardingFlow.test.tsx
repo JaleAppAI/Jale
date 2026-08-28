@@ -32,7 +32,7 @@ import { THREE_QUESTIONS, interpolate, message, onboardingState, renderIntl } fr
 const TOKEN = 'id-token';
 const LONG_ANSWER = 'I frame houses and set trusses with a crew.';
 
-function at(stepKey: string, overrides: Partial<OnboardingState> = {}): OnboardingState {
+function at(stepKey: string, overrides: Partial<OnboardingState> = {}, lockVersion = 1): OnboardingState {
     const base = onboardingState({
         trust: { questions: THREE_QUESTIONS, answers: [] },
         profile: {
@@ -42,16 +42,29 @@ function at(stepKey: string, overrides: Partial<OnboardingState> = {}): Onboardi
         },
         ...overrides,
     });
-    return { ...base, run: { ...base.run, stepKey, lockVersion: base.run.lockVersion } };
+    return { ...base, run: { ...base.run, stepKey, lockVersion } };
 }
 
-/** Every post resolves with the run advanced to `nextStep`. */
+/**
+ * The engine bumps the lock on EVERY write, so the fixtures do too. If they
+ * all answered `lockVersion: 1` the walk below would pass whether or not the
+ * flow re-seeded the lock from each response -- and a client that keeps
+ * posting a stale lock 409s against itself the moment anything else touches
+ * the run.
+ */
+let lock = 1;
+
+/** Every post resolves with the run advanced to `nextStep`, lock bumped. */
 function advancesTo(nextStep: string, overrides: Partial<OnboardingState> = {}) {
-    return async () => ({ kind: 'saved' as const, state: at(nextStep, overrides) });
+    return async () => {
+        lock += 1;
+        return { kind: 'saved' as const, state: at(nextStep, overrides, lock) };
+    };
 }
 
 beforeEach(() => {
     vi.clearAllMocks();
+    lock = 1;
     api.getWorkerOnboarding.mockResolvedValue(at('legal.review'));
 });
 
@@ -88,7 +101,8 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
         await user.type(screen.getByRole('combobox'), '79901');
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.about.cta') }));
         expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
-            lockVersion: 1,
+            // Each save carries the lock the PREVIOUS response handed back.
+            lockVersion: 2,
             answers: [
                 { stepKey: 'profile.name', value: 'David Castellanos' },
                 { stepKey: 'profile.location', value: { kind: 'zip', zip: '79901' } },
@@ -100,7 +114,7 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
         await user.click(screen.getByRole('button', { name: message('worker_vocab.trade.carpenter') }));
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.trade.cta') }));
         expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
-            lockVersion: 1,
+            lockVersion: 3,
             answers: [{ stepKey: 'profile.trade', value: 'carpenter' }],
         });
 
@@ -111,7 +125,7 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
         await user.click(screen.getByRole('button', { name: message('worker_vocab.availability.full_time') }));
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.work.cta') }));
         expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
-            lockVersion: 1,
+            lockVersion: 4,
             answers: [
                 { stepKey: 'profile.experience', value: '2-4' },
                 { stepKey: 'profile.transportation', value: true },
@@ -128,7 +142,7 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
                 : message('worker_onboarding.question.cta');
             await user.click(screen.getByRole('button', { name: label }));
             expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
-                lockVersion: 1,
+                lockVersion: index + 4,
                 answers: [{ stepKey: `trust.question.${index}`, value: { text: LONG_ANSWER } }],
             });
         }
@@ -347,6 +361,16 @@ describe('OnboardingFlow — a worker the engine will not onboard', () => {
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { lifecycle: 'suspended' })} />);
         expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.blocked.suspended'));
         expect(screen.queryByRole('button', { name: message('worker_onboarding.terms.cta') })).not.toBeInTheDocument();
+        // A banner alone is a dead end; there is always a door out.
+        expect(screen.getByRole('button', { name: message('worker_onboarding.common.go_to_profile') })).toBeInTheDocument();
+    });
+
+    it('keeps its own message when the run is ALSO parked on an unmappable step', () => {
+        // Both conditions hold at once here; "on hold" is the more specific
+        // and more useful thing to say, so the blocked banner wins.
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo', { lifecycle: 'suspended' })} />);
+        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.blocked.suspended'));
+        expect(screen.queryByText(message('worker_onboarding.stuck'))).not.toBeInTheDocument();
     });
 
     it('stops when a save comes back not_onboardable', async () => {
@@ -372,5 +396,76 @@ describe('OnboardingFlow — the client is behind the run', () => {
         expect(await screen.findByRole('heading', { name: THREE_QUESTIONS[0].q_en })).toBeInTheDocument();
         expect(api.getWorkerOnboarding).toHaveBeenCalledTimes(1);
         expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('OnboardingFlow — the lock version follows the run, not the page load', () => {
+    it('re-seeds it from the Back response before the next save', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingBack.mockResolvedValue(at('trust.question.1', {}, 9));
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'saved', state: at('trust.question.2', {}, 10) });
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.2')} />);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.common.back') }));
+        expect(api.postOnboardingBack).toHaveBeenCalledWith(TOKEN, { lockVersion: 1 });
+
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[0].q_en });
+        await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.question.cta') }));
+
+        // Back is a write: it moved the run and the lock with it.
+        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
+            lockVersion: 9,
+            answers: [{ stepKey: 'trust.question.1', value: { text: LONG_ANSWER } }],
+        });
+    });
+
+    it('re-seeds it from the language PATCH', async () => {
+        const user = userEvent.setup();
+        api.patchOnboardingLanguage.mockResolvedValue(at('legal.review', {}, 4));
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'saved', state: at('profile.name', {}, 5) });
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.header.language_es') }));
+        await waitFor(() => expect(api.patchOnboardingLanguage).toHaveBeenCalledTimes(1));
+
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
+        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
+            lockVersion: 4,
+            answers: [{ stepKey: 'legal.review', value: 'accept' }],
+        });
+    });
+});
+
+describe('OnboardingFlow — parked on a step this door cannot drive', () => {
+    it('shows the way out instead of a Continue that could only be refused', async () => {
+        const user = userEvent.setup();
+        // Real WhatsApp runs sit on `profile.photo`: no handler advances it, so
+        // the fallback screen's Continue would post `legal.review` forever.
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo')} />);
+
+        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.stuck'));
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.terms.cta') })).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.common.go_to_profile') }));
+        expect(router.replace).toHaveBeenCalledWith('/worker/profile');
+        expect(api.postOnboardingAnswers).not.toHaveBeenCalled();
+    });
+
+    it('does the same for a step key a later workflow version invents', () => {
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.some_new_step')} />);
+        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.stuck'));
+    });
+
+    it('says it in Spanish too', () => {
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo')} />, 'es');
+        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.stuck', 'es'));
+    });
+
+    it('never fires on a completed run — the summary owns that page', () => {
+        // `run.stepKey` still reads `profile.photo` on plenty of finished runs.
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo', { lifecycle: 'ready' })} />);
+        expect(screen.getByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
+        expect(screen.queryByText(message('worker_onboarding.stuck'))).not.toBeInTheDocument();
     });
 });
