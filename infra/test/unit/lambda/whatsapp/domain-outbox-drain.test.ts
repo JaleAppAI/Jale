@@ -515,3 +515,155 @@ describe('domain-outbox-drain', () => {
     expect(mockPublishWorkerIntentWake).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── R1-X: trust-extraction fan-out ──────────────────────────────────
+// `assessment.requested` now fans out to TWO lanes: the TrustScorer queue
+// (fail-CLOSED — a scoring dispatch failure retries the whole event) and the
+// TrustExtractor queue (fail-OPEN — the extraction is a nice-to-have skill
+// summary; losing it must never cost an onboarding or a trust score). These
+// tests pin that asymmetry, which is the whole reason the second dispatch
+// exists in its own inner try/catch.
+describe('domain-outbox-drain — trust-extraction fan-out', () => {
+  let logSpy: jest.SpyInstance;
+  let logLines: string[];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockPublishWorkerIntentWake.mockResolvedValue({ sent: 1, failed: 0 });
+    logLines = [];
+    logSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
+      logLines.push(String(line));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  function assessmentEvent(overrides: Record<string, unknown> = {}) {
+    return makeEvent({
+      id: 'x-1',
+      event_type: 'assessment.requested',
+      event_key: `assessment.requested:${WORKER_ID}:x1`,
+      payload: { professionKey: 'painter' },
+      ...overrides,
+    });
+  }
+
+  it('dispatches the SAME payload to the extraction lane after the scorer lane', async () => {
+    const event = assessmentEvent();
+    const order: string[] = [];
+    const dispatchAssessment = jest.fn(async () => { order.push('assessment'); });
+    const dispatchExtraction = jest.fn(async () => { order.push('extraction'); });
+    scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x1' } });
+
+    const result = await runDrain(fakePool, {
+      renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
+    });
+
+    expect(result.completed).toBe(1);
+    expect(dispatchExtraction).toHaveBeenCalledWith({
+      assessmentId: 'wta-x1',
+      userId: WORKER_ID,
+      professionKey: 'painter',
+    });
+    expect(order).toEqual(['assessment', 'extraction']);
+  });
+
+  it('is fail-OPEN: a thrown extraction dispatch still COMMITs the event, never rolls back and never marks a failure', async () => {
+    const event = assessmentEvent({ id: 'x-2' });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+    const dispatchExtraction = jest.fn().mockRejectedValue(new Error('sqs unavailable'));
+    const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x2' } });
+
+    const result = await runDrain(fakePool, {
+      renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
+    });
+
+    expect(result.completed).toBe(1);
+    expect(result.failed).toBe(0);
+    // The event still completes in its own transaction...
+    expect(calls.some((c) => /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'completed'/.test(c.sql))).toBe(true);
+    expect(calls.some((c) => /^COMMIT$/.test(c.sql))).toBe(true);
+    // ...and nothing resembling markFailure's retry/terminal UPDATE ran.
+    expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /UPDATE worker_domain_outbox/.test(c.sql) && /attempts\s*=\s*\$2/.test(c.sql))).toBe(false);
+    expect(logLines.filter((l) => l.includes('WhatsAppAssessmentDispatchFailure'))).toHaveLength(0);
+    expect(logLines.filter((l) => l.includes('WhatsAppExtractionDispatchFailure')).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('the extraction failure metric carries safe scalars only — no ids, no worker data', async () => {
+    const event = assessmentEvent({ id: 'x-3' });
+    const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+    const dispatchExtraction = jest.fn().mockRejectedValue(new Error(`queue down for ${WORKER_ID} at +15551239876`));
+    scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x3' } });
+
+    await runDrain(fakePool, {
+      renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
+    });
+
+    const line = logLines.find((l) => l.includes('WhatsAppExtractionDispatchFailure'))!;
+    expect(JSON.parse(line)).toEqual({
+      metric: 'WhatsAppExtractionDispatchFailure',
+      event_type: 'assessment.requested',
+    });
+    expect(logLines.join('\n')).not.toContain(WORKER_ID);
+    expect(logLines.join('\n')).not.toContain('15551239876');
+  });
+
+  it('an unset TRUST_EXTRACTION_QUEUE_URL is logged and the event still completes (fail-open), unlike the scorer queue', async () => {
+    const original = process.env.TRUST_EXTRACTION_QUEUE_URL;
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
+    try {
+      const event = assessmentEvent({ id: 'x-4' });
+      const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
+      const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x4' } });
+
+      // No dispatchExtraction injected: this exercises defaultDispatchExtraction.
+      const result = await runDrain(fakePool, {
+        renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment,
+      });
+
+      expect(result.completed).toBe(1);
+      expect(result.failed).toBe(0);
+      expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(false);
+      expect(logLines.filter((l) => l.includes('WhatsAppExtractionDispatchFailure')).length).toBeGreaterThanOrEqual(1);
+    } finally {
+      if (original !== undefined) process.env.TRUST_EXTRACTION_QUEUE_URL = original;
+    }
+  });
+
+  it('defaultDispatchExtraction throws trust_extraction_queue_url_not_configured before touching the AWS SDK', async () => {
+    const original = process.env.TRUST_EXTRACTION_QUEUE_URL;
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
+    jest.resetModules();
+    jest.doMock('@aws-sdk/client-sqs', () => {
+      throw new Error('must not import @aws-sdk/client-sqs when the queue URL is unconfigured');
+    });
+    try {
+      const mod = await import('../../../../lambda/whatsapp/domain-outbox-drain');
+      await expect(
+        mod.defaultDispatchExtraction({ assessmentId: 'x', userId: 'y', professionKey: 'z' }),
+      ).rejects.toThrow('trust_extraction_queue_url_not_configured');
+    } finally {
+      jest.dontMock('@aws-sdk/client-sqs');
+      if (original !== undefined) process.env.TRUST_EXTRACTION_QUEUE_URL = original;
+      jest.resetModules();
+    }
+  });
+
+  it('a failing SCORER dispatch still fails the event closed (the asymmetry is deliberate)', async () => {
+    const event = assessmentEvent({ id: 'x-5' });
+    const dispatchAssessment = jest.fn().mockRejectedValue(new Error('sqs unavailable'));
+    const dispatchExtraction = jest.fn().mockResolvedValue(undefined);
+    scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x5' } });
+
+    const result = await runDrain(fakePool, {
+      renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
+    });
+
+    expect(result.completed).toBe(0);
+    expect(result.failed).toBe(1);
+    expect(dispatchExtraction).not.toHaveBeenCalled();
+  });
+});
