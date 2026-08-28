@@ -331,7 +331,7 @@ export class NotificationsStack extends cdk.Stack {
 
     // ── SES delivery feedback ─────────────────────────────────────
     // Configuration set -> SNS event destination -> topic -> Lambda ->
-    // migration 087's definer. Created as a unit or not at all: an event
+    // migration 088's definer. Created as a unit or not at all: an event
     // destination with no topic, or a topic with nothing subscribed, is a
     // configuration that looks wired and silently drops every bounce.
     if (props.emailConfigurationSetName) {
@@ -372,7 +372,7 @@ export class NotificationsStack extends cdk.Stack {
         environment: {
           // The SAME jale_admin secret the digest settings API uses: the
           // handler reads email_outbox under 037's admin policy and calls
-          // 087's definer, both of which are granted to jale_admin and to
+          // 088's definer, both of which are granted to jale_admin and to
           // nothing else.
           DB_SECRET_ARN: props.dbSecret.secretArn,
         },
@@ -431,7 +431,7 @@ export class NotificationsStack extends cdk.Stack {
           'ses_feedback_unknown_message',
           'SesFeedbackUnknownMessage',
           'A bounce or complaint named a message id no email_outbox row claims. Expected for mail sent '
-            + 'before migration 087; sustained afterwards it means ses_message_id is not being persisted.',
+            + 'before migration 088; sustained afterwards it means ses_message_id is not being persisted.',
         ],
       ] as const) {
         const metricFilter = new logs.MetricFilter(this, `${id}Metric`, {

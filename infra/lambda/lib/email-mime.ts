@@ -207,7 +207,7 @@ export function rfc5322Date(date: Date): string {
  *
  * Message-ID is deliberately NOT set: SES stamps its own and returns it as
  * `MessageId`, which is the value the bounce handler joins on
- * (email_outbox.ses_message_id, migration 087). Minting one here would leave
+ * (email_outbox.ses_message_id, migration 088). Minting one here would leave
  * two competing identifiers for the same message.
  */
 export function buildRawEmail(input: RawEmailInput): Buffer {

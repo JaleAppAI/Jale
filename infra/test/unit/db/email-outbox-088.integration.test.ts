@@ -1,11 +1,11 @@
 /**
- * email-outbox-087.integration.test.ts
+ * email-outbox-088.integration.test.ts
  *
- * PostgreSQL-backed suite for migration 087 (email_outbox delivery metadata +
+ * PostgreSQL-backed suite for migration 088 (email_outbox delivery metadata +
  * public.disable_digest_for_employer).
  *
  * Connection: set JALE_TEST_DATABASE_URL to a local Postgres 16 URL with the
- * full migration chain (001->087) applied, connected as a superuser (e.g.
+ * full migration chain (001->088) applied, connected as a superuser (e.g.
  * `postgres`) so this suite can set role passwords and arrange fixtures that
  * FORCE ROW LEVEL SECURITY would otherwise block. When absent every test here
  * is skipped LOUDLY -- same contract as digest-settings.integration.test.ts.
@@ -13,7 +13,7 @@
  *   bash infra/db/local/bootstrap-testbed.sh --ephemeral --keep --no-tests \
  *        --ref none --port 55493 --container jale-s22-r3 --repo .
  *   JALE_TEST_DATABASE_URL=postgres://postgres:test@127.0.0.1:55493/jale \
- *        npx jest --runInBand test/unit/db/email-outbox-087
+ *        npx jest --runInBand test/unit/db/email-outbox-088
  *
  * Superuser writes arrange state; every claim about who may see or change what
  * is made over a real non-superuser jale_admin connection, because a superuser
@@ -50,7 +50,7 @@ function maybeDescribe(name: string, fn: () => void): void {
     describe.skip(name, fn);
     // eslint-disable-next-line no-console
     console.warn(
-      `[email-outbox-087.integration] SKIPPED: "${name}" -- set JALE_TEST_DATABASE_URL to run `
+      `[email-outbox-088.integration] SKIPPED: "${name}" -- set JALE_TEST_DATABASE_URL to run `
         + 'PostgreSQL-backed tests. This is a DONE_WITH_CONCERNS gate: Docker/Postgres was '
         + 'unavailable at test time.',
     );
@@ -69,10 +69,10 @@ async function withClient<T>(url: string, fn: (client: Client) => Promise<T>): P
   }
 }
 
-const SUB_BOUNCED = 'outbox-087-employer-bounced';
-const SUB_OFF = 'outbox-087-employer-off';
+const SUB_BOUNCED = 'outbox-088-employer-bounced';
+const SUB_OFF = 'outbox-088-employer-off';
 const ALL_SUBS = [SUB_BOUNCED, SUB_OFF];
-const EMAIL_LIKE = 'outbox-087-%@example.test';
+const EMAIL_LIKE = 'outbox-088-%@example.test';
 
 let superuserUrl: string;
 let adminUrl: string;
@@ -101,7 +101,7 @@ async function insertOutbox(
      VALUES ($1, 'Subject', 'Body', $2, $3, $4, $5::jsonb)
      RETURNING id`,
     [
-      overrides.recipientEmail ?? 'outbox-087-a@example.test',
+      overrides.recipientEmail ?? 'outbox-088-a@example.test',
       overrides.sourceType ?? 'employer_digest',
       overrides.sourceId ?? idOf(SUB_BOUNCED),
       overrides.sesMessageId ?? null,
@@ -131,7 +131,7 @@ async function resetFixtures(): Promise<void> {
   });
 }
 
-maybeDescribe('email_outbox delivery metadata + digest feedback definer (migration 087)', () => {
+maybeDescribe('email_outbox delivery metadata + digest feedback definer (migration 088)', () => {
   beforeAll(async () => {
     if (!databaseUrl) return;
     superuserUrl = databaseUrl;
@@ -152,7 +152,7 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
       for (const sub of ALL_SUBS) {
         const inserted = await client.query<{ id: string }>(
           `INSERT INTO users (cognito_sub, user_type, email, phone, full_name, created_at, updated_at)
-           VALUES ($1, 'employer', $2, '+15550000000', 'Outbox 087 Fixture', NOW(), NOW())
+           VALUES ($1, 'employer', $2, '+15550000000', 'Outbox 088 Fixture', NOW(), NOW())
            RETURNING id`,
           [sub, `${sub}@example.test`],
         );
@@ -227,10 +227,10 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
   });
 
   /**
-   * The reconciliation 087's header promises. 037:32 bakes the attempt bound
+   * The reconciliation 088's header promises. 037:32 bakes the attempt bound
    * into email_outbox_sweeper_idx as a literal while the claim query in
    * lambda/lib/email-outbox.ts binds MAX_EMAIL_SEND_ATTEMPTS. They agree today
-   * (both 5), and 087 deliberately changed NEITHER -- moving either one would
+   * (both 5), and 088 deliberately changed NEITHER -- moving either one would
    * change which rows production retries. This test is the enforcement that
    * was missing: edit one side and it goes red.
    */
@@ -280,11 +280,11 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
       await insertOutbox(client, { sesMessageId: null });
       await insertOutbox(client, { sesMessageId: null });
 
-      await insertOutbox(client, { sesMessageId: 'ses-087-unique-1' });
-      await expect(insertOutbox(client, { sesMessageId: 'ses-087-unique-1' })).rejects.toMatchObject({
+      await insertOutbox(client, { sesMessageId: 'ses-088-unique-1' });
+      await expect(insertOutbox(client, { sesMessageId: 'ses-088-unique-1' })).rejects.toMatchObject({
         code: '23505',
       });
-      await expect(insertOutbox(client, { sesMessageId: 'ses-087-unique-2' })).resolves.toBeTruthy();
+      await expect(insertOutbox(client, { sesMessageId: 'ses-088-unique-2' })).resolves.toBeTruthy();
     });
   });
 
@@ -299,7 +299,7 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
         `UPDATE email_outbox
             SET ses_message_id = $2, headers = $3::jsonb
           WHERE id = $1`,
-        [outboxId, 'ses-087-sweeper', '{"unsubscribe_url":"https://jaleapp.ai/u"}'],
+        [outboxId, 'ses-088-sweeper', '{"unsubscribe_url":"https://jaleapp.ai/u"}'],
       );
       return result.rowCount;
     });
@@ -310,7 +310,7 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
       client.query<{ source_type: string; source_id: string; recipient_email: string }>(
         `SELECT source_type, source_id, recipient_email
            FROM email_outbox WHERE ses_message_id = $1`,
-        ['ses-087-sweeper'],
+        ['ses-088-sweeper'],
       ));
     expect(readBack.rows).toHaveLength(1);
     expect(readBack.rows[0].source_type).toBe('employer_digest');
@@ -456,7 +456,7 @@ maybeDescribe('email_outbox delivery metadata + digest feedback definer (migrati
    * Runs the STATEMENT THE HANDLER SENDS, as the employer, through the same
    * FORCE-RLS self policy the Lambda sits behind. A mocked assertion on SQL
    * text cannot show that the CASE fires on the right transition, and this
-   * column now has two writers -- this upsert and 087's bounce definer -- so
+   * column now has two writers -- this upsert and 088's bounce definer -- so
    * the transition semantics are the thing worth pinning.
    */
   async function patchAsEmployer(

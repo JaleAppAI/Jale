@@ -7,7 +7,7 @@ import { errorMessage } from '../lib/http';
  *
  * SNS delivers one SES event per record; a permanent bounce or any complaint
  * for a digest message switches that employer's daily digest off and bumps
- * their unsubscribe_token_version, through migration 087's SECURITY DEFINER
+ * their unsubscribe_token_version, through migration 088's SECURITY DEFINER
  * `public.disable_digest_for_employer(uuid)`. Nothing else in the system
  * reacts to delivery feedback today, so before this handler existed a dead
  * mailbox kept receiving a daily send forever -- which is precisely what
@@ -16,12 +16,12 @@ import { errorMessage } from '../lib/http';
  * ── Which employer ────────────────────────────────────────────────
  * NOT the bounced address. The notification's `mail.messageId` is the id SES
  * returned at send time, which the sweeper persisted into
- * email_outbox.ses_message_id (087). That row records `source_type` and
+ * email_outbox.ses_message_id (088). That row records `source_type` and
  * `source_id`, and for `source_type = 'employer_digest'` the source_id IS the
  * employer's users.id. So the employer is READ OFF THE MESSAGE THAT BOUNCED
  * rather than re-derived from an address -- which cannot mis-target an
  * employer who changed their email between send and bounce, and needs no
- * cross-tenant read of `users`. See 087's header for the full argument.
+ * cross-tenant read of `users`. See 088's header for the full argument.
  *
  * ── eventType vs notificationType ─────────────────────────────────
  * SES has two SNS payload shapes and they disagree on the field name. A
@@ -136,7 +136,7 @@ export const handler = async (event: SNSEvent): Promise<SesFeedbackSummary> => {
       const row = lookup.rows[0];
 
       if (!row) {
-        // Genuinely expected sometimes: mail SES sent before 087 shipped, and
+        // Genuinely expected sometimes: mail SES sent before 088 shipped, and
         // any row whose finalising UPDATE lost its `status = 'send_unknown'`
         // guard. Never a write, always a count.
         summary.unknownMessage += 1;

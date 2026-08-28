@@ -12,7 +12,7 @@ import { buildRawEmail } from './email-mime';
  * claim/send/finalise state machine, unchanged.
  *
  * `MessageId` from the response is no longer discarded: it lands in
- * email_outbox.ses_message_id (migration 087) and is the ONLY key an SES
+ * email_outbox.ses_message_id (migration 088) and is the ONLY key an SES
  * bounce or complaint notification can be joined back to a row on.
  */
 const sesClient = new SESv2Client({ maxAttempts: 1 });
@@ -20,7 +20,7 @@ export const MAX_EMAIL_SEND_ATTEMPTS = 5;
 const MAX_RETRY_DELAY_SECONDS = 3600;
 
 /**
- * The `headers` JSONB bag (migration 087). Deliberately narrow: producers put
+ * The `headers` JSONB bag (migration 088). Deliberately narrow: producers put
  * only what the MIME builder knows how to place, so an unrecognised key can
  * never become an arbitrary attacker-chosen SMTP header.
  */
@@ -135,7 +135,7 @@ function configurationSetName(): string | null {
 
 /**
  * Reads the one header the MIME builder understands out of the row's JSONB
- * bag. Migration 087's CHECK already guarantees an object or NULL, but this is
+ * bag. Migration 088's CHECK already guarantees an object or NULL, but this is
  * data from a table several producers can write, so the shape is re-checked
  * here rather than trusted.
  */
