@@ -84,8 +84,8 @@ describe('AnswerHighlights', () => {
     expect(screen.queryByText('Conduit bending')).not.toBeInTheDocument();
   });
 
-  it('shows a quiet "still reading" line for a non-completed extraction, and no content', () => {
-    for (const status of ['pending', 'extracting', 'failed'] as const) {
+  it('shows a quiet "still reading" line while an extraction is IN FLIGHT, and no content', () => {
+    for (const status of ['pending', 'extracting'] as const) {
       const { unmount } = render(
         wrap(<AnswerHighlights extraction={{ ...completed, status }} />),
       );
@@ -94,6 +94,28 @@ describe('AnswerHighlights', () => {
       expect(screen.queryByText(completed.summary_en!)).not.toBeInTheDocument();
       unmount();
     }
+  });
+
+  it('tells the truth about a FAILED extraction instead of saying it is still reading', () => {
+    // `failed` is terminal, not transient: the extractor is keyed
+    // `(assessment_id, extractor_version)` and its retries are idempotent, so
+    // nothing will ever turn that row into a summary. "Reading their
+    // answers..." on it is a sentence that never stops being wrong.
+    render(wrap(<AnswerHighlights extraction={{ ...completed, status: 'failed' }} />));
+    expect(screen.getByText(en.employer_worker_profile.extraction_failed)).toBeInTheDocument();
+    expect(screen.queryByText(en.employer_worker_profile.extraction_pending)).not.toBeInTheDocument();
+    expect(screen.queryByText('Conduit bending')).not.toBeInTheDocument();
+    expect(screen.queryByText(completed.summary_en!)).not.toBeInTheDocument();
+  });
+
+  it('points a failed extraction at the answers themselves, and names no error', () => {
+    const { container } = render(
+      wrap(<AnswerHighlights extraction={{ ...completed, status: 'failed' }} />, 'es'),
+    );
+    expect(screen.getByText(es.employer_worker_profile.extraction_failed)).toBeInTheDocument();
+    // The failure string is not even selected by the API; nothing model-shaped
+    // may reach an employer.
+    expect(container.textContent).not.toContain('trust-extractor-1');
   });
 
   it('renders nothing when a completed extraction has neither chips nor a summary', () => {

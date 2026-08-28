@@ -943,6 +943,7 @@
     "trust_empty": "Este trabajador aún no ha completado una evaluación de confianza.",
     "extraction_title": "De sus respuestas",
     "extraction_pending": "Leyendo sus respuestas...",
+    "extraction_failed": "No pudimos resumir estas respuestas — léalas abajo.",
     "certifications": "Certificaciones",
     "experience_months": "{months} meses",
     "availability": {
@@ -1086,11 +1087,6 @@
     "page_title": "Detalle del empleo",
     "doc_ok": "Subido",
     "doc_missing": "Falta",
-    "doc_labels": {
-      "resume": "Currículum",
-      "driver_license": "Licencia de conducir",
-      "ssn": "Tarjeta SSN / ITIN"
-    },
     "job_type": {
       "full-time": "Tiempo completo",
       "part-time": "Medio tiempo",
@@ -1324,7 +1320,8 @@
     "driver_license": "Licencia de conducir",
     "work_auth_doc": "Documento de autorización de trabajo",
     "certification_doc": "Certificación",
-    "ssn": "Tarjeta SSN / ITIN"
+    "ssn": "Tarjeta SSN / ITIN",
+    "other": "Otro documento"
   },
   "job_requirements": {
     "picker": {

@@ -94,4 +94,27 @@ describe('DocumentSlots', () => {
     // resume is filled; the other three slots still ask.
     expect(screen.getAllByText(en.employer_worker_profile.request)).toHaveLength(3);
   });
+  it('shows a document whose type this build has never heard of', () => {
+    // A doc_type added by the backend before the frontend learns about it used
+    // to vanish: the employer saw an empty slot list and no hint that a file
+    // existed. It gets a generic heading and is identified by its file name.
+    renderSlots([doc({ id: 'd9', doc_type: 'i9_form' as never, file_name: 'i9.pdf' })]);
+    expect(screen.getByText(en.doc_types.other)).toBeInTheDocument();
+    expect(screen.getByText('i9.pdf')).toBeInTheDocument();
+    expect(screen.getByText(en.employer_worker_profile.view)).toBeInTheDocument();
+  });
+
+  it('does not offer an Other heading when there is nothing unknown', () => {
+    renderSlots([doc({ id: 'd1', doc_type: 'resume' })]);
+    expect(screen.queryByText(en.doc_types.other)).not.toBeInTheDocument();
+  });
+
+  it('treats retired ssn as retired, NOT as unknown', () => {
+    // `ssn` is a type this app knows and has deliberately withdrawn -- the API
+    // filters it before it is even presigned. Sweeping it into "Other
+    // document" would put the card back on screen through the side door.
+    renderSlots([doc({ id: 'd0', doc_type: 'ssn', file_name: 'ssn-card.pdf' })]);
+    expect(screen.queryByText(en.doc_types.other)).not.toBeInTheDocument();
+    expect(screen.queryByText('ssn-card.pdf')).not.toBeInTheDocument();
+  });
 });

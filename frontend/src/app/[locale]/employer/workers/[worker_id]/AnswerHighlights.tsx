@@ -45,15 +45,22 @@ export function AnswerHighlights({ extraction }: { extraction: TrustExtraction |
     </p>
   );
 
-  // `failed` deliberately lands here with `pending`/`extracting`. The failure
-  // string is an internal model/runtime detail the API does not even select,
-  // so there is nothing truthful to say beyond "not ready" -- and a red error
-  // would read as a judgement of the WORKER rather than of our pipeline.
+  // `failed` is TERMINAL, not transient. The extractor is keyed
+  // `(assessment_id, extractor_version)` and its retries are idempotent, so
+  // no later run turns that row into a summary -- "Reading their answers..."
+  // on it is a sentence that never stops being wrong. It gets its own line,
+  // which points at the answers below rather than apologising into a void.
+  //
+  // Still no red, and still no error string: the failure text is an internal
+  // model/runtime detail the API does not even select, and a danger banner
+  // would read as a judgement of the WORKER rather than of our own pipeline.
   if (extraction.status !== 'completed') {
     return (
       <div className="mt-4">
         {eyebrow}
-        <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{t('extraction_pending')}</p>
+        <p className="mt-1 text-sm text-[var(--jale-ink-2)]">
+          {t(extraction.status === 'failed' ? 'extraction_failed' : 'extraction_pending')}
+        </p>
       </div>
     );
   }

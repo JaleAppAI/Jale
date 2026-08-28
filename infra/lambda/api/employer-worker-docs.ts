@@ -9,6 +9,34 @@ const CORS_HEADERS = corsHeaders();
 const s3 = new S3Client({});
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+/**
+ * The applicant's documents for one job. Exported so the real-PostgreSQL gate
+ * (`test/unit/db/employer-worker-reads.integration.test.ts`) executes THIS
+ * text rather than a copy that can rot -- the unit tests mock `lib/db`
+ * wholesale, so nothing else in the suite ever sends this to a planner.
+ *
+ * EVERY column is `wd.`-qualified. Three of the four joined relations also
+ * expose `id`, so a bare `id` is 42702 ("column reference is ambiguous") and
+ * takes the whole endpoint down. Qualifying the rest as well means a future
+ * column on `jobs` or `users` cannot resurrect it.
+ *
+ * cert_name is additive (BE-T3): it lets the employer see WHICH labeled
+ * certification file they are looking at ("OSHA 30" vs "Forklift cert")
+ * among the up-to-20 files a slot may hold.
+ *
+ * $1 worker id, $2 job id, $3 the employer's Cognito sub.
+ */
+export const EMPLOYER_WORKER_DOCS_SQL = `
+  SELECT wd.id, wd.doc_type, wd.s3_key, wd.file_name, wd.file_size,
+         wd.uploaded_at, wd.s3_version_id, wd.cert_name
+    FROM worker_documents wd
+    JOIN job_applications ja ON ja.worker_id = wd.worker_id AND ja.job_id = wd.job_id
+    JOIN jobs j ON j.id = ja.job_id
+    JOIN users employer ON employer.id = j.employer_id
+   WHERE wd.worker_id = $1
+     AND wd.job_id = $2
+     AND employer.cognito_sub = $3`;
+
 export const handler = async (
   event: APIGatewayProxyEvent,
 ): Promise<APIGatewayProxyResult> => {
@@ -113,20 +141,7 @@ export const handler = async (
       };
     }
 
-    // cert_name is additive here (BE-T3): lets the employer see which
-    // labeled certification file they're looking at (e.g. "OSHA 30" vs
-    // "Forklift cert") among the up-to-20 files a slot may hold.
-    const docsResult = await client.query(
-      `SELECT id, doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id, cert_name
-       FROM worker_documents wd
-       JOIN job_applications ja ON ja.worker_id = wd.worker_id AND ja.job_id = wd.job_id
-       JOIN jobs j ON j.id = ja.job_id
-       JOIN users employer ON employer.id = j.employer_id
-       WHERE wd.worker_id = $1
-         AND wd.job_id = $2
-         AND employer.cognito_sub = $3`,
-      [workerId, jobId, cognitoSub],
-    );
+    const docsResult = await client.query(EMPLOYER_WORKER_DOCS_SQL, [workerId, jobId, cognitoSub]);
 
     await client.query('COMMIT');
 

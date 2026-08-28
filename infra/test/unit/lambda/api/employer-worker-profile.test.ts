@@ -354,10 +354,12 @@ describe('employer-worker-profile Lambda', () => {
     expect(body.trust_extraction).not.toHaveProperty('created_at');
   });
 
-  it('selects EXACTLY the six granted extraction columns, scoped to that assessment', async () => {
-    // 086 grants SELECT on a named column list only. Naming `error` or
-    // `model_id` is a hard 42501 for a non-owner reader, not a soft leak, so
-    // this asserts the select list POSITIVELY rather than only by exclusion.
+  it('selects six of the ten granted extraction columns, scoped to that assessment', async () => {
+    // 086:200-205 grants SELECT on a named ten-column list. The four this
+    // response skips (id, assessment_id, user_id, updated_at) are simply
+    // unneeded; the two OUTSIDE that grant -- `error` and `model_id` -- are a
+    // hard 42501 for a non-owner reader, not a soft leak. Asserting the
+    // select list POSITIVELY is what pins both facts at once.
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     setupMockQuery({
       profile: { rows: [mockProfile] },

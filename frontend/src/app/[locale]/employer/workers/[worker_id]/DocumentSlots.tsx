@@ -28,6 +28,13 @@ const ALL_DOC_TYPES: DocTypeKey[] = [
 ];
 
 /**
+ * Types this app KNOWS and has deliberately withdrawn. They are not unknown,
+ * and must never fall through to the "Other document" catch-all below -- that
+ * would put a social-security card back on screen through the side door.
+ */
+const RETIRED_DOC_TYPES = new Set<string>(['ssn']);
+
+/**
  * Anchors styled as buttons.
  *
  * `Button` renders a `<button>`, and the document actions are real navigations
@@ -65,6 +72,51 @@ function StateTile({ filled }: { filled: boolean }) {
   );
 }
 
+/** One uploaded file: what it is, how big, and the two ways to open it. */
+function DocFileRow({ doc }: { doc: WorkerDocument }) {
+  const t = useTranslations('employer_worker_profile');
+  return (
+    <li className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        {/* The worker's own name for the file, when they gave one (078's
+            `cert_name`). Without it a slot holding four certificates is four
+            indistinguishable PDF names. */}
+        {doc.cert_name ? (
+          <p className="truncate text-sm font-semibold text-[var(--jale-ink)]">{doc.cert_name}</p>
+        ) : null}
+        {/* The size never gets truncated away: it is the one part of this line
+            a reader scans for, and a long filename would otherwise eat it
+            whole in the narrow column. */}
+        <p className="mt-0.5 flex items-baseline gap-1 text-xs text-[var(--jale-ink-2)]">
+          <span className="truncate">{doc.file_name}</span>
+          <span className="shrink-0 tabular-nums">
+            {' - '}
+            {Math.round(doc.file_size / 1024)} KB
+          </span>
+        </p>
+      </div>
+
+      <div className="flex shrink-0 gap-2">
+        <a
+          href={doc.url}
+          target="_blank"
+          rel="noreferrer"
+          className={`${DOC_ACTION_BASE} ${DOC_ACTION_PRIMARY}`}
+        >
+          {t('view')}
+        </a>
+        <a
+          href={doc.url}
+          download={doc.file_name}
+          className={`${DOC_ACTION_BASE} ${DOC_ACTION_GHOST}`}
+        >
+          {t('download')}
+        </a>
+      </div>
+    </li>
+  );
+}
+
 export function DocumentSlots({
   documents,
   onRequest,
@@ -79,6 +131,12 @@ export function DocumentSlots({
   const t = useTranslations('employer_worker_profile');
   const tCommon = useTranslations('common');
   const tDocTypes = useTranslations('doc_types');
+
+  const otherDocs = documents.filter(
+    (entry) =>
+      !(ALL_DOC_TYPES as readonly string[]).includes(entry.doc_type) &&
+      !RETIRED_DOC_TYPES.has(entry.doc_type),
+  );
 
   return (
     <ul className="divide-y divide-[var(--jale-divider)]">
@@ -122,52 +180,34 @@ export function DocumentSlots({
             {slotDocs.length > 0 ? (
               <ul className="mt-2 space-y-2 pl-11">
                 {slotDocs.map((doc) => (
-                  <li key={doc.id} className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      {/* The worker's own name for the file, when they gave one
-                          (078's `cert_name`). Without it a slot holding four
-                          certificates is four indistinguishable PDF names. */}
-                      {doc.cert_name ? (
-                        <p className="truncate text-sm font-semibold text-[var(--jale-ink)]">
-                          {doc.cert_name}
-                        </p>
-                      ) : null}
-                      {/* The size never gets truncated away: it is the one part
-                          of this line a reader scans for, and a long filename
-                          would otherwise eat it whole in the narrow column. */}
-                      <p className="mt-0.5 flex items-baseline gap-1 text-xs text-[var(--jale-ink-2)]">
-                        <span className="truncate">{doc.file_name}</span>
-                        <span className="shrink-0 tabular-nums">
-                          {' - '}
-                          {Math.round(doc.file_size / 1024)} KB
-                        </span>
-                      </p>
-                    </div>
-
-                    <div className="flex shrink-0 gap-2">
-                      <a
-                        href={doc.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className={`${DOC_ACTION_BASE} ${DOC_ACTION_PRIMARY}`}
-                      >
-                        {t('view')}
-                      </a>
-                      <a
-                        href={doc.url}
-                        download={doc.file_name}
-                        className={`${DOC_ACTION_BASE} ${DOC_ACTION_GHOST}`}
-                      >
-                        {t('download')}
-                      </a>
-                    </div>
-                  </li>
+                  <DocFileRow key={doc.id} doc={doc} />
                 ))}
               </ul>
             ) : null}
           </li>
         );
       })}
+
+      {/* A doc_type the backend accepts and this build has never heard of used
+          to vanish entirely: the employer saw the four slots, no file, and no
+          hint that one existed. It gets a generic heading and is identified by
+          its own file name. No Request button -- we cannot ask for a document
+          we cannot name. */}
+      {otherDocs.length > 0 ? (
+        <li className="px-5 py-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <StateTile filled />
+            <p className="min-w-0 text-sm font-semibold text-[var(--jale-ink)]">
+              {tDocTypes('other')}
+            </p>
+          </div>
+          <ul className="mt-2 space-y-2 pl-11">
+            {otherDocs.map((doc) => (
+              <DocFileRow key={doc.id} doc={doc} />
+            ))}
+          </ul>
+        </li>
+      ) : null}
     </ul>
   );
 }

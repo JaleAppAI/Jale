@@ -943,6 +943,7 @@
     "trust_empty": "This worker hasn't completed a trust assessment yet.",
     "extraction_title": "From their answers",
     "extraction_pending": "Reading their answers...",
+    "extraction_failed": "We couldn’t summarize these answers — read them below.",
     "certifications": "Certifications",
     "experience_months": "{months} months",
     "availability": {
@@ -1086,11 +1087,6 @@
     "page_title": "Job details",
     "doc_ok": "Uploaded",
     "doc_missing": "Missing",
-    "doc_labels": {
-      "resume": "Resume",
-      "driver_license": "Driver's License",
-      "ssn": "SSN Card / ITIN"
-    },
     "job_type": {
       "full-time": "Full-time",
       "part-time": "Part-time",
@@ -1324,7 +1320,8 @@
     "driver_license": "Driver's License",
     "work_auth_doc": "Work Authorization Document",
     "certification_doc": "Certification",
-    "ssn": "SSN Card / ITIN"
+    "ssn": "SSN Card / ITIN",
+    "other": "Other document"
   },
   "job_requirements": {
     "picker": {
