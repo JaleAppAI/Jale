@@ -13,6 +13,8 @@
  * wording, and drifting them silently changes what workers read.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   TRADE_KEYS,
   STANDARD_TRADE_KEYS,
@@ -26,8 +28,13 @@ import {
   isTradeKey,
   isExperienceKey,
   isAvailabilityKey,
+  isStandardTradeKey,
+  isTransportKey,
+  transportKeyToBoolean,
+  booleanToTransportKey,
   WORKER_VOCAB,
   WORKER_VOCAB_VERSION,
+  type TradeKey,
 } from '../../../../lambda/lib/worker-vocab';
 
 /** Every WhatsApp-rendered string in this codebase is ASCII-only (no accents,
@@ -180,5 +187,123 @@ describe('worker-vocab — WORKER_VOCAB manifest', () => {
     expect(Object.keys(WORKER_VOCAB).sort()).toEqual(
       ['availability', 'experience', 'standardTrades', 'trades', 'transport', 'version'],
     );
+  });
+});
+
+describe('worker-vocab — remaining guards and the transport conversion', () => {
+  it('isStandardTradeKey accepts the five real trades and rejects "other"', () => {
+    for (const key of STANDARD_TRADE_KEYS) expect(isStandardTradeKey(key)).toBe(true);
+    // The whole point of the separate list: `other` is a pointer at
+    // main_trade_other, not a trade, so anything demanding real work rejects it.
+    expect(isStandardTradeKey('other')).toBe(false);
+    for (const bad of ['welder', 'Electrician', '', null, 7, {}]) {
+      expect(isStandardTradeKey(bad)).toBe(false);
+    }
+  });
+
+  it('isTransportKey accepts yes/no and rejects the booleans they map to', () => {
+    for (const key of TRANSPORT_KEYS) expect(isTransportKey(key)).toBe(true);
+    for (const bad of ['true', 'si', 'Yes', '', true, false, null]) {
+      expect(isTransportKey(bad)).toBe(false);
+    }
+  });
+
+  it('round-trips transport keys through the has_transportation boolean', () => {
+    expect(transportKeyToBoolean('yes')).toBe(true);
+    expect(transportKeyToBoolean('no')).toBe(false);
+    expect(booleanToTransportKey(true)).toBe('yes');
+    expect(booleanToTransportKey(false)).toBe('no');
+    for (const key of TRANSPORT_KEYS) {
+      expect(booleanToTransportKey(transportKeyToBoolean(key))).toBe(key);
+    }
+    // Order matters downstream: flows.ts builds the has_transportation button
+    // options as TRANSPORT_KEYS.map(transportKeyToBoolean), and the WhatsApp
+    // reply parser resolves a numeric answer by index into that array.
+    expect(TRANSPORT_KEYS.map(transportKeyToBoolean)).toEqual([true, false]);
+  });
+});
+
+describe('worker-vocab — hardening', () => {
+  it('freezes every key tuple (readonly is only a compile-time promise)', () => {
+    for (const keys of [TRADE_KEYS, STANDARD_TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS, TRANSPORT_KEYS]) {
+      expect(Object.isFrozen(keys)).toBe(true);
+    }
+  });
+
+  it('still narrows the key types to literal unions after Object.freeze', () => {
+    // Compile-time assertion: if `Object.freeze` had widened the tuples to
+    // string[], TradeKey would be `string` and the @ts-expect-error below
+    // would itself be an error ("unused @ts-expect-error"), failing this file
+    // at type-check time rather than at runtime.
+    const good: TradeKey = 'electrician';
+    // @ts-expect-error 'welder' is not a member of TRADE_KEYS
+    const bad: TradeKey = 'welder';
+    expect(good).toBe('electrician');
+    expect(bad).toBe('welder');
+  });
+});
+
+// ── DB CHECK constraint parity ──────────────────────────────────
+//
+// The keys are not just an app convention: four CHECK constraints in the
+// migrations enumerate them, and the app sending a value outside one is a
+// write failure, not a validation message. These read the constraints out of
+// the migration SQL as text -- no database needed -- so a key added or
+// reordered here fails CI unless the matching migration lands with it.
+
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../../../db/migrations');
+
+/** SQL comments are stripped first for the same reason the frontend parity
+ *  guard strips TS comments: a list quoted in a comment must never be read as
+ *  the live constraint. */
+function readMigration(file: string): string {
+  return fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/--.*$/gm, '');
+}
+
+function checkList(sql: string, label: string, re: RegExp): string[] {
+  const match = re.exec(sql);
+  if (!match) throw new Error(`could not find the ${label} CHECK constraint in the migration`);
+  return [...match[1].matchAll(/'([^']*)'/g)].map((m) => m[1]);
+}
+
+describe('worker-vocab — DB CHECK constraint parity', () => {
+  it('users.main_trade (004) enumerates exactly TRADE_KEYS', () => {
+    const sql = readMigration('004_whatsapp.sql');
+    expect(checkList(sql, 'users.main_trade', /CHECK \(main_trade IN \(([\s\S]*?)\)\)/))
+      .toEqual([...TRADE_KEYS]);
+  });
+
+  it('users.years_experience (004) enumerates exactly EXPERIENCE_KEYS', () => {
+    const sql = readMigration('004_whatsapp.sql');
+    expect(checkList(sql, 'users.years_experience', /CHECK \(years_experience IN \(([\s\S]*?)\)\)/))
+      .toEqual([...EXPERIENCE_KEYS]);
+  });
+
+  it('users.availability (004) enumerates exactly AVAILABILITY_KEYS', () => {
+    const sql = readMigration('004_whatsapp.sql');
+    expect(checkList(sql, 'users.availability', /CHECK \(availability IN \(([\s\S]*?)\)\)/))
+      .toEqual([...AVAILABILITY_KEYS]);
+  });
+
+  it('employer_profiles.hiring_trades (016) contains the FULL trade vocabulary, other included', () => {
+    // An `<@ ARRAY[...]` containment check rather than an IN list, and gated
+    // in the app by api/employer-profile.ts's VALID_TRADES = TRADE_KEYS. An
+    // employer may hire for a trade outside the five standard ones, so this
+    // is TRADE_KEYS and not STANDARD_TRADE_KEYS.
+    const sql = readMigration('016_employer_profiles.sql');
+    expect(checkList(sql, 'employer_profiles.hiring_trades', /CHECK \(hiring_trades <@ ARRAY\[([\s\S]*?)\]/))
+      .toEqual([...TRADE_KEYS]);
+  });
+
+  it('worker_profiles.availability (003) repeats the same four slugs as users.availability (004)', () => {
+    // Not gated by this module: whatsapp/lib/profile-flow.ts's
+    // upsertWorkerProfileFromUsers copies users.availability straight into
+    // worker_profiles.availability, so if the two CHECKs ever diverge that
+    // copy starts failing at write time.
+    const sql = readMigration('003_jobs_and_applications.sql');
+    expect(checkList(sql, 'worker_profiles.availability', /CHECK \(availability IN \(([\s\S]*?)\)\)/))
+      .toEqual([...AVAILABILITY_KEYS]);
   });
 });

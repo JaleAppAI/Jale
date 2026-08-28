@@ -2,13 +2,38 @@
  * Worker-profile vocabularies — one source of truth.
  *
  * Four closed enumerations describe a worker: main trade, experience band,
- * availability, and whether they have their own transportation. Their slugs
- * are pinned by CHECK constraints on `users.main_trade`,
- * `users.years_experience` and `users.availability`, and they are written and
- * read by five different surfaces (WhatsApp onboarding v2, the WhatsApp v1
- * profile builder, the web profile editor, the worker API, the frontend).
- * Before this module each surface hand-typed its own copy, so a change had to
- * be made in N places and drift was invisible until it reached a worker.
+ * availability, and whether they have their own transportation. They are
+ * written and read by five different surfaces (WhatsApp onboarding v2, the
+ * WhatsApp v1 profile builder, the web profile editor, the worker API, the
+ * frontend). Before this module each surface hand-typed its own copy, so a
+ * change had to be made in N places and drift was invisible until it reached
+ * a worker.
+ *
+ * THE KEYS ARE PINNED BY FOUR DB CHECK CONSTRAINTS. Changing a key list means
+ * writing a migration for every one of these in the same change — the app
+ * would otherwise start sending values the database rejects:
+ *
+ *   1. `users.main_trade`          004_whatsapp.sql:55-56   <- TRADE_KEYS
+ *   2. `users.years_experience`    004_whatsapp.sql:59      <- EXPERIENCE_KEYS
+ *   3. `users.availability`        004_whatsapp.sql:62      <- AVAILABILITY_KEYS
+ *   4. `employer_profiles.hiring_trades`
+ *                                  016_employer_profiles.sql:16-24
+ *      An `<@ ARRAY[...]` containment check over the FULL trade vocabulary,
+ *      `other` included. It is gated in the app by `api/employer-profile.ts`,
+ *      which validates against TRADE_KEYS.
+ *
+ * Plus one COPY of the availability list that is not gated by this module:
+ * `worker_profiles.availability` (003_jobs_and_applications.sql:64) repeats
+ * the same four slugs, and `whatsapp/lib/profile-flow.ts`'s
+ * `upsertWorkerProfileFromUsers` copies `users.availability` straight into it
+ * — so the two CHECKs must stay identical or that copy starts failing.
+ *
+ * `test/unit/lambda/lib/worker-vocab.test.ts` reads all four constraints out
+ * of the migration files as text and pins them to the key lists here, so this
+ * comment cannot quietly go stale.
+ *
+ * `has_transportation` has no CHECK: it is a plain BOOLEAN column
+ * (004_whatsapp.sql:61). TRANSPORT_KEYS is a presentation vocabulary only.
  *
  * This module owns the keys and the bilingual labels; every backend consumer
  * derives from it. The labels are a verbatim MOVE of copy that already ships:
@@ -28,36 +53,43 @@
  */
 
 // ── Keys ────────────────────────────────────────────────────────
+//
+// Frozen: readonly is a compile-time promise only, and these tuples are
+// handed to callers that hold them for the life of a Lambda container.
 
 /** Canonical trade slugs, in list-picker order. Mirrors the
  *  `users.main_trade` CHECK constraint. `other` is a pointer at the worker's
  *  free-text `main_trade_other`, not a trade. */
-export const TRADE_KEYS = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
+export const TRADE_KEYS = Object.freeze(
+  ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const,
+);
 export type TradeKey = (typeof TRADE_KEYS)[number];
 
 /** The real trades — `TRADE_KEYS` without the `other` escape hatch. Used
  *  wherever a trade must name actual work (trust-question seeding, trade
  *  alias generation, employer hiring-trade pickers). */
 export type StandardTradeKey = Exclude<TradeKey, 'other'>;
-export const STANDARD_TRADE_KEYS = [
-  'electrician', 'plumber', 'carpenter', 'concrete', 'painting',
-] as const satisfies readonly StandardTradeKey[];
+export const STANDARD_TRADE_KEYS = Object.freeze(
+  ['electrician', 'plumber', 'carpenter', 'concrete', 'painting'] as const satisfies readonly StandardTradeKey[],
+);
 
 /** Experience bands, ascending. Mirrors the `users.years_experience` CHECK
  *  constraint. Bands, not integers: the worker API also accepts a numeric
  *  year count and maps it onto these. */
-export const EXPERIENCE_KEYS = ['0-1', '2-4', '5-9', '10+'] as const;
+export const EXPERIENCE_KEYS = Object.freeze(['0-1', '2-4', '5-9', '10+'] as const);
 export type ExperienceKey = (typeof EXPERIENCE_KEYS)[number];
 
 /** Availability slugs. Mirrors the `users.availability` CHECK constraint. */
-export const AVAILABILITY_KEYS = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
+export const AVAILABILITY_KEYS = Object.freeze(
+  ['full_time', 'part_time', 'weekends', 'flexible'] as const,
+);
 export type AvailabilityKey = (typeof AVAILABILITY_KEYS)[number];
 
 /** Transportation is stored as the boolean `users.has_transportation`; these
  *  keys exist only so the question has a labelled, ordered option list like
  *  the other three. Use `transportKeyToBoolean` / `booleanToTransportKey` at
  *  the storage boundary rather than comparing against the strings. */
-export const TRANSPORT_KEYS = ['yes', 'no'] as const;
+export const TRANSPORT_KEYS = Object.freeze(['yes', 'no'] as const);
 export type TransportKey = (typeof TRANSPORT_KEYS)[number];
 
 // ── Labels ──────────────────────────────────────────────────────
