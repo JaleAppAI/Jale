@@ -1,7 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -71,6 +71,28 @@ export const handler = async (
       };
     }
 
+    // Same two-lane bind as the sibling employer reads
+    // (`employer-worker-profile`, `employer-worker-posts`): `setRlsContext`
+    // above stays bound because `worker_documents_employer_select` (018)
+    // resolves the employer through `app.current_user_id`, and
+    // `setInternalUserRlsContext` writes a SEPARATE GUC that the newer
+    // internal-id policies key on. It must carry the EMPLOYER's id -- the
+    // worker's would satisfy the worker-self policies instead.
+    const employerRes = await client.query(
+      `SELECT id FROM users WHERE cognito_sub = $1`,
+      [cognitoSub],
+    );
+    const employerId: string | undefined = employerRes.rows[0]?.id;
+    if (!employerId) {
+      await client.query('COMMIT');
+      return {
+        statusCode: 409,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({ error: 'user_not_provisioned' }),
+      };
+    }
+    await setInternalUserRlsContext(client, employerId);
+
     const applicantCheck = await client.query(
       `SELECT 1
        FROM job_applications ja
@@ -95,7 +117,7 @@ export const handler = async (
     // labeled certification file they're looking at (e.g. "OSHA 30" vs
     // "Forklift cert") among the up-to-20 files a slot may hold.
     const docsResult = await client.query(
-      `SELECT doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id, cert_name
+      `SELECT id, doc_type, s3_key, file_name, file_size, uploaded_at, s3_version_id, cert_name
        FROM worker_documents wd
        JOIN job_applications ja ON ja.worker_id = wd.worker_id AND ja.job_id = wd.job_id
        JOIN jobs j ON j.id = ja.job_id
@@ -108,14 +130,20 @@ export const handler = async (
 
     await client.query('COMMIT');
 
+    // `s3_key`/`s3_version_id` are destructured OUT rather than spread
+    // through: the bucket is private, every read the browser makes is this
+    // server-minted presigned URL, and the key is an internal storage address
+    // that also spells out the worker/job it belongs to. Both are still
+    // SELECTed -- they are what the presigner signs, including the version pin
+    // that keeps an employer looking at the exact bytes that were uploaded.
     const documents = await Promise.all(
-      docsResult.rows.map(async (doc) => {
+      docsResult.rows.map(async ({ s3_key, s3_version_id, ...doc }) => {
         const url = await getSignedUrl(
           s3,
           new GetObjectCommand({
             Bucket: process.env.DOCUMENTS_BUCKET!,
-            Key: doc.s3_key,
-            ...(doc.s3_version_id ? { VersionId: doc.s3_version_id } : {}),
+            Key: s3_key,
+            ...(s3_version_id ? { VersionId: s3_version_id } : {}),
           }),
           { expiresIn: 900 },
         );

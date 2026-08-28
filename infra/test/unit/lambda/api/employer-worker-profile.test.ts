@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-worker-profile';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 
 jest.mock('../../../../lambda/lib/db');
@@ -8,6 +8,7 @@ jest.mock('../../../../lambda/legal/check-compliance');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
@@ -20,6 +21,7 @@ type QueryStubs = {
   jobOwnership?: unknown;
   profile?: unknown;
   assessment?: unknown;
+  extraction?: unknown;
 };
 
 function setupMockQuery(overrides: QueryStubs = {}) {
@@ -28,6 +30,7 @@ function setupMockQuery(overrides: QueryStubs = {}) {
     jobOwnership = { rows: [{ id: 'job-uuid' }] },
     profile = { rows: [] },
     assessment = { rows: [] },
+    extraction = { rows: [] },
   } = overrides;
 
   mockQuery.mockImplementation((text: string) => {
@@ -35,6 +38,7 @@ function setupMockQuery(overrides: QueryStubs = {}) {
     if (t.includes('FROM users WHERE cognito_sub')) return Promise.resolve(employer);
     if (t.includes('FROM jobs WHERE id')) return Promise.resolve(jobOwnership);
     if (t.includes('FROM job_applications ja')) return Promise.resolve(profile);
+    if (t.includes('FROM worker_trust_extractions')) return Promise.resolve(extraction);
     if (t.includes('FROM worker_trust_assessments')) return Promise.resolve(assessment);
     // BEGIN / COMMIT / ROLLBACK and anything else
     return Promise.resolve({});
@@ -50,6 +54,7 @@ describe('employer-worker-profile Lambda', () => {
       connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),
     });
     mockSetRlsContext.mockResolvedValue(undefined);
+    mockSetInternalUserRlsContext.mockResolvedValue(undefined);
   });
 
   const makeEvent = (sub: string | null, workerId = 'worker-uuid', jobId = 'job-uuid') =>
@@ -109,7 +114,11 @@ describe('employer-worker-profile Lambda', () => {
     });
     const res = await handler(makeEvent('employer-sub'));
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ ...mockProfile, trust_assessment: null });
+    expect(JSON.parse(res.body)).toEqual({
+      ...mockProfile,
+      trust_assessment: null,
+      trust_extraction: null,
+    });
     const profileQuery = mockQuery.mock.calls.find(([queryText]) => String(queryText).includes('FROM job_applications ja'))?.[0];
     expect(profileQuery).toContain('FROM worker_skills ws');
     expect(profileQuery).toContain('WHERE ws.worker_id = ja.worker_id');
@@ -141,6 +150,7 @@ describe('employer-worker-profile Lambda', () => {
   it('returns trust_assessment with score and components but never rationales', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const scoredAssessment = {
+      id: 'assessment-uuid',
       profession_key: 'electrician',
       status: 'scored',
       competency_score: 72,
@@ -210,6 +220,16 @@ describe('employer-worker-profile Lambda', () => {
     expect(assessmentQuery).toContain('rubric_version');
     expect(assessmentQuery).not.toContain('score_rationale');
     expect(assessmentQuery).not.toContain('scoring_model_id');
+
+    // R2-D: the extraction lookup joins this endpoint's privacy contract.
+    // `error` is a raw model/runtime failure string and `model_id` is an
+    // internal implementation detail -- 086 leaves BOTH out of the column
+    // grant, so naming either is a 42501, not just a leak.
+    const everyQuery = mockQuery.mock.calls.map(([queryText]) => String(queryText)).join('\n');
+    for (const forbidden of ['score_rationale', 'scoring_model_id', 'error', 'model_id']) {
+      expect(everyQuery).not.toContain(forbidden);
+      expect(JSON.stringify(body)).not.toContain(forbidden);
+    }
   });
 
   it('coerces a non-numeric stored rubric_version to the -1 sentinel instead of NaN', async () => {
@@ -221,6 +241,7 @@ describe('employer-worker-profile Lambda', () => {
     // so it still correctly degrades to plain numbers.
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const scoredAssessment = {
+      id: 'assessment-uuid',
       profession_key: 'electrician',
       status: 'scored',
       competency_score: 72,
@@ -258,6 +279,7 @@ describe('employer-worker-profile Lambda', () => {
   it('nulls score fields for a non-scored assessment but still returns answers', async () => {
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
     const pendingAssessment = {
+      id: 'assessment-uuid',
       profession_key: 'electrician',
       status: 'pending',
       competency_score: null,
@@ -292,5 +314,164 @@ describe('employer-worker-profile Lambda', () => {
     expect(ta.score_components).toBeNull();
     expect(ta.rubric_version).toBeNull();
     expect(ta.answers.length).toBeGreaterThan(0);
+  });
+  /* ===== R2-D: trust_extraction ========================================== */
+
+  const completedExtraction = {
+    status: 'completed',
+    extracted: {
+      skills: [{ label_en: 'Conduit bending', label_es: 'Doblado de tuberia', source: [0] }],
+      tools: [{ label_en: 'Hydraulic bender', label_es: 'Dobladora hidraulica', source: [0] }],
+      experience_signals: [],
+      safety: [{ label_en: 'Lockout/tagout', label_es: 'Bloqueo y etiquetado', source: [2] }],
+      notable: [],
+    },
+    summary_en: 'Ten years of residential rewires, comfortable bending conduit.',
+    summary_es: 'Diez anos de recableado residencial, comodo doblando tuberia.',
+    extractor_version: 'trust-extractor-1',
+    created_at: '2026-08-27T00:00:00.000Z',
+  };
+
+  it('returns the latest completed extraction for the assessment it returned', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [{ id: 'assessment-uuid', status: 'scored', answers: [], rubric_version: 7 }] },
+      extraction: { rows: [completedExtraction] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trust_extraction).toEqual({
+      status: 'completed',
+      extracted: completedExtraction.extracted,
+      summary_en: completedExtraction.summary_en,
+      summary_es: completedExtraction.summary_es,
+      extractor_version: 'trust-extractor-1',
+    });
+    // `created_at` is selected (it is what the ORDER BY ranks on) but is not
+    // part of the wire contract -- the panel has no place to show it.
+    expect(body.trust_extraction).not.toHaveProperty('created_at');
+  });
+
+  it('selects EXACTLY the six granted extraction columns, scoped to that assessment', async () => {
+    // 086 grants SELECT on a named column list only. Naming `error` or
+    // `model_id` is a hard 42501 for a non-owner reader, not a soft leak, so
+    // this asserts the select list POSITIVELY rather than only by exclusion.
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [{ id: 'assessment-uuid', status: 'scored', answers: [] }] },
+      extraction: { rows: [completedExtraction] },
+    });
+    await handler(makeEvent('employer-sub'));
+
+    const call = mockQuery.mock.calls.find(([queryText]) =>
+      String(queryText).includes('FROM worker_trust_extractions'),
+    );
+    expect(call).toBeDefined();
+    const sql = String(call![0]);
+    const selectList = sql
+      .slice(sql.indexOf('SELECT') + 'SELECT'.length, sql.indexOf('FROM'))
+      .split(',')
+      .map((column) => column.trim())
+      .filter(Boolean);
+    expect(selectList).toEqual([
+      'status',
+      'extracted',
+      'summary_en',
+      'summary_es',
+      'extractor_version',
+      'created_at',
+    ]);
+    // Latest completed, else latest of any status -- one round trip.
+    expect(sql).toContain("ORDER BY (status = 'completed') DESC, created_at DESC");
+    expect(sql).toContain('LIMIT 1');
+    // Scoped to the assessment actually returned: `extracted[].source` indexes
+    // back into THAT assessment's `answers` (086 Part 1), so an extraction of
+    // a different assessment would point its chips at the wrong questions.
+    expect(sql).toContain('assessment_id = $1');
+    expect(call![1]).toEqual(['assessment-uuid', 'worker-uuid']);
+  });
+
+  it('reports a non-completed extraction as a status only, with no partial content', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [{ id: 'assessment-uuid', status: 'scored', answers: [] }] },
+      extraction: {
+        rows: [
+          {
+            status: 'extracting',
+            // A re-queued row can still carry the previous attempt's output.
+            // Until it is `completed` none of it is shown, so none of it ships.
+            extracted: { skills: [{ label_en: 'Stale', label_es: 'Viejo', source: [0] }] },
+            summary_en: 'Stale summary',
+            summary_es: 'Resumen viejo',
+            extractor_version: 'trust-extractor-1',
+            created_at: '2026-08-27T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    const body = JSON.parse(res.body);
+    expect(body.trust_extraction.status).toBe('extracting');
+    expect(body.trust_extraction.extracted).toEqual({});
+    expect(body.trust_extraction.summary_en).toBeNull();
+    expect(body.trust_extraction.summary_es).toBeNull();
+    expect(JSON.stringify(body)).not.toContain('Stale');
+  });
+
+  it('returns trust_extraction: null when the assessment has no extraction row', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [{ id: 'assessment-uuid', status: 'scored', answers: [] }] },
+      extraction: { rows: [] },
+    });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(JSON.parse(res.body).trust_extraction).toBeNull();
+  });
+
+  it('never runs the extraction query when there is no assessment to attach it to', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({ profile: { rows: [mockProfile] }, assessment: { rows: [] } });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.trust_assessment).toBeNull();
+    expect(body.trust_extraction).toBeNull();
+    expect(
+      mockQuery.mock.calls.some(([queryText]) =>
+        String(queryText).includes('FROM worker_trust_extractions'),
+      ),
+    ).toBe(false);
+  });
+
+  it('returns 404 without ever running the extraction query', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({ profile: { rows: [] } });
+    const res = await handler(makeEvent('employer-sub'));
+    expect(res.statusCode).toBe(404);
+    expect(
+      mockQuery.mock.calls.some(([queryText]) =>
+        String(queryText).includes('FROM worker_trust_extractions'),
+      ),
+    ).toBe(false);
+  });
+
+  it('reads the extraction in the internal-user RLS lane the 086 employer policy keys on', async () => {
+    // wte_employer_applicant_read gates on
+    // employer_has_applicant_relationship(app.current_internal_user_id, ...),
+    // and that GUC must hold the EMPLOYER's id, never the worker's.
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    setupMockQuery({
+      profile: { rows: [mockProfile] },
+      assessment: { rows: [{ id: 'assessment-uuid', status: 'scored', answers: [] }] },
+      extraction: { rows: [completedExtraction] },
+    });
+    await handler(makeEvent('employer-sub'));
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), 'employer-id');
   });
 });

@@ -129,7 +129,7 @@ export const handler = async (
     // worker/job combination that doesn't resolve to an applicant never pays
     // for a trust-assessment lookup whose result would just be discarded.
     const assessmentRes = await client.query(
-      `SELECT profession_key, status, competency_score, score_components,
+      `SELECT id, profession_key, status, competency_score, score_components,
               answers, scored_at, rubric_version
          FROM worker_trust_assessments
         WHERE user_id = $1
@@ -167,12 +167,62 @@ export const handler = async (
         }
       : null;
 
+    // The structured skills/tools/safety signals the jale_ai extractor
+    // (086 Part 1) derived from THIS assessment's answers. Scoped by
+    // assessment_id, not just user_id: `extracted[].source` indexes back into
+    // `worker_trust_assessments.answers`, so an extraction of a different
+    // (older) assessment would point its chips at the wrong questions.
+    //
+    // Skipped entirely when there is no assessment, for the same reason the
+    // assessment query sits below the 404 check: there is nothing for the
+    // result to attach to, so the round trip would be pure waste.
+    //
+    // The column list is EXACTLY the six 086 grants to a reader. `error` (a
+    // raw model/runtime failure string) and `model_id` (an internal
+    // implementation detail) are deliberately absent from that grant, so
+    // naming either here is a 42501 for a non-owner role -- not merely a
+    // privacy leak. `created_at` is selected because the ORDER BY ranks on
+    // it; it is not part of the wire contract.
+    let trust_extraction: {
+      status: string;
+      extracted: unknown;
+      summary_en: string | null;
+      summary_es: string | null;
+      extractor_version: string;
+    } | null = null;
+
+    if (ta) {
+      const extractionRes = await client.query(
+        `SELECT status, extracted, summary_en, summary_es, extractor_version, created_at
+           FROM worker_trust_extractions
+          WHERE assessment_id = $1 AND user_id = $2
+          ORDER BY (status = 'completed') DESC, created_at DESC
+          LIMIT 1`,
+        [ta.id, workerId],
+      );
+      const te = extractionRes.rows[0] ?? null;
+      if (te) {
+        // Content only from a terminal `completed` row. A re-queued or failed
+        // row can still hold the previous attempt's output, and the panel
+        // shows a "still reading" line for anything non-completed -- so the
+        // stale content has no renderer and no reason to be on the wire.
+        const done = te.status === 'completed';
+        trust_extraction = {
+          status: te.status,
+          extracted: done && te.extracted && typeof te.extracted === 'object' ? te.extracted : {},
+          summary_en: done ? (te.summary_en ?? null) : null,
+          summary_es: done ? (te.summary_es ?? null) : null,
+          extractor_version: te.extractor_version,
+        };
+      }
+    }
+
     await client.query('COMMIT');
 
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ ...result.rows[0], trust_assessment }),
+      body: JSON.stringify({ ...result.rows[0], trust_assessment, trust_extraction }),
     };
   } catch (err) {
     if (client) {
