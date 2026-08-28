@@ -77,7 +77,12 @@ function confirm(pool: CognitoUserPool, username: string, code: string): Promise
     });
 }
 
-export function workerSignUp(input: { phone: string; fullName: string }): Promise<void> {
+/**
+ * Phone only. The name is no longer collected at signup -- it is the
+ * onboarding flow's `profile.name` step -- and the endpoint stopped requiring
+ * it, so nothing is sent in its place.
+ */
+export function workerSignUp(input: { phone: string }): Promise<void> {
     return workerWebSignUp(input);
 }
 
@@ -209,14 +214,11 @@ export function employerConfirmNewPassword(
     });
 }
 
-async function workerWebSignUp(input: { phone: string; fullName: string }): Promise<void> {
+async function workerWebSignUp(input: { phone: string }): Promise<void> {
     const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/auth/worker/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            phone: input.phone.trim(),
-            fullName: input.fullName.trim(),
-        }),
+        body: JSON.stringify({ phone: input.phone.trim() }),
     });
 
     if (res.ok) return;
