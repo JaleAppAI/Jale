@@ -619,25 +619,35 @@ describe('domain-outbox-drain — trust-extraction fan-out', () => {
     expect(trace.indexOf('dispatchExtraction')).toBeGreaterThan(commitIdx);
   });
 
-  it('a fan-out that never settles cannot roll back an already-committed event', async () => {
+  it('a fan-out still in flight cannot roll back an already-committed event', async () => {
     const event = assessmentEvent({ id: 'x-7' });
     const dispatchAssessment = jest.fn().mockResolvedValue(undefined);
-    // Never settles — the shape of an SQS hang rather than an SQS rejection.
-    const dispatchExtraction = jest.fn(() => new Promise<void>(() => {}));
+    // A dispatch held open on a resolver we own — the shape of an SQS hang
+    // rather than an SQS rejection. Holding the resolver (instead of a
+    // never-settling promise plus a timing race) is what makes this
+    // deterministic and leaves nothing dangling at test exit.
+    let releaseDispatch!: () => void;
+    const held = new Promise<void>((resolve) => { releaseDispatch = resolve; });
+    const dispatchExtraction = jest.fn(() => held);
     const calls = scriptClient({ readyRows: [], assessmentRows: [event], pendingAssessmentRow: { id: 'wta-x7' } });
 
-    // The drain itself never resolves while the dispatch hangs, so the
-    // assertion is about the DB state at the moment of the hang: the event is
-    // already durably completed and committed before the fan-out is awaited.
     const pending = runDrain(fakePool, {
       renderer: { render: jest.fn() }, now: () => NOW, dispatchAssessment, dispatchExtraction,
     });
-    await Promise.race([pending, new Promise((resolve) => setImmediate(resolve))]);
+    // One macrotask turn is plenty: every mocked query resolves immediately,
+    // so the drain runs to the fan-out and blocks there.
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
+    // WHILE the dispatch is still in flight, the event is already durably
+    // completed and committed — a Lambda timeout here costs the extraction
+    // and nothing else.
     expect(dispatchExtraction).toHaveBeenCalledTimes(1);
     expect(calls.some((c) => /UPDATE worker_domain_outbox/.test(c.sql) && /status\s*=\s*'completed'/.test(c.sql))).toBe(true);
     expect(calls.some((c) => /^COMMIT$/.test(c.sql))).toBe(true);
     expect(calls.some((c) => /^ROLLBACK$/.test(c.sql))).toBe(false);
+
+    releaseDispatch();
+    await expect(pending).resolves.toMatchObject({ completed: 1, failed: 0 });
   });
 
   it('is fail-OPEN: a thrown extraction dispatch still COMMITs the event, never rolls back and never marks a failure', async () => {
