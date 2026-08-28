@@ -168,7 +168,7 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
   const subs: Record<string, string> = {};
   const phones: Record<string, string> = {};
 
-  const WORKER_KEYS = ['main', 'zip', 'city', 'lock', 'photo'] as const;
+  const WORKER_KEYS = ['main', 'zip', 'city', 'custom', 'lock', 'photo'] as const;
 
   // ── deps assembly ──────────────────────────────────────────────────────
 
@@ -1001,6 +1001,62 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       );
       expect(cities.rows.map((r) => r.city_key)).toEqual([slugCityKey('El Paso', 'TX')]);
       record('profile.location (bare city confirm)', yesMsg, yes.result, yes.sent, null, session);
+    });
+  });
+
+  // =========================================================================
+  // 10b. the custom-trade branch: the trust generator's CACHE-MISS lane
+  // =========================================================================
+
+  describe("10b. profile.trade = other -> profile.custom_trade", () => {
+    test('a custom trade misses the cache and SILENTLY falls back to the generic set', async () => {
+      await asWhatsapp(null, async (client) =>
+        client.query(`SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`, [
+          subs.custom, 'en', workflowVersion,
+        ]),
+      );
+      const session = webSession('custom');
+      expect((await webTurn(session, webMsg('custom', { body: 'accept' }))).result.stepKey)
+        .toBe('profile.name');
+      expect((await webTurn(session, webMsg('custom', { body: 'Carla Nunez' }))).result.stepKey)
+        .toBe('profile.location');
+      expect((await webTurn(session, webMsg('custom', { body: 'Laredo, TX' }))).result.stepKey)
+        .toBe('profile.trade');
+
+      // 'other' must NOT write users.main_trade on its own -- chk_trade_other
+      // (004) requires main_trade_other alongside it.
+      const otherMsg = webMsg('custom', { interactivePayload: 'profile:main_trade:other' });
+      const other = await webTurn(session, otherMsg);
+      expect(other.result.stepKey).toBe('profile.custom_trade');
+      const afterOther = await su.query(
+        `SELECT main_trade, main_trade_other FROM users WHERE id = $1`, [ids.custom],
+      );
+      expect(afterOther.rows[0]).toEqual({ main_trade: null, main_trade_other: null });
+      record('profile.trade (other)', otherMsg, other.result, other.sent, null, session);
+
+      const customMsg = webMsg('custom', { body: 'welder' });
+      const custom = await webTurn(session, customMsg);
+      expect(custom.result.stepKey).toBe('profile.experience');
+
+      // `trade_questions` has no 'welder' row (086 Part 4 purged every
+      // non-seeded cache row), so loadOrGenerateQuestions falls through to the
+      // question-generator Lambda. With no QUESTION_GENERATOR_ARN it throws,
+      // createTrustQuestionGenerator swallows it and returns null, and
+      // seedTrustQuestions silently seeds V2_FALLBACK_TRUST_QUESTIONS. The run
+      // continues either way -- the ONLY visible difference is provenance.
+      expect(session.state_context.v2TrustSource).toBe('fallback');
+      expect(session.state_context.v2QuestionSetVersion).toBe('v2-trust-fallback-1');
+      expect(session.state_context.v2ProfileTrade).toBe('welder');
+      expect(session.state_context.v2CustomTradeText).toBe('welder');
+      const questions = session.state_context.v2TrustQuestions as Array<{ en: string }>;
+      expect(questions).toHaveLength(3);
+      expect(questions[0].en).not.toMatch(/welder/i);
+
+      const user = await su.query(
+        `SELECT main_trade, main_trade_other FROM users WHERE id = $1`, [ids.custom],
+      );
+      expect(user.rows[0]).toEqual({ main_trade: 'other', main_trade_other: 'welder' });
+      record('profile.custom_trade', customMsg, custom.result, custom.sent, null, session);
     });
   });
 
