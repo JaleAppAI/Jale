@@ -29,6 +29,7 @@ const TOPIC_ARN = 'arn:aws:sns:us-east-2:123456789012:jale-ci-whatsapp-alarms';
 function buildStack(options: {
   alarmTopicArn?: string;
   publicSiteBaseUrl?: string | null;
+  emailConfigurationSetName?: string;
 } = {}) {
   const context: Record<string, unknown> = {};
   if (options.publicSiteBaseUrl !== null) {
@@ -50,6 +51,7 @@ function buildStack(options: {
     dbSecret,
     publicResource,
     alarmTopicArn: options.alarmTopicArn,
+    emailConfigurationSetName: options.emailConfigurationSetName,
   });
   return { app, apiHarness, api, stack };
 }
@@ -332,6 +334,103 @@ describe('NotificationsStack', () => {
     apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
       HttpMethod: 'POST',
       AuthorizationType: 'NONE',
+    });
+  });
+
+  // ── SES delivery feedback (sprint 22 R3-E) ───────────────────────────────
+
+  /**
+   * The default harness passes no configuration-set name, which is the
+   * dev-synth shape this whole prop exists to keep working. Nothing is created
+   * and nothing is half-created.
+   */
+  describe('without a configuration set name', () => {
+    it('creates no configuration set, no event destination and no feedback lambda', () => {
+      template.resourceCountIs('AWS::SES::ConfigurationSet', 0);
+      template.resourceCountIs('AWS::SES::ConfigurationSetEventDestination', 0);
+      template.resourceCountIs('AWS::SNS::Topic', 0);
+      const functions = Object.values(template.findResources('AWS::Lambda::Function'));
+      expect(functions.map((fn: any) => fn.Properties.Description))
+        .not.toContain('SES bounce/complaint handler — switches the employer digest off');
+    });
+  });
+
+  describe('with a configuration set name threaded in', () => {
+    const CONFIGURATION_SET = 'jale-employer-email';
+    let feedbackTemplate: Template;
+
+    beforeAll(() => {
+      feedbackTemplate = Template.fromStack(
+        buildStack({ emailConfigurationSetName: CONFIGURATION_SET, alarmTopicArn: TOPIC_ARN }).stack,
+      );
+    });
+
+    it('creates the configuration set under the name both stacks compute independently', () => {
+      feedbackTemplate.hasResourceProperties('AWS::SES::ConfigurationSet', {
+        Name: CONFIGURATION_SET,
+      });
+    });
+
+    /**
+     * BOUNCE and COMPLAINT only. Adding DELIVERY/SEND/OPEN would multiply the
+     * topic's traffic by the whole send volume to tell the handler nothing it
+     * acts on.
+     */
+    it('routes only BOUNCE and COMPLAINT to the SNS destination', () => {
+      feedbackTemplate.hasResourceProperties('AWS::SES::ConfigurationSetEventDestination', {
+        EventDestination: Match.objectLike({
+          Enabled: true,
+          MatchingEventTypes: ['BOUNCE', 'COMPLAINT'],
+          SnsDestination: Match.objectLike({ TopicARN: Match.anyValue() }),
+        }),
+      });
+    });
+
+    it('creates the topic and subscribes the feedback Lambda to it', () => {
+      feedbackTemplate.resourceCountIs('AWS::SNS::Topic', 1);
+      feedbackTemplate.hasResourceProperties('AWS::SNS::Topic', {
+        TopicName: `${CONFIGURATION_SET}-feedback`,
+      });
+      feedbackTemplate.hasResourceProperties('AWS::SNS::Subscription', {
+        Protocol: 'lambda',
+      });
+    });
+
+    it('runs the handler in the VPC as jale_admin, on the same secret the settings API uses', () => {
+      feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
+        Description: 'SES bounce/complaint handler — switches the employer digest off',
+        Timeout: 30,
+        Environment: { Variables: Match.objectLike({ DB_SECRET_ARN: Match.anyValue() }) },
+        VpcConfig: Match.anyValue(),
+      });
+    });
+
+    /**
+     * The handler holds NO SES permission: a configuration set is a
+     * receive-side construct, and the only role that may send is the sweeper's
+     * over in BillingStack.
+     */
+    it('grants the feedback handler no SES permissions at all', () => {
+      expect(JSON.stringify(feedbackTemplate.findResources('AWS::IAM::Policy'))).not.toContain('ses:Send');
+    });
+
+    it('alarms on handler errors and on the two silent outcomes', () => {
+      feedbackTemplate.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'SesFeedbackHandlerErrors',
+        AlarmActions: [TOPIC_ARN],
+      });
+      for (const [literal, metricName] of [
+        ['ses_feedback_malformed', 'SesFeedbackMalformed'],
+        ['ses_feedback_unknown_message', 'SesFeedbackUnknownMessage'],
+      ]) {
+        feedbackTemplate.hasResourceProperties('AWS::Logs::MetricFilter', {
+          FilterPattern: `"${literal}"`,
+          MetricTransformations: Match.arrayWith([Match.objectLike({
+            MetricNamespace: 'Jale/Notifications', MetricName: metricName,
+          })]),
+        });
+        feedbackTemplate.hasResourceProperties('AWS::CloudWatch::Alarm', { AlarmName: metricName });
+      }
     });
   });
 });

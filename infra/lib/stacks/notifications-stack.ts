@@ -8,7 +8,9 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as ses from 'aws-cdk-lib/aws-ses';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
@@ -51,20 +53,40 @@ export interface NotificationsStackProps extends cdk.StackProps {
    * Absent means "alarm exists and is visible in the console but pages nobody".
    */
   readonly alarmTopicArn?: string;
+  /**
+   * Name of the SES configuration set this stack CREATES, and that BillingStack's
+   * sweeper tags every outgoing message with. A literal threaded from
+   * bin/jale-app.ts to both stacks rather than a CDK reference between them --
+   * BillingStack is instantiated first (it must be; this stack consumes
+   * api.publicResource), so a real reference in this direction is a cycle.
+   *
+   * OPTIONAL, and absent is a supported deployment: no configuration set, no
+   * event destination, no SNS topic and no feedback Lambda are created, the
+   * sweeper sends without the X-SES-CONFIGURATION-SET header, and nothing
+   * listens for bounces. That is what keeps `cdk synth` working for a
+   * developer with no SES wiring, and it is why notifications-stack.test.ts's
+   * default harness still synths with the prop omitted.
+   */
+  readonly emailConfigurationSetName?: string;
 }
 
 /**
  * NotificationsStack — the employer daily-digest lane.
  *
  * Resources:
- *   EmployerDigestProducerLambda  EventBridge every 15 min, DB-only, jale_admin
- *   DigestUnsubscribeLambda       POST /public/employer-digest/unsubscribe (UNAUTHENTICATED)
- *   DigestUnsubscribeSecret       HMAC signing key for the unsubscribe links
+ *   EmployerDigestProducerLambda    EventBridge every 15 min, DB-only, jale_admin
+ *   DigestUnsubscribeLambda         POST /public/employer-digest/unsubscribe (UNAUTHENTICATED)
+ *   DigestUnsubscribeSecret         HMAC signing key for the unsubscribe links
+ *   EmployerEmailConfigurationSet   SES configuration set (only with emailConfigurationSetName)
+ *   EmployerEmailFeedbackTopic      SNS topic for its BOUNCE/COMPLAINT events
+ *   SesFeedbackHandlerLambda        applies those events, jale_admin
  *
  * The producer writes rows into `email_outbox` (migration 037) and the
  * EXISTING BillingStack EmailOutboxSweeperLambda drains them via SES,
- * unchanged. Nothing in this stack sends mail directly, and nothing here needs
- * SES permissions.
+ * unchanged. Nothing in this stack sends mail directly, and nothing here holds
+ * a send permission: the configuration set below is a RECEIVE-side construct
+ * (it names where delivery events go), and the sweeper that tags messages with
+ * it lives in BillingStack with the ses:SendEmail grant.
  *
  * Per-method throttles for the unauthenticated route live in ApiStack's single
  * centralized MethodSettings array — this stack must NOT call
@@ -304,6 +326,101 @@ export class NotificationsStack extends cdk.Stack {
         alarmDescription,
         metricFilter.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
       );
+    }
+
+    // ── SES delivery feedback ─────────────────────────────────────
+    // Configuration set -> SNS event destination -> topic -> Lambda ->
+    // migration 087's definer. Created as a unit or not at all: an event
+    // destination with no topic, or a topic with nothing subscribed, is a
+    // configuration that looks wired and silently drops every bounce.
+    if (props.emailConfigurationSetName) {
+      const configurationSet = new ses.CfnConfigurationSet(this, 'EmployerEmailConfigurationSet', {
+        name: props.emailConfigurationSetName,
+      });
+
+      // Not encrypted with a KMS key: SES publishes to this topic from the SES
+      // service principal, and an SSE-KMS topic needs a customer-managed key
+      // with a policy granting ses.amazonaws.com kms:GenerateDataKey. The
+      // payload is a message id, an event type and a recipient address -- the
+      // recipient is the only sensitive field, and it is one this account
+      // already holds in email_outbox.
+      const feedbackTopic = new sns.Topic(this, 'EmployerEmailFeedbackTopic', {
+        topicName: `${props.emailConfigurationSetName}-feedback`,
+        displayName: 'SES bounce and complaint events for employer email',
+      });
+
+      const feedbackLambda = new JaleLambdaFunction(this, 'SesFeedbackHandlerLambda', {
+        entry: path.join(__dirname, '../../lambda/notifications/ses-feedback-handler.ts'),
+        description: 'SES bounce/complaint handler — switches the employer digest off',
+        environment: {
+          // The SAME jale_admin secret the digest settings API uses: the
+          // handler reads email_outbox under 037's admin policy and calls
+          // 087's definer, both of which are granted to jale_admin and to
+          // nothing else.
+          DB_SECRET_ARN: props.dbSecret.secretArn,
+        },
+        // One SNS record per invocation, two short queries. 30s is the default
+        // and is generous; the point of naming it is that a hung DB connection
+        // must not hold a VPC ENI for the full Lambda maximum.
+        timeout: 30,
+        ...lambdaProps,
+      });
+      props.dbSecret.grantRead(feedbackLambda.function);
+      feedbackTopic.addSubscription(new snsSubscriptions.LambdaSubscription(feedbackLambda.function));
+
+      // BOUNCE and COMPLAINT only. DELIVERY/SEND/OPEN/CLICK would multiply the
+      // topic's traffic by the whole send volume to tell the handler nothing
+      // it acts on.
+      new ses.CfnConfigurationSetEventDestination(this, 'EmployerEmailFeedbackDestination', {
+        configurationSetName: configurationSet.ref,
+        eventDestination: {
+          name: 'bounce-and-complaint-to-sns',
+          enabled: true,
+          matchingEventTypes: ['BOUNCE', 'COMPLAINT'],
+          snsDestination: { topicArn: feedbackTopic.topicArn },
+        },
+      });
+
+      notificationsAlarm(
+        'SesFeedbackHandlerErrorsAlarm',
+        'SesFeedbackHandlerErrors',
+        'ses-feedback-handler Lambda reported an unhandled error — bounce and complaint events are '
+          + 'not being applied, so a dead mailbox keeps receiving a daily digest.',
+        feedbackLambda.function.metricErrors({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
+      );
+
+      // Same literal-term filter reasoning as the producer's metrics above.
+      for (const [id, literal, alarmName, alarmDescription] of [
+        [
+          'SesFeedbackMalformed',
+          'ses_feedback_malformed',
+          'SesFeedbackMalformed',
+          'An SES notification arrived that the feedback handler could not parse. It is dropped, not '
+            + 'retried, so nothing else reports it — and a payload shape change means bounces stop '
+            + 'being applied entirely.',
+        ],
+        [
+          'SesFeedbackUnknownMessage',
+          'ses_feedback_unknown_message',
+          'SesFeedbackUnknownMessage',
+          'A bounce or complaint named a message id no email_outbox row claims. Expected for mail sent '
+            + 'before migration 087; sustained afterwards it means ses_message_id is not being persisted.',
+        ],
+      ] as const) {
+        const metricFilter = new logs.MetricFilter(this, `${id}Metric`, {
+          logGroup: feedbackLambda.logGroup,
+          filterPattern: logs.FilterPattern.literal(`"${literal}"`),
+          metricNamespace: 'Jale/Notifications',
+          metricName: id,
+          metricValue: '1',
+        });
+        notificationsAlarm(
+          `${id}Alarm`,
+          alarmName,
+          alarmDescription,
+          metricFilter.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
+        );
+      }
     }
 
     // ── Route ─────────────────────────────────────────────────────
