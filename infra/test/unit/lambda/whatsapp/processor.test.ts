@@ -424,8 +424,6 @@ describe('Processor Lambda', () => {
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-twilio-fail' }] }) // claim
         .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'idle' })] }) // SELECT conv FOR UPDATE
-        // findWebRegisteredWorker → no match (unbound conversation)
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] })
         // v2 forced-idle writeback (routeOnboardingV2 mocked, handled:false)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] })
         // queueReply → INSERT whatsapp_outbox (jobs_none)
@@ -724,7 +722,6 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'new', language: 'en', user_id: null })],
         })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // tryConversationRelay → resolveWorkerIdForWhatsappNumber → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox idle_help (not-a-command fallback)
@@ -828,7 +825,6 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
         })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // verified-phone worker resolution
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT support_needs_signup outbox
@@ -859,7 +855,6 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'awaiting_otp', language: 'en', user_id: null })],
         })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'phone-worker-1' }] })
         .mockResolvedValueOnce({ rowCount: 1, rows: [{ cognito_sub: 'phone-worker-sub-1' }] })
@@ -1087,7 +1082,6 @@ describe('Processor Lambda', () => {
           rowCount: 1,
           rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: null })],
         })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile_not_ready
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
@@ -2980,151 +2974,28 @@ describe('Processor Lambda', () => {
     });
   });
 
-  // ── Web-worker bypass (migration 053's SECURITY DEFINER function) ───────
+  // ── R2-C6: the 053 web-worker bypass lane is GONE ──────────────────────
   //
-  // Workers who registered via the website (email + tos_accepted_at already
-  // set) skip v2 onboarding entirely on their first WhatsApp message. The
-  // bypass call site sits in routeMessage BEFORE the v2 lane, gated on
-  // `!conv.user_id && !voiceEvent` — see the call site comment right above
-  // `registerOnboardingRenderers()`.
-  describe('web worker bypass', () => {
-    it('bypasses v2 onboarding for an eligible web-registered worker on first contact', async () => {
+  // Migration 053's `bypass_onboarding_for_web_worker` used to shunt a
+  // worker who had signed up on the website straight to `lifecycle='ready'`
+  // on their first WhatsApp message, ahead of `routeOnboardingV2` and gated
+  // on `!conv.user_id && !voiceEvent`. R2 deleted that lane: web signup now
+  // drives the SAME engine (`start_web_onboarding_workflow`, migration 086),
+  // so a web worker's phone already has a real `worker_workflow_runs` row
+  // and the ordinary pre-auth -> OTP -> bind path must resume it. These two
+  // cases are the regression lock: routeMessage must issue NO phone lookup
+  // of its own and hand every unbound first message to the v2 lane. The
+  // replacement path itself is proven end-to-end against real PostgreSQL in
+  // test/unit/db/web-worker-whatsapp-crossover.integration.test.ts.
+  describe('no web-worker bypass lane', () => {
+    it('hands an unbound conversation\'s first message straight to the v2 lane', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-bypass' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'new', language: 'es', user_id: null })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'web-worker-1' }] }) // findWebRegisteredWorker → match
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ onboarding_state_id: 'state-1', run_id: 'run-1' }],
-        }) // bypass_onboarding_for_web_worker definer
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation (idle + bind)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // queueOutboxText welcome
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{
-            id: 'ob-1',
-            sequence: 1,
-            whatsapp_number: '+15125551234',
-            body: '¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.',
-          }],
-        }) // sendPendingOutbox: the welcome row
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // UPDATE outbox sent
-        // routeMessage returned the bypassed worker's id, so processRecord
-        // also drains that worker's job-message outbox (set/select/clear
-        // actor) before marking the inbound message completed.
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-web-bypass',
-          From: 'whatsapp:+15125551234',
-          Body: 'Hola',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      // v2 never runs for a bypassed first message.
-      expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
-
-      // The definer function is called with the worker id, the conversation
-      // id, the workflow version as a numeric string, the detected
-      // language, and the inbound message sid.
-      const definerCall = findQueryByPattern(/bypass_onboarding_for_web_worker/i);
-      expect(definerCall).toEqual(['web-worker-1', 'conv-1', '1', 'es', 'SM-web-bypass']);
-
-      // The conversation is bound and moved straight to idle.
-      const conversationWrite = findQueryByPattern(/UPDATE whatsapp_conversations SET conversation_state/i);
-      expect(conversationWrite).toEqual(['conv-1', 'idle', 'web-worker-1', 'es', 'SM-web-bypass']);
-
-      // Bilingual welcome queued via the same outbox helper as before.
-      expect(outboxBodies()).toContain('¡Bienvenido a Jale! Escribe TRABAJOS para ver ofertas disponibles.');
-    });
-
-    it('parks AND claims a referral code for a bypassed web worker, who has no later onboarding completion to claim it at', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-web-referral' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'new', language: 'es', user_id: null })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: 'web-worker-1' }] }) // findWebRegisteredWorker → match
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ onboarding_state_id: 'state-1', run_id: 'run-1' }],
-        }) // bypass_onboarding_for_web_worker definer
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation (idle + bind)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // queueOutboxText welcome
-        // captureReferralForBypassedWorker, isolated behind a SAVEPOINT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // SAVEPOINT referral_bypass
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ share_code: null, job_id: 'job-1', locale: 'es' }],
-        }) // parkPendingClaim: consume the apply token
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // parkPendingClaim: upsert referral_pending_claims
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [{ job_id: 'job-1', share_code: null, referrer_worker_id: 'referrer-1' }],
-        }) // claimPendingReferral: claim the parked row
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // claimPendingReferral: upsert worker_attribution
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // RELEASE SAVEPOINT referral_bypass
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // sendPendingOutbox: no rows needed for this assertion
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set job outbox actor
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending job outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // clear job outbox actor
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-web-referral',
-          From: 'whatsapp:+15125551234',
-          Body: 'I want to apply for this job: JALE-8F4K2QRS',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      // The token is consumed and a claim parked...
-      expect(findQueryByPattern(/UPDATE referral_apply_tokens/i)).toBeTruthy();
-      expect(findQueryByPattern(/INSERT INTO referral_pending_claims/i)).toBeTruthy();
-      // ...and claimed immediately, because this worker skips onboarding and so
-      // will never reach completeOnboarding, where the normal lane claims it.
-      expect(findQueryByPattern(/UPDATE referral_pending_claims/i)).toBeTruthy();
-      const attribution = findQueryByPattern(/INSERT INTO worker_attribution/i);
-      expect(attribution).toBeTruthy();
-      expect(attribution).toContain('web-worker-1');
-
-      // Isolated behind a savepoint so a referral failure cannot abort the
-      // transaction carrying the bypass itself.
-      const statements = mockQuery.mock.calls.map((c: any[]) => c[0]);
-      expect(statements).toContain('SAVEPOINT referral_bypass');
-      expect(statements).toContain('RELEASE SAVEPOINT referral_bypass');
-
-      // The bypass itself is unaffected.
-      expect(mockRouteOnboardingV2).not.toHaveBeenCalled();
-    });
-
-    it('does not bypass a WhatsApp-origin worker missing an email — goes through the v2 lane', async () => {
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-no-email' }] }) // claim
+        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-no-bypass' }] }) // claim
         .mockResolvedValueOnce({
           rowCount: 1,
           rows: [convRow({ conversation_state: 'new', language: 'en', user_id: null })],
         })
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match (email IS NULL)
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // tryConversationRelay → no match
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox idle_help
@@ -3135,7 +3006,7 @@ describe('Processor Lambda', () => {
 
       await handler(
         makeSqsEvent({
-          MessageSid: 'SM-no-email',
+          MessageSid: 'SM-no-bypass',
           From: 'whatsapp:+15125551234',
           Body: 'random text',
         }),
@@ -3144,43 +3015,13 @@ describe('Processor Lambda', () => {
       );
 
       expect(mockRouteOnboardingV2).toHaveBeenCalledTimes(1);
-      expect(countQueryByPattern(/bypass_onboarding_for_web_worker/i)).toBe(0);
-    });
-
-    it('never bypasses a conversation already bound to a worker, even if the phone matches a web-registered row', async () => {
-      mockListMatchedJobsForWorker.mockResolvedValue([]);
-      mockQuery
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
-        .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-bound-no-bypass' }] }) // claim
-        .mockResolvedValueOnce({
-          rowCount: 1,
-          rows: [convRow({ conversation_state: 'idle', language: 'en', user_id: 'user-1' })],
-        })
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // set internal RLS context (jobs keyword)
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox jobs_none
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // processed db_committed
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
-        .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // no pending outbox rows
-        .mockResolvedValueOnce({ rowCount: 1, rows: [] }); // markCompleted
-
-      await handler(
-        makeSqsEvent({
-          MessageSid: 'SM-bound-no-bypass',
-          From: 'whatsapp:+15125551234',
-          Body: 'Trabajos',
-        }),
-        {} as any,
-        {} as any,
-      );
-
-      // The bypass lookup itself (SELECT id FROM users WHERE phone = ...)
-      // must never run for an already-bound conversation.
+      // The eligibility lookup (`SELECT id FROM users WHERE phone = $1 ...`)
+      // and the definer it guarded are both gone.
       expect(countQueryByPattern(/FROM users\s+WHERE phone/i)).toBe(0);
       expect(countQueryByPattern(/bypass_onboarding_for_web_worker/i)).toBe(0);
     });
 
-    it('never bypasses on a synthetic voice-pipeline re-entry, even for an unbound conversation', async () => {
+    it('does the same on a synthetic voice-pipeline re-entry for an unbound conversation', async () => {
       mockRouteOnboardingV2.mockResolvedValue({
         handled: true,
         workerId: null,
@@ -3670,7 +3511,6 @@ describe('v2 routing branch', () => {
         rowCount: 1,
         rows: [convRow({ conversation_state: 'new', language: 'es' })],
       }) // SELECT conv FOR UPDATE (existing)
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context)
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -3701,7 +3541,6 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-reg' }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -3736,7 +3575,6 @@ describe('v2 routing branch', () => {
         rowCount: 1,
         rows: [convRow({ conversation_state: 'idle', language: 'es' })],
       })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // v2 forced-idle writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // help-prompt outbox insert
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
@@ -3770,7 +3608,6 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-tx' }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -3895,7 +3732,6 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-nolegacy' }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context only)
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -4002,7 +3838,6 @@ describe('v2 routing branch', () => {
         rowCount: 1,
         rows: [convRow({ conversation_state: 'idle', language: 'es' })],
       })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback (state_context only)
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -4026,7 +3861,6 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-err' }] }) // claim
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] }) // SELECT conv
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // ROLLBACK
       // Error fallback (2026-07-26): its own tx, after the rollback. The
       // apology is suppressed here (cooldown row present) to keep this
@@ -4072,7 +3906,6 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-noenv' }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -4099,7 +3932,6 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-fifo' }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new' })] })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -4135,7 +3967,6 @@ describe('v2 routing branch', () => {
         rowCount: 1,
         rows: [convRow({ conversation_state: 'idle', state_context: {} })],
       })
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // db_committed
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // COMMIT
@@ -4335,7 +4166,6 @@ describe('error fallback', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: sid }] }) // claim
       .mockResolvedValueOnce({ rowCount: 1, rows: [convRow({ conversation_state: 'new', language: 'es' })] }) // conv FOR UPDATE
-      .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }); // ROLLBACK
   }
 
