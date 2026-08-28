@@ -941,6 +941,10 @@
     "trust_status_failed": "Scoring unavailable",
     "trust_voice_badge": "Voice answer",
     "trust_empty": "This worker hasn't completed a trust assessment yet.",
+    "extraction_title": "From their answers",
+    "extraction_pending": "Reading their answers...",
+    "certifications": "Certifications",
+    "experience_months": "{months} months",
     "availability": {
       "immediate": "Immediate",
       "2_weeks": "2 weeks",

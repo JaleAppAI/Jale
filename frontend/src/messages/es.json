@@ -941,6 +941,10 @@
     "trust_status_failed": "Calificación no disponible",
     "trust_voice_badge": "Respuesta de voz",
     "trust_empty": "Este trabajador aún no ha completado una evaluación de confianza.",
+    "extraction_title": "De sus respuestas",
+    "extraction_pending": "Leyendo sus respuestas...",
+    "certifications": "Certificaciones",
+    "experience_months": "{months} meses",
     "availability": {
       "immediate": "Inmediata",
       "2_weeks": "2 semanas",
