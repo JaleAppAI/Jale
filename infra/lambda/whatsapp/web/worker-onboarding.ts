@@ -372,10 +372,20 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (client && !committed) await client.query('ROLLBACK').catch(() => undefined);
     if (isLockConflict(err)) {
       // The engine's own optimistic lock lost the race INSIDE the
-      // transaction (the other door advanced the run between our read and our
-      // write). A zero-row UPDATE is a SQL success, so the transaction was
-      // never poisoned — but it has been rolled back above, so the fresh
-      // state comes from a new one.
+      // transaction: the other door advanced the run between our read and our
+      // write. A zero-row UPDATE is a SQL success, so the transaction was
+      // never poisoned — but it has been rolled back above, so a retry starts
+      // from a fresh read.
+      //
+      // `workflow_lock_conflict` is also what `advanceWorkflow` raises when
+      // the row is INVISIBLE rather than stale — an UPDATE that matches no
+      // row under RLS is indistinguishable, at the SQL level, from one whose
+      // `lock_version` moved (R2-C0 group 7b pins this). That conflation is
+      // safe here precisely because it is a conflation: a caller who cannot
+      // see the run learns only "try again", never whether the run exists or
+      // whose it is. It does mean a genuine cross-tenant bug would present as
+      // a client that 409s forever, so `WebOnboardingRequestFailed` is not
+      // the signal to watch for one — a run stuck at the same step is.
       return fail(409, 'lock_conflict');
     }
     console.error(JSON.stringify({
