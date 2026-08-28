@@ -2,9 +2,14 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { checkCompliance } from '../legal/check-compliance';
+import { TRADE_KEYS } from '../lib/worker-vocab';
 
 const CORS_HEADERS = corsHeaders();
-const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
+// Hiring trades are the full worker main_trade vocabulary, `other` included
+// (an employer can hire for a trade outside the five standard ones), so
+// this is TRADE_KEYS and not STANDARD_TRADE_KEYS. Aliased rather than
+// retyped; the `valid:` array echoed in the 400 body is unchanged.
+const VALID_TRADES = TRADE_KEYS;
 const VALID_JOB_TYPES = ['full-time', 'part-time', 'contract'] as const;
 const VALID_COMPANY_SIZES = ['1-10', '11-50', '51-200', '200+'] as const;
 
