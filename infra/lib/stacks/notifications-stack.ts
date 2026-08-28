@@ -335,6 +335,26 @@ export class NotificationsStack extends cdk.Stack {
     // destination with no topic, or a topic with nothing subscribed, is a
     // configuration that looks wired and silently drops every bounce.
     if (props.emailConfigurationSetName) {
+      // Validated HERE, at synth, because nothing downstream does. The name is
+      // operator-supplied (vars.JALE_SES_CONFIGURATION_SET_NAME) and three
+      // resources derive their physical names from it; CDK's sqs.Queue
+      // validates `queueName` neither at construction NOR at synth (checked),
+      // so an illegal name synthesizes and diffs cleanly and then fails inside
+      // CloudFormation -- mid-deploy, after `--require-approval never` has
+      // already started creating resources.
+      //
+      // This is SES's own rule (1-64 chars, letters/digits/-/_), which is
+      // strictly tighter than SQS's (80 chars, same charset), so a name that
+      // passes here is guaranteed to produce a legal `<name>-feedback-dlq`
+      // (at most 64 + 13 = 77) and a legal `<name>-feedback` topic.
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(props.emailConfigurationSetName)) {
+        throw new Error(
+          `emailConfigurationSetName must be 1-64 characters of letters, digits, '-' or '_' `
+            + `(SES's rule, and it also has to yield a legal SQS queue name for the feedback DLQ); `
+            + `got ${JSON.stringify(props.emailConfigurationSetName)}`,
+        );
+      }
+
       const configurationSet = new ses.CfnConfigurationSet(this, 'EmployerEmailConfigurationSet', {
         name: props.emailConfigurationSetName,
       });

@@ -365,6 +365,32 @@ describe('NotificationsStack', () => {
       );
     });
 
+    /**
+     * The DLQ, the topic and the set all take their physical names from an
+     * operator-supplied string, and CDK validates `queueName` neither at
+     * construction nor at synth -- an illegal name synthesizes clean, diffs
+     * clean, and then fails INSIDE CloudFormation, mid-deploy, after
+     * `--require-approval never` has begun creating resources. The bound is
+     * SES's own (1-64, letters/digits/-/_), which is tighter than SQS's 80, so
+     * anything that passes yields a legal `<name>-feedback-dlq` too.
+     */
+    it.each([
+      ['over 64 characters', 'a'.repeat(65)],
+      ['a dot', 'jale.employer.email'],
+      ['a space', 'jale employer email'],
+      ['empty after the optional check', ' '],
+    ])('refuses a configuration set name with %s, at synth', (_label, name) => {
+      expect(() => Template.fromStack(buildStack({ emailConfigurationSetName: name }).stack))
+        .toThrow(/emailConfigurationSetName must be 1-64 characters/);
+    });
+
+    it('accepts the longest legal SES name, which still yields a legal DLQ name', () => {
+      const longest = 'a'.repeat(64);
+      const built = Template.fromStack(buildStack({ emailConfigurationSetName: longest }).stack);
+      built.hasResourceProperties('AWS::SQS::Queue', { QueueName: `${longest}-feedback-dlq` });
+      expect(`${longest}-feedback-dlq`.length).toBeLessThanOrEqual(80);
+    });
+
     it('creates the configuration set under the name both stacks compute independently', () => {
       feedbackTemplate.hasResourceProperties('AWS::SES::ConfigurationSet', {
         Name: CONFIGURATION_SET,
