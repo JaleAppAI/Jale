@@ -614,13 +614,32 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
 
       expect(sent[0].payload).toEqual(expectedPromptPayload('profile.experience', 'en', session.state_context));
 
-      // The question SET itself is NOT mirrored into the run's durable
-      // context -- only `state_context` holds it. This single fact is what
-      // WS3's storage decision hangs on: a web door that drops state_context
-      // between requests renders the FALLBACK questions on the next step
-      // while `saveTrustAnswer` records whatever q_en is in scope.
-      expect(row.context.v2TrustQuestions).toBeUndefined();
-      expect(row.context.v2ProfileTrade).toBeUndefined();
+      // FLIPPED by R2-C23. The spike found the question SET living ONLY in
+      // `state_context`, which is what made this the storage decision WS3
+      // hung on: a web door that drops the bag between requests renders the
+      // FALLBACK questions on the next step while `saveTrustAnswer` records
+      // whatever q_en is in scope. The fix went into the ENGINE
+      // (`onboarding/durable-context.ts`), so the bag is now mirrored into
+      // `worker_workflow_runs.context` after every bound step — for BOTH
+      // doors, which is what lets a run started on one channel continue on
+      // the other with the same three questions.
+      expect(row.context.v2TrustQuestions).toEqual(questions);
+      expect(row.context.v2ProfileTrade).toBe('carpenter');
+      expect(row.context.v2TrustSource).toBe('generated');
+      expect(row.context.v2QuestionSetVersion).toBe('v2-trust-questions-2');
+      expect(row.context.v2RubricVersion).toBe('v2-trust-rubric-1');
+      // Exactly the durable keys, and nothing channel-scoped: reprompt
+      // cooldowns and the voice execution ARNs must stay out of the run.
+      expect(Object.keys(row.context).filter((k) => k.startsWith('v2')).sort()).toEqual([
+        'v2CustomTradeText',
+        'v2LocationPendingConfirm',
+        'v2PreferredLanguageOverride',
+        'v2ProfileTrade',
+        'v2QuestionSetVersion',
+        'v2RubricVersion',
+        'v2TrustQuestions',
+        'v2TrustSource',
+      ]);
 
       record('profile.trade', msg, result, sent, row.lock_version, session);
     });
