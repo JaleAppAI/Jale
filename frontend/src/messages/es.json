@@ -1271,7 +1271,8 @@
       "empty_body": "Los trabajadores que se postulen a esta oferta aparecerán aquí. Comparta el enlace público de abajo para llegar a más personas.",
       "filtered_title": "Ningún postulante coincide con estos filtros",
       "filtered_body": "Cambie los filtros, o quítelos para ver a todos los que se postularon.",
-      "clear_filters": "Quitar filtros"
+      "clear_filters": "Quitar filtros",
+      "trust_pill": "Confianza {score}"
     },
     "ranking": {
       "loading": "Calculando qué tan bien coincide cada postulante con este empleo...",

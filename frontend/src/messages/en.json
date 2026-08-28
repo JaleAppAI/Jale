@@ -1271,7 +1271,8 @@
       "empty_body": "Workers who apply to this posting show up here. Share the public link below to reach more people.",
       "filtered_title": "No applicants match these filters",
       "filtered_body": "Change the filters, or clear them to see everyone who applied.",
-      "clear_filters": "Clear filters"
+      "clear_filters": "Clear filters",
+      "trust_pill": "Trust {score}"
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
