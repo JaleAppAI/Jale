@@ -1,8 +1,10 @@
 /**
  * web-worker-whatsapp-crossover.integration.test.ts
  *
- * Sprint 22 R2-C6/C4 gate against REAL PostgreSQL 16 with migrations
- * 001-086 applied.
+ * Sprint 22 R2-C6/C4/087 gate against REAL PostgreSQL 16 with migrations
+ * 001-087 applied. Group C REQUIRES 087: on a 001-086 database it fails
+ * with two runs and lifecycle='onboarding', which is the exact regression
+ * 087 removes.
  *
  * WHY THIS SUITE EXISTS
  *   Migration 053 added `bypass_onboarding_for_web_worker`, and
@@ -23,8 +25,10 @@
  *        ADOPTS the live run, no `worker_workflow_one_active` violation,
  *        no second run, and the next message routes at the run's own step.
  *     C. finished on the web (`lifecycle='ready'`) -> first WhatsApp
- *        message: this is CURRENTLY BROKEN in 047 and the two tests in
- *        that group say so explicitly. See the group header.
+ *        message: migration 087's two changes — the completed run is
+ *        adopted, `lifecycle='ready'` survives, no `otp_verified`
+ *        transition is appended, and the `ready`-with-no-run anomaly is
+ *        refused with 55000 instead of restarted.
  *     D. the referral park/claim hash agreement across the two doors.
  *
  * WHAT IS REAL AND WHAT IS STUBBED
@@ -49,7 +53,7 @@
  *
  * CONNECTION
  *   Set JALE_TEST_DATABASE_URL to a SUPERUSER connection string for a
- *   disposable PostgreSQL 16 database with 001-086 applied (see
+ *   disposable PostgreSQL 16 database with 001-087 applied (see
  *   db/local/bootstrap-testbed.sh). Fixtures and verification reads use the
  *   superuser connection; every ENGINE call goes through a separate pool
  *   authenticated as `jale_whatsapp` (test-whatsapp-pw).
@@ -144,7 +148,7 @@ const THROWS = (what: string) => () => {
   throw new Error(`this door must never reach ${what}`);
 };
 
-maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
+maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
   const su = new Client({ connectionString: databaseUrl });
   let pool: Pool;
   let deps: OnboardingV2Deps;
@@ -173,7 +177,7 @@ maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
   const convIds: Record<string, string> = {};
 
   /** Worker fixtures. `signup` exercises group A only. */
-  const WORKER_KEYS = ['signup', 'resume', 'ready', 'referral'] as const;
+  const WORKER_KEYS = ['signup', 'resume', 'ready', 'referral', 'orphan'] as const;
 
   let employerId = '';
   let jobId = '';
@@ -449,7 +453,7 @@ maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
     // One `whatsapp_conversations` row per crossover worker — what the
     // processor's `getOrCreateConversation` would have inserted on their
     // first inbound message. Deliberately UNBOUND (`user_id IS NULL`).
-    for (const key of ['resume', 'ready', 'referral'] as const) {
+    for (const key of ['resume', 'ready', 'referral', 'orphan'] as const) {
       const r = await su.query<{ id: string }>(
         `INSERT INTO whatsapp_conversations (whatsapp_number, language, conversation_state)
          VALUES ($1, 'es', 'new') RETURNING id`,
@@ -674,23 +678,25 @@ maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
   // =========================================================================
   // C. finished on the web, then the first WhatsApp message
   //
-  // THIS GROUP DOCUMENTS A BUG. 047's bind does two things that are wrong
-  // for a `lifecycle='ready'` worker arriving on WhatsApp for the first
-  // time:
+  // This is what MIGRATION 087 fixes. Through 047 the bind did two things
+  // that are correct for a net-new worker and wrong for a finished one:
   //   1. `INSERT INTO worker_onboarding_state ... ON CONFLICT (user_id)
-  //      DO UPDATE SET lifecycle = 'onboarding'` is UNCONDITIONAL, so
-  //      `ready` is overwritten;
+  //      DO UPDATE SET lifecycle = 'onboarding'` was UNCONDITIONAL, so
+  //      `ready` was overwritten (while `ready_at` stayed set);
   //   2. the run lookup filters `status = 'active'`, which a COMPLETED run
-  //      is not — so it inserts a brand-new active run at `legal.review`.
+  //      is not — so it inserted a brand-new active run at `legal.review`.
   //      (`worker_workflow_one_active` is partial on `status = 'active'`,
-  //      so there is no unique violation to stop it.)
-  // Net effect: a worker who finished onboarding on the web is thrown back
+  //      so there was no unique violation to stop it.)
+  // Net effect: a worker who finished onboarding on the web was thrown back
   // to "accept the terms" on their first WhatsApp message.
   //
-  // Per the R2-C6 brief the SQL is NOT patched here. The first test below
-  // pins the CURRENT behavior so the regression is visible and non-vacuous;
-  // the second is the `.skip`ped assertion of what migration 087 must make
-  // true. When 087 lands, delete the first and un-skip the second.
+  // 087 preserves a terminal lifecycle in the upsert and, when no ACTIVE run
+  // exists under `lifecycle='ready'`, adopts the latest COMPLETED run. These
+  // tests are the gate on both halves, plus the `ready`-with-no-run anomaly
+  // 087 deliberately refuses (mirroring 086's identical guard).
+  //
+  // THIS SUITE REQUIRES 087 APPLIED. Against a 001-086 database the first
+  // test below fails with two runs and `lifecycle='onboarding'`.
   // =========================================================================
 
   describe('C. a lifecycle=ready web worker at the WhatsApp door', () => {
@@ -719,55 +725,115 @@ maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
       expect(runs[0]).toMatchObject({ id: web.runId, status: 'completed' });
     });
 
-    test('CURRENT BEHAVIOR (BUG, remove when 087 lands): the bind un-readies the worker and starts a SECOND run', async () => {
+    test('087: the bind ADOPTS the completed run, keeps lifecycle=ready, and hands off', async () => {
       const session = waSession('ready');
       const bind = await whatsappOtpArrival('ready', session);
 
-      // (1) lifecycle was flipped back by the unconditional ON CONFLICT.
-      const state = await lifecycleOf(ids.ready);
-      expect(state.lifecycle).toBe('onboarding');
-      // `ready_at` is NOT cleared, so the row is now self-contradictory:
-      // "still onboarding, but finished at <timestamp>".
-      expect(state.has_ready_at).toBe(true);
-
-      // (2) a second, active run was created at legal.review. No
-      // `worker_workflow_one_active` violation: the index predicate is
-      // `WHERE status = 'active'` and the first run is 'completed'.
-      const runs = await runsFor(ids.ready);
-      expect(runs).toHaveLength(2);
-      expect(runs[0]).toMatchObject({ id: web.runId, status: 'completed' });
-      expect(runs[1]).toMatchObject({ status: 'active', current_step_key: 'legal.review', lock_version: 0 });
-      expect(runs[1].id).not.toBe(web.runId);
-
-      // ...and the worker is asked to accept the ToS all over again.
-      expect(bind.result).toEqual({
-        handled: true, workerId: ids.ready, stepKey: 'legal.review',
-      });
-      expect(bind.sent[0].sourceType).toBe('onboarding_v2:legal.review');
-    });
-
-    // eslint-disable-next-line jest/no-disabled-tests
-    test.skip('REQUIRED 087: a ready worker\'s first WhatsApp message is a ready handoff, not a restart', async () => {
-      // Fails today; see the group header for the two-line SQL fix 087 must
-      // make to `bind_verified_identity_and_start_workflow`:
-      //   - preserve a terminal lifecycle in the state upsert;
-      //   - when no ACTIVE run exists but a COMPLETED one does, return that
-      //     run instead of inserting a fresh one.
-      // With both in place `loadWorkerGate` returns the completed gate and
-      // `routeOnboardingV2`'s ready-handoff branch fires. 047 already gates
-      // the `otp_verified` transition INSERT on `v_created_run`, so nothing
-      // spurious lands.
-      const session = waSession('ready');
-      const bind = await whatsappOtpArrival('ready', session);
-
+      // 087 change 1: the terminal lifecycle survives the state upsert, with
+      // its original lifecycle_changed_at and ready_at.
       expect(await lifecycleOf(ids.ready)).toEqual({ lifecycle: 'ready', has_ready_at: true });
+
+      // 087 change 2: no ACTIVE run exists, so the completed one is adopted
+      // rather than a second run being minted at legal.review.
       const runs = await runsFor(ids.ready);
       expect(runs).toHaveLength(1);
       expect(runs[0]).toMatchObject({ id: web.runId, status: 'completed' });
+
+      // The conversation is bound by the definer exactly as on any other
+      // bind — 087 changed which run is returned, not whether the bind runs.
+      const conv = await su.query<{ user_id: string | null }>(
+        `SELECT user_id FROM whatsapp_conversations WHERE id = $1`, [convIds.ready],
+      );
+      expect(conv.rows[0].user_id).toBe(ids.ready);
+
+      // KNOWN GAP, deliberately asserted rather than wished away. What the
+      // worker is SENT on this turn is decided by `handleOtpStep`
+      // (onboarding/steps/otp.ts:84-86), which does
+      //   `const stepKey = gate.currentStepKey ?? 'legal.review'` and
+      //   prompts it — without ever consulting `gate.lifecycle`.
+      // So a finished worker gets their last onboarding step re-prompted on
+      // the OTP turn. 087 cannot fix that: the run it correctly adopts still
+      // HAS a `current_step_key`, and the lifecycle check that should
+      // suppress the prompt lives in TypeScript. No data is harmed (the very
+      // next message takes the ready handoff — see the test below, and
+      // `handleTrustQuestion` is never reached), but the copy is wrong.
+      // Fix belongs in otp.ts, which R2-C6/087 does not own; reported as a
+      // follow-up.
       expect(bind.result).toEqual({
+        handled: true, workerId: ids.ready, stepKey: 'trust.question.3',
+      });
+      expect(bind.sent).toHaveLength(1);
+      expect(bind.sent[0].sourceType).toBe('onboarding_v2:trust.question.3');
+    });
+
+    test('087: the NEXT WhatsApp message IS the ready handoff, not a restart', async () => {
+      // The processor writes the bind's user_id back onto the conversation
+      // row, so from here on `routeOnboardingV2` loads a gate. Pre-087 that
+      // gate was the freshly minted ACTIVE run at legal.review and this
+      // message would have been routed as onboarding; with the completed run
+      // adopted it is `lifecycle='ready' + status='completed'`, so the entry
+      // point's ready-handoff branch fires and nothing is sent (the ready
+      // confirmation belongs to the worker.ready release lane).
+      const session = waSession('ready');
+      session.user_id = ids.ready;
+      session.conversation_state = 'idle';
+
+      const next = await turn(session, msgFor('ready', { body: 'hello?' }, 'wa'));
+      expect(next.result).toEqual({
         handled: false, handoff: 'ready', workerId: ids.ready, stepKey: 'ready',
       });
-      expect(bind.sent).toHaveLength(0);
+      expect(next.sent).toHaveLength(0);
+
+      // Still exactly one run, still completed, still ready.
+      const runs = await runsFor(ids.ready);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]).toMatchObject({ id: web.runId, status: 'completed' });
+      expect(await lifecycleOf(ids.ready)).toEqual({ lifecycle: 'ready', has_ready_at: true });
+    });
+
+    test('087: adoption appends NO otp_verified transition to the completed run', async () => {
+      // The transition INSERT is gated on `v_created_run`, which stays false
+      // on both adoption paths. A spurious row here would make the run's
+      // transition history claim it restarted at legal.review.
+      const transitions = await su.query<{ reason: string }>(
+        `SELECT reason FROM worker_workflow_transitions
+          WHERE run_id = $1 AND reason = 'otp_verified'`,
+        [web.runId],
+      );
+      expect(transitions.rowCount).toBe(0);
+
+      // ...and the run's own step/lock are untouched by the bind.
+      const runs = await runsFor(ids.ready);
+      expect(runs[0].current_step_key).toBe('trust.question.3');
+    });
+
+    test('087: lifecycle=ready with NO completed run is refused (55000), not restarted', async () => {
+      // A data anomaly: both this bind and `start_web_onboarding_workflow`
+      // (086) create the run alongside the state, so `ready` with no run
+      // cannot arise from either code path. 087 mirrors 086's decision —
+      // refuse with the identical message rather than mint a fresh
+      // onboarding run, which would silently un-finish a finished worker.
+      await su.query(
+        `INSERT INTO worker_onboarding_state (user_id, lifecycle, lifecycle_changed_at, ready_at)
+         VALUES ($1, 'ready', now(), now())`,
+        [ids.orphan],
+      );
+      expect(await runsFor(ids.orphan)).toHaveLength(0);
+
+      const session = waSession('orphan');
+      await expect(whatsappOtpArrival('orphan', session)).rejects.toThrow(
+        'worker is lifecycle=ready with no completed workflow run',
+      );
+
+      // The refusal is total: the failed turn rolled back, so no run was
+      // created and the anomalous state is left exactly as an operator will
+      // find it.
+      expect(await runsFor(ids.orphan)).toHaveLength(0);
+      expect(await lifecycleOf(ids.orphan)).toEqual({ lifecycle: 'ready', has_ready_at: true });
+      const conv = await su.query<{ user_id: string | null }>(
+        `SELECT user_id FROM whatsapp_conversations WHERE id = $1`, [convIds.orphan],
+      );
+      expect(conv.rows[0].user_id).toBeNull();
     });
   });
 
