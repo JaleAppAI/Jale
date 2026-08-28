@@ -44,6 +44,15 @@
  *   extraction fixture in the last group is written as `jale_ai`
  *   (test-ai-pw) -- the only role 086 lets write one.
  *
+ * ORDERING CONTRACT -- this suite is NOT order-independent.
+ *   The `3-6.` group drives ONE worker across many `test()` blocks, sharing
+ *   `mainRun` (run id + session + the `state_context` bag), and later groups
+ *   (`9.` especially) assert on the state that drive leaves behind. Jest's
+ *   default in-file sequential execution is therefore load-bearing:
+ *   `-t`/`--testNamePattern` filtering and `--randomize` are NOT supported
+ *   and will fail with confusing mid-run assertions rather than skips. Run
+ *   the whole file, `--runInBand`.
+ *
  * Set JALE_SPIKE_TRANSCRIPT to a file path to dump the per-step
  * value -> message -> captured-prompt transcript the spike report is built
  * from. Optional; the suite asserts the same facts either way.
@@ -78,6 +87,7 @@ import {
   type WorkerGate,
 } from '../../../lambda/whatsapp/lib/onboarding-repository';
 import { buildPromptForStep } from '../../../lambda/whatsapp/onboarding/prompts';
+import { V2_FALLBACK_TRUST_QUESTIONS } from '../../../lambda/whatsapp/lib/interactive-templates';
 import { recordCanonicalWhatsAppConsent } from '../../../lambda/whatsapp/lib/legal-consent';
 import { hashNormalizedPhone } from '../../../lambda/whatsapp/lib/runtime-controls';
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
@@ -168,7 +178,20 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
   const subs: Record<string, string> = {};
   const phones: Record<string, string> = {};
 
-  const WORKER_KEYS = ['main', 'zip', 'city', 'custom', 'lock', 'photo'] as const;
+  const WORKER_KEYS = ['main', 'zip', 'city', 'custom', 'lock', 'photo', 'referral'] as const;
+
+  /** Referral fixture (group 12) — an employer and one job to hang a
+   * pending claim off; `referral_pending_claims.job_id` is NOT NULL. */
+  let employerId = '';
+  let referralJobId = '';
+
+  /**
+   * The three carpenter questions AS STORED, read out of `trade_questions`
+   * in beforeAll. Every trust-question expectation compares against THIS,
+   * never against a literal duplicated from 086 -- a duplicated literal
+   * would keep passing after someone reworded the migration.
+   */
+  let carpenterQuestions: Array<{ q_en: string; q_es: string }> = [];
 
   // ── deps assembly ──────────────────────────────────────────────────────
 
@@ -365,10 +388,28 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
     workflowVersion = engineWorkflowVersion();
 
     await su.connect();
-    if (new URL(databaseUrl as string).username !== 'jale_whatsapp') {
+
+    // JALE_TEST_DATABASE_URL must be a GENUINE superuser: FORCE ROW LEVEL
+    // SECURITY applies even to jale_admin as table owner, so fixture setup
+    // and the verification reads below need BYPASSRLS, not just ownership.
+    // Asserting it here rather than trusting the caller is what stops a
+    // mis-pointed URL from turning this suite's negative controls green for
+    // the wrong reason.
+    const suRole = await su.query<{ rolsuper: boolean }>(
+      `SELECT rolsuper FROM pg_roles WHERE rolname = current_user`,
+    );
+    expect(suRole.rows[0].rolsuper).toBe(true);
+
+    // Same shape as media-board-rls.integration.test.ts's guard: never reset
+    // the password of the role this connection is itself authenticated as.
+    // A superuser URL is never one of these, so in practice both run.
+    const suUser = new URL(databaseUrl as string).username;
+    if (suUser !== 'jale_whatsapp') {
       await su.query(`ALTER ROLE jale_whatsapp WITH PASSWORD 'test-whatsapp-pw'`);
     }
-    await su.query(`ALTER ROLE jale_ai WITH PASSWORD 'test-ai-pw'`);
+    if (suUser !== 'jale_ai') {
+      await su.query(`ALTER ROLE jale_ai WITH PASSWORD 'test-ai-pw'`);
+    }
 
     pool = new Pool({
       connectionString: urlForRole(databaseUrl as string, 'jale_whatsapp', 'test-whatsapp-pw'),
@@ -386,6 +427,27 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       );
       ids[key] = inserted.rows[0].id;
     }
+
+    const employer = await su.query<{ id: string }>(
+      `INSERT INTO users (cognito_sub, user_type, email)
+       VALUES ($1, 'employer', $2) RETURNING id`,
+      [`r2c0-employer-${tag}`, `r2c0-employer-${tag}@example.com`],
+    );
+    employerId = employer.rows[0].id;
+    const job = await su.query<{ id: string }>(
+      `INSERT INTO jobs (employer_id, title, location, job_type, status)
+       VALUES ($1, 'R2-C0 referral fixture', 'El Paso, TX', 'full-time', 'active')
+       RETURNING id`,
+      [employerId],
+    );
+    referralJobId = job.rows[0].id;
+
+    const tq = await su.query<{ questions: Array<{ q_en: string; q_es: string }> }>(
+      `SELECT questions FROM trade_questions
+        WHERE profession_key = 'carpenter' AND is_seeded = true`,
+    );
+    carpenterQuestions = tq.rows[0].questions;
+    expect(carpenterQuestions).toHaveLength(3);
 
     deps = buildDeps();
   }, 60_000);
@@ -406,9 +468,25 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
     // (048), as are the workflow/state/assessment/profile children, so
     // deleting the fixture users clears everything except
     // `legal_consent_log`, whose FK is plain RESTRICT.
-    const fixtureIds = Object.values(ids);
+    const fixtureIds = [...Object.values(ids), employerId].filter(Boolean);
     if (fixtureIds.length > 0) {
+      // Order matters, and not only for FK reasons. `referral_pending_claims.
+      // claimed_worker_id` is ON DELETE SET NULL, but the row also carries
+      // `referral_pending_claims_claimed_coherent`
+      // (`(claimed_at IS NULL) = (claimed_worker_id IS NULL)`) -- so deleting a
+      // worker who CLAIMED a referral nulls half the pair and the CHECK
+      // rejects the delete outright (a real 23514, seen the first time group 12
+      // ran). The claim rows have to go first, explicitly.
+      await su.query(
+        `DELETE FROM worker_attribution WHERE worker_id = ANY($1::uuid[])`, [fixtureIds],
+      );
+      await su.query(
+        `DELETE FROM referral_pending_claims
+          WHERE claimed_worker_id = ANY($1::uuid[]) OR job_id = $2`,
+        [fixtureIds, referralJobId || null],
+      );
       await su.query(`DELETE FROM legal_consent_log WHERE user_id = ANY($1::uuid[])`, [fixtureIds]);
+      // `jobs.employer_id` cascades, so the fixture job goes with the employer.
       await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [fixtureIds]);
     }
     await su.end();
@@ -419,6 +497,34 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
   // =========================================================================
 
   const mainRun: { id: string; session: OnboardingV2Session | null } = { id: '', session: null };
+
+  describe('0. the pool really is jale_whatsapp (control for every negative below)', () => {
+    test('not a superuser, no BYPASSRLS, not a member of jale_admin', async () => {
+      // Without this, a JALE_TEST_DATABASE_URL that happened to point the
+      // "role" pool at a superuser would turn every negative control in this
+      // file (null gate, cross-tenant read, RLS-scoped writes) into a false
+      // green: a BYPASSRLS role sees everything and a superuser skips grant
+      // checks entirely.
+      const who = await asWhatsapp(null, async (client) => {
+        const r = await client.query<{
+          current_user: string; rolsuper: boolean; rolbypassrls: boolean;
+        }>(
+          `SELECT current_user,
+                  r.rolsuper,
+                  r.rolbypassrls
+             FROM pg_roles r WHERE r.rolname = current_user`,
+        );
+        const member = await client.query<{ is_member: boolean }>(
+          `SELECT pg_has_role(current_user, 'jale_admin', 'USAGE') AS is_member`,
+        );
+        return { ...r.rows[0], isAdminMember: member.rows[0].is_member };
+      });
+      expect(who.current_user).toBe('jale_whatsapp');
+      expect(who.rolsuper).toBe(false);
+      expect(who.rolbypassrls).toBe(false);
+      expect(who.isAdminMember).toBe(false);
+    });
+  });
 
   describe('1-2. the door opens: start_web_onboarding_workflow, then loadWorkerGate', () => {
     test('resolve_worker_internal_id is the door\'s first call: sub -> internal uuid', async () => {
@@ -512,6 +618,14 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(sent).toHaveLength(1);
       expect(sent[0].payload).toEqual(expectedPromptPayload('profile.name', 'en', session.state_context));
       expect(sent[0].sourceType).toBe('onboarding_v2:profile.name');
+      // LITERAL pin. `expectedPromptPayload` calls the same
+      // `buildPromptForStep` the code under test calls, so on its own it only
+      // proves the router routed -- it can never catch a copy change. The
+      // literals below are what a web client would actually have to render.
+      expect(sent[0].payload).toMatchObject({
+        templateName: '',
+        fallbackBody: 'What is your name? Send your full name.',
+      });
 
       // recordCanonicalWhatsAppConsent really wrote, as jale_whatsapp.
       const consent = await su.query(
@@ -536,7 +650,12 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       const row = await runRow(mainRun.id);
       expect(row.current_step_key).toBe('profile.location');
       expect(row.lock_version).toBe(2);
+      expect(sent).toHaveLength(1);
       expect(sent[0].payload).toEqual(expectedPromptPayload('profile.location', 'en', session.state_context));
+      expect(sent[0].payload).toMatchObject({
+        templateName: '',
+        fallbackBody: 'Where do you work? Send your ZIP code or City, ST.',
+      });
       record('profile.name', msg, result, sent, row.lock_version, session);
     });
 
@@ -549,7 +668,17 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       const row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(3);
       expect(row.context.locationSource).toBe('city_state');
+      expect(sent).toHaveLength(1);
       expect(sent[0].payload).toEqual(expectedPromptPayload('profile.trade', 'en', session.state_context));
+      // `onboarding_trade_en` is a TWILIO content template. A web client has
+      // no such thing and must ignore templateName in favour of fallbackBody
+      // (or its own renderer) -- pinned so that coupling stays visible.
+      expect(sent[0].payload).toMatchObject({
+        templateName: 'onboarding_trade_en',
+        fallbackBody:
+          'What is your main trade?\n1. Electrician\n2. Plumber\n3. Carpenter\n'
+          + '4. Concrete\n5. Painting\n6. Other\nReply with the number.',
+      });
 
       const city = await su.query(
         `SELECT city_key, city, state FROM worker_preferred_cities WHERE user_id = $1`, [ids.main],
@@ -604,23 +733,39 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(session.state_context.v2ProfileTrade).toBe('carpenter');
       expect(session.state_context.v2QuestionSetVersion).toBe('v2-trust-questions-2');
       expect(session.state_context.v2RubricVersion).toBe('v2-trust-rubric-1');
+      // Compared against the `trade_questions` row AS STORED, not against a
+      // literal copied out of 086 -- a copied literal would keep passing
+      // after someone reworded the migration.
       const questions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
-      expect(questions).toHaveLength(3);
-      expect(questions[0].en).toBe(
-        'What kind of carpentry do you specialize in, and what did you build on your last job: '
-        + 'framing, doors, cabinets, finish trim?',
-      );
+      expect(questions.map((q) => q.en)).toEqual(carpenterQuestions.map((q) => q.q_en));
+      expect(questions.map((q) => q.es)).toEqual(carpenterQuestions.map((q) => q.q_es));
       expect(questions[0].en).not.toMatch(/reply with the number/i);
 
+      expect(sent).toHaveLength(1);
       expect(sent[0].payload).toEqual(expectedPromptPayload('profile.experience', 'en', session.state_context));
+      expect(sent[0].payload).toMatchObject({ templateName: 'onboarding_experience_en' });
 
-      // The question SET itself is NOT mirrored into the run's durable
-      // context -- only `state_context` holds it. This single fact is what
-      // WS3's storage decision hangs on: a web door that drops state_context
-      // between requests renders the FALLBACK questions on the next step
-      // while `saveTrustAnswer` records whatever q_en is in scope.
-      expect(row.context.v2TrustQuestions).toBeUndefined();
-      expect(row.context.v2ProfileTrade).toBeUndefined();
+      // EXACT key set, not two spot `toBeUndefined()` checks: this is the
+      // fact WS3's storage decision hangs on, and an inclusion test would
+      // still pass if the engine started mirroring only SOME of the bag.
+      // These five are every `contextPatch` this run has applied so far --
+      // legal.ts's `legalAcceptedAt`, profile.ts's `nameSetAt` /
+      // `locationSource` / `{ trade, trustQuestionSource }`. NOTHING from the
+      // `v2*` state_context bag is here: not v2TrustQuestions, not
+      // v2ProfileTrade, not the provenance versions. A web door that drops
+      // state_context between requests therefore renders the FALLBACK
+      // questions on the next step while `saveTrustAnswer` records whatever
+      // q_en happens to be in scope.
+      //
+      // R2-C23 will deliberately persist the v2 bag here -- flip this
+      // assertion then (add the v2* keys; do not weaken it to a subset).
+      expect(Object.keys(row.context).sort()).toEqual([
+        'legalAcceptedAt',
+        'locationSource',
+        'nameSetAt',
+        'trade',
+        'trustQuestionSource',
+      ]);
 
       record('profile.trade', msg, result, sent, row.lock_version, session);
     });
@@ -633,9 +778,11 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(exp.result.stepKey).toBe('profile.transportation');
       let row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(5);
+      expect(exp.sent).toHaveLength(1);
       expect(exp.sent[0].payload).toEqual(
         expectedPromptPayload('profile.transportation', 'en', session.state_context),
       );
+      expect(exp.sent[0].payload).toMatchObject({ templateName: 'onboarding_transportation_en' });
       record('profile.experience', expMsg, exp.result, exp.sent, row.lock_version, session);
 
       const transMsg = webMsg('main', { interactivePayload: 'profile:has_transportation:true' });
@@ -643,9 +790,11 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(trans.result.stepKey).toBe('profile.availability');
       row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(6);
+      expect(trans.sent).toHaveLength(1);
       expect(trans.sent[0].payload).toEqual(
         expectedPromptPayload('profile.availability', 'en', session.state_context),
       );
+      expect(trans.sent[0].payload).toMatchObject({ templateName: 'onboarding_availability_en' });
       record('profile.transportation', transMsg, trans.result, trans.sent, row.lock_version, session);
 
       // availability is the LAST profile field, so this turn also runs
@@ -658,11 +807,18 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(avail.result.stepKey).toBe('trust.question.1');
       row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(7);
+      expect(avail.sent).toHaveLength(1);
       expect(avail.sent[0].payload).toEqual(
         expectedPromptPayload('trust.question.1', 'en', session.state_context),
       );
-      expect((avail.sent[0].payload as { fallbackBody: string }).fallbackBody)
-        .toBe((session.state_context.v2TrustQuestions as Array<{ en: string }>)[0].en);
+      // Pinned against the DB row, closing the tautology: the prompt the
+      // worker sees IS `trade_questions.questions->0->>'q_en'`, verbatim.
+      expect(avail.sent[0].payload).toEqual({
+        templateName: '',
+        variables: {},
+        fallbackBody: carpenterQuestions[0].q_en,
+        lang: 'en',
+      });
       record('profile.availability', availMsg, avail.result, avail.sent, row.lock_version, session);
 
       const skills = await su.query(
@@ -680,9 +836,12 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(result.stepKey).toBe('trust.question.2');
       const row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(8);
+      expect(sent).toHaveLength(1);
       expect(sent[0].payload).toEqual(
         expectedPromptPayload('trust.question.2', 'en', session.state_context),
       );
+      expect((sent[0].payload as { fallbackBody: string }).fallbackBody)
+        .toBe(carpenterQuestions[1].q_en);
       record('trust.question.1', msg, result, sent, row.lock_version, session);
     });
 
@@ -701,9 +860,12 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       let row = await runRow(mainRun.id);
       expect(row.current_step_key).toBe('trust.question.1');
       expect(row.lock_version).toBe(9);
+      expect(back.sent).toHaveLength(1);
       expect(back.sent[0].payload).toEqual(
         expectedPromptPayload('trust.question.1', 'en', session.state_context),
       );
+      expect((back.sent[0].payload as { fallbackBody: string }).fallbackBody)
+        .toBe(carpenterQuestions[0].q_en);
       record('gate:BACK', backMsg, back.result, back.sent, row.lock_version, session);
 
       const redoMsg = webMsg('main', {
@@ -713,6 +875,7 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(redo.result.stepKey).toBe('trust.question.2');
       row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(10);
+      expect(redo.sent).toHaveLength(1);
       record('trust.question.1 (re-answer)', redoMsg, redo.result, redo.sent, row.lock_version, session);
 
       // Filter-then-append: exactly one entry per question_index, and it is
@@ -737,9 +900,12 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(q2.result.stepKey).toBe('trust.question.3');
       let row = await runRow(mainRun.id);
       expect(row.lock_version).toBe(11);
+      expect(q2.sent).toHaveLength(1);
       expect(q2.sent[0].payload).toEqual(
         expectedPromptPayload('trust.question.3', 'en', session.state_context),
       );
+      expect((q2.sent[0].payload as { fallbackBody: string }).fallbackBody)
+        .toBe(carpenterQuestions[2].q_en);
       record('trust.question.2', q2Msg, q2.result, q2.sent, row.lock_version, session);
 
       const q3Msg = webMsg('main', {
@@ -780,11 +946,28 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(answers).toHaveLength(3);
       expect(answers.map((a) => a.question_index)).toEqual([0, 1, 2]);
       expect(answers.map((a) => a.answer_source)).toEqual(['text', 'text', 'text']);
-      expect(answers.every((a) => typeof a.q_en === 'string' && (a.q_en as string).length > 0)).toBe(true);
-      expect(answers[0].q_en).toBe(
-        'What kind of carpentry do you specialize in, and what did you build on your last job: '
-        + 'framing, doors, cabinets, finish trim?',
-      );
+      // Each stored answer carries the question AS STORED in trade_questions
+      // (the trust scorer reads `{ q_en, answer_text }`), compared against the
+      // DB row rather than a duplicated literal.
+      expect(answers.map((a) => a.q_en)).toEqual(carpenterQuestions.map((q) => q.q_en));
+      expect(answers.map((a) => a.q_es)).toEqual(carpenterQuestions.map((q) => q.q_es));
+
+      // The FINAL exact context key set, for the same reason as the one at
+      // profile.trade: still not one `v2*` key, all the way to completion.
+      // R2-C23 will change this -- flip it then, do not weaken it.
+      const finalRun = await runRow(mainRun.id);
+      expect(Object.keys(finalRun.context).sort()).toEqual([
+        'availability',
+        'hasTransportation',
+        'legalAcceptedAt',
+        'locationSource',
+        'nameSetAt',
+        'trade',
+        'trustAnswer1At',
+        'trustAnswer2At',
+        'trustQuestionSource',
+        'yearsExperience',
+      ]);
 
       const user = await su.query(
         `SELECT full_name, city, main_trade, main_trade_other, years_experience,
@@ -821,17 +1004,6 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
         questionSetVersion: 'v2-trust-questions-2',
         rubricVersion: 'v2-trust-rubric-1',
       });
-    });
-
-    test('completion parked no referral claim: the web phone hash simply matched nothing', async () => {
-      // `completeOnboarding` hashes `session.whatsapp_number` unconditionally.
-      // For a web worker that value is `users.phone`; with no parked claim the
-      // call is a silent no-op and lifecycle completion is unaffected.
-      const attribution = await su.query(
-        `SELECT 1 FROM worker_attribution WHERE worker_id = $1`, [ids.main],
-      );
-      expect(attribution.rowCount).toBe(0);
-      expect(hashNormalizedPhone(phones.main)).toMatch(/^[0-9a-f]{64}$/);
     });
 
     test('a completed run is idle: the entry point hands off instead of routing', async () => {
@@ -884,7 +1056,64 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
   });
 
   // =========================================================================
-  // 8/9. a ready worker: start returns the completed run; extraction read
+  // 7b. write-side RLS negatives (the read-side null gate has a twin)
+  // =========================================================================
+
+  describe('7b. jale_whatsapp cannot write ANOTHER worker\'s run', () => {
+    test('wrong GUC and unset GUC both match zero rows on worker B\'s run', async () => {
+      // Group 7 left worker `lock`'s run active at legal.review, lock 0.
+      const target = await su.query<{ id: string; lock_version: number }>(
+        `SELECT id, lock_version FROM worker_workflow_runs
+          WHERE user_id = $1 AND status = 'active'`, [ids.lock],
+      );
+      const runId = target.rows[0].id;
+      expect(target.rows[0].lock_version).toBe(0);
+
+      // (a) GUC pinned to worker A (`zip`), writing worker B's (`lock`) run.
+      //     `worker_workflow_runs_worker` scopes USING to the GUC, so the
+      //     UPDATE simply sees no row -- indistinguishable from a stale lock,
+      //     which is exactly why the read-side null gate matters too.
+      await asWhatsapp(ids.zip, async (client) => {
+        const raw = await client.query(
+          `UPDATE worker_workflow_runs SET current_step_key = 'profile.name',
+                  lock_version = lock_version + 1
+            WHERE id = $1 AND lock_version = 0`, [runId],
+        );
+        expect(raw.rowCount).toBe(0);
+
+        await expect(
+          advanceWorkflow(client, {
+            runId,
+            expectedLockVersion: 0,
+            fromStepKey: 'legal.review',
+            toStepKey: 'profile.name',
+            contextPatch: {},
+            inboundMessageSid: `web:${randomUUID()}`,
+            reason: 'spike_cross_tenant_write',
+          }),
+        ).rejects.toThrow('workflow_lock_conflict');
+      });
+
+      // (b) No GUC at all -- the door forgetting setInternalUserRlsContext.
+      await asWhatsapp(null, async (client) => {
+        const raw = await client.query(
+          `UPDATE worker_workflow_runs SET current_step_key = 'profile.name'
+            WHERE id = $1`, [runId],
+        );
+        expect(raw.rowCount).toBe(0);
+      });
+
+      // Untouched by either attempt.
+      const after = await su.query<{ current_step_key: string; lock_version: number }>(
+        `SELECT current_step_key, lock_version FROM worker_workflow_runs WHERE id = $1`,
+        [runId],
+      );
+      expect(after.rows[0]).toEqual({ current_step_key: 'legal.review', lock_version: 0 });
+    });
+  });
+
+  // =========================================================================
+  // 9. a ready worker: start returns the completed run; extraction read
   // =========================================================================
 
   describe('9. a lifecycle=ready worker at the door', () => {
@@ -965,25 +1194,45 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
   // =========================================================================
 
   describe('10. profile.location dialects', () => {
-    async function driveToLocation(key: string): Promise<OnboardingV2Session> {
-      await asWhatsapp(null, async (client) =>
-        client.query(`SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`, [
-          subs[key], 'en', workflowVersion,
-        ]),
-      );
+    /** Drives a fresh worker to `profile.location` and returns its run id too,
+     * so each dialect below can assert the REAL lock ladder rather than
+     * recording a placeholder. */
+    async function driveToLocation(
+      key: string,
+    ): Promise<{ session: OnboardingV2Session; runId: string }> {
+      const started = await asWhatsapp(null, async (client) => {
+        const r = await client.query(
+          `SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`,
+          [subs[key], 'en', workflowVersion],
+        );
+        return r.rows[0];
+      });
       const session = webSession(key);
       const legal = await webTurn(session, webMsg(key, { body: 'accept' }));
       expect(legal.result.stepKey).toBe('profile.name');
+      expect(legal.sent).toHaveLength(1);
+      expect((await runRow(started.run_id)).lock_version).toBe(1);
       const name = await webTurn(session, webMsg(key, { body: 'Beto Rivera' }));
       expect(name.result.stepKey).toBe('profile.location');
-      return session;
+      expect(name.sent).toHaveLength(1);
+      expect((await runRow(started.run_id)).lock_version).toBe(2);
+      return { session, runId: started.run_id };
     }
 
     test('a bare ZIP resolves with source=zip and seeds NO preferred city', async () => {
-      const session = await driveToLocation('zip');
+      const { session, runId } = await driveToLocation('zip');
       const msg = webMsg('zip', { body: '79901' });
-      const { result } = await webTurn(session, msg);
+      const { result, sent } = await webTurn(session, msg);
       expect(result.stepKey).toBe('profile.trade');
+
+      // The ZIP turn DOES enqueue the next step's prompt -- an earlier
+      // revision recorded a literal `[]` here and the transcript lied.
+      const row = await runRow(runId);
+      expect(row.lock_version).toBe(3);
+      expect(row.context.locationSource).toBe('zip');
+      expect(sent).toHaveLength(1);
+      expect(sent[0].sourceType).toBe('onboarding_v2:profile.trade');
+      expect(sent[0].payload).toMatchObject({ templateName: 'onboarding_trade_en' });
 
       const user = await su.query(`SELECT city FROM users WHERE id = $1`, [ids.zip]);
       // NOTE: `saveLocation` writes `location.city ?? locationText`, and a ZIP
@@ -997,11 +1246,11 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
         `SELECT 1 FROM worker_preferred_cities WHERE user_id = $1`, [ids.zip],
       );
       expect(cities.rowCount).toBe(0);
-      record('profile.location (zip)', msg, result, [], null, session);
+      record('profile.location (zip)', msg, result, sent, row.lock_version, session);
     });
 
     test('a bare city asks for confirmation and "1" accepts it', async () => {
-      const session = await driveToLocation('city');
+      const { session, runId } = await driveToLocation('city');
 
       const askMsg = webMsg('city', { body: 'El Paso' });
       const ask = await webTurn(session, askMsg);
@@ -1014,8 +1263,17 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
         [ids.city],
       );
       expect(parked.rows[0].context.v2LocationPendingConfirm).toEqual({ city: 'El Paso', state: 'TX' });
+      // A same-step advance: the lock ladder moves even though the step key
+      // does not.
+      const askRow = await runRow(runId);
+      expect(askRow.lock_version).toBe(3);
+      expect(ask.sent).toHaveLength(1);
       expect(ask.sent[0].sourceType).toBe('onboarding_v2:v2_location_confirm');
-      record('profile.location (bare city ask)', askMsg, ask.result, ask.sent, null, session);
+      expect(ask.sent[0].payload).toEqual({
+        body: 'Did you mean El Paso, TX?\n1. Yes\n2. No\nReply with 1 or 2.',
+        lang: 'en',
+      });
+      record('profile.location (bare city ask)', askMsg, ask.result, ask.sent, askRow.lock_version, session);
 
       const yesMsg = webMsg('city', { body: '1' });
       const yes = await webTurn(session, yesMsg);
@@ -1027,7 +1285,11 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
         `SELECT city_key FROM worker_preferred_cities WHERE user_id = $1`, [ids.city],
       );
       expect(cities.rows.map((r) => r.city_key)).toEqual([slugCityKey('El Paso', 'TX')]);
-      record('profile.location (bare city confirm)', yesMsg, yes.result, yes.sent, null, session);
+      const yesRow = await runRow(runId);
+      expect(yesRow.lock_version).toBe(4);
+      expect(yes.sent).toHaveLength(1);
+      expect(yes.sent[0].sourceType).toBe('onboarding_v2:profile.trade');
+      record('profile.location (bare city confirm)', yesMsg, yes.result, yes.sent, yesRow.lock_version, session);
     });
   });
 
@@ -1037,18 +1299,25 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
 
   describe("10b. profile.trade = other -> profile.custom_trade", () => {
     test('a custom trade misses the cache and SILENTLY falls back to the generic set', async () => {
-      await asWhatsapp(null, async (client) =>
-        client.query(`SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`, [
-          subs.custom, 'en', workflowVersion,
-        ]),
-      );
+      const started = await asWhatsapp(null, async (client) => {
+        const r = await client.query(
+          `SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`,
+          [subs.custom, 'en', workflowVersion],
+        );
+        return r.rows[0];
+      });
+      const runId: string = started.run_id;
       const session = webSession('custom');
-      expect((await webTurn(session, webMsg('custom', { body: 'accept' }))).result.stepKey)
-        .toBe('profile.name');
-      expect((await webTurn(session, webMsg('custom', { body: 'Carla Nunez' }))).result.stepKey)
-        .toBe('profile.location');
-      expect((await webTurn(session, webMsg('custom', { body: 'Laredo, TX' }))).result.stepKey)
-        .toBe('profile.trade');
+      for (const [body, expected, lock] of [
+        ['accept', 'profile.name', 1],
+        ['Carla Nunez', 'profile.location', 2],
+        ['Laredo, TX', 'profile.trade', 3],
+      ] as Array<[string, string, number]>) {
+        const turn = await webTurn(session, webMsg('custom', { body }));
+        expect(turn.result.stepKey).toBe(expected);
+        expect(turn.sent).toHaveLength(1);
+        expect((await runRow(runId)).lock_version).toBe(lock);
+      }
 
       // 'other' must NOT write users.main_trade on its own -- chk_trade_other
       // (004) requires main_trade_other alongside it.
@@ -1059,11 +1328,25 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
         `SELECT main_trade, main_trade_other FROM users WHERE id = $1`, [ids.custom],
       );
       expect(afterOther.rows[0]).toEqual({ main_trade: null, main_trade_other: null });
-      record('profile.trade (other)', otherMsg, other.result, other.sent, null, session);
+      const otherRow = await runRow(runId);
+      expect(otherRow.lock_version).toBe(4);
+      expect(otherRow.context.selectedTrade).toBe('other');
+      expect(other.sent).toHaveLength(1);
+      expect(other.sent[0].sourceType).toBe('onboarding_v2:profile.custom_trade');
+      expect(other.sent[0].payload).toMatchObject({
+        templateName: '',
+        fallbackBody: 'What is your trade? Describe it in a few words.',
+      });
+      record('profile.trade (other)', otherMsg, other.result, other.sent, otherRow.lock_version, session);
 
       const customMsg = webMsg('custom', { body: 'welder' });
       const custom = await webTurn(session, customMsg);
       expect(custom.result.stepKey).toBe('profile.experience');
+      const customRow = await runRow(runId);
+      expect(customRow.lock_version).toBe(5);
+      expect(customRow.context.customTrade).toBe('welder');
+      expect(customRow.context.trustQuestionSource).toBe('fallback');
+      expect(custom.sent).toHaveLength(1);
 
       // `trade_questions` has no 'welder' row (086 Part 4 purged every
       // non-seeded cache row), so loadOrGenerateQuestions falls through to the
@@ -1075,15 +1358,16 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
       expect(session.state_context.v2QuestionSetVersion).toBe('v2-trust-fallback-1');
       expect(session.state_context.v2ProfileTrade).toBe('welder');
       expect(session.state_context.v2CustomTradeText).toBe('welder');
-      const questions = session.state_context.v2TrustQuestions as Array<{ en: string }>;
-      expect(questions).toHaveLength(3);
-      expect(questions[0].en).not.toMatch(/welder/i);
+      // Not "does not mention welder" -- it is EXACTLY the reviewed generic
+      // set, which is what makes the degradation invisible to a worker.
+      const questions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+      expect(questions).toEqual(V2_FALLBACK_TRUST_QUESTIONS.map((q) => ({ en: q.en, es: q.es })));
 
       const user = await su.query(
         `SELECT main_trade, main_trade_other FROM users WHERE id = $1`, [ids.custom],
       );
       expect(user.rows[0]).toEqual({ main_trade: 'other', main_trade_other: 'welder' });
-      record('profile.custom_trade', customMsg, custom.result, custom.sent, null, session);
+      record('profile.custom_trade', customMsg, custom.result, custom.sent, customRow.lock_version, session);
     });
   });
 
@@ -1134,6 +1418,81 @@ maybeDescribe('R2-C0 spike: the web onboarding door under jale_whatsapp', () => 
         // Second pass must clear the reprompt cooldown.
         clockRef.now = new Date(clockRef.now.getTime() + 3_600_000);
       }
+    });
+  });
+
+  // =========================================================================
+  // 12. the referral park/claim question, actually answered
+  // =========================================================================
+
+  describe('12. a claim parked under the web phone hash IS claimed at completion', () => {
+    test('completeOnboarding claims it, and the hash is byte-sensitive', async () => {
+      // `completeOnboarding` -> `claimPendingReferral` keys on
+      // `hashNormalizedPhone(session.whatsapp_number)`, which for a web worker
+      // is `users.phone`. Park a claim under exactly that hash and drive a
+      // real web run to completion: does the WEB-origin completion pick it up?
+      const webHash = hashNormalizedPhone(phones.referral);
+      await su.query(
+        `INSERT INTO referral_pending_claims (phone_hash, job_id, expires_at)
+         VALUES ($1, $2, now() + interval '30 days')`,
+        [webHash, referralJobId],
+      );
+
+      const started = await asWhatsapp(null, async (client) => {
+        const r = await client.query(
+          `SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`,
+          [subs.referral, 'en', workflowVersion],
+        );
+        return r.rows[0];
+      });
+      const session = webSession('referral');
+      const script: Array<Partial<{ body: string; interactivePayload: string }>> = [
+        { body: 'accept' },
+        { body: 'Dani Solis' },
+        { body: 'Laredo, TX' },
+        { interactivePayload: 'profile:main_trade:plumber' },
+        { interactivePayload: 'profile:years_experience:5-9' },
+        { interactivePayload: 'profile:has_transportation:false' },
+        { interactivePayload: 'profile:availability:flexible' },
+        { body: 'I run supply lines and set fixtures on residential remodels.' },
+        { body: 'I find the shutoff and the cleanout before I touch anything else.' },
+        { body: 'A compression fitting wept overnight once; I cut it out and sweated a joint.' },
+      ];
+      let last: RouteResult | null = null;
+      for (const fields of script) {
+        const turn = await webTurn(session, webMsg('referral', fields));
+        last = turn.result;
+      }
+      expect(last).toEqual({
+        handled: true, workerId: ids.referral, stepKey: 'trust.question.3',
+      });
+      expect((await runRow(started.run_id)).status).toBe('completed');
+
+      // OBSERVED: yes. The web-origin completion claims it, because
+      // `users.phone` and `whatsapp_conversations.whatsapp_number` hold the
+      // same normalized E.164 string (conversation-router.ts strips the
+      // 'whatsapp:' prefix before storing).
+      const claim = await su.query<{ claimed_worker_id: string | null }>(
+        `SELECT claimed_worker_id FROM referral_pending_claims WHERE phone_hash = $1`,
+        [webHash],
+      );
+      expect(claim.rows[0].claimed_worker_id).toBe(ids.referral);
+      const attribution = await su.query<{ first_job_id: string }>(
+        `SELECT first_job_id FROM worker_attribution WHERE worker_id = $1`,
+        [ids.referral],
+      );
+      expect(attribution.rowCount).toBe(1);
+      expect(attribution.rows[0].first_job_id).toBe(referralJobId);
+
+      // ...but `hashNormalizedPhone` only `.trim()`s, so the match is
+      // BYTE-sensitive. Any formatting difference between what the web door
+      // passes as `session.whatsapp_number` and what parked the claim loses it
+      // silently -- no error, no metric, just an unattributed worker. THIS is
+      // the open WS3 contract question: web signup must park/claim on the same
+      // byte string the WhatsApp lane uses.
+      expect(hashNormalizedPhone(`whatsapp:${phones.referral}`)).not.toBe(webHash);
+      expect(hashNormalizedPhone(phones.referral.replace('+', ''))).not.toBe(webHash);
+      expect(hashNormalizedPhone(`  ${phones.referral}  `)).toBe(webHash);
     });
   });
 });
