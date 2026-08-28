@@ -903,15 +903,22 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
         'profile.experience', 'profile.transportation', 'profile.availability',
         'trust.question.1', 'trust.question.2', 'trust.question.3',
       ];
+      const asserted: string[] = [];
       for (const key of ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'batch', 'preauth']) {
         const response = await get(key);
         expect(response.statusCode).toBe(200);
-        const run = response.body.run;
-        if (run.status !== 'active') continue;
-        expect({ key, stepKey: run.stepKey }).toEqual({ key, stepKey: expect.stringMatching(
-          new RegExp(`^(${ANSWERABLE.map((k) => k.replace(/\./g, '\\.')).join('|')})$`),
-        ) });
+        // A finished run keeps its last step key; only a LIVE run's cursor
+        // has to be one the browser can post against.
+        if (response.body.lifecycle === 'ready') continue;
+        // Reported as a pair so a failure names the worker, not just the key.
+        expect({ key, answerable: ANSWERABLE.includes(response.body.run.stepKey) })
+          .toEqual({ key, answerable: true });
+        asserted.push(key);
       }
+      // Guards the assertion itself: a DTO change that dropped `run.stepKey`
+      // (or a `lifecycle` that read 'ready' for everyone) would otherwise let
+      // this loop pass without checking anything at all.
+      expect(asserted.length).toBeGreaterThanOrEqual(5);
     });
 
     test('the trust answers rendered are the CURRENT trade\'s, not merely the newest row', async () => {
