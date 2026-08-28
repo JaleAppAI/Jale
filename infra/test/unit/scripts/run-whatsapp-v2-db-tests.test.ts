@@ -32,6 +32,15 @@ const SUITE_RETRIGGER = 'test/unit/db/retrigger-sweep-definer.integration.test.t
 // bypass, the 075/078 cert caps (both constraint names) under RLS including
 // the RLS-scoped-COUNT footgun, and the snapshot-copy savepoint rollback.
 const SUITE_080 = 'test/unit/db/whatsapp-application-fill-080.integration.test.ts';
+// S22 R2-C0 / R2-C23 (2026-08-28): the WEB door onto the v2 onboarding
+// engine. The spike proves `jale_whatsapp` can drive the state machine for a
+// web-origin worker at all (migration 086's SECURITY DEFINER entry points,
+// the run.context durable bag, cross-tenant negatives); the door suite drives
+// the four HTTP routes through the real handler against the real role. Both
+// exist only because column-scoped grants and RLS are invisible to a mocked
+// pool -- a `SELECT *` this role cannot run is a 42501 nothing else catches.
+const SUITE_WEB_SPIKE = 'test/unit/db/web-onboarding-door-spike.integration.test.ts';
+const SUITE_WEB_DOOR = 'test/unit/db/web-onboarding-door.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -46,10 +55,13 @@ function runGuard(overrides: NodeJS.ProcessEnv): ReturnType<typeof spawnSync> {
 }
 
 describe('test:whatsapp-v2-db fail-closed URL guard', () => {
-  it('invokes exactly the migration-042, concurrency, migration-049, and profile-constraint suites in-band', () => {
+  it('invokes exactly the migration-042, concurrency, migration-049, profile-constraint and web-door suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
-    expect(suites).toEqual([SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052, SUITE_053, SUITE_RESET, SUITE_RETRIGGER, SUITE_080]);
+    expect(suites).toEqual([
+      SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052,
+      SUITE_053, SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR,
+    ]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
     expect(script).not.toMatch(
