@@ -203,4 +203,27 @@ describe('V2_FALLBACK_TRUST_QUESTIONS', () => {
       expect(q.en).not.toBe(q.es);
     }
   });
+
+  it('asks no question about years of experience / how long — the profile already collected that', () => {
+    // R1-A: menu labels and duration questions give the AI scorer nothing to
+    // grade. Q1 used to ask "How many years have you worked in this trade?",
+    // which duplicates `users.years_experience` collected at profile.experience.
+    const banned = /how many years|how long|years have you|cuantos anos|cuanto tiempo/i;
+    for (const q of V2_FALLBACK_TRUST_QUESTIONS) {
+      expect(q.en).not.toMatch(banned);
+      expect(q.es).not.toMatch(banned);
+    }
+  });
+
+  it('opens with a broad, trade-agnostic question about the work itself', () => {
+    expect(V2_FALLBACK_TRUST_QUESTIONS[0].en).toMatch(/typical day/i);
+    expect(V2_FALLBACK_TRUST_QUESTIONS[0].es).toMatch(/dia tipico/i);
+  });
+
+  it('is plain ASCII on both sides, matching every other v2 template string', () => {
+    for (const q of V2_FALLBACK_TRUST_QUESTIONS) {
+      expect(q.en).toMatch(/^[\x00-\x7F]*$/);
+      expect(q.es).toMatch(/^[\x00-\x7F]*$/);
+    }
+  });
 });

@@ -453,7 +453,7 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     expect(h.getWorkerProfile()).toMatchObject({ name: 'Jose Martinez', trade: 'plumber' });
   });
 
-  it('a landed standard trade seeds the standard trust-question set exactly like the text flow', async () => {
+  it('a landed standard trade seeds its question set from the per-trade cache exactly like the text flow', async () => {
     const h = await toVoiceChoice('+15552230011');
     await h.sendVoiceNote();
 
@@ -471,7 +471,32 @@ describe('WhatsApp v2 voice — full voice profile intake (profile.voice_choice/
     });
 
     expect(h.getState().stateContext.v2ProfileTrade).toBe('carpenter');
-    expect(h.getState().stateContext.v2TrustSource).toBe('standard');
+    // R1-A: standard trades take the SAME generator lane as custom ones.
+    expect(h.getState().stateContext.v2TrustSource).toBe('generated');
+    expect(h.getState().stateContext.v2QuestionSetVersion).toBe('v2-trust-questions-2');
+    expect(h.getState().stateContext.v2TrustQuestions).toHaveLength(3);
+    expect(h.getTrustQuestionGenerateCalls()).toContain('carpenter');
+  });
+
+  it('a landed standard trade falls back to the reviewed open-text set when the generator fails', async () => {
+    const h = await toVoiceChoice('+15552230014');
+    h.failAdapter('trustQuestions');
+    await h.sendVoiceNote();
+
+    await h.injectVoiceIntakeResult(0, {
+      status: 'COMPLETED',
+      fields: {
+        full_name: 'Jose Martinez', city: '78701', main_trade: 'carpenter',
+        years_experience: '5-9', has_transportation: true, availability: 'full_time',
+      },
+      confidences: {
+        full_name: 0.9, city: 0.9, main_trade: 0.9,
+        years_experience: 0.9, has_transportation: 0.9, availability: 0.9,
+      },
+      summaryEn: 'summary', summaryEs: 'resumen',
+    });
+
+    expect(h.getState().stateContext.v2TrustSource).toBe('fallback');
     expect(h.getState().stateContext.v2TrustQuestions).toHaveLength(3);
   });
 

@@ -1,10 +1,5 @@
 import type { PoolClient } from 'pg';
-import { randomUUID } from 'node:crypto';
-import {
-  buildTrustQuestion,
-  computeNextField,
-  type ProfileField,
-} from './flows';
+import { type ProfileField } from './flows';
 import { t, type Lang, type TemplateKey } from './templates';
 
 export const FIELD_PROMPT_KEY: Record<ProfileField, TemplateKey> = {
@@ -122,19 +117,13 @@ export async function upsertWorkerProfileFromUsers(
   );
 }
 
-export interface AutoAdvanceProfileArgs {
-  userId: string;
-  conversationId: string;
-  inboundMessageSid: string;
-  language: Lang;
-  queueBody: (body: string) => Promise<void>;
-  loadCustomTrustQuestions?: (
-    client: PoolClient,
-    professionKey: string,
-    professionRaw: string,
-  ) => Promise<Array<{ q_en: string; q_es: string }>>;
-  assessmentIdFactory?: () => string;
-}
+// Sprint 22 R1-A: `autoAdvanceProfileAfterAi` (and its `AutoAdvanceProfileArgs`)
+// lived here. It was the LAST writer of the v1 `building_profile` ->
+// `building_trust_signal` / `building_custom_trust` hand-off and the only
+// caller of flows.ts's deleted `buildTrustQuestion`. Its two call sites in
+// ai-profile-writer.ts sat on the v1 legacy branch, which has had no producer
+// since processor.ts started tagging BOTH StartExecution payloads with the v2
+// marker. Everything else in this module is live on v2.
 
 export function normalizeProfession(raw: string): string {
   return raw
@@ -145,125 +134,4 @@ export function normalizeProfession(raw: string): string {
     .replace(/[-./]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-export async function autoAdvanceProfileAfterAi(
-  client: PoolClient,
-  args: AutoAdvanceProfileArgs,
-): Promise<void> {
-  const dbFilled = await loadProfileFromDb(client, args.userId);
-  const next = computeNextField({}, dbFilled);
-
-  if (next !== null) {
-    await client.query(
-      `UPDATE whatsapp_conversations
-          SET conversation_state = 'building_profile',
-              state_context = $2::jsonb,
-              last_processed_message_sid = $3,
-              updated_at = NOW()
-        WHERE id = $1`,
-      [
-        args.conversationId,
-        JSON.stringify({ pending_field: next, collected: {}, field_sids: {} }),
-        args.inboundMessageSid,
-      ],
-    );
-    await args.queueBody(profileQuestionBody(next, args.language));
-    return;
-  }
-
-  await upsertWorkerProfileFromUsers(client, args.userId);
-
-  if (dbFilled.main_trade === 'other' && typeof dbFilled.main_trade_other === 'string') {
-    const professionRaw = dbFilled.main_trade_other.trim();
-    if (professionRaw) {
-      const professionKey = normalizeProfession(professionRaw);
-      const existing = await client.query(
-        `SELECT id FROM worker_trust_assessments
-         WHERE user_id = $1 AND profession_key = $2
-           AND status IN ('pending','scoring','scored','failed')`,
-        [args.userId, professionKey],
-      );
-      if (existing.rows.length === 0) {
-        if (!args.loadCustomTrustQuestions) {
-          throw new Error('loadCustomTrustQuestions required for custom AI profile trust flow');
-        }
-        const questions = await args.loadCustomTrustQuestions(client, professionKey, professionRaw);
-        const assessmentId = args.assessmentIdFactory?.() ?? randomUUID();
-        await client.query(
-          `UPDATE whatsapp_conversations
-              SET conversation_state = 'building_custom_trust',
-                  state_context = $2::jsonb,
-                  last_processed_message_sid = $3,
-                  updated_at = NOW()
-            WHERE id = $1`,
-          [
-            args.conversationId,
-            JSON.stringify({
-              custom_trust_step: 0,
-              custom_trust_answers: [],
-              custom_trust_profession: professionRaw,
-              custom_trust_questions: questions,
-              custom_trust_assessment_id: assessmentId,
-            }),
-            args.inboundMessageSid,
-          ],
-        );
-        await args.queueBody(args.language === 'es' ? questions[0].q_es : questions[0].q_en);
-        return;
-      }
-    }
-  }
-
-  if (!await trustSignalColumnsAvailable(client)) {
-    await client.query(
-      `UPDATE whatsapp_conversations
-          SET conversation_state = 'awaiting_media_photo',
-              state_context = '{"profile_completed": true}'::jsonb,
-              last_processed_message_sid = $2,
-              updated_at = NOW()
-        WHERE id = $1`,
-      [args.conversationId, args.inboundMessageSid],
-    );
-    await args.queueBody(t('profile_complete', args.language));
-    await args.queueBody(t('ask_media_photo', args.language));
-    return;
-  }
-
-  const trust = await client.query<{ trust_signals_completed_at: string | null }>(
-    `SELECT trust_signals_completed_at FROM users WHERE id = $1`,
-    [args.userId],
-  );
-  const trustDone = !!trust.rows[0]?.trust_signals_completed_at;
-
-  if (!trustDone) {
-    const trade = await loadTradeFromDb(client, args.userId);
-    await client.query(
-      `UPDATE whatsapp_conversations
-          SET conversation_state = 'building_trust_signal',
-              state_context = $2::jsonb,
-              last_processed_message_sid = $3,
-              updated_at = NOW()
-        WHERE id = $1`,
-      [
-        args.conversationId,
-        JSON.stringify({ trust_step: 0, trust_answers: [] }),
-        args.inboundMessageSid,
-      ],
-    );
-    await args.queueBody(buildTrustQuestion(0, trade, args.language));
-    return;
-  }
-
-  await client.query(
-    `UPDATE whatsapp_conversations
-        SET conversation_state = 'awaiting_media_photo',
-            state_context = '{"profile_completed": true}'::jsonb,
-            last_processed_message_sid = $2,
-            updated_at = NOW()
-      WHERE id = $1`,
-    [args.conversationId, args.inboundMessageSid],
-  );
-  await args.queueBody(t('profile_complete', args.language));
-  await args.queueBody(t('ask_media_photo', args.language));
 }

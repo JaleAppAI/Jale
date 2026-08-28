@@ -4133,7 +4133,7 @@ describe('v2 routing branch', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ message_sid: 'SM-v2-ctx' }] })
       .mockResolvedValueOnce({
         rowCount: 1,
-        rows: [convRow({ conversation_state: 'building_custom_trust', state_context: {} })],
+        rows: [convRow({ conversation_state: 'idle', state_context: {} })],
       })
       .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // findWebRegisteredWorker → no match
       .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // updateConversation writeback

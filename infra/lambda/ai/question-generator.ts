@@ -50,16 +50,29 @@ export async function generateAndCacheQuestions(
 }
 
 async function callBedrock(profession: string): Promise<QuestionSet[]> {
+  // Sprint 22 R1-A: every trade (the five standard ones included) is served
+  // from this cache now, and the answers are graded by the AI trust scorer.
+  // A menu label or a duration ("5 years", "lead") gives the scorer nothing to
+  // grade, so the prompt demands three OPEN questions and explicitly forbids
+  // years/seniority/"how long" and any multiple-choice or numbered form. The
+  // retired prompt actively asked for a seniority question; that is gone.
   const systemPrompt =
-    'You generate exactly 3 assessment questions for a blue-collar worker applying for jobs. ' +
+    'You generate exactly 3 open-ended assessment questions for a blue-collar worker applying for jobs. ' +
+    'Every question must invite the worker to answer in their own words, in a sentence or two. ' +
     'Questions must reveal real trade knowledge without requiring formal education. ' +
+    'Never write a multiple-choice question, never offer numbered or lettered options, and never ' +
+    'ask anything answerable with a single word, a number, or a level. ' +
     'Return only a JSON array of exactly 3 objects with keys "q_en" and "q_es". No markdown.';
 
   const userMessage =
-    `Generate 3 assessment questions for a worker who says they are a "${profession}". ` +
-    'Questions should cover: specialization, independence/responsibility level, and common tasks. ' +
-    'Do not ask how many years of experience they have; that is already collected in the profile. ' +
-    'For the second question, ask what level they can work at, such as helper, independently, or lead. ' +
+    `Generate 3 open questions for a worker who says they are a "${profession}". ` +
+    'Question 1: ask what they specialize in and what they actually built or did on their last job. ' +
+    'Question 2: ask how they start a job they have never seen before. ' +
+    'Question 3: ask about a job or a problem that went wrong and what they did about it. ' +
+    'Do not ask how many years of experience they have, do not ask how long they have done the work, ' +
+    'and do not ask about seniority or their level (helper, independent, lead) - the profile already ' +
+    'collects experience, and a level is a label the scorer cannot grade. ' +
+    'Do not offer multiple-choice answers and do not write numbered options. ' +
     'Keep language simple because workers may not be formally educated.';
 
   const response = await bedrock.send(

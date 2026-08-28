@@ -14,19 +14,15 @@ import { detectMediaCategory } from '../../lib/media';
 import { parseMediaPayload, type ProfileField } from '../../lib/flows';
 import { shouldRepeatPrompt } from '../../lib/onboarding-language';
 import { loadProfileFromDb } from '../../lib/profile-flow';
-import { normalizeTrade, standardTrustQuestions } from '../../lib/onboarding-adapters';
-import { V2_FALLBACK_TRUST_QUESTIONS } from '../../lib/interactive-templates';
+import { normalizeTrade } from '../../lib/onboarding-adapters';
 import { planExtractionWrites, type ExtractionWrite } from '../../lib/voice-extraction';
 import type { ProfileIntakeVoiceEventV2 } from '../../lib/voice-events';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
 import {
-  type BilingualQuestion,
   VOICE_PROCESSING_TIMEOUT_MS,
   VOICE_CONFIDENCE_THRESHOLD,
-  V2_TRUST_FALLBACK_VERSION,
-  V2_TRUST_QUESTION_SET_VERSION,
-  V2_TRUST_RUBRIC_VERSION,
 } from '../constants';
+import { seedTrustQuestions } from '../trust-seed';
 import { repeatCurrentPrompt, sendTemplateMessage } from '../delivery';
 import { advanceProfileToNextStep, effectiveLang } from '../transitions';
 
@@ -208,39 +204,16 @@ async function seedTrustQuestionsForLandedTrade(
   deps: OnboardingV2Deps,
 ): Promise<void> {
   if (write.field === 'trade') {
-    const questions: BilingualQuestion[] = standardTrustQuestions(write.value).map((q) => ({ en: q.q_en, es: q.q_es }));
+    // R1-A: the trade KEY is the profession looked up in the per-trade cache,
+    // exactly as `handleProfileTrade` does for a typed list-picker choice.
     session.state_context.v2ProfileTrade = write.value;
-    session.state_context.v2TrustQuestions = questions;
-    session.state_context.v2TrustSource = 'standard';
-    session.state_context.v2QuestionSetVersion = V2_TRUST_QUESTION_SET_VERSION;
-    session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+    await seedTrustQuestions(client, session, deps, write.value);
     return;
   }
 
   const professionRaw = write.value;
-  const professionKey = normalizeTrade(professionRaw);
-  let generated: BilingualQuestion[] | null = null;
-  try {
-    const result = await deps.adapters.trustQuestions.generate(client, professionRaw);
-    if (Array.isArray(result) && result.length === 3) {
-      generated = result.map((q) => ({ en: q.q_en, es: q.q_es }));
-    }
-  } catch (err) {
-    console.error(JSON.stringify({
-      metric: 'OnboardingTrustQuestionGenerationFailed',
-      reason: (err as { name?: string })?.name ?? 'unknown_error',
-    }));
-    generated = null;
-  }
-
-  const source: 'generated' | 'fallback' = generated ? 'generated' : 'fallback';
-  const questions: BilingualQuestion[] = generated ?? V2_FALLBACK_TRUST_QUESTIONS.map((q) => ({ ...q }));
-
-  session.state_context.v2ProfileTrade = professionKey;
-  session.state_context.v2TrustQuestions = questions;
-  session.state_context.v2TrustSource = source;
-  session.state_context.v2QuestionSetVersion = source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION;
-  session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+  session.state_context.v2ProfileTrade = normalizeTrade(professionRaw);
+  await seedTrustQuestions(client, session, deps, professionRaw);
   session.state_context.v2CustomTradeText = professionRaw;
 }
 

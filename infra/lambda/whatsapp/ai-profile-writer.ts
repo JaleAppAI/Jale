@@ -1,7 +1,6 @@
 import type { Handler } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 import { S3Client } from '@aws-sdk/client-s3';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
   BedrockRuntimeClient,
@@ -11,7 +10,6 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { readTranscriptResult, type TranscriptResult } from '../lib/transcript';
 import { t, type Lang } from './lib/templates';
 import { sendPendingOutbox } from './lib/outbox';
-import { autoAdvanceProfileAfterAi } from './lib/profile-flow';
 import {
   buildSyntheticVoiceInboundBody,
   syntheticVoiceSid,
@@ -19,12 +17,10 @@ import {
   type VoiceExtractionFields,
 } from './lib/voice-events';
 import { hashNormalizedPhone } from './lib/runtime-controls';
-import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const s3 = new S3Client({});
 const bedrock = new BedrockRuntimeClient({});
-const lambdaClient = new LambdaClient({});
 const sqsClient = new SQSClient({});
 
 const BEDROCK_MODEL_ID =
@@ -107,11 +103,6 @@ interface BedrockResult {
   confidence_scores: Record<string, number>;
   summary_en: string;
   summary_es: string;
-}
-
-interface TrustQuestion {
-  q_en: string;
-  q_es: string;
 }
 
 function parseBedrockJsonResponse(responseText: string): BedrockResult {
@@ -294,39 +285,6 @@ async function setWorkerRlsContextByUserId(
   const cognitoSub = userRow.rows[0]?.cognito_sub;
   if (!cognitoSub) throw new Error('worker cognito_sub missing before ai extraction write');
   await setRlsContext(client, cognitoSub);
-}
-
-function questionGeneratorArn(): string {
-  const arn = process.env.QUESTION_GENERATOR_ARN;
-  if (!arn) throw new Error('QUESTION_GENERATOR_ARN not set');
-  return arn;
-}
-
-async function loadOrGenerateCustomTrustQuestions(
-  client: PoolClient,
-  professionKey: string,
-  professionRaw: string,
-): Promise<TrustQuestion[]> {
-  // Grows the bilingual trade-alias cache for the matcher. Awaited (rather
-  // than fired-and-forgotten with `void`) so it can't be aborted by a frozen
-  // Lambda execution environment; the helper never throws by contract and
-  // its Event-type invoke returns in milliseconds, so this never affects the
-  // trust-question flow below.
-  await requestTradeAliasGeneration(professionRaw);
-
-  const cached = await client.query<{ questions: TrustQuestion[] }>(
-    'SELECT questions FROM trade_questions WHERE profession_key = $1',
-    [professionKey],
-  );
-  if (cached.rows.length > 0) return cached.rows[0].questions;
-
-  const response = await lambdaClient.send(
-    new InvokeCommand({
-      FunctionName: questionGeneratorArn(),
-      Payload: Buffer.from(JSON.stringify({ professionKey, professionRaw })),
-    }),
-  );
-  return JSON.parse(Buffer.from(response.Payload ?? new Uint8Array()).toString()) as TrustQuestion[];
 }
 
 // ── Handler ─────────────────────────────────────────────────────
@@ -538,18 +496,12 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         t('ai_extraction_failed', language),
       );
 
-      await autoAdvanceProfileAfterAi(
-        client,
-        {
-          userId,
-          conversationId,
-          inboundMessageSid: outboxMessageSid,
-          language,
-          queueBody: (body) => queueOutboxText(client, outboxMessageSid, whatsappNumber, body),
-          loadCustomTrustQuestions: loadOrGenerateCustomTrustQuestions,
-        },
-      );
-
+      // Sprint 22 R1-A: `autoAdvanceProfileAfterAi` was called here. It was
+      // the last writer of the v1 `building_trust_signal` /
+      // `building_custom_trust` hand-off, whose numbered-menu questions are
+      // gone. This whole v1 branch has had no producer since processor.ts
+      // started tagging BOTH StartExecution payloads with the v2 marker; the
+      // failed-extraction row and its notice still commit exactly as before.
       await client.query('COMMIT');
       committed = true;
       await sendPendingOutbox(client, outboxMessageSid);
@@ -626,18 +578,9 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       t('ai_extraction_summary', language, { summary }),
     );
 
-    await autoAdvanceProfileAfterAi(
-      client,
-      {
-        userId,
-        conversationId,
-        inboundMessageSid: outboxMessageSid,
-        language,
-        queueBody: (body) => queueOutboxText(client, outboxMessageSid, whatsappNumber, body),
-        loadCustomTrustQuestions: loadOrGenerateCustomTrustQuestions,
-      },
-    );
-
+    // Sprint 22 R1-A: `autoAdvanceProfileAfterAi` was called here — see the
+    // FAILED branch above. The users UPDATE and the summary notice still
+    // commit exactly as before.
     await client.query('COMMIT');
     committed = true;
     await sendPendingOutbox(client, outboxMessageSid);
