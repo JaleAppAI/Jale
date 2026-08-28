@@ -224,6 +224,10 @@ const whatsapp = new WhatsAppStack(app, 'JaleWhatsAppStack', {
   dbSecret: database.dbSecret,
   workerPool: auth.workerPool,
   api: api.api,
+  // S22 R2-C23: the web onboarding door hangs `/worker/onboarding*` off
+  // ApiStack's own `/worker` resource and reuses its worker authorizer.
+  workerResource: api.workerResource,
+  workerAuthorizer: api.workerAuthorizer,
   workerRerankQueue: matching.workerRerankQueue,
   questionGeneratorFn: ai.questionGeneratorFn.function,
   aliasGeneratorFn: ai.aliasGeneratorFn.function,

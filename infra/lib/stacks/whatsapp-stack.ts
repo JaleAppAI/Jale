@@ -34,6 +34,19 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
   /** Existing API Gateway (from ApiStack) — webhook route added here */
   readonly api: apigateway.RestApi;
+  /**
+   * ApiStack's `/worker` resource, already `public readonly` there for exactly
+   * this reason (ReferralsStack hangs `/worker/jobs/{jobId}/share` off it the
+   * same way). S22 R2-C23 adds `/worker/onboarding*` here rather than in
+   * ApiStack because the web door needs THIS stack's `jale/whatsapp/db`
+   * secret, question/alias generator ARNs and domain-outbox wake queue —
+   * moving it the other way would make ApiStack depend on WhatsAppStack,
+   * which already depends on ApiStack.
+   */
+  readonly workerResource: apigateway.Resource;
+  /** ApiStack's worker Cognito authorizer — the same one every other
+   * `/worker/*` route uses. */
+  readonly workerAuthorizer: apigateway.IAuthorizer;
   readonly workerRerankQueue?: sqs.IQueue;
   readonly questionGeneratorFn: lambda.IFunction;
   readonly aliasGeneratorFn: lambda.IFunction;
@@ -1060,5 +1073,80 @@ export class WhatsAppStack extends cdk.Stack {
         ],
       },
     );
+
+    // ═══════════════════════════════════════════════════════════════════
+    // S22 R2-C23 — WEB ONBOARDING DOOR
+    //
+    //   GET    /worker/onboarding
+    //   POST   /worker/onboarding/answers
+    //   POST   /worker/onboarding/back
+    //   PATCH  /worker/onboarding/language
+    //
+    // One Lambda driving the SAME `worker_workflow_runs` state machine the
+    // processor drives for WhatsApp, as the SAME `jale_whatsapp` role — every
+    // table the engine writes is granted to that role and no other API role,
+    // column by column, across migrations 042/049/066/084/086. Migration 086
+    // added the two SECURITY DEFINER entry points
+    // (`resolve_worker_internal_id`, `start_web_onboarding_workflow`) that let
+    // the web knock on that door.
+    //
+    // It lives in WhatsAppStack, not ApiStack, because WhatsAppStack already
+    // depends on ApiStack (`props.api`) and owns everything this Lambda needs:
+    // the `jale/whatsapp/db` secret, the question/alias generator ARNs and the
+    // domain-outbox wake queue. Wiring it the other way round would create an
+    // ApiStack ↔ WhatsAppStack cycle.
+    // ═══════════════════════════════════════════════════════════════════
+
+    const webOnboardingLambda = new JaleLambdaFunction(this, 'WorkerWebOnboardingLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/web/worker-onboarding.ts'),
+      description: 'Web worker onboarding — drives the WhatsApp v2 engine over HTTP',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      // API Gateway hard-caps a REST integration at 29s. `profile.trade`
+      // synchronously invokes the question-generator Lambda on a cache miss,
+      // so this is the one route that can legitimately take seconds rather
+      // than milliseconds — but it must return a 5xx we control rather than
+      // API Gateway's own 504.
+      timeout: 28,
+      environment: {
+        // Same role as the processor: getDbPool() reads this alias.
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+        // createTrustQuestionGenerator invokes this synchronously to build a
+        // trade's three questions. WITHOUT it the generator throws, the
+        // adapter swallows the throw and `seedTrustQuestions` silently seeds
+        // the generic FALLBACK set — a defect that is invisible in the flow
+        // and only shows up weeks later as un-scorable assessments. The
+        // handler logs `WebOnboardingFallbackQuestionsSeeded` when it happens.
+        QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+        // Requested by the same custom-trust lane when a typed profession has
+        // no alias row yet.
+        ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
+        // The third trust answer completes onboarding and enqueues
+        // `assessment.requested` + `worker.ready`. Poking the drain
+        // post-commit is what keeps scoring and skill extraction from waiting
+        // for the cron — exactly what the processor does.
+        DOMAIN_OUTBOX_WAKE_QUEUE_URL: domainOutboxWakeQueue.queueUrl,
+      },
+    });
+    whatsappDbSecret.grantRead(webOnboardingLambda.function);
+    props.questionGeneratorFn.grantInvoke(webOnboardingLambda.function);
+    props.aliasGeneratorFn.grantInvoke(webOnboardingLambda.function);
+    domainOutboxWakeQueue.grantSendMessages(webOnboardingLambda.function);
+
+    const webOnboardingIntegration = new apigateway.LambdaIntegration(webOnboardingLambda.function);
+    // CORS preflight is inherited from the RestApi's
+    // `defaultCorsPreflightOptions` (ApiStack), exactly like every sibling
+    // `/worker/*` route — no per-resource CORS here on purpose.
+    const onboardingResource = props.workerResource.addResource('onboarding');
+    const workerAuth = {
+      authorizer: props.workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+    onboardingResource.addMethod('GET', webOnboardingIntegration, workerAuth);
+    onboardingResource.addResource('answers').addMethod('POST', webOnboardingIntegration, workerAuth);
+    onboardingResource.addResource('back').addMethod('POST', webOnboardingIntegration, workerAuth);
+    onboardingResource.addResource('language').addMethod('PATCH', webOnboardingIntegration, workerAuth);
   }
 }

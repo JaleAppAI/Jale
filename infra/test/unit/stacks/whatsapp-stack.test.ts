@@ -89,6 +89,8 @@ describe('WhatsAppStack', () => {
       dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
+      workerResource: api.workerResource,
+      workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
@@ -305,8 +307,9 @@ describe('event-driven outbox wake queues', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 12 Lambda functions including the worker-intent drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 12);
+  // 13 since S22 R2-C23 added the web onboarding door.
+  test('Stack creates 13 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 13);
   });
 
   test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
@@ -1198,6 +1201,87 @@ describe('event-driven outbox wake queues', () => {
         .not.toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
     });
   });
+
+  // ── S22 R2-C23: the web onboarding door ────────────────────────
+  //
+  // The Lambda is a WhatsAppStack resource (it needs this stack's DB secret,
+  // generator ARNs and wake queue); the ROUTES are ApiStack resources,
+  // because `props.workerResource.addResource()` creates its children in the
+  // scope of the resource it hangs off. Hence the two templates.
+  describe('web onboarding door', () => {
+    function webDoorFn(): any {
+      const functions = template.findResources('AWS::Lambda::Function');
+      return Object.values(functions).find((resource: any) =>
+        /Web worker onboarding/.test(resource.Properties?.Description ?? '')) as any;
+    }
+
+    test('a single Lambda serves all four routes, inside the VPC', () => {
+      const fn = webDoorFn();
+      expect(fn).toBeDefined();
+      expect(fn.Properties.VpcConfig).toBeDefined();
+      // API Gateway hard-caps a REST integration at 29s; profile.trade can
+      // synchronously invoke the question generator.
+      expect(fn.Properties.Timeout).toBeLessThanOrEqual(28);
+    });
+
+    test('connects as jale_whatsapp — the ONLY role granted the engine tables', () => {
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.DB_SECRET_ARN).toBe('jale/whatsapp/db');
+      expect(env.REQUIRED_TOS_VERSION).toBeDefined();
+    });
+
+    test('carries QUESTION_GENERATOR_ARN — without it every trade silently gets FALLBACK questions', () => {
+      // seedTrustQuestions swallows a generator failure into the generic
+      // fallback set, so a missing ARN is invisible in the flow and only
+      // shows up later as un-scorable assessments.
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.QUESTION_GENERATOR_ARN).toBeDefined();
+      expect(env.ALIAS_GENERATOR_ARN).toBeDefined();
+    });
+
+    test('carries DOMAIN_OUTBOX_WAKE_QUEUE_URL so completion does not wait for the cron', () => {
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.DOMAIN_OUTBOX_WAKE_QUEUE_URL).toBeDefined();
+    });
+
+    test('its role can read the secret, invoke both generators and send the wake', () => {
+      const fn = webDoorFn();
+      const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+      const policies = template.findResources('AWS::IAM::Policy');
+      const statements = Object.values(policies)
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const actions = statements.flatMap((st) =>
+        Array.isArray(st.Action) ? st.Action : [st.Action]);
+
+      expect(actions).toEqual(expect.arrayContaining(['secretsmanager:GetSecretValue']));
+      expect(actions).toEqual(expect.arrayContaining(['lambda:InvokeFunction']));
+      expect(actions).toEqual(expect.arrayContaining(['sqs:SendMessage']));
+    });
+
+    test.each([
+      ['onboarding', 'GET'],
+      ['answers', 'POST'],
+      ['back', 'POST'],
+      ['language', 'PATCH'],
+    ])('/worker/onboarding/%s serves %s behind the worker Cognito authorizer', (part, method) => {
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const [logicalId] = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === part,
+      ) as [string, any];
+
+      const methods = apiTemplate.findResources('AWS::ApiGateway::Method');
+      const match = Object.values(methods).find((m: any) =>
+        m.Properties.HttpMethod === method
+        && JSON.stringify(m.Properties.ResourceId) === JSON.stringify({ Ref: logicalId })) as any;
+
+      expect(match).toBeDefined();
+      // The legal wall is deliberately absent (accepting the terms is step
+      // one of this flow) but authentication is NOT: every route is COGNITO.
+      expect(match.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+      expect(match.Properties.AuthorizerId).toBeDefined();
+    });
+  });
 });
 
 // ── Task 5: voice-trust-receiver v2 re-entry (transport flag ON) ─────────
@@ -1264,6 +1348,8 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
+      workerResource: api.workerResource,
+      workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
