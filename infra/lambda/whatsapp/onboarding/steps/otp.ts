@@ -81,6 +81,35 @@ export async function handleOtpStep(
       workflowVersion: deps.workflowVersion,
       inboundMessageSid: msg.messageSid,
     });
+    // A worker who ALREADY FINISHED onboarding — on the web, or on WhatsApp
+    // from another number — must not be re-prompted an onboarding step by the
+    // act of verifying their OTP.
+    //
+    // Migration 087 makes `bind_verified_identity_and_start_workflow` ADOPT a
+    // ready worker's completed run instead of opening a second one, so this
+    // branch now returns a gate whose `current_step_key` is wherever that run
+    // finished (`trust.question.3`). Prompting it would ask a ready worker to
+    // answer their last trust question again, on this turn only: their next
+    // message routes through `routeOnboardingV2`, which hands ready workers
+    // off before ever reaching a step handler. That is a one-message defect,
+    // and one message is the whole first impression of the channel.
+    //
+    // The handoff is BYTE-FOR-BYTE the one `routeOnboardingV2` performs for a
+    // ready worker's message (onboarding-v2.ts: `gate.lifecycle === 'ready'
+    // && gate.status === 'completed' && gate.runId`), including the
+    // `session.language` write, so the OTP turn and every turn after it are
+    // handled identically. `handled: false` hands this inbound message to the
+    // processor's normal post-onboarding path rather than swallowing it.
+    if (gate.lifecycle === 'ready' && gate.status === 'completed' && gate.runId) {
+      session.language = gate.preferredLanguage;
+      console.log(JSON.stringify({
+        metric: 'OnboardingOtpBoundReadyWorker',
+        runId: gate.runId,
+        currentStepKey: gate.currentStepKey,
+      }));
+      return { handled: false, handoff: 'ready', workerId: gate.userId, stepKey: 'ready' };
+    }
+
     const stepKey = gate.currentStepKey ?? 'legal.review';
     await sendStepPrompt(client, deps, gate.userId, stepKey, gate.preferredLanguage, now, gate.runId!, msg.messageSid, `bind:${now.getTime()}`);
     return { handled: true, workerId: gate.userId, stepKey };
