@@ -38,6 +38,10 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly questionGeneratorFn: lambda.IFunction;
   readonly aliasGeneratorFn: lambda.IFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
+  /** R1-X: AiStack's trust-EXTRACTION queue. Required, not optional: the
+   *  drain's fan-out to it is fail-open at runtime, so an unwired queue would
+   *  otherwise hide behind a metric instead of failing synth. */
+  readonly trustExtractionQueue: sqs.IQueue;
   /**
    * Shared worker documents bucket (from DocumentsStack). The processor
    * lambda is granted PUT-only access (+ the KMS actions grantPut adds for
@@ -415,6 +419,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
+        TRUST_EXTRACTION_QUEUE_URL: props.trustExtractionQueue.queueUrl,
         WORKER_INTENT_WAKE_QUEUE_URL: workerIntentWakeQueue.queueUrl,
       },
     });
@@ -424,6 +429,8 @@ export class WhatsAppStack extends cdk.Stack {
     // it gets sqs:SendMessage only (no ReceiveMessage/DeleteMessage), and no
     // Twilio secret access.
     props.trustAssessmentQueue.grantSendMessages(domainOutboxDrainLambda.function);
+    // R1-X: same least-privilege posture for the extraction lane — send only.
+    props.trustExtractionQueue.grantSendMessages(domainOutboxDrainLambda.function);
     workerIntentWakeQueue.grantSendMessages(domainOutboxDrainLambda.function);
     domainOutboxDrainLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(domainOutboxWakeQueue, {

@@ -32,6 +32,10 @@ export interface JaleLambdaFunctionProps {
   /** Node modules to bundle despite the @aws-sdk/* externalModules exclusion.
    *  Use for SDK packages NOT provided by the Node 20.x runtime (e.g. @aws-sdk/s3-request-presigner). */
   nodeModules?: string[];
+  /** Memory in MB (default 256). Raise it for Lambdas whose work is
+   *  bundle-heavy or latency-sensitive (a larger memory setting also buys
+   *  proportionally more CPU). */
+  memorySize?: number;
   /** Reserved concurrent executions. Use to cap a Lambda to N concurrent
    *  invocations (e.g. 1, to serialize a scheduled drain against itself
    *  instead of relying on an invocation-frequency assumption). Omit for the
@@ -55,7 +59,7 @@ export class JaleLambdaFunction extends Construct {
       entry: props.entry,
       handler: props.handler ?? 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 256,
+      memorySize: props.memorySize ?? 256,
       timeout: cdk.Duration.seconds(props.timeout ?? 30),
       description: props.description,
       environment: props.environment,

@@ -228,6 +228,7 @@ const whatsapp = new WhatsAppStack(app, 'JaleWhatsAppStack', {
   questionGeneratorFn: ai.questionGeneratorFn.function,
   aliasGeneratorFn: ai.aliasGeneratorFn.function,
   trustAssessmentQueue: ai.trustAssessmentQueue,
+  trustExtractionQueue: ai.trustExtractionQueue,
   statusCallbackUrl: whatsappStatusCallbackUrl,
   alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
   documentsBucket: documents.bucket,

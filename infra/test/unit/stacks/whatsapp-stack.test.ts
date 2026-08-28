@@ -92,6 +92,7 @@ describe('WhatsAppStack', () => {
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
+      trustExtractionQueue: ai.trustExtractionQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
       documentsBucket: docsBucket,
@@ -635,6 +636,40 @@ describe('event-driven outbox wake queues', () => {
       const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
       const variables = drainFn.Properties.Environment?.Variables ?? {};
       expect(variables.TRUST_ASSESSMENT_QUEUE_URL).toBeDefined();
+    });
+
+    // R1-X: the drain fans assessment.requested out to a SECOND queue. The
+    // dispatch is fail-open at runtime, so if this env var were missing the
+    // only symptom in production would be a metric nobody is watching — these
+    // two tests are what makes the misconfiguration impossible instead.
+    test('drain function has TRUST_EXTRACTION_QUEUE_URL, distinct from the scorer queue URL', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const variables = drainFn.Properties.Environment?.Variables ?? {};
+      expect(variables.TRUST_EXTRACTION_QUEUE_URL).toBeDefined();
+      expect(variables.TRUST_EXTRACTION_QUEUE_URL)
+        .not.toEqual(variables.TRUST_ASSESSMENT_QUEUE_URL);
+    });
+
+    test('drain role can send to BOTH trust queues (send only — never receive)', () => {
+      const [, drainFn] = findFunctionByDescription(/domain.*outbox.*drain/i);
+      const roleLogicalId = drainFn.Properties.Role['Fn::GetAtt'][0];
+      const policies: Record<string, any> = template.findResources('AWS::IAM::Policy');
+      const sendResources = Object.values(policies)
+        .filter((p: any) => (p.Properties.Roles || []).some((r: any) => r.Ref === roleLogicalId))
+        .flatMap((p: any) => p.Properties.PolicyDocument.Statement)
+        .filter((s: any) => {
+          const actions = Array.isArray(s.Action) ? s.Action : [s.Action];
+          return actions.includes('sqs:SendMessage') && !actions.includes('sqs:ReceiveMessage');
+        })
+        .flatMap((s: any) => (Array.isArray(s.Resource) ? s.Resource : [s.Resource]))
+        .map((r: any) => JSON.stringify(r));
+
+      // Both AiStack queues cross the stack boundary as Fn::ImportValue
+      // references whose export names embed the source logical id, so each
+      // grant is identifiable — asserting on a COUNT alone would pass on the
+      // drain's unrelated worker-intent-wake grant.
+      expect(sendResources.some((r: string) => r.includes('TrustAssessmentQueue'))).toBe(true);
+      expect(sendResources.some((r: string) => r.includes('TrustExtractionQueue'))).toBe(true);
     });
 
     test("drain role sends downstream and consumes only its own domain wake queue", () => {
@@ -1231,6 +1266,7 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
+      trustExtractionQueue: ai.trustExtractionQueue,
       statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
       alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
       documentsBucket: docsBucket,
