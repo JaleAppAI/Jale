@@ -6,6 +6,7 @@ import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ses from 'aws-cdk-lib/aws-ses';
@@ -349,6 +350,22 @@ export class NotificationsStack extends cdk.Stack {
         displayName: 'SES bounce and complaint events for employer email',
       });
 
+      // Without this the lane is inert and every signal says it is healthy.
+      // SES publishes as the `ses.amazonaws.com` service principal, and
+      // nothing in `new sns.Topic` or the L1 event destination grants it
+      // `sns:Publish` — SES would drop each bounce on its own side, so the
+      // handler is never invoked, its error alarm never fires, and
+      // ses_feedback_unknown_message never counts. `aws:SourceAccount` keeps
+      // it from being a confused deputy: any account's SES could otherwise
+      // publish a Complaint here and switch an employer's digest off.
+      const feedbackPublish = feedbackTopic.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowSesEventPublish',
+        principals: [new iam.ServicePrincipal('ses.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [feedbackTopic.topicArn],
+        conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
+      }));
+
       const feedbackLambda = new JaleLambdaFunction(this, 'SesFeedbackHandlerLambda', {
         entry: path.join(__dirname, '../../lambda/notifications/ses-feedback-handler.ts'),
         description: 'SES bounce/complaint handler — switches the employer digest off',
@@ -371,15 +388,25 @@ export class NotificationsStack extends cdk.Stack {
       // BOUNCE and COMPLAINT only. DELIVERY/SEND/OPEN/CLICK would multiply the
       // topic's traffic by the whole send volume to tell the handler nothing
       // it acts on.
-      new ses.CfnConfigurationSetEventDestination(this, 'EmployerEmailFeedbackDestination', {
-        configurationSetName: configurationSet.ref,
-        eventDestination: {
-          name: 'bounce-and-complaint-to-sns',
-          enabled: true,
-          matchingEventTypes: ['BOUNCE', 'COMPLAINT'],
-          snsDestination: { topicArn: feedbackTopic.topicArn },
+      const feedbackDestination = new ses.CfnConfigurationSetEventDestination(
+        this,
+        'EmployerEmailFeedbackDestination',
+        {
+          configurationSetName: configurationSet.ref,
+          eventDestination: {
+            name: 'bounce-and-complaint-to-sns',
+            enabled: true,
+            matchingEventTypes: ['BOUNCE', 'COMPLAINT'],
+            snsDestination: { topicArn: feedbackTopic.topicArn },
+          },
         },
-      });
+      );
+      // SES checks it can publish when the destination is created, so the
+      // topic policy has to land first. CloudFormation infers no ordering
+      // between them: both only reference the topic.
+      if (feedbackPublish.policyDependable) {
+        feedbackDestination.node.addDependency(feedbackPublish.policyDependable);
+      }
 
       notificationsAlarm(
         'SesFeedbackHandlerErrorsAlarm',

@@ -396,6 +396,36 @@ describe('NotificationsStack', () => {
       });
     });
 
+    /**
+     * The failure this catches is silent in every other signal. SES publishes
+     * to the topic as the `ses.amazonaws.com` service principal, and neither
+     * `new sns.Topic` nor the L1 event destination writes a resource policy
+     * granting it `sns:Publish`. Without one, SES drops every bounce and
+     * complaint on its own side: the handler is never invoked, so
+     * SesFeedbackHandlerErrors stays flat, ses_feedback_unknown_message stays
+     * flat, and the whole lane reads as deployed and healthy while a dead
+     * mailbox keeps receiving a daily digest.
+     *
+     * `aws:SourceAccount` is the confused-deputy guard: without it any other
+     * account's SES could publish bounce events into this topic and switch
+     * arbitrary employers' digests off.
+     */
+    it('lets the SES service principal publish to the feedback topic, this account only', () => {
+      feedbackTemplate.resourceCountIs('AWS::SNS::TopicPolicy', 1);
+      feedbackTemplate.hasResourceProperties('AWS::SNS::TopicPolicy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Effect: 'Allow',
+              Action: 'sns:Publish',
+              Principal: { Service: 'ses.amazonaws.com' },
+              Condition: { StringEquals: { 'aws:SourceAccount': Match.anyValue() } },
+            }),
+          ]),
+        }),
+      });
+    });
+
     it('runs the handler in the VPC as jale_admin, on the same secret the settings API uses', () => {
       feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
         Description: 'SES bounce/complaint handler — switches the employer digest off',

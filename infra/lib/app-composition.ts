@@ -174,7 +174,7 @@ export function buildJaleApp(app: cdk.App): void {
     crossRegionReferences: true,
   });
 
-  new BillingStack(app, 'JaleBillingStack', {
+  const billing = new BillingStack(app, 'JaleBillingStack', {
     env,
     vpc: network.vpc,
     privateSubnets: network.privateSubnets,
@@ -215,7 +215,7 @@ export function buildJaleApp(app: cdk.App): void {
   // No dedicated security group or role secret: the producer is DB-only and runs
   // as jale_admin, so it reuses network.lambdaSg and database.dbSecret exactly
   // like Auth/Ai/Matching. See the stack header for why that is deliberate.
-  new NotificationsStack(app, 'JaleNotificationsStack', {
+  const notifications = new NotificationsStack(app, 'JaleNotificationsStack', {
     env,
     vpc: network.vpc,
     lambdaSg: network.lambdaSg,
@@ -224,6 +224,19 @@ export function buildJaleApp(app: cdk.App): void {
     alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
     emailConfigurationSetName: sesConfigurationSetName,
   });
+
+  // The one ordering constraint the literal-threading above does NOT give us for
+  // free. The name is shared, but the SES configuration set is a real resource
+  // that only NotificationsStack creates, and BillingStack's sweeper starts
+  // naming it the moment EMAIL_CONFIGURATION_SET is set: sending against a set
+  // that does not exist yet fails with ConfigurationSetDoesNotExist, which burns
+  // outbox attempts on every queued digest until the other stack lands. Neither
+  // stack references the other, so this is a pure ordering edge with no cycle.
+  // Only added when the name is supplied -- with no configuration set there is
+  // nothing to order, and the two stacks stay independent as before.
+  if (sesConfigurationSetName) {
+    billing.addDependency(notifications, 'sweeper sends with a configuration set this stack creates');
+  }
 
   new LegalStack(app, 'JaleLegalStack', {
     env,
