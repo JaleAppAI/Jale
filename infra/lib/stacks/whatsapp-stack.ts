@@ -1156,8 +1156,23 @@ export class WhatsAppStack extends cdk.Stack {
       authorizationType: apigateway.AuthorizationType.COGNITO,
     };
     onboardingResource.addMethod('GET', webOnboardingIntegration, workerAuth);
-    onboardingResource.addResource('answers').addMethod('POST', webOnboardingIntegration, workerAuth);
-    onboardingResource.addResource('back').addMethod('POST', webOnboardingIntegration, workerAuth);
-    onboardingResource.addResource('language').addMethod('PATCH', webOnboardingIntegration, workerAuth);
+    // ONE `{action}` resource, not three siblings (`answers`, `back`,
+    // `language`). The URLs the browser calls are unchanged; the CloudFormation
+    // footprint is not. ApiStack stands at 489 resources against CloudFormation's
+    // hard maximum of 500, and every REST resource costs more than itself: a
+    // Resource, its method, the OPTIONS preflight `defaultCorsPreflightOptions`
+    // adds, and two Lambda::Permissions per Lambda-backed method. Four sibling
+    // resources come to 20 and synthesis fails outright with
+    // TooManyResourcesInStack; this shape costs 10.
+    //
+    // ANY, because one resource has to carry POST (answers, back) and PATCH
+    // (language). It is not a widening: the Cognito worker authorizer is
+    // attached to the method exactly as it is to the GET, and the handler
+    // answers any method/action pair it does not route with 404 `not_found`.
+    //
+    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: this leaves ApiStack at 499/500.
+    // The stack needs splitting (a nested stack, or a second RestApi for
+    // `/worker/*`) before anything else can be hung off it.
+    onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
   }
 }

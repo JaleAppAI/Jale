@@ -100,10 +100,18 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
     sub: string,
     opts: { method?: string; resource?: string; body?: unknown } = {},
   ): APIGatewayProxyEvent {
+    const requestPath = opts.resource ?? '/worker/onboarding';
+    // API Gateway's REAL shape for this route: ONE `{action}` resource, so
+    // `resource` is the TEMPLATE and the segment arrives in `pathParameters`.
+    // Building the event any other way would test a router that production
+    // never runs (ApiStack has no room for named sibling resources -- see
+    // whatsapp-stack.ts).
+    const action = requestPath.replace(/^\/worker\/onboarding\/?/, '');
     return {
       httpMethod: opts.method ?? 'GET',
-      resource: opts.resource ?? '/worker/onboarding',
-      path: opts.resource ?? '/worker/onboarding',
+      resource: action ? '/worker/onboarding/{action}' : '/worker/onboarding',
+      path: requestPath,
+      pathParameters: action ? { action } : null,
       body: opts.body === undefined ? null : JSON.stringify(opts.body),
       requestContext: { authorizer: { claims: { sub } } },
     } as unknown as APIGatewayProxyEvent;
@@ -691,6 +699,15 @@ maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
 
     test('an unroutable method/path is 404 not_found', async () => {
       const response = await call(subs.lock, { method: 'DELETE', resource: '/worker/onboarding/answers' });
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toEqual({ error: 'not_found' });
+    });
+
+    test('an action the router does not know is 404, not a 500', async () => {
+      // The route is ANY on one `{action}` resource, so API Gateway forwards
+      // every segment and every verb: the 404 is the HANDLER's, not the
+      // gateway's, and it has to exist.
+      const response = await call(subs.lock, { method: 'POST', resource: '/worker/onboarding/bogus' });
       expect(response.statusCode).toBe(404);
       expect(response.body).toEqual({ error: 'not_found' });
     });

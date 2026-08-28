@@ -75,10 +75,22 @@ function parseBody(event: APIGatewayProxyEvent): Record<string, unknown> | null 
 }
 
 /** The path suffix under `/worker/onboarding`, e.g. `answers`. */
+/**
+ * `answers` | `back` | `language` | '' (the bare GET).
+ *
+ * `event.pathParameters.action` FIRST, because the route is a single
+ * `{action}` resource rather than three named siblings — ApiStack is at its
+ * 500-resource ceiling, see `whatsapp-stack.ts`. That makes `event.resource`
+ * the literal template `/worker/onboarding/{action}`, which no path regex
+ * should be asked to read. `event.path` is the fallback: it is what a direct
+ * invoke and the suites' synthetic events carry.
+ */
 function routeSuffix(event: APIGatewayProxyEvent): string {
-  const resource = event.resource || event.path || '';
-  const match = /\/worker\/onboarding(?:\/([a-z-]+))?\/?$/.exec(resource);
-  return match?.[1] ?? '';
+  const fromParam = event.pathParameters?.action;
+  if (typeof fromParam === 'string' && fromParam.length > 0) return fromParam.toLowerCase();
+  const source = event.path || event.resource || '';
+  const match = /\/worker\/onboarding(?:\/([a-zA-Z-]+))?\/?$/.exec(source);
+  return (match?.[1] ?? '').toLowerCase();
 }
 
 /**

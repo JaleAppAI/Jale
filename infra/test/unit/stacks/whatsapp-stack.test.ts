@@ -1261,9 +1261,11 @@ describe('event-driven outbox wake queues', () => {
 
     test.each([
       ['onboarding', 'GET'],
-      ['answers', 'POST'],
-      ['back', 'POST'],
-      ['language', 'PATCH'],
+      // ONE `{action}` resource carries answers/back/language. ApiStack sits
+      // at 489 of CloudFormation's 500 resources, and four sibling resources
+      // cost 20 (resource + method + CORS OPTIONS + two Lambda permissions
+      // each) -- synthesis fails outright. This shape costs 10.
+      ['{action}', 'ANY'],
     ])('/worker/onboarding/%s serves %s behind the worker Cognito authorizer', (part, method) => {
       const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
       const [logicalId] = Object.entries(resources).find(
@@ -1280,6 +1282,17 @@ describe('event-driven outbox wake queues', () => {
       // one of this flow) but authentication is NOT: every route is COGNITO.
       expect(match.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
       expect(match.Properties.AuthorizerId).toBeDefined();
+    });
+
+    test('the door costs ApiStack 10 resources, and the stack has 11 to spare', () => {
+      // A regression guard on the thing that actually broke: this stack is
+      // one feature away from CloudFormation's hard maximum. If this fails
+      // because the count grew, the fix is to SPLIT ApiStack, not to raise
+      // the number.
+      const all = apiTemplate.toJSON().Resources as Record<string, { Type: string }>;
+      const mine = Object.keys(all).filter((id) => /Onboarding/i.test(id));
+      expect(mine.length).toBe(10);
+      expect(Object.keys(all).length).toBeLessThanOrEqual(500);
     });
   });
 });
