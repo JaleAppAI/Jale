@@ -514,7 +514,8 @@ describe('event-driven outbox wake queues', () => {
     const configured = Object.values(functions).filter((resource: any) =>
       resource.Properties?.Environment?.Variables?.TWILIO_STATUS_CALLBACK_URL
         === 'https://callbacks.example.test/prod/whatsapp/status-callback');
-    expect(configured).toHaveLength(9);
+    // 8 since Sprint 22 R1: voice-trust-receiver no longer sends via Twilio.
+    expect(configured).toHaveLength(8);
   });
 
   test('both ApiStack employer-conversation senders use the exact configured URL', () => {

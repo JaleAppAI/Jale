@@ -547,7 +547,8 @@ export class WhatsAppStack extends cdk.Stack {
         BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
-        QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+        // Sprint 22 R1: QUESTION_GENERATOR_ARN removed — the v1 trust hand-off
+        // (autoAdvanceProfileAfterAi) that invoked it was deleted.
         ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
@@ -556,7 +557,6 @@ export class WhatsAppStack extends cdk.Stack {
     whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
     twilioSecret.grantRead(aiProfileWriterLambda.function);
     mediaBucket.grantRead(aiProfileWriterLambda.function);
-    props.questionGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
     props.aliasGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
     // Stream B (Task 8d): a voice note ingested from the v2 lane's
     // profile.voice_choice step completes through this SAME lambda; its v2
@@ -594,22 +594,17 @@ export class WhatsAppStack extends cdk.Stack {
     // ── Step Functions: AI Pipeline ─────────────────────────────
     const voiceTrustReceiverLambda = new JaleLambdaFunction(this, 'VoiceTrustReceiverLambda', {
       entry: path.join(__dirname, '../../lambda/ai/voice-trust-receiver.ts'),
-      description: 'voice-trust-receiver: writes transcript to state_context, advances trust step',
+      description: 'voice-trust-receiver: re-enters the v2 lane with the trust transcript',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       timeout: 30,
-      environment: {
-        DB_SECRET_ARN: whatsappDbSecret.secretName,
-        TWILIO_SECRET_ARN: twilioSecret.secretName,
-        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
-        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
-      },
+      // Sprint 22 R1: the legacy v1 branch (DB writes, Twilio outbox, direct
+      // trust-queue send) was deleted; the receiver now only reads the
+      // transcript from S3 and re-enqueues onto the v2 inbound queue below,
+      // so it holds no DB/Twilio secrets and no assessment-queue grant.
+      environment: {},
     });
-    whatsappDbSecret.grantRead(voiceTrustReceiverLambda.function);
-    twilioSecret.grantRead(voiceTrustReceiverLambda.function);
     mediaBucket.grantRead(voiceTrustReceiverLambda.function);
-    props.trustAssessmentQueue.grantSendMessages(voiceTrustReceiverLambda.function);
     // v2 re-entry (Task 5): a trust voice note started from the v2 lane
     // completes by sending a synthetic event back onto the same v2 inbound
     // FIFO queue the webhook uses — gated on the identical transport flag so
