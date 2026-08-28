@@ -81,3 +81,18 @@ export const VOICE_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 /** Minimum Bedrock extraction confidence (per field) required before
  * `planExtractionWrites` (lib/voice-extraction.ts) will write it. */
 export const VOICE_CONFIDENCE_THRESHOLD = 0.75;
+
+// ── Workflow version ────────────────────────────────────────────────────
+
+/**
+ * The `worker_workflow_runs.workflow_version` every v2 run is bound with.
+ *
+ * Sprint 22 R2-C23: `processor.ts` has declared this as a module-private
+ * `const WHATSAPP_V2_WORKFLOW_VERSION = 1` since the lane was built, and the
+ * web door (`start_web_onboarding_workflow`'s third argument) needs the SAME
+ * number or the two doors mint runs the other cannot recognise. The processor
+ * keeps its own literal — this module is a second declaration, not a
+ * refactor of it — so `web-onboarding-workflow-version.test.ts` reads
+ * processor.ts's source and asserts the two agree. Bump both together.
+ */
+export const WHATSAPP_V2_WORKFLOW_VERSION = 1;
