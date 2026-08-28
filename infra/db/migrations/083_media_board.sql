@@ -1,6 +1,6 @@
 -- ============================================================
 -- 083_media_board.sql
--- Run manually AFTER 081_whatsapp_application_defaults_read.sql
+-- Run manually AFTER 082_employer_digest_settings.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --
 -- Media board: worker portfolio posts (1-10 photos + caption).
@@ -104,7 +104,7 @@ CREATE POLICY worker_post_media_employer_select ON worker_post_media
                   AND p.status = 'published')
   );
 
--- 082 also touches the pre-existing worker_profile_media table (011).
+-- 083 also touches the pre-existing worker_profile_media table (011).
 -- The WhatsApp post lane's profile-photo branch INSERTs into
 -- worker_profile_media under app.current_internal_user_id (the internal-id
 -- lane), but 011's only policy (worker_profile_media_self) checks
@@ -115,10 +115,10 @@ CREATE POLICY worker_post_media_employer_select ON worker_post_media
 -- real Postgres — 011's grants (SELECT/INSERT/UPDATE TO jale_whatsapp,
 -- already in place) are necessary but not sufficient without a policy that
 -- evaluates true for jale_whatsapp sessions. This adds that policy,
--- mirroring 082's own worker_posts_self_internal /
+-- mirroring 083's own worker_posts_self_internal /
 -- worker_post_media_self_internal shape (and 066/081's precedent for the
 -- same self/internal-lane split on other tables), with an explicit TO
--- clause per 082's own rule.
+-- clause per 083's own rule.
 CREATE POLICY worker_profile_media_self_internal ON worker_profile_media
   FOR ALL TO jale_whatsapp
   USING (user_id::text = current_setting('app.current_internal_user_id', true))

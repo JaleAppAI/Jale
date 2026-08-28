@@ -135,6 +135,7 @@ $MigrationFiles = @(
     '083_media_board.sql'
     '084_preferred_cities_whatsapp_write.sql'
     '085_employer_trust_assessment_read.sql'
+    '086_trust_extractions_and_web_onboarding.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
