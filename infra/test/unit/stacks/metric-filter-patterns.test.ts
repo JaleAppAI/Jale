@@ -258,6 +258,26 @@ const FILTERS = collectFilters();
 const LAMBDA_LINES = readLambdaSourceLines();
 
 describe('CloudWatch MetricFilter patterns', () => {
+  // Guards against rot: a new stack that installs a MetricFilter but is not
+  // wired into buildTemplates() would leave the suite green while going
+  // completely unaudited.
+  test('buildTemplates covers every stack source that installs a MetricFilter', () => {
+    const stacksDir = path.join(__dirname, '../../../lib/stacks');
+    const withFilters = fs.readdirSync(stacksDir)
+      .filter((name) => name.endsWith('-stack.ts'))
+      .filter((name) => fs.readFileSync(path.join(stacksDir, name), 'utf8')
+        .includes('new logs.MetricFilter'))
+      .sort();
+    expect(withFilters).toEqual([
+      'ai-stack.ts',
+      'billing-stack.ts',
+      'media-board-stack.ts',
+      'notifications-stack.ts',
+      'referrals-stack.ts',
+      'whatsapp-stack.ts',
+    ]);
+  });
+
   test('the audit found every stack that owns metric filters', () => {
     expect(FILTERS.length).toBeGreaterThan(0);
     const stacks = new Set(FILTERS.map((f) => f.stack));
