@@ -34,6 +34,9 @@ const draft = (overrides: Partial<OnboardingDraft> = {}): OnboardingDraft => ({
 function props(overrides: Partial<Parameters<typeof AboutYouStep>[0]> = {}) {
     return {
         draft: draft(),
+        // The engine's cursor: the first of this screen's two steps, so both
+        // are still ahead of it and the batch is the full one.
+        stepKey: 'profile.name',
         onDraftChange: vi.fn(),
         pendingConfirm: null,
         rejection: null,

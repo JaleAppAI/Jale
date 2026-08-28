@@ -12,7 +12,7 @@ import {
     type OnboardingDraft,
 } from '@/lib/onboarding-flow';
 import { LocationField } from './LocationField';
-import { StepBody, StepField, StepFooter, StepHeader, StepHint, StepLayout, useRejectionMessage } from './StepHeader';
+import { StepBody, StepField, StepFooter, StepHeader, StepHint, StepLayout, useRejectionMessage, type ExitLink } from './StepHeader';
 
 /**
  * Name and location. Two name FIELDS, one `profile.name` VALUE: the engine
@@ -28,20 +28,25 @@ import { StepBody, StepField, StepFooter, StepHeader, StepHint, StepLayout, useR
  */
 export function AboutYouStep({
     draft,
+    stepKey,
     onDraftChange,
     pendingConfirm,
     rejection,
     saving,
     error,
+    exitLink,
     onBack,
     onSubmit,
 }: {
     draft: OnboardingDraft;
+    /** The engine's cursor: decides which of this screen's two steps still need sending. */
+    stepKey: string;
     onDraftChange: (patch: Partial<OnboardingDraft>) => void;
     pendingConfirm: { city: string; state: string } | null;
     rejection: { stepKey: string; reason: string } | null;
     saving: boolean;
     error?: string | null;
+    exitLink?: ExitLink;
     onBack: (() => void) | null;
     onSubmit: (items: OnboardingAnswerBatch) => void;
 }) {
@@ -52,18 +57,22 @@ export function AboutYouStep({
 
     const nameError = rejection?.stepKey === 'profile.name' ? rejectionMessage(rejection.reason) : null;
     const locationError = rejection?.stepKey === 'profile.location' ? rejectionMessage(rejection.reason) : null;
+    const nameErrorId = `${fieldId}-name-error`;
+    const locationErrorId = `${fieldId}-location-error`;
 
     return (
         <StepLayout>
             <StepHeader screen="about" title={t('title')} subtitle={t('subtitle')} onBack={onBack} backDisabled={saving} />
             <StepBody>
                 <div className="grid grid-cols-1 gap-2.5 min-[400px]:grid-cols-2">
-                    <StepField label={t('first_name')} htmlFor={`${fieldId}-first`} error={nameError}>
+                    <StepField label={t('first_name')} htmlFor={`${fieldId}-first`} error={nameError} errorId={nameErrorId}>
                         <Input
                             id={`${fieldId}-first`}
                             value={draft.firstName}
                             autoComplete="given-name"
                             disabled={saving}
+                            aria-invalid={nameError ? true : undefined}
+                            aria-describedby={nameError ? nameErrorId : undefined}
                             onChange={(e) => onDraftChange({ firstName: e.target.value })}
                         />
                     </StepField>
@@ -85,11 +94,13 @@ export function AboutYouStep({
                     <LocationField
                         value={draft.location}
                         disabled={saving}
+                        invalid={locationError !== null}
+                        describedBy={locationError ? locationErrorId : undefined}
                         placeholder={t('location_placeholder')}
                         onChange={(location) => onDraftChange({ location })}
                     />
                     {locationError
-                        ? <p role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{locationError}</p>
+                        ? <p id={locationErrorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{locationError}</p>
                         : <StepHint>{t('location_help')}</StepHint>}
                 </div>
 
@@ -117,12 +128,13 @@ export function AboutYouStep({
                         size="lg"
                         loading={saving}
                         loadingLabel={tCommon('loading')}
-                        disabled={!canContinue('about', draft)}
-                        onClick={() => onSubmit(answersForScreen('about', draft))}
+                        disabled={!canContinue('about', draft, stepKey)}
+                        onClick={() => onSubmit(answersForScreen('about', draft, stepKey))}
                     >
                         {t('cta')}
                     </Button>
                 )}
+                {exitLink}
             </StepFooter>
         </StepLayout>
     );

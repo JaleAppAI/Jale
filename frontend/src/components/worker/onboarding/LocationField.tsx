@@ -19,11 +19,15 @@ export function LocationField({
     value,
     onChange,
     disabled = false,
+    invalid = false,
+    describedBy,
     placeholder,
 }: {
     value: LocationDraft;
     onChange: (value: LocationDraft) => void;
     disabled?: boolean;
+    invalid?: boolean;
+    describedBy?: string;
     placeholder?: string;
 }) {
     const t = useTranslations('worker_onboarding.about');
@@ -34,6 +38,9 @@ export function LocationField({
             <LocationPicker
                 value={value.text}
                 placeholder={placeholder}
+                disabled={disabled}
+                invalid={invalid}
+                describedBy={describedBy}
                 onChange={(picked) => {
                     onChange({
                         text: picked.label,

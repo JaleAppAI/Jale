@@ -24,24 +24,6 @@ import {
 const OTP_LENGTH = 6;
 const RESEND_CODE_COOLDOWN_SECONDS = 60;
 
-/**
- * `POST /auth/worker/signup` still REQUIRES a non-empty `fullName` (it 400s
- * with `missing_full_name`, and stages the value through
- * `stage_worker_pending_name`), but this form no longer asks for one -- the
- * name is the onboarding flow's `profile.name` step, where it is asked as two
- * fields and written to the real profile.
- *
- * So a placeholder goes over the wire and is overwritten minutes later. An em
- * dash rather than something like "Worker": if a run is abandoned before
- * `profile.name`, an employer would never see this anyway (an onboarding
- * worker is not surfaced), and a dash reads as "blank" rather than as a name
- * someone chose.
- *
- * REMOVE THIS the moment the backend drops the parameter -- the sibling task
- * that owns `/worker/onboarding` is doing exactly that.
- */
-const SIGNUP_NAME_PLACEHOLDER = '\u2014';
-
 type Step = 'login' | 'signup' | 'otp';
 
 export default function WorkerAuthForm() {
@@ -69,6 +51,10 @@ export default function WorkerAuthForm() {
     }, []);
 
     const [step, setStep] = useState<Step>('login');
+    // Which door this OTP screen was reached through. `step` cannot answer it
+    // -- both doors set it to 'otp' -- and the two want different fallbacks
+    // once the code is accepted (see `handleVerifyOtp`).
+    const [isSignup, setIsSignup] = useState(false);
     const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
     const [phoneLocalNumber, setPhoneLocalNumber] = useState('');
     const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
@@ -101,6 +87,7 @@ export default function WorkerAuthForm() {
             setUser(await workerSignIn(phone));
             resetDigits();
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+            setIsSignup(false);
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
         } catch (err) {
@@ -115,10 +102,11 @@ export default function WorkerAuthForm() {
         setResendSuccess(false);
         setIsLoading(true);
         try {
-            await workerSignUp({ phone, fullName: SIGNUP_NAME_PLACEHOLDER });
+            await workerSignUp({ phone });
             setUser(await workerSignIn(phone));
             resetDigits();
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+            setIsSignup(true);
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
         } catch (err) {
@@ -188,7 +176,16 @@ export default function WorkerAuthForm() {
                 lifecycle = null;
             }
 
-            if (lifecycle && lifecycle !== 'ready') {
+            // A read that failed tells us nothing, so the two doors part ways
+            // here. After a SIGNUP there is no profile worth showing and the
+            // run is certainly unfinished, so send them to the flow and let it
+            // do the error handling it already has (retry, and a way out).
+            // After a LOGIN the old destination is still the better guess:
+            // most workers signing in are done onboarding, and dropping them
+            // into a flow they finished months ago would be worse than the
+            // profile page they asked for.
+            const unread = lifecycle === null;
+            if ((lifecycle && lifecycle !== 'ready') || (unread && isSignup)) {
                 router.replace('/worker/onboarding');
             } else {
                 const jobId = validateJobId(stash?.jobId);

@@ -18,6 +18,7 @@ const draft = (overrides: Partial<OnboardingDraft> = {}): OnboardingDraft => ({
 function props(overrides: Partial<Parameters<typeof TradeStep>[0]> = {}) {
     return {
         draft: draft(),
+        stepKey: 'profile.trade',
         onDraftChange: vi.fn(),
         rejection: null,
         saving: false,

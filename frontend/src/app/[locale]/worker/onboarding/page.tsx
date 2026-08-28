@@ -56,7 +56,13 @@ export default function WorkerOnboardingPage() {
     if (errorKind && !state) {
         return (
             <main className="mx-auto flex min-h-screen max-w-md items-center px-4 py-10">
-                <ErrorState kind={errorKind} onRetry={retry} />
+                {/* `backHref` matters more here than on most pages: several of
+                    the kinds this can be (`not_found` from a worker row the
+                    engine has no run for, a legal wall, a 403) are not things
+                    Retry can fix, and without a second button this screen is
+                    the end of the road. The profile page is reachable for any
+                    signed-in worker. */}
+                <ErrorState kind={errorKind} onRetry={retry} backHref="/worker/profile" />
             </main>
         );
     }

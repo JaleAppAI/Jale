@@ -1765,6 +1765,7 @@
       "title": "¿Agregar una foto?",
       "subtitle": "Opcional. Los trabajadores con foto reciben más respuestas.",
       "add": "Elegir foto",
+      "finish": "Terminar",
       "skip": "Por ahora no"
     },
     "done": {
@@ -1776,6 +1777,7 @@
       "working_body": "Estamos sacando las habilidades que mencionaste. Toma un momento — puedes seguir.",
       "extracted": "Extrajimos estas habilidades de tus respuestas. Ya puedes empezar en Jale.",
       "failed": "Esta vez no pudimos leer tus respuestas. Los empleadores igual las ven con tus propias palabras.",
+      "stalled": "Todavía no terminamos de leer tus respuestas — ya puedes empezar en Jale.",
       "cta": "Ir a mi perfil",
       "cta_job": "Continuar al trabajo"
     },
@@ -1793,12 +1795,13 @@
       "reason": {
         "too_short": "Un poco más, por favor — al menos {min} caracteres.",
         "too_long": "Es demasiado largo — que no pase de {max} caracteres."
-      }
+      },
+      "step_mismatch": "Tu progreso se actualizó desde otro dispositivo — revisa este paso y continúa."
     },
     "blocked": {
       "suspended": "Esta cuenta está en pausa, así que no podemos continuar. Responde a cualquier mensaje de Jale y lo revisamos.",
       "not_onboardable": "No podemos configurar esta cuenta ahora mismo. Responde a cualquier mensaje de Jale y te ayudamos."
     },
-    "stuck": "No podemos continuar tu registro desde aquí. Nada de lo que nos dijiste se perdió — abre tu perfil para terminarlo, o responde a cualquier mensaje de Jale y te ayudamos."
+    "stuck": "Termina este paso en WhatsApp o vuelve más tarde."
   }
 }

@@ -12,7 +12,7 @@ import {
     answerTooLong,
     type OnboardingAnswerBatch,
 } from '@/lib/onboarding-flow';
-import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage } from './StepHeader';
+import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage, type ExitLink } from './StepHeader';
 
 /**
  * One of the three answers employers actually read.
@@ -41,6 +41,7 @@ export function TrustQuestionStep({
     rejection,
     saving,
     error,
+    exitLink,
     onBack,
     onSubmit,
 }: {
@@ -53,6 +54,7 @@ export function TrustQuestionStep({
     rejection: { stepKey: string; reason: string } | null;
     saving: boolean;
     error?: string | null;
+    exitLink?: ExitLink;
     onBack: (() => void) | null;
     onSubmit: (items: OnboardingAnswerBatch) => void;
 }) {
@@ -70,6 +72,8 @@ export function TrustQuestionStep({
     const tooLong = answerTooLong(answer);
     const stepKey = `trust.question.${index}`;
     const rejected = rejection?.stepKey === stepKey ? rejectionMessage(rejection.reason) : null;
+    const errorId = `${fieldId}-error`;
+    const hintId = `${fieldId}-hint`;
 
     return (
         <StepLayout>
@@ -91,6 +95,10 @@ export function TrustQuestionStep({
                         placeholder={t('placeholder')}
                         value={answer}
                         disabled={saving}
+                        // Invalid only once the engine has actually refused it:
+                        // an answer still being typed is short, not wrong.
+                        aria-invalid={rejected || tooLong ? true : undefined}
+                        aria-describedby={rejected ? errorId : hintId}
                         onChange={(e) => onAnswerChange(e.target.value)}
                     />
                     <button
@@ -116,7 +124,7 @@ export function TrustQuestionStep({
                             <span className="text-[13px] text-[var(--jale-ink-2)]">{t('voice_note')}</span>
                         </span>
                     ) : (
-                        <span className="flex-1 text-[13px] text-[var(--jale-ink-2)]">
+                        <span id={hintId} className="flex-1 text-[13px] text-[var(--jale-ink-2)]">
                             {tooLong
                                 ? t('too_long', { count: MAX_ANSWER_CHARS })
                                 : trimmed.length > 0 && !answerLongEnough(answer)
@@ -129,7 +137,7 @@ export function TrustQuestionStep({
                     </span>
                 </div>
 
-                {rejected ? <p role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p> : null}
+                {rejected ? <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p> : null}
 
                 {index === 1 ? (
                     <p className="flex items-start gap-2 text-[13px] text-[var(--jale-ink-2)]">
@@ -150,6 +158,7 @@ export function TrustQuestionStep({
                 >
                     {index === 3 ? t('last_cta') : t('cta')}
                 </Button>
+                {exitLink}
             </StepFooter>
         </StepLayout>
     );

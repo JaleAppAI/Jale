@@ -131,6 +131,21 @@ describe('WorkerAuthForm — signup is phone only', () => {
         await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalled());
         expect(sessionStorage.getItem('pendingWorkerProfile')).toBeNull();
     });
+
+    it('sends the phone and NOTHING else — no placeholder name', async () => {
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await goToSignup(user);
+        await user.type(screen.getByRole('textbox'), '2105550134');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.create_account') }));
+
+        // The endpoint stopped requiring `fullName`, so the em-dash stand-in
+        // that used to be posted here is gone. A real name is collected by the
+        // onboarding flow's own step and written to the profile.
+        await waitFor(() => expect(cognito.workerSignUp).toHaveBeenCalledTimes(1));
+        const [arg] = cognito.workerSignUp.mock.calls[0];
+        expect(Object.keys(arg)).toEqual(['phone']);
+    });
 });
 
 describe('WorkerAuthForm — where a verified worker lands', () => {
@@ -158,7 +173,10 @@ describe('WorkerAuthForm — where a verified worker lands', () => {
         expect(replace).not.toHaveBeenCalled();
     });
 
-    it('falls back to the previous destination when the onboarding read fails', async () => {
+    it('falls back to the previous destination when a LOGIN cannot read the run', async () => {
+        // Most workers signing in have long finished onboarding; dropping them
+        // into a flow they completed months ago would be worse than the page
+        // they actually asked for.
         api.getWorkerOnboarding.mockRejectedValue(new Error('offline'));
         const user = userEvent.setup();
         render(<WorkerAuthForm />);
@@ -167,5 +185,22 @@ describe('WorkerAuthForm — where a verified worker lands', () => {
         await completeOtp(user);
 
         await waitFor(() => expect(push).toHaveBeenCalledWith('/worker/profile'));
+    });
+
+    it('sends a SIGNUP to the flow even when the run cannot be read', async () => {
+        // The other direction: an account made seconds ago has no profile
+        // worth showing and certainly has not finished onboarding, so the
+        // flow -- which has its own retry and its own way out -- is the
+        // honest destination.
+        api.getWorkerOnboarding.mockRejectedValue(new Error('offline'));
+        const user = userEvent.setup();
+        render(<WorkerAuthForm />);
+        await goToSignup(user);
+        await user.type(screen.getByRole('textbox'), '2105550134');
+        await user.click(screen.getByRole('button', { name: message('auth.worker.create_account') }));
+        await completeOtp(user);
+
+        await waitFor(() => expect(replace).toHaveBeenCalledWith('/worker/onboarding'));
+        expect(push).not.toHaveBeenCalled();
     });
 });

@@ -1,5 +1,5 @@
 'use client';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, PROGRESS_SEGMENTS, type ScreenKey } from '@/lib/onboarding-flow';
 
@@ -10,6 +10,13 @@ import { MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, PROGRESS_SEGMENTS, type ScreenKey }
  * The heading recipe (1.4rem / 800 / -0.03em) is `AuthHeading`'s, deliberately:
  * a worker walks straight out of `WorkerAuthForm` into this flow and the
  * headline must not change size or weight under them mid-journey.
+ *
+ * FOCUS MOVES TO THE HEADING on every step change. Nothing navigates here --
+ * the URL is the same eight screens deep -- so a screen reader would otherwise
+ * announce nothing at all when Continue swapped the entire page, and a keyboard
+ * user would be left tabbing from wherever the old Continue button was.
+ * `tabIndex={-1}` makes the h1 focusable programmatically without adding it to
+ * the tab order.
  */
 export function StepHeader({
     screen,
@@ -31,7 +38,12 @@ export function StepHeader({
     backDisabled?: boolean;
 }) {
     const t = useTranslations('worker_onboarding');
+    const headingRef = useRef<HTMLHeadingElement>(null);
     const index = (PROGRESS_SEGMENTS as readonly ScreenKey[]).indexOf(screen);
+
+    useEffect(() => {
+        headingRef.current?.focus();
+    }, [screen]);
     const counter = counterLabel
         ?? (index >= 0 ? t('progress.counter', { current: index + 1, total: PROGRESS_SEGMENTS.length }) : '');
 
@@ -56,7 +68,11 @@ export function StepHeader({
             {eyebrow ? (
                 <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-[var(--jale-ink-2)]">{eyebrow}</p>
             ) : null}
-            <h1 className="mb-2 mt-1.5 text-[1.4rem] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)]">
+            <h1
+                ref={headingRef}
+                tabIndex={-1}
+                className="mb-2 mt-1.5 text-[1.4rem] font-extrabold leading-tight tracking-[-0.03em] text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
+            >
                 {title}
             </h1>
             {subtitle ? <p className="mb-[18px] text-[15px] font-light text-[var(--jale-ink-2)]">{subtitle}</p> : null}
@@ -78,11 +94,13 @@ export function StepFooter({ children }: { children: ReactNode }) {
 }
 
 /** Uppercase field label, matching `WorkerAuthForm`'s `Field`. */
-export function StepField({ label, htmlFor, children, error }: {
+export function StepField({ label, htmlFor, children, error, errorId }: {
     label: string;
     htmlFor?: string;
     children: ReactNode;
     error?: string | null;
+    /** Wire this onto the control's `aria-describedby` so the error is read with it. */
+    errorId?: string;
 }) {
     return (
         <div className="flex flex-col gap-1.5">
@@ -90,10 +108,16 @@ export function StepField({ label, htmlFor, children, error }: {
                 {label}
             </label>
             {children}
-            {error ? <p role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{error}</p> : null}
+            {error ? <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{error}</p> : null}
         </div>
     );
 }
+
+/**
+ * The quiet way out, shown under the error once saving has failed twice in a
+ * row. `null` the rest of the time, which is nearly always.
+ */
+export type ExitLink = ReactNode | null;
 
 export function StepHint({ children }: { children: ReactNode }) {
     return <p className="text-[13px] text-[var(--jale-ink-2)]">{children}</p>;

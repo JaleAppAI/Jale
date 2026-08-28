@@ -633,6 +633,12 @@ export type OnboardingSaveResult =
   /** 409: this worker cannot be onboarded at all. A dead end, not a retry. */
   | { kind: 'blocked'; reason: 'suspended' | 'not_onboardable' };
 
+/**
+ * All four helpers take a trailing optional `AbortSignal`, mutations included:
+ * a component that unmounts mid-save (a language switch is a route change, and
+ * the flow does one) should be able to drop the request rather than have its
+ * `.then` run against a dead tree.
+ */
 export async function getWorkerOnboarding(token: string, signal?: AbortSignal): Promise<OnboardingState> {
   const res = await apiFetch('/worker/onboarding', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
@@ -642,10 +648,11 @@ export async function getWorkerOnboarding(token: string, signal?: AbortSignal): 
 export async function postOnboardingAnswers(
   token: string,
   body: OnboardingAnswersBody,
+  signal?: AbortSignal,
 ): Promise<OnboardingSaveResult> {
   const res = await apiFetch(
     '/worker/onboarding/answers',
-    { method: 'POST', body: JSON.stringify(body) },
+    { method: 'POST', body: JSON.stringify(body), signal },
     token,
   );
   if (res.ok) return { kind: 'saved', state: await res.json() };
@@ -692,10 +699,11 @@ export async function postOnboardingAnswers(
 export async function postOnboardingBack(
   token: string,
   body: { lockVersion: number },
+  signal?: AbortSignal,
 ): Promise<OnboardingState> {
   const res = await apiFetch(
     '/worker/onboarding/back',
-    { method: 'POST', body: JSON.stringify(body) },
+    { method: 'POST', body: JSON.stringify(body), signal },
     token,
   );
   if (!res.ok) throw await parseApiError(res, 'save_failed');
@@ -705,10 +713,11 @@ export async function postOnboardingBack(
 export async function patchOnboardingLanguage(
   token: string,
   body: { preferredLanguage: 'en' | 'es' },
+  signal?: AbortSignal,
 ): Promise<OnboardingState> {
   const res = await apiFetch(
     '/worker/onboarding/language',
-    { method: 'PATCH', body: JSON.stringify(body) },
+    { method: 'PATCH', body: JSON.stringify(body), signal },
     token,
   );
   if (!res.ok) throw await parseApiError(res, 'save_failed');

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { useLocale, useTranslations } from 'next-intl';
 import { usePathname, useRouter } from '@/i18n/navigation';
 import { classifyError, errorMessageKey } from '@/lib/api/errors';
@@ -14,8 +14,10 @@ import {
     currentScreen,
     initFlowState,
     isAnswerableStepKey,
+    itemsFromCursor,
     onboardingFlowReducer,
     questionText,
+    screenForState,
     trustQuestionIndex,
     type OnboardingAnswerBatch,
     type OnboardingDraft,
@@ -62,6 +64,13 @@ import { DoneStep } from './DoneStep';
  * will refuse, and there is no Back off the first screen. So an unanswerable
  * step gets the exit panel instead -- their answers are saved either way.
  *
+ * WHAT A BATCH MAY CONTAIN. The engine applies a batch item by item and
+ * refuses any item that is not the step it is on at that moment -- it does not
+ * skip the ones behind it. Every batch therefore goes through
+ * `itemsFromCursor` on the way out, here rather than only in the screens, so
+ * the rule holds for the confirm buttons and for whatever screen is added
+ * next.
+ *
  * WHY NOT `usePageData`. That hook's legal-wall handling redirects to
  * `/legal/accept` on a `legal_wall` classification -- and accepting the legal
  * terms is a STEP of this flow (`TermsStep`). Wiring it up here would bounce a
@@ -91,6 +100,8 @@ export function OnboardingFlow({
     const [flow, dispatch] = useReducer(onboardingFlowReducer, initialState, initFlowState);
     const [languageBusy, setLanguageBusy] = useState(false);
     const [handoffJobId, setHandoffJobId] = useState<string | null>(null);
+    const pollsRef = useRef(0);
+    const [pollsSpent, setPollsSpent] = useState(false);
 
     const screen = currentScreen(flow);
     // Parked on a step with no screen behind it (see the header comment).
@@ -103,6 +114,44 @@ export function OnboardingFlow({
         && !isAnswerableStepKey(flow.server.run.stepKey);
     const extractionStatus = flow.server.extraction?.status ?? 'pending';
 
+    // The draft is parked under the run AND the step it belongs to: a worker
+    // who toggles language on `profile.location` and is then moved forward by
+    // WhatsApp must not have that text poured into a different question.
+    const draftKey = `jale.onboarding.draft.${flow.server.run.id}.${flow.server.run.stepKey}`;
+
+    function stashDraft() {
+        try {
+            window.sessionStorage.setItem(draftKey, JSON.stringify(flow.draft));
+        } catch {
+            // Private mode, or a full quota. The language switch still works;
+            // the worker just retypes. Never worth failing the toggle for.
+        }
+    }
+
+    // Restore-once, on mount. Reading in an effect (not during render) because
+    // `sessionStorage` does not exist on the server, and clearing immediately
+    // because a parked draft is for exactly one remount -- a reload an hour
+    // later should show what the server has, not a ghost.
+    useEffect(() => {
+        let stored: string | null = null;
+        try {
+            stored = window.sessionStorage.getItem(draftKey);
+            window.sessionStorage.removeItem(draftKey);
+        } catch {
+            return;
+        }
+        if (!stored) return;
+        try {
+            const parsed: unknown = JSON.parse(stored);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                dispatch({ type: 'set_draft', patch: parsed as Partial<OnboardingDraft> });
+            }
+        } catch {
+            // Someone else's key, or a half-written value. Ignore it.
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     // A referred stranger who signed up from a shared job link still has that
     // job waiting: `WorkerAuthForm` deliberately leaves the stash in place and
     // this flow finishes the journey. Read in an effect, never during render --
@@ -114,15 +163,27 @@ export function OnboardingFlow({
     // Poll the extraction while the summary is on screen. Capped by ATTEMPTS
     // rather than wall-clock so the stop condition is exact under test and
     // unaffected by a tab that was backgrounded mid-run.
+    //
+    // The count lives in a ref because the effect RE-RUNS when the status
+    // moves `pending` -> `extracting`, which is the single most likely thing
+    // to happen while it is running. A local counter would go back to zero
+    // there and quietly double the budget.
     useEffect(() => {
-        if (screen !== 'done') return;
+        if (screen !== 'done') {
+            pollsRef.current = 0;
+            setPollsSpent(false);
+            return;
+        }
         if (extractionStatus === 'completed' || extractionStatus === 'failed') return;
+        if (pollsRef.current >= MAX_POLLS) return;
 
-        let polls = 0;
         const controller = new AbortController();
         const timer = window.setInterval(() => {
-            polls += 1;
-            if (polls >= MAX_POLLS) window.clearInterval(timer);
+            pollsRef.current += 1;
+            if (pollsRef.current >= MAX_POLLS) {
+                window.clearInterval(timer);
+                setPollsSpent(true);
+            }
             getWorkerOnboarding(token, controller.signal)
                 .then((server) => dispatch({ type: 'sync_server', server }))
                 // A failed poll is not worth a banner: the answers are saved,
@@ -136,7 +197,12 @@ export function OnboardingFlow({
         };
     }, [screen, extractionStatus, token]);
 
-    async function submit(items: OnboardingAnswerBatch) {
+    async function submit(batch: OnboardingAnswerBatch) {
+        // The last word on what leaves this component: never an item the
+        // engine is already past. See the header.
+        const items = itemsFromCursor(batch, flow.server.run.stepKey);
+        if (items.length === 0) return;
+
         dispatch({ type: 'saving' });
         try {
             let result = await postOnboardingAnswers(token, {
@@ -166,9 +232,18 @@ export function OnboardingFlow({
                 return;
             }
             if (result.kind === 'step_mismatch') {
-                // This client is behind the run, not in conflict with it:
-                // re-read and re-render wherever the engine actually is.
-                dispatch({ type: 'hydrate', server: await getWorkerOnboarding(token) });
+                // This client is behind the run, not in conflict with it: the
+                // other door moved the cursor between our read and our write.
+                //
+                // Re-read, and then be careful about the draft. If the engine
+                // turns out to be on a step this same screen answers, the
+                // worker is looking at their own half-typed answer and
+                // rebuilding it from the server would delete it in front of
+                // them -- keep it and say what happened. Only a move to a
+                // DIFFERENT screen rebuilds, because then the draft belongs
+                // to a screen that is no longer on the page.
+                const fresh = await getWorkerOnboarding(token);
+                dispatch({ type: 'step_mismatch', server: fresh, sameScreen: screenForState(fresh) === screen });
                 return;
             }
             if (result.kind === 'step_rejected') {
@@ -205,8 +280,17 @@ export function OnboardingFlow({
     async function selectLanguage(language: LanguageChoice) {
         if (language === locale) return;
         setLanguageBusy(true);
+        // Switching language is a ROUTE change (`/en/...` -> `/es/...`), so
+        // this component unmounts and remounts with whatever the server says.
+        // Anything typed and not yet saved would die there, which is exactly
+        // when a worker switches: they hit a question they would rather answer
+        // in their own language. Park the draft first; the remount picks it up.
+        stashDraft();
         try {
-            dispatch({ type: 'hydrate', server: await patchOnboardingLanguage(token, { preferredLanguage: language }) });
+            // `sync_server`, not `hydrate`: the response is a fresh snapshot of
+            // a run that has not moved, and rebuilding the draft from it would
+            // undo the same typing the stash above is protecting.
+            dispatch({ type: 'sync_server', server: await patchOnboardingLanguage(token, { preferredLanguage: language }) });
         } catch {
             // Non-fatal by contract: the visible language is what the worker
             // just asked for, so the route still changes; only the stored
@@ -229,6 +313,15 @@ export function OnboardingFlow({
 
     const onDraftChange = (patch: Partial<OnboardingDraft>) => dispatch({ type: 'set_draft', patch });
     const errorText = flow.errorKind ? tCommon(errorMessageKey(flow.errorKind)) : null;
+    // One failed save is a blip and the retry is right there. Two in a row and
+    // the flow stops insisting: everything answered so far is already on the
+    // server, so offer the way out under the message rather than leaving a
+    // worker pressing a button that keeps failing.
+    const exitLink = flow.failures >= 2 ? (
+        <Button variant="ghost" onClick={() => router.replace('/worker/profile')}>
+            {tOnboarding('common.go_to_profile')}
+        </Button>
+    ) : null;
     // Back walks the ENGINE, so it is only offered where the engine can walk:
     // not on the first screen, and not once the run has completed (the photo
     // prompt and the summary both sit after that point).
@@ -242,7 +335,16 @@ export function OnboardingFlow({
         >
             {flow.blocked ? exitPanel(tBlocked(flow.blocked))
                 : stuck ? exitPanel(tOnboarding('stuck'))
-                    : renderScreen()}
+                    : (
+                        <>
+                            {flow.notice ? (
+                                <div className="mb-3.5">
+                                    <InlineFeedback tone="info">{tOnboarding(`rejection.${flow.notice}`)}</InlineFeedback>
+                                </div>
+                            ) : null}
+                            {renderScreen()}
+                        </>
+                    )}
         </OnboardingShell>
     );
 
@@ -265,17 +367,19 @@ export function OnboardingFlow({
     function renderScreen() {
         const shared = {
             draft: flow.draft,
+            stepKey: flow.server.run.stepKey,
             onDraftChange,
             rejection: flow.rejection,
             saving: flow.saving,
             error: errorText,
+            exitLink,
             onBack: backHandler,
             onSubmit: submit,
         };
 
         switch (screen) {
             case 'terms':
-                return <TermsStep saving={flow.saving} error={errorText} onSubmit={submit} />;
+                return <TermsStep saving={flow.saving} error={errorText} exitLink={exitLink} onSubmit={submit} />;
             case 'about':
                 return <AboutYouStep {...shared} pendingConfirm={flow.server.pendingLocationConfirm} />;
             case 'trade':
@@ -302,6 +406,7 @@ export function OnboardingFlow({
                         rejection={flow.rejection}
                         saving={flow.saving}
                         error={errorText}
+                        exitLink={exitLink}
                         onBack={backHandler}
                         onSubmit={submit}
                     />
@@ -314,6 +419,7 @@ export function OnboardingFlow({
                     <DoneStep
                         state={flow.server}
                         hasJobHandoff={handoffJobId !== null}
+                        extractionStalled={pollsSpent}
                         onFinish={finish}
                     />
                 );

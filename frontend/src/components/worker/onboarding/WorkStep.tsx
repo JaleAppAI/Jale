@@ -21,7 +21,7 @@ import {
     type TransportKey,
 } from '@/lib/worker-vocab';
 import { OptionGrid } from './OptionGrid';
-import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage } from './StepHeader';
+import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage, type ExitLink } from './StepHeader';
 
 /**
  * Three questions, ONE screen, one batch of three steps. The WhatsApp engine
@@ -34,18 +34,27 @@ import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage } fro
  */
 export function WorkStep({
     draft,
+    stepKey,
     onDraftChange,
     rejection,
     saving,
     error,
+    exitLink,
     onBack,
     onSubmit,
 }: {
     draft: OnboardingDraft;
+    /**
+     * The engine's cursor. This screen holds three engine steps, and a worker
+     * resuming mid-way through them must only re-send the ones still ahead of
+     * it -- the engine refuses a batch that starts behind where it is.
+     */
+    stepKey: string;
     onDraftChange: (patch: Partial<OnboardingDraft>) => void;
     rejection: { stepKey: string; reason: string } | null;
     saving: boolean;
     error?: string | null;
+    exitLink?: ExitLink;
     onBack: (() => void) | null;
     onSubmit: (items: OnboardingAnswerBatch) => void;
 }) {
@@ -58,6 +67,7 @@ export function WorkStep({
     const rejected = rejection && rejection.stepKey.startsWith('profile.')
         ? rejectionMessage(rejection.reason)
         : null;
+    const errorId = `${groupId}-error`;
 
     return (
         <StepLayout>
@@ -67,6 +77,7 @@ export function WorkStep({
                     <OptionGrid<ExperienceKey>
                         variant="grid"
                         labelledBy={`${groupId}-years`}
+                        describedBy={rejected ? errorId : undefined}
                         options={EXPERIENCE_KEYS.map((key) => ({ value: key, label: tVocab(experienceLabelKey(key)) }))}
                         value={draft.experience}
                         disabled={saving}
@@ -78,6 +89,7 @@ export function WorkStep({
                     <OptionGrid<TransportKey>
                         variant="grid"
                         labelledBy={`${groupId}-transport`}
+                        describedBy={rejected ? errorId : undefined}
                         options={TRANSPORT_KEYS.map((key) => ({ value: key, label: tVocab(transportLabelKey(key)) }))}
                         value={draft.transportation === null ? null : (draft.transportation ? 'yes' : 'no')}
                         disabled={saving}
@@ -89,6 +101,7 @@ export function WorkStep({
                     <OptionGrid<AvailabilityKey>
                         variant="grid"
                         labelledBy={`${groupId}-availability`}
+                        describedBy={rejected ? errorId : undefined}
                         options={AVAILABILITY_KEYS.map((key) => ({ value: key, label: tVocab(availabilityLabelKey(key)) }))}
                         value={draft.availability}
                         disabled={saving}
@@ -96,7 +109,7 @@ export function WorkStep({
                     />
                 </Group>
 
-                {rejected ? <p role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p> : null}
+                {rejected ? <p id={errorId} role="alert" className="text-xs font-semibold text-[var(--jale-danger)]">{rejected}</p> : null}
             </StepBody>
             <StepFooter>
                 {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
@@ -105,11 +118,12 @@ export function WorkStep({
                     size="lg"
                     loading={saving}
                     loadingLabel={tCommon('loading')}
-                    disabled={!canContinue('work', draft)}
-                    onClick={() => onSubmit(answersForScreen('work', draft))}
+                    disabled={!canContinue('work', draft, stepKey)}
+                    onClick={() => onSubmit(answersForScreen('work', draft, stepKey))}
                 >
                     {t('cta')}
                 </Button>
+                {exitLink}
             </StepFooter>
         </StepLayout>
     );

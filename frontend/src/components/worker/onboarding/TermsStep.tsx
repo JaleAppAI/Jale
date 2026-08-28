@@ -3,7 +3,7 @@ import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { answersForScreen, type OnboardingAnswerBatch, type OnboardingDraft } from '@/lib/onboarding-flow';
-import { StepBody, StepFooter, StepHeader, StepLayout } from './StepHeader';
+import { StepBody, StepFooter, StepHeader, StepLayout, type ExitLink } from './StepHeader';
 
 /** The draft plays no part here — `legal.review` is answered with a constant. */
 const NO_DRAFT = {} as OnboardingDraft;
@@ -19,10 +19,12 @@ const NO_DRAFT = {} as OnboardingDraft;
 export function TermsStep({
     saving,
     error,
+    exitLink,
     onSubmit,
 }: {
     saving: boolean;
     error?: string | null;
+    exitLink?: ExitLink;
     onSubmit: (items: OnboardingAnswerBatch) => void;
 }) {
     const t = useTranslations('worker_onboarding.terms');
@@ -48,10 +50,11 @@ export function TermsStep({
                     size="lg"
                     loading={saving}
                     loadingLabel={tCommon('loading')}
-                    onClick={() => onSubmit(answersForScreen('terms', NO_DRAFT))}
+                    onClick={() => onSubmit(answersForScreen('terms', NO_DRAFT, 'legal.review'))}
                 >
                     {t('cta')}
                 </Button>
+                {exitLink}
             </StepFooter>
         </StepLayout>
     );

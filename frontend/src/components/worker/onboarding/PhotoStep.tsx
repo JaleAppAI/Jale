@@ -40,7 +40,13 @@ export function PhotoStep({ onSkip }: { onSkip: () => void }) {
                 </div>
             </StepBody>
             <StepFooter>
-                <Button className="w-full" size="lg" onClick={onSkip}>{t('skip')}</Button>
+                {/* Both buttons do the same thing while the uploader is
+                    disabled, and both are here on purpose: the prototype shows
+                    a primary Finish with the quiet skip beneath it, and
+                    demoting Finish to "Skip for now" would make the only way
+                    forward read as giving up on something. */}
+                <Button className="w-full" size="lg" onClick={onSkip}>{t('finish')}</Button>
+                <Button variant="ghost" className="w-full" onClick={onSkip}>{t('skip')}</Button>
             </StepFooter>
         </StepLayout>
     );

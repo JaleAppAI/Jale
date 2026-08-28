@@ -1765,6 +1765,7 @@
       "title": "Add a photo?",
       "subtitle": "Optional. Workers with a photo get more replies.",
       "add": "Choose a photo",
+      "finish": "Finish",
       "skip": "Skip for now"
     },
     "done": {
@@ -1776,6 +1777,7 @@
       "working_body": "We're pulling out the skills you mentioned. This takes a moment — you can keep going.",
       "extracted": "We extracted these skills from your answers. You're good to go on Jale.",
       "failed": "We couldn't read your answers this time. Employers still see them in your own words.",
+      "stalled": "We couldn't finish reading your answers yet — you're good to go on Jale.",
       "cta": "Go to my profile",
       "cta_job": "Continue to the job"
     },
@@ -1793,12 +1795,13 @@
       "reason": {
         "too_short": "A little more, please — at least {min} characters.",
         "too_long": "That's too long — keep it under {max} characters."
-      }
+      },
+      "step_mismatch": "Your progress was updated from another device — check this step and continue."
     },
     "blocked": {
       "suspended": "This account is on hold, so onboarding cannot continue. Reply to any Jale message and we will look into it.",
       "not_onboardable": "We cannot set up this account right now. Reply to any Jale message and we will help."
     },
-    "stuck": "We can't pick your setup up from here. Nothing you told us is lost — open your profile to finish it, or reply to any Jale message and we will help."
+    "stuck": "Finish this step on WhatsApp, or come back later."
   }
 }

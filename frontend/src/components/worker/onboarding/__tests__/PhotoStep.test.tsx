@@ -33,10 +33,27 @@ describe('PhotoStep', () => {
         expect(add).toHaveAttribute('title', message('worker_onboarding.common.coming_soon'));
     });
 
+    it('leads with Finish and keeps the skip quiet underneath, as the prototype does', () => {
+        renderIntl(<PhotoStep {...props()} />);
+        const finish = screen.getByRole('button', { name: message('worker_onboarding.photo.finish') });
+        const skip = screen.getByRole('button', { name: message('worker_onboarding.photo.skip') });
+        expect(finish).toBeEnabled();
+        // Finish is the primary; the skip is the ghost beside it. Order on the
+        // page is the hierarchy, so assert it rather than the class names.
+        expect(finish.compareDocumentPosition(skip)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
     it('skips without asking the API for anything — there is no photo step', async () => {
         const onSkip = vi.fn();
         renderIntl(<PhotoStep {...props({ onSkip })} />);
         await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.photo.skip') }));
+        expect(onSkip).toHaveBeenCalledTimes(1);
+    });
+
+    it('finishes to the same place — both buttons end the prompt', async () => {
+        const onSkip = vi.fn();
+        renderIntl(<PhotoStep {...props({ onSkip })} />);
+        await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.photo.finish') }));
         expect(onSkip).toHaveBeenCalledTimes(1);
     });
 

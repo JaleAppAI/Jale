@@ -21,6 +21,7 @@ export function OptionGrid<T extends string>({
     variant = 'rows',
     disabled = false,
     labelledBy,
+    describedBy,
 }: {
     options: readonly OptionItem<T>[];
     value: T | null;
@@ -28,11 +29,20 @@ export function OptionGrid<T extends string>({
     variant?: 'rows' | 'grid';
     disabled?: boolean;
     labelledBy?: string;
+    /**
+     * The id of the rejection message, when there is one. It goes on the GROUP
+     * rather than on each button: `aria-invalid` is a widget state that a
+     * `group` does not reliably carry, and marking six trade buttons invalid
+     * to explain one rejected answer is noise. Described-by on the group means
+     * the sentence is read as focus enters the choices.
+     */
+    describedBy?: string;
 }) {
     return (
         <div
             role="group"
             aria-labelledby={labelledBy}
+            aria-describedby={describedBy}
             className={variant === 'grid' ? 'grid grid-cols-2 gap-2' : 'flex flex-col gap-2'}
         >
             {options.map((option) => {

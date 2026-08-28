@@ -64,6 +64,7 @@ function advancesTo(nextStep: string, overrides: Partial<OnboardingState> = {}) 
 
 beforeEach(() => {
     vi.clearAllMocks();
+    window.sessionStorage.clear();
     lock = 1;
     api.getWorkerOnboarding.mockResolvedValue(at('legal.review'));
 });
@@ -318,7 +319,30 @@ describe('OnboardingFlow — the summary polls for the extraction', () => {
 
         await vi.advanceTimersByTimeAsync(60_000);
         expect(api.getWorkerOnboarding).toHaveBeenCalledTimes(20);
-        expect(screen.getByText(message('worker_onboarding.done.working'))).toBeInTheDocument();
+        // And it stops SAYING it is working: a spinner nobody is turning reads
+        // as a broken page the worker should keep waiting on.
+        expect(screen.queryByText(message('worker_onboarding.done.working'))).not.toBeInTheDocument();
+        expect(screen.getByText(message('worker_onboarding.done.stalled'))).toBeInTheDocument();
+    });
+
+    it('does not hand itself a second budget when the status moves pending → extracting', async () => {
+        vi.useFakeTimers();
+        const pending = at('profile.photo', {
+            lifecycle: 'ready',
+            extraction: { status: 'pending', extracted: null, summary_en: null, summary_es: null },
+        });
+        const extracting = at('profile.photo', {
+            lifecycle: 'ready',
+            extraction: { status: 'extracting', extracted: null, summary_en: null, summary_es: null },
+        });
+        // The very first poll flips the status, which re-runs the effect. A
+        // counter that lived in the effect would restart at zero right here.
+        api.getWorkerOnboarding.mockResolvedValueOnce(extracting).mockResolvedValue(extracting);
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={pending} />);
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(api.getWorkerOnboarding).toHaveBeenCalledTimes(20);
     });
 });
 
@@ -467,5 +491,113 @@ describe('OnboardingFlow — parked on a step this door cannot drive', () => {
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.photo', { lifecycle: 'ready' })} />);
         expect(screen.getByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
         expect(screen.queryByText(message('worker_onboarding.stuck'))).not.toBeInTheDocument();
+    });
+});
+
+describe('OnboardingFlow — the run moved between our read and our write', () => {
+    it('keeps the answer being typed when the engine is still on the same screen', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'step_mismatch' });
+        api.getWorkerOnboarding.mockResolvedValue(at('trust.question.2', {}, 6));
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.2')} />);
+        const box = screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'));
+        await user.type(box, LONG_ANSWER);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.question.cta') }));
+
+        // Told what happened...
+        expect(await screen.findByText(message('worker_onboarding.rejection.step_mismatch'))).toBeInTheDocument();
+        // ...without losing the sentence they just wrote...
+        expect(box).toHaveValue(LONG_ANSWER);
+        // ...and Continue still works, on the lock the refetch brought back.
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.question.cta') }));
+        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(2);
+        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
+            lockVersion: 6,
+            answers: [{ stepKey: 'trust.question.2', value: { text: LONG_ANSWER } }],
+        });
+    });
+
+    it('rebuilds from the server when the engine has moved to a different screen', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'step_mismatch' });
+        api.getWorkerOnboarding.mockResolvedValue(at('trust.question.3'));
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.2')} />);
+        await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.question.cta') }));
+
+        expect(await screen.findByRole('heading', { name: THREE_QUESTIONS[2].q_en })).toBeInTheDocument();
+        expect(screen.getByText(message('worker_onboarding.rejection.step_mismatch'))).toBeInTheDocument();
+        // Question 3's box is question 3's: the draft did not follow.
+        expect(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'))).toHaveValue('');
+    });
+});
+
+describe('OnboardingFlow — switching language mid-answer', () => {
+    it('does not cost the worker what they had already typed', async () => {
+        const user = userEvent.setup();
+        const typed = 'x'.repeat(200);
+        api.patchOnboardingLanguage.mockResolvedValue(at('trust.question.1'));
+
+        const view = renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />);
+        await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), typed);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.header.language_es') }));
+        await waitFor(() => expect(api.patchOnboardingLanguage).toHaveBeenCalledTimes(1));
+
+        // The toggle is a ROUTE change: next-intl remounts the tree under the
+        // other locale. That is what this unmount/remount stands in for.
+        view.unmount();
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />, 'es');
+
+        expect(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder', 'es'))).toHaveValue(typed);
+    });
+
+    it('does not pour a parked answer into a different step', async () => {
+        const user = userEvent.setup();
+        api.patchOnboardingLanguage.mockResolvedValue(at('trust.question.1'));
+
+        const view = renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />);
+        await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.header.language_es') }));
+        await waitFor(() => expect(api.patchOnboardingLanguage).toHaveBeenCalledTimes(1));
+        view.unmount();
+
+        // WhatsApp moved them on while the route was changing.
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.2')} />, 'es');
+        expect(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder', 'es'))).toHaveValue('');
+    });
+});
+
+describe('OnboardingFlow — a save that keeps failing', () => {
+    it('offers the way out on the second failure, not the first', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingAnswers.mockRejectedValue(new Error('network'));
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />);
+        await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
+        const cta = screen.getByRole('button', { name: message('worker_onboarding.question.cta') });
+
+        await user.click(cta);
+        await waitFor(() => expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(1));
+        // One failure is a blip; the retry is right there and it is the right
+        // thing to press.
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.common.go_to_profile') })).not.toBeInTheDocument();
+
+        await user.click(cta);
+        await waitFor(() => expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(2));
+        const exit = await screen.findByRole('button', { name: message('worker_onboarding.common.go_to_profile') });
+        await user.click(exit);
+        expect(router.replace).toHaveBeenCalledWith('/worker/profile');
+    });
+});
+
+describe('OnboardingFlow — a run in the middle of WhatsApp voice intake', () => {
+    it('sends them back to the door that can finish it', () => {
+        // Every step this screen could post is BEHIND `profile.voice_choice`,
+        // so any Continue here is a batch the engine refuses.
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.voice_choice')} />);
+        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.stuck'));
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.terms.cta') })).not.toBeInTheDocument();
     });
 });

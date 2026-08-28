@@ -38,6 +38,7 @@ import {
 export function DoneStep({
     state,
     hasJobHandoff = false,
+    extractionStalled = false,
     onFinish,
 }: {
     state: OnboardingState;
@@ -47,6 +48,12 @@ export function DoneStep({
      * `OnboardingFlow` owns both the flag and where the button actually goes.
      */
     hasJobHandoff?: boolean;
+    /**
+     * The summary gave up waiting for the extraction (see `MAX_POLLS`). Not
+     * the same as `status: 'failed'` — nothing failed, we just stopped asking
+     * — so it gets its own, calmer sentence.
+     */
+    extractionStalled?: boolean;
     onFinish: () => void;
 }) {
     const locale = useLocale();
@@ -121,6 +128,11 @@ export function DoneStep({
                         </>
                     ) : extraction?.status === 'failed' ? (
                         <p className="text-sm text-[var(--jale-ink-2)]">{t('failed')}</p>
+                    ) : extractionStalled ? (
+                        // The poll budget is gone. A spinner that never stops
+                        // says "something is broken and you should wait"; both
+                        // halves are wrong, so say the true thing instead.
+                        <p className="text-sm text-[var(--jale-ink-2)]">{t('stalled')}</p>
                     ) : (
                         <>
                             <span
