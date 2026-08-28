@@ -634,9 +634,11 @@ type TrustQ = { q_en: string; q_es: string };
 
 function createFakeTrustQuestions() {
   let mode: 'succeed' | 'fail' = 'succeed';
+  const calls: string[] = [];
   return {
     trustQuestions: {
       async generate(_client: PoolClient, profession: string): Promise<TrustQ[] | null> {
+        calls.push(profession);
         if (mode === 'fail') {
           throw new Error('generator_unavailable');
         }
@@ -653,6 +655,9 @@ function createFakeTrustQuestions() {
     _succeed(): void {
       mode = 'succeed';
     },
+    /** Every `profession` argument `generate` was called with, in order.
+     * R1-A: standard trades pass their trade KEY through here too. */
+    _calls: calls,
   };
 }
 
@@ -1083,6 +1088,12 @@ export class WhatsAppV2Harness {
 
   // ── Adapter failure injection ────────────────────────────────────────
 
+  /** Every profession string `deps.adapters.trustQuestions.generate` was
+   * called with, in order. */
+  getTrustQuestionGenerateCalls(): string[] {
+    return [...this.trustQuestionsFake._calls];
+  }
+
   failAdapter(name: 'trustQuestions' | 'location'): void {
     if (name === 'trustQuestions') this.trustQuestionsFake._fail();
     if (name === 'location') this.locationFailing = true;
@@ -1473,7 +1484,10 @@ export class WhatsAppV2Harness {
         case 'trust.question.1':
         case 'trust.question.2':
         case 'trust.question.3':
-          await this.sendText('1');
+          // R1-A: trust questions are OPEN TEXT for every trade — a bare '1'
+          // would now be recorded verbatim as the answer, which is not what a
+          // canned "valid answer" should look like.
+          await this.sendText('I mostly do commercial work and I bring my own tools.');
           break;
         default:
           throw new Error(`driveToStep: no canned answer for ${step}`);

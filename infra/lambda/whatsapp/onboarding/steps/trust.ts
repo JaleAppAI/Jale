@@ -8,7 +8,7 @@ import type { PoolClient } from 'pg';
 import type { WorkflowStepKey } from '../../lib/onboarding-types';
 import type { WorkerGate } from '../../lib/onboarding-repository';
 import type { Lang } from '../../lib/templates';
-import { normalizeTrade, getTrustOptions } from '../../lib/onboarding-adapters';
+import { normalizeTrade } from '../../lib/onboarding-adapters';
 import { V2_FALLBACK_TRUST_QUESTIONS } from '../../lib/interactive-templates';
 import { detectMediaCategory } from '../../lib/media';
 import type { TrustVoiceEventV2 } from '../../lib/voice-events';
@@ -29,19 +29,6 @@ const TRUST_STEP_NEXT: Record<string, WorkflowStepKey | null> = {
   'trust.question.2': 'trust.question.3',
   'trust.question.3': null,
 };
-
-/** Parses a 1-based option index from either a `trust:<n>` interactive
- * payload or plain numeric text. Returns null when neither form is present. */
-function parseTrustOptionIndex(msg: OnboardingV2InboundMessage): number | null {
-  if (msg.interactivePayload) {
-    const match = /^trust:(\d+)$/.exec(msg.interactivePayload);
-    if (!match) return null;
-    return Number(match[1]);
-  }
-  const trimmed = (msg.body ?? '').trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  return Number(trimmed);
-}
 
 /**
  * Sole call site that ever writes a trust answer (typed or transcribed
@@ -271,20 +258,13 @@ export async function handleTrustQuestion(
     return handleTrustVoiceNote(client, session, msg, deps, gate, lang, now, stepKey, idx);
   }
 
-  const trade = (session.state_context.v2ProfileTrade as string | undefined) ?? 'other';
-  const source = (session.state_context.v2TrustSource as string | undefined) ?? 'fallback';
-
-  let answerText: string | null = null;
-  if (source === 'standard') {
-    const options = getTrustOptions(idx, trade);
-    const optionIdx = parseTrustOptionIndex(msg);
-    if (optionIdx !== null && optionIdx >= 1 && optionIdx <= options.length) {
-      answerText = options[optionIdx - 1];
-    }
-  } else {
-    const trimmed = (msg.body ?? '').trim();
-    answerText = trimmed.length > 0 ? trimmed : null;
-  }
+  // Sprint 22 R1-A: free text is the ONLY typed path. Every trade — standard
+  // or custom — now gets three open questions from the per-trade cache, so
+  // there is no numbered menu left to resolve an index against. A bare digit
+  // is recorded verbatim as what the worker typed (including on a run resumed
+  // from a pre-R1-A `state_context` that still says `v2TrustSource:'standard'`).
+  const trimmed = (msg.body ?? '').trim();
+  const answerText: string | null = trimmed.length > 0 ? trimmed : null;
 
   if (answerText === null) {
     await repeatCurrentPrompt(client, session, deps, gate.userId, stepKey, lang, now, gate.runId!, msg.messageSid);

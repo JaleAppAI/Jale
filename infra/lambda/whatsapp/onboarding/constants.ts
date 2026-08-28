@@ -47,7 +47,7 @@ export const TRADE_LABELS: Record<(typeof TRADE_ORDER)[number], { en: string; es
 /** Provenance identifiers recorded on the assessment (via `completeOnboarding`'s
  * `assessmentProvenance` payload) and on each `saveTrustAnswer` call. Bump the
  * relevant constant when the underlying question/rubric content changes. */
-export const V2_TRUST_QUESTION_SET_VERSION = 'v2-trust-questions-1';
+export const V2_TRUST_QUESTION_SET_VERSION = 'v2-trust-questions-2';
 export const V2_TRUST_FALLBACK_VERSION = 'v2-trust-fallback-1';
 export const V2_TRUST_RUBRIC_VERSION = 'v2-trust-rubric-1';
 
