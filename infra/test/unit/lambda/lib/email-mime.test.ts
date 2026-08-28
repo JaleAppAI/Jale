@@ -169,6 +169,59 @@ describe('email MIME builder', () => {
     expect(() => build({ subject: '' })).toThrow(/email_mime_header_empty/);
   });
 
+  /**
+   * RFC 5322 2.1.1 caps a line at 998 octets excluding CRLF. A
+   * `List-Unsubscribe: <url>` is the one header here that CANNOT be folded --
+   * there is no permitted fold point inside a URL -- and the URL is the one
+   * header value assembled from a stored `headers.unsubscribe_url`, so it is
+   * the one an oversized row can actually blow out. 3,864 characters is what
+   * an absurd-but-legal signed token produces.
+   */
+  it('refuses an unsubscribe URL that renders a header line over the 998-octet limit', () => {
+    const url = `https://api.jaleapp.ai/public/employer-digest/unsubscribe?token=${'t'.repeat(3864)}`;
+    expect(() => build({ unsubscribeUrl: url })).toThrow(/email_mime_header_too_long/);
+  });
+
+  /**
+   * The code must be terminal-safe: email-outbox.ts's safeErrorCode() only
+   * keeps an error `name` matching /^[A-Za-z0-9_.:-]{1,100}$/, and anything
+   * else collapses to the generic ses_send_failed that rides the retry ladder.
+   * A message this build can never produce must not be retried 5 times.
+   */
+  it('throws the over-long header with a code the sweeper will record verbatim', () => {
+    const url = `https://api.jaleapp.ai/u?token=${'t'.repeat(3864)}`;
+    let name = '';
+    try {
+      build({ unsubscribeUrl: url });
+    } catch (error) {
+      name = (error as Error).name;
+    }
+    expect(name).toBe('email_mime_header_too_long');
+    expect(name).toMatch(/^[A-Za-z0-9_.:-]{1,100}$/);
+  });
+
+  /**
+   * The counterpart: a Subject long enough to break the limit unfolded must
+   * still build, because encodeHeaderValue() folds it into legal segments. A
+   * raw-value length check would have rejected this one.
+   */
+  it('accepts a subject long enough to need folding, and keeps every folded line legal', () => {
+    const message = build({ subject: `Resumen — ${'candidato '.repeat(200)}` });
+    for (const line of headerBlock(message).split('\r\n')) {
+      expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(998);
+    }
+  });
+
+  it('keeps every header line of an ordinary digest inside the limit', () => {
+    const message = build({
+      unsubscribeUrl: 'https://api.jaleapp.ai/public/employer-digest/unsubscribe?token=abc.def.ghi',
+      configurationSet: 'jale-employer-email',
+    });
+    for (const line of headerBlock(message).split('\r\n')) {
+      expect(Buffer.byteLength(line, 'utf8')).toBeLessThanOrEqual(998);
+    }
+  });
+
   // ── Body parts ────────────────────────────────────────────────────────────
 
   it('produces a multipart/alternative with text first, html second, both base64', () => {

@@ -39,10 +39,12 @@ import { errorMessage } from '../lib/http';
  * follow any incident back to a row.
  *
  * ── Failure posture ───────────────────────────────────────────────
- * A malformed or unrecognised notification is COUNTED and dropped: SNS retries
- * an async Lambda failure and then dead-letters it, and no amount of retrying
- * makes a garbage payload parse. A DATABASE failure throws, because that is
- * exactly the case retrying fixes.
+ * A malformed or unrecognised notification is COUNTED and dropped, never
+ * thrown: no amount of retrying makes a garbage payload parse. A DATABASE
+ * failure throws, because that is exactly the case retrying fixes -- Lambda
+ * retries the async invocation twice and then sends it to
+ * SesFeedbackHandlerDlq (NotificationsStack), whose depth alarm is the signal
+ * that a bounce was accepted by SES and never applied here.
  */
 
 interface SesFeedbackSummary {
@@ -68,9 +70,23 @@ function metric(name: string, fields: Record<string, unknown> = {}): void {
   console.error(JSON.stringify({ metric: name, ...fields }));
 }
 
-/** `Permanent` is the only bounce worth acting on: `Transient` is a full mailbox or a greylist. */
+/**
+ * `Permanent` is the only bounce worth acting on: `Transient` is a full mailbox
+ * or a greylist.
+ *
+ * `not-spam` is the one complaint that must NOT disable anything. It is an ARF
+ * feedback type meaning the recipient moved the message back OUT of their spam
+ * folder -- the opposite of a complaint, delivered down the same channel
+ * because the ARF report format carries both. Treating it as a complaint would
+ * switch the digest off for someone who just told their provider they wanted
+ * it. Every other feedback type (abuse, fraud, virus, other, or absent) is a
+ * real complaint and disables.
+ */
 function shouldDisable(notification: Record<string, unknown>, eventType: string): boolean {
-  if (eventType === 'Complaint') return true;
+  if (eventType === 'Complaint') {
+    const complaint = notification.complaint as Record<string, unknown> | undefined;
+    return complaint?.complaintFeedbackType !== 'not-spam';
+  }
   if (eventType !== 'Bounce') return false;
   const bounce = notification.bounce as Record<string, unknown> | undefined;
   return bounce?.bounceType === 'Permanent';

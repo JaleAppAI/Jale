@@ -366,6 +366,18 @@ export class NotificationsStack extends cdk.Stack {
         conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
       }));
 
+      // The handler's own header promises SNS "dead-letters after retries".
+      // That is only true if a dead-letter target exists: an async Lambda
+      // failure without one is retried twice and then DISCARDED, and the
+      // bounce it carried is gone. Same shape as the producer's DLQ above,
+      // with retryAttempts 2 rather than 0 -- the failure this handler throws
+      // on is a database error, which is exactly the case a retry fixes.
+      const feedbackDlq = new sqs.Queue(this, 'SesFeedbackHandlerDlq', {
+        queueName: `${props.emailConfigurationSetName}-feedback-dlq`,
+        encryption: sqs.QueueEncryption.KMS_MANAGED,
+        retentionPeriod: cdk.Duration.days(14),
+      });
+
       const feedbackLambda = new JaleLambdaFunction(this, 'SesFeedbackHandlerLambda', {
         entry: path.join(__dirname, '../../lambda/notifications/ses-feedback-handler.ts'),
         description: 'SES bounce/complaint handler — switches the employer digest off',
@@ -380,9 +392,12 @@ export class NotificationsStack extends cdk.Stack {
         // and is generous; the point of naming it is that a hung DB connection
         // must not hold a VPC ENI for the full Lambda maximum.
         timeout: 30,
+        deadLetterQueue: feedbackDlq,
+        retryAttempts: 2,
         ...lambdaProps,
       });
       props.dbSecret.grantRead(feedbackLambda.function);
+      feedbackDlq.grantSendMessages(feedbackLambda.function);
       feedbackTopic.addSubscription(new snsSubscriptions.LambdaSubscription(feedbackLambda.function));
 
       // BOUNCE and COMPLAINT only. DELIVERY/SEND/OPEN/CLICK would multiply the
@@ -407,6 +422,16 @@ export class NotificationsStack extends cdk.Stack {
       if (feedbackPublish.policyDependable) {
         feedbackDestination.node.addDependency(feedbackPublish.policyDependable);
       }
+
+      notificationsAlarm(
+        'SesFeedbackHandlerDlqAlarm',
+        'SesFeedbackHandlerDlqDepth',
+        'An SES bounce or complaint was dead-lettered after retries — that feedback was never '
+          + 'applied, so the employer it named keeps receiving the digest. Replay the queue.',
+        feedbackDlq.metricApproximateNumberOfMessagesVisible({
+          period: cdk.Duration.minutes(15), statistic: 'Sum',
+        }),
+      );
 
       notificationsAlarm(
         'SesFeedbackHandlerErrorsAlarm',

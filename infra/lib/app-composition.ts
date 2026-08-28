@@ -69,8 +69,21 @@ export function buildJaleApp(app: cdk.App): void {
    * goes out; nothing listens for bounces. There is no baked default, because a
    * configuration-set name is account- and region-global and a hardcoded one
    * would collide between dev and production.
+   *
+   * Resolved from -c first, then JALE_SES_CONFIGURATION_SET_NAME, same shape as
+   * ReferralsStack's publicSiteBaseUrl. The EMPTY STRING has to mean "absent",
+   * not "a set named ''": the production workflow always passes the flag, as
+   * `-c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME"`, and an
+   * unset GitHub `vars.` entry expands to the empty string. Nullish coalescing
+   * alone would keep that '' and wire the whole feedback lane to a nameless
+   * configuration set, so both sources go through emptyToUndefined().
    */
-  const sesConfigurationSetName = app.node.tryGetContext('sesConfigurationSetName') as string | undefined;
+  function emptyToUndefined(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  }
+
+  const sesConfigurationSetName = emptyToUndefined(app.node.tryGetContext('sesConfigurationSetName'))
+    ?? emptyToUndefined(process.env.JALE_SES_CONFIGURATION_SET_NAME);
 
   const network = new NetworkStack(app, 'JaleNetworkStack', { env });
 
@@ -234,6 +247,22 @@ export function buildJaleApp(app: cdk.App): void {
   // stack references the other, so this is a pure ordering edge with no cycle.
   // Only added when the name is supplied -- with no configuration set there is
   // nothing to order, and the two stacks stay independent as before.
+  //
+  // TWO CAVEATS, both accepted rather than defended against:
+  //   * `cdk deploy --exclusively` IGNORES this edge. It is the documented use
+  //     of the deploy workflow's `cdk-extra-args` input, so a BillingStack-only
+  //     `--exclusively` deploy with the name set re-opens the
+  //     ConfigurationSetDoesNotExist window. Nothing in CDK can prevent that;
+  //     the ordering has to be respected by whoever passes the flag.
+  //   * The everyday path does not depend on this edge anyway:
+  //     deploy-production.yml's `full_stack_list` already lists
+  //     JaleNotificationsStack BEFORE JaleBillingStack. The dependency exists to
+  //     make that ordering explicit rather than incidental to the list's order,
+  //     and to hold for scoped deploys that contain both stacks.
+  //
+  // The cost of the edge: with the name set, a BillingStack deploy is coupled to
+  // NotificationsStack succeeding. Deliberate -- a sweeper that cannot send is a
+  // worse outcome than a billing deploy that waits.
   if (sesConfigurationSetName) {
     billing.addDependency(notifications, 'sweeper sends with a configuration set this stack creates');
   }

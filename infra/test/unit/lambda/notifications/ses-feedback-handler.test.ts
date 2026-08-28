@@ -33,10 +33,13 @@ function bounce(bounceType: string, options: { messageId?: string; useLegacyFiel
   };
 }
 
-function complaint() {
+function complaint(feedbackType?: string) {
   return {
     eventType: 'Complaint',
-    complaint: { complainedRecipients: [{ emailAddress: RECIPIENT }] },
+    complaint: {
+      complainedRecipients: [{ emailAddress: RECIPIENT }],
+      ...(feedbackType ? { complaintFeedbackType: feedbackType } : {}),
+    },
     mail: { messageId: MESSAGE_ID, destination: [RECIPIENT] },
   };
 }
@@ -105,6 +108,15 @@ describe('SES feedback handler', () => {
     expect(definerCall()).toBeDefined();
   });
 
+  it.each(['abuse', 'fraud', 'virus', 'other'])(
+    'switches the digest off for a %s complaint',
+    async (feedbackType) => {
+      const summary = await handler(snsEvent(complaint(feedbackType)));
+      expect(summary.disabled).toBe(1);
+      expect(definerCall()).toBeDefined();
+    },
+  );
+
   it('reads the identity-notification field name too, not only the configuration-set one', async () => {
     await handler(snsEvent(bounce('Permanent', { useLegacyField: true })));
     expect(definerCall()).toBeDefined();
@@ -118,6 +130,19 @@ describe('SES feedback handler', () => {
   });
 
   // ── Declines to act ───────────────────────────────────────────────────────
+
+  /**
+   * `not-spam` arrives on the complaint channel but MEANS the opposite: the
+   * recipient pulled the message back out of their spam folder. ARF carries
+   * both down one feedback type. Acting on it would switch the digest off for
+   * the one person who just told their provider they wanted it.
+   */
+  it('leaves the digest ON for a not-spam complaint and never reaches the database', async () => {
+    const summary = await handler(snsEvent(complaint('not-spam')));
+    expect(summary).toMatchObject({ processed: 1, disabled: 0, transient: 1 });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(definerCall()).toBeUndefined();
+  });
 
   it('counts a TRANSIENT bounce and never reaches the database', async () => {
     const summary = await handler(snsEvent(bounce('Transient')));

@@ -145,6 +145,29 @@ function unsubscribeUrlOf(headers: EmailOutboxHeaders | null): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/**
+ * A 4xx from SES means SES definitely did NOT accept the message, so the row is
+ * safe to retry -- as opposed to a timeout or a 5xx, where a message may have
+ * been accepted and a retry would duplicate it.
+ *
+ * KNOWN COARSENESS, accepted for now. Two 400-range codes are not per-message
+ * defects at all and get treated as if they were:
+ *
+ *   AccountSendingPaused  the whole account is suspended (usually a reputation
+ *                         action). Every queued row burns its 5 attempts over
+ *                         the 15-minute ladder and goes terminal `failed`,
+ *                         which loses ~75 minutes of digests permanently
+ *                         rather than holding them until the pause is lifted.
+ *   TooManyRequests       the sending-rate quota. Same ladder, but here the
+ *                         ladder is roughly the right shape -- it just is not
+ *                         a backoff chosen for throttling.
+ *
+ * Neither can be distinguished from a genuine per-message rejection by status
+ * code alone; separating them needs a name check plus a distinct "hold, do not
+ * count an attempt" state on the row. Follow-up, not this change: the failure
+ * is visible (rows land in `failed` with the SES code in last_error) rather
+ * than silent, and an account-level pause is an incident either way.
+ */
 function definiteProviderRejection(error: unknown): boolean {
   const status = (error as { $metadata?: { httpStatusCode?: number } } | null)?.$metadata?.httpStatusCode;
   return typeof status === 'number' && status >= 400 && status < 500;

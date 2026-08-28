@@ -426,6 +426,29 @@ describe('NotificationsStack', () => {
       });
     });
 
+    /**
+     * Without a dead-letter target an async Lambda failure is retried and then
+     * DISCARDED: the bounce SES accepted is simply gone, and the only trace is
+     * an employer who keeps receiving a digest at a dead address. The handler's
+     * own header promises this queue exists.
+     */
+    it('dead-letters a feedback invocation that keeps failing, and alarms on the depth', () => {
+      feedbackTemplate.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: `${CONFIGURATION_SET}-feedback-dlq`,
+      });
+      feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
+        Description: 'SES bounce/complaint handler — switches the employer digest off',
+        DeadLetterConfig: { TargetArn: Match.anyValue() },
+      });
+      feedbackTemplate.hasResourceProperties('AWS::Lambda::EventInvokeConfig', {
+        MaximumRetryAttempts: 2,
+      });
+      feedbackTemplate.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'SesFeedbackHandlerDlqDepth',
+        AlarmActions: [TOPIC_ARN],
+      });
+    });
+
     it('runs the handler in the VPC as jale_admin, on the same secret the settings API uses', () => {
       feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
         Description: 'SES bounce/complaint handler — switches the employer digest off',

@@ -150,12 +150,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS email_outbox_ses_message_id_unique
   ON email_outbox (ses_message_id)
   WHERE ses_message_id IS NOT NULL;
 
--- Bounce triage by address. The handler's own lookup goes through
--- ses_message_id (the unique index above), but every human follow-up to a
--- bounce starts from the address -- "what else did we send this person, and
--- did any of it land?" -- and without this that is a seq scan over the whole
--- outbox. lower() because address comparison is case-insensitive everywhere
--- else in this lane (the handler matches users on lower(email) too).
+-- Bounce triage by address, for PEOPLE. Nothing in the code path uses it: the
+-- handler's only lookup is by ses_message_id (the unique index above), and it
+-- never reads `users` at all -- it goes straight from the outbox row's
+-- source_id to the definer. This index exists for the query an operator runs
+-- with psql after a bounce report -- "what else did we send this address, and
+-- did any of it land?" -- which without it is a seq scan over the whole
+-- outbox, a table that only ever grows.
+--
+-- lower() because the address an operator pastes out of a bounce notification
+-- or a support thread rarely matches the stored casing, and an expression
+-- index is the only way that query uses an index at all. It does NOT make the
+-- column case-insensitive for any other purpose; the local part of an address
+-- is case-sensitive per RFC 5321, which is why this is a triage aid and not a
+-- uniqueness or matching rule.
 CREATE INDEX IF NOT EXISTS email_outbox_recipient_email_idx
   ON email_outbox (lower(recipient_email));
 

@@ -102,6 +102,39 @@ function assertHeaderSafe(field: string, value: string): void {
   }
 }
 
+/**
+ * RFC 5322 2.1.1: a line MUST be at most 998 octets excluding the CRLF.
+ * Checked on the ASSEMBLED headers rather than per field, because that is the
+ * only place the real wire lines exist: a Subject arrives here already folded
+ * by encodeHeaderValue() into several short segments, so a raw-value check
+ * would reject subjects that are perfectly legal on the wire, and a
+ * `List-Unsubscribe: <url>` arrives as one segment that CANNOT be folded --
+ * there is no permitted fold point inside a URL. Splitting each header on CRLF
+ * and measuring the segments covers both.
+ *
+ * Rejecting rather than truncating: a truncated List-Unsubscribe is a URL that
+ * silently 400s for the recipient, and a truncated Subject is a lie. The throw
+ * carries a stable `name`, so the sweeper writes it to last_error and the row
+ * goes terminal-unsendable instead of riding the retry ladder for a defect no
+ * retry can fix.
+ */
+const MAX_HEADER_LINE_OCTETS = 998;
+
+function assertHeaderLinesFit(headers: readonly string[]): void {
+  for (const header of headers) {
+    for (const line of header.split(CRLF)) {
+      const octets = Buffer.byteLength(line, 'utf8');
+      if (octets > MAX_HEADER_LINE_OCTETS) {
+        const field = header.slice(0, Math.max(0, header.indexOf(':'))) || 'header';
+        throw new MimeBuildError(
+          'email_mime_header_too_long',
+          `${field} renders a ${octets}-octet line, over RFC 5322's ${MAX_HEADER_LINE_OCTETS}`,
+        );
+      }
+    }
+  }
+}
+
 /** Printable US-ASCII only. Anything else -- an accent, an em dash, a tab -- gets encoded. */
 function isAscii(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
@@ -253,6 +286,7 @@ export function buildRawEmail(input: RawEmailInput): Buffer {
   if (!input.bodyHtml) {
     headers.push('Content-Type: text/plain; charset=UTF-8');
     headers.push('Content-Transfer-Encoding: base64');
+    assertHeaderLinesFit(headers);
     return Buffer.from(
       `${headers.join(CRLF)}${CRLF}${CRLF}${base64Part(input.bodyText)}${CRLF}`,
       'utf8',
@@ -263,6 +297,7 @@ export function buildRawEmail(input: RawEmailInput): Buffer {
   // either part; base64 output has no `=?` or `_` and cannot contain this.
   const boundary = `----=_Jale_${randomBytes(12).toString('hex')}`;
   headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+  assertHeaderLinesFit(headers);
 
   // text/plain FIRST: RFC 2046 says a multipart/alternative's parts run
   // worst-to-best and clients pick the LAST one they can render, so the order
