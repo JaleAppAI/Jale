@@ -265,7 +265,7 @@
       "title": "Sign in with your phone",
       "phone_label": "We'll text you a 6-digit code to sign in.",
       "signup_title": "Create your worker profile",
-      "signup_subtitle": "Answer the same questions we ask on WhatsApp so employers can match with you.",
+      "signup_subtitle": "Enter your phone number. We'll text you a code, then set up your profile together.",
       "signup_prompt": "New to Jale?",
       "signup_link": "Create an account",
       "confirm_title": "Confirm your account",
@@ -282,40 +282,10 @@
       "otp_label": "Enter the code we sent you",
       "verify": "Verify",
       "back": "Back",
-      "yes": "Yes",
-      "no": "No",
       "fields": {
-        "full_name": "Full name",
-        "phone": "Phone number",
-        "city": "City or zip code",
-        "main_trade": "Main trade",
-        "main_trade_other": "Trade",
-        "years_experience": "Years of experience",
-        "has_transportation": "Own transportation",
-        "availability": "Availability"
-      },
-      "trades": {
-        "electrician": "Electrician",
-        "plumber": "Plumber",
-        "carpenter": "Carpenter",
-        "concrete": "Concrete",
-        "painting": "Painting",
-        "other": "Other"
-      },
-      "experience": {
-        "0-1": "0-1 years",
-        "2-4": "2-4 years",
-        "5-9": "5-9 years",
-        "10plus": "10+ years"
-      },
-      "availability": {
-        "full_time": "Full-time",
-        "part_time": "Part-time",
-        "weekends": "Weekends",
-        "flexible": "Flexible"
+        "phone": "Phone number"
       },
       "errors": {
-        "trade_other_required": "Please enter your trade.",
         "account_exists": "We could not continue with that phone number. Check it and try again.",
         "account_not_found": "We could not continue with that phone number. Check it and try again.",
         "invalid_phone": "Enter a valid phone number, including the area code.",
@@ -1694,5 +1664,127 @@
     "success_settings_hint": "You can turn the daily digest back on at any time under Notifications in your Jale settings.",
     "error_title": "This link is no longer valid",
     "error_body": "You can manage digest emails under Notifications in your Jale settings."
+  },
+  "worker_vocab": {
+    "trade": {
+      "electrician": "Electrician",
+      "plumber": "Plumber",
+      "carpenter": "Carpenter",
+      "concrete": "Concrete",
+      "painting": "Painting",
+      "other": "Other"
+    },
+    "experience": {
+      "0-1": "Less than a year",
+      "2-4": "2–4 years",
+      "5-9": "5–9 years",
+      "10+": "10+ years"
+    },
+    "availability": {
+      "full_time": "Full-time",
+      "part_time": "Part-time",
+      "weekends": "Weekends",
+      "flexible": "Flexible"
+    },
+    "transport": {
+      "yes": "Yes",
+      "no": "No"
+    }
+  },
+  "worker_onboarding": {
+    "header": {
+      "language_group": "Language",
+      "language_en": "EN",
+      "language_es": "ES"
+    },
+    "progress": {
+      "label": "Step {current} of {total}",
+      "counter": "{current} / {total}"
+    },
+    "common": {
+      "back": "Back",
+      "coming_soon": "Coming soon",
+      "voice_badge": "voice",
+      "typed_badge": "typed"
+    },
+    "terms": {
+      "title": "Before we start",
+      "subtitle": "A quick read. Your answers are shared only with employers you apply to.",
+      "info_title": "How Jale uses your information",
+      "info_body": "Your name, trade, location and answers are shown to employers only when you apply to their job. We never sell your data.",
+      "messages_title": "Messages",
+      "messages_body": "By continuing you agree to receive job messages by SMS and WhatsApp. Reply STOP any time.",
+      "terms_title": "Terms of service",
+      "terms_body": "Full terms at jaleapp.ai/legal/terms · Privacy at jaleapp.ai/legal/privacy.",
+      "cta": "I accept and continue"
+    },
+    "about": {
+      "title": "About you",
+      "subtitle": "Employers see this on your applications.",
+      "first_name": "First name",
+      "last_name": "Last name",
+      "location": "Where you live",
+      "location_placeholder": "City or ZIP — e.g. El Paso or 79901",
+      "location_help": "Pick your city from the list, or type a 5-digit ZIP.",
+      "zip": "ZIP",
+      "clear_location": "Change location",
+      "confirm_title": "Did you mean {city}, {state}?",
+      "confirm_yes": "Yes, that's right",
+      "confirm_no": "No, let me change it",
+      "cta": "Continue"
+    },
+    "trade": {
+      "title": "What's your trade?",
+      "subtitle": "Pick the one you do most.",
+      "other_label": "Your trade",
+      "other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "cta": "Continue"
+    },
+    "work": {
+      "title": "Your work",
+      "years": "Time in this trade",
+      "transport": "Do you have your own transportation?",
+      "availability": "When can you work?",
+      "cta": "Continue"
+    },
+    "question": {
+      "eyebrow": "Question {number} of 3",
+      "intro": "In your own words. Type or tap the mic.",
+      "placeholder": "Write your answer here…",
+      "must": "Employers read these three answers to decide who to hire — they're required.",
+      "too_short": "A little more, please — at least {count} characters.",
+      "chars": "{count} characters",
+      "mic_label": "Record a voice note",
+      "voice_note": "From your voice note — edit if anything is wrong.",
+      "cta": "Next",
+      "last_cta": "Finish"
+    },
+    "photo": {
+      "title": "Add a photo?",
+      "subtitle": "Optional. Workers with a photo get more replies.",
+      "add": "Choose a photo",
+      "skip": "Skip for now"
+    },
+    "done": {
+      "title": "You're all set",
+      "subtitle": "Employers can now find you. Here's what they'll see.",
+      "profile_heading": "Your profile",
+      "own_words": "In your own words",
+      "working": "Reading your answers…",
+      "working_body": "We're pulling out the skills you mentioned. This takes a moment — you can keep going.",
+      "extracted": "We extracted these skills from your answers. You're good to go on Jale.",
+      "failed": "We couldn't read your answers this time. Employers still see them in your own words.",
+      "cta": "Go to my profile",
+      "improve": "Improve my answers"
+    },
+    "summary": {
+      "name": "Name",
+      "location": "Location",
+      "trade": "Trade",
+      "experience": "Experience",
+      "transportation": "Own transportation",
+      "availability": "Availability",
+      "empty": "—"
+    }
   }
 }

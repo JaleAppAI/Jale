@@ -544,3 +544,159 @@ export async function deleteWorkerPost(token: string, post_id: string): Promise<
   const res = await apiFetch(`/worker/posts/${post_id}`, { method: 'DELETE' }, token);
   if (!res.ok) throw await parseApiError(res, 'delete_failed');
 }
+
+// ---------------------------------------------------------------------------
+// Web worker onboarding (S22 R2)
+//
+// The four endpoints below drive the web door onto the SAME onboarding state
+// machine WhatsApp v2 runs (migration 086's `start_web_onboarding_workflow`).
+// Every one of them answers with the WHOLE `OnboardingState`, so the client
+// never has to guess what changed: hydrate from the response and re-render.
+//
+// `lockVersion` is optimistic concurrency across the two doors -- the same
+// worker answering on WhatsApp while the web tab is open. It advances on
+// EVERY mutation (answers, back, language), so a caller that only re-reads it
+// after `answers` will 409 on its next write.
+// ---------------------------------------------------------------------------
+
+export type OnboardingLifecycle = 'onboarding' | 'ready' | 'suspended';
+
+export type OnboardingRun = {
+  id: string;
+  stepKey: string;
+  lockVersion: number;
+  preferredLanguage: 'en' | 'es';
+  workflowVersion: number;
+};
+
+export type OnboardingLocation = { city: string | null; state: string | null; zip: string | null };
+
+export type OnboardingProfile = {
+  fullName: string | null;
+  location: OnboardingLocation | null;
+  trade: { key: string; other: string | null } | null;
+  yearsExperience: string | null;
+  hasTransportation: boolean | null;
+  availability: string | null;
+};
+
+export type OnboardingQuestion = { index: number; q_en: string; q_es: string };
+export type OnboardingAnswer = { index: number; text: string; source: 'text' | 'voice' };
+
+export type OnboardingExtractedSkill = { label_en: string; label_es: string; source: number[] };
+
+export type OnboardingExtraction = {
+  status: 'pending' | 'extracting' | 'completed' | 'failed';
+  extracted: Record<string, OnboardingExtractedSkill[]> | null;
+  summary_en: string | null;
+  summary_es: string | null;
+};
+
+export type OnboardingState = {
+  lifecycle: OnboardingLifecycle;
+  run: OnboardingRun;
+  profile: OnboardingProfile;
+  trust: { questions: OnboardingQuestion[]; answers: OnboardingAnswer[] };
+  pendingLocationConfirm: { city: string; state: string } | null;
+  extraction: OnboardingExtraction | null;
+};
+
+/** One engine step and the value it is being answered with. */
+export type OnboardingAnswerItem = { stepKey: string; value: unknown };
+
+export type OnboardingAnswersBody = { lockVersion: number; answers: OnboardingAnswerItem[] };
+
+/**
+ * `postOnboardingAnswers` returns a UNION instead of throwing for its two
+ * expected rejections, which is a deliberate break from this module's
+ * throw-`parseApiError` convention -- and the reason is `ApiError` itself:
+ * `ALLOWED_PAYLOAD_KEYS` in `./errors` is a closed allowlist, so an `ApiError`
+ * physically cannot carry `rejectedStepKey`, `reason` or the fresh `state` the
+ * 422 body ships. Widening that allowlist would loosen the guarantee it exists
+ * to give (no unreviewed server detail reaching the UI) for one endpoint.
+ *
+ * Everything else -- 5xx, offline, timeout, an unexpected 4xx -- still throws
+ * `ApiError` exactly like every other helper here.
+ */
+export type OnboardingSaveResult =
+  | { kind: 'saved'; state: OnboardingState }
+  /** 409: someone else (WhatsApp) advanced the run. Refetch and retry once. */
+  | { kind: 'lock_conflict' }
+  /** 422: the engine refused one step. `state` is the run as it stands now. */
+  | { kind: 'step_rejected'; rejectedStepKey: string; reason: string; state: OnboardingState };
+
+export async function getWorkerOnboarding(token: string, signal?: AbortSignal): Promise<OnboardingState> {
+  const res = await apiFetch('/worker/onboarding', { signal }, token);
+  if (!res.ok) throw await parseApiError(res, 'fetch_failed');
+  return res.json();
+}
+
+export async function postOnboardingAnswers(
+  token: string,
+  body: OnboardingAnswersBody,
+): Promise<OnboardingSaveResult> {
+  const res = await apiFetch(
+    '/worker/onboarding/answers',
+    { method: 'POST', body: JSON.stringify(body) },
+    token,
+  );
+  if (res.ok) return { kind: 'saved', state: await res.json() };
+
+  if (res.status === 409 || res.status === 422) {
+    // Read the body ONCE, defensively: a proxy 409/422 with an HTML body must
+    // degrade to the generic thrown error, never to a half-built union member.
+    const parsed = await res.clone().json().catch(() => null) as {
+      error?: unknown;
+      rejectedStepKey?: unknown;
+      reason?: unknown;
+      state?: unknown;
+    } | null;
+
+    if (res.status === 409 && parsed?.error === 'lock_conflict') {
+      return { kind: 'lock_conflict' };
+    }
+    if (
+      res.status === 422
+      && parsed?.error === 'step_rejected'
+      && typeof parsed.rejectedStepKey === 'string'
+      && typeof parsed.reason === 'string'
+      && parsed.state !== null
+      && typeof parsed.state === 'object'
+    ) {
+      return {
+        kind: 'step_rejected',
+        rejectedStepKey: parsed.rejectedStepKey,
+        reason: parsed.reason,
+        state: parsed.state as OnboardingState,
+      };
+    }
+  }
+
+  throw await parseApiError(res, 'save_failed');
+}
+
+export async function postOnboardingBack(
+  token: string,
+  body: { lockVersion: number },
+): Promise<OnboardingState> {
+  const res = await apiFetch(
+    '/worker/onboarding/back',
+    { method: 'POST', body: JSON.stringify(body) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'save_failed');
+  return res.json();
+}
+
+export async function patchOnboardingLanguage(
+  token: string,
+  body: { preferredLanguage: 'en' | 'es' },
+): Promise<OnboardingState> {
+  const res = await apiFetch(
+    '/worker/onboarding/language',
+    { method: 'PATCH', body: JSON.stringify(body) },
+    token,
+  );
+  if (!res.ok) throw await parseApiError(res, 'save_failed');
+  return res.json();
+}
