@@ -310,44 +310,64 @@ describe('AuthStack', () => {
     );
   });
 
-  test('VerifyAuthChallenge Lambda has DB_SECRET_ARN environment variable', () => {
-    // Needed to promote a name staged at signup (migration 052) into
-    // users.full_name on the first correct OTP.
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
-      Environment: Match.objectLike({
-        Variables: Match.objectLike({
-          DB_SECRET_ARN: Match.anyValue(),
-        }),
-      }),
-    });
+  // ── R2-C4: VerifyAuthChallenge is a pure Cognito trigger ───────────────
+  //
+  // It used to promote a name staged at signup (migration 052's
+  // promote_worker_pending_name) into users.full_name on the first correct
+  // OTP, which is what the DB_SECRET_ARN, the VPC attachment and the
+  // dbSecret.grantRead() were for. R2 made web signup phone-only — the name
+  // is collected at `profile.name` inside the onboarding flow — so the
+  // handler opens no pool at all and all three are gone. These three tests
+  // are the lock: an accidental re-add would put a Cognito trigger back
+  // inside the VPC (cold-start cost on every login) and hand it a database
+  // credential it has no use for.
+
+  /** The synthesized VerifyAuthChallenge function, by its unique Description. */
+  function verifyAuthChallengeFn(): { logicalId: string; resource: any } {
+    const fns = template.findResources('AWS::Lambda::Function');
+    const entries = Object.entries(fns).filter(([, resource]: [string, any]) =>
+      resource.Properties?.Description === 'Worker pool VerifyAuthChallengeResponse — OTP comparison');
+    expect(entries).toHaveLength(1);
+    const [logicalId, resource] = entries[0];
+    return { logicalId, resource };
+  }
+
+  test('VerifyAuthChallenge Lambda is NOT attached to the VPC', () => {
+    const { resource } = verifyAuthChallengeFn();
+    expect(resource.Properties.VpcConfig).toBeUndefined();
   });
 
-  test('VerifyAuthChallenge Lambda has a Secrets Manager read grant for the DB secret', () => {
-    // grantRead() emits a statement with BOTH GetSecretValue and
-    // DescribeSecret on the exact secret resource. PostConfirmationLambda
-    // already grantRead()s props.dbSecret (the RDS master secret), so if
-    // VerifyAuthChallengeLambda grants the same way, the identical Resource
-    // token must appear in at least two distinct statements — this also
-    // rules out matching on the unrelated Twilio secret grants, whose
-    // Resource token differs.
+  test('VerifyAuthChallenge Lambda has no DB_SECRET_ARN environment variable', () => {
+    const { resource } = verifyAuthChallengeFn();
+    const variables = resource.Properties.Environment?.Variables ?? {};
+    expect(Object.keys(variables)).not.toContain('DB_SECRET_ARN');
+  });
+
+  test('VerifyAuthChallenge Lambda role carries no secretsmanager:GetSecretValue', () => {
+    // Resolve the function's own role, then scan every IAM policy attached
+    // to it. Matching on the Description alone would not catch a grant,
+    // because grantRead() writes to the ROLE, not the function.
+    const { resource } = verifyAuthChallengeFn();
+    const roleLogicalId = resource.Properties.Role['Fn::GetAtt'][0];
+
     const policies = template.findResources('AWS::IAM::Policy');
-    const dbSecretReadResources = Object.values(policies)
-      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
-      .filter((statement: any) => {
-        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-        return actions.includes('secretsmanager:GetSecretValue')
-          && actions.includes('secretsmanager:DescribeSecret');
-      })
-      .map((statement: any) => JSON.stringify(statement.Resource));
+    const statementsOnThisRole = Object.values(policies)
+      .filter((policy: any) => (policy.Properties.Roles ?? []).some(
+        (role: any) => role?.Ref === roleLogicalId))
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement);
 
-    const counts = new Map<string, number>();
-    for (const resource of dbSecretReadResources) {
-      counts.set(resource, (counts.get(resource) ?? 0) + 1);
-    }
-    const maxSharedResourceCount = Math.max(0, ...Array.from(counts.values()));
+    // Sanity: the role IS policed (the AdminUpdateUserAttributes grant), so
+    // an empty list would make the assertion below vacuous.
+    expect(statementsOnThisRole.length).toBeGreaterThan(0);
+    expect(statementsOnThisRole.flatMap((statement: any) =>
+      (Array.isArray(statement.Action) ? statement.Action : [statement.Action])))
+      .not.toContain('secretsmanager:GetSecretValue');
 
-    expect(maxSharedResourceCount).toBeGreaterThanOrEqual(2);
+    // ...and the managed policies it does keep are the Lambda basics, never
+    // the VPC-access one that a `vpc:` prop would have added.
+    const role = template.findResources('AWS::IAM::Role')[roleLogicalId];
+    const managed = JSON.stringify(role.Properties.ManagedPolicyArns ?? []);
+    expect(managed).not.toContain('AWSLambdaVPCAccessExecutionRole');
   });
 
   test('CreateAuthChallenge errors raise a CloudWatch alarm', () => {

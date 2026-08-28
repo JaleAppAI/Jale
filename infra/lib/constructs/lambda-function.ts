@@ -15,10 +15,16 @@ export interface JaleLambdaFunctionProps {
   handler?: string;
   /** Environment variables */
   environment?: Record<string, string>;
-  /** VPC to deploy into */
-  vpc: ec2.IVpc;
-  /** Security groups to attach */
-  securityGroups: ec2.ISecurityGroup[];
+  /** VPC to deploy into. Omit ONLY for a Lambda that talks to no in-VPC
+   *  resource at all — a VPC-attached function pays ENI cold-start cost on
+   *  every invocation, so "no database, no cache, no private endpoint" is
+   *  the whole bar. Every Jale Lambda that touches Postgres must pass it.
+   *  (First omitter: the worker pool's VerifyAuthChallenge trigger, which
+   *  is a pure OTP string comparison plus one Cognito attribute write.) */
+  vpc?: ec2.IVpc;
+  /** Security groups to attach. Required alongside `vpc`; meaningless
+   *  without it. */
+  securityGroups?: ec2.ISecurityGroup[];
   /** Timeout in seconds (default 30) */
   timeout?: number;
   /** Description of the function */
@@ -65,9 +71,11 @@ export class JaleLambdaFunction extends Construct {
       environment: props.environment,
       tracing: lambda.Tracing.ACTIVE,
       vpc: props.vpc,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-      },
+      // CDK rejects `vpcSubnets` when there is no VPC ("Cannot configure
+      // 'vpcSubnets' without configuring a VPC"), so both travel together.
+      vpcSubnets: props.vpc
+        ? { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }
+        : undefined,
       securityGroups: props.securityGroups,
       logGroup: this.logGroup,
       deadLetterQueue: props.deadLetterQueue,
