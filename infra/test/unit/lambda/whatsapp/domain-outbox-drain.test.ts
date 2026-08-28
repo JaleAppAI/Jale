@@ -119,6 +119,15 @@ describe('domain-outbox-drain', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // R1-X: several tests below inject `dispatchAssessment` but not
+    // `dispatchExtraction`, so they now reach `defaultDispatchExtraction` on
+    // the happy path. Jest shares `process.env` across test FILES in a worker,
+    // so a sibling suite that sets TRUST_EXTRACTION_QUEUE_URL would make that
+    // default construct a real SQSClient and issue a real SendMessage — which
+    // the fail-open catch would then swallow, leaving a green suite that
+    // touched AWS. Unsetting it here makes the default throw before the SDK
+    // import, for these tests and for any added later.
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
     mockPublishWorkerIntentWake.mockResolvedValue({ sent: 1, failed: 0 });
     logLines = [];
     logSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {
@@ -529,6 +538,7 @@ describe('domain-outbox-drain — trust-extraction fan-out', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
     mockPublishWorkerIntentWake.mockResolvedValue({ sent: 1, failed: 0 });
     logLines = [];
     logSpy = jest.spyOn(console, 'log').mockImplementation((line: string) => {

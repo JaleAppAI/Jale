@@ -266,6 +266,9 @@ describe('extractAssessment', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    // process.env is shared across test files in a Jest worker; leaking this
+    // would let another suite's fail-open dispatcher reach the real AWS SDK.
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
   });
 
   it('claims the row with ON CONFLICT ... WHERE status IN (pending, failed) keyed on the extractor version', async () => {
@@ -392,6 +395,9 @@ describe('handleRecoveryCron', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    // process.env is shared across test files in a Jest worker; leaking this
+    // would let another suite's fail-open dispatcher reach the real AWS SDK.
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
   });
 
   it('re-queues rows stuck in extracting for more than 15 minutes, joining the assessment for the profession key', async () => {
@@ -447,6 +453,9 @@ describe('handler', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+    // process.env is shared across test files in a Jest worker; leaking this
+    // would let another suite's fail-open dispatcher reach the real AWS SDK.
+    delete process.env.TRUST_EXTRACTION_QUEUE_URL;
   });
 
   it('routes {source: cron.recovery} to the recovery path, not to SQS record processing', async () => {
