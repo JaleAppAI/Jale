@@ -104,6 +104,9 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
   let workerOther: string;
   let workerReady: string;
   let workerFresh: string;
+  let workerSuspended: string;
+  let workerReadyNoRun: string;
+  let workerRace: string;
   let jobId: string;
   let assessmentId: string;
   let extractionId: string;
@@ -116,6 +119,9 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     workerOther: `t86-worker-other-${randomUUID().slice(0, 8)}`,
     workerReady: `t86-worker-ready-${randomUUID().slice(0, 8)}`,
     workerFresh: `t86-worker-fresh-${randomUUID().slice(0, 8)}`,
+    workerSuspended: `t86-worker-suspended-${randomUUID().slice(0, 8)}`,
+    workerReadyNoRun: `t86-worker-readynorun-${randomUUID().slice(0, 8)}`,
+    workerRace: `t86-worker-race-${randomUUID().slice(0, 8)}`,
   };
 
   async function one<T extends QueryResultRow>(sql: string, params: unknown[] = []): Promise<T> {
@@ -139,6 +145,9 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     workerOther = await insertUser(subs.workerOther, 'worker');
     workerReady = await insertUser(subs.workerReady, 'worker');
     workerFresh = await insertUser(subs.workerFresh, 'worker');
+    workerSuspended = await insertUser(subs.workerSuspended, 'worker');
+    workerReadyNoRun = await insertUser(subs.workerReadyNoRun, 'worker');
+    workerRace = await insertUser(subs.workerRace, 'worker');
 
     jobId = (await one<{ id: string }>(
       `INSERT INTO jobs (employer_id, title, location, job_type, status)
@@ -168,6 +177,19 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
        VALUES ($1, 1, 'legal.review', 'completed', 'es', now()) RETURNING id`,
       [workerReady],
     )).id;
+
+    // An operator-suspended worker, and a 'ready' worker whose run row is
+    // missing (a data anomaly the function must refuse rather than paper over).
+    await setup.query(
+      `INSERT INTO worker_onboarding_state (user_id, lifecycle, lifecycle_changed_at)
+       VALUES ($1, 'suspended', now())`,
+      [workerSuspended],
+    );
+    await setup.query(
+      `INSERT INTO worker_onboarding_state (user_id, lifecycle, ready_at, lifecycle_changed_at)
+       VALUES ($1, 'ready', now(), now())`,
+      [workerReadyNoRun],
+    );
   });
 
   afterAll(async () => {
@@ -214,7 +236,7 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     }
     const byName = new Map(result.rows.map((r) => [r.policyname, r]));
     expect(byName.get('wte_ai_service_rows')).toMatchObject({ cmd: 'ALL', roles: ['jale_ai'] });
-    expect(byName.get('wte_worker_own_internal')).toMatchObject({ cmd: 'SELECT', roles: ['jale_whatsapp'] });
+    expect(byName.get('wte_worker_own_internal')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin', 'jale_whatsapp'] });
     expect(byName.get('wte_employer_applicant_read')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
     expect(byName.get('wte_worker_own_sub')).toMatchObject({ cmd: 'SELECT', roles: ['jale_admin'] });
   });
@@ -268,6 +290,34 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     });
   });
 
+  it('refuses an extraction whose user_id does not match its assessment (composite FK)', async () => {
+    await expectSqlState(
+      asRole('jale_ai', [], (client) =>
+        client.query(
+          `INSERT INTO worker_trust_extractions (assessment_id, user_id, extractor_version)
+           VALUES ($1, $2, 'mismatched')`,
+          [assessmentId, workerOther],
+        )),
+      '23503',
+    );
+  });
+
+  it('points the foreign key at (id, user_id) on worker_trust_assessments', async () => {
+    const fk = await one<{ conname: string; ncols: number; parent: string }>(
+      `SELECT c.conname, array_length(c.conkey, 1) AS ncols,
+              c.confrelid::regclass::text AS parent
+         FROM pg_constraint c
+        WHERE c.conrelid = 'public.worker_trust_extractions'::regclass
+          AND c.contype = 'f'
+          AND c.confrelid = 'public.worker_trust_assessments'::regclass`,
+    );
+    expect(fk).toEqual({
+      conname: 'worker_trust_extractions_assessment_fk',
+      ncols: 2,
+      parent: 'worker_trust_assessments',
+    });
+  });
+
   it('shows a jale_whatsapp session only its own worker rows', async () => {
     const own = await asRole(
       'jale_whatsapp',
@@ -282,6 +332,28 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
       (client) => client.query('SELECT id FROM worker_trust_extractions'),
     );
     expect(other.rows).toEqual([]);
+  });
+
+  it('shows nothing to a jale_whatsapp session with app.current_internal_user_id unset', async () => {
+    const blind = await asRole('jale_whatsapp', [], (client) =>
+      client.query('SELECT id FROM worker_trust_extractions'));
+    expect(blind.rows).toEqual([]);
+  });
+
+  it('lets jale_admin read own rows on the internal-id lane too (mirrors 083)', async () => {
+    const own = await asRole(
+      'jale_admin',
+      [{ key: 'app.current_internal_user_id', value: worker }],
+      (client) => client.query<{ id: string }>(
+        'SELECT id FROM worker_trust_extractions WHERE id = $1', [extractionId]),
+    );
+    expect(own.rows.map((r) => r.id)).toEqual([extractionId]);
+  });
+
+  it('shows nothing to a jale_admin session with both GUCs unset', async () => {
+    const blind = await asRole('jale_admin', [], (client) =>
+      client.query('SELECT id FROM worker_trust_extractions'));
+    expect(blind.rows).toEqual([]);
   });
 
   it('refuses a jale_whatsapp INSERT into worker_trust_extractions', async () => {
@@ -332,22 +404,78 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     expect(own.rows.map((r) => r.id)).toEqual([extractionId]);
   });
 
-  it('grants jale_whatsapp read-only access and jale_ai write access', async () => {
+  it('grants jale_whatsapp a column-scoped read and jale_ai full write access', async () => {
     const row = await one<Record<string, boolean>>(`SELECT
-      has_table_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'SELECT') AS wa_select,
+      has_table_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'SELECT') AS wa_table_select,
+      has_column_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'extracted', 'SELECT') AS wa_extracted,
+      has_column_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'summary_es', 'SELECT') AS wa_summary,
+      has_column_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'error', 'SELECT') AS wa_error,
+      has_column_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'model_id', 'SELECT') AS wa_model,
       has_table_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'INSERT') AS wa_insert,
       has_table_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'UPDATE') AS wa_update,
       has_table_privilege('jale_whatsapp', 'public.worker_trust_extractions', 'DELETE') AS wa_delete,
-      has_table_privilege('jale_admin', 'public.worker_trust_extractions', 'SELECT') AS admin_select,
       has_table_privilege('jale_ai', 'public.worker_trust_extractions', 'SELECT') AS ai_select,
       has_table_privilege('jale_ai', 'public.worker_trust_extractions', 'INSERT') AS ai_insert,
       has_table_privilege('jale_ai', 'public.worker_trust_extractions', 'UPDATE') AS ai_update`);
 
     expect(row).toEqual({
-      wa_select: true, wa_insert: false, wa_update: false, wa_delete: false,
-      admin_select: true,
+      // Column-scoped, so there is deliberately no table-wide SELECT.
+      wa_table_select: false,
+      wa_extracted: true, wa_summary: true,
+      wa_error: false, wa_model: false,
+      wa_insert: false, wa_update: false, wa_delete: false,
       ai_select: true, ai_insert: true, ai_update: true,
     });
+  });
+
+  it('refuses jale_whatsapp the error and model_id columns at query time', async () => {
+    await expectSqlState(
+      asRole('jale_whatsapp', [{ key: 'app.current_internal_user_id', value: worker }],
+        (client) => client.query('SELECT error FROM worker_trust_extractions')),
+      '42501',
+    );
+    await expectSqlState(
+      asRole('jale_whatsapp', [{ key: 'app.current_internal_user_id', value: worker }],
+        (client) => client.query('SELECT model_id FROM worker_trust_extractions')),
+      '42501',
+    );
+    // SELECT * is refused too -- readers must name their columns.
+    await expectSqlState(
+      asRole('jale_whatsapp', [{ key: 'app.current_internal_user_id', value: worker }],
+        (client) => client.query('SELECT * FROM worker_trust_extractions')),
+      '42501',
+    );
+  });
+
+  // jale_admin OWNS the table, and an owner's implicit privileges cannot be
+  // revoked or narrowed -- `SELECT error` as jale_admin therefore SUCCEEDS no
+  // matter what is granted (verified on PostgreSQL 16), exactly as its
+  // implicit INSERT/UPDATE does. What IS assertable, and what a future move of
+  // the API lane onto a non-owner role would rely on, is the declared ACL in
+  // pg_attribute.attacl.
+  it('declares a column-scoped jale_admin grant that excludes error and model_id', async () => {
+    const rows = await setup.query<{ attname: string; granted: boolean }>(
+      `SELECT a.attname, COALESCE(a.attacl::text LIKE '%jale_admin=%', false) AS granted
+         FROM pg_attribute a
+        WHERE a.attrelid = 'public.worker_trust_extractions'::regclass
+          AND a.attnum > 0 AND NOT a.attisdropped
+        ORDER BY a.attnum`,
+    );
+    const granted = rows.rows.filter((r) => r.granted).map((r) => r.attname).sort();
+    expect(granted).toEqual([
+      'assessment_id', 'created_at', 'extracted', 'extractor_version', 'id',
+      'status', 'summary_en', 'summary_es', 'updated_at', 'user_id',
+    ]);
+    expect(granted).not.toContain('error');
+    expect(granted).not.toContain('model_id');
+
+    // The owner really can still read them -- documented, not asserted away.
+    const ownerRead = await asRole(
+      'jale_admin',
+      [{ key: 'app.current_internal_user_id', value: worker }],
+      (client) => client.query('SELECT error, model_id FROM worker_trust_extractions'),
+    );
+    expect(ownerRead.rowCount).toBeGreaterThanOrEqual(0);
   });
 
   // jale_admin OWNS the table, so has_table_privilege() reports INSERT/UPDATE
@@ -415,61 +543,84 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
   });
 
   // ── Part 2: start_web_onboarding_workflow ─────────────────────────────
+  // The function is addressed by COGNITO SUB, never by internal uuid: a
+  // caller can only name an identity it already holds a sub for, which is why
+  // there is no GUC "gate" to test. The old draft's
+  // app.onboarding_bind_user_id check was caller-settable (app.* is
+  // unreserved) and has been replaced by this signature.
 
   const START_SQL = 'SELECT * FROM public.start_web_onboarding_workflow($1, $2, $3)';
 
-  it('refuses to start without the app.onboarding_bind_user_id guard (42501)', async () => {
+  interface StartRow {
+    onboarding_state_id: string;
+    run_id: string;
+    created: boolean;
+    current_step_key: string;
+    preferred_language: string;
+    workflow_version: number;
+    lifecycle: string;
+  }
+
+  it('takes a cognito sub, not an internal id, so no caller can name another worker', async () => {
+    const signature = await one<{ args: string }>(
+      `SELECT pg_get_function_arguments(p.oid) AS args
+         FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'start_web_onboarding_workflow'`,
+    );
+    expect(signature.args).toBe(
+      'p_cognito_sub text, p_preferred_language text, p_workflow_version integer');
+
+    // Passing a uuid string where a sub is expected simply resolves nothing.
     await expectSqlState(
       asRole('jale_whatsapp', [], (client) => client.query(START_SQL, [workerFresh, 'es', 1])),
-      '42501',
-    );
-
-    // A GUC pinned to a DIFFERENT worker is just as rejected.
-    await expectSqlState(
-      asRole(
-        'jale_whatsapp',
-        [{ key: 'app.onboarding_bind_user_id', value: worker }],
-        (client) => client.query(START_SQL, [workerFresh, 'es', 1]),
-      ),
-      '42501',
+      '23503',
     );
   });
 
-  it('rejects an invalid language and a non-positive workflow version with 22023', async () => {
+  it('rejects an unknown sub with 23503 and bad inputs with 22023', async () => {
     await expectSqlState(
-      asRole(
-        'jale_whatsapp',
-        [{ key: 'app.onboarding_bind_user_id', value: workerFresh }],
-        (client) => client.query(START_SQL, [workerFresh, 'fr', 1]),
-      ),
-      '22023',
+      asRole('jale_whatsapp', [], (client) =>
+        client.query(START_SQL, ['t86-nobody-at-all', 'es', 1])),
+      '23503',
     );
+    // An employer's sub resolves to NULL through resolve_worker_internal_id.
     await expectSqlState(
-      asRole(
-        'jale_whatsapp',
-        [{ key: 'app.onboarding_bind_user_id', value: workerFresh }],
-        (client) => client.query(START_SQL, [workerFresh, 'es', 0]),
-      ),
-      '22023',
+      asRole('jale_whatsapp', [], (client) =>
+        client.query(START_SQL, [subs.employerRelated, 'es', 1])),
+      '23503',
     );
+    const badArgs: unknown[][] = [
+      [subs.workerFresh, 'fr', 1],
+      [subs.workerFresh, 'es', 0],
+      ['   ', 'es', 1],
+    ];
+    for (const args of badArgs) {
+      await expectSqlState(
+        asRole('jale_whatsapp', [], (client) => client.query(START_SQL, args)),
+        '22023',
+      );
+    }
   });
 
-  it('creates the state, run and transition on the first call, and is idempotent on the second', async () => {
-    const first = await asRole(
-      'jale_whatsapp',
-      [{ key: 'app.onboarding_bind_user_id', value: workerFresh }],
-      (client) => client.query<{ onboarding_state_id: string; run_id: string; created: boolean }>(
-        START_SQL, [workerFresh, 'es', 3]),
-      true,
-    );
+  it('creates the state, run and transition on the first call and returns the full run shape', async () => {
+    const first = await asRole('jale_whatsapp', [],
+      (client) => client.query<StartRow>(START_SQL, [subs.workerFresh, 'es', 3]), true);
+
     expect(first.rows).toHaveLength(1);
-    expect(first.rows[0].created).toBe(true);
+    // Item 4: everything the web Lambda needs, in one round trip.
+    expect(first.rows[0]).toMatchObject({
+      created: true,
+      current_step_key: 'legal.review',
+      preferred_language: 'es',
+      workflow_version: 3,
+      lifecycle: 'onboarding',
+    });
 
     const run = await one<{
       current_step_key: string; status: string; preferred_language: string;
-      workflow_version: number; lock_version: number;
+      workflow_version: number; lock_version: number; user_id: string;
     }>(
-      `SELECT current_step_key, status, preferred_language, workflow_version, lock_version
+      `SELECT current_step_key, status, preferred_language, workflow_version, lock_version, user_id
          FROM worker_workflow_runs WHERE id = $1`,
       [first.rows[0].run_id],
     );
@@ -479,6 +630,7 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
       preferred_language: 'es',
       workflow_version: 3,
       lock_version: 0,
+      user_id: workerFresh,
     });
 
     const state = await one<{ lifecycle: string; user_id: string }>(
@@ -496,24 +648,22 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
       [first.rows[0].run_id],
     );
     expect(transitions.rows).toEqual([{
-      from_step_key: null,
-      to_step_key: 'legal.review',
-      inbound_message_sid: null,
-      reason: 'web_start',
+      from_step_key: null, to_step_key: 'legal.review',
+      inbound_message_sid: null, reason: 'web_start',
     }]);
 
-    // Second call: same run, created = false, no second run or transition.
-    const second = await asRole(
-      'jale_whatsapp',
-      [{ key: 'app.onboarding_bind_user_id', value: workerFresh }],
-      (client) => client.query<{ onboarding_state_id: string; run_id: string; created: boolean }>(
-        START_SQL, [workerFresh, 'en', 4]),
-      true,
-    );
+    // Second call adopts the active run: same ids, created = false, and the
+    // run's own language/version win over the new arguments.
+    const second = await asRole('jale_whatsapp', [],
+      (client) => client.query<StartRow>(START_SQL, [subs.workerFresh, 'en', 4]), true);
     expect(second.rows[0]).toEqual({
       onboarding_state_id: first.rows[0].onboarding_state_id,
       run_id: first.rows[0].run_id,
       created: false,
+      current_step_key: 'legal.review',
+      preferred_language: 'es',
+      workflow_version: 3,
+      lifecycle: 'onboarding',
     });
 
     const counts = await one<{ runs: string; transitions: string }>(
@@ -527,15 +677,12 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
   });
 
   it('returns the completed run for a worker already at lifecycle=ready, without creating another', async () => {
-    const result = await asRole(
-      'jale_whatsapp',
-      [{ key: 'app.onboarding_bind_user_id', value: workerReady }],
-      (client) => client.query<{ onboarding_state_id: string; run_id: string; created: boolean }>(
-        START_SQL, [workerReady, 'es', 1]),
-      true,
-    );
-    expect(result.rows[0].run_id).toBe(readyRunId);
-    expect(result.rows[0].created).toBe(false);
+    const result = await asRole('jale_whatsapp', [],
+      (client) => client.query<StartRow>(START_SQL, [subs.workerReady, 'es', 1]), true);
+    expect(result.rows[0]).toMatchObject({
+      run_id: readyRunId, created: false, lifecycle: 'ready',
+      current_step_key: 'legal.review',
+    });
 
     const after = await one<{ runs: string; lifecycle: string }>(
       `SELECT (SELECT count(*) FROM worker_workflow_runs WHERE user_id = $1) AS runs,
@@ -544,6 +691,113 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     );
     // lifecycle must NOT have been dragged back to 'onboarding'.
     expect(after).toEqual({ runs: '1', lifecycle: 'ready' });
+  });
+
+  it('refuses a suspended worker with 55000 and leaves the state alone', async () => {
+    await expectSqlState(
+      asRole('jale_whatsapp', [], (client) =>
+        client.query(START_SQL, [subs.workerSuspended, 'es', 1])),
+      '55000',
+    );
+    const after = await one<{ lifecycle: string; runs: string }>(
+      `SELECT (SELECT lifecycle FROM worker_onboarding_state WHERE user_id = $1) AS lifecycle,
+              (SELECT count(*) FROM worker_workflow_runs WHERE user_id = $1) AS runs`,
+      [workerSuspended],
+    );
+    expect(after).toEqual({ lifecycle: 'suspended', runs: '0' });
+  });
+
+  it('refuses lifecycle=ready with no completed run (55000) rather than minting one', async () => {
+    await expectSqlState(
+      asRole('jale_whatsapp', [], (client) =>
+        client.query(START_SQL, [subs.workerReadyNoRun, 'es', 1])),
+      '55000',
+    );
+    const after = await one<{ runs: string; lifecycle: string }>(
+      `SELECT (SELECT count(*) FROM worker_workflow_runs WHERE user_id = $1) AS runs,
+              (SELECT lifecycle FROM worker_onboarding_state WHERE user_id = $1) AS lifecycle`,
+      [workerReadyNoRun],
+    );
+    expect(after).toEqual({ runs: '0', lifecycle: 'ready' });
+  });
+
+  // The advisory lock is keyed on user_id; 047's WhatsApp bind path keys on
+  // phone hash, so the two do not exclude each other. This reproduces that
+  // race DETERMINISTICALLY rather than asserting on the code path: session A
+  // inserts an active run and holds the transaction open, so session B's
+  // in-function SELECT cannot see it, B's INSERT blocks on
+  // worker_workflow_one_active, and A's COMMIT converts B's wait into the
+  // unique_violation the handler is written for.
+  it('adopts a run created by a concurrent WhatsApp bind instead of raising 23505', async () => {
+    const a = new Client({ connectionString: databaseUrl });
+    const b = new Client({ connectionString: databaseUrl });
+    await a.connect();
+    await b.connect();
+    try {
+      await a.query('BEGIN');
+      const planted = await a.query<{ id: string }>(
+        `INSERT INTO worker_workflow_runs
+           (user_id, workflow_version, current_step_key, status, preferred_language)
+         VALUES ($1, 9, 'legal.review', 'active', 'en') RETURNING id`,
+        [workerRace],
+      );
+      const plantedRunId = planted.rows[0].id;
+
+      await b.query('BEGIN');
+      await b.query('SET LOCAL ROLE jale_whatsapp');
+      // Not awaited: this blocks on the uncommitted unique index entry.
+      const pending = b.query<StartRow>(START_SQL, [subs.workerRace, 'es', 2]);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      await a.query('COMMIT');
+      const result = await pending;
+
+      expect(result.rows[0]).toMatchObject({
+        run_id: plantedRunId,
+        created: false,
+        preferred_language: 'en',
+        workflow_version: 9,
+      });
+      await b.query('COMMIT');
+
+      const runs = await one<{ count: string }>(
+        'SELECT count(*)::text AS count FROM worker_workflow_runs WHERE user_id = $1',
+        [workerRace]);
+      expect(runs.count).toBe('1');
+    } finally {
+      await a.query('ROLLBACK').catch(() => undefined);
+      await b.query('ROLLBACK').catch(() => undefined);
+      await a.end();
+      await b.end();
+    }
+  });
+
+  it('restores app.onboarding_bind_user_id and app.worker_reconcile_sub to their prior values', async () => {
+    const probe = await asRole(
+      'jale_whatsapp',
+      [
+        { key: 'app.onboarding_bind_user_id', value: 'prior-bind' },
+        { key: 'app.worker_reconcile_sub', value: 'prior-sub' },
+      ],
+      async (client) => {
+        await client.query(START_SQL, [subs.workerReady, 'es', 1]);
+        return client.query<{ bind: string; sub: string }>(
+          `SELECT current_setting('app.onboarding_bind_user_id', true) AS bind,
+                  current_setting('app.worker_reconcile_sub', true) AS sub`);
+      },
+    );
+    expect(probe.rows[0]).toEqual({ bind: 'prior-bind', sub: 'prior-sub' });
+  });
+
+  it('leaves both GUCs harmless (empty, not another worker) when they were unset', async () => {
+    const probe = await asRole('jale_whatsapp', [], async (client) => {
+      await client.query(START_SQL, [subs.workerReady, 'es', 1]);
+      return client.query<{ bind: string; sub: string }>(
+        `SELECT current_setting('app.onboarding_bind_user_id', true) AS bind,
+                current_setting('app.worker_reconcile_sub', true) AS sub`);
+    });
+    // set_config cannot restore "never set"; '' matches no id and no sub.
+    expect(probe.rows[0]).toEqual({ bind: '', sub: '' });
   });
 
   it('keeps both definers jale_admin-owned, SECURITY DEFINER, search_path-pinned and off PUBLIC', async () => {
@@ -707,7 +961,12 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     ]);
 
     const forbiddenEn = /years|how long|seniority|\b[1-3]\.\s/i;
-    const forbiddenEs = /años|cuánto tiempo|antigüedad|\b[1-3]\.\s/i;
+    // The seed text is deliberately ASCII (matching every migration 001-085),
+    // so accented literals like /años/ could never fire. `.` stands in for the
+    // accent so the guard matches BOTH spellings -- same patterns migration
+    // 086's own self-audit uses. \b would not anchor "anos" inside
+    // "cuentanos"/"planos", hence the explicit boundaries.
+    const forbiddenEs = /(?:^|[^a-z])a.os(?![a-z])|cu.nto tiempo|antig.edad|\b[1-3]\.\s/i;
 
     for (const row of result.rows) {
       expect(row.questions).toHaveLength(3);
