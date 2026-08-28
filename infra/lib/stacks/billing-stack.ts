@@ -37,6 +37,17 @@ export interface BillingStackProps extends cdk.StackProps {
   readonly employerAuthorizer: apigateway.CognitoUserPoolsAuthorizer;
   /** /employer resource from ApiStack — billing routes hang off it */
   readonly employerResource: apigateway.Resource;
+  /**
+   * SES configuration set NotificationsStack creates, passed as a literal from
+   * bin/jale-app.ts (see the note there for why it is not a CDK reference).
+   *
+   * Present  => the sweeper tags every message with it, so bounces and
+   *             complaints reach the feedback handler, and the send is
+   *             authorized against the configuration-set ARN as well as the
+   *             identity.
+   * Absent   => today's behaviour exactly: mail sends, nothing listens.
+   */
+  readonly emailConfigurationSetName?: string;
 }
 
 export function validateBillingEmailConfiguration(
@@ -224,13 +235,40 @@ export class BillingStack extends cdk.Stack {
           DB_SECRET_ARN: props.appDbSecret.secretArn,
           EMAIL_FROM_ADDRESS: requiredEmailFromAddress,
           ALLOWED_ORIGIN: allowedOrigin,
+          // Read by lambda/lib/email-outbox.ts. Unset is a supported state:
+          // the message is built and sent without the X-SES-CONFIGURATION-SET
+          // header and produces no delivery events.
+          ...(props.emailConfigurationSetName
+            ? { EMAIL_CONFIGURATION_SET: props.emailConfigurationSetName }
+            : {}),
         },
-        nodeModules: ['@aws-sdk/client-ses'],
+        // SESv2, not SESv1: the sweeper now hands SES a complete raw MIME
+        // message so it can carry the RFC 8058 List-Unsubscribe headers.
+        nodeModules: ['@aws-sdk/client-sesv2'],
     });
     props.appDbSecret.grantRead(emailSweeperLambda.function);
+    // ses:SendEmail is what authorizes SESv2's SendEmail, INCLUDING the
+    // Content.Raw form the sweeper now uses -- the action name follows the
+    // API, not the payload shape. ses:SendRawEmail is the SESv1 action and is
+    // kept for the transition window: a rollback to the previous Lambda
+    // artifact must not also need an IAM change to send mail again.
+    //
+    // Two resources in ONE statement, which is what SES's authorization model
+    // wants: a send that names a configuration set is checked against BOTH the
+    // identity ARN and the configuration-set ARN, and a request that satisfies
+    // neither is denied either way.
     emailSweeperLambda.function.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail'],
-      resources: [requiredSesVerifiedIdentityArn],
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: [
+        requiredSesVerifiedIdentityArn,
+        ...(props.emailConfigurationSetName
+          ? [this.formatArn({
+            service: 'ses',
+            resource: 'configuration-set',
+            resourceName: props.emailConfigurationSetName,
+          })]
+          : []),
+      ],
     }));
     new events.Rule(this, 'EmailOutboxSweepSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.minutes(5)),

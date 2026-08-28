@@ -1,11 +1,66 @@
+import { buildRawEmail } from '../../../../lambda/lib/email-mime';
 import {
   DIGEST_BODY_HTML_MAX,
   DIGEST_BODY_HTML_SOFT_MAX,
   DIGEST_BODY_TEXT_MAX,
+  DIGEST_ENCODED_BODY_SOFT_MAX,
   DIGEST_SUBJECT_MAX,
   renderEmployerDigest,
+  type DigestJob,
   type EmployerDigestModel,
 } from '../../../../lambda/lib/employer-digest-template';
+
+/**
+ * Gmail's clip threshold, in bytes of the message as RECEIVED. Every budget
+ * assertion below measures against the real MIME builder rather than against
+ * `bodyHtml.length`, because the source-character count is not the quantity
+ * Gmail cuts on -- which is exactly how a Spanish digest at the old 70,000
+ * CHARACTER cap shipped encoding to 115,874 bytes.
+ */
+const GMAIL_CLIP_BYTES = 102_400;
+
+/** A generous allowance for the headers SES adds after we hand the message over. */
+const SES_ADDED_HEADER_ALLOWANCE = 2_048;
+
+const ONE_CLICK_URL =
+  'https://jaleapp.ai/api/public/employer-digest/unsubscribe?token=abcdefghijklmnop.qrstuvwxyz012345';
+
+function encodedMessageBytes(rendered: { subject: string; bodyText: string; bodyHtml: string }): number {
+  return buildRawEmail({
+    from: 'Jale <no-reply@jaleapp.ai>',
+    to: 'a-fairly-long-employer-address@some-construction-company.example',
+    subject: rendered.subject,
+    bodyText: rendered.bodyText,
+    bodyHtml: rendered.bodyHtml,
+    unsubscribeUrl: ONE_CLICK_URL,
+    configurationSet: 'jale-employer-email',
+  }).length;
+}
+
+/** A full ten-candidate job block, the shape the producer actually emits. */
+function tenCandidateJob(index: number, accented: boolean): DigestJob {
+  const id = `11111111-2222-4333-8444-${String(index).padStart(12, '0')}`;
+  return {
+    jobId: id,
+    title: accented
+      ? `Instalación eléctrica y climatización — Añadir señalización ${'ó'.repeat(30)}`
+      : `Journeyman Electrician - Site ${index}`,
+    jobUrl: `https://jaleapp.ai/en/employer/jobs/${id}`,
+    newApplicantCount: 14,
+    candidates: Array.from({ length: 10 }, (_, position) => ({
+      displayName: accented
+        ? `Jesús Ángel Muñóz Peña ${'ó'.repeat(20)}`
+        : `Candidate Number ${position} Lopez`,
+      matchScore: 90 - position * 3,
+      scoreBand: (position < 3 ? 'strong' : position < 7 ? 'good' : 'fair') as 'strong' | 'good' | 'fair',
+      location: accented ? `Ciudad Juárez, Chihuahua ${'á'.repeat(15)}` : 'San Antonio, TX',
+    })),
+  };
+}
+
+function renderedJobCount(bodyHtml: string): number {
+  return (bodyHtml.match(/<h2/g) ?? []).length;
+}
 
 const DASHBOARD_URL = 'https://jaleapp.ai/en/employer/dashboard';
 const UNSUBSCRIBE_URL = 'https://jaleapp.ai/en/digest-unsubscribe?token=abc.def';
@@ -207,21 +262,24 @@ describe('employer digest template', () => {
         location: 'Somewhere In A Long City Name, TX',
       })),
     }));
-    const { bodyText, bodyHtml } = renderEmployerDigest(model({ jobs }));
+    const { subject, bodyText, bodyHtml } = renderEmployerDigest(model({ jobs }));
 
     expect(bodyText.length).toBeGreaterThan(0);
     expect(bodyText.length).toBeLessThanOrEqual(DIGEST_BODY_TEXT_MAX);
     expect(bodyHtml.length).toBeGreaterThan(0);
     expect(bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_MAX);
-    // Gmail clips a message at ~102 kB of the transfer-ENCODED part, well
-    // before the 200 kB column limit, so the soft cap is the real budget.
-    expect(bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
+    // Gmail clips a message at ~102 kB of the transfer-ENCODED bytes, well
+    // before the 200 kB column limit, so the encoded budget is the real one.
+    expect(Buffer.byteLength(bodyHtml, 'utf8')).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
+    expect(encodedMessageBytes({ subject, bodyText, bodyHtml }))
+      .toBeLessThan(GMAIL_CLIP_BYTES - SES_ADDED_HEADER_ALLOWANCE);
     // A useful digest, not one job and a "the rest lives elsewhere" note.
     // Deliberate tripwire: this fixture's blocks (150-char titles, 10 long
-    // names and locations) measure ~11 kB, so the render lands on EXACTLY 6
-    // jobs at 67,584 chars — 2,416 spare. Any card change adding ~400 bytes
-    // per block turns this red, which is when the soft cap wants re-examining.
-    expect((bodyHtml.match(/<h2/g) ?? []).length).toBeGreaterThanOrEqual(6);
+    // names and locations) measure ~11 kB, so the render lands on EXACTLY 5
+    // jobs once the budget is spent in ENCODED bytes rather than source
+    // characters. Any card change adding ~400 bytes per block turns this red,
+    // which is when the soft caps want re-examining.
+    expect((bodyHtml.match(/<h2/g) ?? []).length).toBeGreaterThanOrEqual(5);
     // The reader must be told the list was cut, and where the rest lives.
     expect(bodyText).toMatch(/dashboard/i);
     expect(bodyHtml).toContain(DASHBOARD_URL);
@@ -444,15 +502,52 @@ describe('employer digest template', () => {
   // ── Byte budget ───────────────────────────────────────────────────────────
 
   it('leaves room under the soft cap for a realistic digest after the shell', () => {
-    const empty = renderEmployerDigest(model({ jobs: [] })).bodyHtml.length;
+    const empty = Buffer.byteLength(renderEmployerDigest(model({ jobs: [] })).bodyHtml, 'utf8');
     expect(empty).toBeLessThan(8_000);
-    // The shell must not eat the budget: 3,483 chars spent leaves 66,517, and
-    // a real 10-candidate block measures ~10 kB, so six of them still land.
-    expect(DIGEST_BODY_HTML_SOFT_MAX - empty).toBeGreaterThanOrEqual(6 * 8_000);
+    // The shell must not eat the budget: ~3,500 bytes spent, and a real
+    // 10-candidate block measures ~10 kB, so several of them still land.
+    expect(DIGEST_BODY_HTML_SOFT_MAX - empty).toBeGreaterThanOrEqual(5 * 8_000);
   });
 
   it('keeps the soft cap at or under the hard email_outbox cap', () => {
     expect(DIGEST_BODY_HTML_SOFT_MAX).toBeLessThanOrEqual(DIGEST_BODY_HTML_MAX);
+  });
+
+  /**
+   * THE TRIPWIRE. The old version of this counted six ten-candidate ENGLISH
+   * job blocks and asserted on `bodyHtml.length`; it passed while the Spanish
+   * equivalent encoded to 115,874 bytes and was clipped in Gmail with the
+   * unsubscribe footer below the cut. It now measures what Gmail measures, in
+   * both languages, through the builder that actually produces the bytes.
+   *
+   * Measured at DIGEST_ENCODED_BODY_SOFT_MAX = 96,000:
+   *   English, ten candidates per job .... 5 blocks, 83,238 encoded bytes
+   *   Spanish, ten candidates per job .... 4 blocks, 79,724 encoded bytes
+   * Both comfortably under the 102,400 clip with room for SES's own headers.
+   */
+  it.each([
+    ['English', false, 5],
+    ['Spanish', true, 4],
+  ])('fits %s ten-candidate job blocks and stays well under the Gmail clip', (_label, accented, expected) => {
+    const jobs = Array.from({ length: 30 }, (_, index) => tenCandidateJob(index, accented as boolean));
+    const rendered = renderEmployerDigest(model({ jobs, language: accented ? 'es' : 'en' }));
+
+    expect(renderedJobCount(rendered.bodyHtml)).toBe(expected);
+    expect(encodedMessageBytes(rendered)).toBeLessThan(GMAIL_CLIP_BYTES - SES_ADDED_HEADER_ALLOWANCE);
+  });
+
+  it('never lets a digest of any size encode past the clip, however many jobs are offered', () => {
+    for (const accented of [false, true]) {
+      for (const count of [1, 2, 5, 10, 40]) {
+        const jobs = Array.from({ length: count }, (_, index) => tenCandidateJob(index, accented));
+        const rendered = renderEmployerDigest(model({ jobs, language: accented ? 'es' : 'en' }));
+        expect(encodedMessageBytes(rendered)).toBeLessThan(GMAIL_CLIP_BYTES - SES_ADDED_HEADER_ALLOWANCE);
+      }
+    }
+  });
+
+  it('keeps the encoded budget itself under the Gmail clip with room for the envelope', () => {
+    expect(DIGEST_ENCODED_BODY_SOFT_MAX).toBeLessThan(GMAIL_CLIP_BYTES - SES_ADDED_HEADER_ALLOWANCE);
   });
 
   it('includes the last job that fits under the soft cap and drops the first that does not', () => {
@@ -464,7 +559,7 @@ describe('employer digest template', () => {
       jobs: [{ ...model().jobs[0], title: 'T'.repeat(titleLength) }],
     }));
     let fitting = 100;
-    let overflowing = 70_000;
+    let overflowing = 65_000;
     while (overflowing - fitting > 1) {
       const mid = Math.floor((fitting + overflowing) / 2);
       if (render(mid).bodyHtml.includes('<h2')) fitting = mid;
@@ -474,7 +569,7 @@ describe('employer digest template', () => {
 
     const fits = render(fitting);
     expect(fits.bodyHtml).toContain('<h2');
-    expect(fits.bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
+    expect(Buffer.byteLength(fits.bodyHtml, 'utf8')).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
     expect(fits.bodyHtml).not.toContain('not shown');
 
     const over = render(overflowing);
@@ -483,6 +578,6 @@ describe('employer digest template', () => {
     expect(over.bodyText).toContain('Some job postings are not shown in this email.');
     expect(over.bodyHtml).toContain(DASHBOARD_URL);
     expect(over.bodyText).toContain(UNSUBSCRIBE_URL);
-    expect(over.bodyHtml.length).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
+    expect(Buffer.byteLength(over.bodyHtml, 'utf8')).toBeLessThanOrEqual(DIGEST_BODY_HTML_SOFT_MAX);
   });
 });

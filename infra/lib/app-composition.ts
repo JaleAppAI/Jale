@@ -52,6 +52,26 @@ export function buildJaleApp(app: cdk.App): void {
     region: process.env.CDK_DEFAULT_REGION,
   };
 
+  /**
+   * SES configuration set that routes bounce/complaint events to the digest
+   * feedback handler. Threaded as a PLAIN STRING to both stacks that need it --
+   * NotificationsStack creates the configuration set and the SNS event
+   * destination, BillingStack tags the outgoing message with it -- deliberately
+   * NOT as a CDK reference: BillingStack is instantiated before
+   * NotificationsStack (it has to be; NotificationsStack consumes
+   * api.publicResource), and a real cross-stack reference in this direction
+   * would be a dependency cycle. A literal both sides compute independently has
+   * no ordering constraint at all.
+   *
+   * OPTIONAL on purpose. Absent (`cdk synth` with no -c sesConfigurationSetName)
+   * means: no configuration set, no event destination, no feedback Lambda, and a
+   * sweeper that sends without the X-SES-CONFIGURATION-SET header. Mail still
+   * goes out; nothing listens for bounces. There is no baked default, because a
+   * configuration-set name is account- and region-global and a hardcoded one
+   * would collide between dev and production.
+   */
+  const sesConfigurationSetName = app.node.tryGetContext('sesConfigurationSetName') as string | undefined;
+
   const network = new NetworkStack(app, 'JaleNetworkStack', { env });
 
   const database = new DatabaseStack(app, 'JaleDatabaseStack', {
@@ -164,6 +184,7 @@ export function buildJaleApp(app: cdk.App): void {
     api: api.api,
     employerAuthorizer: api.employerAuthorizer,
     employerResource: api.employerResource,
+    emailConfigurationSetName: sesConfigurationSetName,
   });
 
   new ReferralsStack(app, 'JaleReferralsStack', {
@@ -201,6 +222,7 @@ export function buildJaleApp(app: cdk.App): void {
     dbSecret: database.dbSecret,
     publicResource: api.publicResource,
     alarmTopicArn: app.node.tryGetContext('whatsappAlarmTopicArn'),
+    emailConfigurationSetName: sesConfigurationSetName,
   });
 
   new LegalStack(app, 'JaleLegalStack', {

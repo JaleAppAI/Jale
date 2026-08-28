@@ -185,21 +185,34 @@ describe('BillingStack', () => {
     });
   });
 
-  test('email sweeper IAM permits only ses:SendEmail on the configured identity', () => {
-    template.hasResourceProperties('AWS::IAM::Policy', {
-      PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({
-        Action: 'ses:SendEmail',
-        Effect: 'Allow',
-        Resource: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
-      })]) },
-    });
+  /**
+   * ses:SendEmail is the action that authorizes SESv2's SendEmail, including
+   * the Content.Raw form the sweeper now uses. ses:SendRawEmail is the SESv1
+   * action, kept for the transition window so a rollback to the previous
+   * Lambda artifact does not also need an IAM change to send mail.
+   */
+  test('email sweeper IAM permits only the two SES send actions, on the configured identity', () => {
     const policies = template.findResources('AWS::IAM::Policy');
     const sesStatements = Object.values(policies).flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
       .filter((statement: any) => JSON.stringify(statement.Action).includes('ses:'));
     expect(sesStatements).toEqual([expect.objectContaining({
-      Action: 'ses:SendEmail',
+      Action: ['ses:SendEmail', 'ses:SendRawEmail'],
+      Effect: 'Allow',
       Resource: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
     })]);
+  });
+
+  /**
+   * No configuration set was threaded into this harness, which is the dev-synth
+   * shape: the sweeper still sends, tags nothing, and grants nothing extra.
+   */
+  test('omits the configuration-set env var and its ARN when no configuration set is configured', () => {
+    const functions = template.findResources('AWS::Lambda::Function');
+    const sweeper = Object.values(functions).find((fn: any) =>
+      fn.Properties.Description === 'Sends durable billing email outbox messages through SES');
+    expect(sweeper).toBeDefined();
+    expect((sweeper as any).Properties.Environment.Variables.EMAIL_CONFIGURATION_SET).toBeUndefined();
+    expect(JSON.stringify(template.findResources('AWS::IAM::Policy'))).not.toContain('configuration-set/');
   });
 
   test('email outbox failure logs have metric filters and alarm-topic-backed alarms', () => {
@@ -727,5 +740,87 @@ describe('BillingStack — imported alarm topic', () => {
       expect(alarm.Properties.AlarmActions).toContain(importedTopicArn);
       expect(alarm.Properties.OKActions).toContain(importedTopicArn);
     }
+  });
+});
+
+describe('BillingStack — SES configuration set threaded in', () => {
+  let template: Template;
+  const CONFIGURATION_SET = 'jale-employer-email';
+
+  beforeAll(() => {
+    const app = new cdk.App({
+      context: {
+        otpSmsFromNumber: '+13252210992',
+        emailFromAddress: 'billing@jaleapp.ai',
+        sesVerifiedIdentityArn: 'arn:aws:ses:us-east-2:123456789012:identity/jaleapp.ai',
+      },
+    });
+    const network = new NetworkStack(app, 'TestNetworkStackConfigSet');
+    const database = new DatabaseStack(app, 'TestDatabaseStackConfigSet', { network });
+    const auth = new AuthStack(app, 'TestAuthStackConfigSet', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    const ai = new AiStack(app, 'TestAiStackConfigSet', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      aiDbSecret: database.aiDbSecret,
+      alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-ai-alarms-test',
+    });
+    const api = new ApiStack(app, 'TestApiStackConfigSet', {
+      workerPool: auth.workerPool,
+      employerPool: auth.employerPool,
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      aliasGeneratorFn: ai.aliasGeneratorFn.function,
+      whatsappStatusCallbackUrl: 'https://api.example.com/whatsapp/status-callback',
+    });
+    new LegalStack(app, 'TestLegalStackConfigSet', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+      api: api.api,
+      dualAuthorizer: api.dualAuthorizer,
+    });
+
+    new BillingStack(app, 'TestBillingStackConfigSet', {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      billingLambdaSg: network.billingLambdaSg,
+      billingDbSecret: database.billingDbSecret,
+      appDbSecret: database.dbSecret,
+      api: api.api,
+      employerAuthorizer: api.employerAuthorizer,
+      employerResource: api.employerResource,
+      emailConfigurationSetName: CONFIGURATION_SET,
+    });
+    template = Template.fromStack(app.node.findChild('TestBillingStackConfigSet') as cdk.Stack);
+  });
+
+  test('gives the sweeper the configuration-set name so every message is tagged for bounce routing', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Sends durable billing email outbox messages through SES',
+      Environment: { Variables: Match.objectLike({ EMAIL_CONFIGURATION_SET: CONFIGURATION_SET }) },
+    });
+  });
+
+  /**
+   * SES checks a send that names a configuration set against BOTH the identity
+   * and the configuration-set ARN, so both belong in the one statement.
+   */
+  test('scopes the SES send grant to the identity AND the configuration set', () => {
+    const policies = template.findResources('AWS::IAM::Policy');
+    const sesStatements = Object.values(policies).flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
+      .filter((statement: any) => JSON.stringify(statement.Action).includes('ses:'));
+    expect(sesStatements).toHaveLength(1);
+    expect(sesStatements[0].Action).toEqual(['ses:SendEmail', 'ses:SendRawEmail']);
+    expect(JSON.stringify(sesStatements[0].Resource)).toContain('identity/jaleapp.ai');
+    expect(JSON.stringify(sesStatements[0].Resource)).toContain(`configuration-set/${CONFIGURATION_SET}`);
   });
 });

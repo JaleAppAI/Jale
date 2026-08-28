@@ -25,6 +25,28 @@ function makeEvent(body: unknown, raw?: string): APIGatewayProxyEvent {
   } as unknown as APIGatewayProxyEvent;
 }
 
+/**
+ * An RFC 8058 one-click POST as a mail provider sends it: the fixed
+ * `List-Unsubscribe=One-Click` form body, the token in the QUERY STRING, and
+ * `application/x-www-form-urlencoded`.
+ */
+function oneClickEvent(options: {
+  token?: string | null;
+  body?: string;
+  contentType?: string;
+  base64?: boolean;
+} = {}): APIGatewayProxyEvent {
+  const rawBody = options.body ?? 'List-Unsubscribe=One-Click';
+  return {
+    httpMethod: 'POST',
+    headers: { 'Content-Type': options.contentType ?? 'application/x-www-form-urlencoded' },
+    queryStringParameters: options.token === null ? null : { token: options.token ?? 'good.token' },
+    body: options.base64 ? Buffer.from(rawBody, 'utf8').toString('base64') : rawBody,
+    isBase64Encoded: options.base64 ?? false,
+    requestContext: {},
+  } as unknown as APIGatewayProxyEvent;
+}
+
 describe('digest unsubscribe endpoint', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -135,5 +157,98 @@ describe('digest unsubscribe endpoint', () => {
       expect(res.headers).toHaveProperty('Access-Control-Allow-Origin');
       expect(res.headers!['Content-Type']).toBe('application/json');
     }
+  });
+
+  // ── RFC 8058 one-click (sprint 22 R3-E) ──────────────────────────────────
+
+  it('unsubscribes from a one-click form POST with the token in the query string', async () => {
+    mockVerify.mockResolvedValue({ employerId: EMPLOYER_ID, version: 4 });
+    const res = await handler(oneClickEvent());
+
+    expect(res.statusCode).toBe(200);
+    expect(mockVerify).toHaveBeenCalledWith('good.token');
+    const call = mockQuery.mock.calls.find((c) => String(c[0]).includes('unsubscribe_employer'));
+    expect(call![1]).toEqual([EMPLOYER_ID, 4]);
+  });
+
+  /**
+   * RFC 8058 forbids a redirect, and the caller is a mail server with nothing
+   * to render: a bare status and an empty text/plain body is the whole answer.
+   */
+  it('answers a one-click POST with an empty plain-text body and no redirect', async () => {
+    mockVerify.mockResolvedValue({ employerId: EMPLOYER_ID, version: 1 });
+    const res = await handler(oneClickEvent());
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('');
+    expect(res.headers!['Content-Type']).toBe('text/plain; charset=utf-8');
+    expect(res.headers).not.toHaveProperty('Location');
+  });
+
+  it('tolerates a charset parameter on the content type', async () => {
+    mockVerify.mockResolvedValue({ employerId: EMPLOYER_ID, version: 1 });
+    const res = await handler(oneClickEvent({
+      contentType: 'application/x-www-form-urlencoded; charset=UTF-8',
+    }));
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('reads a base64-encoded body, which API Gateway may hand it', async () => {
+    mockVerify.mockResolvedValue({ employerId: EMPLOYER_ID, version: 1 });
+    const res = await handler(oneClickEvent({ base64: true }));
+    expect(res.statusCode).toBe(200);
+    expect(mockQuery).toHaveBeenCalled();
+  });
+
+  /**
+   * Without this the route would spend a token for any form POST that reached
+   * it, which is not what the header advertises and not what the recipient
+   * asked for.
+   */
+  it.each([
+    ['an empty body', ''],
+    ['a different field', 'Something-Else=One-Click'],
+    ['a different value', 'List-Unsubscribe=Yes'],
+  ])('refuses a one-click POST carrying %s, without verifying or touching the DB', async (_label, body) => {
+    const res = await handler(oneClickEvent({ body }));
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe('');
+    expect(mockVerify).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('refuses a one-click POST with no token in the query string', async () => {
+    const res = await handler(oneClickEvent({ token: null }));
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe('');
+    expect(mockVerify).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unverifiable one-click token with the same empty 400', async () => {
+    mockVerify.mockResolvedValue(null);
+    const res = await handler(oneClickEvent());
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe('');
+    expect(res.headers!['Content-Type']).toBe('text/plain; charset=utf-8');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('answers a one-click service failure with an empty 500, not a JSON envelope', async () => {
+    mockVerify.mockResolvedValue({ employerId: EMPLOYER_ID, version: 1 });
+    mockQuery.mockRejectedValue(new Error('connection reset'));
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await handler(oneClickEvent());
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe('');
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+    errorLog.mockRestore();
+  });
+
+  it('leaves the browser JSON path untouched when no form content type is present', async () => {
+    mockVerify.mockResolvedValue({ employerId: EMPLOYER_ID, version: 1 });
+    const res = await handler(makeEvent({ token: 'good.token' }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ status: 'unsubscribed' });
+    expect(res.headers!['Content-Type']).toBe('application/json');
   });
 });
