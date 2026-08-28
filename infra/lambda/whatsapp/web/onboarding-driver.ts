@@ -44,6 +44,7 @@ import {
   type OnboardingV2InboundMessage,
   type OnboardingV2Session,
 } from '../onboarding-v2';
+import { isAvailabilityKey, isExperienceKey, isTradeKey } from '../../lib/worker-vocab';
 import { isUnimplementedBoundStep } from '../onboarding/gate';
 import { hydrateSessionFromRun, persistDurableStateContext } from '../onboarding/durable-context';
 import {
@@ -104,9 +105,6 @@ const WEB_ANSWERABLE_STEPS = new Set<string>([
   'trust.question.3',
 ]);
 
-const TRADE_KEYS = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
-const EXPERIENCE_KEYS = ['0-1', '2-4', '5-9', '10+'] as const;
-const AVAILABILITY_KEYS = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 
 // ── Result shapes ────────────────────────────────────────────────────────
 
@@ -347,7 +345,9 @@ export function mapAnswerToEngineMessage(
 
     case 'profile.trade': {
       const trade = asString(value);
-      if (trade === null || !(TRADE_KEYS as readonly string[]).includes(trade)) {
+      // Guards from the SHARED vocabulary (R2-C1), not a local copy: the
+      // same module the frontend's picker mirrors, with a parity test over it.
+      if (!isTradeKey(trade)) {
         return { ok: false, reason: 'invalid_choice' };
       }
       // V1's approved template dialect — `parseTradeChoice` accepts it.
@@ -362,7 +362,7 @@ export function mapAnswerToEngineMessage(
 
     case 'profile.experience': {
       const band = asString(value);
-      if (band === null || !(EXPERIENCE_KEYS as readonly string[]).includes(band)) {
+      if (!isExperienceKey(band)) {
         return { ok: false, reason: 'invalid_choice' };
       }
       return { ok: true, fields: { interactivePayload: `profile:years_experience:${band}` } };
@@ -375,7 +375,7 @@ export function mapAnswerToEngineMessage(
 
     case 'profile.availability': {
       const availability = asString(value);
-      if (availability === null || !(AVAILABILITY_KEYS as readonly string[]).includes(availability)) {
+      if (!isAvailabilityKey(availability)) {
         return { ok: false, reason: 'invalid_choice' };
       }
       return { ok: true, fields: { interactivePayload: `profile:availability:${availability}` } };

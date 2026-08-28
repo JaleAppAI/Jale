@@ -156,6 +156,10 @@ function buildStacks(): Record<string, cdk.Stack> {
     dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     api: api.api,
+    // S22 R2-C23: the web onboarding door hangs /worker/onboarding* off the
+    // ApiStack's worker resource, so WhatsAppStack needs both.
+    workerResource: api.workerResource,
+    workerAuthorizer: api.workerAuthorizer,
     questionGeneratorFn: ai.questionGeneratorFn.function,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
     trustAssessmentQueue: ai.trustAssessmentQueue,
