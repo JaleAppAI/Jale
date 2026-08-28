@@ -32,12 +32,16 @@ export interface AiStackOutputs {
   readonly questionGeneratorFn: JaleLambdaFunction;
   readonly aliasGeneratorFn: JaleLambdaFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
+  /** R1-X: skill-extraction lane. Separate queue from the scoring lane so a
+   *  extraction backlog or DLQ can never stall or dead-letter a trust score. */
+  readonly trustExtractionQueue: sqs.IQueue;
 }
 
 export class AiStack extends cdk.Stack implements AiStackOutputs {
   public readonly questionGeneratorFn: JaleLambdaFunction;
   public readonly aliasGeneratorFn: JaleLambdaFunction;
   public readonly trustAssessmentQueue: sqs.IQueue;
+  public readonly trustExtractionQueue: sqs.IQueue;
 
   constructor(scope: Construct, id: string, props: AiStackProps) {
     super(scope, id, props);
@@ -90,6 +94,27 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       visibilityTimeout: cdk.Duration.seconds(360),
       deadLetterQueue: {
         queue: trustAssessmentDlq,
+        maxReceiveCount: 3,
+      },
+    });
+
+    // R1-X: the extraction lane gets its OWN queue + DLQ rather than sharing
+    // the assessment pair. Two consumers on one queue would make each one's
+    // retries and dead-letters the other's problem, and the whole point of
+    // this lane is that it cannot affect scoring.
+    const trustExtractionDlq = new sqs.Queue(this, 'TrustExtractionDlq', {
+      queueName: 'trust-extraction-dlq',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    this.trustExtractionQueue = new sqs.Queue(this, 'TrustExtractionQueue', {
+      queueName: 'trust-extraction-queue',
+      encryption: sqs.QueueEncryption.KMS_MANAGED,
+      // 6x the extractor's 60s timeout, matching the assessment queue.
+      visibilityTimeout: cdk.Duration.seconds(360),
+      deadLetterQueue: {
+        queue: trustExtractionDlq,
         maxReceiveCount: 3,
       },
     });
@@ -184,6 +209,57 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       ],
     });
 
+    // ── R1-X: trust-answer skill extractor ───────────────────────────
+    // Same Bedrock model and the same SQS payload as the scorer, but a
+    // wholly separate lane: no SSM rubric (its prompt is versioned in code
+    // alongside the parsing contract), no write access to
+    // worker_trust_assessments or users, and its own queue/DLQ/alarms.
+    const trustExtractorLambda = new JaleLambdaFunction(this, 'TrustExtractorLambda', {
+      entry: path.join(__dirname, '../../lambda/ai/trust-extractor.ts'),
+      description: 'Trust answer skill extractor with stale-claim recovery',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      timeout: 60,
+      // Larger than the repo default (256): the extractor validates and
+      // re-serializes a multi-array JSON document per invocation, and the
+      // extra CPU that comes with the memory bump keeps it well inside the
+      // 60s timeout that sizes the queue's visibility window.
+      memorySize: 512,
+      environment: {
+        DB_SECRET_ARN: props.aiDbSecret.secretName,
+        BEDROCK_MODEL_ID,
+        TRUST_EXTRACTION_QUEUE_URL: this.trustExtractionQueue.queueUrl,
+      },
+      nodeModules: ['@aws-sdk/client-bedrock-runtime'],
+    });
+    props.aiDbSecret.grantRead(trustExtractorLambda.function);
+    trustExtractorLambda.function.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock:InvokeModel'],
+        resources: bedrockArns(region, account),
+      }),
+    );
+    this.trustExtractionQueue.grantConsumeMessages(trustExtractorLambda.function);
+    // Send, too: the recovery cron re-queues its own stale claims.
+    this.trustExtractionQueue.grantSendMessages(trustExtractorLambda.function);
+
+    trustExtractorLambda.function.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.trustExtractionQueue, {
+        batchSize: 1,
+        maxConcurrency: 5,
+      }),
+    );
+
+    new events.Rule(this, 'TrustExtractorRecoveryCron', {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
+      description: 'Reset stale trust extraction claims',
+      targets: [
+        new targets.LambdaFunction(trustExtractorLambda.function, {
+          event: events.RuleTargetInput.fromObject({ source: 'cron.recovery' }),
+        }),
+      ],
+    });
+
     // ── Alarm actions (2026-07-27 observability pass) ────────────────
     // These alarms existed since C-lane but had NO action attached — they
     // turned red in the console and paged nobody, so a Bedrock parse
@@ -253,6 +329,29 @@ export class AiStack extends cdk.Stack implements AiStackOutputs {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmName: 'TrustScorerFailures',
+    }).addAlarmAction(aiAlarmAction);
+
+    // R1-X extractor alarms. The extractor deliberately logs no model output
+    // and no answer text, so unlike the scorer there is no log-metric-filter
+    // alarm here: a bad model response marks the row failed and rethrows, so
+    // Lambda Errors + DLQ depth are the two signals that matter.
+    new cloudwatch.Alarm(this, 'TrustExtractorErrorsAlarm', {
+      metric: trustExtractorLambda.function.metricErrors({
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'TrustExtractorErrors',
+    }).addAlarmAction(aiAlarmAction);
+
+    new cloudwatch.Alarm(this, 'TrustExtractionDlqAlarm', {
+      metric: trustExtractionDlq.metricApproximateNumberOfMessagesVisible(),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      alarmName: 'TrustExtractionDlqDepth',
     }).addAlarmAction(aiAlarmAction);
   }
 }

@@ -152,4 +152,116 @@ describe('AiStack', () => {
       AlarmName: 'TrustScorerFailures',
     });
   });
+  // ── R1-X: trust-answer skill extractor ────────────────────────────
+  // Every assertion below keys on something UNIQUE to the extractor
+  // (queue name, its own Description, its own AlarmName). `hasResourceProperties`
+  // matches ANY resource of the type, so a generic assertion such as
+  // `{ BatchSize: 1 }` or `{ ScheduleExpression: 'rate(15 minutes)' }` would
+  // already be satisfied by the scorer's resources and pass vacuously.
+  const EXTRACTOR_DESCRIPTION = 'Trust answer skill extractor with stale-claim recovery';
+
+  it('creates trust-extraction-queue mirroring the assessment pair (KMS-managed, 6x the 60s Lambda timeout, maxReceiveCount 3)', () => {
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'trust-extraction-queue',
+      VisibilityTimeout: 360,
+      KmsMasterKeyId: 'alias/aws/sqs',
+      RedrivePolicy: Match.objectLike({ maxReceiveCount: 3 }),
+    });
+  });
+
+  it('creates trust-extraction-dlq with 14-day retention', () => {
+    template.hasResourceProperties('AWS::SQS::Queue', {
+      QueueName: 'trust-extraction-dlq',
+      MessageRetentionPeriod: 14 * 24 * 3600,
+      KmsMasterKeyId: 'alias/aws/sqs',
+    });
+  });
+
+  it('creates the TrustExtractor Lambda on Node 20 with 512MB, a 60s timeout and its own queue URL', () => {
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: EXTRACTOR_DESCRIPTION,
+      Runtime: 'nodejs20.x',
+      MemorySize: 512,
+      Timeout: 60,
+      Environment: {
+        Variables: Match.objectLike({
+          DB_SECRET_ARN: Match.anyValue(),
+          BEDROCK_MODEL_ID: Match.anyValue(),
+          TRUST_EXTRACTION_QUEUE_URL: Match.anyValue(),
+        }),
+      },
+    });
+  });
+
+  it('does not give the extractor the scorer`s SSM rubric parameter (its prompt lives in code)', () => {
+    const functions = template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: EXTRACTOR_DESCRIPTION },
+    });
+    expect(Object.keys(functions)).toHaveLength(1);
+    const variables = Object.values(functions)[0].Properties.Environment.Variables;
+    expect(variables.SSM_RUBRIC_PARAM).toBeUndefined();
+  });
+
+  it('subscribes the extractor to its own queue with batchSize 1', () => {
+    const extractor = Object.keys(template.findResources('AWS::Lambda::Function', {
+      Properties: { Description: EXTRACTOR_DESCRIPTION },
+    }))[0];
+    const mappings = Object.values(
+      template.findResources('AWS::Lambda::EventSourceMapping'),
+    ).filter((mapping: any) => mapping.Properties.FunctionName?.Ref === extractor);
+    expect(mappings).toHaveLength(1);
+    expect(mappings[0].Properties.BatchSize).toBe(1);
+    // Pins the SOURCE queue too: a mapping wired to the assessment queue
+    // would otherwise satisfy every other assertion in this test.
+    const extractionQueue = Object.keys(template.findResources('AWS::SQS::Queue', {
+      Properties: { QueueName: 'trust-extraction-queue' },
+    }))[0];
+    expect(mappings[0].Properties.EventSourceArn['Fn::GetAtt'])
+      .toEqual([extractionQueue, 'Arn']);
+  });
+
+  it('creates a dedicated 15-min recovery rule that invokes the EXTRACTOR with {source: cron.recovery}', () => {
+    template.hasResourceProperties('AWS::Events::Rule', {
+      Description: 'Reset stale trust extraction claims',
+      ScheduleExpression: 'rate(15 minutes)',
+      Targets: Match.arrayWith([
+        Match.objectLike({ Input: '{"source":"cron.recovery"}' }),
+      ]),
+    });
+  });
+
+  it('alarms on extractor errors and on trust-extraction DLQ depth, both actioned', () => {
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'TrustExtractorErrors',
+      MetricName: 'Errors',
+      Period: 300,
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      AlarmActions: Match.anyValue(),
+    });
+    template.hasResourceProperties('AWS::CloudWatch::Alarm', {
+      AlarmName: 'TrustExtractionDlqDepth',
+      Threshold: 1,
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold',
+      AlarmActions: Match.anyValue(),
+    });
+  });
+
+  it('exposes trustExtractionQueue so WhatsAppStack can grant the drain send access', () => {
+    const app = new cdk.App();
+    const harness = new cdk.Stack(app, 'AiHarness2', {
+      env: { account: '123456789012', region: 'us-east-1' },
+    });
+    const vpc = new ec2.Vpc(harness, 'Vpc', { maxAzs: 2 });
+    const stack = new AiStack(app, 'TestAiStackExport', {
+      env: { account: '123456789012', region: 'us-east-1' },
+      vpc,
+      privateSubnets: vpc.privateSubnets,
+      lambdaSg: new ec2.SecurityGroup(harness, 'LambdaSg', { vpc }),
+      aiDbSecret: new secretsmanager.Secret(harness, 'AiDbSecret'),
+      alarmTopicArn: 'arn:aws:sns:us-east-1:123456789012:jale-ai-alarms-test',
+    });
+    expect(stack.trustExtractionQueue).toBeDefined();
+    expect(stack.trustExtractionQueue).not.toBe(stack.trustAssessmentQueue);
+  });
 });

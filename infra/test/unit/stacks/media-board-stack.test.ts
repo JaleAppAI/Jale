@@ -80,6 +80,7 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     questionGeneratorFn: ai.questionGeneratorFn.function,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
     trustAssessmentQueue: ai.trustAssessmentQueue,
+    trustExtractionQueue: ai.trustExtractionQueue,
     statusCallbackUrl: 'https://callbacks.example.test/prod/whatsapp/status-callback',
     alarmTopicArn: 'arn:aws:sns:us-east-2:123456789012:jale-whatsapp-alarms-test',
     documentsBucket: docsBucket,
