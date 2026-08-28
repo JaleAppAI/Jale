@@ -1,43 +1,31 @@
 'use client';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
-import { InlineFeedback } from '@/components/ui/inline-feedback';
-import { answersForScreen, type OnboardingAnswerBatch, type OnboardingDraft } from '@/lib/onboarding-flow';
 import { StepBody, StepFooter, StepHeader, StepLayout } from './StepHeader';
 
-/** `profile.photo` is answered with a constant; the draft has nothing to give. */
-const NO_DRAFT = {} as OnboardingDraft;
-
 /**
- * SKIP-ONLY IN V1, and the button says so by being disabled rather than absent.
+ * CLIENT-SIDE ONLY, AND SKIP-ONLY. This screen makes no request at all.
  *
- * There is no profile-photo uploader in this app to reuse: the vault flow
- * (`getAuthUploadUrl`/`confirmAuthUpload`) uploads typed DOCUMENTS into a
- * worker's document vault, and the media board's uploader creates POSTS — a
- * profile avatar is neither, and would need its own backend field, its own
- * upload type and its own moderation story. Rather than half-wire one of those
- * two into an "avatar", the step is honest: the prompt is here, the upload is
- * marked coming soon, and skipping answers the engine's step so the run
- * completes.
+ * Two separate facts put it here. First, the engine has no photo step: the run
+ * completes on the third trust answer, and `profile.photo` is a key the API
+ * answers 422 `unknown_step` for — so there is nothing to post. Second, there
+ * is no profile-photo uploader in this app to reuse: the vault flow uploads
+ * typed DOCUMENTS and the media board creates POSTS; an avatar is neither, and
+ * would need its own field, upload type and moderation story.
+ *
+ * So the prompt is shown once, the upload is marked coming soon rather than
+ * hidden (a worker who sent a photo on WhatsApp should see it is on its way
+ * here too), and skipping is a local transition to the summary.
  */
-export function PhotoStep({
-    saving,
-    error,
-    onBack,
-    onSubmit,
-}: {
-    saving: boolean;
-    error?: string | null;
-    onBack: (() => void) | null;
-    onSubmit: (items: OnboardingAnswerBatch) => void;
-}) {
+export function PhotoStep({ onSkip }: { onSkip: () => void }) {
     const t = useTranslations('worker_onboarding.photo');
     const tShared = useTranslations('worker_onboarding.common');
-    const tCommon = useTranslations('common');
 
     return (
         <StepLayout>
-            <StepHeader screen="photo" title={t('title')} subtitle={t('subtitle')} onBack={onBack} backDisabled={saving} />
+            {/* No Back: the run is already complete, and the engine's `back`
+                endpoint only operates on an active run. */}
+            <StepHeader screen="photo" title={t('title')} subtitle={t('subtitle')} onBack={null} />
             <StepBody>
                 <div className="flex flex-col items-center text-center">
                     <div className="mx-auto mb-1.5 mt-3.5 grid h-[120px] w-[120px] place-items-center rounded-full border-2 border-dashed border-[var(--jale-divider)] bg-[var(--jale-input)] text-[var(--jale-ink-2)]">
@@ -46,28 +34,13 @@ export function PhotoStep({
                             <circle cx="12" cy="13" r="3.5" />
                         </svg>
                     </div>
-                    <Button
-                        variant="ghost"
-                        size="lg"
-                        disabled
-                        title={tShared('coming_soon')}
-                        className="max-w-[240px]"
-                    >
+                    <Button variant="ghost" size="lg" disabled title={tShared('coming_soon')} className="max-w-[240px]">
                         {t('add')}
                     </Button>
                 </div>
             </StepBody>
             <StepFooter>
-                {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
-                <Button
-                    className="w-full"
-                    size="lg"
-                    loading={saving}
-                    loadingLabel={tCommon('loading')}
-                    onClick={() => onSubmit(answersForScreen('photo', NO_DRAFT))}
-                >
-                    {t('skip')}
-                </Button>
+                <Button className="w-full" size="lg" onClick={onSkip}>{t('skip')}</Button>
             </StepFooter>
         </StepLayout>
     );

@@ -620,10 +620,18 @@ export type OnboardingAnswersBody = { lockVersion: number; answers: OnboardingAn
  */
 export type OnboardingSaveResult =
   | { kind: 'saved'; state: OnboardingState }
-  /** 409: someone else (WhatsApp) advanced the run. Refetch and retry once. */
-  | { kind: 'lock_conflict' }
+  /**
+   * 409: someone else (WhatsApp) advanced the run. The body carries the fresh
+   * state, so the retry usually needs no extra GET -- `state` is optional
+   * only because a proxy-generated 409 would not have one.
+   */
+  | { kind: 'lock_conflict'; state?: OnboardingState }
   /** 422: the engine refused one step. `state` is the run as it stands now. */
-  | { kind: 'step_rejected'; rejectedStepKey: string; reason: string; state: OnboardingState };
+  | { kind: 'step_rejected'; rejectedStepKey: string; reason: string; state: OnboardingState }
+  /** 422: the client is behind the run. Refetch and re-render; do NOT retry. */
+  | { kind: 'step_mismatch' }
+  /** 409: this worker cannot be onboarded at all. A dead end, not a retry. */
+  | { kind: 'blocked'; reason: 'suspended' | 'not_onboardable' };
 
 export async function getWorkerOnboarding(token: string, signal?: AbortSignal): Promise<OnboardingState> {
   const res = await apiFetch('/worker/onboarding', { signal }, token);
@@ -651,27 +659,33 @@ export async function postOnboardingAnswers(
       reason?: unknown;
       state?: unknown;
     } | null;
+    const state = parsed?.state !== null && typeof parsed?.state === 'object'
+      ? parsed.state as OnboardingState
+      : undefined;
 
     if (res.status === 409 && parsed?.error === 'lock_conflict') {
-      return { kind: 'lock_conflict' };
+      return { kind: 'lock_conflict', state };
+    }
+    if (res.status === 409 && (parsed?.error === 'suspended' || parsed?.error === 'not_onboardable')) {
+      return { kind: 'blocked', reason: parsed.error };
+    }
+    if (res.status === 422 && parsed?.error === 'step_mismatch') {
+      return { kind: 'step_mismatch' };
     }
     if (
       res.status === 422
       && parsed?.error === 'step_rejected'
       && typeof parsed.rejectedStepKey === 'string'
       && typeof parsed.reason === 'string'
-      && parsed.state !== null
-      && typeof parsed.state === 'object'
+      && state !== undefined
     ) {
-      return {
-        kind: 'step_rejected',
-        rejectedStepKey: parsed.rejectedStepKey,
-        reason: parsed.reason,
-        state: parsed.state as OnboardingState,
-      };
+      return { kind: 'step_rejected', rejectedStepKey: parsed.rejectedStepKey, reason: parsed.reason, state };
     }
   }
 
+  // Everything left over -- 404 `worker_not_found`, 422 `unknown_step` (a
+  // client bug, not something a worker can act on), 5xx, transport failures --
+  // throws like every other helper in this module.
   throw await parseApiError(res, 'save_failed');
 }
 

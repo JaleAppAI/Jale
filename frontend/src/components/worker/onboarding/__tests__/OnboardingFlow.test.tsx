@@ -69,8 +69,8 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
             .mockImplementationOnce(advancesTo('trust.question.1'))
             .mockImplementationOnce(advancesTo('trust.question.2'))
             .mockImplementationOnce(advancesTo('trust.question.3'))
-            .mockImplementationOnce(advancesTo('profile.photo'))
-            .mockImplementationOnce(advancesTo('profile.photo', { lifecycle: 'ready' }));
+            // The third answer COMPLETES the run: the engine has no photo step.
+            .mockImplementationOnce(advancesTo('trust.question.3', { lifecycle: 'ready' }));
 
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
 
@@ -133,17 +133,15 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
             });
         }
 
-        // 8 — photo, skip-only
+        // 8 — photo: shown once, client-side, and posts NOTHING
         await screen.findByRole('heading', { name: message('worker_onboarding.photo.title') });
+        const postsBeforePhoto = api.postOnboardingAnswers.mock.calls.length;
         await user.click(screen.getByRole('button', { name: message('worker_onboarding.photo.skip') }));
-        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
-            lockVersion: 1,
-            answers: [{ stepKey: 'profile.photo', value: { skip: true } }],
-        });
+        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(postsBeforePhoto);
 
         // Done
         expect(await screen.findByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
-        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(8);
+        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(7);
     });
 });
 
@@ -180,7 +178,27 @@ describe('OnboardingFlow — resuming a run started on WhatsApp', () => {
 });
 
 describe('OnboardingFlow — the other door moved first', () => {
-    it('refetches and retries exactly once on a lock conflict', async () => {
+    it('retries once with the fresh state the 409 body carries, without a second GET', async () => {
+        const user = userEvent.setup();
+        const fresh = { ...at('legal.review'), run: { ...at('legal.review').run, lockVersion: 7 } };
+        api.postOnboardingAnswers
+            .mockResolvedValueOnce({ kind: 'lock_conflict', state: fresh })
+            .mockResolvedValueOnce({ kind: 'saved', state: at('profile.name') });
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
+
+        await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
+        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(2);
+        // The retry carries the FRESH lock version, and cost no extra round trip.
+        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
+            lockVersion: 7,
+            answers: [{ stepKey: 'legal.review', value: 'accept' }],
+        });
+        expect(api.getWorkerOnboarding).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a GET when the 409 body carries no state', async () => {
         const user = userEvent.setup();
         api.postOnboardingAnswers
             .mockResolvedValueOnce({ kind: 'lock_conflict' })
@@ -195,8 +213,6 @@ describe('OnboardingFlow — the other door moved first', () => {
 
         await screen.findByRole('heading', { name: message('worker_onboarding.about.title') });
         expect(api.getWorkerOnboarding).toHaveBeenCalledTimes(1);
-        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(2);
-        // The retry carries the REFETCHED lock version, not the stale one.
         expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
             lockVersion: 7,
             answers: [{ stepKey: 'legal.review', value: 'accept' }],
@@ -305,25 +321,56 @@ describe('OnboardingFlow — language is a header toggle, not a step', () => {
     });
 });
 
-describe('OnboardingFlow — improving answers from the summary', () => {
-    it('walks back into question 1 without asking the server to rewind', async () => {
-        const user = userEvent.setup();
-        const finished = at('profile.photo', {
-            lifecycle: 'ready',
-            trust: {
-                questions: THREE_QUESTIONS,
-                answers: [{ index: 1, text: 'I mostly frame houses in Helotes.', source: 'text' }],
-            },
-        });
-        renderIntl(<OnboardingFlow token={TOKEN} initialState={finished} />);
-
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.done.improve') }));
-        expect(screen.getByRole('heading', { name: THREE_QUESTIONS[0].q_en })).toBeInTheDocument();
-        expect(api.postOnboardingBack).not.toHaveBeenCalled();
-
-        // Back out of the first question returns to the summary, still no rewind.
-        await user.click(screen.getByRole('button', { name: message('worker_onboarding.common.back') }));
+describe('OnboardingFlow — a finished run', () => {
+    it('shows the summary with no way back: the engine cannot rewind a completed run', () => {
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.3', { lifecycle: 'ready' })} />);
         expect(screen.getByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
-        expect(api.postOnboardingBack).not.toHaveBeenCalled();
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.common.back') })).not.toBeInTheDocument();
+        // And no photo prompt on a reload — it is optional and already past.
+        expect(screen.queryByRole('heading', { name: message('worker_onboarding.photo.title') })).not.toBeInTheDocument();
+    });
+
+    it('lets a worker walk back into an earlier question BEFORE the last answer', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingBack.mockResolvedValue(at('trust.question.1'));
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.2')} />);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.common.back') }));
+
+        expect(api.postOnboardingBack).toHaveBeenCalledWith(TOKEN, { lockVersion: 1 });
+        expect(await screen.findByRole('heading', { name: THREE_QUESTIONS[0].q_en })).toBeInTheDocument();
+    });
+});
+
+describe('OnboardingFlow — a worker the engine will not onboard', () => {
+    it('stops on a suspended run instead of showing a form that cannot save', () => {
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review', { lifecycle: 'suspended' })} />);
+        expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.blocked.suspended'));
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.terms.cta') })).not.toBeInTheDocument();
+    });
+
+    it('stops when a save comes back not_onboardable', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'blocked', reason: 'not_onboardable' });
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
+
+        expect(await screen.findByRole('alert')).toHaveTextContent(message('worker_onboarding.blocked.not_onboardable'));
+    });
+});
+
+describe('OnboardingFlow — the client is behind the run', () => {
+    it('re-reads and re-renders on a step mismatch rather than retrying', async () => {
+        const user = userEvent.setup();
+        api.postOnboardingAnswers.mockResolvedValue({ kind: 'step_mismatch' });
+        api.getWorkerOnboarding.mockResolvedValue(at('trust.question.1'));
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('legal.review')} />);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.terms.cta') }));
+
+        expect(await screen.findByRole('heading', { name: THREE_QUESTIONS[0].q_en })).toBeInTheDocument();
+        expect(api.getWorkerOnboarding).toHaveBeenCalledTimes(1);
+        expect(api.postOnboardingAnswers).toHaveBeenCalledTimes(1);
     });
 });

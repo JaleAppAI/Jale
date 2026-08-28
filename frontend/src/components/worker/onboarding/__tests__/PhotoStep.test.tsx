@@ -8,10 +8,7 @@ import { message, renderIntl } from './render-intl';
 
 function props(overrides: Partial<Parameters<typeof PhotoStep>[0]> = {}) {
     return {
-        saving: false,
-        error: null,
-        onBack: vi.fn(),
-        onSubmit: vi.fn(),
+        onSkip: vi.fn(),
         ...overrides,
     } satisfies Parameters<typeof PhotoStep>[0];
 }
@@ -36,10 +33,15 @@ describe('PhotoStep', () => {
         expect(add).toHaveAttribute('title', message('worker_onboarding.common.coming_soon'));
     });
 
-    it('posts profile.photo = skip', async () => {
-        const onSubmit = vi.fn();
-        renderIntl(<PhotoStep {...props({ onSubmit })} />);
+    it('skips without asking the API for anything — there is no photo step', async () => {
+        const onSkip = vi.fn();
+        renderIntl(<PhotoStep {...props({ onSkip })} />);
         await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.photo.skip') }));
-        expect(onSubmit).toHaveBeenCalledWith([{ stepKey: 'profile.photo', value: { skip: true } }]);
+        expect(onSkip).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers no Back: the run completed on the last question', () => {
+        renderIntl(<PhotoStep {...props()} />);
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.common.back') })).not.toBeInTheDocument();
     });
 });

@@ -5,8 +5,11 @@ import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { Textarea } from '@/components/ui/textarea';
 import {
+    MAX_ANSWER_CHARS,
     MIN_ANSWER_CHARS,
+    answerAcceptable,
     answerLongEnough,
+    answerTooLong,
     type OnboardingAnswerBatch,
 } from '@/lib/onboarding-flow';
 import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage } from './StepHeader';
@@ -60,7 +63,11 @@ export function TrustQuestionStep({
     const fieldId = useId();
 
     const trimmed = answer.trim();
-    const ready = answerLongEnough(answer);
+    // Both bounds are the SERVER's (15 / 2000, measured on the trimmed text).
+    // Mirroring them here means the worker is stopped by a sentence rather
+    // than by a 422 after they press Next.
+    const ready = answerAcceptable(answer);
+    const tooLong = answerTooLong(answer);
     const stepKey = `trust.question.${index}`;
     const rejected = rejection?.stepKey === stepKey ? rejectionMessage(rejection.reason) : null;
 
@@ -101,7 +108,7 @@ export function TrustQuestionStep({
                 </div>
 
                 <div className="flex items-center justify-between gap-2">
-                    {source === 'voice' ? (
+                    {source === 'voice' && !tooLong ? (
                         <span className="flex flex-1 items-center gap-2">
                             <span className="inline-block rounded-full bg-[var(--jale-input)] px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.08em] text-[var(--jale-ink-2)]">
                                 {tShared('voice_badge')}
@@ -110,7 +117,11 @@ export function TrustQuestionStep({
                         </span>
                     ) : (
                         <span className="flex-1 text-[13px] text-[var(--jale-ink-2)]">
-                            {trimmed.length > 0 && !ready ? t('too_short', { count: MIN_ANSWER_CHARS }) : ''}
+                            {tooLong
+                                ? t('too_long', { count: MAX_ANSWER_CHARS })
+                                : trimmed.length > 0 && !answerLongEnough(answer)
+                                    ? t('too_short', { count: MIN_ANSWER_CHARS })
+                                    : ''}
                         </span>
                     )}
                     <span className="text-xs tabular-nums text-[var(--jale-ink-2)]">

@@ -19,7 +19,9 @@ import {
     type OnboardingAnswerBatch,
     type OnboardingDraft,
 } from '@/lib/onboarding-flow';
+import { clearPendingReferral, readPendingReferral, validateJobId } from '@/lib/referral-return';
 import { tradeLabel } from '@/lib/worker-vocab';
+import { InlineFeedback } from '@/components/ui/inline-feedback';
 import { OnboardingShell, type LanguageChoice } from './OnboardingHeader';
 import { ProgressSegments } from './ProgressSegments';
 import { TermsStep } from './TermsStep';
@@ -41,11 +43,17 @@ import { DoneStep } from './DoneStep';
  *
  *   - the screen comes from `run.stepKey` (see `lib/onboarding-flow.ts`),
  *   - every response re-seeds `lockVersion`, and
- *   - a 409 means the other door moved first: refetch, retry ONCE, and if it
- *     conflicts again say so rather than fighting for the run.
+ *   - a 409 means the other door moved first: take the fresh state the body
+ *     carries, retry ONCE, and if it conflicts again say so rather than
+ *     fighting for the run.
+ *
+ * WHERE THE RUN ENDS. The engine completes on the THIRD trust answer -- that
+ * response already says `lifecycle: 'ready'`. The photo prompt after it is
+ * client-side only (there is no photo step to post), so the flow shows it once
+ * out of `photoPending` and then moves to the summary.
  *
  * WHY NOT `usePageData`. That hook's legal-wall handling redirects to
- * `/legal/accept` on a `legal_wall` classification — and accepting the legal
+ * `/legal/accept` on a `legal_wall` classification -- and accepting the legal
  * terms is a STEP of this flow (`TermsStep`). Wiring it up here would bounce a
  * worker out of onboarding to accept the very terms they are being shown.
  * The page does its own fetch and this component owns the mutations.
@@ -68,11 +76,21 @@ export function OnboardingFlow({
     const pathname = usePathname();
     const tCommon = useTranslations('common');
     const tVocab = useTranslations('worker_vocab');
+    const tBlocked = useTranslations('worker_onboarding.blocked');
     const [flow, dispatch] = useReducer(onboardingFlowReducer, initialState, initFlowState);
     const [languageBusy, setLanguageBusy] = useState(false);
+    const [handoffJobId, setHandoffJobId] = useState<string | null>(null);
 
     const screen = currentScreen(flow);
     const extractionStatus = flow.server.extraction?.status ?? 'pending';
+
+    // A referred stranger who signed up from a shared job link still has that
+    // job waiting: `WorkerAuthForm` deliberately leaves the stash in place and
+    // this flow finishes the journey. Read in an effect, never during render --
+    // `sessionStorage` does not exist while this renders on the server.
+    useEffect(() => {
+        setHandoffJobId(validateJobId(readPendingReferral()?.jobId));
+    }, []);
 
     // Poll the extraction while the summary is on screen. Capped by ATTEMPTS
     // rather than wall-clock so the stop condition is exact under test and
@@ -108,10 +126,11 @@ export function OnboardingFlow({
             });
 
             if (result.kind === 'lock_conflict') {
-                // The other door moved. Take its state for the lock version
-                // only -- `sync_server` deliberately leaves the draft alone,
-                // because the retry is about to re-post what was just typed.
-                const fresh = await getWorkerOnboarding(token);
+                // The other door moved. The 409 body carries the fresh run, so
+                // the retry usually costs no extra round trip; `sync_server`
+                // takes it for the lock version ONLY, because the retry is
+                // about to re-post the draft the worker just typed.
+                const fresh = result.state ?? await getWorkerOnboarding(token);
                 dispatch({ type: 'sync_server', server: fresh });
                 result = await postOnboardingAnswers(token, {
                     lockVersion: fresh.run.lockVersion,
@@ -121,6 +140,16 @@ export function OnboardingFlow({
 
             if (result.kind === 'lock_conflict') {
                 dispatch({ type: 'save_failed', errorKind: 'conflict' });
+                return;
+            }
+            if (result.kind === 'blocked') {
+                dispatch({ type: 'blocked', reason: result.reason });
+                return;
+            }
+            if (result.kind === 'step_mismatch') {
+                // This client is behind the run, not in conflict with it:
+                // re-read and re-render wherever the engine actually is.
+                dispatch({ type: 'hydrate', server: await getWorkerOnboarding(token) });
                 return;
             }
             if (result.kind === 'step_rejected') {
@@ -133,15 +162,10 @@ export function OnboardingFlow({
                 return;
             }
 
-            if (flow.improving) {
-                dispatch({ type: 'hydrate', server: result.state });
-                dispatch({ type: 'improve_next' });
-                return;
-            }
-            if (screen === 'photo') {
-                // The last step. `completed` pins the summary locally so it
-                // renders even if the run's own lifecycle has not flipped yet.
-                dispatch({ type: 'completed', server: result.state });
+            // The third answer completes the run. Offer the (client-only)
+            // photo prompt once before the summary.
+            if (screen === 'q3' && result.state.lifecycle === 'ready') {
+                dispatch({ type: 'finished', server: result.state });
                 return;
             }
             dispatch({ type: 'hydrate', server: result.state });
@@ -151,12 +175,6 @@ export function OnboardingFlow({
     }
 
     async function goBack() {
-        // Improve-mode is a local re-read of answers the run has already
-        // passed, so its Back walks the sub-mode, never the engine.
-        if (flow.improving) {
-            dispatch({ type: 'improve_back' });
-            return;
-        }
         dispatch({ type: 'saving' });
         try {
             dispatch({ type: 'hydrate', server: await postOnboardingBack(token, { lockVersion: flow.server.run.lockVersion }) });
@@ -171,18 +189,31 @@ export function OnboardingFlow({
         try {
             dispatch({ type: 'hydrate', server: await patchOnboardingLanguage(token, { preferredLanguage: language }) });
         } catch {
-            // The visible language is what the worker just asked for, so the
-            // route still changes; only the stored preference missed, and the
-            // next toggle (or the next screen's save) will carry it.
+            // Non-fatal by contract: the visible language is what the worker
+            // just asked for, so the route still changes; only the stored
+            // preference missed, and the next toggle carries it.
         } finally {
             setLanguageBusy(false);
             router.replace(pathname, { locale: language });
         }
     }
 
+    function finish() {
+        // The job the worker was applying for when they signed up, if any.
+        if (handoffJobId) {
+            clearPendingReferral();
+            router.replace(`/worker/jobs/${handoffJobId}`);
+            return;
+        }
+        router.replace('/worker/profile');
+    }
+
     const onDraftChange = (patch: Partial<OnboardingDraft>) => dispatch({ type: 'set_draft', patch });
     const errorText = flow.errorKind ? tCommon(errorMessageKey(flow.errorKind)) : null;
-    const backHandler = screen === 'terms' || screen === 'done' ? null : goBack;
+    // Back walks the ENGINE, so it is only offered where the engine can walk:
+    // not on the first screen, and not once the run has completed (the photo
+    // prompt and the summary both sit after that point).
+    const backHandler = screen === 'terms' || screen === 'photo' || screen === 'done' ? null : goBack;
 
     return (
         <OnboardingShell
@@ -190,7 +221,11 @@ export function OnboardingFlow({
             languageBusy={languageBusy}
             progress={<ProgressSegments current={screen} />}
         >
-            {renderScreen()}
+            {flow.blocked ? (
+                <div className="anim-fade-in flex flex-1 items-start pt-6">
+                    <InlineFeedback tone="warning">{tBlocked(flow.blocked)}</InlineFeedback>
+                </div>
+            ) : renderScreen()}
         </OnboardingShell>
     );
 
@@ -226,7 +261,7 @@ export function OnboardingFlow({
                         question={questionText(flow.server, index, locale)}
                         tradeLabel={tradeLabel((key) => tVocab(key), flow.draft.trade, flow.draft.customTrade)}
                         answer={draftAnswer}
-                        // Editing a transcribed answer makes it typed again —
+                        // Editing a transcribed answer makes it typed again --
                         // the badge must not claim a voice note that no longer
                         // matches what is in the box.
                         source={saved && saved.text === draftAnswer ? saved.source : 'text'}
@@ -240,16 +275,13 @@ export function OnboardingFlow({
                 );
             }
             case 'photo':
-                return <PhotoStep saving={flow.saving} error={errorText} onBack={backHandler} onSubmit={submit} />;
+                return <PhotoStep onSkip={() => dispatch({ type: 'photo_skipped' })} />;
             case 'done':
                 return (
                     <DoneStep
                         state={flow.server}
-                        // A suspended worker has nothing to improve; everyone
-                        // else is still standing in the flow and may edit.
-                        canImprove={flow.server.lifecycle !== 'suspended'}
-                        onImprove={() => dispatch({ type: 'improve_start' })}
-                        onGoToProfile={() => router.replace('/worker/profile')}
+                        hasJobHandoff={handoffJobId !== null}
+                        onFinish={finish}
                     />
                 );
         }

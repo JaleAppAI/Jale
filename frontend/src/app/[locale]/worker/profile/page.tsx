@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { useRouter } from '@/i18n/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { usePageData } from '@/hooks/usePageData';
 import { apiFetch } from '@/lib/api';
@@ -24,7 +23,6 @@ import { PostLightbox } from '@/components/media-board/PostLightbox';
 import { NewPostModal } from '@/components/media-board/NewPostModal';
 import { getVaultDocuments, updateWorkerProfile, getWorkerPosts, deleteWorkerPost } from '@/lib/api/worker';
 import type { WorkerProfileData, WorkerProfilePatch, WorkerVaultDoc, DocType, WorkerPost } from '@/lib/api/worker';
-import { readPendingReferral, clearPendingReferral, validateJobId } from '@/lib/referral-return';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,7 +66,6 @@ function toWorkerProfile(p: Record<string, unknown>): WorkerProfileData {
 
 export default function WorkerProfilePage() {
     const { idToken } = useAuth();
-    const router = useRouter();
     const t = useTranslations('worker_profile');
     const tCommon = useTranslations('common');
     const tMedia = useTranslations('media_board');
@@ -89,41 +86,15 @@ export default function WorkerProfilePage() {
         fetcher: async ({ token, signal }) => {
             const res = await apiFetch('/worker/profile', { signal }, token);
             if (!res.ok) throw await parseApiError(res, 'fetch_failed');
-            let profile = toWorkerProfile(await res.json());
+            // No `pendingWorkerProfile` flush any more: worker signup is
+            // phone-only and the profile is collected by /worker/onboarding
+            // against the real engine, which also owns the hand-off to a
+            // pending referral job when the run finishes.
+            const profile = toWorkerProfile(await res.json());
             const d = await getVaultDocuments(token, signal);
             const docs = d.documents;
             const postsRes = await getWorkerPosts(token, undefined, signal);
 
-            const pending = sessionStorage.getItem('pendingWorkerProfile');
-            if (pending) {
-                await updateWorkerProfile(token, JSON.parse(pending));
-                sessionStorage.removeItem('pendingWorkerProfile');
-                const updated = await apiFetch('/worker/profile', { signal }, token);
-                if (updated.ok) {
-                    profile = toWorkerProfile(await updated.json());
-                }
-
-                // This is the second stop of the web-apply signup journey: the form
-                // sent a fresh signup here (so the typed profile above gets saved)
-                // instead of straight to the job. If a referral is still waiting,
-                // finish the journey now.
-                const referral = readPendingReferral();
-                const jobId = validateJobId(referral?.jobId);
-                if (jobId) {
-                    clearPendingReferral();
-                    router.push(`/worker/jobs/${jobId}`);
-                    // Returning (rather than falling through) keeps the redirect
-                    // the last thing this path does, exactly as before: the page
-                    // hands over its data and the router takes the screen.
-                    return {
-                        profile,
-                        docs,
-                        posts: postsRes.posts,
-                        next_before: postsRes.next_before,
-                        next_before_id: postsRes.next_before_id,
-                    };
-                }
-            }
             return {
                 profile,
                 docs,

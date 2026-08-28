@@ -1757,7 +1757,8 @@
       "mic_label": "Record a voice note",
       "voice_note": "From your voice note — edit if anything is wrong.",
       "cta": "Next",
-      "last_cta": "Finish"
+      "last_cta": "Finish",
+      "too_long": "That's too long — keep it under {count} characters."
     },
     "photo": {
       "title": "Add a photo?",
@@ -1775,7 +1776,7 @@
       "extracted": "We extracted these skills from your answers. You're good to go on Jale.",
       "failed": "We couldn't read your answers this time. Employers still see them in your own words.",
       "cta": "Go to my profile",
-      "improve": "Improve my answers"
+      "cta_job": "Continue to the job"
     },
     "summary": {
       "name": "Name",
@@ -1787,7 +1788,15 @@
       "empty": "—"
     },
     "rejection": {
-      "generic": "We couldn't accept that — check it and try again."
+      "generic": "We couldn't accept that — check it and try again.",
+      "reason": {
+        "too_short": "A little more, please — at least {min} characters.",
+        "too_long": "That's too long — keep it under {max} characters."
+      }
+    },
+    "blocked": {
+      "suspended": "This account is on hold, so onboarding cannot continue. Reply to any Jale message and we will look into it.",
+      "not_onboardable": "We cannot set up this account right now. Reply to any Jale message and we will help."
     }
   }
 }

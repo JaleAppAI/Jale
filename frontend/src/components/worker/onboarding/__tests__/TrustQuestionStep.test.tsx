@@ -4,7 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TrustQuestionStep } from '@/components/worker/onboarding/TrustQuestionStep';
-import { MIN_ANSWER_CHARS } from '@/lib/onboarding-flow';
+import { MAX_ANSWER_CHARS, MIN_ANSWER_CHARS } from '@/lib/onboarding-flow';
 import { interpolate, message, renderIntl } from './render-intl';
 
 const LONG_ENOUGH = 'I frame houses and set trusses.';
@@ -65,6 +65,27 @@ describe('TrustQuestionStep', () => {
 
         rerender(<TrustQuestionStep {...props({ answer: LONG_ENOUGH })} />);
         expect(screen.getByRole('button', { name: message('worker_onboarding.question.cta') })).toBeEnabled();
+    });
+
+    it('stops an answer over the server ceiling before it can be rejected', () => {
+        const tooLong = 'x'.repeat(MAX_ANSWER_CHARS + 1);
+        renderIntl(<TrustQuestionStep {...props({ answer: tooLong })} />);
+        expect(screen.getByRole('button', { name: message('worker_onboarding.question.cta') })).toBeDisabled();
+        expect(screen.getByText(interpolate(
+            message('worker_onboarding.question.too_long'),
+            { count: MAX_ANSWER_CHARS },
+        ))).toBeInTheDocument();
+    });
+
+    it('renders the two server-side length reasons as sentences, not codes', () => {
+        renderIntl(<TrustQuestionStep {...props({
+            answer: 'anything at all here',
+            rejection: { stepKey: 'trust.question.1', reason: 'too_short' },
+        })} />);
+        expect(screen.getByRole('alert')).toHaveTextContent(interpolate(
+            message('worker_onboarding.rejection.reason.too_short'),
+            { min: MIN_ANSWER_CHARS },
+        ));
     });
 
     it('counts characters', () => {

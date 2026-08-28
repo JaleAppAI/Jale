@@ -27,18 +27,27 @@ import {
  * A `failed` extraction is stated plainly rather than hidden or retried
  * forever: their answers still reach employers verbatim, which is the part
  * that matters, and the extractor re-runs server-side.
+ *
+ * There is no "improve my answers" here. The run is COMPLETE by the time this
+ * screen exists (the third answer's own response says `lifecycle: 'ready'`),
+ * and the engine's `back` endpoint only walks an ACTIVE run — so the button
+ * would have had nothing to call. Editing an answer is the Back control on the
+ * question screens, before the third one is submitted; after that, the profile
+ * editor owns it.
  */
 export function DoneStep({
     state,
-    canImprove,
-    onImprove,
-    onGoToProfile,
+    hasJobHandoff = false,
+    onFinish,
 }: {
     state: OnboardingState;
-    /** Only while the run is still onboarding — see `OnboardingFlow`. */
-    canImprove: boolean;
-    onImprove: () => void;
-    onGoToProfile: () => void;
+    /**
+     * The worker got here from a shared job link and still has that job
+     * waiting. The CTA then says so instead of promising a profile page —
+     * `OnboardingFlow` owns both the flag and where the button actually goes.
+     */
+    hasJobHandoff?: boolean;
+    onFinish: () => void;
 }) {
     const locale = useLocale();
     const spanish = locale === 'es';
@@ -144,16 +153,9 @@ export function DoneStep({
             </div>
 
             <div className="mt-[22px] flex flex-col gap-2.5">
-                <Button className="w-full" size="lg" onClick={onGoToProfile}>{t('cta')}</Button>
-                {canImprove ? (
-                    <button
-                        type="button"
-                        onClick={onImprove}
-                        className="min-h-[40px] cursor-pointer rounded-full border-0 bg-transparent text-sm font-medium text-[var(--jale-ink-2)] transition-colors hover:bg-[var(--jale-input)] hover:text-[var(--jale-ink)] focus-visible:outline-none focus-visible:shadow-[var(--shadow-focus)]"
-                    >
-                        {t('improve')}
-                    </button>
-                ) : null}
+                <Button className="w-full" size="lg" onClick={onFinish}>
+                    {hasJobHandoff ? t('cta_job') : t('cta')}
+                </Button>
             </div>
         </div>
     );

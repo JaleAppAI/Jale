@@ -1757,7 +1757,8 @@
       "mic_label": "Grabar una nota de voz",
       "voice_note": "De tu nota de voz — corrige si algo está mal.",
       "cta": "Siguiente",
-      "last_cta": "Terminar"
+      "last_cta": "Terminar",
+      "too_long": "Es demasiado largo — que no pase de {count} caracteres."
     },
     "photo": {
       "title": "¿Agregar una foto?",
@@ -1775,7 +1776,7 @@
       "extracted": "Extrajimos estas habilidades de tus respuestas. Ya puedes empezar en Jale.",
       "failed": "Esta vez no pudimos leer tus respuestas. Los empleadores igual las ven con tus propias palabras.",
       "cta": "Ir a mi perfil",
-      "improve": "Mejorar mis respuestas"
+      "cta_job": "Continuar al trabajo"
     },
     "summary": {
       "name": "Nombre",
@@ -1787,7 +1788,15 @@
       "empty": "—"
     },
     "rejection": {
-      "generic": "No pudimos aceptar eso — revísalo e inténtalo de nuevo."
+      "generic": "No pudimos aceptar eso — revísalo e inténtalo de nuevo.",
+      "reason": {
+        "too_short": "Un poco más, por favor — al menos {min} caracteres.",
+        "too_long": "Es demasiado largo — que no pase de {max} caracteres."
+      }
+    },
+    "blocked": {
+      "suspended": "Esta cuenta está en pausa, así que no podemos continuar. Responde a cualquier mensaje de Jale y lo revisamos.",
+      "not_onboardable": "No podemos configurar esta cuenta ahora mismo. Responde a cualquier mensaje de Jale y te ayudamos."
     }
   }
 }

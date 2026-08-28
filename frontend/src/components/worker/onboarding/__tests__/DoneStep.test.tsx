@@ -28,9 +28,8 @@ const FILLED: Partial<OnboardingState> = {
 function props(overrides: Partial<Parameters<typeof DoneStep>[0]> = {}) {
     return {
         state: onboardingState(FILLED),
-        canImprove: true,
-        onImprove: vi.fn(),
-        onGoToProfile: vi.fn(),
+        hasJobHandoff: false,
+        onFinish: vi.fn(),
         ...overrides,
     } satisfies Parameters<typeof DoneStep>[0];
 }
@@ -131,20 +130,24 @@ describe('DoneStep', () => {
     });
 
     it('sends the worker on to their profile', async () => {
-        const onGoToProfile = vi.fn();
-        renderIntl(<DoneStep {...props({ onGoToProfile })} />);
+        const onFinish = vi.fn();
+        renderIntl(<DoneStep {...props({ onFinish })} />);
         await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.done.cta') }));
-        expect(onGoToProfile).toHaveBeenCalled();
+        expect(onFinish).toHaveBeenCalled();
     });
 
-    it('offers "Improve my answers" only while the run is still onboarding', async () => {
-        const onImprove = vi.fn();
-        const { unmount } = renderIntl(<DoneStep {...props({ onImprove })} />);
-        await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.done.improve') }));
-        expect(onImprove).toHaveBeenCalled();
-        unmount();
+    it('says where it is really going when a shared job is still waiting', async () => {
+        const onFinish = vi.fn();
+        renderIntl(<DoneStep {...props({ hasJobHandoff: true, onFinish })} />);
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.done.cta') })).not.toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: message('worker_onboarding.done.cta_job') }));
+        expect(onFinish).toHaveBeenCalled();
+    });
 
-        renderIntl(<DoneStep {...props({ canImprove: false })} />);
-        expect(screen.queryByRole('button', { name: message('worker_onboarding.done.improve') })).not.toBeInTheDocument();
+    it('offers no way back into the questions — the run is already complete', () => {
+        renderIntl(<DoneStep {...props()} />);
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.common.back') })).not.toBeInTheDocument();
+        // Exactly one action: finish.
+        expect(screen.getAllByRole('button')).toHaveLength(1);
     });
 });

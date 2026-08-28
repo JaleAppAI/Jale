@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  MAX_ANSWER_CHARS,
   MIN_ANSWER_CHARS,
   PROGRESS_SEGMENTS,
   STEP_SCREEN,
   answerLongEnough,
+  answerTooLong,
   answersForScreen,
   canContinue,
   currentScreen,
@@ -63,18 +65,26 @@ const emptyDraft: OnboardingDraft = {
 
 describe('step key → screen mapping', () => {
   it('maps every engine step key the workflow union declares', () => {
-    // Mirrors infra/lambda/whatsapp/lib/onboarding-types.ts's WorkflowStepKey.
+    // Mirrors infra/lambda/whatsapp/lib/onboarding-types.ts's WorkflowStepKey,
+    // minus the two dead photo keys — see below.
     const engineSteps = [
       'start.choose_language', 'identity.verify_otp', 'legal.review',
       'profile.voice_choice', 'profile.voice_processing',
       'profile.name', 'profile.location', 'profile.trade', 'profile.custom_trade',
       'profile.experience', 'profile.transportation', 'profile.availability',
       'trust.question.1', 'trust.question.2', 'trust.question.3',
-      'profile.photo', 'profile.photo_type',
     ];
     for (const step of engineSteps) {
       expect(STEP_SCREEN[step], `no screen mapped for ${step}`).toBeTruthy();
     }
+  });
+
+  it('gives the dead photo step keys no screen of their own', () => {
+    // No handler advances them and the API answers `unknown_step`, so a screen
+    // whose Continue posts one would be a trap. They take the safe default.
+    expect(STEP_SCREEN['profile.photo']).toBeUndefined();
+    expect(STEP_SCREEN['profile.photo_type']).toBeUndefined();
+    expect(screenForStepKey('profile.photo')).toBe('terms');
   });
 
   it('sends the three profile screens their own steps', () => {
@@ -87,8 +97,6 @@ describe('step key → screen mapping', () => {
     expect(screenForStepKey('profile.transportation')).toBe('work');
     expect(screenForStepKey('profile.availability')).toBe('work');
     expect(screenForStepKey('trust.question.2')).toBe('q2');
-    expect(screenForStepKey('profile.photo')).toBe('photo');
-    expect(screenForStepKey('profile.photo_type')).toBe('photo');
   });
 
   it('lands an unknown or WhatsApp-only step on a safe screen instead of crashing', () => {
@@ -104,10 +112,6 @@ describe('step key → screen mapping', () => {
     expect(screenForState(state({ lifecycle: 'ready' }))).toBe('done');
     expect(screenForState(state({ lifecycle: 'ready', run: { ...state().run, stepKey: 'trust.question.1' } })))
       .toBe('done');
-  });
-
-  it('shows Done from the local completed flag even while the run still says onboarding', () => {
-    expect(screenForState(state(), true)).toBe('done');
   });
 
   it('keeps the progress bar to the eight pre-summary screens, questions marked as trust', () => {
@@ -192,8 +196,9 @@ describe('what each screen posts', () => {
       .toEqual([{ stepKey: 'trust.question.2', value: { text: 'I frame houses all day long' } }]);
   });
 
-  it('photo is skip-only in v1', () => {
-    expect(answersForScreen('photo', emptyDraft)).toEqual([{ stepKey: 'profile.photo', value: { skip: true } }]);
+  it('photo posts NOTHING — it is a client-side prompt, not an engine step', () => {
+    expect(answersForScreen('photo', emptyDraft)).toEqual([]);
+    expect(answersForScreen('done', emptyDraft)).toEqual([]);
   });
 
   it('the location confirm prompt posts its own step', () => {
@@ -232,6 +237,15 @@ describe('when Next is allowed', () => {
     expect(answerLongEnough('I frame houses.')).toBe(true);
     expect(canContinue('q1', { ...emptyDraft, answers: ['I frame houses.', '', ''] })).toBe(true);
     expect(canContinue('q3', { ...emptyDraft, answers: ['I frame houses.', '', ''] })).toBe(false);
+  });
+
+  it('mirrors the server ceiling too, so 2001 characters never reach a 422', () => {
+    expect(MAX_ANSWER_CHARS).toBe(2000);
+    const tooLong = 'x'.repeat(MAX_ANSWER_CHARS + 1);
+    expect(answerTooLong(tooLong)).toBe(true);
+    // Measured on the TRIMMED text, exactly as the API measures it.
+    expect(answerTooLong(` ${'x'.repeat(MAX_ANSWER_CHARS)} `)).toBe(false);
+    expect(canContinue('q1', { ...emptyDraft, answers: [tooLong, '', ''] })).toBe(false);
   });
 
   it('never blocks terms, photo or done', () => {
@@ -293,6 +307,7 @@ describe('reducer', () => {
     const flow = initFlowState(state({ run: { ...state().run, stepKey: 'trust.question.2' } }));
     expect(currentScreen(flow)).toBe('q2');
     expect(flow.saving).toBe(false);
+    expect(flow.photoPending).toBe(false);
   });
 
   it('hydrate advances the screen, refreshes the lock and rebuilds the draft', () => {
@@ -334,37 +349,32 @@ describe('reducer', () => {
     expect(flow.rejection).toBeNull();
   });
 
-  it('completed pins Done even though the run still reports onboarding', () => {
+  it('offers the photo prompt once when the last answer completes the run', () => {
+    let flow = initFlowState(state({ run: { ...state().run, stepKey: 'trust.question.3' } }));
+    flow = onboardingFlowReducer(flow, { type: 'finished', server: state({ lifecycle: 'ready' }) });
+    expect(flow.photoPending).toBe(true);
+    expect(currentScreen(flow)).toBe('photo');
+
+    flow = onboardingFlowReducer(flow, { type: 'photo_skipped' });
+    expect(currentScreen(flow)).toBe('done');
+  });
+
+  it('does not re-offer the photo prompt when a finished run is reloaded', () => {
+    const flow = initFlowState(state({ lifecycle: 'ready' }));
+    expect(flow.photoPending).toBe(false);
+    expect(currentScreen(flow)).toBe('done');
+  });
+
+  it('stops the flow for a worker the engine will not onboard', () => {
     let flow = initFlowState(state());
-    flow = onboardingFlowReducer(flow, { type: 'completed', server: state({ run: { ...state().run, stepKey: 'profile.photo' } }) });
-    expect(flow.completed).toBe(true);
-    expect(currentScreen(flow)).toBe('done');
+    expect(flow.blocked).toBeNull();
+    flow = onboardingFlowReducer(flow, { type: 'blocked', reason: 'not_onboardable' });
+    expect(flow.blocked).toBe('not_onboardable');
+    expect(flow.saving).toBe(false);
   });
 
-  it('walks "improve my answers" q1 → q2 → q3 → done and back again', () => {
-    let flow = initFlowState(state({ lifecycle: 'ready' }));
-    expect(currentScreen(flow)).toBe('done');
-    flow = onboardingFlowReducer(flow, { type: 'improve_start' });
-    expect(currentScreen(flow)).toBe('q1');
-    flow = onboardingFlowReducer(flow, { type: 'improve_next' });
-    expect(currentScreen(flow)).toBe('q2');
-    flow = onboardingFlowReducer(flow, { type: 'improve_back' });
-    expect(currentScreen(flow)).toBe('q1');
-    flow = onboardingFlowReducer(flow, { type: 'improve_back' });
-    expect(currentScreen(flow)).toBe('done');
-    flow = onboardingFlowReducer(flow, { type: 'improve_start' });
-    flow = onboardingFlowReducer(flow, { type: 'improve_next' });
-    flow = onboardingFlowReducer(flow, { type: 'improve_next' });
-    expect(currentScreen(flow)).toBe('q3');
-    flow = onboardingFlowReducer(flow, { type: 'improve_next' });
-    expect(currentScreen(flow)).toBe('done');
-  });
-
-  it('an improve-mode hydrate keeps the sub-mode instead of snapping back to Done', () => {
-    let flow = initFlowState(state({ lifecycle: 'ready' }));
-    flow = onboardingFlowReducer(flow, { type: 'improve_start' });
-    flow = onboardingFlowReducer(flow, { type: 'hydrate', server: state({ lifecycle: 'ready' }) });
-    expect(currentScreen(flow)).toBe('q1');
+  it('treats a suspended lifecycle as blocked from the very first render', () => {
+    expect(initFlowState(state({ lifecycle: 'suspended' })).blocked).toBe('suspended');
   });
 
   it('surfaces a generic failure as an error kind, not a raw message', () => {

@@ -1,7 +1,7 @@
 'use client';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
-import { PROGRESS_SEGMENTS, type ScreenKey } from '@/lib/onboarding-flow';
+import { MAX_ANSWER_CHARS, MIN_ANSWER_CHARS, PROGRESS_SEGMENTS, type ScreenKey } from '@/lib/onboarding-flow';
 
 /**
  * The chrome every onboarding screen shares: a back link and step counter on
@@ -102,16 +102,23 @@ export function StepHint({ children }: { children: ReactNode }) {
 /**
  * Turns a 422's `reason` into a sentence.
  *
- * The engine's reasons are CODES, not copy, and this app's standing rule is
- * that no backend string is ever rendered raw (see `useErrorMessage`). A code
- * we have copy for is translated; anything else falls back to one reviewed
- * sentence. Adding `worker_onboarding.rejection.reason.<code>` to both
- * catalogues is all it takes to give a new code its own wording.
+ * The engine's reasons are CODES (`too_short`, `too_long`, ...), not copy, and
+ * this app's standing rule is that no backend string is ever rendered raw (see
+ * `useErrorMessage`). A code we have copy for is translated; anything else
+ * falls back to one reviewed sentence, so a code the backend grows tomorrow
+ * degrades to a real sentence instead of leaking an identifier onto the
+ * screen. Giving it its own wording is one key in each catalogue:
+ * `worker_onboarding.rejection.reason.<code>`.
+ *
+ * The bounds are passed to every lookup because the two length reasons name
+ * them; a message without those placeholders simply ignores them.
  */
 export function useRejectionMessage(): (reason: string) => string {
     const t = useTranslations('worker_onboarding.rejection');
     return (reason: string) => {
         const key = `reason.${reason}`;
-        return t.has(key) ? t(key) : t('generic');
+        return t.has(key)
+            ? t(key, { min: MIN_ANSWER_CHARS, max: MAX_ANSWER_CHARS })
+            : t('generic');
     };
 }

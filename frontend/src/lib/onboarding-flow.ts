@@ -14,7 +14,14 @@
 //    answered two questions on WhatsApp opens the web and lands on question 3
 //    with no client-side memory involved at all.
 //
-// 2. `hydrate` vs `syncServer`. Both replace the server snapshot (the
+// 2. THE PHOTO SCREEN IS NOT AN ENGINE STEP. The state machine completes on
+//    the third trust answer (that response already carries
+//    `lifecycle: 'ready'`), and `profile.photo*` is a step key no handler can
+//    advance -- the API answers 422 `unknown_step` for it. So the photo prompt
+//    is shown once, client-side, out of `photoPending`, and skipping it is a
+//    local transition with no request behind it.
+//
+// 3. `hydrate` vs `syncServer`. Both replace the server snapshot (the
 //    `lockVersion` advances on EVERY mutation, including `back` and the
 //    language PATCH, so a stale one 409s the next write). Only `hydrate`
 //    rebuilds the draft from it. A 409 refetch uses `syncServer` precisely
@@ -53,8 +60,13 @@ export function isTrustScreen(screen: ScreenKey): screen is TrustScreen {
   return (TRUST_SCREENS as readonly string[]).includes(screen);
 }
 
-/** Below this, "Next" stays disabled. Matches the WhatsApp engine's floor. */
+/**
+ * The server's own bounds for a trust answer, mirrored client-side so the
+ * worker is stopped by a disabled button and a sentence rather than by a 422.
+ * Both are measured on the TRIMMED text, exactly as the API measures them.
+ */
 export const MIN_ANSWER_CHARS = 15;
+export const MAX_ANSWER_CHARS = 2000;
 
 /**
  * EVERY engine step key, mapped onto the screen that can answer it.
@@ -69,7 +81,12 @@ export const MIN_ANSWER_CHARS = 15;
  *   identity.verify_otp    — already done by `WorkerAuthForm` before we mount.
  *   profile.voice_*        — WhatsApp-only voice intake; `about` is the first
  *                            screen that can supply the data it collects.
- *   profile.photo_type     — a sub-step of the photo prompt.
+ *
+ * `profile.photo` / `profile.photo_type` are NOT here. They are dead keys in
+ * the engine (no handler advances them, and the API rejects them as
+ * `unknown_step`), so a run somehow parked on one is a run that cannot move;
+ * it falls through to the unknown-key default rather than being given a screen
+ * whose Continue could never be accepted.
  */
 export const STEP_SCREEN: Readonly<Record<string, ScreenKey>> = {
   'start.choose_language': 'terms',
@@ -87,8 +104,6 @@ export const STEP_SCREEN: Readonly<Record<string, ScreenKey>> = {
   'trust.question.1': 'q1',
   'trust.question.2': 'q2',
   'trust.question.3': 'q3',
-  'profile.photo': 'photo',
-  'profile.photo_type': 'photo',
 };
 
 /** Unknown keys (a workflow version we predate) land on the first screen. */
@@ -98,10 +113,14 @@ export function screenForStepKey(stepKey: string): ScreenKey {
 
 /**
  * Where a run stands. `lifecycle === 'ready'` wins over any step key: it is the
- * engine saying onboarding is over, whatever cursor it left behind.
+ * engine saying onboarding is over, whatever cursor it left behind — and it is
+ * what the third trust answer's own response comes back with.
+ *
+ * A finished run therefore resumes straight to the summary. The photo prompt
+ * is not re-offered on a reload: it is optional, it was already declined or
+ * shown once, and asking again would just be nagging.
  */
-export function screenForState(state: OnboardingState, completed = false): ScreenKey {
-  if (completed) return 'done';
+export function screenForState(state: OnboardingState): ScreenKey {
   if (state.lifecycle === 'ready') return 'done';
   return screenForStepKey(state.run.stepKey);
 }
@@ -267,9 +286,10 @@ export function answersForScreen(screen: ScreenKey, draft: OnboardingDraft): Onb
         : [{ stepKey: `trust.question.${index}`, value: { text: draft.answers[index - 1].trim() } }];
     }
     case 'photo':
-      // v1 is skip-only — see `PhotoStep`.
-      return [{ stepKey: 'profile.photo', value: { skip: true } }];
     case 'done':
+      // Neither screen answers an engine step: the run is already complete by
+      // the time either is on screen, and `profile.photo` is not a step the
+      // API accepts. See this file's header.
       return [];
   }
 }
@@ -281,6 +301,15 @@ export function locationConfirmAnswer(accept: boolean): OnboardingAnswerItem[] {
 
 export function answerLongEnough(text: string): boolean {
   return text.trim().length >= MIN_ANSWER_CHARS;
+}
+
+export function answerTooLong(text: string): boolean {
+  return text.trim().length > MAX_ANSWER_CHARS;
+}
+
+/** Both bounds at once — what the Next button on a question screen turns on. */
+export function answerAcceptable(text: string): boolean {
+  return answerLongEnough(text) && !answerTooLong(text);
 }
 
 export function canContinue(screen: ScreenKey, draft: OnboardingDraft): boolean {
@@ -301,7 +330,7 @@ export function canContinue(screen: ScreenKey, draft: OnboardingDraft): boolean 
     case 'q2':
     case 'q3': {
       const index = trustQuestionIndex(screen);
-      return index !== null && answerLongEnough(draft.answers[index - 1]);
+      return index !== null && answerAcceptable(draft.answers[index - 1]);
     }
   }
 }
@@ -310,19 +339,21 @@ export function canContinue(screen: ScreenKey, draft: OnboardingDraft): boolean 
 // Reducer
 // ---------------------------------------------------------------------------
 
+export type OnboardingBlock = 'suspended' | 'not_onboardable';
+
 export type OnboardingFlowState = {
   server: OnboardingState;
   draft: OnboardingDraft;
-  /** Set once `profile.photo` is accepted: Done renders even while the run's own lifecycle lags. */
-  completed: boolean;
   /**
-   * "Improve my answers" re-enters the three questions from the Done screen.
-   * A local sub-mode, not a server rewind: the run has already moved past
-   * them, so Next/Back here walk q1→q2→q3→done without touching `/back`.
+   * The photo prompt is waiting to be shown. Set only by `finished` — the
+   * third trust answer's response — and cleared by skipping it, so it appears
+   * exactly once per completion and never on a reload of a finished run.
    */
-  improving: TrustScreen | null;
+  photoPending: boolean;
+  /** The engine refuses to onboard this worker at all; the flow stops. */
+  blocked: OnboardingBlock | null;
   saving: boolean;
-  /** 422: shown against the field that owns `stepKey`. */
+  /** 422 `step_rejected`: shown against the field that owns `stepKey`. */
   rejection: { stepKey: string; reason: string } | null;
   /** Anything else that failed — rendered as one translated sentence. */
   errorKind: ErrorKind | null;
@@ -331,23 +362,23 @@ export type OnboardingFlowState = {
 export type OnboardingFlowAction =
   | { type: 'hydrate'; server: OnboardingState }
   | { type: 'sync_server'; server: OnboardingState }
+  /** The last question landed and the run completed: offer the photo prompt. */
+  | { type: 'finished'; server: OnboardingState }
+  | { type: 'photo_skipped' }
   | { type: 'set_draft'; patch: Partial<OnboardingDraft> }
   | { type: 'set_answer'; index: 1 | 2 | 3; text: string }
   | { type: 'saving' }
   | { type: 'save_failed'; errorKind: ErrorKind }
   | { type: 'step_rejected'; stepKey: string; reason: string; server: OnboardingState }
-  | { type: 'completed'; server: OnboardingState }
-  | { type: 'improve_start' }
-  | { type: 'improve_next' }
-  | { type: 'improve_back' }
+  | { type: 'blocked'; reason: OnboardingBlock }
   | { type: 'clear_error' };
 
 export function initFlowState(server: OnboardingState): OnboardingFlowState {
   return {
     server,
     draft: draftFromState(server),
-    completed: false,
-    improving: null,
+    photoPending: false,
+    blocked: server.lifecycle === 'suspended' ? 'suspended' : null,
     saving: false,
     rejection: null,
     errorKind: null,
@@ -356,19 +387,8 @@ export function initFlowState(server: OnboardingState): OnboardingFlowState {
 
 /** The one place that answers "which screen is on screen right now". */
 export function currentScreen(state: OnboardingFlowState): ScreenKey {
-  return state.improving ?? screenForState(state.server, state.completed);
-}
-
-const IMPROVE_ORDER = TRUST_SCREENS;
-
-function nextImprove(screen: TrustScreen): TrustScreen | null {
-  const i = IMPROVE_ORDER.indexOf(screen);
-  return i >= 0 && i + 1 < IMPROVE_ORDER.length ? IMPROVE_ORDER[i + 1] : null;
-}
-
-function previousImprove(screen: TrustScreen): TrustScreen | null {
-  const i = IMPROVE_ORDER.indexOf(screen);
-  return i > 0 ? IMPROVE_ORDER[i - 1] : null;
+  if (state.photoPending) return 'photo';
+  return screenForState(state.server);
 }
 
 export function onboardingFlowReducer(
@@ -381,6 +401,7 @@ export function onboardingFlowReducer(
         ...state,
         server: action.server,
         draft: draftFromState(action.server),
+        blocked: action.server.lifecycle === 'suspended' ? 'suspended' : state.blocked,
         saving: false,
         rejection: null,
         errorKind: null,
@@ -388,6 +409,18 @@ export function onboardingFlowReducer(
     case 'sync_server':
       // Draft untouched on purpose — see this file's header.
       return { ...state, server: action.server };
+    case 'finished':
+      return {
+        ...state,
+        server: action.server,
+        draft: draftFromState(action.server),
+        photoPending: true,
+        saving: false,
+        rejection: null,
+        errorKind: null,
+      };
+    case 'photo_skipped':
+      return { ...state, photoPending: false };
     case 'set_draft':
       return { ...state, draft: { ...state.draft, ...action.patch }, rejection: null, errorKind: null };
     case 'set_answer': {
@@ -407,27 +440,8 @@ export function onboardingFlowReducer(
         rejection: { stepKey: action.stepKey, reason: action.reason },
         errorKind: null,
       };
-    case 'completed':
-      return {
-        ...state,
-        server: action.server,
-        draft: draftFromState(action.server),
-        completed: true,
-        improving: null,
-        saving: false,
-        rejection: null,
-        errorKind: null,
-      };
-    case 'improve_start':
-      return { ...state, improving: 'q1', rejection: null, errorKind: null };
-    case 'improve_next':
-      return state.improving
-        ? { ...state, improving: nextImprove(state.improving), saving: false, rejection: null, errorKind: null }
-        : state;
-    case 'improve_back':
-      return state.improving
-        ? { ...state, improving: previousImprove(state.improving), rejection: null, errorKind: null }
-        : state;
+    case 'blocked':
+      return { ...state, saving: false, blocked: action.reason };
     case 'clear_error':
       return { ...state, rejection: null, errorKind: null };
   }
