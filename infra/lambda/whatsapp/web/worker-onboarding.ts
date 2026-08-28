@@ -312,7 +312,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (lockVersion !== gate.lockVersion) {
         result = await conflict(client, workerId, gate);
       } else {
-        const back = await applyBack(client, { gate, now });
+        const back = await applyBack(client, deps, { gate, now });
         if (!back.moved) {
           const state = await buildOnboardingState(client, { workerId, gate });
           await client.query('COMMIT');
@@ -336,7 +336,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       if (lockVersion !== null && lockVersion !== gate.lockVersion) {
         result = await conflict(client, workerId, gate);
       } else {
-        await setPreferredLanguage(client, { gate, session, preferredLanguage });
+        await setPreferredLanguage(client, deps, { gate, session, preferredLanguage });
       }
     } else {
       await client.query('ROLLBACK');

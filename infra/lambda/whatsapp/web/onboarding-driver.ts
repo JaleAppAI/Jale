@@ -455,7 +455,7 @@ export async function applyAnswerBatch(
     // is exactly what WhatsApp's "REVIEW TERMS" does: reactivate first, then
     // let the real handler run.
     if (gate.status === 'declined' && gate.currentStepKey === 'legal.review' && item.stepKey === 'legal.review') {
-      gate = await reactivateDeclinedLegalRun(client, {
+      gate = await deps.repo.reactivateDeclinedLegalRun(client, {
         runId: gate.runId as string,
         expectedLockVersion: gate.lockVersion as number,
       });
@@ -490,7 +490,7 @@ export async function applyAnswerBatch(
       input.now,
     );
 
-    const after = await loadWorkerGate(client, input.workerId);
+    const after = await deps.repo.loadWorkerGate(client, input.workerId);
     if (!after) throw new Error('worker_gate_missing_after_web_step');
 
     // The engine refuses by reprompting, not by throwing: an unchanged
@@ -529,6 +529,7 @@ export type BackOutcome = { moved: true; gate: WorkerGate } | { moved: false; re
 
 export async function applyBack(
   client: PoolClient,
+  deps: OnboardingV2Deps,
   input: { gate: WorkerGate; now: Date },
 ): Promise<BackOutcome> {
   const gate = input.gate;
@@ -539,12 +540,12 @@ export async function applyBack(
     return { moved: false, reason: 'nothing_to_go_back_to' };
   }
 
-  const previous = await findPreviousStepKey(client, gate.runId as string, stepKey);
+  const previous = await deps.repo.findPreviousStepKey(client, gate.runId as string, stepKey);
   if (!previous || !PROFILE_OR_TRUST_STEP.test(previous)) {
     return { moved: false, reason: 'nothing_to_go_back_to' };
   }
 
-  const moved = await advanceWorkflow(client, {
+  const moved = await deps.repo.advanceWorkflow(client, {
     runId: gate.runId as string,
     expectedLockVersion: gate.lockVersion as number,
     fromStepKey: stepKey,
@@ -581,6 +582,7 @@ export async function applyBack(
  */
 export async function setPreferredLanguage(
   client: PoolClient,
+  deps: OnboardingV2Deps,
   input: {
     gate: WorkerGate;
     session: OnboardingV2Session;
@@ -595,7 +597,7 @@ export async function setPreferredLanguage(
   // the worker's seeded trust questions.
   await hydrateSessionFromRun(client, input.session, input.gate.runId as string);
 
-  const updated = await setRunPreferredLanguage(client, {
+  const updated = await deps.repo.setRunPreferredLanguage(client, {
     runId: input.gate.runId as string,
     expectedLockVersion: input.gate.lockVersion as number,
     preferredLanguage: input.preferredLanguage,
