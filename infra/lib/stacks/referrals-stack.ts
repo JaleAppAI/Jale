@@ -474,12 +474,19 @@ export class ReferralsStack extends cdk.Stack {
 
     // 2. Deliberate skip paths -- missing/malformed secret or failed OAuth
     // exchange -- both already log `{"metric":"VisibilityOutboxDrainSkipped"}`;
-    // this MetricFilter (same pattern as AiStack's TrustScorerFailures /
+    // this MetricFilter (same idiom as AiStack's TrustScorerFailures /
     // WhatsAppStack's CallbackErrors) turns that log line into an alarmable
     // metric without any Lambda code change.
+    //
+    // LITERAL term pattern, NOT `logs.FilterPattern.stringValue('$.metric',
+    // ...)`: a JSON selector only matches events that are themselves valid
+    // JSON, and Node 20's default TEXT log format prefixes each console line
+    // with `timestamp<TAB>requestId<TAB>LEVEL<TAB>`, so the selector this used
+    // to carry matched nothing at all. See notifications-stack.ts:260 and
+    // test/unit/stacks/metric-filter-patterns.test.ts.
     const skippedMetric = new logs.MetricFilter(this, 'VisibilityOutboxDrainSkippedMetric', {
       logGroup: visibilityOutboxDrainLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'VisibilityOutboxDrainSkipped'),
+      filterPattern: logs.FilterPattern.literal('"VisibilityOutboxDrainSkipped"'),
       metricNamespace: 'Jale/Referrals',
       metricName: 'VisibilityOutboxDrainSkipped',
       metricValue: '1',

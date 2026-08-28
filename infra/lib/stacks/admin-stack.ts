@@ -14,6 +14,7 @@ import * as route53targets from 'aws-cdk-lib/aws-route53-targets';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import { Construct } from 'constructs';
+import { resolveCognitoDeletionProtection } from '../constructs/cognito-pool';
 
 export interface AdminStackProps extends cdk.StackProps {
   readonly domainName: string;
@@ -61,8 +62,13 @@ export class AdminStack extends cdk.Stack {
     const environment = this.node.tryGetContext('environment') ?? 'dev';
     const durability = getAdminDurability(environment);
 
+    // Same app-global `-c deletionProtection=true` the production deploy
+    // workflow passes for RDS and the worker/employer pools: the admin pool
+    // holds the internal operator accounts (with MFA enrolments that cannot be
+    // recreated from a backup), so a replace/destroy must fail loudly.
     this.adminPool = new cognito.UserPool(this, 'AdminUserPool', {
       userPoolName: 'jale-admin-pool',
+      deletionProtection: resolveCognitoDeletionProtection(this),
       signInAliases: { email: true },
       selfSignUpEnabled: false,
       autoVerify: { email: true },

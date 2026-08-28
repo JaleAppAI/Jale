@@ -9,7 +9,11 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
-import { JaleCognitoPool, CognitoPoolProps } from '../constructs/cognito-pool';
+import {
+  JaleCognitoPool,
+  CognitoPoolProps,
+  resolveCognitoDeletionProtection,
+} from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -237,8 +241,16 @@ export class AuthStack extends cdk.Stack {
 
     // ── Worker Cognito Pool ──
     const isProd = this.node.tryGetContext('environment') === 'production';
+    // Both live pools hold real registered users; a replacement or an
+    // accidental `cdk destroy` would delete them outright. DeletionProtection
+    // is the pool-side backstop, driven by the same app-global
+    // `-c deletionProtection=true` the production deploy workflow already
+    // passes for RDS. Setting it emits an UpdateUserPool call on the next
+    // deploy — see the construct's note on resolveCognitoDeletionProtection.
+    const deletionProtection = resolveCognitoDeletionProtection(this);
     this.workerPool = new JaleCognitoPool(this, 'WorkerPool', {
       poolName: 'jale-worker-pool',
+      deletionProtection,
       signInAliases: { phone: true },
       mfa: cognito.Mfa.OFF,
       adminUserPassword: !isProd,
@@ -355,6 +367,7 @@ export class AuthStack extends cdk.Stack {
     // ── Employer Cognito Pool ──
     this.employerPool = new JaleCognitoPool(this, 'EmployerPool', {
       poolName: 'jale-employer-pool',
+      deletionProtection,
       signInAliases: { email: true },
       adminUserPassword: !isProd,
       mfa: cognito.Mfa.OPTIONAL,

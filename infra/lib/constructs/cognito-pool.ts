@@ -67,6 +67,36 @@ export interface CognitoPoolProps {
    *   3. SES account out of sandbox (or destination addresses sandbox-verified).
    */
   email?: cognito.UserPoolEmail;
+  /**
+   * Cognito-side DeletionProtection. ACTIVE makes DeleteUserPool (and any
+   * CloudFormation replace/delete of the pool) fail until an operator turns it
+   * off explicitly, which is the only thing standing between a mis-scoped
+   * `cdk destroy` and the loss of every registered user. Resolve with
+   * `resolveCognitoDeletionProtection(this)` rather than hardcoding.
+   *
+   * Defaults to false so throwaway dev/test pools stay disposable.
+   */
+  deletionProtection?: boolean;
+}
+
+/**
+ * Reads the app-wide `deletionProtection` CDK context flag.
+ *
+ * The production deploy workflow passes `-c deletionProtection=true` on synth,
+ * both diffs and deploy (.github/workflows/_reusable-deploy.yml; the string is
+ * pinned by scripts/validate-github-workflows.mjs), and `-c` context is
+ * app-global, so every stack sees it. The CLI hands context values through as
+ * STRINGS, hence the `'true'` arm.
+ *
+ * Deliberately NOT database-stack.ts's `!== false` idiom: RDS defaults deletion
+ * protection ON and opts dev out, whereas a Cognito pool with no context at all
+ * (a bare `new cdk.App()` in a unit test, a scratch synth) should stay
+ * disposable. cdk.json pins `deletionProtection: false` for dev, so both real
+ * paths agree either way; only the context-absent case differs.
+ */
+export function resolveCognitoDeletionProtection(scope: Construct): boolean {
+  const value = scope.node.tryGetContext('deletionProtection');
+  return value === true || value === 'true';
 }
 
 export { CognitoPool as JaleCognitoPool };
@@ -103,6 +133,7 @@ export class CognitoPool extends Construct {
       smsRole: props.smsRole,
       smsRoleExternalId: props.smsExternalId,
       email: props.email,
+      deletionProtection: props.deletionProtection ?? false,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
