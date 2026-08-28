@@ -31,6 +31,16 @@ describe('NewPostModal', () => {
     (workerApi.uploadFileToS3 as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
   });
 
+  it('renders a visible, labeled upload control (not a bare file input)', () => {
+    render(wrap(<NewPostModal token="t" onClose={vi.fn()} onCreated={vi.fn()} />));
+    // The button-like label and its format hint are visible text now — the
+    // old markup hid 'Select photos' behind sr-only next to a naked input.
+    expect(screen.getByText('Select photos')).toBeInTheDocument();
+    expect(screen.getByText('JPG, PNG or WebP · up to 10 photos')).toBeInTheDocument();
+    // The input itself is still present for keyboard/tests but visually hidden.
+    expect(screen.getByTestId('post-file-input')).toHaveClass('sr-only');
+  });
+
   it('rejects a non-image file with an error message', async () => {
     render(wrap(<NewPostModal token="t" onClose={vi.fn()} onCreated={vi.fn()} />));
     const input = screen.getByTestId('post-file-input');

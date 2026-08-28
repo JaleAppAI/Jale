@@ -1670,6 +1670,7 @@
     "delete_confirm": "Delete this post? This cannot be undone.",
     "delete_error": "Could not delete the post. Please try again.",
     "select_photos": "Select photos",
+    "select_photos_hint": "JPG, PNG or WebP · up to 10 photos",
     "max_photos_error": "You can add up to 10 photos per post.",
     "file_type_error": "Only JPG, PNG, or WebP photos are allowed.",
     "upload_error": "Upload failed. Please try again.",
