@@ -165,18 +165,17 @@ test('handler writes completed extraction and updates user on success', async ()
     /UPDATE users/.test(sql)
   );
   expect(updateCall).toBeDefined();
-  // Should have inserted whatsapp_outbox row
+  // Should have inserted whatsapp_outbox row. Sprint 22 R1-A: the SECOND row
+  // (and the `building_profile` conversation-state advance that produced it)
+  // came from `autoAdvanceProfileAfterAi`, which is deleted along with the v1
+  // trust lane it fed. The extraction summary is all this branch queues now.
   const outboxCalls = outboxInserts();
-  expect(outboxCalls).toHaveLength(2);
+  expect(outboxCalls).toHaveLength(1);
   expect(outboxCalls[0][1][0]).toBe('MMvoice-1');
   expect(outboxCalls[0][1][3]).toContain('Profile created');
-  expect(outboxCalls[1][1][3]).toContain('what is your full name');
-  // Should have updated conversation state to building_profile with a pending field
-  const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+  expect(mockQuery.mock.calls.find(([sql]: [string]) =>
     /UPDATE whatsapp_conversations/.test(sql) && /building_profile/.test(sql)
-  );
-  expect(convUpdate).toBeDefined();
-  expect(convUpdate![1][1]).toContain('"pending_field":"full_name"');
+  )).toBeUndefined();
   expect(mockSendPendingOutbox).toHaveBeenCalledWith(
     expect.objectContaining({ query: mockQuery }),
     'MMvoice-1',
@@ -233,18 +232,15 @@ test('handler writes failed extraction and falls back on failed status', async (
     /INSERT INTO worker_profile_ai_extractions/.test(sql)
   );
   expect(insertCall).toBeDefined();
-  // Should update conversation to building_profile
-  const convUpdate = mockQuery.mock.calls.find(([sql]: [string]) =>
+  // Sprint 22 R1-A: no `building_profile` advance any more — see the success
+  // test above. The failure notice is the only outbox row.
+  expect(mockQuery.mock.calls.find(([sql]: [string]) =>
     /UPDATE whatsapp_conversations/.test(sql) && /building_profile/.test(sql)
-  );
-  expect(convUpdate).toBeDefined();
-  // Should queue fallback reply (ai_extraction_failed message)
+  )).toBeUndefined();
   const outboxCalls = outboxInserts();
-  expect(outboxCalls).toHaveLength(2);
+  expect(outboxCalls).toHaveLength(1);
   expect(outboxCalls[0][1][0]).toBe('MMvoice-failed');
   expect(outboxCalls[0][1][3]).toContain('No pudimos procesar');
-  expect(outboxCalls[1][1][3]).toContain('nombre completo');
-  expect(convUpdate![1][1]).toContain('"pending_field":"full_name"');
   expect(mockSendPendingOutbox).toHaveBeenCalledWith(
     expect.objectContaining({ query: mockQuery }),
     'MMvoice-failed',
@@ -319,186 +315,12 @@ test('fields with confidence below threshold are not written to users', async ()
   expect(updateCall![0]).not.toContain('years_experience');
 });
 
-test('when AI fills all profile fields, handler upserts worker profile and completes if trust columns are missing', async () => {
-  mockS3Send.mockResolvedValue(makeTranscriptS3Response('Complete worker profile'));
-  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
-    {
-      full_name: 'Alex Worker',
-      city: 'El Paso',
-      main_trade: 'electrician',
-      years_experience: '10+',
-      has_transportation: true,
-      availability: 'full_time',
-    },
-    {
-      full_name: 0.95,
-      city: 0.95,
-      main_trade: 0.95,
-      years_experience: 0.95,
-      has_transportation: 0.95,
-      availability: 0.95,
-    },
-    'Complete electrician profile.',
-    'Perfil completo de electricista.',
-  ));
-
-  mockQuery.mockImplementation((sql: string) => {
-    if (/SELECT cognito_sub FROM users/.test(sql)) {
-      return Promise.resolve({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] });
-    }
-    if (/SELECT full_name, city, main_trade/.test(sql)) {
-      return Promise.resolve({
-        rowCount: 1,
-        rows: [{
-          full_name: 'Alex Worker',
-          city: 'El Paso',
-          main_trade: 'electrician',
-          main_trade_other: null,
-          years_experience: '10+',
-          has_transportation: true,
-          availability: 'full_time',
-        }],
-      });
-    }
-    if (/information_schema\.columns/.test(sql)) {
-      return Promise.resolve({ rowCount: 1, rows: [{ exists: false }] });
-    }
-    if (/SELECT COALESCE\(MAX\(sequence\)/.test(sql)) {
-      return Promise.resolve({ rowCount: 1, rows: [{ next_seq: 1 }] });
-    }
-    return Promise.resolve({ rowCount: 1, rows: [] });
-  });
-
-  await handler({
-    userId: 'user-1',
-    conversationId: 'conv-1',
-    inboundMessageSid: 'MMvoice-complete',
-    whatsappNumber: '+15125551234',
-    language: 'en',
-    mediaBucketName: 'jale-worker-media-test',
-    transcriptOutputKey: 'user-1/transcripts/job-complete.json',
-    status: 'transcription_complete',
-  }, {} as any, () => {});
-
-  const workerProfileUpsert = mockQuery.mock.calls.find(([sql]: [string]) =>
-    /INSERT INTO worker_profiles/.test(sql)
-  );
-  expect(workerProfileUpsert).toBeDefined();
-  const mediaPhotoUpdate = mockQuery.mock.calls.find(([sql, params]: [string, unknown[]]) =>
-    /UPDATE whatsapp_conversations/.test(sql)
-    && Array.isArray(params)
-    && params.includes('MMvoice-complete')
-    && /conversation_state = 'awaiting_media_photo'/.test(sql)
-  );
-  expect(mediaPhotoUpdate).toBeDefined();
-  const outboxCalls = outboxInserts();
-  expect(outboxCalls).toHaveLength(3);
-  expect(outboxCalls[0][1][3]).toContain('Profile created');
-  expect(outboxCalls[1][1][3]).toContain('Your profile is ready');
-  expect(outboxCalls[2][1][3]).toContain('Profile photo');
-});
-
-test('spanish voice profile with custom trade generates questions and asks first custom question', async () => {
-  const customQuestions = [
-    { q_en: 'What welding work do you do?', q_es: 'Que tipo de soldadura haces?' },
-    { q_en: 'What is your welding level?', q_es: 'Cual es tu nivel en soldadura?' },
-    { q_en: 'What welding tasks do you do most?', q_es: 'Que tareas de soldadura haces mas?' },
-  ];
-  mockS3Send.mockResolvedValue(makeTranscriptS3Response(
-    'Me llamo Luis, vivo en Denver, soy soldador, tengo diez anos de experiencia, tengo transporte y busco tiempo completo.',
-  ));
-  mockBedrockSend.mockResolvedValue(makeBedrockResponse(
-    {
-      full_name: 'Luis Worker',
-      city: 'Denver',
-      main_trade: 'other',
-      main_trade_other: 'Soldador',
-      years_experience: '10+',
-      has_transportation: true,
-      availability: 'full_time',
-    },
-    {
-      full_name: 0.95,
-      city: 0.95,
-      main_trade: 0.95,
-      main_trade_other: 0.95,
-      years_experience: 0.95,
-      has_transportation: 0.95,
-      availability: 0.95,
-    },
-    'Custom welding profile complete.',
-    'Perfil de soldador completo.',
-  ));
-  mockLambdaSend.mockResolvedValue({
-    Payload: Buffer.from(JSON.stringify(customQuestions)),
-  });
-
-  mockQuery.mockImplementation((sql: string) => {
-    if (/SELECT cognito_sub FROM users/.test(sql)) {
-      return Promise.resolve({ rowCount: 1, rows: [{ cognito_sub: 'worker-sub' }] });
-    }
-    if (/SELECT full_name, city, main_trade/.test(sql)) {
-      return Promise.resolve({
-        rowCount: 1,
-        rows: [{
-          full_name: 'Luis Worker',
-          city: 'Denver',
-          main_trade: 'other',
-          main_trade_other: 'Soldador',
-          years_experience: '10+',
-          has_transportation: true,
-          availability: 'full_time',
-        }],
-      });
-    }
-    if (/SELECT id FROM worker_trust_assessments/.test(sql)) {
-      return Promise.resolve({ rowCount: 0, rows: [] });
-    }
-    if (/SELECT questions FROM trade_questions/.test(sql)) {
-      return Promise.resolve({ rowCount: 0, rows: [] });
-    }
-    if (/SELECT COALESCE\(MAX\(sequence\)/.test(sql)) {
-      return Promise.resolve({ rowCount: 1, rows: [{ next_seq: 1 }] });
-    }
-    return Promise.resolve({ rowCount: 1, rows: [] });
-  });
-
-  await handler({
-    userId: 'user-1',
-    conversationId: 'conv-1',
-    inboundMessageSid: 'MMvoice-custom-es',
-    whatsappNumber: '+15125551234',
-    language: 'es',
-    mediaBucketName: 'jale-worker-media-test',
-    transcriptOutputKey: 'user-1/transcripts/custom-es.json',
-    status: 'transcription_complete',
-  }, {} as any, () => {});
-
-  expect(mockLambdaSend).toHaveBeenCalledTimes(1);
-  const invokeInput = mockLambdaSend.mock.calls[0][0].input;
-  const payload = JSON.parse(Buffer.from(invokeInput.Payload).toString());
-  expect(payload).toEqual({ professionKey: 'soldador', professionRaw: 'Soldador' });
-
-  const customStateUpdate = mockQuery.mock.calls.find(([sql, params]: [string, unknown[]]) =>
-    /UPDATE whatsapp_conversations/.test(sql)
-    && (
-      String(sql).includes("conversation_state = 'building_custom_trust'")
-      || (Array.isArray(params) && params.includes('building_custom_trust'))
-    )
-  );
-  expect(customStateUpdate).toBeDefined();
-  const stateJson = (customStateUpdate![1] as unknown[]).find((value) =>
-    typeof value === 'string' && value.includes('custom_trust_questions')
-  );
-  expect(JSON.parse(String(stateJson))).toMatchObject({
-    custom_trust_step: 0,
-    custom_trust_profession: 'Soldador',
-    custom_trust_questions: customQuestions,
-  });
-
-  const outboxBodiesForCustomTrust = outboxInserts().map((call) => call[1][3]);
-  expect(outboxBodiesForCustomTrust).toContain('Que tipo de soldadura haces?');
-});
+// Sprint 22 R1-A: two tests lived here — "when AI fills all profile fields,
+// handler upserts worker profile and completes if trust columns are missing"
+// and "spanish voice profile with custom trade generates questions and asks
+// first custom question". Both exercised `autoAdvanceProfileAfterAi`, the v1
+// `building_profile` -> `building_trust_signal` / `building_custom_trust`
+// hand-off, which is deleted along with the numbered trust menu it fed.
 
 test('handler accepts Bedrock JSON wrapped in a markdown fence', async () => {
   mockS3Send.mockResolvedValue(makeTranscriptS3Response('Soy electricista en Austin'));

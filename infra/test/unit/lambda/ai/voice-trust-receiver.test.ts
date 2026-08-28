@@ -47,96 +47,26 @@ const baseContext = {
   ],
 } as const;
 
-describe('handleVoiceTrustCompletion', () => {
+// Sprint 22 R1-A: the legacy (non-v2) `VoiceTrustContext` lane — the one that
+// wrote `custom_trust_*` state and parked the conversation in
+// `building_custom_trust` — is deleted. Its tests went with it; what remains
+// is the assertion that a non-v2 event now fails loudly instead of silently
+// dropping a worker's transcribed answer.
+describe('handleVoiceTrustCompletion — legacy (non-v2) execution context', () => {
   const { handleVoiceTrustCompletion } = require('../../../../lambda/ai/voice-trust-receiver');
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.TRUST_ASSESSMENT_QUEUE_URL = 'https://sqs.us-east-1.amazonaws.com/123/queue';
-    mockSendPendingOutbox.mockResolvedValue(undefined);
   });
 
-  it('on FAILED sends retry prompt without advancing step', async () => {
-    mockDbQuery.mockResolvedValue({
-      rows: [{
-        state_context: {
-          custom_trust_step: 0,
-          custom_trust_answers: [],
-          custom_trust_questions: baseContext.trustQuestions,
-        },
-      }],
-    });
+  it('throws and does ZERO DB work — no producer of this shape exists any more', async () => {
+    await expect(
+      handleVoiceTrustCompletion({ status: 'COMPLETED', executionContext: baseContext }),
+    ).rejects.toThrow(/non-v2 execution context is no longer supported/);
 
-    await handleVoiceTrustCompletion({ status: 'FAILED', executionContext: baseContext });
-
-    const updateCall = mockDbQuery.mock.calls.find(([sql]) =>
-      String(sql).includes("conversation_state = 'building_custom_trust'"));
-    expect(updateCall).toBeDefined();
-    const stepAdvanceCall = mockDbQuery.mock.calls.find(([, params]) =>
-      String(params?.[0]).includes('custom_trust_step'));
-    expect(stepAdvanceCall).toBeUndefined();
-  });
-
-  it('on COMPLETED mid-flow reads transcript, appends answer, and advances step', async () => {
-    const transcript = '{"results":{"transcripts":[{"transcript":"I do residential wiring"}]}}';
-    mockS3Send.mockResolvedValueOnce({
-      Body: { transformToString: () => Promise.resolve(transcript) },
-    });
-    mockDbQuery
-      .mockResolvedValueOnce({
-        rows: [{
-          state_context: {
-            custom_trust_step: 0,
-            custom_trust_answers: [],
-            custom_trust_questions: baseContext.trustQuestions,
-          },
-        }],
-      })
-      .mockResolvedValue({ rows: [] });
-
-    await handleVoiceTrustCompletion({
-      status: 'COMPLETED',
-      executionContext: { ...baseContext, trustStep: 0 },
-    });
-
-    const updateCall = mockDbQuery.mock.calls.find(([sql]) =>
-      String(sql).includes('UPDATE whatsapp_conversations'));
-    expect(updateCall).toBeDefined();
-    expect(String(updateCall?.[1]?.[0])).toContain('"custom_trust_step":1');
-  });
-
-  it('on COMPLETED final step inserts WTA row and pushes to queue', async () => {
-    const transcript = '{"results":{"transcripts":[{"transcript":"I handle crews"}]}}';
-    mockS3Send.mockResolvedValueOnce({
-      Body: { transformToString: () => Promise.resolve(transcript) },
-    });
-    const existingAnswers = [
-      { q_en: 'Q1 en', answer_text: 'Residential', answer_source: 'text', answered_at: '2026-01-01T00:00:00Z' },
-      { q_en: 'Q2 en', answer_text: 'Lead', answer_source: 'voice', answered_at: '2026-01-01T00:00:00Z' },
-    ];
-    mockDbQuery
-      .mockResolvedValueOnce({
-        rows: [{
-          state_context: {
-            custom_trust_step: 2,
-            custom_trust_answers: existingAnswers,
-            custom_trust_questions: baseContext.trustQuestions,
-            custom_trust_profession: 'soldador de arco',
-          },
-        }],
-      })
-      .mockResolvedValue({ rows: [] });
-    mockSqsSend.mockResolvedValue({});
-
-    await handleVoiceTrustCompletion({
-      status: 'COMPLETED',
-      executionContext: { ...baseContext, trustStep: 2 },
-    });
-
-    expect(mockSqsSend).toHaveBeenCalledTimes(1);
-    const insertCall = mockDbQuery.mock.calls.find(([sql]) =>
-      String(sql).includes('INSERT INTO worker_trust_assessments'));
-    expect(insertCall).toBeDefined();
+    expect(mockDbConnect).not.toHaveBeenCalled();
+    expect(mockDbQuery).not.toHaveBeenCalled();
+    expect(mockSqsSend).not.toHaveBeenCalled();
   });
 });
 
