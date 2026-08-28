@@ -190,11 +190,16 @@ function createFakeAdapters(clockRef: { now: Date }) {
         return null;
       }),
     },
-    // Mirrors production for EVERY trade now that standard trades are routed
-    // through the per-trade cache too: the 5 standard keys are seeded rows in
-    // `trade_questions` (migration 012), so `generate` resolves three questions
-    // for them exactly as it does for a cached custom profession. Tests that
-    // want the fallback lane mock a null/short/throwing result explicitly.
+    // Every trade — standard or custom — now resolves through the per-trade
+    // cache, so this fake answers for all of them. The three questions below
+    // are the POST-086 shape (open, no seniority, no "how long"), not a copy
+    // of what any row holds today: migration 012's five standard rows still
+    // ask "What is your seniority level?", and sibling task R1-M's migration
+    // 086 is what rewrites them. Nothing here asserts real seeded content —
+    // that belongs to `test/unit/db/trust-extractions-086.integration.test.ts`
+    // (R1-M). What this file does assert is the ROUTING: that a standard trade
+    // calls `generate` with its trade key and stores whatever comes back.
+    // Tests that want the fallback lane mock a null/short/throwing result.
     trustQuestions: {
       generate: jest.fn(async (_c: any, profession: string): Promise<Array<{ q_en: string; q_es: string }> | null> => [
         { q_en: `What do you specialise in as a ${profession}?`, q_es: `En que te especializas como ${profession}?` },
