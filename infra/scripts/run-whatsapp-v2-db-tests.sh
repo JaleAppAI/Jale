@@ -39,4 +39,5 @@ exec npx jest --runInBand \
   test/unit/db/whatsapp-onboarding-reset.integration.test.ts \
   test/unit/db/retrigger-sweep-definer.integration.test.ts \
   test/unit/db/whatsapp-application-fill-080.integration.test.ts \
-  test/unit/db/web-onboarding-door-spike.integration.test.ts
+  test/unit/db/web-onboarding-door-spike.integration.test.ts \
+  test/unit/db/web-onboarding-door.integration.test.ts

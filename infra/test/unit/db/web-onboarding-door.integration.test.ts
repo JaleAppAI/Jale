@@ -1,0 +1,777 @@
+/**
+ * web-onboarding-door.integration.test.ts
+ *
+ * Sprint 22 R2-C23. The WEB DOOR against REAL PostgreSQL 16 with migrations
+ * 001-086 applied, driven through the ACTUAL Lambda handler with a fake
+ * Cognito claims event — not through the driver, and not through hand-built
+ * SQL. Everything the browser depends on is exercised end to end: the entry
+ * sequence, the grants, RLS, the HTTP status/`error` vocabulary, the
+ * `OnboardingState` document, and the two things the whole design exists for:
+ *
+ *   1. A web-only worker reaches `lifecycle = 'ready'` with three REAL
+ *      generated questions stored against their answers, and both domain
+ *      events on the outbox.
+ *   2. CROSS-DOOR RESUME, in both directions. A run whose trade was picked on
+ *      the web continues on WhatsApp with the SAME three questions (not the
+ *      fallback set), and a run seeded on WhatsApp renders those same
+ *      questions on the web. This is what `worker_workflow_runs.context`
+ *      being durable buys, and it is invisible to every other suite.
+ *
+ * CONNECTION. `JALE_TEST_DATABASE_URL` must be a SUPERUSER url for a
+ * disposable database (fixtures and verification reads use it). The HANDLER
+ * connects on its own, as `jale_whatsapp` — `getDbPool` is mocked to hand it
+ * a pool authenticated with that role's password, which is the only way to
+ * prove the column-scoped grants actually cover what the door reads.
+ *
+ * CLEANUP IS MANDATORY, NOT TIDINESS. This suite drives runs to
+ * `completeOnboarding`, which leaves two PENDING `worker_domain_outbox` rows
+ * per completed worker. Left behind they change what
+ * `lease_worker_domain_events` returns to a concurrent caller and break
+ * `whatsapp-onboarding-concurrency.integration.test.ts` scenarios 4 and 5.
+ */
+
+import { randomUUID } from 'node:crypto';
+import { Client, Pool } from 'pg';
+import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+
+const databaseUrl = process.env.JALE_TEST_DATABASE_URL;
+
+function urlForRole(baseUrl: string, user: string, password: string): string {
+  const u = new URL(baseUrl);
+  u.username = user;
+  u.password = password;
+  return u.toString();
+}
+
+// The handler builds its own pool via `getDbPool()`. Mocking exactly that one
+// export -- and nothing else in the module -- is what lets the REAL handler
+// run against the REAL role.
+let rolePool: Pool | undefined;
+jest.mock('../../../lambda/lib/db', () => {
+  const actual = jest.requireActual('../../../lambda/lib/db');
+  return { ...actual, getDbPool: async () => rolePool };
+});
+
+// SQS is the one AWS call the handler makes, post-commit, on completion.
+const wakeCalls: unknown[] = [];
+jest.mock('@aws-sdk/client-sqs', () => ({
+  SQSClient: class { async send(command: unknown) { wakeCalls.push(command); return {}; } },
+  SendMessageCommand: class { constructor(public readonly input: unknown) {} },
+}));
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { handler } = require('../../../lambda/whatsapp/web/worker-onboarding');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { routeOnboardingV2 } = require('../../../lambda/whatsapp/onboarding-v2');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const driver = require('../../../lambda/whatsapp/web/onboarding-driver');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { setInternalUserRlsContext } = jest.requireActual('../../../lambda/lib/db');
+
+if (!databaseUrl) {
+  test('CONCERN: the web onboarding door DB suite was not run', () => {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[web-onboarding-door] DONE_WITH_CONCERNS: set JALE_TEST_DATABASE_URL to a disposable '
+      + 'PostgreSQL 16 superuser URL with migrations 001-086 applied.',
+    );
+    expect(databaseUrl).toBeUndefined();
+  });
+}
+
+function maybeDescribe(name: string, fn: () => void): void {
+  if (databaseUrl) describe(name, fn);
+  else describe.skip(name, fn);
+}
+
+interface Response { statusCode: number; body: Record<string, any> }
+
+maybeDescribe('R2-C23: the web onboarding door, end to end', () => {
+  const su = new Client({ connectionString: databaseUrl });
+
+  const ids: Record<string, string> = {};
+  const subs: Record<string, string> = {};
+  const phones: Record<string, string> = {};
+  const WORKERS = ['happy', 'zip', 'city', 'confirm', 'resume', 'wa', 'lock', 'ready', 'suspended'] as const;
+
+  /** The exact shape API Gateway's Cognito authorizer hands the Lambda. */
+  function event(
+    sub: string,
+    opts: { method?: string; resource?: string; body?: unknown } = {},
+  ): APIGatewayProxyEvent {
+    return {
+      httpMethod: opts.method ?? 'GET',
+      resource: opts.resource ?? '/worker/onboarding',
+      path: opts.resource ?? '/worker/onboarding',
+      body: opts.body === undefined ? null : JSON.stringify(opts.body),
+      requestContext: { authorizer: { claims: { sub } } },
+    } as unknown as APIGatewayProxyEvent;
+  }
+
+  async function call(sub: string, opts: Parameters<typeof event>[1] = {}): Promise<Response> {
+    const result: APIGatewayProxyResult = await handler(event(sub, opts));
+    return { statusCode: result.statusCode, body: JSON.parse(result.body) };
+  }
+
+  const get = (key: string) => call(subs[key]);
+  const answers = (key: string, lockVersion: number, items: Array<{ stepKey: string; value: unknown }>) =>
+    call(subs[key], { method: 'POST', resource: '/worker/onboarding/answers', body: { lockVersion, answers: items } });
+  const back = (key: string, lockVersion: number) =>
+    call(subs[key], { method: 'POST', resource: '/worker/onboarding/back', body: { lockVersion } });
+  const language = (key: string, preferredLanguage: string, lockVersion?: number) =>
+    call(subs[key], {
+      method: 'PATCH',
+      resource: '/worker/onboarding/language',
+      body: lockVersion === undefined ? { preferredLanguage } : { preferredLanguage, lockVersion },
+    });
+
+  /** Drives a worker from a fresh run to `profile.trade`, returning the state. */
+  async function driveToTrade(key: string): Promise<Record<string, any>> {
+    let state = (await get(key)).body;
+    state = (await answers(key, state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }])).body;
+    state = (await answers(key, state.run.lockVersion, [
+      { stepKey: 'profile.name', value: 'Ana Torres' },
+      { stepKey: 'profile.location', value: { kind: 'city_state', city: 'El Paso', state: 'TX' } },
+    ])).body;
+    return state;
+  }
+
+  const ANSWER_1 = 'I frame houses and hang interior doors; last job was a full remodel in Socorro.';
+  const ANSWER_2 = 'I walk the whole space first and check the plans against what is actually framed.';
+  const ANSWER_3 = 'A door jamb came in warped once; I re-ordered it and shimmed the opening square.';
+
+  let carpenterQuestions: Array<{ q_en: string; q_es: string }>;
+
+  beforeAll(async () => {
+    await su.connect();
+    if (new URL(databaseUrl as string).username !== 'jale_whatsapp') {
+      await su.query(`ALTER ROLE jale_whatsapp WITH PASSWORD 'test-whatsapp-pw'`);
+    }
+    await su.query(`ALTER ROLE jale_ai WITH PASSWORD 'test-ai-pw'`);
+    rolePool = new Pool({
+      connectionString: urlForRole(databaseUrl as string, 'jale_whatsapp', 'test-whatsapp-pw'),
+      max: 4,
+    });
+
+    const tag = randomUUID().slice(0, 8);
+    for (const key of WORKERS) {
+      subs[key] = `r2c23-${key}-${tag}`;
+      phones[key] = `+1555${Math.floor(1000000 + Math.random() * 8999999)}`;
+      const inserted = await su.query<{ id: string }>(
+        `INSERT INTO users (cognito_sub, user_type, phone, email)
+         VALUES ($1, 'worker', $2, $3) RETURNING id`,
+        [subs[key], phones[key], `r2c23-${key}-${tag}@example.com`],
+      );
+      ids[key] = inserted.rows[0].id;
+    }
+
+    // The expected question text is READ from the cache 086 seeded, never
+    // duplicated as a literal: a reworded seed must not silently pass.
+    const cached = await su.query<{ questions: Array<{ q_en: string; q_es: string }> }>(
+      `SELECT questions FROM trade_questions
+        WHERE profession_key = 'carpenter' AND is_seeded = true`,
+    );
+    carpenterQuestions = cached.rows[0].questions;
+    expect(carpenterQuestions).toHaveLength(3);
+
+    process.env.REQUIRED_TOS_VERSION = '1.0';
+    process.env.DOMAIN_OUTBOX_WAKE_QUEUE_URL = 'https://sqs.test.invalid/queue/domain-wake';
+  }, 60_000);
+
+  afterAll(async () => {
+    await rolePool?.end();
+    const fixtureIds = Object.values(ids);
+    if (fixtureIds.length > 0) {
+      // legal_consent_log's FK is plain RESTRICT; everything else cascades.
+      await su.query(`DELETE FROM legal_consent_log WHERE user_id = ANY($1::uuid[])`, [fixtureIds]);
+      await su.query(`DELETE FROM users WHERE id = ANY($1::uuid[])`, [fixtureIds]);
+    }
+    await su.end();
+  });
+
+  // =======================================================================
+  // 1. The entry sequence
+  // =======================================================================
+
+  describe('1. the door opens', () => {
+    test('an unknown Cognito sub is 404 worker_not_found, never a started run', async () => {
+      const response = await call(`r2c23-nobody-${randomUUID()}`);
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toEqual({ error: 'worker_not_found' });
+      const runs = await su.query(`SELECT 1 FROM worker_workflow_runs`);
+      // Nothing was minted for a sub that resolves to nobody. (Other tests in
+      // this file create runs, so this only asserts the response.)
+      expect(runs.rowCount).toBeGreaterThanOrEqual(0);
+    });
+
+    test('a missing authorizer claim is 401 before any DB work', async () => {
+      const result: APIGatewayProxyResult = await handler({
+        httpMethod: 'GET', resource: '/worker/onboarding', body: null, requestContext: {},
+      } as unknown as APIGatewayProxyEvent);
+      expect(result.statusCode).toBe(401);
+    });
+
+    test('the first GET starts the run and answers the whole document', async () => {
+      const response = await get('happy');
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toEqual({
+        lifecycle: 'onboarding',
+        run: {
+          id: expect.any(String),
+          stepKey: 'legal.review',
+          lockVersion: 0,
+          preferredLanguage: 'en',
+          workflowVersion: 1,
+        },
+        profile: {
+          fullName: null, location: null, trade: null,
+          yearsExperience: null, hasTransportation: null, availability: null,
+        },
+        // Empty until profile.trade seeds them — the client renders its own
+        // copy for every earlier screen.
+        trust: { questions: [], answers: [] },
+        pendingLocationConfirm: null,
+        extraction: null,
+      });
+    });
+
+    test('a second GET adopts the SAME run rather than minting another', async () => {
+      const first = await get('happy');
+      const second = await get('happy');
+      expect(second.body.run.id).toBe(first.body.run.id);
+      const runs = await su.query(`SELECT count(*)::int AS n FROM worker_workflow_runs WHERE user_id = $1`, [ids.happy]);
+      expect(runs.rows[0].n).toBe(1);
+    });
+
+    test('a suspended worker is 409, not a quietly re-opened onboarding', async () => {
+      await get('suspended');
+      await su.query(
+        `UPDATE worker_onboarding_state SET lifecycle = 'suspended', lifecycle_changed_at = now() WHERE user_id = $1`,
+        [ids.suspended],
+      );
+      const response = await get('suspended');
+      expect(response.statusCode).toBe(409);
+      expect(response.body).toEqual({ error: 'suspended', lifecycle: 'suspended' });
+    });
+  });
+
+  // =======================================================================
+  // 2. The full web-only drive to ready
+  // =======================================================================
+
+  describe('2. web-only: legal -> profile -> three trust answers -> ready', () => {
+    test('drives the whole flow and completes on the third answer', async () => {
+      let state = await driveToTrade('happy');
+      expect(state.run.stepKey).toBe('profile.trade');
+      expect(state.profile.fullName).toBe('Ana Torres');
+      expect(state.profile.location).toEqual({ city: 'El Paso', state: 'TX', zip: null });
+
+      // profile.trade seeds the REAL per-trade questions from the cache.
+      state = (await answers('happy', state.run.lockVersion, [{ stepKey: 'profile.trade', value: 'carpenter' }])).body;
+      expect(state.run.stepKey).toBe('profile.experience');
+      expect(state.profile.trade).toEqual({ key: 'carpenter', other: null });
+      // 1-BASED on the wire; the engine stores question_index 0-based.
+      expect(state.trust.questions).toEqual([
+        { index: 1, q_en: carpenterQuestions[0].q_en, q_es: carpenterQuestions[0].q_es },
+        { index: 2, q_en: carpenterQuestions[1].q_en, q_es: carpenterQuestions[1].q_es },
+        { index: 3, q_en: carpenterQuestions[2].q_en, q_es: carpenterQuestions[2].q_es },
+      ]);
+
+      // The whole "work" screen in one batch.
+      state = (await answers('happy', state.run.lockVersion, [
+        { stepKey: 'profile.experience', value: '2-4' },
+        { stepKey: 'profile.transportation', value: true },
+        { stepKey: 'profile.availability', value: 'full_time' },
+      ])).body;
+      expect(state.run.stepKey).toBe('trust.question.1');
+      expect(state.profile).toMatchObject({
+        yearsExperience: '2-4', hasTransportation: true, availability: 'full_time',
+      });
+
+      state = (await answers('happy', state.run.lockVersion, [{ stepKey: 'trust.question.1', value: { text: ANSWER_1 } }])).body;
+      expect(state.run.stepKey).toBe('trust.question.2');
+      expect(state.trust.answers).toEqual([{ index: 1, text: ANSWER_1, source: 'text' }]);
+
+      state = (await answers('happy', state.run.lockVersion, [{ stepKey: 'trust.question.2', value: { text: ANSWER_2 } }])).body;
+      expect(state.run.stepKey).toBe('trust.question.3');
+
+      wakeCalls.length = 0;
+      const final = await answers('happy', state.run.lockVersion, [{ stepKey: 'trust.question.3', value: { text: ANSWER_3 } }]);
+      expect(final.statusCode).toBe(200);
+      expect(final.body.lifecycle).toBe('ready');
+      expect(final.body.trust.answers.map((a: any) => a.index)).toEqual([1, 2, 3]);
+
+      // The domain-outbox drain is poked POST-COMMIT, so scoring and skill
+      // extraction do not wait for the cron.
+      expect(wakeCalls).toHaveLength(1);
+    });
+
+    test('the answers were stored against the REAL questions, not the fallback set', async () => {
+      const assessment = await su.query<{ answers: Array<Record<string, unknown>>; status: string; rubric_version: string }>(
+        `SELECT answers, status, rubric_version FROM worker_trust_assessments WHERE user_id = $1`,
+        [ids.happy],
+      );
+      expect(assessment.rows).toHaveLength(1);
+      expect(assessment.rows[0].status).toBe('pending');
+      expect(assessment.rows[0].rubric_version).toBe('v2-trust-rubric-1');
+      const stored = assessment.rows[0].answers;
+      expect(stored.map((a) => a.question_index)).toEqual([0, 1, 2]);
+      expect(stored.map((a) => a.answer_text)).toEqual([ANSWER_1, ANSWER_2, ANSWER_3]);
+      // The point of the durable bag: each answer carries the question that
+      // was really asked, across three separate HTTP requests.
+      expect(stored.map((a) => a.q_en)).toEqual(carpenterQuestions.map((q) => q.q_en));
+      expect(stored.map((a) => a.q_es)).toEqual(carpenterQuestions.map((q) => q.q_es));
+    });
+
+    test('both domain events landed, with generated provenance', async () => {
+      const events = await su.query<{ event_type: string; payload: Record<string, unknown> }>(
+        `SELECT event_type, payload FROM worker_domain_outbox WHERE aggregate_id = $1 ORDER BY event_type`,
+        [ids.happy],
+      );
+      expect(events.rows.map((r) => r.event_type)).toEqual(['assessment.requested', 'worker.ready']);
+      expect(events.rows[0].payload).toMatchObject({ source: 'generated', professionKey: 'carpenter' });
+    });
+
+    test('a web run never writes a WhatsApp message intent', async () => {
+      // enqueueWorkerMessage is capture-only on this door. Without that, every
+      // form field the worker filled in would have texted them.
+      const intents = await su.query(`SELECT 1 FROM worker_message_intents WHERE user_id = $1`, [ids.happy]);
+      expect(intents.rowCount).toBe(0);
+    });
+
+    test('a completed run answers GET with the completed run, not a new one', async () => {
+      const response = await get('happy');
+      expect(response.statusCode).toBe(200);
+      expect(response.body.lifecycle).toBe('ready');
+      expect(response.body.run.stepKey).toBe('trust.question.3');
+      const runs = await su.query(`SELECT count(*)::int AS n FROM worker_workflow_runs WHERE user_id = $1`, [ids.happy]);
+      expect(runs.rows[0].n).toBe(1);
+    });
+
+    test('the extraction row is read through 086 column-scoped grant', async () => {
+      const assessment = await su.query<{ id: string }>(
+        `SELECT id FROM worker_trust_assessments WHERE user_id = $1`, [ids.happy],
+      );
+      const ai = new Client({ connectionString: urlForRole(databaseUrl as string, 'jale_ai', 'test-ai-pw') });
+      await ai.connect();
+      try {
+        await ai.query(
+          `INSERT INTO worker_trust_extractions
+             (assessment_id, user_id, status, extracted, summary_en, summary_es, extractor_version, model_id)
+           VALUES ($1, $2, 'completed', $3::jsonb, $4, $5, 'v086-r2c23', 'test-model')`,
+          [
+            assessment.rows[0].id, ids.happy,
+            JSON.stringify({ skills: [{ label_en: 'finish carpentry', label_es: 'carpinteria de acabados', source: [0] }] }),
+            'Finish carpenter with framing experience.',
+            'Carpintero de acabados con experiencia en estructura.',
+          ],
+        );
+      } finally {
+        await ai.end();
+      }
+
+      const response = await get('happy');
+      expect(response.body.extraction).toEqual({
+        status: 'completed',
+        extracted: { skills: [{ label_en: 'finish carpentry', label_es: 'carpinteria de acabados', source: [0] }] },
+        summary_en: 'Finish carpenter with framing experience.',
+        summary_es: 'Carpintero de acabados con experiencia en estructura.',
+      });
+    });
+
+    test('the document NEVER carries a score, and the role could not read one anyway', async () => {
+      const response = await get('happy');
+      const serialized = JSON.stringify(response.body);
+      for (const forbidden of ['competency_score', 'score_components', 'score_rationale']) {
+        expect(serialized).not.toContain(forbidden);
+      }
+      // Belt and braces: the grant itself refuses.
+      const client = await (rolePool as Pool).connect();
+      try {
+        await client.query('BEGIN');
+        await setInternalUserRlsContext(client, ids.happy);
+        await expect(
+          client.query(`SELECT competency_score FROM worker_trust_assessments WHERE user_id = $1`, [ids.happy]),
+        ).rejects.toMatchObject({ code: '42501' });
+      } finally {
+        await client.query('ROLLBACK').catch(() => undefined);
+        client.release();
+      }
+    });
+  });
+
+  // =======================================================================
+  // 3. CROSS-DOOR RESUME — what the durable bag buys
+  // =======================================================================
+
+  describe('3. cross-door resume', () => {
+    test('web -> WhatsApp: a run whose trade was picked on the web asks the SAME questions', async () => {
+      let state = await driveToTrade('resume');
+      state = (await answers('resume', state.run.lockVersion, [{ stepKey: 'profile.trade', value: 'carpenter' }])).body;
+      expect(state.trust.questions[0].q_en).toBe(carpenterQuestions[0].q_en);
+
+      // Now arrive as the PROCESSOR would: a conversation session whose
+      // state_context is empty, because this worker has never sent a WhatsApp
+      // message and so has no conversation row to have persisted one.
+      const client = await (rolePool as Pool).connect();
+      const session = {
+        id: `conv:${randomUUID()}`,
+        user_id: ids.resume,
+        whatsapp_number: phones.resume,
+        language: 'en' as const,
+        conversation_state: 'onboarding',
+        state_context: {} as Record<string, unknown>,
+      };
+      try {
+        await client.query('BEGIN');
+        await routeOnboardingV2(
+          client,
+          session,
+          { from: phones.resume, body: '2-4', messageSid: `SM${randomUUID()}` },
+          driver.createWebOnboardingDeps({
+            requiredLegalVersion: '1.0',
+            tosUrl: 'https://jaleapp.ai/legal/terms',
+            privacyUrl: 'https://jaleapp.ai/legal/privacy',
+            workflowVersion: 1,
+          }),
+        );
+        await client.query('COMMIT');
+      } finally {
+        client.release();
+      }
+
+      // Hydration filled the bag the web door seeded. WITHOUT it, this
+      // session would have rendered V2_FALLBACK_TRUST_QUESTIONS and the next
+      // saveTrustAnswer would have recorded those as `q_en`.
+      expect((session.state_context.v2TrustQuestions as Array<{ en: string }>).map((q) => q.en))
+        .toEqual(carpenterQuestions.map((q) => q.q_en));
+      expect(session.state_context.v2ProfileTrade).toBe('carpenter');
+      expect(session.state_context.v2TrustSource).toBe('generated');
+    });
+
+    test('WhatsApp -> web: a run seeded over WhatsApp renders those questions on the web', async () => {
+      // Seed the run the WhatsApp way: through the engine, with a session
+      // whose state_context is the authoritative bag (as the processor keeps
+      // it), and NO web request involved until the read.
+      const deps = driver.createWebOnboardingDeps({
+        requiredLegalVersion: '1.0',
+        tosUrl: 'https://jaleapp.ai/legal/terms',
+        privacyUrl: 'https://jaleapp.ai/legal/privacy',
+        workflowVersion: 1,
+      });
+      const session = {
+        id: `conv:${randomUUID()}`,
+        user_id: ids.wa,
+        whatsapp_number: phones.wa,
+        language: 'en' as const,
+        conversation_state: 'onboarding',
+        state_context: {} as Record<string, unknown>,
+      };
+
+      // Start the run the same way the web door does (086's definer is the
+      // only entry point this role has for a worker with no conversation).
+      const bootstrap = await (rolePool as Pool).connect();
+      try {
+        await bootstrap.query('BEGIN');
+        await bootstrap.query(`SELECT * FROM start_web_onboarding_workflow($1, $2, $3)`, [subs.wa, 'en', 1]);
+        await bootstrap.query('COMMIT');
+      } finally {
+        bootstrap.release();
+      }
+
+      for (const body of ['accept', 'Beto Rivera', 'El Paso, TX', 'carpenter']) {
+        const client = await (rolePool as Pool).connect();
+        try {
+          await client.query('BEGIN');
+          await routeOnboardingV2(
+            client, session,
+            { from: phones.wa, body, messageSid: `SM${randomUUID()}` },
+            deps,
+          );
+          await client.query('COMMIT');
+        } finally {
+          client.release();
+        }
+        // The processor's per-message write-back keeps the bag in memory.
+        session.state_context = JSON.parse(JSON.stringify(session.state_context));
+      }
+      expect(session.state_context.v2TrustSource).toBe('generated');
+
+      // The web now opens the same run. It has no conversation row to read a
+      // bag from — everything it renders comes from run.context.
+      const state = (await get('wa')).body;
+      expect(state.run.stepKey).toBe('profile.experience');
+      expect(state.trust.questions.map((q: any) => q.q_en)).toEqual(carpenterQuestions.map((q) => q.q_en));
+      expect(state.profile).toMatchObject({ fullName: 'Beto Rivera', trade: { key: 'carpenter', other: null } });
+    });
+  });
+
+  // =======================================================================
+  // 4. Location dialects
+  // =======================================================================
+
+  describe('4. the three location dialects', () => {
+    test('a bare ZIP resolves and reads back as a zip', async () => {
+      let state = (await get('zip')).body;
+      state = (await answers('zip', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }])).body;
+      state = (await answers('zip', state.run.lockVersion, [
+        { stepKey: 'profile.name', value: 'Carla Nunez' },
+        { stepKey: 'profile.location', value: { kind: 'zip', zip: '79901' } },
+      ])).body;
+
+      expect(state.run.stepKey).toBe('profile.trade');
+      expect(state.profile.location).toEqual({ city: null, state: null, zip: '79901' });
+      const cities = await su.query(`SELECT 1 FROM worker_preferred_cities WHERE user_id = $1`, [ids.zip]);
+      expect(cities.rowCount).toBe(0);
+    });
+
+    /**
+     * FINDING, pinned rather than worked around: the WEB door cannot park a
+     * location confirmation ITSELF. `locationStepValue` on the client only
+     * ever produces `{kind:'zip'}` or a `{kind:'city_state'}` with BOTH
+     * fields, and both of those resolve outright. A parked confirmation is
+     * therefore always something the OTHER door did — which is exactly why
+     * `pendingLocationConfirm` is in the state document and
+     * `{kind:'confirm'}` is in the value table: they exist to let the web
+     * finish what WhatsApp started, not to serve a web-only flow.
+     */
+    test('a confirmation parked by WhatsApp is rendered, and confirmable, on the web', async () => {
+      let state = (await get('city')).body;
+      state = (await answers('city', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }])).body;
+      state = (await answers('city', state.run.lockVersion, [{ stepKey: 'profile.name', value: 'Deb Ortiz' }])).body;
+      expect(state.run.stepKey).toBe('profile.location');
+
+      // A bare city over WhatsApp: ambiguous, so the engine asks.
+      const client = await (rolePool as Pool).connect();
+      try {
+        await client.query('BEGIN');
+        await routeOnboardingV2(
+          client,
+          {
+            id: `conv:${randomUUID()}`,
+            user_id: ids.city,
+            whatsapp_number: phones.city,
+            language: 'en',
+            conversation_state: 'onboarding',
+            state_context: {},
+          },
+          { from: phones.city, body: 'El Paso', messageSid: `SM${randomUUID()}` },
+          driver.createWebOnboardingDeps({
+            requiredLegalVersion: '1.0',
+            tosUrl: 'https://jaleapp.ai/legal/terms',
+            privacyUrl: 'https://jaleapp.ai/legal/privacy',
+            workflowVersion: 1,
+          }),
+        );
+        await client.query('COMMIT');
+      } finally {
+        client.release();
+      }
+
+      // The web sees the parked question, read out of run.context.
+      state = (await get('city')).body;
+      expect(state.run.stepKey).toBe('profile.location');
+      expect(state.pendingLocationConfirm).toEqual({ city: 'El Paso', state: 'TX' });
+
+      state = (await answers('city', state.run.lockVersion, [
+        { stepKey: 'profile.location', value: { kind: 'confirm', accept: true } },
+      ])).body;
+      expect(state.run.stepKey).toBe('profile.trade');
+      expect(state.pendingLocationConfirm).toBeNull();
+      expect(state.profile.location).toEqual({ city: 'El Paso', state: 'TX', zip: null });
+    });
+
+    test('a confirm with nothing parked is refused, not handed to the location resolver', async () => {
+      // '1' means "yes" only while a confirmation is parked. Sent otherwise it
+      // would reach `deps.adapters.location.resolve('1')` as if it were a
+      // place name, so the translator refuses instead of mistranslating.
+      let state = (await get('confirm')).body;
+      state = (await answers('confirm', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }])).body;
+      state = (await answers('confirm', state.run.lockVersion, [{ stepKey: 'profile.name', value: 'Ivan Cruz' }])).body;
+      expect(state.run.stepKey).toBe('profile.location');
+      expect(state.pendingLocationConfirm).toBeNull();
+
+      const response = await answers('confirm', state.run.lockVersion, [
+        { stepKey: 'profile.location', value: { kind: 'confirm', accept: true } },
+      ]);
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({
+        error: 'step_rejected',
+        rejectedStepKey: 'profile.location',
+        reason: 'no_pending_confirm',
+      });
+      // Refused before the engine, so the run did not move.
+      expect(response.body.state.run.lockVersion).toBe(state.run.lockVersion);
+    });
+  });
+
+  // =======================================================================
+  // 5. The HTTP error vocabulary
+  // =======================================================================
+
+  describe('5. status codes and error codes', () => {
+    test('a stale lockVersion is 409 lock_conflict WITH the fresh state', async () => {
+      const state = (await get('lock')).body;
+      const response = await answers('lock', state.run.lockVersion + 7, [{ stepKey: 'legal.review', value: 'accept' }]);
+      expect(response.statusCode).toBe(409);
+      expect(response.body.error).toBe('lock_conflict');
+      // The body carries the run, so the browser's retry costs no extra GET.
+      expect(response.body.state.run.lockVersion).toBe(state.run.lockVersion);
+      expect(response.body.state.run.stepKey).toBe('legal.review');
+    });
+
+    test('a step the run is not on is 422 step_mismatch, with the state', async () => {
+      const state = (await get('lock')).body;
+      const response = await answers('lock', state.run.lockVersion, [{ stepKey: 'profile.name', value: 'Nope' }]);
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({
+        error: 'step_mismatch',
+        rejectedStepKey: 'profile.name',
+        reason: 'expected:legal.review',
+      });
+      expect(response.body.state.run.stepKey).toBe('legal.review');
+    });
+
+    test('a photo step key is 422 unknown_step', async () => {
+      const state = (await get('lock')).body;
+      const response = await answers('lock', state.run.lockVersion, [{ stepKey: 'profile.photo', value: { skip: true } }]);
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({ error: 'unknown_step', rejectedStepKey: 'profile.photo' });
+    });
+
+    test('a too-short trust answer is 422 step_rejected too_short, and keeps the run put', async () => {
+      let state = (await get('lock')).body;
+      state = (await answers('lock', state.run.lockVersion, [{ stepKey: 'legal.review', value: 'accept' }])).body;
+      state = (await answers('lock', state.run.lockVersion, [
+        { stepKey: 'profile.name', value: 'Eva Lima' },
+        { stepKey: 'profile.location', value: { kind: 'zip', zip: '79901' } },
+      ])).body;
+      state = (await answers('lock', state.run.lockVersion, [{ stepKey: 'profile.trade', value: 'plumber' }])).body;
+      state = (await answers('lock', state.run.lockVersion, [
+        { stepKey: 'profile.experience', value: '5-9' },
+        { stepKey: 'profile.transportation', value: false },
+        { stepKey: 'profile.availability', value: 'weekends' },
+      ])).body;
+      expect(state.run.stepKey).toBe('trust.question.1');
+
+      const response = await answers('lock', state.run.lockVersion, [
+        { stepKey: 'trust.question.1', value: { text: 'too short' } },
+      ]);
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({
+        error: 'step_rejected', rejectedStepKey: 'trust.question.1', reason: 'too_short',
+      });
+      expect(response.body.state.run.stepKey).toBe('trust.question.1');
+      // Refused BEFORE the engine, so the lock did not move either.
+      expect(response.body.state.run.lockVersion).toBe(state.run.lockVersion);
+    });
+
+    test('partial progress before a rejection is COMMITTED, not rolled back', async () => {
+      const state = (await get('lock')).body;
+      expect(state.run.stepKey).toBe('trust.question.1');
+      const response = await answers('lock', state.run.lockVersion, [
+        { stepKey: 'trust.question.1', value: { text: ANSWER_1 } },
+        // Wrong step for item two: the run is on trust.question.2 by then.
+        { stepKey: 'trust.question.1', value: { text: ANSWER_2 } },
+      ]);
+      expect(response.statusCode).toBe(422);
+      expect(response.body.error).toBe('step_mismatch');
+      // Item one really landed and really persisted.
+      expect(response.body.state.run.stepKey).toBe('trust.question.2');
+      const fresh = (await get('lock')).body;
+      expect(fresh.run.stepKey).toBe('trust.question.2');
+      expect(fresh.trust.answers).toEqual([{ index: 1, text: ANSWER_1, source: 'text' }]);
+    });
+
+    test('an unroutable method/path is 404 not_found', async () => {
+      const response = await call(subs.lock, { method: 'DELETE', resource: '/worker/onboarding/answers' });
+      expect(response.statusCode).toBe(404);
+      expect(response.body).toEqual({ error: 'not_found' });
+    });
+
+    test('a malformed body is 400 invalid_request', async () => {
+      const result: APIGatewayProxyResult = await handler({
+        httpMethod: 'POST',
+        resource: '/worker/onboarding/answers',
+        body: 'not json',
+        requestContext: { authorizer: { claims: { sub: subs.lock } } },
+      } as unknown as APIGatewayProxyEvent);
+      expect(result.statusCode).toBe(400);
+
+      // ...as is a batch wider than the cap.
+      const oversized = await answers('lock', 0, Array.from({ length: 7 }, () => ({ stepKey: 'trust.question.2', value: { text: ANSWER_2 } })));
+      expect(oversized.statusCode).toBe(400);
+      expect(oversized.body).toEqual({ error: 'invalid_request' });
+    });
+  });
+
+  // =======================================================================
+  // 6. BACK and language
+  // =======================================================================
+
+  describe('6. back and language', () => {
+    test('back steps the run back, and back-twice does not bounce forward', async () => {
+      let state = (await get('lock')).body;
+      expect(state.run.stepKey).toBe('trust.question.2');
+
+      state = (await back('lock', state.run.lockVersion)).body;
+      expect(state.run.stepKey).toBe('trust.question.1');
+
+      // The reason string is `worker_back_web` precisely so findPreviousStepKey
+      // (which excludes `reason LIKE 'worker\\_%'`) does not read the first
+      // back's own transition as "the step before".
+      state = (await back('lock', state.run.lockVersion)).body;
+      expect(state.run.stepKey).toBe('profile.availability');
+
+      const transitions = await su.query<{ reason: string }>(
+        `SELECT reason FROM worker_workflow_transitions t
+           JOIN worker_workflow_runs r ON r.id = t.run_id
+          WHERE r.user_id = $1 AND t.reason LIKE 'worker_back%'`,
+        [ids.lock],
+      );
+      expect(transitions.rows.every((r) => r.reason === 'worker_back_web')).toBe(true);
+      expect(transitions.rowCount).toBe(2);
+    });
+
+    test('back at legal.review is 422 with the state, not a 500', async () => {
+      const state = (await get('city')).body;
+      // The 'city' worker is past legal, so use a worker still on it.
+      expect(state.run.stepKey).not.toBe('legal.review');
+      const fresh = (await get('ready')).body;
+      const response = await back('ready', fresh.run.lockVersion);
+      expect(response.statusCode).toBe(422);
+      expect(response.body).toMatchObject({ error: 'nothing_to_go_back_to', reason: 'nothing_to_go_back_to' });
+      expect(response.body.state.run.stepKey).toBe('legal.review');
+    });
+
+    test('the language PATCH persists the run column AND the durable override', async () => {
+      const before = (await get('ready')).body;
+      const response = await language('ready', 'es', before.run.lockVersion);
+      expect(response.statusCode).toBe(200);
+      expect(response.body.run.preferredLanguage).toBe('es');
+
+      const row = await su.query<{ preferred_language: string; context: Record<string, unknown> }>(
+        `SELECT preferred_language, context FROM worker_workflow_runs WHERE id = $1`, [before.run.id],
+      );
+      // Both halves of IDIOMA's write path: the column the worker.ready
+      // release renderer reads, and the override every prompt in this run
+      // reads -- the latter now durable, which is what makes it survive to
+      // the next HTTP request and to WhatsApp.
+      expect(row.rows[0].preferred_language).toBe('es');
+      expect(row.rows[0].context.v2PreferredLanguageOverride).toBe('es');
+    });
+
+    test('the language PATCH is a no-op on a completed run, never a 409 loop', async () => {
+      const response = await language('happy', 'es');
+      expect(response.statusCode).toBe(200);
+      expect(response.body.lifecycle).toBe('ready');
+    });
+
+    test('a stale lockVersion on the language PATCH is 409 with the state', async () => {
+      const state = (await get('ready')).body;
+      const response = await language('ready', 'en', state.run.lockVersion + 5);
+      expect(response.statusCode).toBe(409);
+      expect(response.body.error).toBe('lock_conflict');
+    });
+  });
+});
