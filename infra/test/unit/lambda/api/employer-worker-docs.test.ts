@@ -206,4 +206,37 @@ describe('employer-worker-docs Lambda', () => {
     const body = JSON.parse(res.body);
     expect(body.documents[0].cert_name).toBe('OSHA 30');
   });
+  it('never mints a presigned URL for a retired ssn document', async () => {
+    // No surface renders `ssn` any more, so a row that reaches the response is
+    // pure exposure: unlike the `s3_key` removed above -- inert against a
+    // private bucket -- a presigned GET is directly fetchable for 15 minutes
+    // by anyone who reads the payload. Asserting `getSignedUrl` ran exactly
+    // once is what proves the card was never signed, not merely omitted after.
+    setupMockQuery({
+      documents: {
+        rows: [
+          resumeRow,
+          {
+            id: 'doc-ssn',
+            doc_type: 'ssn',
+            s3_key: 'documents/j1/w1/ssn/uuid.pdf',
+            file_name: 'social-security-card.pdf',
+            file_size: 512,
+            uploaded_at: '2026-08-20T00:00:00.000Z',
+            s3_version_id: null,
+            cert_name: null,
+          },
+        ],
+      },
+    });
+
+    const res = await handler(makeEvent('emp-sub'));
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.documents).toHaveLength(1);
+    expect(body.documents[0].doc_type).toBe('resume');
+    expect(res.body).not.toContain('social-security-card.pdf');
+    expect(mockGetSignedUrl).toHaveBeenCalledTimes(1);
+    expect(GetObjectCommand).toHaveBeenCalledTimes(1);
+  });
 });

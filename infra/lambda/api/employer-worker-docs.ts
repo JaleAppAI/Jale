@@ -136,19 +136,30 @@ export const handler = async (
     // that also spells out the worker/job it belongs to. Both are still
     // SELECTed -- they are what the presigner signs, including the version pin
     // that keeps an employer looking at the exact bytes that were uploaded.
+    //
+    // The `ssn` filter runs BEFORE the presigner, not after. No employer
+    // surface renders that slot any more, so a legacy row reaching this point
+    // would have a live 15-minute presigned GET for a social-security card
+    // minted for it and shipped in a payload nothing displays -- strictly
+    // worse than the `s3_key` removed above, which was inert against a
+    // private bucket. Filtering here rather than in the SQL keeps the row
+    // visible to the query the RLS policy governs and makes "never signed"
+    // the assertable behaviour.
     const documents = await Promise.all(
-      docsResult.rows.map(async ({ s3_key, s3_version_id, ...doc }) => {
-        const url = await getSignedUrl(
-          s3,
-          new GetObjectCommand({
-            Bucket: process.env.DOCUMENTS_BUCKET!,
-            Key: s3_key,
-            ...(s3_version_id ? { VersionId: s3_version_id } : {}),
-          }),
-          { expiresIn: 900 },
-        );
-        return { ...doc, url };
-      }),
+      docsResult.rows
+        .filter((doc) => doc.doc_type !== 'ssn')
+        .map(async ({ s3_key, s3_version_id, ...doc }) => {
+          const url = await getSignedUrl(
+            s3,
+            new GetObjectCommand({
+              Bucket: process.env.DOCUMENTS_BUCKET!,
+              Key: s3_key,
+              ...(s3_version_id ? { VersionId: s3_version_id } : {}),
+            }),
+            { expiresIn: 900 },
+          );
+          return { ...doc, url };
+        }),
     );
 
     return {
