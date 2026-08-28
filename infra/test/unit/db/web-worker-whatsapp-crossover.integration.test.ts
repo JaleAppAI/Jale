@@ -200,7 +200,14 @@ maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
         return {
           status: 'sent',
           challengeId: identityScript.session,
-          expiresAt: new Date(clockRef.now.getTime() + 10 * 60_000),
+          // The ONE value here that must come off the wall clock, not the
+          // injected one: `save_worker_pre_auth` stores it and 047's
+          // challenge lookup compares it against `pg_catalog.now()`. Derived
+          // from the frozen clock it silently becomes "expired" the moment
+          // real time passes the fixture's start instant, and the bind fails
+          // with `no bindable identity challenge` — a wall-clock-dependent
+          // green. Every other time value in this suite stays on `clockRef`.
+          expiresAt: new Date(Date.now() + 10 * 60_000),
         };
       },
       async verifyChallenge() {
@@ -485,6 +492,14 @@ maybeDescribe('R2-C6: a web-started worker continues on WhatsApp', () => {
     const fixturePhoneHashes = Object.values(phones).filter(Boolean).map(hashNormalizedPhone);
     if (fixturePhoneHashes.length > 0) {
       await su.query(`DELETE FROM referral_pending_claims WHERE phone_hash = ANY($1::text[])`, [
+        fixturePhoneHashes,
+      ]);
+      // `worker_identity_challenges` is keyed by phone hash and its user FKs
+      // are ON DELETE SET NULL (047), so a verified challenge SURVIVES the
+      // fixture-user delete below. Left behind it is exactly the orphaned
+      // row 047's self-heal exists for — harmless, but this suite should not
+      // be the thing that manufactures them for the next runner.
+      await su.query(`DELETE FROM worker_identity_challenges WHERE phone_hash = ANY($1::text[])`, [
         fixturePhoneHashes,
       ]);
     }
