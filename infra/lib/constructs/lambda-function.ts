@@ -46,9 +46,20 @@ export interface JaleLambdaFunctionProps {
 export class JaleLambdaFunction extends Construct {
   public readonly function: NodejsFunction;
   public readonly logGroup: logs.LogGroup;
+  /**
+   * Absolute path to the handler source this function bundles. NodejsFunction
+   * keeps `entry` private and the synthesized template only carries the asset
+   * hash, so nothing downstream can otherwise tell which source file a log
+   * group belongs to. test/unit/stacks/metric-filter-patterns.test.ts uses it
+   * to check each MetricFilter against the code that writes to ITS log group,
+   * rather than against the whole lambda/ tree.
+   */
+  public readonly entry: string;
 
   constructor(scope: Construct, id: string, props: JaleLambdaFunctionProps) {
     super(scope, id);
+
+    this.entry = props.entry;
 
     this.logGroup = new logs.LogGroup(this, 'LogGroup', {
       retention: logs.RetentionDays.ONE_MONTH,

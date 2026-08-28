@@ -562,8 +562,12 @@ describe('AuthStack — SES context validation', () => {
  * now nothing stopped a mis-scoped `cdk destroy` — or a template change that
  * replaced the pool — from deleting them. DeletionProtection is driven by the
  * app-global `deletionProtection` CDK context flag, which
- * .github/workflows/_reusable-deploy.yml already passes as
- * `-c deletionProtection=true` on synth, both diffs and deploy.
+ * .github/workflows/_reusable-deploy.yml passes as `-c deletionProtection=true`
+ * on all four cdk invocations.
+ *
+ * The resolver is FAIL-SAFE (`!== false`, same as database-stack.ts): only an
+ * explicit false disarms. A synth that forgets the flag entirely must not emit
+ * INACTIVE over two live pools.
  */
 describe('AuthStack Cognito DeletionProtection', () => {
   const buildTemplate = (idPrefix: string, deletionProtection?: unknown): Template => {
@@ -592,25 +596,33 @@ describe('AuthStack Cognito DeletionProtection', () => {
 
   // The CLI hands `-c deletionProtection=true` through as the STRING 'true'.
   // Testing only the boolean would pass green while prod shipped INACTIVE.
+  // The no-context row is the fail-safe case: a scratch synth or a stack built
+  // outside the app must not plan INACTIVE over a live pool.
   test.each([
-    ['the string CI actually passes', 'true'],
-    ['a boolean from cdk.json', true],
-  ])('every pool is ACTIVE with %s', (_label, value) => {
-    const pools = userPools(buildTemplate(`DpOn${String(value)}`, value));
+    ['the string CI actually passes', 'DpOnStr', 'true'],
+    ['a boolean from cdk.json', 'DpOnBool', true],
+    ['no context at all (fail-safe)', 'DpAbsent', undefined],
+    ['an unrecognised value', 'DpOnJunk', 'yes'],
+  ])('every pool is ACTIVE with %s', (_label, idPrefix, value) => {
+    const pools = userPools(buildTemplate(idPrefix, value));
     expect(pools).toHaveLength(2);
     for (const pool of pools) {
       expect(pool.DeletionProtection).toBe('ACTIVE');
     }
   });
 
-  test('pools stay disposable when the context flag is absent or false', () => {
-    for (const [idPrefix, value] of [['DpAbsent', undefined], ['DpFalse', false]] as const) {
-      const pools = userPools(buildTemplate(idPrefix, value));
-      expect(pools).toHaveLength(2);
-      for (const pool of pools) {
-        expect(pool.DeletionProtection === undefined || pool.DeletionProtection === 'INACTIVE')
-          .toBe(true);
-      }
+  // Only an explicit false disarms — and `-c deletionProtection=false` arrives
+  // as the STRING 'false', so both spellings have to be honoured or a
+  // deliberate dev opt-out silently keeps the pool protected.
+  test.each([
+    ['a boolean false (cdk.json dev value)', 'DpFalseBool', false],
+    ['the string a -c flag produces', 'DpFalseStr', 'false'],
+  ])('pools stay disposable with %s', (_label, idPrefix, value) => {
+    const pools = userPools(buildTemplate(idPrefix, value));
+    expect(pools).toHaveLength(2);
+    for (const pool of pools) {
+      expect(pool.DeletionProtection === undefined || pool.DeletionProtection === 'INACTIVE')
+        .toBe(true);
     }
   });
 
@@ -623,7 +635,7 @@ describe('AuthStack Cognito DeletionProtection', () => {
     // Identical construct ids in two separate apps: path-derived values (the
     // SMS role ExternalId, asset hashes) must be equal so a real difference
     // stands out.
-    const off = buildTemplate('DpDiff');
+    const off = buildTemplate('DpDiff', false);
     const on = buildTemplate('DpDiff', 'true');
     const offPools = off.findResources('AWS::Cognito::UserPool');
     const onPools = on.findResources('AWS::Cognito::UserPool');

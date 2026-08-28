@@ -165,7 +165,9 @@ describeIfDocker('AdminStack', () => {
  */
 describeIfDocker('AdminStack Cognito DeletionProtection', () => {
   const buildTemplate = (deletionProtection?: unknown): Template => {
-    const context: Record<string, unknown> = { environment: 'prod' };
+    // 'production' is the value bin/jale-app.ts accepts and the deploy workflow
+    // passes; 'prod' is not a real environment name anywhere in the app.
+    const context: Record<string, unknown> = { environment: 'production' };
     if (deletionProtection !== undefined) {
       context.deletionProtection = deletionProtection;
     }
@@ -196,9 +198,11 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
   };
 
   // 'true' is the STRING the CDK CLI hands through for `-c deletionProtection=true`.
+  // The no-context row is the fail-safe case: absent must not mean disarmed.
   test.each([
     ['the string CI actually passes', 'true'],
     ['a boolean from cdk.json', true],
+    ['no context at all (fail-safe)', undefined],
   ])('the admin pool is ACTIVE with %s', (_label, value) => {
     buildTemplate(value).hasResourceProperties('AWS::Cognito::UserPool', {
       UserPoolName: 'jale-admin-pool',
@@ -206,8 +210,10 @@ describeIfDocker('AdminStack Cognito DeletionProtection', () => {
     });
   });
 
-  test('the admin pool stays disposable when the context flag is absent or false', () => {
-    for (const value of [undefined, false]) {
+  // Only an explicit false disarms, in either spelling — `-c` values arrive as
+  // strings.
+  test('the admin pool stays disposable only on an explicit false', () => {
+    for (const value of [false, 'false']) {
       const pools = Object.values(buildTemplate(value).findResources('AWS::Cognito::UserPool'));
       expect(pools).toHaveLength(1);
       const props = (pools[0] as { Properties: Record<string, unknown> }).Properties;

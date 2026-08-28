@@ -62,10 +62,20 @@ export class AdminStack extends cdk.Stack {
     const environment = this.node.tryGetContext('environment') ?? 'dev';
     const durability = getAdminDurability(environment);
 
-    // Same app-global `-c deletionProtection=true` the production deploy
+    // Same app-global `deletionProtection` context flag the production deploy
     // workflow passes for RDS and the worker/employer pools: the admin pool
     // holds the internal operator accounts (with MFA enrolments that cannot be
-    // recreated from a backup), so a replace/destroy must fail loudly.
+    // recreated from a backup), so a replace/destroy must fail loudly. The
+    // resolver is fail-safe — only an explicit false (cdk.json's dev value)
+    // turns it off.
+    //
+    // STANDING CONSTRAINT once ACTIVE: CloudFormation replaces a user pool when
+    // `UserPoolName`, the schema/custom attributes or the alias/username
+    // configuration change, and the replacement's delete is exactly what
+    // DeletionProtection blocks. Such an update fails mid-flight and can strand
+    // the stack in UPDATE_ROLLBACK_FAILED / UPDATE_ROLLBACK_COMPLETE, which the
+    // deploy workflow refuses to deploy over. Changing any of those three means
+    // deploying with protection off first, on purpose.
     this.adminPool = new cognito.UserPool(this, 'AdminUserPool', {
       userPoolName: 'jale-admin-pool',
       deletionProtection: resolveCognitoDeletionProtection(this),

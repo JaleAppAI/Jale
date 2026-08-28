@@ -74,29 +74,40 @@ export interface CognitoPoolProps {
    * `cdk destroy` and the loss of every registered user. Resolve with
    * `resolveCognitoDeletionProtection(this)` rather than hardcoding.
    *
-   * Defaults to false so throwaway dev/test pools stay disposable.
+   * Omitting it defaults to PROTECTED. Disarming a live pool has to be a thing
+   * someone typed, not a thing they forgot.
    */
   deletionProtection?: boolean;
 }
 
 /**
- * Reads the app-wide `deletionProtection` CDK context flag.
+ * Reads the app-wide `deletionProtection` CDK context flag, FAIL-SAFE: anything
+ * other than an explicit false disarms nothing.
  *
- * The production deploy workflow passes `-c deletionProtection=true` on synth,
- * both diffs and deploy (.github/workflows/_reusable-deploy.yml; the string is
- * pinned by scripts/validate-github-workflows.mjs), and `-c` context is
- * app-global, so every stack sees it. The CLI hands context values through as
- * STRINGS, hence the `'true'` arm.
+ * Same `!== false` shape as database-stack.ts:30, and for the same reason: a
+ * property whose whole job is to stop an accidental delete must not be switched
+ * off by an omission. The production deploy workflow passes
+ * `-c deletionProtection=true` on synth, both diffs and deploy
+ * (.github/workflows/_reusable-deploy.yml; the four occurrences are pinned by
+ * scripts/validate-github-workflows.mjs), and `-c` context is app-global, so
+ * every stack sees it. Any synth that does not — a stack built straight from a
+ * unit test, a scratch app, a future entrypoint that forgets the flag — now
+ * plans ACTIVE instead of quietly planning INACTIVE over live pools.
  *
- * Deliberately NOT database-stack.ts's `!== false` idiom: RDS defaults deletion
- * protection ON and opts dev out, whereas a Cognito pool with no context at all
- * (a bare `new cdk.App()` in a unit test, a scratch synth) should stay
- * disposable. cdk.json pins `deletionProtection: false` for dev, so both real
- * paths agree either way; only the context-absent case differs.
+ * What this does NOT cover, and the reason the two runbooks were amended: `-c`
+ * is not the only source. cdk.json pins `deletionProtection: false` for dev and
+ * is read by every `cdk` invocation from `infra/`, so a hand-run
+ * `cdk deploy JaleAuthStack` (which scripts/run-migrations.ps1 and
+ * scripts/run-migration-022.ps1 both print as the next step) still resolves to
+ * false unless it passes `-c deletionProtection=true`. Fail-safe closes the
+ * absent-context case, not the wrong-context one — deploy through the workflow.
+ *
+ * The `'false'` arm exists because the CDK CLI hands `-c` values through as
+ * STRINGS: `-c deletionProtection=false` arrives as `'false'`, not `false`.
  */
 export function resolveCognitoDeletionProtection(scope: Construct): boolean {
   const value = scope.node.tryGetContext('deletionProtection');
-  return value === true || value === 'true';
+  return value !== false && value !== 'false';
 }
 
 export { CognitoPool as JaleCognitoPool };
@@ -133,7 +144,7 @@ export class CognitoPool extends Construct {
       smsRole: props.smsRole,
       smsRoleExternalId: props.smsExternalId,
       email: props.email,
-      deletionProtection: props.deletionProtection ?? false,
+      deletionProtection: props.deletionProtection ?? true,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
