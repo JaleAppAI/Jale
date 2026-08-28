@@ -229,6 +229,9 @@ export function questionText(state: OnboardingState, index: number, locale: stri
 // What a screen posts, and whether it may
 // ---------------------------------------------------------------------------
 
+/** What a screen hands to the flow when its CTA is pressed. */
+export type OnboardingAnswerBatch = OnboardingAnswerItem[];
+
 export function answersForScreen(screen: ScreenKey, draft: OnboardingDraft): OnboardingAnswerItem[] {
   switch (screen) {
     case 'terms':

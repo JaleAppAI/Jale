@@ -1785,6 +1785,9 @@
       "transportation": "Transporte propio",
       "availability": "Disponibilidad",
       "empty": "—"
+    },
+    "rejection": {
+      "generic": "No pudimos aceptar eso — revísalo e inténtalo de nuevo."
     }
   }
 }

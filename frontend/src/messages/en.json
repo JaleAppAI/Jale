@@ -1785,6 +1785,9 @@
       "transportation": "Own transportation",
       "availability": "Availability",
       "empty": "—"
+    },
+    "rejection": {
+      "generic": "We couldn't accept that — check it and try again."
     }
   }
 }
