@@ -616,6 +616,71 @@ maybeDescribe('migration 086: trust extractions and the web onboarding door', ()
     expect(sql).not.toMatch(/ALTER TABLE jobs ALTER COLUMN certification_requirements SET NOT NULL/i);
   });
 
+  // The 065 -> 067 regression guard. Every other Part-3 assertion is
+  // satisfied by an EMPTY jobs table, which is exactly the failure mode 065
+  // shipped with: the UPDATE matched nothing and nobody could tell. This
+  // plants a NULL row and replays the migration's own mechanism against it,
+  // with a plain-jale_admin negative control proving the helper role is
+  // load-bearing rather than decoration.
+  it('actually updates NULL rows through the backfill role (065 -> 067 regression guard)', async () => {
+    const planted = await one<{ id: string; updated_at: Date }>(
+      `INSERT INTO jobs (employer_id, title, location, job_type, status, certification_requirements)
+       VALUES ($1, 'T86 backfill probe', 'Austin', 'full-time', 'active', NULL)
+       RETURNING id, updated_at`,
+      [employerRelated],
+    );
+
+    const client = new Client({ connectionString: databaseUrl });
+    await client.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Negative control: the migration's UPDATE as plain jale_admin. jobs is
+      // FORCE RLS and no jobs policy is satisfied without app.current_user_id,
+      // so this must match zero rows.
+      await client.query('SET LOCAL ROLE jale_admin');
+      const control = await client.query(
+        `UPDATE jobs SET certification_requirements = '[]'::jsonb
+          WHERE certification_requirements IS NULL`,
+      );
+      expect(control.rowCount).toBe(0);
+      await client.query('RESET ROLE');
+
+      // Replay the migration's mechanism verbatim.
+      await client.query('GRANT SELECT, UPDATE ON jobs TO jale_location_backfill');
+      await client.query(
+        `CREATE POLICY jobs_cert_backfill_update ON jobs
+           FOR UPDATE TO jale_location_backfill USING (true) WITH CHECK (true)`,
+      );
+      await client.query('ALTER TABLE jobs DISABLE TRIGGER jobs_updated_at');
+
+      await client.query('SET LOCAL ROLE jale_location_backfill');
+      const backfilled = await client.query(
+        `UPDATE jobs SET certification_requirements = '[]'::jsonb
+          WHERE certification_requirements IS NULL`,
+      );
+      expect(backfilled.rowCount).toBeGreaterThanOrEqual(1);
+      await client.query('RESET ROLE');
+
+      const after = await client.query<{ certification_requirements: unknown; updated_at: Date }>(
+        'SELECT certification_requirements, updated_at FROM jobs WHERE id = $1',
+        [planted.id],
+      );
+      expect(after.rows[0].certification_requirements).toEqual([]);
+      // Disabling jobs_updated_at is what keeps a pre-077 job from looking
+      // freshly edited just because it acquired its default.
+      expect(after.rows[0].updated_at.getTime()).toBe(planted.updated_at.getTime());
+
+      await client.query('ROLLBACK');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      await client.end();
+      await setup.query('DELETE FROM jobs WHERE id = $1', [planted.id]);
+    }
+  });
+
   it('leaves the one-shot backfill grant and policy revoked, and the jobs trigger enabled', async () => {
     const row = await one<{ can_update: boolean; policy_count: string; trigger_enabled: string }>(
       `SELECT has_table_privilege('jale_location_backfill', 'public.jobs', 'UPDATE') AS can_update,
