@@ -30,19 +30,13 @@ export const DEFAULT_ROUTING = STEP_ROUTING['legal.review'];
 
 // ── Task 5: profile/trust vocabulary + assessment provenance versions ───
 
-/** Canonical trade slugs in list-picker order; mirrors flows.ts's TRADE_KEYS
- * (never imported directly — that module is out of this task's scope). */
-export const TRADE_ORDER = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
-export type StandardTrade = Exclude<(typeof TRADE_ORDER)[number], 'other'>;
-
-export const TRADE_LABELS: Record<(typeof TRADE_ORDER)[number], { en: string; es: string }> = {
-  electrician: { en: 'Electrician', es: 'Electricista' },
-  plumber: { en: 'Plumber', es: 'Plomero' },
-  carpenter: { en: 'Carpenter', es: 'Carpintero' },
-  concrete: { en: 'Concrete', es: 'Concreto' },
-  painting: { en: 'Painting', es: 'Pintura' },
-  other: { en: 'Other', es: 'Otro' },
-};
+/** Trade vocabulary. The slugs, their list-picker order and their bilingual
+ * labels all live in `lambda/lib/worker-vocab` now — the single source of
+ * truth shared with the worker API and, via a parity test, the frontend.
+ * Re-exported under this module's historical names so `prompts.ts` and
+ * `steps/profile.ts` keep compiling unchanged. */
+export { TRADE_KEYS as TRADE_ORDER, TRADE_LABELS } from '../../lib/worker-vocab';
+export type { StandardTradeKey as StandardTrade } from '../../lib/worker-vocab';
 
 /** Provenance identifiers recorded on the assessment (via `completeOnboarding`'s
  * `assessmentProvenance` payload) and on each `saveTrustAnswer` call. Bump the

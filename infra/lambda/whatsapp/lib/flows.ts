@@ -10,6 +10,16 @@
  */
 
 import type { Lang } from './templates';
+import {
+  TRADE_KEYS,
+  EXPERIENCE_KEYS,
+  AVAILABILITY_KEYS,
+  TRANSPORT_KEYS,
+  transportKeyToBoolean,
+  type TradeKey,
+  type ExperienceKey,
+  type AvailabilityKey,
+} from '../../lib/worker-vocab';
 
 // ── Conversation state types ────────────────────────────────────
 
@@ -25,24 +35,18 @@ export type ConversationState =
   | 'otp_timeout'
   | 'idle';
 
+// The three profile vocabularies below are owned by `lambda/lib/worker-vocab`
+// (which also carries their bilingual labels and the frontend parity guard).
+// These aliases keep flows.ts's historical export names for its consumers.
+
 /** Canonical slugs matching users.main_trade CHECK constraint */
-export type TradeSlug =
-  | 'electrician'
-  | 'plumber'
-  | 'carpenter'
-  | 'concrete'
-  | 'painting'
-  | 'other';
+export type TradeSlug = TradeKey;
 
 /** Canonical slugs matching users.years_experience CHECK constraint */
-export type ExperienceSlug = '0-1' | '2-4' | '5-9' | '10+';
+export type ExperienceSlug = ExperienceKey;
 
 /** Canonical slugs matching users.availability CHECK constraint */
-export type AvailabilitySlug =
-  | 'full_time'
-  | 'part_time'
-  | 'weekends'
-  | 'flexible';
+export type AvailabilitySlug = AvailabilityKey;
 
 // ── Profile builder: pending-field model ────────────────────────
 
@@ -73,24 +77,27 @@ export const PROFILE_FIELDS: readonly ProfileFieldDef[] = [
   {
     field: 'main_trade',
     type: 'buttons',
-    options: ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'],
+    options: TRADE_KEYS,
   },
   // Conditional: only activated when main_trade === 'other'
   { field: 'main_trade_other', type: 'text', conditional: true },
   {
     field: 'years_experience',
     type: 'buttons',
-    options: ['0-1', '2-4', '5-9', '10+'],
+    options: EXPERIENCE_KEYS,
   },
   {
+    // `has_transportation` is a boolean column, so the option list is the
+    // vocabulary's yes/no keys mapped through the storage conversion —
+    // [true, false], in that order.
     field: 'has_transportation',
     type: 'buttons',
-    options: [true, false],
+    options: TRANSPORT_KEYS.map(transportKeyToBoolean),
   },
   {
     field: 'availability',
     type: 'buttons',
-    options: ['full_time', 'part_time', 'weekends', 'flexible'],
+    options: AVAILABILITY_KEYS,
   },
 ] as const;
 

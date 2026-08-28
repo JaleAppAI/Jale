@@ -5,11 +5,15 @@ import { setWorkerCoordinates, type WorkerLocationSource } from '../lib/location
 import { parsePreferredCities, type CityFields } from '../lib/city-fields';
 import { checkCompliance } from '../legal/check-compliance';
 import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
+import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../lib/worker-vocab';
 
 const CORS_HEADERS = corsHeaders();
-const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
-const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'] as const;
-const VALID_AVAIL = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
+// The three vocabularies are owned by `lambda/lib/worker-vocab`; these
+// aliases keep this handler's local names (and the `valid:` arrays it echoes
+// back in 400 bodies) unchanged.
+const VALID_TRADES = TRADE_KEYS;
+const VALID_EXPERIENCE = EXPERIENCE_KEYS;
+const VALID_AVAIL = AVAILABILITY_KEYS;
 // 'map_pin' is deliberately absent: no client can drop a pin yet, and its
 // confidence (100) would outrank every later correction. See migration 065 section 4.
 const VALID_LOCATION_SOURCES = ['geocoded_zip', 'geocoded_address'] as const satisfies readonly WorkerLocationSource[];
