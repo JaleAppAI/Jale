@@ -329,7 +329,11 @@ export async function extractAssessment(event: ExtractAssessmentEvent): Promise<
       .filter((index) => index >= 0);
 
     if (answeredIndexes.length < 1) {
-      await writeCompleted(client, extractionId, notEnoughDetailResult(), null);
+      const written = await writeCompleted(client, extractionId, notEnoughDetailResult(), null);
+      if (written === 0) {
+        logReclaimed(event.assessmentId);
+        return;
+      }
       console.log(JSON.stringify({
         metric: 'TrustExtractorSkippedEmpty',
         assessmentId: event.assessmentId,
@@ -356,7 +360,11 @@ export async function extractAssessment(event: ExtractAssessmentEvent): Promise<
     }
 
     const extracted = parseExtraction(rawText, answeredIndexes);
-    await writeCompleted(client, extractionId, extracted, BEDROCK_MODEL_ID);
+    const written = await writeCompleted(client, extractionId, extracted, BEDROCK_MODEL_ID);
+    if (written === 0) {
+      logReclaimed(event.assessmentId);
+      return;
+    }
 
     console.log(JSON.stringify({
       metric: 'TrustExtractorCompleted',
@@ -386,25 +394,46 @@ export async function extractAssessment(event: ExtractAssessmentEvent): Promise<
 /** Single-statement completion — guarded on `status = 'extracting'` so a row
  *  the recovery cron already reclaimed is never overwritten by a late writer.
  *  One statement, so no explicit transaction is needed (unlike the scorer,
- *  which writes two tables). */
+ *  which writes two tables).
+ *
+ *  Returns the number of rows actually written: 0 means this invocation LOST
+ *  the row (see the `reclaimed` handling in extractAssessment). */
 async function writeCompleted(
-  client: { query: (sql: string, params: unknown[]) => Promise<unknown> },
+  client: { query: (sql: string, params: unknown[]) => Promise<{ rowCount: number | null }> },
   extractionId: string,
   result: ExtractionResult,
   modelId: string | null,
-): Promise<void> {
+): Promise<number> {
   const extracted = EXTRACTION_ARRAY_KEYS.reduce((acc, key) => {
     acc[key] = result[key];
     return acc;
   }, {} as ExtractedArrays);
 
-  await client.query(COMPLETE_SQL, [
+  const written = await client.query(COMPLETE_SQL, [
     JSON.stringify(extracted),
     result.summary_en,
     result.summary_es,
     modelId,
     extractionId,
   ]);
+  return written.rowCount ?? 0;
+}
+
+/**
+ * Emitted instead of Completed/SkippedEmpty when the guarded UPDATE matched no
+ * rows. Sequence: this invocation claimed the row and stalled past
+ * STALE_MINUTES; the recovery cron reset it to 'pending' and re-queued it; a
+ * second invocation claimed and completed it; then this one woke up. Its write
+ * is correctly a no-op, and it must not claim credit for a result it did not
+ * write. Mirrors trust-scorer.ts's `assessmentUpdate.rowCount === 0` branch.
+ * Not an error: the row IS extracted, just by someone else.
+ */
+function logReclaimed(assessmentId: string): void {
+  console.log(JSON.stringify({
+    metric: 'TrustExtractorSkippedReclaimed',
+    assessmentId,
+    extractor_version: EXTRACTOR_VERSION,
+  }));
 }
 
 /**

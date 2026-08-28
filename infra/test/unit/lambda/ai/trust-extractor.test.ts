@@ -374,6 +374,35 @@ describe('extractAssessment', () => {
     expect(emitted).not.toMatch(/\d{3}-\d{3}-\d{4}/);
   });
 
+  // Lost-race guard, mirroring trust-scorer.ts's `assessmentUpdate.rowCount === 0`
+  // branch. Sequence: this invocation claims the row and stalls > 15 min; the
+  // recovery cron resets it to 'pending' and re-queues it; a second invocation
+  // claims and COMPLETES it; then this one wakes up. Its guarded UPDATE matches
+  // 0 rows — so it must not claim credit for a result it did not write.
+  it('does not emit Completed when the recovery cron reclaimed the row mid-flight', async () => {
+    scriptDb({ completeRowCount: 0 });
+    bedrockReturns(JSON.stringify(VALID_EXTRACTION));
+
+    await expect(extractAssessment(EVENT)).resolves.toBeUndefined();
+
+    const metrics = loggedMetrics(logSpy).map((m) => m.metric);
+    expect(metrics).not.toContain('TrustExtractorCompleted');
+    expect(metrics).not.toContain('TrustExtractorFailed');
+    expect(metrics).toContain('TrustExtractorSkippedReclaimed');
+    expect(loggedMetrics(logSpy).find((m) => m.metric === 'TrustExtractorSkippedReclaimed'))
+      .toMatchObject({ assessmentId: EVENT.assessmentId, extractor_version: EXTRACTOR_VERSION });
+  });
+
+  it('does not emit SkippedEmpty either when the reclaimed row loses the no-answers write', async () => {
+    scriptDb({ answers: [{ q_en: 'Q', answer_text: '  ' }], completeRowCount: 0 });
+
+    await expect(extractAssessment(EVENT)).resolves.toBeUndefined();
+
+    const metrics = loggedMetrics(logSpy).map((m) => m.metric);
+    expect(metrics).not.toContain('TrustExtractorSkippedEmpty');
+    expect(metrics).toContain('TrustExtractorSkippedReclaimed');
+  });
+
   it('never touches worker_trust_assessments or users (fail-open: scoring is independent)', async () => {
     const calls = scriptDb();
     bedrockReturns(JSON.stringify(VALID_EXTRACTION));
