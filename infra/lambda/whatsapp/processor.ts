@@ -1534,16 +1534,10 @@ interface WorkerProfileSummary {
   years_experience: string | null;
   has_transportation: boolean | null;
   availability: string | null;
-  trust_signals: unknown;
-  trust_signals_completed_at: string | null;
   trust_assessment_profession_key: string | null;
   trust_assessment_status: string | null;
   trust_assessment_answers: unknown;
   trust_assessment_questions: unknown;
-}
-
-interface StoredTrustAnswer {
-  label?: string;
 }
 
 interface StoredAssessmentAnswer {
@@ -1569,7 +1563,6 @@ async function handleProfileCommand(
   const result = await client.query<WorkerProfileSummary>(
     `SELECT u.phone, u.whatsapp_number, u.full_name, u.city, u.main_trade, u.main_trade_other,
             u.years_experience, u.has_transportation, u.availability,
-            u.trust_signals, u.trust_signals_completed_at,
             wta.profession_key AS trust_assessment_profession_key,
             wta.status AS trust_assessment_status,
             wta.answers AS trust_assessment_answers,
@@ -1609,7 +1602,6 @@ async function handleProfileCommand(
 }
 
 function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string {
-  const trustSignals = parseTrustSignals(profile.trust_signals);
   const assessmentAnswers = parseAssessmentAnswers(profile.trust_assessment_answers);
   const assessmentQuestions = parseAssessmentQuestions(profile.trust_assessment_questions);
   const text = lang === 'es'
@@ -1626,9 +1618,6 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         status: 'Estado',
         trustQuestions: 'Preguntas de confianza',
         answer: 'Respuesta',
-        specialization: 'Especialidad',
-        seniority: 'Nivel',
-        tasks: 'Trabajo principal',
         missing: 'Sin completar',
         yes: 'Si',
         no: 'No',
@@ -1646,9 +1635,6 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         status: 'Status',
         trustQuestions: 'Trust questions',
         answer: 'Answer',
-        specialization: 'Specialty',
-        seniority: 'Level',
-        tasks: 'Main work',
         missing: 'Not set',
         yes: 'Yes',
         no: 'No',
@@ -1689,12 +1675,6 @@ function formatProfileSummary(profile: WorkerProfileSummary, lang: Lang): string
         );
       });
     }
-  } else if (profile.trust_signals_completed_at && trustSignals) {
-    lines.push(
-      `${text.specialization}: ${trustSignals.specialization?.label ?? text.missing}`,
-      `${text.seniority}: ${trustSignals.seniority?.label ?? text.missing}`,
-      `${text.tasks}: ${trustSignals.tasks?.label ?? text.missing}`,
-    );
   } else {
     lines.push(text.missing);
   }
@@ -1744,21 +1724,6 @@ function assessmentStatusLabel(status: string, lang: Lang): string {
     failed: { es: 'Fallido', en: 'Failed' },
   };
   return labels[status]?.[lang] ?? status;
-}
-
-function parseTrustSignals(value: unknown): Record<string, StoredTrustAnswer> | null {
-  if (!value) return null;
-  if (typeof value === 'string') {
-    try {
-      return JSON.parse(value) as Record<string, StoredTrustAnswer>;
-    } catch {
-      return null;
-    }
-  }
-  if (typeof value === 'object') {
-    return value as Record<string, StoredTrustAnswer>;
-  }
-  return null;
 }
 
 function labelFor(

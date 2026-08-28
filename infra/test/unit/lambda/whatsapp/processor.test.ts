@@ -610,12 +610,10 @@ describe('Processor Lambda', () => {
             years_experience: '10+',
             has_transportation: true,
             availability: 'flexible',
-            trust_signals_completed_at: '2026-04-29T00:00:00.000Z',
-            trust_signals: {
-              specialization: { label: 'Commercial' },
-              seniority: { label: 'Lead crew' },
-              tasks: { label: 'Work panels' },
-            },
+            trust_assessment_profession_key: null,
+            trust_assessment_status: null,
+            trust_assessment_answers: null,
+            trust_assessment_questions: null,
           }],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
@@ -893,6 +891,11 @@ describe('Processor Lambda', () => {
         !(params as unknown[])?.includes('phone-worker-1'))).toBe(true);
     });
 
+    // R2-C8: `users.trust_signals` / `trust_signals_completed_at` (the v1
+    // three-question lane) no longer have a writer and no longer have a
+    // reader — `formatProfileSummary`'s legacy branch is gone and 088 drops
+    // the columns. A worker with no `worker_trust_assessments` row now gets
+    // the plain "not set" line, never a v1 specialty/level/main-work block.
     it('returns profile details for a linked worker profile command', async () => {
       mockQuery
         .mockResolvedValueOnce({ rowCount: 0, rows: [] }) // BEGIN
@@ -914,12 +917,10 @@ describe('Processor Lambda', () => {
             years_experience: '10+',
             has_transportation: true,
             availability: 'flexible',
-            trust_signals_completed_at: '2026-04-29T00:00:00.000Z',
-            trust_signals: {
-              specialization: { label: 'Commercial' },
-              seniority: { label: 'Lead crew' },
-              tasks: { label: 'Work panels' },
-            },
+            trust_assessment_profession_key: null,
+            trust_assessment_status: null,
+            trust_assessment_answers: null,
+            trust_assessment_questions: null,
           }],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
@@ -942,7 +943,11 @@ describe('Processor Lambda', () => {
       expect(body).toContain('Your profile');
       expect(body).toContain('Name: Luis Gomez');
       expect(body).toContain('Trade: Electrician');
-      expect(body).toContain('Specialty: Commercial');
+      // The trust block degrades to "Not set" — no v1 fallback rendering.
+      expect(body).toContain('Trust\nNot set');
+      expect(body).not.toMatch(/Specialty|Level|Main work/);
+      // ...and the summary query no longer even SELECTs the dead columns.
+      expect(countQueryByPattern(/u\.trust_signals/i)).toBe(0);
       expect(countQueryByPattern(/UPDATE users/i)).toBe(0);
     });
 
@@ -967,8 +972,6 @@ describe('Processor Lambda', () => {
             years_experience: '10+',
             has_transportation: true,
             availability: 'flexible',
-            trust_signals_completed_at: null,
-            trust_signals: null,
             trust_assessment_profession_key: 'drywall',
             trust_assessment_status: 'scored',
             trust_assessment_answers: [
@@ -1044,8 +1047,6 @@ describe('Processor Lambda', () => {
             years_experience: '10+',
             has_transportation: true,
             availability: 'flexible',
-            trust_signals_completed_at: null,
-            trust_signals: null,
           }],
         })
         .mockResolvedValueOnce({ rowCount: 1, rows: [] }) // INSERT outbox profile
