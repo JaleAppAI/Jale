@@ -5,7 +5,9 @@ describe('cdk context defaults', () => {
   it('requires local CDK commands to select an environment explicitly', () => {
     const cdkJsonPath = path.join(__dirname, '../../cdk.json');
     const cdkJson = JSON.parse(fs.readFileSync(cdkJsonPath, 'utf8'));
-    const appPath = path.join(__dirname, '../../bin/jale-app.ts');
+    // The environment guard lives with the composition (lib/app-composition.ts),
+    // not the bin entrypoint, since the composition moved out of it.
+    const appPath = path.join(__dirname, '../../lib/app-composition.ts');
     const app = fs.readFileSync(appPath, 'utf8');
 
     expect(cdkJson.context.environment).toBeUndefined();

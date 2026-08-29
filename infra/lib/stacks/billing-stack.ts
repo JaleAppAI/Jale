@@ -15,6 +15,7 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { lambdaIntegration } from '../api-integration';
 
 export interface BillingStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -242,7 +243,7 @@ export class BillingStack extends cdk.Stack {
 
     billingResource.addMethod(
       'GET',
-      new apigateway.LambdaIntegration(getBillingLambda.function),
+      lambdaIntegration(getBillingLambda.function),
       {
         authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -251,7 +252,7 @@ export class BillingStack extends cdk.Stack {
 
     billingResource.addResource('checkout').addMethod(
       'POST',
-      new apigateway.LambdaIntegration(checkoutLambda.function),
+      lambdaIntegration(checkoutLambda.function),
       {
         authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -260,7 +261,7 @@ export class BillingStack extends cdk.Stack {
 
     billingResource.addResource('portal').addMethod(
       'POST',
-      new apigateway.LambdaIntegration(portalLambda.function),
+      lambdaIntegration(portalLambda.function),
       {
         authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -271,7 +272,7 @@ export class BillingStack extends cdk.Stack {
     props.api.root
       .addResource('billing')
       .addResource('webhook')
-      .addMethod('POST', new apigateway.LambdaIntegration(webhookVerifierLambda.function));
+      .addMethod('POST', lambdaIntegration(webhookVerifierLambda.function));
 
     // ── Alarm notifications ──
     // billingAlarmTopicArn (if set) imports an existing monitored ops topic and

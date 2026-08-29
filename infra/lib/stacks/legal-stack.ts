@@ -6,6 +6,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { lambdaIntegration } from '../api-integration';
 
 export interface LegalStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -75,7 +76,7 @@ export class LegalStack extends cdk.Stack {
 
     // GET /legal/tos — public, no auth, rate-limited via method throttling
     const tosResource = legalResource.addResource('tos');
-    tosResource.addMethod('GET', new apigateway.LambdaIntegration(getTosFn.function), {
+    tosResource.addMethod('GET', lambdaIntegration(getTosFn.function), {
       methodResponses: [{ statusCode: '200' }],
     });
 
@@ -86,7 +87,7 @@ export class LegalStack extends cdk.Stack {
 
     // POST /legal/accept — protected by dual Cognito authorizer (created in ApiStack)
     const acceptResource = legalResource.addResource('accept');
-    acceptResource.addMethod('POST', new apigateway.LambdaIntegration(acceptTosFn.function), {
+    acceptResource.addMethod('POST', lambdaIntegration(acceptTosFn.function), {
       authorizer: props.dualAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
