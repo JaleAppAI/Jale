@@ -914,6 +914,7 @@
     "extraction_title": "From their answers",
     "extraction_pending": "Reading their answers...",
     "extraction_failed": "We couldn’t summarize these answers — read them below.",
+    "extraction_empty": "Not enough detail in their answers to summarize.",
     "certifications": "Certifications",
     "experience_months": "{months} months",
     "availability": {
