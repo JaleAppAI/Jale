@@ -20,6 +20,7 @@ import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
+import { lambdaIntegration } from '../api-integration';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -1067,7 +1068,7 @@ export class WhatsAppStack extends cdk.Stack {
     const webhookResource = whatsappResource.addResource('webhook');
     webhookResource.addMethod(
       'POST',
-      new apigateway.LambdaIntegration(this.webhookLambda.function),
+      lambdaIntegration(this.webhookLambda.function),
       {
         methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
       },
@@ -1075,7 +1076,7 @@ export class WhatsAppStack extends cdk.Stack {
     const statusCallbackResource = whatsappResource.addResource('status-callback');
     statusCallbackResource.addMethod(
       'POST',
-      new apigateway.LambdaIntegration(statusCallbackLambda.function),
+      lambdaIntegration(statusCallbackLambda.function),
       {
         authorizationType: apigateway.AuthorizationType.NONE,
         methodResponses: [
@@ -1203,7 +1204,7 @@ export class WhatsAppStack extends cdk.Stack {
       'OnboardingBoundStepSelfHealed',
     );
 
-    const webOnboardingIntegration = new apigateway.LambdaIntegration(webOnboardingLambda.function);
+    const webOnboardingIntegration = lambdaIntegration(webOnboardingLambda.function);
     // CORS preflight is inherited from the RestApi's
     // `defaultCorsPreflightOptions` (ApiStack), exactly like every sibling
     // `/worker/*` route — no per-resource CORS here on purpose.
@@ -1215,21 +1216,28 @@ export class WhatsAppStack extends cdk.Stack {
     onboardingResource.addMethod('GET', webOnboardingIntegration, workerAuth);
     // ONE `{action}` resource, not three siblings (`answers`, `back`,
     // `language`). The URLs the browser calls are unchanged; the CloudFormation
-    // footprint is not. ApiStack stands at 489 resources against CloudFormation's
-    // hard maximum of 500, and every REST resource costs more than itself: a
-    // Resource, its method, the OPTIONS preflight `defaultCorsPreflightOptions`
-    // adds, and two Lambda::Permissions per Lambda-backed method. Four sibling
-    // resources come to 20 and synthesis fails outright with
-    // TooManyResourcesInStack; this shape costs 10.
+    // footprint is not. Every REST resource costs more than itself: a Resource,
+    // its method, the OPTIONS preflight `defaultCorsPreflightOptions` adds, and
+    // a Lambda::Permission per Lambda-backed method. Four sibling resources
+    // come to 16; this shape costs 8.
     //
     // ANY, because one resource has to carry POST (answers, back) and PATCH
     // (language). It is not a widening: the Cognito worker authorizer is
     // attached to the method exactly as it is to the GET, and the handler
     // answers any method/action pair it does not route with 404 `not_found`.
     //
-    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: this leaves ApiStack at 499/500.
-    // The stack needs splitting (a nested stack, or a second RestApi for
-    // `/worker/*`) before anything else can be hung off it.
+    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-08-29 with the CI
+    // production context, JaleApiStack synthesizes to 431 resources against
+    // CloudFormation's hard maximum of 500 — 423 without this door. It was
+    // 501 (synth failed with TooManyResourcesInStack) until every method on
+    // the shared RestApi moved to `lambdaIntegration()` from
+    // `lib/api-integration.ts`, which drops the console-only
+    // `test-invoke-stage` Lambda::Permission and freed 70 resources. Use that
+    // helper — never `new apigateway.LambdaIntegration(...)` — for any method
+    // on this API. `test/unit/stacks/api-stack-resource-ceiling.test.ts`
+    // synthesizes the real composition and fails the build above 470, which
+    // is where splitting ApiStack (a nested stack, or a second RestApi for
+    // `/worker/*`) becomes the answer.
     onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
   }
 }

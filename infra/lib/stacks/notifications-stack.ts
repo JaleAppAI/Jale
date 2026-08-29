@@ -12,6 +12,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { lambdaIntegration } from '../api-integration';
 
 export interface NotificationsStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -316,6 +317,6 @@ export class NotificationsStack extends cdk.Stack {
     props.publicResource
       .addResource('employer-digest')
       .addResource('unsubscribe')
-      .addMethod('POST', new apigateway.LambdaIntegration(unsubscribeLambda.function));
+      .addMethod('POST', lambdaIntegration(unsubscribeLambda.function));
   }
 }
