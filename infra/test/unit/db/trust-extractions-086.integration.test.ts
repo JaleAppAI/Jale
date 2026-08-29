@@ -16,7 +16,7 @@
  *           purge of the AI-generated (is_seeded = false) cache rows.
  *
  * Roles are assumed with SET LOCAL ROLE from one superuser connection, the
- * same approach as whatsapp-onboarding-053.integration.test.ts: a superuser
+ * same approach as web-worker-whatsapp-crossover.integration.test.ts: a superuser
  * that has SET ROLE'd to a non-superuser role is subject to RLS, so this
  * exercises the policies exactly as the Lambdas hit them, with no role
  * passwords involved.
