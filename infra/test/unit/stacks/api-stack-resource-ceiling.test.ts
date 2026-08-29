@@ -116,7 +116,7 @@ const CEILING = 470;
 describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () => {
   let apiTemplate: Template;
   let stackIds: string[];
-  let savedEnv: { account?: string; region?: string };
+  let savedEnv: { account?: string; region?: string; renamePhase1?: string };
 
   beforeAll(() => {
     // Pinned, not inherited: a developer with a different account/region
@@ -124,9 +124,13 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     savedEnv = {
       account: process.env.CDK_DEFAULT_ACCOUNT,
       region: process.env.CDK_DEFAULT_REGION,
+      renamePhase1: process.env.JALE_WORKER_JOBS_RENAME_PHASE1,
     };
     process.env.CDK_DEFAULT_ACCOUNT = PLACEHOLDER_ACCOUNT;
     process.env.CDK_DEFAULT_REGION = PLACEHOLDER_REGION;
+    // api-stack.ts gates the legacy `/worker/jobs/{jobId}` routes on this flag;
+    // a developer with it exported would measure 12 resources fewer.
+    delete process.env.JALE_WORKER_JOBS_RENAME_PHASE1;
 
     const app = new cdk.App({
       context: cliContext(),
@@ -150,6 +154,8 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     else process.env.CDK_DEFAULT_ACCOUNT = savedEnv.account;
     if (savedEnv.region === undefined) delete process.env.CDK_DEFAULT_REGION;
     else process.env.CDK_DEFAULT_REGION = savedEnv.region;
+    if (savedEnv.renamePhase1 === undefined) delete process.env.JALE_WORKER_JOBS_RENAME_PHASE1;
+    else process.env.JALE_WORKER_JOBS_RENAME_PHASE1 = savedEnv.renamePhase1;
   });
 
   it('composes the full app, not a subset', () => {

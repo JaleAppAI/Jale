@@ -34,7 +34,7 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
  */
 export function lambdaIntegration(
   handler: lambda.IFunction,
-  options?: apigateway.LambdaIntegrationOptions,
+  options?: Omit<apigateway.LambdaIntegrationOptions, 'allowTestInvoke'>,
 ): apigateway.LambdaIntegration {
   return new apigateway.LambdaIntegration(handler, {
     ...options,
