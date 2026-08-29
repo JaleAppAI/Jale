@@ -1755,8 +1755,11 @@
       "mic_label": "Record a voice note",
       "voice_note": "From your voice note — edit if anything is wrong.",
       "cta": "Next",
-      "last_cta": "Finish",
       "too_long": "That's too long — keep it under {count} characters."
+    },
+    "trust": {
+      "complete_cta": "Complete your questions",
+      "complete_note": "You won't be able to change your answers after this."
     },
     "photo": {
       "title": "Add a photo?",

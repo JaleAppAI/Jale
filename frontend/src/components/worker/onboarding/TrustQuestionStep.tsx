@@ -27,6 +27,12 @@ import { StepBody, StepFooter, StepHeader, StepLayout, useRejectionMessage, type
  * floor is `MIN_ANSWER_CHARS` of real text, with the shortfall spelled out
  * rather than left as a mysteriously dead button.
  *
+ * ANSWERS STAY EDITABLE UNTIL THE THIRD IS SENT. Back walks the engine
+ * (Q3 -> Q2 -> Q1), and the response to each `back` carries the answers
+ * already stored, so `draftFromState` puts the earlier text straight back in
+ * this box. Re-answering Q1 then advances forward through Q2 and Q3 with what
+ * was written there still in place -- nothing is retyped to get past it.
+ *
  * The mic is rendered DISABLED rather than hidden: voice answers ship in a
  * later release, and a worker who used them on WhatsApp should see that the
  * affordance exists here and is coming, not wonder whether the web lost it.
@@ -60,6 +66,7 @@ export function TrustQuestionStep({
 }) {
     const t = useTranslations('worker_onboarding.question');
     const tShared = useTranslations('worker_onboarding.common');
+    const tTrust = useTranslations('worker_onboarding.trust');
     const tCommon = useTranslations('common');
     const rejectionMessage = useRejectionMessage();
     const fieldId = useId();
@@ -156,8 +163,15 @@ export function TrustQuestionStep({
                     disabled={!ready}
                     onClick={() => onSubmit([{ stepKey, value: { text: trimmed } }])}
                 >
-                    {index === 3 ? t('last_cta') : t('cta')}
+                    {index === 3 ? tTrust('complete_cta') : t('cta')}
                 </Button>
+                {/* The last question is the point of no return: it completes
+                    the run, and the engine's `back` only walks an ACTIVE one.
+                    Say so under the button rather than after it, while the
+                    worker can still walk back and change an answer. */}
+                {index === 3 ? (
+                    <p className="text-center text-[13px] text-[var(--jale-ink-2)]">{tTrust('complete_note')}</p>
+                ) : null}
                 {exitLink}
             </StepFooter>
         </StepLayout>

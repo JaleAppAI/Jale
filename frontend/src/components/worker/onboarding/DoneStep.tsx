@@ -28,12 +28,9 @@ import {
  * forever: their answers still reach employers verbatim, which is the part
  * that matters, and the extractor re-runs server-side.
  *
- * There is no "improve my answers" here. The run is COMPLETE by the time this
- * screen exists (the third answer's own response says `lifecycle: 'ready'`),
- * and the engine's `back` endpoint only walks an ACTIVE run — so the button
- * would have had nothing to call. Editing an answer is the Back control on the
- * question screens, before the third one is submitted; after that, the profile
- * editor owns it.
+ * There is no "improve my answers" here — Luis, 2026-08-29. Editing an answer
+ * is the Back control on the question screens, up until the third one is sent;
+ * after that the run is complete and the profile editor owns it.
  */
 export function DoneStep({
     state,

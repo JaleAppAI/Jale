@@ -139,7 +139,7 @@ describe('OnboardingFlow — a fresh worker walks the whole flow', () => {
             await screen.findByRole('heading', { name: THREE_QUESTIONS[index - 1].q_en });
             await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
             const label = index === 3
-                ? message('worker_onboarding.question.last_cta')
+                ? message('worker_onboarding.trust.complete_cta')
                 : message('worker_onboarding.question.cta');
             await user.click(screen.getByRole('button', { name: label }));
             expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
@@ -599,5 +599,145 @@ describe('OnboardingFlow — a run in the middle of WhatsApp voice intake', () =
         renderIntl(<OnboardingFlow token={TOKEN} initialState={at('profile.voice_choice')} />);
         expect(screen.getByRole('alert')).toHaveTextContent(message('worker_onboarding.stuck'));
         expect(screen.queryByRole('button', { name: message('worker_onboarding.terms.cta') })).not.toBeInTheDocument();
+    });
+});
+
+describe('OnboardingFlow — changing an earlier answer before the last one is sent', () => {
+    const A1 = 'I frame houses and set trusses.';
+    const A1_EDITED = 'I frame houses, set trusses and hang doors.';
+    const A2 = 'I read plans and set my own lines.';
+    const A3 = 'I want steady work close to home.';
+
+    /** A run at `stepKey` holding exactly these answers. */
+    function withAnswers(stepKey: string, indexes: number[], lockVersion: number) {
+        const texts: Record<number, string> = { 1: A1, 2: A2, 3: A3 };
+        return at(stepKey, {
+            trust: {
+                questions: THREE_QUESTIONS,
+                answers: indexes.map((index) => ({ index, text: texts[index], source: 'text' as const })),
+            },
+        }, lockVersion);
+    }
+
+    it('walks back to question 1 and forward again with every stored answer still there', async () => {
+        const user = userEvent.setup();
+        const answer = () => screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'));
+        const next = () => screen.getByRole('button', { name: message('worker_onboarding.question.cta') });
+        const back = () => screen.getByRole('button', { name: message('worker_onboarding.common.back') });
+
+        api.postOnboardingAnswers
+            .mockResolvedValueOnce({ kind: 'saved', state: withAnswers('trust.question.2', [1], 2) })
+            .mockResolvedValueOnce({ kind: 'saved', state: withAnswers('trust.question.3', [1, 2], 3) })
+            // Forward again after the edit.
+            .mockResolvedValueOnce({ kind: 'saved', state: withAnswers('trust.question.2', [1, 2], 6) })
+            .mockResolvedValueOnce({ kind: 'saved', state: withAnswers('trust.question.3', [1, 2, 3], 7) });
+        api.postOnboardingBack
+            .mockResolvedValueOnce(withAnswers('trust.question.2', [1, 2], 4))
+            .mockResolvedValueOnce(withAnswers('trust.question.1', [1, 2], 5));
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.1')} />);
+
+        // Forward through the first two.
+        await user.type(answer(), A1);
+        await user.click(next());
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[1].q_en });
+        await user.type(answer(), A2);
+        await user.click(next());
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[2].q_en });
+
+        // Back twice, to the first question. Each `back` is a write, so each
+        // one hands back a new lock.
+        await user.click(back());
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[1].q_en });
+        expect(api.postOnboardingBack).toHaveBeenLastCalledWith(TOKEN, { lockVersion: 3 });
+        // The answer already given is in the box, not lost behind them.
+        expect(answer()).toHaveValue(A2);
+
+        await user.click(back());
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[0].q_en });
+        expect(api.postOnboardingBack).toHaveBeenLastCalledWith(TOKEN, { lockVersion: 4 });
+        expect(answer()).toHaveValue(A1);
+
+        // Change it and come forward again.
+        await user.clear(answer());
+        await user.type(answer(), A1_EDITED);
+        await user.click(next());
+        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
+            lockVersion: 5,
+            answers: [{ stepKey: 'trust.question.1', value: { text: A1_EDITED } }],
+        });
+
+        // Question 2 is not retyped to get past it.
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[1].q_en });
+        expect(answer()).toHaveValue(A2);
+        await user.click(next());
+        expect(api.postOnboardingAnswers).toHaveBeenLastCalledWith(TOKEN, {
+            lockVersion: 6,
+            answers: [{ stepKey: 'trust.question.2', value: { text: A2 } }],
+        });
+
+        // And question 3 shows whatever the server holds for it — this run has
+        // an answer stored there (the other door can have written one), and it
+        // is prefilled rather than asked again.
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[2].q_en });
+        expect(answer()).toHaveValue(A3);
+        expect(screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta') })).toBeEnabled();
+    });
+
+    it('does not carry an UNSENT answer back and forward — only what the server has', async () => {
+        const user = userEvent.setup();
+        const answer = () => screen.getByPlaceholderText(message('worker_onboarding.question.placeholder'));
+
+        // Typed on question 3 and never sent, so no door has it. Back lands on
+        // question 2 and the run's own state is what fills the box.
+        api.postOnboardingBack.mockResolvedValue(withAnswers('trust.question.2', [1, 2], 4));
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={withAnswers('trust.question.3', [1, 2], 3)} />);
+
+        await user.type(answer(), 'Something I typed but never sent at all.');
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.common.back') }));
+
+        await screen.findByRole('heading', { name: THREE_QUESTIONS[1].q_en });
+        expect(answer()).toHaveValue(A2);
+    });
+});
+
+describe('OnboardingFlow — after the last answer there is no way back', () => {
+    it('offers no Back on the photo prompt or the summary, and calls /back from neither', async () => {
+        const user = userEvent.setup();
+        const backLabel = message('worker_onboarding.common.back');
+        api.postOnboardingAnswers.mockResolvedValue({
+            kind: 'saved',
+            state: at('trust.question.3', { lifecycle: 'ready' }, 4),
+        });
+
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.3')} />);
+        // The question itself still has one, right up to the last press.
+        expect(screen.getByRole('button', { name: backLabel })).toBeInTheDocument();
+
+        await user.type(screen.getByPlaceholderText(message('worker_onboarding.question.placeholder')), LONG_ANSWER);
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta') }));
+
+        // Photo: the run is complete, and `back` only walks an active run.
+        await screen.findByRole('heading', { name: message('worker_onboarding.photo.title') });
+        expect(screen.queryByRole('button', { name: backLabel })).not.toBeInTheDocument();
+
+        await user.click(screen.getByRole('button', { name: message('worker_onboarding.photo.finish') }));
+
+        // Summary: same.
+        expect(await screen.findByText(message('worker_onboarding.done.title'))).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: backLabel })).not.toBeInTheDocument();
+        expect(api.postOnboardingBack).not.toHaveBeenCalled();
+    });
+
+    it('has no "improve my answers" control on the summary — Luis, 2026-08-29', () => {
+        renderIntl(<OnboardingFlow token={TOKEN} initialState={at('trust.question.3', { lifecycle: 'ready' })} />);
+        // `includes`, not equality: the Button paints a hidden copy of its
+        // label to hold its width while loading, so the text node repeats.
+        const buttons = screen.getAllByRole('button').map((b) => b.textContent ?? '');
+        // The language toggle pair aside, the summary offers exactly one way
+        // on, and nothing here reopens the questions.
+        expect(buttons.some((label) => label.includes(message('worker_onboarding.done.cta')))).toBe(true);
+        expect(buttons.some((label) => /improve|mejorar/i.test(label))).toBe(false);
+        expect(buttons).toHaveLength(3);
     });
 });
