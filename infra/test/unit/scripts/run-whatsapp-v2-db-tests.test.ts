@@ -43,6 +43,16 @@ const SUITE_WEB_DOOR = 'test/unit/db/web-onboarding-door.integration.test.ts';
 // then messages WhatsApp for the first time, through the real pre-auth ->
 // OTP -> bind_verified_identity_and_start_workflow path.
 const SUITE_CROSSOVER = 'test/unit/db/web-worker-whatsapp-crossover.integration.test.ts';
+// Sprint 22 R2-POLISH: the 086 EMPLOYER side, which had no fail-closed home
+// until now. The extraction suite covers worker_trust_extractions' FORCE RLS
+// and its four read lanes plus the two SECURITY DEFINER entry points; the
+// reads suite executes the two employer applicant queries as their EXPORTED
+// query text (not a copy) against the real policies. Both are here for the
+// reason the whole list exists: a mocked pool has no planner and no policies,
+// so the ambiguous `id` that 500'd every employer documents request -- and any
+// 42501 on a column these roles are not granted -- is invisible without one.
+const SUITE_EXTRACTIONS_086 = 'test/unit/db/trust-extractions-086.integration.test.ts';
+const SUITE_EMPLOYER_READS = 'test/unit/db/employer-worker-reads.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -57,12 +67,16 @@ function runGuard(overrides: NodeJS.ProcessEnv): ReturnType<typeof spawnSync> {
 }
 
 describe('test:whatsapp-v2-db fail-closed URL guard', () => {
-  it('invokes exactly the migration-042, concurrency, migration-049, profile-constraint, web-door and crossover suites in-band', () => {
+  it('invokes exactly the migration-042, concurrency, migration-049, profile-constraint, web-door, crossover and 086 employer-read suites in-band', () => {
     const script = fs.readFileSync(scriptPath, 'utf8');
     const suites = script.match(/test\/unit\/db\/[a-zA-Z0-9_.-]+\.integration\.test\.ts/g) ?? [];
+    // Order is load-bearing only as a convention: the list reads
+    // chronologically by migration/feature, so a new suite is APPENDED rather
+    // than slotted alphabetically.
     expect(suites).toEqual([
       SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052,
       SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR, SUITE_CROSSOVER,
+      SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS,
     ]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.

@@ -914,6 +914,7 @@
     "extraction_title": "De sus respuestas",
     "extraction_pending": "Leyendo sus respuestas...",
     "extraction_failed": "No pudimos resumir estas respuestas — léalas abajo.",
+    "extraction_empty": "Sus respuestas no tienen suficiente detalle para resumir.",
     "certifications": "Certificaciones",
     "experience_months": "{months} meses",
     "availability": {

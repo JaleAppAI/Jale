@@ -118,15 +118,45 @@ describe('AnswerHighlights', () => {
     expect(container.textContent).not.toContain('trust-extractor-1');
   });
 
-  it('renders nothing when a completed extraction has neither chips nor a summary', () => {
-    const { container } = render(
+  it('says so under the eyebrow when a completed extraction has neither chips nor a summary', () => {
+    // Completed-and-bare is a terminal state, not a missing one: an employer
+    // who saw chips on the previous applicant must not read this applicant's
+    // absent section as a panel that failed to load. Silence here is the only
+    // reading that is genuinely ambiguous, so the line is the empty state.
+    render(
       wrap(
         <AnswerHighlights
           extraction={{ ...completed, extracted: {}, summary_en: null, summary_es: null }}
         />,
       ),
     );
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByText(en.employer_worker_profile.extraction_title)).toBeInTheDocument();
+    expect(screen.getByText(en.employer_worker_profile.extraction_empty)).toBeInTheDocument();
+    // Still nothing borrowed from the populated fixture, and still no
+    // pending/failed line: this row is neither in flight nor broken.
+    expect(screen.queryByText('Conduit bending')).not.toBeInTheDocument();
+    expect(screen.queryByText(completed.summary_en!)).not.toBeInTheDocument();
+    expect(screen.queryByText(en.employer_worker_profile.extraction_pending)).not.toBeInTheDocument();
+    expect(screen.queryByText(en.employer_worker_profile.extraction_failed)).not.toBeInTheDocument();
+  });
+
+  it('gives the empty state a Spanish line too, and still claims nothing', () => {
+    const { container } = render(
+      wrap(
+        <AnswerHighlights
+          extraction={{
+            ...completed,
+            extracted: { skills: [], tools: [], experience_signals: [], safety: [], notable: [] },
+            summary_en: '   ',
+            summary_es: '   ',
+          }}
+        />,
+        'es',
+      ),
+    );
+    // A whitespace-only summary is as empty as a null one.
+    expect(screen.getByText(es.employer_worker_profile.extraction_empty)).toBeInTheDocument();
+    expect(container.textContent?.toLowerCase()).not.toContain('verificad');
   });
 
   it('shows one chip for a label the extractor placed in two categories', () => {

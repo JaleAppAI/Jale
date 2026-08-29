@@ -1139,6 +1139,10 @@ export class WhatsAppStack extends cdk.Stack {
         // post-commit is what keeps scoring and skill extraction from waiting
         // for the cron — exactly what the processor does.
         DOMAIN_OUTBOX_WAKE_QUEUE_URL: domainOutboxWakeQueue.queueUrl,
+        // TOS_URL / PRIVACY_URL are INTENTIONALLY absent: the web copy owns
+        // the Terms and Privacy links, so the engine's legal prompt text (the
+        // only thing those two feed) is never shown by this door, and the
+        // handler's hardcoded jaleapp.ai/legal defaults stand.
       },
     });
     whatsappDbSecret.grantRead(webOnboardingLambda.function);

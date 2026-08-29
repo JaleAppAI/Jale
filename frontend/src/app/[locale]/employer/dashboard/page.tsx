@@ -169,12 +169,17 @@ export default function EmployerDashboardPage() {
             // keeps a billing outage off the board, and `withDeadline` keeps a
             // SLOW one off it too -- without the deadline the jobs commit waits
             // out apiFetch's 15s budget for signage it can render without.
-            // (`listJobTemplates` takes no signal; that is a lib limitation.)
+            //
+            // All three take the page's `signal`, so an abandoned load (an
+            // unmount, or a retry that supersedes this one) cancels the
+            // REQUESTS rather than merely discarding their answers. The
+            // deadline still matters: it bounds a slow response, where the
+            // signal bounds an abandoned page.
             const [jobList, freshBilling, freshTemplateCount] = await Promise.all([
                 getJobs(token, signal),
                 withDeadline(getBilling(token, signal).catch(() => null), BEST_EFFORT_DEADLINE_MS),
                 withDeadline(
-                    listJobTemplates(token).then((list) => list.length).catch(() => null),
+                    listJobTemplates(token, signal).then((list) => list.length).catch(() => null),
                     BEST_EFFORT_DEADLINE_MS,
                 ),
             ]);

@@ -8,6 +8,14 @@
 # start_web_onboarding_workflow driven end-to-end as jale_whatsapp), the
 # R2-C23 web-door HTTP suite, and the R2-C6 web->WhatsApp crossover suite.
 #
+# The last two entries close the 086 EMPLOYER side of the same migration: the
+# worker_trust_extractions policies and the two SECURITY DEFINER entry points,
+# and then the two employer applicant reads executed as their exported query
+# text against the real policies. They are here rather than in a mocked suite
+# for the reason the rest of this list exists -- a mocked pool has no planner
+# and no policies, so a column this role cannot select is a 42501 (or a 42702)
+# that only a real database ever raises.
+#
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
 # disposable local Postgres 16 database with migrations 001 THROUGH 087
 # applied, and the connecting role must be a SUPERUSER. The suites are not
@@ -81,4 +89,6 @@ exec npx jest --runInBand \
   test/unit/db/whatsapp-application-fill-080.integration.test.ts \
   test/unit/db/web-onboarding-door-spike.integration.test.ts \
   test/unit/db/web-onboarding-door.integration.test.ts \
-  test/unit/db/web-worker-whatsapp-crossover.integration.test.ts
+  test/unit/db/web-worker-whatsapp-crossover.integration.test.ts \
+  test/unit/db/trust-extractions-086.integration.test.ts \
+  test/unit/db/employer-worker-reads.integration.test.ts

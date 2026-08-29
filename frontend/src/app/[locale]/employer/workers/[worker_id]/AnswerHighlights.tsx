@@ -34,9 +34,9 @@ export function AnswerHighlights({ extraction }: { extraction: TrustExtraction |
   const t = useTranslations('employer_worker_profile');
   const locale = useLocale();
 
-  // No assessment, or none extracted yet: the panel below still shows the
-  // score and the answers, and an empty eyebrow over nothing would read as a
-  // section that failed to load.
+  // The ONLY case that renders nothing: there is no extraction row at all, so
+  // there is no claim to make about it either way. Every state a row CAN be in
+  // -- in flight, failed, completed-and-bare -- gets its own line below.
   if (!extraction) return null;
 
   const eyebrow = (
@@ -82,8 +82,22 @@ export function AnswerHighlights({ extraction }: { extraction: TrustExtraction |
   const summary = (locale === 'es' ? extraction.summary_es : extraction.summary_en)?.trim() || null;
 
   // A completed row with nothing in it is possible (a worker who answered in
-  // three words). Better to say nothing than to head an empty box.
-  if (labels.length === 0 && !summary) return null;
+  // three words). It gets a line rather than silence: the panel below still
+  // shows the score, and an employer who saw chips on the last applicant would
+  // otherwise read this one's missing section as a page that failed to load.
+  //
+  // The sentence is about the ANSWERS, not the worker and not our pipeline --
+  // "not enough detail to summarize" is the whole of what a completed-but-bare
+  // extraction tells us, and the raw questions and answers sit directly below
+  // for an employer who wants to judge that for themselves.
+  if (labels.length === 0 && !summary) {
+    return (
+      <div className="mt-4">
+        {eyebrow}
+        <p className="mt-1 text-sm text-[var(--jale-ink-2)]">{t('extraction_empty')}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-4">
