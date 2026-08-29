@@ -14,6 +14,7 @@ import {
   appendSendTimestamp,
 } from '../../lib/onboarding-language';
 import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session, RouteResult } from '../types';
+import { claimPendingReferral } from '../../lib/referral-claims';
 import { sendPreAuthPrompt, sendPreAuthText, sendStepPrompt, readHistory } from '../delivery';
 
 export async function handleOtpStep(
@@ -102,6 +103,37 @@ export async function handleOtpStep(
     // processor's normal post-onboarding path rather than swallowing it.
     if (gate.lifecycle === 'ready' && gate.status === 'completed' && gate.runId) {
       session.language = gate.preferredLanguage;
+      // A referral code in this worker's FIRST WhatsApp message was parked by
+      // `handleStartStep` under this same `phoneHash` — literally the same
+      // string: `routeOnboardingV2` computes it once
+      // (`hashNormalizedPhone(msg.from)`) and hands it to both steps, so the
+      // park key and this claim key cannot drift.
+      //
+      // Normally the claim happens at ONBOARDING COMPLETION
+      // (`steps/trust.ts` -> `completeOnboarding`). This worker already
+      // completed, on the web, so that moment is behind them and will never
+      // come again on WhatsApp: without this the parked claim sits unclaimed
+      // forever and the referrer is never credited. These are exactly the
+      // people a referral link sends to the website in the first place.
+      //
+      // SAVEPOINT-isolated for the same reason the start-step hook is: this
+      // runs inside the processor's open transaction, and an unguarded
+      // failure here would abort the whole turn and cost the worker their
+      // welcome message over a referral bookkeeping error. Static metric
+      // only — never the token, the number, or the hash.
+      try {
+        await client.query('SAVEPOINT referral_ready_bind');
+        await claimPendingReferral(client, phoneHash, gate.userId, now);
+        await client.query('RELEASE SAVEPOINT referral_ready_bind');
+      } catch {
+        try {
+          await client.query('ROLLBACK TO SAVEPOINT referral_ready_bind');
+        } catch {
+          // The transaction is already unusable; the caller's retry/DLQ
+          // handling takes over as it would for any other failed statement.
+        }
+        console.error(JSON.stringify({ metric: 'ReferralReadyBindClaimFailed' }));
+      }
       console.log(JSON.stringify({
         metric: 'OnboardingOtpBoundReadyWorker',
         runId: gate.runId,

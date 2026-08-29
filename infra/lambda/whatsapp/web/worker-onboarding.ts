@@ -62,8 +62,22 @@ function fail(statusCode: number, error: string, extra: Record<string, unknown> 
   return json(statusCode, { error, ...extra });
 }
 
+/**
+ * 16 KB. The largest legitimate request is a 6-item batch whose three trust
+ * answers are 2000 characters each — comfortably under 8 KB — so this is not
+ * a limit any worker can reach by typing. It is here because `JSON.parse` on
+ * a multi-megabyte body is pure attacker-controlled CPU and heap on a VPC
+ * Lambda, and the check has to be a BYTE length taken before the parse — a
+ * character count would be computed by parsing. Rejecting here (before
+ * `getDbPool()`) also keeps such a request off the connection pool entirely.
+ * API Gateway's own 10 MB payload cap is three orders of magnitude too high
+ * to serve as this guard.
+ */
+const MAX_BODY_BYTES = 16 * 1024;
+
 function parseBody(event: APIGatewayProxyEvent): Record<string, unknown> | null {
   if (!event.body) return {};
+  if (Buffer.byteLength(event.body, 'utf8') > MAX_BODY_BYTES) return null;
   try {
     const parsed = JSON.parse(event.body);
     return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -295,6 +309,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // unanswerable through this door and must be repaired, not rendered.
     // Runs as the first mutation of every request, including the GET, so the
     // browser never sees the broken cursor at all.
+    //
+    // DELIBERATELY BEFORE THE lockVersion CHECK BELOW. The repair goes through
+    // `advanceWorkflow`, which bumps `lock_version`, so a POST that arrives
+    // holding the pre-heal version now 409s. That is the correct outcome and
+    // it is self-correcting: the 409 body carries the HEALED state, the
+    // browser re-renders on `legal.review` and retries once. Checking the lock
+    // first would instead answer from a cursor no screen can post against.
     gate = await healPreAuthStep(client, deps, { workerId, gate });
 
     let result: APIGatewayProxyResult | null = null;

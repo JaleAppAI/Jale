@@ -1146,6 +1146,59 @@ export class WhatsAppStack extends cdk.Stack {
     props.aliasGeneratorFn.grantInvoke(webOnboardingLambda.function);
     domainOutboxWakeQueue.grantSendMessages(webOnboardingLambda.function);
 
+    // ── Web-door observability ───────────────────────────────────────
+    //
+    // Idiom B (a single quoted term), the same one every sibling filter in
+    // this stack uses and the one `metric-filter-patterns.test.ts` resolves
+    // back to the emitting entry file. Each term below is logged by
+    // `lambda/whatsapp/web/worker-onboarding.ts` or by a module it imports
+    // (`web/onboarding-driver.ts`), which is what that audit checks.
+    const webOnboardingMetric = (id: string, term: string, metricName: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: webOnboardingLambda.logGroup,
+        filterPattern: logs.FilterPattern.literal(`"${term}"`),
+        metricNamespace: 'Jale/WhatsApp',
+        metricName,
+        metricValue: '1',
+      });
+
+    // The generator was unreachable and the worker is being asked three
+    // GENERIC questions instead of their trade's. Invisible in the flow and
+    // only surfacing weeks later as un-scorable assessments, so it alarms on
+    // the first occurrence rather than on a rate.
+    const webFallbackQuestionsMetric = webOnboardingMetric(
+      'WebOnboardingFallbackQuestionsMetric',
+      'WebOnboardingFallbackQuestionsSeeded',
+      'WebOnboardingFallbackQuestions',
+    );
+    alarm(
+      'WebOnboardingFallbackQuestionsAlarm',
+      'WhatsAppWebOnboardingFallbackQuestions',
+      webFallbackQuestionsMetric.metric({ statistic: 'Sum', period: cdk.Duration.minutes(5) }),
+    ).addAlarmAction(alarmAction);
+
+    // Any 500 out of the door: a worker who cannot finish onboarding at all.
+    const webRequestFailedMetric = webOnboardingMetric(
+      'WebOnboardingRequestFailedMetric',
+      'WebOnboardingRequestFailed',
+      'WebOnboardingRequestFailures',
+    );
+    alarm(
+      'WebOnboardingRequestFailedAlarm',
+      'WhatsAppWebOnboardingRequestFailures',
+      webRequestFailedMetric.metric({ statistic: 'Sum', period: cdk.Duration.minutes(5) }),
+    ).addAlarmAction(alarmAction);
+
+    // METRIC ONLY, no alarm. A bound run parked on a pre-auth step is
+    // repaired in place and the worker never notices, so paging on it would
+    // be noise — but it can only come from operator tooling or a legacy row,
+    // so a non-zero count is worth being able to graph and go looking for.
+    webOnboardingMetric(
+      'WebOnboardingPreAuthSelfHealMetric',
+      'OnboardingBoundStepSelfHealed',
+      'OnboardingBoundStepSelfHealed',
+    );
+
     const webOnboardingIntegration = new apigateway.LambdaIntegration(webOnboardingLambda.function);
     // CORS preflight is inherited from the RestApi's
     // `defaultCorsPreflightOptions` (ApiStack), exactly like every sibling

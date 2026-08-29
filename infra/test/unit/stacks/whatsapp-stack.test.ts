@@ -1300,15 +1300,23 @@ describe('event-driven outbox wake queues', () => {
       expect(children.map((c: any) => c.Properties.PathPart)).toEqual(['{action}']);
     });
 
-    test('the door costs ApiStack 10 resources, and the stack has 11 to spare', () => {
-      // A regression guard on the thing that actually broke: this stack is
-      // one feature away from CloudFormation's hard maximum. If this fails
-      // because the count grew, the fix is to SPLIT ApiStack, not to raise
-      // the number.
+    test('the door costs ApiStack exactly 10 resources', () => {
+      // A regression guard on the thing that actually broke: four named
+      // sibling resources cost 20 (Resource + Method + the OPTIONS preflight
+      // `defaultCorsPreflightOptions` adds + two Lambda::Permissions per
+      // Lambda-backed method) and pushed the full app past
+      // CloudFormation's 500-resource maximum. One `{action}` resource costs
+      // 10. If this number grows, the fix is to SPLIT ApiStack.
+      //
+      // Only the door's OWN cost is asserted here: this file's app wires a
+      // SUBSET of the stacks (no DocumentsStack, no MediaBoardStack), so its
+      // ApiStack total is not the deployed one and a ceiling assertion
+      // against it would pass no matter how full the real stack got. The
+      // ceiling is asserted in `metric-filter-patterns.test.ts`, whose app is
+      // the full `bin/jale-app.ts` composition.
       const all = apiTemplate.toJSON().Resources as Record<string, { Type: string }>;
       const mine = Object.keys(all).filter((id) => /Onboarding/i.test(id));
       expect(mine.length).toBe(10);
-      expect(Object.keys(all).length).toBeLessThanOrEqual(500);
     });
   });
 });

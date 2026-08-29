@@ -84,6 +84,22 @@ export const MAX_ANSWERS_PER_BATCH = 6;
  * `worker_trust_assessments.answers` is unbounded JSONB and the extractor
  * prompt is not.
  */
+/**
+ * `profile.custom_trade` is free text that becomes `users.main_trade_other`
+ * and the `profession_key` the question generator and trade-alias lanes are
+ * prompted with. The column has no length CHECK (004:58 is a bare TEXT), so
+ * the cap has to live here: without one a paste of a whole CV becomes a
+ * profession, is sent to the generator as a prompt, and is stored as the
+ * label an employer sees. 60 characters is longer than every seeded trade
+ * name and short enough to stay a NAME.
+ */
+export const CUSTOM_TRADE_MIN_CHARS = 2;
+export const CUSTOM_TRADE_MAX_CHARS = 60;
+/** C0 + DEL + C1. A trade name is one line of text; newlines and control
+ *  bytes in it are either a paste accident or an injection attempt at the
+ *  generator prompt. */
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
+
 export const TRUST_ANSWER_MIN_CHARS = 15;
 export const TRUST_ANSWER_MAX_CHARS = 2000;
 
@@ -357,7 +373,14 @@ export function mapAnswerToEngineMessage(
     case 'profile.custom_trade': {
       const text = asString(value);
       if (text === null) return { ok: false, reason: 'invalid_value' };
-      return { ok: true, fields: { body: text } };
+      const trimmed = text.trim();
+      if (CONTROL_CHARS.test(trimmed)) return { ok: false, reason: 'invalid' };
+      if (trimmed.length < CUSTOM_TRADE_MIN_CHARS) return { ok: false, reason: 'too_short' };
+      if (trimmed.length > CUSTOM_TRADE_MAX_CHARS) return { ok: false, reason: 'too_long' };
+      // The TRIMMED text, not the raw: `normalizeTrade` lowercases and slugs
+      // it into `profession_key`, and a trailing space there would mint a
+      // second cache row for the same trade.
+      return { ok: true, fields: { body: trimmed } };
     }
 
     case 'profile.experience': {

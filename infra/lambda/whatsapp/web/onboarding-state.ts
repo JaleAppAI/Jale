@@ -157,17 +157,25 @@ export async function buildOnboardingState(
   // already holds the NORMALIZED key — `profile.ts` writes
   // `v2ProfileTrade = normalizeTrade(professionRaw)`, the same value
   // `trust.ts` inserts — so this is an equality match, not a re-derivation.
-  const professionKey = typeof runContext.v2ProfileTrade === 'string'
+  //
+  // A run with NO trade in the bag has no trust answers to render, so the
+  // query is skipped rather than run unscoped. Dropping the scope would be
+  // the exact bug this filter exists to prevent: before `profile.trade` the
+  // run has no profession, and the newest row for this user then belongs to
+  // some OTHER profession — a previous run's, or a RESTART's abandoned one —
+  // and would be rendered under the new trade's questions.
+  const professionKey = typeof runContext.v2ProfileTrade === 'string' && runContext.v2ProfileTrade
     ? runContext.v2ProfileTrade
     : null;
-  const assessment = await client.query<{ id: string; answers: unknown }>(
-    `SELECT id, answers FROM worker_trust_assessments
-      WHERE user_id = $1
-        AND ($2::text IS NULL OR profession_key = $2::text)
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [workerId, professionKey],
-  );
+  const assessment = professionKey === null
+    ? { rows: [] as Array<{ id: string; answers: unknown }> }
+    : await client.query<{ id: string; answers: unknown }>(
+      `SELECT id, answers FROM worker_trust_assessments
+        WHERE user_id = $1 AND profession_key = $2
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [workerId, professionKey],
+    );
 
   // 086's column-scoped reader grant, under `wte_worker_own_internal`.
   const extraction = await client.query<{

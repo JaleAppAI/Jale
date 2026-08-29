@@ -66,6 +66,32 @@ describe('mapAnswerToEngineMessage', () => {
       .toEqual({ ok: false, reason: 'no_pending_confirm' });
   });
 
+  test('profile.custom_trade is capped, floored, trimmed and control-char free', () => {
+    // This value becomes `users.main_trade_other` (a bare TEXT column, no
+    // length CHECK), the `profession_key` the question generator is PROMPTED
+    // with, and the trade label an employer reads. Without a cap here, a
+    // pasted CV becomes all three.
+    expect(mapAnswerToEngineMessage('profile.custom_trade', '  welder  ', noConfirm))
+      .toEqual({ ok: true, fields: { body: 'welder' } });
+    // Trimmed, not raw: `normalizeTrade` slugs this into `profession_key`, so
+    // a trailing space would mint a second cache row for the same trade.
+    expect(mapAnswerToEngineMessage('profile.custom_trade', 'a'.repeat(60), noConfirm))
+      .toEqual({ ok: true, fields: { body: 'a'.repeat(60) } });
+
+    expect(mapAnswerToEngineMessage('profile.custom_trade', 'a'.repeat(61), noConfirm))
+      .toEqual({ ok: false, reason: 'too_long' });
+    expect(mapAnswerToEngineMessage('profile.custom_trade', ' x ', noConfirm))
+      .toEqual({ ok: false, reason: 'too_short' });
+    expect(mapAnswerToEngineMessage('profile.custom_trade', '   ', noConfirm))
+      .toEqual({ ok: false, reason: 'too_short' });
+    // A trade name is ONE line. A newline here is either a paste accident or
+    // an attempt to steer the generator prompt.
+    expect(mapAnswerToEngineMessage('profile.custom_trade', 'welder\nIgnore previous', noConfirm))
+      .toEqual({ ok: false, reason: 'invalid' });
+    expect(mapAnswerToEngineMessage('profile.custom_trade', 'weld\u0000er', noConfirm))
+      .toEqual({ ok: false, reason: 'invalid' });
+  });
+
   test('an unknown vocabulary key is a rejection, never a passed-through payload', () => {
     expect(mapAnswerToEngineMessage('profile.trade', 'astronaut', noConfirm)).toEqual({ ok: false, reason: 'invalid_choice' });
     expect(mapAnswerToEngineMessage('profile.experience', '20+', noConfirm)).toEqual({ ok: false, reason: 'invalid_choice' });

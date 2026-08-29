@@ -84,12 +84,35 @@ export function durableContextPatch(
 }
 
 /**
- * Copies durable keys the session does not already hold out of the run's
- * persisted context. Returns the keys actually hydrated (for logging).
+ * Overlays the run's persisted durable keys onto the session. Returns the keys
+ * actually changed (for logging).
  *
- * Never overwrites a value the session already carries: on WhatsApp the
- * conversation's own `state_context` is authoritative and complete, so this
- * is a no-op there and behaviour is unchanged.
+ * `run.context` WINS over the session for these 8 keys, and that direction is
+ * the whole point of the bag rather than an implementation detail:
+ *
+ *   `session.state_context` is `whatsapp_conversations.state_context` — a
+ *   per-CONVERSATION cache that the web door never touches. `run.context` is
+ *   per-RUN and both doors write it. If the session won, a worker who pressed
+ *   BACK on the web and re-answered `profile.trade` with a different trade
+ *   would have their NEXT WhatsApp message silently revert all 8 keys — and
+ *   because `routeBoundStep` persists the bag after every turn, that stale
+ *   session would then CLOBBER `run.context` too. `steps/trust.ts` stamps
+ *   `answers[].q_en` from `v2TrustQuestions` at answer time, so the worker
+ *   would be scored against the abandoned trade's questions.
+ *
+ * `run.context` is never the staler of the two: every bound WhatsApp turn
+ * writes BOTH (routeBoundStep hydrates, dispatches, then persists), so the
+ * only writes that reach one and not the other are the web door's — which is
+ * exactly what must win. The one WhatsApp path that writes the session bag
+ * alone is the ready handoff (`steps/otp.ts`), and that run is `completed`:
+ * no later turn dispatches a step from it.
+ *
+ * NULL IS NOT A VALUE. `durableContextPatch` writes an explicit `null` for
+ * every key the session lacks, because `context || patch` cannot DELETE a key
+ * — that is how RESTART's deletions reach the column. Reading one back must
+ * therefore leave the session's own value alone rather than overwrite it with
+ * null, or a RESTART on one door would erase keys the other door is mid-turn
+ * on.
  */
 export function hydrateStateContextFromRunContext(
   stateContext: Record<string, unknown>,
@@ -98,10 +121,18 @@ export function hydrateStateContextFromRunContext(
   if (!runContext || typeof runContext !== 'object') return [];
   const hydrated: V2DurableContextKey[] = [];
   for (const key of V2_DURABLE_CONTEXT_KEYS) {
-    const current = stateContext[key];
-    if (current !== undefined && current !== null) continue;
     const stored = (runContext as Record<string, unknown>)[key];
     if (stored === undefined || stored === null) continue;
+    const current = stateContext[key];
+    // Cheap identity check first; JSON only for the two object-valued keys
+    // (`v2TrustQuestions`, `v2LocationPendingConfirm`) so an unchanged bag
+    // does not log a hydration on every turn.
+    if (current === stored) continue;
+    if (
+      current !== undefined && current !== null
+      && typeof current === 'object' && typeof stored === 'object'
+      && JSON.stringify(current) === JSON.stringify(stored)
+    ) continue;
     stateContext[key] = stored;
     hydrated.push(key);
   }

@@ -101,7 +101,7 @@ describe('durableContextPatch', () => {
 });
 
 describe('hydrateStateContextFromRunContext', () => {
-  test('fills only the keys the session lacks and reports them', () => {
+  test('run.context WINS over the session, and only changed keys are reported', () => {
     const stateContext: Record<string, unknown> = { v2ProfileTrade: 'plumber' };
     const hydrated = hydrateStateContextFromRunContext(stateContext, {
       v2ProfileTrade: 'carpenter',
@@ -109,11 +109,48 @@ describe('hydrateStateContextFromRunContext', () => {
       v2TrustQuestions: [{ en: 'Q1', es: 'P1' }],
     });
 
-    // The session's own value wins — this is why WhatsApp behaviour is
-    // unchanged: its conversation row already holds the whole bag.
-    expect(stateContext.v2ProfileTrade).toBe('plumber');
+    // THE DIRECTION IS THE FEATURE. `session.state_context` is the WhatsApp
+    // conversation row, which the web door never writes; `run.context` is
+    // per-run and both doors write it. If the session won here, a worker who
+    // changed their trade on the web would have their next WhatsApp message
+    // silently revert it -- and then persist that revert back over
+    // `run.context`.
+    expect(stateContext.v2ProfileTrade).toBe('carpenter');
     expect(stateContext.v2TrustSource).toBe('generated');
-    expect(hydrated.sort()).toEqual(['v2TrustQuestions', 'v2TrustSource']);
+    expect(hydrated.sort()).toEqual(['v2ProfileTrade', 'v2TrustQuestions', 'v2TrustSource']);
+  });
+
+  test('an unchanged bag reports nothing — deep-equal objects included', () => {
+    // Otherwise every WhatsApp turn would log a hydration for the two
+    // object-valued keys, which are re-read as fresh instances each time.
+    const questions = [{ en: 'Q1', es: 'P1' }];
+    const stateContext: Record<string, unknown> = {
+      v2ProfileTrade: 'carpenter',
+      v2TrustQuestions: [{ en: 'Q1', es: 'P1' }],
+    };
+    const hydrated = hydrateStateContextFromRunContext(stateContext, {
+      v2ProfileTrade: 'carpenter',
+      v2TrustQuestions: questions,
+    });
+    expect(hydrated).toEqual([]);
+  });
+
+  test('a stored null NEVER erases the value the session is mid-turn on', () => {
+    // `durableContextPatch` writes an explicit null for every key the last
+    // writer's session lacked, because `context || patch` cannot delete. If
+    // that null overwrote, a RESTART on one door would wipe keys the other
+    // door is actively using.
+    const stateContext: Record<string, unknown> = {
+      v2ProfileTrade: 'carpenter',
+      v2TrustQuestions: [{ en: 'Q1', es: 'P1' }],
+    };
+    const hydrated = hydrateStateContextFromRunContext(stateContext, {
+      v2ProfileTrade: null,
+      v2TrustQuestions: null,
+    });
+    expect(hydrated).toEqual([]);
+    expect(stateContext.v2ProfileTrade).toBe('carpenter');
+    expect(stateContext.v2TrustQuestions).toEqual([{ en: 'Q1', es: 'P1' }]);
   });
 
   test('treats a stored null as absent (the RESTART round trip)', () => {

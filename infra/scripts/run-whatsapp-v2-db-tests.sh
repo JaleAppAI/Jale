@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 #
 # Fail-closed runner for the focused WhatsApp v2 PostgreSQL enforcement and
-# concurrency suites (migrations 042/049/080/086 + onboarding concurrency,
+# concurrency suites (migrations 042/049/080/086/087 + onboarding concurrency,
 # least-privilege flow coverage, and the 080 application-fill DB contract:
 # worker_documents grants/RLS, the 022 guard's GUC bypass, and the 075/078
 # cert caps), plus the R2-C0 web-onboarding-door spike (086's
-# start_web_onboarding_workflow driven end-to-end as jale_whatsapp).
+# start_web_onboarding_workflow driven end-to-end as jale_whatsapp), the
+# R2-C23 web-door HTTP suite, and the R2-C6 web->WhatsApp crossover suite.
+#
+# WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
+# disposable local Postgres 16 database with migrations 001 THROUGH 087
+# applied, and the connecting role must be a SUPERUSER. The suites are not
+# merely readers: they ALTER ROLE jale_whatsapp / jale_ai to set the test
+# passwords they then reconnect with, insert fixtures past RLS, and read
+# columns those roles are not granted. A non-superuser URL fails deep inside
+# a beforeAll with a permission error that reads like a schema bug, so the
+# check below is done up front instead.
 #
 # `test:whatsapp-v2-db` points here so that an unset or empty
 # JALE_TEST_DATABASE_URL is a hard, non-zero failure instead of a false green.
@@ -24,8 +34,39 @@ if [ -z "${JALE_TEST_DATABASE_URL:-}" ]; then
   echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is not set (or empty)." >&2
   echo "  Refusing to run: the migration-042/049 and concurrency suites SKIP without a" >&2
   echo "  database URL and jest would otherwise exit 0 without verifying anything." >&2
-  echo "  Set it to a local Postgres 16 superuser URL (schema through 049 applied), then" >&2
-  echo "  re-run. The value is never printed." >&2
+  echo "  Set it to a local Postgres 16 SUPERUSER url (migrations 001-087 applied)," >&2
+  echo "  then re-run. The value is never printed." >&2
+  exit 1
+fi
+
+# Fail LOUDLY and fast on a non-superuser URL rather than deep inside a
+# beforeAll. Uses node + the repo's own `pg` (psql is not installed on CI
+# images) and a hard connect timeout, so an unreachable host is a 5-second
+# error rather than a hang. The URL is passed through the environment and
+# never interpolated into the program text, so it cannot reach a log line or
+# a process listing.
+if ! node -e '
+  const { Client } = require("pg");
+  const c = new Client({
+    connectionString: process.env.JALE_TEST_DATABASE_URL,
+    connectionTimeoutMillis: 5000,
+  });
+  c.connect()
+    .then(() => c.query("SELECT rolsuper FROM pg_roles WHERE rolname = current_user"))
+    .then((r) => {
+      if (!r.rows[0] || r.rows[0].rolsuper !== true) {
+        console.error("  connected, but the role is NOT a superuser.");
+        process.exit(2);
+      }
+    })
+    .then(() => c.end())
+    .catch((e) => { console.error("  " + e.message); process.exit(3); });
+' 2>&1; then
+  echo "run-whatsapp-v2-db-tests: JALE_TEST_DATABASE_URL is unusable." >&2
+  echo "  These suites need a disposable local database with migrations 001-087" >&2
+  echo "  applied, reached as a SUPERUSER: they ALTER ROLE jale_whatsapp/jale_ai to" >&2
+  echo "  set test passwords, insert fixtures past RLS, and read columns those roles" >&2
+  echo "  are not granted. Refusing to run. The value is never printed." >&2
   exit 1
 fi
 

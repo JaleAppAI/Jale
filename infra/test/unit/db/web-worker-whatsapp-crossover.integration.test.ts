@@ -92,6 +92,7 @@ import {
 } from '../../../lambda/whatsapp/lib/onboarding-repository';
 import { recordCanonicalWhatsAppConsent } from '../../../lambda/whatsapp/lib/legal-consent';
 import { hashNormalizedPhone } from '../../../lambda/whatsapp/lib/runtime-controls';
+import { formatApplyToken, hashToken } from '../../../lambda/lib/referral-codes';
 import { setInternalUserRlsContext } from '../../../lambda/lib/db';
 import type {
   PreferredLanguage,
@@ -177,9 +178,11 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
   const convIds: Record<string, string> = {};
 
   /** Worker fixtures. `signup` exercises group A only. */
-  const WORKER_KEYS = ['signup', 'resume', 'ready', 'referral', 'orphan'] as const;
+  const WORKER_KEYS = ['signup', 'resume', 'ready', 'referral', 'readyref', 'orphan'] as const;
 
   let employerId = '';
+  let shareCode = '';
+  let applyTokenRaw = '';
   let jobId = '';
 
   // ── deps assembly ──────────────────────────────────────────────────────
@@ -402,11 +405,15 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
   async function whatsappOtpArrival(
     key: string,
     session: OnboardingV2Session,
+    // The FIRST inbound body. Defaults to a plain greeting; group E sends a
+    // referral code here, which is the only message `handleStartStep` ever
+    // parks one from.
+    firstBody = 'Hola',
   ): Promise<{ result: RouteResult; sent: WorkerMessageIntentInput[] }> {
     identityScript.verifiedWorkerId = ids[key];
     identityScript.session = `cognito-session-${key}-${randomUUID().slice(0, 8)}`;
 
-    const hello = await turn(session, msgFor(key, { body: 'Hola' }, 'wa'));
+    const hello = await turn(session, msgFor(key, { body: firstBody }, 'wa'));
     expect(hello.result).toEqual({
       handled: true, workerId: null, stepKey: 'start.choose_language',
     });
@@ -453,7 +460,7 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
     // One `whatsapp_conversations` row per crossover worker — what the
     // processor's `getOrCreateConversation` would have inserted on their
     // first inbound message. Deliberately UNBOUND (`user_id IS NULL`).
-    for (const key of ['resume', 'ready', 'referral', 'orphan'] as const) {
+    for (const key of ['resume', 'ready', 'referral', 'readyref', 'orphan'] as const) {
       const r = await su.query<{ id: string }>(
         `INSERT INTO whatsapp_conversations (whatsapp_number, language, conversation_state)
          VALUES ($1, 'es', 'new') RETURNING id`,
@@ -476,6 +483,22 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       [employerId],
     );
     jobId = job.rows[0].id;
+
+    // Group E: a REAL apply token behind a real share link, so the referral
+    // arrives the way it actually does -- as a code in the worker's first
+    // WhatsApp message -- instead of being hand-seeded as a pending claim.
+    shareCode = 'R2C6ABCD';
+    await su.query(
+      `INSERT INTO job_share_links (code, job_id, referrer_worker_id, channel)
+       VALUES ($1, $2, $3, 'facebook')`,
+      [shareCode, jobId, ids.referral],
+    );
+    applyTokenRaw = 'JMNPQRST';
+    await su.query(
+      `INSERT INTO referral_apply_tokens (token_hash, job_id, share_code, expires_at)
+       VALUES ($1, $2, $3, now() + INTERVAL '1 day')`,
+      [hashToken(applyTokenRaw), jobId, shareCode],
+    );
 
     deps = buildDeps();
   }, 90_000);
@@ -746,24 +769,21 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       );
       expect(conv.rows[0].user_id).toBe(ids.ready);
 
-      // KNOWN GAP, deliberately asserted rather than wished away. What the
-      // worker is SENT on this turn is decided by `handleOtpStep`
-      // (onboarding/steps/otp.ts:84-86), which does
-      //   `const stepKey = gate.currentStepKey ?? 'legal.review'` and
-      //   prompts it — without ever consulting `gate.lifecycle`.
-      // So a finished worker gets their last onboarding step re-prompted on
-      // the OTP turn. 087 cannot fix that: the run it correctly adopts still
-      // HAS a `current_step_key`, and the lifecycle check that should
-      // suppress the prompt lives in TypeScript. No data is harmed (the very
-      // next message takes the ready handoff — see the test below, and
-      // `handleTrustQuestion` is never reached), but the copy is wrong.
-      // Fix belongs in otp.ts, which R2-C6/087 does not own; reported as a
-      // follow-up.
+      // GAP CLOSED (R2-C23). This assertion used to pin the defect: the OTP
+      // turn re-prompted `gate.currentStepKey ?? 'legal.review'` without ever
+      // consulting `gate.lifecycle`, so a worker who finished on the web was
+      // asked their last trust question again the moment they verified their
+      // number. 087 could not fix it from SQL — the run it correctly adopts
+      // still HAS a `current_step_key`, and the check belongs in TypeScript.
+      //
+      // `handleOtpStep` now takes the SAME ready handoff the router takes for
+      // every later message (see the test below), so the OTP turn and the one
+      // after it are indistinguishable — which is the property worth pinning,
+      // not the two calls being spelled the same way.
       expect(bind.result).toEqual({
-        handled: true, workerId: ids.ready, stepKey: 'trust.question.3',
+        handled: false, handoff: 'ready', workerId: ids.ready, stepKey: 'ready',
       });
-      expect(bind.sent).toHaveLength(1);
-      expect(bind.sent[0].sourceType).toBe('onboarding_v2:trust.question.3');
+      expect(bind.sent).toHaveLength(0);
     });
 
     test('087: the NEXT WhatsApp message IS the ready handoff, not a restart', async () => {
@@ -885,6 +905,73 @@ maybeDescribe('R2-C6/087: a web-started worker continues on WhatsApp', () => {
       );
       expect(attribution.rows).toHaveLength(1);
       expect(attribution.rows[0].first_job_id).toBe(jobId);
+    });
+  });
+
+  // =========================================================================
+  // E. R2-C23: the referral a READY web worker carries in on WhatsApp
+  // =========================================================================
+
+  describe('E. a ready web worker whose first WhatsApp message carries a referral code', () => {
+    test('the OTP turn claims the parked referral and writes attribution', async () => {
+      // THE GAP THIS CLOSES. `handleStartStep` parks the code on arrival, and
+      // the ONLY claim site is `completeOnboarding` -> `claimPendingReferral`.
+      // This worker already completed -- on the web, before ever texting -- so
+      // that moment is behind them and never comes again on WhatsApp. Without
+      // a claim in the ready handoff the parked claim sits forever and the
+      // referrer is never credited, which is precisely the person a referral
+      // link sends to the website in the first place.
+      await startWebRun('readyref');
+      const web = webSession('readyref');
+      expect((await turn(web, msgFor('readyref', { body: 'accept' }))).result.stepKey).toBe('profile.name');
+      expect((await turn(web, msgFor('readyref', { body: 'Nora Salas' }))).result.stepKey).toBe('profile.location');
+      expect((await turn(web, msgFor('readyref', { body: 'El Paso, TX' }))).result.stepKey).toBe('profile.trade');
+      expect((await turn(web, msgFor('readyref', { interactivePayload: 'profile:main_trade:carpenter' }))).result.stepKey).toBe('profile.experience');
+      expect((await turn(web, msgFor('readyref', { interactivePayload: 'profile:years_experience:2-4' }))).result.stepKey).toBe('profile.transportation');
+      expect((await turn(web, msgFor('readyref', { interactivePayload: 'profile:has_transportation:true' }))).result.stepKey).toBe('profile.availability');
+      expect((await turn(web, msgFor('readyref', { interactivePayload: 'profile:availability:full_time' }))).result.stepKey).toBe('trust.question.1');
+      await turn(web, msgFor('readyref', { body: 'Framing and finish trim.' }));
+      await turn(web, msgFor('readyref', { body: 'I walk the space and read the plans.' }));
+      await turn(web, msgFor('readyref', { body: 'A warped jamb once; re-ordered and shimmed.' }));
+      expect(await lifecycleOf(ids.readyref)).toEqual({ lifecycle: 'ready', has_ready_at: true });
+
+      // Nothing is claimed yet: the web completion hashes `users.phone`, and
+      // this worker's referral has not been parked at all until they text.
+      const phoneHash = hashNormalizedPhone(phones.readyref);
+      expect((await su.query(
+        `SELECT 1 FROM referral_pending_claims WHERE phone_hash = $1`, [phoneHash],
+      )).rowCount).toBe(0);
+
+      // Now the first WhatsApp message, carrying the code.
+      const wa = waSession('readyref');
+      const bind = await whatsappOtpArrival(
+        'readyref', wa, `Hola, quiero este trabajo ${formatApplyToken(applyTokenRaw)}`,
+      );
+
+      // Still the ready handoff, still silent.
+      expect(bind.result).toEqual({
+        handled: false, handoff: 'ready', workerId: ids.readyref, stepKey: 'ready',
+      });
+      expect(bind.sent).toHaveLength(0);
+
+      // Parked by the start step, then CLAIMED by the ready handoff.
+      const claim = await su.query<{ claimed_worker_id: string | null; job_id: string }>(
+        `SELECT claimed_worker_id, job_id FROM referral_pending_claims WHERE phone_hash = $1`,
+        [phoneHash],
+      );
+      expect(claim.rows).toHaveLength(1);
+      expect(claim.rows[0].claimed_worker_id).toBe(ids.readyref);
+      expect(claim.rows[0].job_id).toBe(jobId);
+
+      // And the attribution row credits the share link's OWN channel, not the
+      // WhatsApp transport the person happened to arrive on.
+      const attribution = await su.query<{ first_job_id: string; first_channel: string }>(
+        `SELECT first_job_id, first_channel FROM worker_attribution WHERE worker_id = $1`,
+        [ids.readyref],
+      );
+      expect(attribution.rows).toHaveLength(1);
+      expect(attribution.rows[0].first_job_id).toBe(jobId);
+      expect(attribution.rows[0].first_channel).toBe('facebook');
     });
   });
 });

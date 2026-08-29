@@ -86,7 +86,8 @@ export const VOICE_CONFIDENCE_THRESHOLD = 0.75;
  * web door (`start_web_onboarding_workflow`'s third argument) needs the SAME
  * number or the two doors mint runs the other cannot recognise. The processor
  * keeps its own literal — this module is a second declaration, not a
- * refactor of it — so `web-onboarding-workflow-version.test.ts` reads
- * processor.ts's source and asserts the two agree. Bump both together.
+ * refactor of it — so `test/unit/lambda/whatsapp/onboarding/durable-context.
+ * test.ts` reads processor.ts's source and asserts the two agree. Bump both
+ * together.
  */
 export const WHATSAPP_V2_WORKFLOW_VERSION = 1;
