@@ -116,9 +116,26 @@ describe('TrustQuestionStep', () => {
         expect(onSubmit).toHaveBeenCalledWith([{ stepKey: 'trust.question.2', value: { text: LONG_ENOUGH } }]);
     });
 
-    it('calls the last question Finish', () => {
+    it('names the last button for what it does, and warns that it is final', () => {
+        // Luis, 2026-08-29: the third answer completes the run, so the button
+        // stops being a "next" and says so before it is pressed.
         renderIntl(<TrustQuestionStep {...props({ index: 3, answer: LONG_ENOUGH })} />);
-        expect(screen.getByRole('button', { name: message('worker_onboarding.question.last_cta') })).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta') })).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: message('worker_onboarding.question.cta') })).not.toBeInTheDocument();
+        expect(screen.getByText(message('worker_onboarding.trust.complete_note'))).toBeInTheDocument();
+    });
+
+    it('warns only on the last one — the first two are still changeable', () => {
+        const { rerender } = renderIntl(<TrustQuestionStep {...props({ index: 1, answer: LONG_ENOUGH })} />);
+        expect(screen.queryByText(message('worker_onboarding.trust.complete_note'))).not.toBeInTheDocument();
+        rerender(<TrustQuestionStep {...props({ index: 2, answer: LONG_ENOUGH })} />);
+        expect(screen.queryByText(message('worker_onboarding.trust.complete_note'))).not.toBeInTheDocument();
+    });
+
+    it('says both in Spanish', () => {
+        renderIntl(<TrustQuestionStep {...props({ index: 3, answer: LONG_ENOUGH })} />, 'es');
+        expect(screen.getByRole('button', { name: message('worker_onboarding.trust.complete_cta', 'es') })).toBeInTheDocument();
+        expect(screen.getByText(message('worker_onboarding.trust.complete_note', 'es'))).toBeInTheDocument();
     });
 
     it('types through the answer callback', async () => {
