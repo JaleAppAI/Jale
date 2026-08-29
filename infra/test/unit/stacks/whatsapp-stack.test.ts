@@ -89,6 +89,8 @@ describe('WhatsAppStack', () => {
       dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
+      workerResource: api.workerResource,
+      workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,
@@ -305,8 +307,9 @@ describe('event-driven outbox wake queues', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  test('Stack creates 12 Lambda functions including the worker-intent drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 12);
+  // 13 since S22 R2-C23 added the web onboarding door.
+  test('Stack creates 13 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 13);
   });
 
   test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
@@ -1198,6 +1201,124 @@ describe('event-driven outbox wake queues', () => {
         .not.toHaveProperty('WHATSAPP_INBOUND_V2_QUEUE_URL');
     });
   });
+
+  // ── S22 R2-C23: the web onboarding door ────────────────────────
+  //
+  // The Lambda is a WhatsAppStack resource (it needs this stack's DB secret,
+  // generator ARNs and wake queue); the ROUTES are ApiStack resources,
+  // because `props.workerResource.addResource()` creates its children in the
+  // scope of the resource it hangs off. Hence the two templates.
+  describe('web onboarding door', () => {
+    function webDoorFn(): any {
+      const functions = template.findResources('AWS::Lambda::Function');
+      return Object.values(functions).find((resource: any) =>
+        /Web worker onboarding/.test(resource.Properties?.Description ?? '')) as any;
+    }
+
+    test('a single Lambda serves all four routes, inside the VPC', () => {
+      const fn = webDoorFn();
+      expect(fn).toBeDefined();
+      expect(fn.Properties.VpcConfig).toBeDefined();
+      // API Gateway hard-caps a REST integration at 29s; profile.trade can
+      // synchronously invoke the question generator.
+      expect(fn.Properties.Timeout).toBeLessThanOrEqual(28);
+    });
+
+    test('connects as jale_whatsapp — the ONLY role granted the engine tables', () => {
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.DB_SECRET_ARN).toBe('jale/whatsapp/db');
+      expect(env.REQUIRED_TOS_VERSION).toBeDefined();
+    });
+
+    test('carries QUESTION_GENERATOR_ARN — without it every trade silently gets FALLBACK questions', () => {
+      // seedTrustQuestions swallows a generator failure into the generic
+      // fallback set, so a missing ARN is invisible in the flow and only
+      // shows up later as un-scorable assessments.
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.QUESTION_GENERATOR_ARN).toBeDefined();
+      expect(env.ALIAS_GENERATOR_ARN).toBeDefined();
+    });
+
+    test('carries DOMAIN_OUTBOX_WAKE_QUEUE_URL so completion does not wait for the cron', () => {
+      const env = webDoorFn().Properties.Environment.Variables;
+      expect(env.DOMAIN_OUTBOX_WAKE_QUEUE_URL).toBeDefined();
+    });
+
+    test('its role can read the secret, invoke both generators and send the wake', () => {
+      const fn = webDoorFn();
+      const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+      const policies = template.findResources('AWS::IAM::Policy');
+      const statements = Object.values(policies)
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const actions = statements.flatMap((st) =>
+        Array.isArray(st.Action) ? st.Action : [st.Action]);
+
+      expect(actions).toEqual(expect.arrayContaining(['secretsmanager:GetSecretValue']));
+      expect(actions).toEqual(expect.arrayContaining(['lambda:InvokeFunction']));
+      expect(actions).toEqual(expect.arrayContaining(['sqs:SendMessage']));
+    });
+
+    test.each([
+      ['onboarding', 'GET'],
+      // ONE `{action}` resource carries answers/back/language. ApiStack sits
+      // at 489 of CloudFormation's 500 resources, and four sibling resources
+      // cost 20 (resource + method + CORS OPTIONS + two Lambda permissions
+      // each) -- synthesis fails outright. This shape costs 10.
+      ['{action}', 'ANY'],
+    ])('/worker/onboarding/%s serves %s behind the worker Cognito authorizer', (part, method) => {
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const [logicalId] = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === part,
+      ) as [string, any];
+
+      const methods = apiTemplate.findResources('AWS::ApiGateway::Method');
+      const match = Object.values(methods).find((m: any) =>
+        m.Properties.HttpMethod === method
+        && JSON.stringify(m.Properties.ResourceId) === JSON.stringify({ Ref: logicalId })) as any;
+
+      expect(match).toBeDefined();
+      // The legal wall is deliberately absent (accepting the terms is step
+      // one of this flow) but authentication is NOT: every route is COGNITO.
+      expect(match.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+      expect(match.Properties.AuthorizerId).toBeDefined();
+    });
+
+    test('{action} is the ONLY child of /worker/onboarding', () => {
+      // ANY on `{action}` matches every single-segment path under
+      // /worker/onboarding, so a named sibling added later by another stack
+      // would keep its route but lose the traffic to this handler's 404.
+      // Nothing hangs anything off `onboarding` today (it is the only
+      // `addResource('onboarding')` in the repo) and this keeps it that way.
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const [onboardingId] = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === 'onboarding',
+      ) as [string, any];
+      const children = Object.values(resources).filter(
+        (r: any) => JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: onboardingId }),
+      );
+      expect(children.map((c: any) => c.Properties.PathPart)).toEqual(['{action}']);
+    });
+
+    test('the door costs ApiStack exactly 10 resources', () => {
+      // A regression guard on the thing that actually broke: four named
+      // sibling resources cost 20 (Resource + Method + the OPTIONS preflight
+      // `defaultCorsPreflightOptions` adds + two Lambda::Permissions per
+      // Lambda-backed method) and pushed the full app past
+      // CloudFormation's 500-resource maximum. One `{action}` resource costs
+      // 10. If this number grows, the fix is to SPLIT ApiStack.
+      //
+      // Only the door's OWN cost is asserted here: this file's app wires a
+      // SUBSET of the stacks (no DocumentsStack, no MediaBoardStack), so its
+      // ApiStack total is not the deployed one and a ceiling assertion
+      // against it would pass no matter how full the real stack got. The
+      // ceiling is asserted in `metric-filter-patterns.test.ts`, whose app is
+      // the full `bin/jale-app.ts` composition.
+      const all = apiTemplate.toJSON().Resources as Record<string, { Type: string }>;
+      const mine = Object.keys(all).filter((id) => /Onboarding/i.test(id));
+      expect(mine.length).toBe(10);
+    });
+  });
 });
 
 // ── Task 5: voice-trust-receiver v2 re-entry (transport flag ON) ─────────
@@ -1264,6 +1385,8 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       dbSecret: database.dbSecret,
       workerPool: auth.workerPool,
       api: api.api,
+      workerResource: api.workerResource,
+      workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
       trustAssessmentQueue: ai.trustAssessmentQueue,

@@ -77,6 +77,8 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     api: api.api,
+    workerResource: api.workerResource,
+    workerAuthorizer: api.workerAuthorizer,
     questionGeneratorFn: ai.questionGeneratorFn.function,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
     trustAssessmentQueue: ai.trustAssessmentQueue,

@@ -565,6 +565,46 @@ describe('identity.verify_otp', () => {
     expect(gateway.calls[0].dedupeKey).toContain(otpMessage.messageSid);
   });
 
+  it('a READY worker who verifies OTP is handed off, never re-prompted their last step', async () => {
+    // Migration 087 makes `bind_verified_identity_and_start_workflow` ADOPT a
+    // ready worker's completed run instead of opening a second one, so the
+    // bind hands back a gate parked wherever that run finished. Prompting it
+    // would ask a worker who already finished onboarding (on the web, or from
+    // another number) to answer their last trust question again -- on the OTP
+    // turn only, since every later message is handed off by the router.
+    const { deps, gateRepo, adapters, gateway } = makeDeps();
+    const session = makeSession({ user_id: 'user-1' });
+    await bootstrapOtp(deps, session);
+    jest.spyOn(gateRepo, 'bindVerifiedIdentityAndStartWorkflow').mockResolvedValueOnce({
+      userId: 'user-1',
+      lifecycle: 'ready',
+      runId: 'run-user-1',
+      workflowVersion: 1,
+      currentStepKey: 'trust.question.3',
+      status: 'completed',
+      preferredLanguage: 'es',
+      lockVersion: 7,
+    });
+    const advanceSpy = jest.spyOn(gateRepo, 'advanceWorkflow');
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'verified', workerId: 'user-1' });
+    const sentBefore = gateway.calls.length;
+
+    const result = await routeOnboardingV2(client, session, makeMsg('123456', {
+      messageSid: 'SM0123456789abcdef0123456789abcdef',
+    }), deps);
+
+    // Byte-for-byte the handoff `routeOnboardingV2` returns for any other
+    // message from a ready worker, so the OTP turn and the next turn agree.
+    expect(result).toEqual({ handled: false, handoff: 'ready', workerId: 'user-1', stepKey: 'ready' });
+    // No onboarding prompt on this turn...
+    expect(gateway.calls).toHaveLength(sentBefore);
+    // ...and no write to a completed run.
+    expect(advanceSpy).not.toHaveBeenCalled();
+    // The handoff carries the run's language into the session, exactly as the
+    // router's own ready branch does.
+    expect(session.language).toBe('es');
+  });
+
   it('an invalid code returns invalid and persists the RETURNED attempts count AND the rotated session', async () => {
     const { deps, preAuthRepo, adapters } = makeDeps();
     const session = makeSession({ user_id: 'user-1' });

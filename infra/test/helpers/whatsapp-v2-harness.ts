@@ -946,7 +946,14 @@ export class WhatsAppV2Harness {
   private readonly profileFake = createFakeProfileAdapter();
   private readonly voiceIntakeFake = createFakeVoiceIntake();
   private readonly locationResolver = createLocationResolver();
-  private readonly deps: OnboardingV2Deps;
+  /**
+   * S22 R2-C23: public so the WEB door's driver can be exercised against the
+   * SAME fakes the WhatsApp router uses. The web door is a second caller of
+   * this exact deps graph — giving it its own parallel set of fakes would let
+   * the two drift, which is the one thing a shared state machine cannot
+   * afford. Read-only by convention; nothing outside the harness reassigns it.
+   */
+  public readonly deps: OnboardingV2Deps;
   private readonly processedSids = new Map<string, RouteResult>();
   private readonly sent: SentMessage[] = [];
   private readonly canonicalLegalConsents: Array<{ workerId: string; documentVersion: string }> = [];
@@ -1080,6 +1087,20 @@ export class WhatsAppV2Harness {
 
   advanceTime(ms: number): void {
     this.clockRef.now = new Date(this.clockRef.now.getTime() + ms);
+  }
+
+  /** The worker id this conversation was bound to by OTP verification.
+   * Throws before the bind, which is the only state where there isn't one. */
+  boundWorkerId(): string {
+    const workerId = this.conversations._byId.get(this.conversationId)?.user_id;
+    if (!workerId) throw new Error('boundWorkerId: conversation is not bound yet');
+    return workerId;
+  }
+
+  /** The worker's gate as the fake repo holds it — the web door reads a gate
+   * before every mutation, so its tests need the same view. */
+  async gateFor(workerId?: string): Promise<WorkerGate | null> {
+    return this.gateRepo.loadWorkerGate(HARNESS_CLIENT, workerId ?? this.boundWorkerId());
   }
 
   now(): Date {

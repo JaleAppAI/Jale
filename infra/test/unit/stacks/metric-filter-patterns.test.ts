@@ -156,6 +156,10 @@ function buildStacks(): Record<string, cdk.Stack> {
     dbSecret: database.dbSecret,
     workerPool: auth.workerPool,
     api: api.api,
+    // S22 R2-C23: the web onboarding door hangs /worker/onboarding* off the
+    // ApiStack's worker resource, so WhatsAppStack needs both.
+    workerResource: api.workerResource,
+    workerAuthorizer: api.workerAuthorizer,
     questionGeneratorFn: ai.questionGeneratorFn.function,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,
     trustAssessmentQueue: ai.trustAssessmentQueue,
@@ -424,4 +428,34 @@ describe('CloudWatch MetricFilter patterns', () => {
       }
     },
   );
+});
+
+// ── S22 R2-C23: the CloudFormation resource ceiling ─────────────────────
+//
+// Lives in this file, and only this file, because `buildStacks()` above is
+// the full `bin/jale-app.ts` composition — DocumentsStack and MediaBoardStack
+// included, both of which hang routes off the same RestApi. Every other stack
+// test wires a subset, so a ceiling assertion there passes no matter how full
+// the deployed ApiStack really is.
+describe('ApiStack resource ceiling', () => {
+  it('stays under CloudFormation\'s hard maximum of 500 resources', () => {
+    const stacks = buildStacks();
+    const app = stacks.WhatsAppStack.node.root as cdk.App;
+    const api = app.node.findChild('TestApiStack') as cdk.Stack;
+    const resources = Template.fromStack(api).toJSON().Resources as Record<string, unknown>;
+    const total = Object.keys(resources).length;
+    const webDoor = Object.keys(resources).filter((id) => /Onboarding/i.test(id));
+
+    // Measured 2026-08-28 on this tree: 489 without the web onboarding door,
+    // 499 with it. CDK refuses to synthesize at 501 (TooManyResourcesInStack)
+    // — that is a DEPLOY failure, not a lint.
+    //
+    // THE HEADROOM IS ONE RESOURCE. If this fails, the answer is NOT to
+    // shrink another feature's routes: it is to split ApiStack (a nested
+    // stack, or a second RestApi for `/worker/*`). Whoever adds the next
+    // route owns that.
+    expect(webDoor).toHaveLength(10);
+    expect(total).toBe(499);
+    expect(total).toBeLessThanOrEqual(500);
+  });
 });
