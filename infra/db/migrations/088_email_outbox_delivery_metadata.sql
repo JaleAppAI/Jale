@@ -3,6 +3,14 @@
 -- Run manually AFTER 087_bind_reuses_ready_web_worker.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --
+-- DEPLOY ORDER (REVERSE of migration 086's rule): apply THIS migration BEFORE
+-- deploying the Release-3 code. lib/email-outbox.ts names `headers` and
+-- `ses_message_id` unconditionally in queueEmail / the claim query / the
+-- finalize UPDATE, and queueEmail is shared with the billing pause emails --
+-- code-first is a total outbound-email outage (42703 undefined_column on every
+-- send) until this file lands. Applying first is safe: the old code never
+-- reads the new columns.
+--
 -- SEQUENCING NOTE. This file was written as 087 and renumbered to 088 when
 -- release 2 claimed that slot for 087_bind_reuses_ready_web_worker.sql (a fix
 -- to 047's bind function). 087 does NOT exist on this branch, so the
