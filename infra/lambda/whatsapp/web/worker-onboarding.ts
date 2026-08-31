@@ -216,7 +216,10 @@ function parseLockVersion(body: Record<string, unknown>): number | null {
 
 export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> => {
   const cognitoSub: string | undefined = event.requestContext?.authorizer?.claims?.sub;
-  if (!cognitoSub) return fail(401, 'unauthorized');
+  // `resolve_worker_internal_id` raises 22023 on a blank sub, and that call
+  // sits outside the try that maps SQLSTATEs -> statuses; a blank claim is
+  // unauthenticated, not a server fault.
+  if (typeof cognitoSub !== 'string' || cognitoSub.trim() === '') return fail(401, 'unauthorized');
 
   const method = (event.httpMethod || 'GET').toUpperCase();
   const suffix = routeSuffix(event);

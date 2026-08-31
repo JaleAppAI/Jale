@@ -53,6 +53,9 @@ const SUITE_CROSSOVER = 'test/unit/db/web-worker-whatsapp-crossover.integration.
 // 42501 on a column these roles are not granted -- is invisible without one.
 const SUITE_EXTRACTIONS_086 = 'test/unit/db/trust-extractions-086.integration.test.ts';
 const SUITE_EMPLOYER_READS = 'test/unit/db/employer-worker-reads.integration.test.ts';
+// The R2 hostile-input battery: SQL/encoding/boundary/envelope/lock/RLS probes
+// driven through the real web-door handler against the real policies.
+const SUITE_HOSTILE_INPUTS = 'test/unit/db/web-onboarding-hostile-inputs.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -76,7 +79,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
     expect(suites).toEqual([
       SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052,
       SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR, SUITE_CROSSOVER,
-      SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS,
+      SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
     ]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.

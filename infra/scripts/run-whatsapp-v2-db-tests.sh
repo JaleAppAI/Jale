@@ -91,4 +91,5 @@ exec npx jest --runInBand \
   test/unit/db/web-onboarding-door.integration.test.ts \
   test/unit/db/web-worker-whatsapp-crossover.integration.test.ts \
   test/unit/db/trust-extractions-086.integration.test.ts \
-  test/unit/db/employer-worker-reads.integration.test.ts
+  test/unit/db/employer-worker-reads.integration.test.ts \
+  test/unit/db/web-onboarding-hostile-inputs.integration.test.ts

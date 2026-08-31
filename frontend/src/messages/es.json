@@ -1800,6 +1800,9 @@
           "too_short": "Escribe tu oficio en {min} a {max} caracteres.",
           "too_long": "Escribe tu oficio en {min} a {max} caracteres.",
           "invalid": "Eso no parece un oficio — usa solo letras y números."
+        },
+        "location": {
+          "too_long": "Ese nombre de ciudad o estado es demasiado largo — usa la forma corta."
         }
       },
       "step_mismatch": "Tu progreso se actualizó desde otro dispositivo — revisa este paso y continúa."

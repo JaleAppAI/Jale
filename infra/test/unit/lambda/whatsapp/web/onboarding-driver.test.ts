@@ -88,6 +88,40 @@ describe('mapAnswerToEngineMessage', () => {
     // an attempt to steer the generator prompt.
     expect(mapAnswerToEngineMessage('profile.custom_trade', 'welder\nIgnore previous', noConfirm))
       .toEqual({ ok: false, reason: 'invalid' });
+    // An unpaired surrogate is not a control character, but PostgreSQL cannot
+    // store it inside jsonb (`v2ProfileTrade` in worker_workflow_runs.context).
+    expect(mapAnswerToEngineMessage('profile.custom_trade', 'we\uD800lder', noConfirm))
+      .toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  test('text PostgreSQL cannot store is refused at the door, newlines are not', () => {
+    // NUL is 22021 on a text column and 22P05 inside jsonb; a lone surrogate
+    // is 22P02 inside jsonb. Each used to be a 500 from deep in the engine.
+    for (const bad of ['Ana\u0000Torres', 'Ana\uD800Torres', 'Ana\uDC00Torres']) {
+      expect(mapAnswerToEngineMessage('profile.name', bad, noConfirm))
+        .toEqual({ ok: false, reason: 'invalid_value' });
+      expect(mapAnswerToEngineMessage('trust.question.1', { text: `${bad} hangs doors and frames walls` }, noConfirm))
+        .toEqual({ ok: false, reason: 'invalid_value' });
+      expect(mapAnswerToEngineMessage('profile.location', { kind: 'city_state', city: bad, state: 'TX' }, noConfirm))
+        .toEqual({ ok: false, reason: 'invalid_value' });
+    }
+    // A properly paired surrogate (an emoji) and a newline are legitimate text.
+    expect(mapAnswerToEngineMessage('profile.name', 'Ana \uD83D\uDE00 Torres', noConfirm))
+      .toEqual({ ok: true, fields: { body: 'Ana \uD83D\uDE00 Torres' } });
+    expect(mapAnswerToEngineMessage('trust.question.1', { text: 'I hang doors.\nI frame walls.' }, noConfirm))
+      .toEqual({ ok: true, fields: { body: 'I hang doors.\nI frame walls.' } });
+  });
+
+  test('a typed city and state are length-capped before the resolver sees them', () => {
+    // The resolver bounds the charset, not the length, and the resolved text
+    // lands verbatim in users.city, worker_preferred_cities and
+    // worker_profiles.location — 8000 bytes per column without this.
+    expect(mapAnswerToEngineMessage('profile.location', { kind: 'city_state', city: 'Ab'.repeat(4000), state: 'TX' }, noConfirm))
+      .toEqual({ ok: false, reason: 'too_long' });
+    expect(mapAnswerToEngineMessage('profile.location', { kind: 'city_state', city: 'Austin', state: 'T'.repeat(41) }, noConfirm))
+      .toEqual({ ok: false, reason: 'too_long' });
+    expect(mapAnswerToEngineMessage('profile.location', { kind: 'city_state', city: 'Rancho Santa Margarita', state: 'California' }, noConfirm))
+      .toEqual({ ok: true, fields: { body: 'Rancho Santa Margarita, California' } });
     expect(mapAnswerToEngineMessage('profile.custom_trade', 'weld\u0000er', noConfirm))
       .toEqual({ ok: false, reason: 'invalid' });
   });

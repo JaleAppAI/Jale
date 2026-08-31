@@ -1800,6 +1800,9 @@
           "too_short": "Tell us your trade in {min}–{max} characters.",
           "too_long": "Tell us your trade in {min}–{max} characters.",
           "invalid": "That doesn't look like a trade — plain letters and numbers only."
+        },
+        "location": {
+          "too_long": "That city or state name is too long — use the short form."
         }
       },
       "step_mismatch": "Your progress was updated from another device — check this step and continue."

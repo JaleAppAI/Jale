@@ -99,6 +99,20 @@ export const CUSTOM_TRADE_MAX_CHARS = 60;
  *  bytes in it are either a paste accident or an injection attempt at the
  *  generator prompt. */
 const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
+/** Text PostgreSQL cannot store: a NUL byte (22021 on `text`, 22P05 inside
+ *  `jsonb`) or an unpaired UTF-16 surrogate (Node encodes it as U+FFFD on a
+ *  `text` column but `JSON.stringify` leaves the lone escape, and `::jsonb`
+ *  raises 22P02). Either one used to surface as a 500 from deep inside the
+ *  engine; it is a malformed answer, so it is refused at the door with the
+ *  same 422 as any other invalid value. Deliberately NOT `CONTROL_CHARS`:
+ *  a newline in a free-text answer is legitimate. */
+const UNSTORABLE_TEXT = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+/** `deps.adapters.location.resolve` bounds the CHARSET of a typed city and
+ *  state (`CITY_PART_RE`) but not their length, and the resolved text lands
+ *  verbatim in `users.city`, `worker_preferred_cities` and
+ *  `worker_profiles.location`. Real place names fit comfortably. */
+export const LOCATION_CITY_MAX_CHARS = 80;
+export const LOCATION_STATE_MAX_CHARS = 40;
 
 export const TRUST_ANSWER_MIN_CHARS = 15;
 export const TRUST_ANSWER_MAX_CHARS = 2000;
@@ -329,6 +343,7 @@ export function mapAnswerToEngineMessage(
     case 'profile.name': {
       const name = asString(value);
       if (name === null) return { ok: false, reason: 'invalid_value' };
+      if (UNSTORABLE_TEXT.test(name)) return { ok: false, reason: 'invalid_value' };
       return { ok: true, fields: { body: name } };
     }
 
@@ -344,6 +359,12 @@ export function mapAnswerToEngineMessage(
         const city = asString(loc.city);
         const state = asString(loc.state);
         if (city === null || state === null) return { ok: false, reason: 'invalid_value' };
+        if (UNSTORABLE_TEXT.test(city) || UNSTORABLE_TEXT.test(state)) {
+          return { ok: false, reason: 'invalid_value' };
+        }
+        if (city.length > LOCATION_CITY_MAX_CHARS || state.length > LOCATION_STATE_MAX_CHARS) {
+          return { ok: false, reason: 'too_long' };
+        }
         // The exact dialect `deps.adapters.location.resolve` parses.
         return { ok: true, fields: { body: `${city}, ${state}` } };
       }
@@ -374,7 +395,9 @@ export function mapAnswerToEngineMessage(
       const text = asString(value);
       if (text === null) return { ok: false, reason: 'invalid_value' };
       const trimmed = text.trim();
-      if (CONTROL_CHARS.test(trimmed)) return { ok: false, reason: 'invalid' };
+      if (CONTROL_CHARS.test(trimmed) || UNSTORABLE_TEXT.test(trimmed)) {
+        return { ok: false, reason: 'invalid' };
+      }
       if (trimmed.length < CUSTOM_TRADE_MIN_CHARS) return { ok: false, reason: 'too_short' };
       if (trimmed.length > CUSTOM_TRADE_MAX_CHARS) return { ok: false, reason: 'too_long' };
       // The TRIMMED text, not the raw: `normalizeTrade` lowercases and slugs
@@ -410,6 +433,7 @@ export function mapAnswerToEngineMessage(
       const wrapper = record(value);
       const text = wrapper ? asString(wrapper.text) : asString(value);
       if (text === null) return { ok: false, reason: 'invalid_value' };
+      if (UNSTORABLE_TEXT.test(text)) return { ok: false, reason: 'invalid_value' };
       const trimmed = text.trim();
       if (trimmed.length < TRUST_ANSWER_MIN_CHARS) return { ok: false, reason: 'too_short' };
       if (trimmed.length > TRUST_ANSWER_MAX_CHARS) return { ok: false, reason: 'too_long' };
