@@ -122,8 +122,18 @@ describe('mapAnswerToEngineMessage', () => {
       .toEqual({ ok: false, reason: 'too_long' });
     expect(mapAnswerToEngineMessage('profile.location', { kind: 'city_state', city: 'Rancho Santa Margarita', state: 'California' }, noConfirm))
       .toEqual({ ok: true, fields: { body: 'Rancho Santa Margarita, California' } });
-    expect(mapAnswerToEngineMessage('profile.custom_trade', 'weld\u0000er', noConfirm))
-      .toEqual({ ok: false, reason: 'invalid' });
+  });
+
+  test('a ZIP answer is five digits only, never a city_state smuggled through the comma', () => {
+    // `resolve()` splits on the last comma, so an unguarded zip value is a
+    // second, uncapped city_state channel (and a prototype-key smuggler into
+    // inferCityState). Only /^\d{5}$/ passes.
+    expect(mapAnswerToEngineMessage('profile.location', { kind: 'zip', zip: '79901' }, noConfirm))
+      .toEqual({ ok: true, fields: { body: '79901' } });
+    for (const bad of ['Ab'.repeat(4000) + ', TX', '__proto__', 'constructor', '7990', '799011', '7990a', '79901, TX', '79901\u0000', ' 79901 ']) {
+      expect(mapAnswerToEngineMessage('profile.location', { kind: 'zip', zip: bad }, noConfirm))
+        .toEqual({ ok: false, reason: 'invalid_value' });
+    }
   });
 
   test('an unknown vocabulary key is a rejection, never a passed-through payload', () => {

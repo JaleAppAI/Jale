@@ -113,6 +113,12 @@ const UNSTORABLE_TEXT = /\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\
  *  `worker_profiles.location`. Real place names fit comfortably. */
 export const LOCATION_CITY_MAX_CHARS = 80;
 export const LOCATION_STATE_MAX_CHARS = 40;
+/** A ZIP answer is exactly five digits. `deps.adapters.location.resolve`
+ *  treats anything with a comma as "City, ST", so an unbounded `zip` value is
+ *  a second, uncapped city_state channel (and a prototype-key smuggler into
+ *  `inferCityState`). The frontend gates the same field on this exact regex
+ *  (`onboarding-flow.ts` ZIP), so nothing legitimate is refused. */
+const WEB_ZIP_RE = /^\d{5}$/;
 
 export const TRUST_ANSWER_MIN_CHARS = 15;
 export const TRUST_ANSWER_MAX_CHARS = 2000;
@@ -353,6 +359,9 @@ export function mapAnswerToEngineMessage(
       if (loc.kind === 'zip') {
         const zip = asString(loc.zip);
         if (zip === null) return { ok: false, reason: 'invalid_value' };
+        // Five digits, nothing else: no comma (which would make the resolver
+        // parse it as "City, ST"), no length, no unstorable text.
+        if (!WEB_ZIP_RE.test(zip)) return { ok: false, reason: 'invalid_value' };
         return { ok: true, fields: { body: zip } };
       }
       if (loc.kind === 'city_state') {
@@ -369,6 +378,11 @@ export function mapAnswerToEngineMessage(
         return { ok: true, fields: { body: `${city}, ${state}` } };
       }
       if (loc.kind === 'confirm') {
+        // Not dead code despite the web never seeding a pending confirm since
+        // the zip branch became five-digit-only: `pendingLocationConfirm` is
+        // set by the WhatsApp door's fuzzy `inferCityState`, and a worker who
+        // started on WhatsApp can answer the confirm here (one engine, two
+        // doors). It only ever emits '1'/'2', so it carries no free text.
         if (typeof loc.accept !== 'boolean') return { ok: false, reason: 'invalid_value' };
         // '1'/'2' are the confirmation dialect `handleProfileLocation` reads,
         // and it reads them ONLY while a confirmation is parked. Sent

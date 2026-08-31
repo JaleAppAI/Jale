@@ -18,16 +18,16 @@
  * (`invalid_request` / `worker_not_found` / `not_found` / `lock_conflict` /
  * `suspended` / `step_rejected` / `step_mismatch` / `unknown_step`) OR, where
  * it is accepted, a byte-exact row and an unchanged schema. A 500 is a
- * finding, not a behaviour — and four of them are recorded below with
- * `test.failing`, so this suite is GREEN today and turns RED the moment the
- * bug is fixed (which is the signal to delete the `.failing`).
+ * finding, not a behaviour. The first pass found six; all six are FIXED, and
+ * each is asserted here as ordinary, currently-passing expectations — the
+ * correct 4xx AND a blast-radius check that the transaction left nothing
+ * behind. (An earlier revision recorded the open bugs with `test.failing`;
+ * nothing remains failing now.)
  *
- * WHY `test.failing` AND NOT `test.todo`. A todo records a sentence; a
- * `.failing` test records the reproduction. Each one asserts the CORRECT
- * behaviour, so it documents the fix as well as the defect. The blast radius
- * of each bug -- that the transaction rolled back and left nothing behind --
- * is asserted in a SEPARATE, ordinary, currently-passing test, so that half
- * of the evidence can never be masked by the `.failing` wrapper.
+ * WHY BLAST-RADIUS TESTS ARE SEPARATE. Each fix is asserted twice: the reason
+ * code on the rejection, and — in an independent, ordinary test — that the row
+ * and schema are untouched, so neither half can mask a regression in the
+ * other.
  *
  * CONNECTION. `JALE_TEST_DATABASE_URL` must be a SUPERUSER url for a
  * disposable database. The HANDLER connects on its own as `jale_whatsapp`
@@ -372,15 +372,18 @@ maybeDescribe('R2: the web onboarding door under hostile input', () => {
       const key = await mkWorker('inj-location');
       await driveTo(key, 'profile.location');
       const before = await tableCounts();
-      for (const value of [
-        { kind: 'city_state', city: "' OR 1=1 --", state: 'TX' },
-        { kind: 'city_state', city: "El Paso'); DROP TABLE users; --", state: 'TX' },
-        { kind: 'zip', zip: "79901'--" },
-        { kind: 'city_state', city: 'El Paso', state: "TX' OR 1=1 --" },
-      ]) {
+      const cases: Array<[Record<string, unknown>, string]> = [
+        // city_state: refused by the resolver's charset (CITY_PART_RE).
+        [{ kind: 'city_state', city: "' OR 1=1 --", state: 'TX' }, 'rejected'],
+        [{ kind: 'city_state', city: "El Paso'); DROP TABLE users; --", state: 'TX' }, 'rejected'],
+        [{ kind: 'city_state', city: 'El Paso', state: "TX' OR 1=1 --" }, 'rejected'],
+        // zip: refused by the five-digit guard before the resolver sees it.
+        [{ kind: 'zip', zip: "79901'--" }, 'invalid_value'],
+      ];
+      for (const [value, reason] of cases) {
         const response = await hostile(key, 'profile.location', value);
         expect(response.statusCode).toBe(422);
-        expect(response.body).toMatchObject({ error: 'step_rejected', reason: 'rejected' });
+        expect(response.body).toMatchObject({ error: 'step_rejected', reason });
       }
       expect(await tableCounts()).toEqual(before);
       const stored = await su.query(`SELECT city FROM users WHERE id = $1`, [ids[key]]);
@@ -429,8 +432,8 @@ maybeDescribe('R2: the web onboarding door under hostile input', () => {
     // 0x00`. The door answers 500 `internal_error`.
     // MINIMAL FIX: the shared `UNSTORABLE_TEXT` guard described above, in the
     // `profile.name` branch of `mapAnswerToEngineMessage`
-    // (onboarding-driver.ts:329-333), returning `{ ok: false, reason:
-    // 'invalid' }` -> 422 `step_rejected`.
+    // (onboarding-driver.ts), returning `{ ok: false, reason: 'invalid_value' }`
+    // -> 422 `step_rejected`.
     test('BUG 1: a NUL byte in profile.name should be a 4xx, not a 500', async () => {
       const key = await mkWorker('nul-name');
       await driveTo(key, 'profile.name');
@@ -557,6 +560,41 @@ maybeDescribe('R2: the web onboarding door under hostile input', () => {
         `SELECT context->>'v2ProfileTrade' trade FROM worker_workflow_runs WHERE user_id = $1`, [ids[key]],
       );
       expect(context.rows[0].trade).toBeNull();
+    }, 180_000);
+
+    test('a comma or a prototype key in the ZIP field cannot smuggle a city past the cap', async () => {
+      // BUG 5b (reviewer): `resolve()` splits on the LAST comma, so an
+      // unguarded `zip` value was a second, uncapped city_state channel — an
+      // 8000-char incompressible city there raised 54000 (index row too big)
+      // as a 500, and a compressible one stored 8000+ bytes and echoed them
+      // back. `__proto__`/`constructor` reached `inferCityState`'s object
+      // lookup and, via a follow-up confirm, 500'd on `state.trim`.
+      // FIX: /^\\d{5}$/ on the zip branch (onboarding-driver.ts).
+      const key = await mkWorker('zip-smuggle');
+      await driveTo(key, 'profile.location');
+      const before = await tableCounts();
+      for (const zip of [
+        'ab'.repeat(4000) + ', TX',
+        'z'.repeat(8000) + ', TX',
+        '__proto__',
+        'constructor',
+        '79901, TX',
+        '79901 ',
+      ]) {
+        const response = await hostile(key, 'profile.location', { kind: 'zip', zip });
+        expect(response.statusCode).toBe(422);
+        expect(response.body).toMatchObject({ error: 'step_rejected', reason: 'invalid_value' });
+      }
+      expect(await tableCounts()).toEqual(before);
+      const stored = await su.query(
+        `SELECT (SELECT city FROM users WHERE id = $1) c,
+                (SELECT count(*)::int FROM worker_preferred_cities WHERE user_id = $1) n,
+                (SELECT context->'v2LocationPendingConfirm' FROM worker_workflow_runs WHERE user_id = $1) pending`,
+        [ids[key]],
+      );
+      expect(stored.rows[0]).toEqual({ c: null, n: 0, pending: null });
+      const ok = await hostile(key, 'profile.location', { kind: 'zip', zip: '79901' });
+      expect(ok.statusCode).toBe(200);
     }, 180_000);
 
     test('the location resolver rejects NUL and surrogates by charset, so no 500 reaches the DB', async () => {
@@ -1004,6 +1042,7 @@ maybeDescribe('R2: the web onboarding door under hostile input', () => {
         expect(assessments.rows[0].n).toBe(0);
       } finally {
         await su.query(`DROP TRIGGER IF EXISTS hostile_raise_on_sentinel ON worker_trust_assessments`);
+        await su.query(`DROP FUNCTION IF EXISTS pg_temp.hostile_raise_on_sentinel()`);
       }
     }, 180_000);
 
