@@ -16,6 +16,14 @@ const CORS_HEADERS = corsHeaders();
 
 interface SignupBody {
   phone?: string;
+  /**
+   * R2 web signup is PHONE ONLY — the worker's name is collected inside the
+   * onboarding flow itself (`profile.name`), not on the signup form. The
+   * field is kept on the type, accepted and IGNORED, so a stale client that
+   * still posts it gets a 200 instead of a 400 during the rollout window.
+   * Nothing is staged: `stage_worker_pending_name` /
+   * `promote_worker_pending_name` (migration 052) have no caller left.
+   */
   fullName?: string;
 }
 
@@ -30,14 +38,16 @@ export const handler = async (
   }
 
   const phone = body.phone?.trim() ?? '';
-  const fullName = body.fullName?.trim() ?? '';
 
   if (!/^\+\d{8,15}$/.test(phone)) {
     return json(400, { error: 'invalid_phone', message: 'Phone must be in E.164 format.' });
   }
 
-  if (!fullName) {
-    return json(400, { error: 'missing_full_name', message: 'fullName is required.' });
+  // Observability only, never a rejection: tells us when the last stale
+  // client stops sending a name so the field can be dropped from the type.
+  // The value itself is never logged.
+  if (body.fullName !== undefined) {
+    console.warn('worker-web-signup: ignoring deprecated fullName field (phone-only signup)');
   }
 
   const userPoolId = process.env.WORKER_POOL_ID;
@@ -50,12 +60,10 @@ export const handler = async (
     // Hardening (2026-07-26 security review): this endpoint is
     // unauthenticated, so NOTHING the caller supplies is identity proof.
     // The account is created with phone_number_verified='false' (flipped by
-    // verify-auth-challenge.ts on the first correct OTP) and WITHOUT the
-    // caller's fullName — pre-marking a stranger's number "verified" with an
-    // attacker-chosen name was a pre-registration poisoning vector. The name
-    // reaches the DB moments later through the authenticated post-OTP
-    // profile update the frontend already performs on every signup
-    // (WorkerAuthForm's pendingWorkerProfile → PATCH /worker/profile).
+    // verify-auth-challenge.ts on the first correct OTP) — pre-marking a
+    // stranger's number "verified" was a pre-registration poisoning vector.
+    // R2 removed the name from this endpoint entirely: the worker types it
+    // at `profile.name`, inside the authenticated onboarding flow.
     try {
       await cognito.send(new AdminCreateUserCommand({
         UserPoolId: userPoolId,
@@ -77,12 +85,8 @@ export const handler = async (
       });
       // '' is a safe no-op through reconcile_worker_signup's NULLIF/COALESCE:
       // it never clobbers an existing users.full_name and leaves a new row's
-      // name NULL for the authenticated post-OTP update to fill.
+      // name NULL for `profile.name` to fill.
       await seedWorkerUser(repaired.cognitoSub, phone, '');
-      // Stage the caller-supplied name for promotion on the first correct
-      // OTP (see stageWorkerPendingName below) so a worker who closes the
-      // tab before the authenticated post-OTP PATCH still gets a name.
-      await stageWorkerPendingName(repaired.cognitoSub, fullName);
       return json(200, { ok: true });
     }
 
@@ -96,15 +100,11 @@ export const handler = async (
       throw new Error('Unable to resolve Cognito sub for worker signup.');
     }
 
-    // Same rationale as the reconcile branch: the users row is seeded
-    // WITHOUT the caller-supplied name; the authenticated post-OTP profile
-    // update owns it. `fullName` is still validated above purely as an API
-    // contract check (the frontend always sends it).
+    // Same rationale as the reconcile branch: the users row is seeded with
+    // `cognito_sub` + `phone` and no name. `resolve_worker_internal_id`
+    // (086) resolves that row for the onboarding engine on the very next
+    // request.
     await seedWorkerUser(cognitoSub, phone, '');
-    // Stage the caller-supplied name for promotion on the first correct OTP
-    // (see stageWorkerPendingName below) so a worker who closes the tab
-    // before the authenticated post-OTP PATCH still gets a name.
-    await stageWorkerPendingName(cognitoSub, fullName);
     await ensureWorkerGroup(userPoolId, phone);
 
     await cognito.send(new AdminSetUserPasswordCommand({
@@ -158,30 +158,6 @@ async function seedWorkerUser(cognitoSub: string, phone: string, fullName: strin
     throw err;
   } finally {
     client.release();
-  }
-}
-
-// Stages the caller-supplied name for promote_worker_pending_name to adopt
-// on the first correct OTP (verify-auth-challenge.ts) -- never displayed and
-// never trusted as identity until that promotion happens. A later signup
-// submission for the same worker intentionally overwrites an earlier
-// pending value (stage_worker_pending_name's UPDATE, migration 052), so a
-// squatter who pre-creates an account cannot hold a name against the real
-// owner by staging first. Nothing is promoted without a correct OTP, and
-// staging is best-effort: it must never fail the signup response.
-async function stageWorkerPendingName(cognitoSub: string, fullName: string): Promise<void> {
-  try {
-    const pool = await getDbPool();
-    const client = await pool.connect();
-    try {
-      await client.query('SELECT stage_worker_pending_name($1, $2)', [cognitoSub, fullName]);
-    } finally {
-      client.release();
-    }
-  } catch (err) {
-    console.warn('worker-web-signup: failed to stage pending name (signup unaffected)', {
-      err: errorMessage(err),
-    });
   }
 }
 

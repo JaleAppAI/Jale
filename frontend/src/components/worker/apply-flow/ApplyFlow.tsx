@@ -151,7 +151,11 @@ export function ApplyFlow({
   // is a supported key, and this is the separate defensive exclusion -- a
   // new-shape job must never carry it in `required_docs` once it has named
   // certs (job-requirements.ts's own invariant).
-  const missingLegacyDocs = supportedDocs.filter(
+  // Deduped, matching `DocumentsCertificationsStep`'s own gate: `required_docs`
+  // is raw wire data whose CHECK does not forbid a repeat, and the two lists
+  // must agree exactly or the step nav would offer a Continue the step itself
+  // refuses (or the reverse).
+  const missingLegacyDocs = Array.from(new Set(supportedDocs)).filter(
     (doc) => (hasCerts ? doc !== 'certification_doc' : true) && !hasDoc(doc),
   );
   const canAdvanceFromDocuments = (

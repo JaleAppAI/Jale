@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   isGreetingKeyword,
   isExactGreetingKeyword,
@@ -14,8 +16,6 @@ import {
   parseMediaPayload,
   parseProfileAnswer,
   parseProfilePayloadAnswer,
-  getTrustOptions,
-  buildTrustQuestion,
   parseTypedJobAction,
   computeNextField,
   PROFILE_FIELDS,
@@ -458,13 +458,40 @@ describe('flows.ts — computeNextField', () => {
   });
 });
 
-describe('flows.ts — trust signals', () => {
-  it('returns trade-specific specialization options', () => {
-    expect(getTrustOptions(0, 'electrician')).toEqual([
-      'Residential',
-      'Commercial',
-      'Industrial',
-    ]);
+describe('flows.ts — the numbered trust menu is gone (sprint 22 R1-A)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const flows = require('../../../../../lambda/whatsapp/lib/flows');
+
+  it.each([
+    'TRUST_QUESTIONS',
+    'SENIORITY_OPTIONS',
+    'TRUST_STEPS',
+    'getTrustOptions',
+    'buildTrustQuestion',
+    'trustOptionLabel',
+    'TRUST_OPTION_LABELS_ES',
+  ])('no longer exports %s', (name) => {
+    expect(flows[name]).toBeUndefined();
+  });
+
+  it('carries no "Reply with the number" trust prompt text anywhere in the module', () => {
+    // The five standard trades now get three OPEN questions from the
+    // per-trade cache; a menu label gives the AI scorer nothing to grade.
+    const source = readFileSync(
+      join(__dirname, '../../../../../lambda/whatsapp/lib/flows.ts'),
+      'utf8',
+    );
+    expect(source).not.toContain('Reply with the number');
+    expect(source).not.toContain('Responde con el numero');
+  });
+
+  it('drops building_trust_signal / building_custom_trust from ConversationState', () => {
+    const source = readFileSync(
+      join(__dirname, '../../../../../lambda/whatsapp/lib/flows.ts'),
+      'utf8',
+    );
+    expect(source).not.toContain('building_trust_signal');
+    expect(source).not.toContain('building_custom_trust');
   });
 
   describe('isHelpCommand / isProfileCommand', () => {
@@ -501,38 +528,6 @@ describe('flows.ts — trust signals', () => {
       'rejects the near-match "%s"',
       (input) => expect(isSupportCommand(input)).toBe(false),
     );
-  });
-
-  it('returns shared seniority options', () => {
-    expect(getTrustOptions(1, 'plumber')).toEqual([
-      'Helper',
-      'Can work alone',
-      'Lead crew',
-    ]);
-  });
-
-  it('falls back to other for unknown trades', () => {
-    expect(getTrustOptions(2, 'welder')).toEqual([
-      'Use power tools',
-      'Read plans',
-      'Site cleanup/safety',
-    ]);
-  });
-
-  it('builds a numbered trust question', () => {
-    const question = buildTrustQuestion(0, 'electrician', 'en');
-    expect(question).toContain('One more question');
-    expect(question).toContain('What is your specialty?');
-    expect(question).toContain('1. Residential');
-    expect(question).toContain('Reply with the number.');
-  });
-
-  it('builds Spanish trust questions without profile headers', () => {
-    const question = buildTrustQuestion(0, 'electrician', 'es');
-    expect(question).toContain('Una pregunta mas');
-    expect(question).toContain('En que te especializas?');
-    expect(question).toContain('1. Residencial');
-    expect(question).not.toContain('Perfil de confianza');
   });
 
 });

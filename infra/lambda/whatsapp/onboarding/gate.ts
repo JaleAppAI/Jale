@@ -46,6 +46,18 @@ const UNIMPLEMENTED_STEPS = new Set<string>([
   'profile.photo_type',
 ]);
 
+/**
+ * R2-C23: the web door skips `applyGate` entirely (see
+ * `dispatchWebBoundStep`), so it needs this same list to refuse a run parked
+ * on a handler-less step. Without it `handleProfileAndTrust`'s terminal
+ * `unhandled bound step` throw would surface as a 500 instead of the 422 the
+ * HTTP contract owes the browser. A run really can sit here: migration 050
+ * widened the step-key CHECK ahead of the photo handlers landing.
+ */
+export function isUnimplementedBoundStep(stepKey: string): boolean {
+  return UNIMPLEMENTED_STEPS.has(stepKey);
+}
+
 /** RESTART/REINICIAR and BACK/ATRAS (see below) are recognized only within
  * the profile-collection and trust-question steps — not at legal.review (a
  * legal decision isn't an "answer" to redo) and not at the pre-auth/OTP

@@ -1,13 +1,3 @@
-import type { ConversationState } from '../../../../lambda/whatsapp/lib/flows';
-
-describe('ConversationState type', () => {
-  it('includes building_custom_trust', () => {
-    const state: ConversationState = 'building_custom_trust';
-
-    expect(state).toBe('building_custom_trust');
-  });
-});
-
 describe('normalizeProfession', () => {
   it('lowercases and trims', () => {
     const { normalizeProfession } = require('../../../../lambda/whatsapp/handlers/custom-trust');

@@ -35,7 +35,6 @@ import {
   createTrustQuestionGenerator,
   createProfilePersistenceAdapter,
   createOnboardingV2Adapters,
-  standardTrustQuestions,
   normalizeTrade,
   inferCityState,
   type ReconcileUserRowFn,
@@ -636,17 +635,11 @@ describe('TrustQuestionGenerator.generate', () => {
 });
 
 // ── Re-exported trade/trust vocabulary ───────────────────────────────────
-
-describe('standardTrustQuestions', () => {
-  it('returns three questions sourced from TRUST_QUESTIONS', () => {
-    const questions = standardTrustQuestions('electrician');
-    expect(questions).toHaveLength(3);
-    for (const q of questions) {
-      expect(q.q_en.length).toBeGreaterThan(0);
-      expect(q.q_es.length).toBeGreaterThan(0);
-    }
-  });
-});
+//
+// Sprint 22 R1-A: `standardTrustQuestions` (and the flows.ts menu vocabulary
+// it re-exported) is deleted. Every trade — standard or custom — is seeded
+// from the per-trade `trade_questions` cache through
+// `createTrustQuestionGenerator` instead.
 
 describe('normalizeTrade', () => {
   it('lowercases and trims', () => {

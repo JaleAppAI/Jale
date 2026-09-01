@@ -111,6 +111,17 @@ requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'cdk d
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '--no-change-set');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'cdk deploy');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c deletionProtection=true');
+// The flag must ride on ALL FOUR cdk invocations -- plan synth, plan diff,
+// deploy diff, deploy. It is app-global context, so it is what arms
+// DeletionProtection on the RDS instance and on all three Cognito pools; a
+// diff run without it plans INACTIVE and the operator reviews the wrong plan.
+const deletionProtectionFlags = reusableDeploy.match(/-c deletionProtection=true/g) ?? [];
+if (deletionProtectionFlags.length !== 4) {
+  fail(
+    '.github/workflows/_reusable-deploy.yml must pass -c deletionProtection=true on all four cdk '
+    + `invocations (plan synth, plan diff, deploy diff, deploy); found ${deletionProtectionFlags.length}`,
+  );
+}
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLING_EMAIL_FROM_ADDRESS');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, 'BILLING_SES_VERIFIED_IDENTITY_ARN');
 requireIncludes('.github/workflows/_reusable-deploy.yml', reusableDeploy, '-c emailFromAddress=');

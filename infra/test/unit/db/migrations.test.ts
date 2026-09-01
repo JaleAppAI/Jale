@@ -119,6 +119,8 @@ describe('database migrations', () => {
       '085',
       '086',
       '087',
+      '088',
+      '089',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -783,7 +785,7 @@ describe('database migrations', () => {
   });
 
   it('admin analytics definer functions are locked to the console role', () => {
-    const sql = fs.readFileSync(path.join(migrationsDir, '086_admin_analytics.sql'), 'utf8');
+    const sql = fs.readFileSync(path.join(migrationsDir, '088_admin_analytics.sql'), 'utf8');
 
     // Five definer functions, each hardened per the migration-072 pattern.
     // Line-anchored so prose in a comment mentioning "SECURITY DEFINER" can't
@@ -805,7 +807,7 @@ describe('database migrations', () => {
 
   it('087 repairs the analytics definers without widening the console role', () => {
     const sql = fs.readFileSync(
-      path.join(migrationsDir, '087_admin_analytics_rls_repair.sql'),
+      path.join(migrationsDir, '089_admin_analytics_rls_repair.sql'),
       'utf8',
     );
 

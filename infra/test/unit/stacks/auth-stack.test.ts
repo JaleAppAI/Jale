@@ -310,44 +310,64 @@ describe('AuthStack', () => {
     );
   });
 
-  test('VerifyAuthChallenge Lambda has DB_SECRET_ARN environment variable', () => {
-    // Needed to promote a name staged at signup (migration 052) into
-    // users.full_name on the first correct OTP.
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Description: 'Worker pool VerifyAuthChallengeResponse — OTP comparison',
-      Environment: Match.objectLike({
-        Variables: Match.objectLike({
-          DB_SECRET_ARN: Match.anyValue(),
-        }),
-      }),
-    });
+  // ── R2-C4: VerifyAuthChallenge is a pure Cognito trigger ───────────────
+  //
+  // It used to promote a name staged at signup (migration 052's
+  // promote_worker_pending_name) into users.full_name on the first correct
+  // OTP, which is what the DB_SECRET_ARN, the VPC attachment and the
+  // dbSecret.grantRead() were for. R2 made web signup phone-only — the name
+  // is collected at `profile.name` inside the onboarding flow — so the
+  // handler opens no pool at all and all three are gone. These three tests
+  // are the lock: an accidental re-add would put a Cognito trigger back
+  // inside the VPC (cold-start cost on every login) and hand it a database
+  // credential it has no use for.
+
+  /** The synthesized VerifyAuthChallenge function, by its unique Description. */
+  function verifyAuthChallengeFn(): { logicalId: string; resource: any } {
+    const fns = template.findResources('AWS::Lambda::Function');
+    const entries = Object.entries(fns).filter(([, resource]: [string, any]) =>
+      resource.Properties?.Description === 'Worker pool VerifyAuthChallengeResponse — OTP comparison');
+    expect(entries).toHaveLength(1);
+    const [logicalId, resource] = entries[0];
+    return { logicalId, resource };
+  }
+
+  test('VerifyAuthChallenge Lambda is NOT attached to the VPC', () => {
+    const { resource } = verifyAuthChallengeFn();
+    expect(resource.Properties.VpcConfig).toBeUndefined();
   });
 
-  test('VerifyAuthChallenge Lambda has a Secrets Manager read grant for the DB secret', () => {
-    // grantRead() emits a statement with BOTH GetSecretValue and
-    // DescribeSecret on the exact secret resource. PostConfirmationLambda
-    // already grantRead()s props.dbSecret (the RDS master secret), so if
-    // VerifyAuthChallengeLambda grants the same way, the identical Resource
-    // token must appear in at least two distinct statements — this also
-    // rules out matching on the unrelated Twilio secret grants, whose
-    // Resource token differs.
+  test('VerifyAuthChallenge Lambda has no DB_SECRET_ARN environment variable', () => {
+    const { resource } = verifyAuthChallengeFn();
+    const variables = resource.Properties.Environment?.Variables ?? {};
+    expect(Object.keys(variables)).not.toContain('DB_SECRET_ARN');
+  });
+
+  test('VerifyAuthChallenge Lambda role carries no secretsmanager:GetSecretValue', () => {
+    // Resolve the function's own role, then scan every IAM policy attached
+    // to it. Matching on the Description alone would not catch a grant,
+    // because grantRead() writes to the ROLE, not the function.
+    const { resource } = verifyAuthChallengeFn();
+    const roleLogicalId = resource.Properties.Role['Fn::GetAtt'][0];
+
     const policies = template.findResources('AWS::IAM::Policy');
-    const dbSecretReadResources = Object.values(policies)
-      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement)
-      .filter((statement: any) => {
-        const actions = Array.isArray(statement.Action) ? statement.Action : [statement.Action];
-        return actions.includes('secretsmanager:GetSecretValue')
-          && actions.includes('secretsmanager:DescribeSecret');
-      })
-      .map((statement: any) => JSON.stringify(statement.Resource));
+    const statementsOnThisRole = Object.values(policies)
+      .filter((policy: any) => (policy.Properties.Roles ?? []).some(
+        (role: any) => role?.Ref === roleLogicalId))
+      .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement);
 
-    const counts = new Map<string, number>();
-    for (const resource of dbSecretReadResources) {
-      counts.set(resource, (counts.get(resource) ?? 0) + 1);
-    }
-    const maxSharedResourceCount = Math.max(0, ...Array.from(counts.values()));
+    // Sanity: the role IS policed (the AdminUpdateUserAttributes grant), so
+    // an empty list would make the assertion below vacuous.
+    expect(statementsOnThisRole.length).toBeGreaterThan(0);
+    expect(statementsOnThisRole.flatMap((statement: any) =>
+      (Array.isArray(statement.Action) ? statement.Action : [statement.Action])))
+      .not.toContain('secretsmanager:GetSecretValue');
 
-    expect(maxSharedResourceCount).toBeGreaterThanOrEqual(2);
+    // ...and the managed policies it does keep are the Lambda basics, never
+    // the VPC-access one that a `vpc:` prop would have added.
+    const role = template.findResources('AWS::IAM::Role')[roleLogicalId];
+    const managed = JSON.stringify(role.Properties.ManagedPolicyArns ?? []);
+    expect(managed).not.toContain('AWSLambdaVPCAccessExecutionRole');
   });
 
   test('CreateAuthChallenge errors raise a CloudWatch alarm', () => {
@@ -554,5 +574,105 @@ describe('AuthStack — SES context validation', () => {
       sesEmailFromAddress: 'ci-synth@jaleapp.ai',
       sesEmailRegion: 'us-east-2',
     })).toThrow(/sesEmailRegion must be one of/);
+  });
+});
+
+/**
+ * G1 (sprint 22 R2-G): both live pools carry real registered users, and until
+ * now nothing stopped a mis-scoped `cdk destroy` — or a template change that
+ * replaced the pool — from deleting them. DeletionProtection is driven by the
+ * app-global `deletionProtection` CDK context flag, which
+ * .github/workflows/_reusable-deploy.yml passes as `-c deletionProtection=true`
+ * on all four cdk invocations.
+ *
+ * The resolver is FAIL-SAFE (`!== false`, same as database-stack.ts): only an
+ * explicit false disarms. A synth that forgets the flag entirely must not emit
+ * INACTIVE over two live pools.
+ */
+describe('AuthStack Cognito DeletionProtection', () => {
+  const buildTemplate = (idPrefix: string, deletionProtection?: unknown): Template => {
+    const context: Record<string, unknown> = {
+      environment: 'production',
+      otpSmsFromNumber: '+15125550123',
+    };
+    if (deletionProtection !== undefined) {
+      context.deletionProtection = deletionProtection;
+    }
+    const app = new cdk.App({ context });
+    const network = new NetworkStack(app, `${idPrefix}NetworkStack`);
+    const database = new DatabaseStack(app, `${idPrefix}DatabaseStack`, { network });
+    const auth = new AuthStack(app, `${idPrefix}AuthStack`, {
+      vpc: network.vpc,
+      privateSubnets: network.privateSubnets,
+      lambdaSg: network.lambdaSg,
+      dbSecret: database.dbSecret,
+    });
+    return Template.fromStack(auth);
+  };
+
+  const userPools = (template: Template): Array<Record<string, unknown>> =>
+    Object.values(template.findResources('AWS::Cognito::UserPool'))
+      .map((resource) => (resource as { Properties: Record<string, unknown> }).Properties);
+
+  // The CLI hands `-c deletionProtection=true` through as the STRING 'true'.
+  // Testing only the boolean would pass green while prod shipped INACTIVE.
+  // The no-context row is the fail-safe case: a scratch synth or a stack built
+  // outside the app must not plan INACTIVE over a live pool.
+  test.each([
+    ['the string CI actually passes', 'DpOnStr', 'true'],
+    ['a boolean from cdk.json', 'DpOnBool', true],
+    ['no context at all (fail-safe)', 'DpAbsent', undefined],
+    ['an unrecognised value', 'DpOnJunk', 'yes'],
+  ])('every pool is ACTIVE with %s', (_label, idPrefix, value) => {
+    const pools = userPools(buildTemplate(idPrefix, value));
+    expect(pools).toHaveLength(2);
+    for (const pool of pools) {
+      expect(pool.DeletionProtection).toBe('ACTIVE');
+    }
+  });
+
+  // Only an explicit false disarms — and `-c deletionProtection=false` arrives
+  // as the STRING 'false', so both spellings have to be honoured or a
+  // deliberate dev opt-out silently keeps the pool protected.
+  test.each([
+    ['a boolean false (cdk.json dev value)', 'DpFalseBool', false],
+    ['the string a -c flag produces', 'DpFalseStr', 'false'],
+  ])('pools stay disposable with %s', (_label, idPrefix, value) => {
+    const pools = userPools(buildTemplate(idPrefix, value));
+    expect(pools).toHaveLength(2);
+    for (const pool of pools) {
+      expect(pool.DeletionProtection === undefined || pool.DeletionProtection === 'INACTIVE')
+        .toBe(true);
+    }
+  });
+
+  // The deploy risk worth guarding is a REPLACEMENT: CloudFormation replaces a
+  // user pool when UserPoolName, the schema/custom attributes or the alias
+  // configuration change, and a replacement deletes the old pool with every
+  // user in it. Diffing the two synthesized pools proves this change touches
+  // exactly one property and none of those.
+  test('turning DeletionProtection on changes nothing else on either pool', () => {
+    // Identical construct ids in two separate apps: path-derived values (the
+    // SMS role ExternalId, asset hashes) must be equal so a real difference
+    // stands out.
+    const off = buildTemplate('DpDiff', false);
+    const on = buildTemplate('DpDiff', 'true');
+    const offPools = off.findResources('AWS::Cognito::UserPool');
+    const onPools = on.findResources('AWS::Cognito::UserPool');
+    expect(Object.keys(onPools).sort()).toEqual(Object.keys(offPools).sort());
+
+    for (const logicalId of Object.keys(offPools)) {
+      const before = { ...(offPools[logicalId] as any).Properties };
+      const after = { ...(onPools[logicalId] as any).Properties };
+      expect(after.DeletionProtection).toBe('ACTIVE');
+      delete before.DeletionProtection;
+      delete after.DeletionProtection;
+      expect(after).toEqual(before);
+      // Belt and braces on the three replacement triggers.
+      expect(after.UserPoolName).toBe(before.UserPoolName);
+      expect(after.Schema).toEqual(before.Schema);
+      expect(after.AliasAttributes ?? after.UsernameAttributes)
+        .toEqual(before.AliasAttributes ?? before.UsernameAttributes);
+    }
   });
 });

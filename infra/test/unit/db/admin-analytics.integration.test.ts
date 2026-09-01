@@ -2,10 +2,10 @@
  * admin-analytics.integration.test.ts
  *
  * PostgreSQL-backed behavioral + privilege tests for the five SECURITY DEFINER
- * analytics functions introduced in migration 086 (admin console Analytics tab).
+ * analytics functions introduced in migration 088 (admin console Analytics tab).
  *
  * Connection: set JALE_TEST_DATABASE_URL to a local Postgres 16 URL with the full
- * migration chain (001→086) already applied. When absent, the whole suite is
+ * migration chain (001→089) already applied. When absent, the whole suite is
  * explicitly skipped and the concern is logged (Rule 11: no silent skips).
  *
  * The URL must point to an already-migrated database (migrations are NOT applied
@@ -291,9 +291,9 @@ maybeDescribe('admin analytics definer functions', () => {
     // `users` is deliberately NOT in this list. jale_admin_console has had
     // column-level SELECT on users plus the `users_admin_console_read`
     // (USING true) policy since the admin-panel migrations (026/027) — that
-    // predates 086 and is what the existing admin console screens run on.
+    // predates 088 and is what the existing admin console screens run on.
     // The four below have no console grant at all, so the definer functions
-    // are the console's only path to them; that is the property 086 must not
+    // are the console's only path to them; that is the property 088 must not
     // regress.
     for (const table of ['jobs', 'subscriptions', 'job_conversation_messages', 'whatsapp_processed_messages']) {
       await expect(asConsole(consoleUrl, (c) =>

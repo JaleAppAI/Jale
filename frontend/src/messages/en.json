@@ -265,7 +265,7 @@
       "title": "Sign in with your phone",
       "phone_label": "We'll text you a 6-digit code to sign in.",
       "signup_title": "Create your worker profile",
-      "signup_subtitle": "Answer the same questions we ask on WhatsApp so employers can match with you.",
+      "signup_subtitle": "Enter your phone number. We'll text you a code, then set up your profile together.",
       "signup_prompt": "New to Jale?",
       "signup_link": "Create an account",
       "confirm_title": "Confirm your account",
@@ -282,40 +282,10 @@
       "otp_label": "Enter the code we sent you",
       "verify": "Verify",
       "back": "Back",
-      "yes": "Yes",
-      "no": "No",
       "fields": {
-        "full_name": "Full name",
-        "phone": "Phone number",
-        "city": "City or zip code",
-        "main_trade": "Main trade",
-        "main_trade_other": "Trade",
-        "years_experience": "Years of experience",
-        "has_transportation": "Own transportation",
-        "availability": "Availability"
-      },
-      "trades": {
-        "electrician": "Electrician",
-        "plumber": "Plumber",
-        "carpenter": "Carpenter",
-        "concrete": "Concrete",
-        "painting": "Painting",
-        "other": "Other"
-      },
-      "experience": {
-        "0-1": "0-1 years",
-        "2-4": "2-4 years",
-        "5-9": "5-9 years",
-        "10plus": "10+ years"
-      },
-      "availability": {
-        "full_time": "Full-time",
-        "part_time": "Part-time",
-        "weekends": "Weekends",
-        "flexible": "Flexible"
+        "phone": "Phone number"
       },
       "errors": {
-        "trade_other_required": "Please enter your trade.",
         "account_exists": "We could not continue with that phone number. Check it and try again.",
         "account_not_found": "We could not continue with that phone number. Check it and try again.",
         "invalid_phone": "Enter a valid phone number, including the area code.",
@@ -858,9 +828,6 @@
       "post_without_template": "Post without saving template"
     },
     "worker_profile": {
-      "doc_resume": "Resume",
-      "doc_driver_license": "Driver's License",
-      "doc_ssn": "SSN Card",
       "years_experience": "{years, plural, one {# yr exp} other {# yrs exp}}"
     },
     "post_job_docs": {
@@ -942,9 +909,14 @@
     "trust_status_scoring": "Scoring in progress",
     "trust_status_scored": "Assessment scored",
     "trust_status_failed": "Scoring unavailable",
-    "trust_selected_prefix": "Selected:",
     "trust_voice_badge": "Voice answer",
     "trust_empty": "This worker hasn't completed a trust assessment yet.",
+    "extraction_title": "From their answers",
+    "extraction_pending": "Reading their answers...",
+    "extraction_failed": "We couldn’t summarize these answers — read them below.",
+    "extraction_empty": "Not enough detail in their answers to summarize.",
+    "certifications": "Certifications",
+    "experience_months": "{months} months",
     "availability": {
       "immediate": "Immediate",
       "2_weeks": "2 weeks",
@@ -986,11 +958,6 @@
     "success_body": "The employer has been notified.",
     "error_size": "File must be under 10 MB",
     "error_type": "Only JPG, PNG, or PDF files are accepted",
-    "doc_resume": "Resume",
-    "doc_driver_license": "Driver's License",
-    "doc_ssn": "SSN Card / ITIN",
-    "doc_work_auth_doc": "Work Authorization Document",
-    "doc_certification_doc": "Certification",
     "error_upload": "Upload failed. Please try again.",
     "error_submit": "Submission failed. Please try again.",
     "error_already_received": "We already received this document through this link.",
@@ -1046,11 +1013,6 @@
     "no_city_jobs": "Nothing in your cities right now.",
     "required_docs_label": "Documents needed",
     "results_count": "{count, plural, one {# job found} other {# jobs found}}",
-    "doc_labels": {
-      "resume": "Resume",
-      "driver_license": "Driver's License",
-      "ssn": "SSN Card / ITIN"
-    },
     "job_type": {
       "full-time": "40 hrs/wk",
       "part-time": "Part-time",
@@ -1096,11 +1058,6 @@
     "page_title": "Job details",
     "doc_ok": "Uploaded",
     "doc_missing": "Missing",
-    "doc_labels": {
-      "resume": "Resume",
-      "driver_license": "Driver's License",
-      "ssn": "SSN Card / ITIN"
-    },
     "job_type": {
       "full-time": "Full-time",
       "part-time": "Part-time",
@@ -1152,6 +1109,7 @@
       "progress_saved": "Your progress is saved.",
       "prefilled_hint": "From your last application — edit if needed",
       "legacy_doc_notice": "This can’t be uploaded online — the employer may ask for it in person.",
+      "unknown_doc_notice": "We don’t recognize this requirement — ask the employer what they need before you apply.",
       "cert_question": "Do you have {name}?",
       "cert_use_vault": "Use {file} from your vault",
       "cert_upload_new": "Upload new",
@@ -1280,7 +1238,8 @@
       "empty_body": "Workers who apply to this posting show up here. Share the public link below to reach more people.",
       "filtered_title": "No applicants match these filters",
       "filtered_body": "Change the filters, or clear them to see everyone who applied.",
-      "clear_filters": "Clear filters"
+      "clear_filters": "Clear filters",
+      "trust_pill": "Trust {score}"
     },
     "ranking": {
       "loading": "Scoring how well each applicant matches this job...",
@@ -1326,6 +1285,14 @@
     "tracked_caption": "Opens and signups from this link are tracked and credited to your business.",
     "fallback_link_label": "Backup link",
     "fallback_link_untracked": "This link works, but opens and signups from it won't be tracked or credited to your business. Try \"Get share link\" again later for a trackable link."
+  },
+  "doc_types": {
+    "resume": "Resume",
+    "driver_license": "Driver's License",
+    "work_auth_doc": "Work Authorization Document",
+    "certification_doc": "Certification",
+    "ssn": "SSN Card / ITIN",
+    "other": "Other document"
   },
   "job_requirements": {
     "picker": {
@@ -1695,5 +1662,155 @@
     "success_settings_hint": "You can turn the daily digest back on at any time under Notifications in your Jale settings.",
     "error_title": "This link is no longer valid",
     "error_body": "You can manage digest emails under Notifications in your Jale settings."
+  },
+  "worker_vocab": {
+    "trade": {
+      "electrician": "Electrician",
+      "plumber": "Plumber",
+      "carpenter": "Carpenter",
+      "concrete": "Concrete",
+      "painting": "Painting",
+      "other": "Other"
+    },
+    "experience": {
+      "0-1": "Less than a year",
+      "2-4": "2–4 years",
+      "5-9": "5–9 years",
+      "10+": "10+ years"
+    },
+    "availability": {
+      "full_time": "Full-time",
+      "part_time": "Part-time",
+      "weekends": "Weekends",
+      "flexible": "Flexible"
+    },
+    "transport": {
+      "yes": "Yes",
+      "no": "No"
+    }
+  },
+  "worker_onboarding": {
+    "header": {
+      "language_group": "Language",
+      "language_en": "EN",
+      "language_es": "ES"
+    },
+    "progress": {
+      "label": "Step {current} of {total}",
+      "counter": "{current} / {total}"
+    },
+    "common": {
+      "back": "Back",
+      "coming_soon": "Coming soon",
+      "voice_badge": "voice",
+      "typed_badge": "typed",
+      "go_to_profile": "Go to my profile"
+    },
+    "terms": {
+      "title": "Before we start",
+      "subtitle": "A quick read. Your answers are shared only with employers you apply to.",
+      "info_title": "How Jale uses your information",
+      "info_body": "Your name, trade, location and answers are shown to employers only when you apply to their job. We never sell your data.",
+      "messages_title": "Messages",
+      "messages_body": "By continuing you agree to receive job messages by SMS and WhatsApp. Reply STOP any time.",
+      "terms_title": "Terms of service",
+      "terms_body": "Full terms at jaleapp.ai/legal/terms · Privacy at jaleapp.ai/legal/privacy.",
+      "cta": "I accept and continue"
+    },
+    "about": {
+      "title": "About you",
+      "subtitle": "Employers see this on your applications.",
+      "first_name": "First name",
+      "last_name": "Last name",
+      "location": "Where you live",
+      "location_placeholder": "City or ZIP — e.g. El Paso or 79901",
+      "location_help": "Pick your city from the list, or type a 5-digit ZIP.",
+      "zip": "ZIP",
+      "clear_location": "Change location",
+      "confirm_title": "Did you mean {city}, {state}?",
+      "confirm_yes": "Yes, that's right",
+      "confirm_no": "No, let me change it",
+      "cta": "Continue"
+    },
+    "trade": {
+      "title": "What's your trade?",
+      "subtitle": "Pick the one you do most.",
+      "other_label": "Your trade",
+      "other_placeholder": "Type your trade, e.g. welder, drywall, roofer",
+      "cta": "Continue"
+    },
+    "work": {
+      "title": "Your work",
+      "years": "Time in this trade",
+      "transport": "Do you have your own transportation?",
+      "availability": "When can you work?",
+      "cta": "Continue"
+    },
+    "question": {
+      "eyebrow": "Question {number} of 3",
+      "intro": "In your own words. Type or tap the mic.",
+      "placeholder": "Write your answer here…",
+      "must": "Employers read these three answers to decide who to hire — they're required.",
+      "too_short": "A little more, please — at least {count} characters.",
+      "chars": "{count} characters",
+      "mic_label": "Record a voice note",
+      "voice_note": "From your voice note — edit if anything is wrong.",
+      "cta": "Next",
+      "too_long": "That's too long — keep it under {count} characters."
+    },
+    "trust": {
+      "complete_cta": "Complete your questions",
+      "complete_note": "You won't be able to change your answers after this."
+    },
+    "photo": {
+      "title": "Add a photo?",
+      "subtitle": "Optional. Workers with a photo get more replies.",
+      "add": "Choose a photo",
+      "finish": "Finish",
+      "skip": "Skip for now"
+    },
+    "done": {
+      "title": "You're all set",
+      "subtitle": "Employers can now find you. Here's what they'll see.",
+      "profile_heading": "Your profile",
+      "own_words": "In your own words",
+      "working": "Reading your answers…",
+      "working_body": "We're pulling out the skills you mentioned. This takes a moment — you can keep going.",
+      "extracted": "We extracted these skills from your answers. You're good to go on Jale.",
+      "failed": "We couldn't read your answers this time. Employers still see them in your own words.",
+      "stalled": "We couldn't finish reading your answers yet — you're good to go on Jale.",
+      "cta": "Go to my profile",
+      "cta_job": "Continue to the job"
+    },
+    "summary": {
+      "name": "Name",
+      "location": "Location",
+      "trade": "Trade",
+      "experience": "Experience",
+      "transportation": "Own transportation",
+      "availability": "Availability",
+      "empty": "—"
+    },
+    "rejection": {
+      "generic": "We couldn't accept that — check it and try again.",
+      "reason": {
+        "too_short": "A little more, please — at least {min} characters.",
+        "too_long": "That's too long — keep it under {max} characters.",
+        "custom_trade": {
+          "too_short": "Tell us your trade in {min}–{max} characters.",
+          "too_long": "Tell us your trade in {min}–{max} characters.",
+          "invalid": "That doesn't look like a trade — plain letters and numbers only."
+        },
+        "location": {
+          "too_long": "That city or state name is too long — use the short form."
+        }
+      },
+      "step_mismatch": "Your progress was updated from another device — check this step and continue."
+    },
+    "blocked": {
+      "suspended": "This account is on hold, so onboarding cannot continue. Reply to any Jale message and we will look into it.",
+      "not_onboardable": "We cannot set up this account right now. Reply to any Jale message and we will help."
+    },
+    "stuck": "Finish this step on WhatsApp, or come back later."
   }
 }

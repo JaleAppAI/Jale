@@ -12,9 +12,8 @@ import type { LocationSource } from '@/lib/location-search';
 import type { PreferredCity, WorkerProfileData, WorkerProfilePatch } from '@/lib/api/worker';
 import { splitDedupe } from '@/lib/text';
 import { validateWorkerProfileFields, type WorkerProfileField } from '@/lib/worker-profile-form';
+import { AVAILABILITY_KEYS } from '@/lib/worker-vocab';
 import { useErrorMessage } from '@/hooks/useErrorMessage';
-
-const AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'] as const;
 
 const FIELD_LABEL_KEY: Record<WorkerProfileField, string> = {
   full_name: 'full_name',
@@ -134,7 +133,7 @@ export function ProfileEditForm(props: {
           value={availability}
           onChange={(e) => setAvailability(e.target.value)}
         >
-          {AVAILABILITY.map((a) => <option key={a} value={a}>{t(`availability.${a}`)}</option>)}
+          {AVAILABILITY_KEYS.map((a) => <option key={a} value={a}>{t(`availability.${a}`)}</option>)}
         </Select>
       </LabeledField>
 

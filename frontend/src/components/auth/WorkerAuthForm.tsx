@@ -8,12 +8,9 @@ import { workerSignIn, workerSignUp, workerVerifyOtp } from '@/lib/cognito';
 import { authErrorKey } from '@/lib/auth-errors';
 import { formatPhoneNumber, type PhoneCountryCode } from '@/lib/phone';
 import type { CognitoUser } from 'amazon-cognito-identity-js';
-import { claimReferral, type WorkerAvailability, type WorkerExperience, type WorkerProfilePatch, type WorkerTrade } from '@/lib/api/worker';
+import { claimReferral, getWorkerOnboarding } from '@/lib/api/worker';
 import { Button } from '@/components/ui/button';
 import { InlineFeedback } from '@/components/ui/inline-feedback';
-import { Input } from '@/components/ui/input';
-import { LocationPicker } from '@/components/ui/LocationPicker';
-import { Select } from '@/components/ui/select';
 import { PhoneNumberField } from '@/components/auth/PhoneNumberField';
 import {
     stashPendingReferral,
@@ -25,9 +22,6 @@ import {
 } from '@/lib/referral-return';
 
 const OTP_LENGTH = 6;
-const TRADES: WorkerTrade[] = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
-const EXPERIENCE: WorkerExperience[] = ['0-1', '2-4', '5-9', '10+'];
-const AVAILABILITY: WorkerAvailability[] = ['full_time', 'part_time', 'weekends', 'flexible'];
 const RESEND_CODE_COOLDOWN_SECONDS = 60;
 
 type Step = 'login' | 'signup' | 'otp';
@@ -57,15 +51,12 @@ export default function WorkerAuthForm() {
     }, []);
 
     const [step, setStep] = useState<Step>('login');
+    // Which door this OTP screen was reached through. `step` cannot answer it
+    // -- both doors set it to 'otp' -- and the two want different fallbacks
+    // once the code is accepted (see `handleVerifyOtp`).
+    const [isSignup, setIsSignup] = useState(false);
     const [phoneCountryCode, setPhoneCountryCode] = useState<PhoneCountryCode>('+1');
     const [phoneLocalNumber, setPhoneLocalNumber] = useState('');
-    const [fullName, setFullName] = useState('');
-    const [city, setCity] = useState('');
-    const [mainTrade, setMainTrade] = useState<WorkerTrade>('electrician');
-    const [mainTradeOther, setMainTradeOther] = useState('');
-    const [yearsExperience, setYearsExperience] = useState<WorkerExperience>('0-1');
-    const [hasTransportation, setHasTransportation] = useState<boolean>(true);
-    const [availability, setAvailability] = useState<WorkerAvailability>('full_time');
     const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
     const [user, setUser] = useState<CognitoUser | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -88,17 +79,6 @@ export default function WorkerAuthForm() {
         return () => window.clearTimeout(timeoutId);
     }, [resendCooldownSeconds]);
 
-    const pendingProfile = (): WorkerProfilePatch => ({
-        full_name: fullName.trim(),
-        city: city.trim(),
-        location: city.trim(),
-        main_trade: mainTrade,
-        main_trade_other: mainTrade === 'other' ? mainTradeOther.trim() : null,
-        years_experience: yearsExperience,
-        has_transportation: hasTransportation,
-        availability,
-    });
-
     const handleSendOtp = async () => {
         setError(null);
         setResendSuccess(false);
@@ -107,6 +87,7 @@ export default function WorkerAuthForm() {
             setUser(await workerSignIn(phone));
             resetDigits();
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+            setIsSignup(false);
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
         } catch (err) {
@@ -119,17 +100,13 @@ export default function WorkerAuthForm() {
     const handleCreateAccount = async () => {
         setError(null);
         setResendSuccess(false);
-        if (mainTrade === 'other' && !mainTradeOther.trim()) {
-            setError(t('errors.trade_other_required'));
-            return;
-        }
         setIsLoading(true);
         try {
-            await workerSignUp({ phone, fullName });
-            sessionStorage.setItem('pendingWorkerProfile', JSON.stringify(pendingProfile()));
+            await workerSignUp({ phone });
             setUser(await workerSignIn(phone));
             resetDigits();
             setResendCooldownSeconds(RESEND_CODE_COOLDOWN_SECONDS);
+            setIsSignup(true);
             setStep('otp');
             setTimeout(() => inputRefs.current[0]?.focus(), 50);
         } catch (err) {
@@ -180,15 +157,36 @@ export default function WorkerAuthForm() {
                 claimReferral(tokens.idToken, stash.shareCode).catch(() => {});
             }
 
-            // Signup left a pendingWorkerProfile stash -- /worker/profile is
-            // the only page that applies it, so it must always be the next
-            // stop for a fresh signup. It reads pendingReferral itself once
-            // the profile save lands, and continues on to the job from
-            // there. A login (no pendingWorkerProfile) goes straight to the
-            // validated job, same as before.
-            const isSignup = Boolean(sessionStorage.getItem('pendingWorkerProfile'));
-            if (isSignup) {
-                router.push('/worker/profile');
+            // Signup and login take the SAME next hop now, and the run itself
+            // decides it: anyone the engine still considers `onboarding` --
+            // a fresh signup, or a returning worker who abandoned the flow
+            // half-way (on either door) -- goes to /worker/onboarding.
+            //
+            // The referral stash is deliberately LEFT in place on that path:
+            // the flow's summary screen reads it and hands the worker on to
+            // the job they were applying for once onboarding is done.
+            //
+            // A read that fails (offline, or the endpoint down) must never
+            // strand a worker who has just proved their phone number, so it
+            // falls back to the destination this form used before.
+            let lifecycle: string | null = null;
+            try {
+                lifecycle = (await getWorkerOnboarding(tokens.idToken)).lifecycle;
+            } catch {
+                lifecycle = null;
+            }
+
+            // A read that failed tells us nothing, so the two doors part ways
+            // here. After a SIGNUP there is no profile worth showing and the
+            // run is certainly unfinished, so send them to the flow and let it
+            // do the error handling it already has (retry, and a way out).
+            // After a LOGIN the old destination is still the better guess:
+            // most workers signing in are done onboarding, and dropping them
+            // into a flow they finished months ago would be worse than the
+            // profile page they asked for.
+            const unread = lifecycle === null;
+            if ((lifecycle && lifecycle !== 'ready') || (unread && isSignup)) {
+                router.replace('/worker/onboarding');
             } else {
                 const jobId = validateJobId(stash?.jobId);
                 router.push(jobId ? `/worker/jobs/${jobId}` : '/worker/profile');
@@ -236,7 +234,6 @@ export default function WorkerAuthForm() {
     };
 
     const otpComplete = digits.every(Boolean);
-    const canCreate = fullName.trim() && phoneReady && city.trim() && (mainTrade !== 'other' || mainTradeOther.trim());
 
     return (
         <div className="flex w-full flex-col">
@@ -268,7 +265,6 @@ export default function WorkerAuthForm() {
                     <BackButton onClick={() => { setError(null); setStep('login'); }} label={t('back')} />
                     <AuthHeading title={t('signup_title')} subtitle={t('signup_subtitle')} />
                     <p className="text-xs leading-relaxed text-[var(--jale-ink-2)]">{t('password_note')}</p>
-                    <Field label={t('fields.full_name')}><Input value={fullName} onChange={(e) => setFullName(e.target.value)} autoComplete="name" /></Field>
                     <Field label={t('fields.phone')}>
                         <PhoneNumberField
                             countryCode={phoneCountryCode}
@@ -277,33 +273,8 @@ export default function WorkerAuthForm() {
                             onLocalNumberChange={setPhoneLocalNumber}
                         />
                     </Field>
-                    <Field label={t('fields.city')}><LocationPicker value={city} onChange={(v) => setCity(v.label)} /></Field>
-                    <Field label={t('fields.main_trade')}>
-                        <Select value={mainTrade} onChange={(e) => setMainTrade(e.target.value as WorkerTrade)}>
-                            {TRADES.map((trade) => <option key={trade} value={trade}>{t(`trades.${trade}`)}</option>)}
-                        </Select>
-                    </Field>
-                    {mainTrade === 'other' && (
-                        <Field label={t('fields.main_trade_other')}><Input value={mainTradeOther} onChange={(e) => setMainTradeOther(e.target.value)} /></Field>
-                    )}
-                    <Field label={t('fields.years_experience')}>
-                        <Select value={yearsExperience} onChange={(e) => setYearsExperience(e.target.value as WorkerExperience)}>
-                            {EXPERIENCE.map((exp) => <option key={exp} value={exp}>{t(`experience.${exp.replace('+', 'plus')}`)}</option>)}
-                        </Select>
-                    </Field>
-                    <Field label={t('fields.has_transportation')}>
-                        <Select value={hasTransportation ? 'yes' : 'no'} onChange={(e) => setHasTransportation(e.target.value === 'yes')}>
-                            <option value="yes">{t('yes')}</option>
-                            <option value="no">{t('no')}</option>
-                        </Select>
-                    </Field>
-                    <Field label={t('fields.availability')}>
-                        <Select value={availability} onChange={(e) => setAvailability(e.target.value as WorkerAvailability)}>
-                            {AVAILABILITY.map((item) => <option key={item} value={item}>{t(`availability.${item}`)}</option>)}
-                        </Select>
-                    </Field>
                     {error && <FormError>{error}</FormError>}
-                    <Button className="w-full" size="lg" onClick={handleCreateAccount} disabled={!canCreate} loading={isLoading} loadingLabel={tCommon('loading')}>
+                    <Button className="w-full" size="lg" onClick={handleCreateAccount} disabled={!phoneReady} loading={isLoading} loadingLabel={tCommon('loading')}>
                         {t('create_account')}
                     </Button>
                 </div>

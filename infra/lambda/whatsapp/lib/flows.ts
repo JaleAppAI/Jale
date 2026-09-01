@@ -10,6 +10,16 @@
  */
 
 import type { Lang } from './templates';
+import {
+  TRADE_KEYS,
+  EXPERIENCE_KEYS,
+  AVAILABILITY_KEYS,
+  TRANSPORT_KEYS,
+  transportKeyToBoolean,
+  type TradeKey,
+  type ExperienceKey,
+  type AvailabilityKey,
+} from '../../lib/worker-vocab';
 
 // ── Conversation state types ────────────────────────────────────
 
@@ -21,30 +31,22 @@ export type ConversationState =
   | 'awaiting_media_voice'
   | 'processing_ai'
   | 'building_profile'
-  | 'building_trust_signal'
-  | 'building_custom_trust'
   | 'legal_declined'
   | 'otp_timeout'
   | 'idle';
 
+// The three profile vocabularies below are owned by `lambda/lib/worker-vocab`
+// (which also carries their bilingual labels and the frontend parity guard).
+// These aliases keep flows.ts's historical export names for its consumers.
+
 /** Canonical slugs matching users.main_trade CHECK constraint */
-export type TradeSlug =
-  | 'electrician'
-  | 'plumber'
-  | 'carpenter'
-  | 'concrete'
-  | 'painting'
-  | 'other';
+export type TradeSlug = TradeKey;
 
 /** Canonical slugs matching users.years_experience CHECK constraint */
-export type ExperienceSlug = '0-1' | '2-4' | '5-9' | '10+';
+export type ExperienceSlug = ExperienceKey;
 
 /** Canonical slugs matching users.availability CHECK constraint */
-export type AvailabilitySlug =
-  | 'full_time'
-  | 'part_time'
-  | 'weekends'
-  | 'flexible';
+export type AvailabilitySlug = AvailabilityKey;
 
 // ── Profile builder: pending-field model ────────────────────────
 
@@ -75,24 +77,27 @@ export const PROFILE_FIELDS: readonly ProfileFieldDef[] = [
   {
     field: 'main_trade',
     type: 'buttons',
-    options: ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'],
+    options: TRADE_KEYS,
   },
   // Conditional: only activated when main_trade === 'other'
   { field: 'main_trade_other', type: 'text', conditional: true },
   {
     field: 'years_experience',
     type: 'buttons',
-    options: ['0-1', '2-4', '5-9', '10+'],
+    options: EXPERIENCE_KEYS,
   },
   {
+    // `has_transportation` is a boolean column, so the option list is the
+    // vocabulary's yes/no keys mapped through the storage conversion —
+    // [true, false], in that order.
     field: 'has_transportation',
     type: 'buttons',
-    options: [true, false],
+    options: TRANSPORT_KEYS.map(transportKeyToBoolean),
   },
   {
     field: 'availability',
     type: 'buttons',
-    options: ['full_time', 'part_time', 'weekends', 'flexible'],
+    options: AVAILABILITY_KEYS,
   },
 ] as const;
 
@@ -116,8 +121,6 @@ export interface ProfileStateContext {
   otp_issued_at?: string;
   /** Map of accepted profile field → MessageSid that wrote it. */
   field_sids?: Partial<Record<ProfileField, string>>;
-  trust_step?: number;
-  trust_answers?: TrustAnswer[];
   custom_trust_step?: number;
   custom_trust_answers?: unknown[];
   custom_trust_profession?: string;
@@ -139,138 +142,17 @@ export interface ProfileStateContext {
 }
 
 // -- Trust Signal Layer ----------------------------------------------------
-
-export type TrustField = 'specialization' | 'seniority' | 'tasks';
-
-export interface TrustAnswer {
-  questionKey: TrustField;
-  optionKey: string;
-  label: string;
-  answeredAt: string;
-}
-
-const TRADE_KEYS = [
-  'electrician',
-  'plumber',
-  'carpenter',
-  'concrete',
-  'painting',
-  'other',
-] as const;
-
-export type TradeKey = typeof TRADE_KEYS[number];
-
-export const TRUST_QUESTIONS: Record<
-  TradeKey,
-  { specialization: string[]; tasks: string[] }
-> = {
-  electrician: {
-    specialization: ['Residential', 'Commercial', 'Industrial'],
-    tasks: ['Pull wire', 'Bend conduit', 'Work panels'],
-  },
-  plumber: {
-    specialization: ['Repairs', 'New installs', 'Drain/sewer'],
-    tasks: ['Install pipe', 'Set fixtures', 'Water heaters'],
-  },
-  carpenter: {
-    specialization: ['Framing', 'Finish work', 'Cabinets/trim'],
-    tasks: ['Read plans', 'Frame walls', 'Install doors/trim'],
-  },
-  concrete: {
-    specialization: ['Forms', 'Rebar', 'Pour/finish'],
-    tasks: ['Set forms', 'Tie rebar', 'Finish concrete'],
-  },
-  painting: {
-    specialization: ['Interior', 'Exterior', 'Prep/texture'],
-    tasks: ['Prep/sanding', 'Spray', 'Roll/brush'],
-  },
-  other: {
-    specialization: ['General labor', 'Skilled trade', 'Equipment/tools'],
-    tasks: ['Use power tools', 'Read plans', 'Site cleanup/safety'],
-  },
-};
-
-export const SENIORITY_OPTIONS = ['Helper', 'Can work alone', 'Lead crew'];
-export const TRUST_STEPS: TrustField[] = ['specialization', 'seniority', 'tasks'];
-
-export function getTrustOptions(step: number, trade: string): string[] {
-  const tradeKey: TradeKey = TRADE_KEYS.includes(trade as TradeKey)
-    ? (trade as TradeKey)
-    : 'other';
-  if (step === 0) return TRUST_QUESTIONS[tradeKey].specialization;
-  if (step === 1) return SENIORITY_OPTIONS;
-  return TRUST_QUESTIONS[tradeKey].tasks;
-}
-
-export function buildTrustQuestion(step: number, trade: string, lang: Lang): string {
-  const field = TRUST_STEPS[step] ?? TRUST_STEPS[0];
-  const options = getTrustOptions(step, trade);
-  const displayOptions = options.map((option) => trustOptionLabel(option, lang));
-  const numbered = displayOptions
-    .map((option, i) => `${i + 1}. ${option}`)
-    .join('\n');
-  const prompts: Record<TrustField, { es: string; en: string }> = {
-    specialization: {
-      es: `Una pregunta mas para recomendarte mejores trabajos.\n\nEn que te especializas?\n${numbered}\n\nResponde con el numero.`,
-      en: `One more question so we can recommend better jobs.\n\nWhat is your specialty?\n${numbered}\n\nReply with the number.`,
-    },
-    seniority: {
-      es: `Cual es tu nivel?\n${numbered}\n\nResponde con el numero.`,
-      en: `What is your level?\n${numbered}\n\nReply with the number.`,
-    },
-    tasks: {
-      es: `Que trabajo haces mas?\n${numbered}\n\nResponde con el numero.`,
-      en: `What work do you do most?\n${numbered}\n\nReply with the number.`,
-    },
-  };
-  return prompts[field][lang];
-}
-
-function trustOptionLabel(option: string, lang: Lang): string {
-  if (lang === 'en') return option;
-  return TRUST_OPTION_LABELS_ES[option] ?? option;
-}
-
-export const TRUST_OPTION_LABELS_ES: Record<string, string> = {
-  Residential: 'Residencial',
-  Commercial: 'Comercial',
-  Industrial: 'Industrial',
-  Repairs: 'Reparaciones',
-  'New installs': 'Instalaciones nuevas',
-  'Drain/sewer': 'Drenaje',
-  Framing: 'Framing',
-  'Finish work': 'Acabados',
-  'Cabinets/trim': 'Gabinetes y molduras',
-  Forms: 'Formas',
-  Rebar: 'Varilla',
-  'Pour/finish': 'Colado y acabado',
-  Interior: 'Interior',
-  Exterior: 'Exterior',
-  'Prep/texture': 'Preparacion y textura',
-  'General labor': 'Trabajo general',
-  'Skilled trade': 'Oficio especializado',
-  'Equipment/tools': 'Equipo y herramientas',
-  Helper: 'Ayudante',
-  'Can work alone': 'Puedo trabajar solo',
-  'Lead crew': 'Lider de cuadrilla',
-  'Pull wire': 'Jalar cable',
-  'Bend conduit': 'Doblar conduit',
-  'Work panels': 'Trabajar paneles',
-  'Install pipe': 'Instalar tuberia',
-  'Set fixtures': 'Instalar accesorios',
-  'Water heaters': 'Calentadores de agua',
-  'Read plans': 'Leer planos',
-  'Frame walls': 'Levantar muros',
-  'Install doors/trim': 'Instalar puertas y molduras',
-  'Set forms': 'Poner formas',
-  'Tie rebar': 'Amarrar varilla',
-  'Finish concrete': 'Acabar concreto',
-  'Prep/sanding': 'Preparar y lijar',
-  Spray: 'Spray',
-  'Roll/brush': 'Rodillo y brocha',
-  'Use power tools': 'Usar herramientas electricas',
-  'Site cleanup/safety': 'Limpieza y seguridad',
-};
+//
+// Sprint 22 R1-A: the numbered trust menu (TRUST_QUESTIONS / SENIORITY_OPTIONS
+// / TRUST_STEPS / getTrustOptions / buildTrustQuestion / TRUST_OPTION_LABELS_ES)
+// lived here and served the five standard trades. It is gone: a menu label
+// gives the AI trust scorer nothing to grade, so every trade now gets three
+// OPEN questions from the per-trade `trade_questions` cache, seeded by
+// `onboarding/trust-seed.ts`. The reviewed open-text fallback set lives in
+// `lib/interactive-templates.ts` (V2_FALLBACK_TRUST_QUESTIONS).
+//
+// The `custom_trust_*` keys still on ProfileStateContext above are inert
+// leftovers on historical rows; nothing reads or writes them any more.
 
 export interface TypedJobAction {
   index: number;

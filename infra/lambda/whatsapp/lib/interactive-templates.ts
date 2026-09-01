@@ -100,11 +100,19 @@ export function buildHelpMenuInteractivePrompt(lang: Lang): InteractivePrompt {
 
 // ── V2 workflow builders (additive; legacy builders above are unchanged) ──
 
-/** Reviewed bilingual fallback set used when the question generator fails. */
+/**
+ * Reviewed bilingual fallback set used when the question generator fails.
+ *
+ * Sprint 22 R1-A: Q1 used to ask how many years the worker had been in the
+ * trade — a duplicate of `users.years_experience`, already collected at
+ * `profile.experience`, and a one-word answer the AI scorer cannot grade. It
+ * is now a broad, trade-agnostic OPEN question about the work itself. ASCII
+ * only on both sides, matching every other string in this module.
+ */
 export const V2_FALLBACK_TRUST_QUESTIONS: ReadonlyArray<{ en: string; es: string }> = [
   {
-    en: 'How many years have you worked in this trade?',
-    es: 'Cuantos anos has trabajado en este oficio?',
+    en: 'What do you actually do on a typical day in your trade? Tell us about the work itself.',
+    es: 'Que haces realmente en un dia tipico en tu oficio? Cuentanos del trabajo en si.',
   },
   {
     en: 'What tools or equipment do you bring to a job?',

@@ -7,10 +7,8 @@
 import type { PoolClient } from 'pg';
 import type { WorkerGate } from '../../lib/onboarding-repository';
 import type { Lang } from '../../lib/templates';
-import { V2_FALLBACK_TRUST_QUESTIONS } from '../../lib/interactive-templates';
 import {
   normalizeTrade,
-  standardTrustQuestions,
   inferCityState,
   type ResolvedLocation,
 } from '../../lib/onboarding-adapters';
@@ -23,11 +21,8 @@ import type { OnboardingV2Deps, OnboardingV2InboundMessage, OnboardingV2Session,
 import {
   TRADE_ORDER,
   type StandardTrade,
-  type BilingualQuestion,
-  V2_TRUST_QUESTION_SET_VERSION,
-  V2_TRUST_FALLBACK_VERSION,
-  V2_TRUST_RUBRIC_VERSION,
 } from '../constants';
+import { seedTrustQuestions } from '../trust-seed';
 import { repeatCurrentPrompt, sendTemplateMessage } from '../delivery';
 import { advanceProfileToNextStep } from '../transitions';
 
@@ -271,23 +266,24 @@ export async function handleProfileTrade(
   const trade: StandardTrade = choice;
   await deps.adapters.profile.saveTrade(client, gate.userId, trade);
 
-  // Precompute and cache the standard trust-question set now (unconditionally,
-  // even though the resolver may route through profile.experience/
-  // transportation/availability before actually reaching trust.question.1) —
-  // harmless to set early, and it's exactly what's needed whenever the run
-  // does arrive at trust.question.1.
-  const questions: BilingualQuestion[] = standardTrustQuestions(trade).map((q) => ({ en: q.q_en, es: q.q_es }));
+  // Precompute and cache the trust-question set now (unconditionally, even
+  // though the resolver may route through profile.experience/transportation/
+  // availability before actually reaching trust.question.1) — harmless to set
+  // early, and it's exactly what's needed whenever the run does arrive at
+  // trust.question.1.
+  //
+  // Sprint 22 R1-A: a standard trade takes the SAME per-trade cache lane as a
+  // custom one. The trade key IS the profession we look up — normalizeTrade/
+  // normalizeProfession maps it onto the `trade_questions.profession_key` row
+  // migration 012 seeds for each of the five standard trades.
   session.state_context.v2ProfileTrade = trade;
-  session.state_context.v2TrustQuestions = questions;
-  session.state_context.v2TrustSource = 'standard';
-  session.state_context.v2QuestionSetVersion = V2_TRUST_QUESTION_SET_VERSION;
-  session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+  const source = await seedTrustQuestions(client, session, deps, trade);
 
   return advanceProfileToNextStep(
     client, session, msg, deps, gate,
     'profile.trade',
-    { trade, trustQuestionSource: 'standard' },
-    'profile_trade_standard',
+    { trade, trustQuestionSource: source },
+    'profile_trade_set',
     now,
   );
 }
@@ -311,26 +307,6 @@ export async function handleCustomTrade(
 
   const professionKey = normalizeTrade(professionRaw);
 
-  // The generator never throws by contract (createTrustQuestionGenerator
-  // catches internally), but an injected/production adapter failing in an
-  // unexpected way must still fall back rather than fail the run.
-  let generated: BilingualQuestion[] | null = null;
-  try {
-    const result = await deps.adapters.trustQuestions.generate(client, professionRaw);
-    if (Array.isArray(result) && result.length === 3) {
-      generated = result.map((q) => ({ en: q.q_en, es: q.q_es }));
-    }
-  } catch (err) {
-    console.error(JSON.stringify({
-      metric: 'OnboardingTrustQuestionGenerationFailed',
-      reason: (err as { name?: string })?.name ?? 'unknown_error',
-    }));
-    generated = null;
-  }
-
-  const source: 'generated' | 'fallback' = generated ? 'generated' : 'fallback';
-  const questions: BilingualQuestion[] = generated ?? V2_FALLBACK_TRUST_QUESTIONS.map((q) => ({ ...q }));
-
   // Defect 1 fix: persist the RAW typed profession (e.g. "welder"), not just
   // the normalized lookup key — V1 already does this, and
   // upsertWorkerProfileFromUsers needs `main_trade_other` to seed a
@@ -339,10 +315,7 @@ export async function handleCustomTrade(
   // the trust-question lookup below depends on it.
   await deps.adapters.profile.saveCustomTrade(client, gate.userId, professionRaw);
   session.state_context.v2ProfileTrade = professionKey;
-  session.state_context.v2TrustQuestions = questions;
-  session.state_context.v2TrustSource = source;
-  session.state_context.v2QuestionSetVersion = source === 'fallback' ? V2_TRUST_FALLBACK_VERSION : V2_TRUST_QUESTION_SET_VERSION;
-  session.state_context.v2RubricVersion = V2_TRUST_RUBRIC_VERSION;
+  const source = await seedTrustQuestions(client, session, deps, professionRaw);
 
   // `saveCustomTrade` above persists main_trade_other, so loadProfileFromDb
   // resolves this field on its own. The state_context copy is kept as a
