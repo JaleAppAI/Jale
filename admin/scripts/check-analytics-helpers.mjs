@@ -97,4 +97,54 @@ assert.equal(filled.length, 7, 'every bucket present after gap filling');
 assert.deepEqual(filled[1], { bucketStart: '2026-08-25T00:00:00.000Z', workerSignups: 3, employerSignups: 1 });
 assert.deepEqual(filled[0], { bucketStart: '2026-08-24T00:00:00.000Z', workerSignups: 0, employerSignups: 0 });
 
+// ---- row mappers (pg returns BIGINT as string, TIMESTAMPTZ as Date) ----
+assert.deepEqual(
+  analytics.mapTotalsRow({
+    total_workers: '12', total_employers: '5', paying_employers: '3',
+    jobs_active: '7', jobs_paused: '1', jobs_filled: '2', jobs_closed: '4',
+  }),
+  { totalWorkers: 12, totalEmployers: 5, payingEmployers: 3, jobsActive: 7, jobsPaused: 1, jobsFilled: 2, jobsClosed: 4 },
+);
+
+assert.deepEqual(
+  analytics.mapSignupRow({ bucket_start: new Date('2026-08-25T00:00:00.000Z'), worker_signups: '3', employer_signups: '1' }),
+  { bucketStart: '2026-08-25T00:00:00.000Z', workerSignups: 3, employerSignups: 1 },
+);
+
+assert.deepEqual(
+  analytics.mapJobsActivityRow({ bucket_start: new Date('2026-08-25T00:00:00.000Z'), jobs_posted: '2', applications_submitted: '9' }),
+  { bucketStart: '2026-08-25T00:00:00.000Z', jobsPosted: 2, applicationsSubmitted: 9 },
+);
+
+assert.deepEqual(
+  analytics.mapMessageTrafficRow({
+    bucket_start: new Date('2026-08-25T00:00:00.000Z'),
+    job_messages_out: '4', job_messages_in: '2', job_messages_failed: '1',
+    wa_inbound: '10', wa_outbound: '8', wa_failed: '0',
+  }),
+  { bucketStart: '2026-08-25T00:00:00.000Z', jobMessagesOut: 4, jobMessagesIn: 2, jobMessagesFailed: 1, waInbound: 10, waOutbound: 8, waFailed: 0 },
+);
+
+assert.deepEqual(
+  analytics.mapPayingEmployerRow({
+    employer_id: '00000000-0000-0000-0000-000000000001',
+    display_name: 'IT Analytics Co', plan_code: 'pro_monthly', status: 'active',
+    current_period_end: new Date('2026-09-15T00:00:00.000Z'), cancel_at_period_end: false,
+  }),
+  {
+    employerId: '00000000-0000-0000-0000-000000000001', displayName: 'IT Analytics Co',
+    planCode: 'pro_monthly', status: 'active',
+    currentPeriodEnd: '2026-09-15T00:00:00.000Z', cancelAtPeriodEnd: false,
+  },
+);
+assert.equal(
+  analytics.mapPayingEmployerRow({
+    employer_id: '00000000-0000-0000-0000-000000000002',
+    display_name: 'Empleador', plan_code: 'pro_monthly', status: 'trialing',
+    current_period_end: null, cancel_at_period_end: true,
+  }).currentPeriodEnd,
+  undefined,
+  'null period end maps to undefined',
+);
+
 console.log('check-analytics-helpers: all assertions passed');
