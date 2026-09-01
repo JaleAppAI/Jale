@@ -64,3 +64,47 @@ export type AuditEvent = {
   piiReveal: boolean;
   summary: string;
 };
+
+export type AnalyticsRange = '7d' | '30d' | '90d';
+export type AnalyticsBucket = 'day' | 'week';
+
+export type AnalyticsTotals = {
+  totalWorkers: number;
+  totalEmployers: number;
+  payingEmployers: number;
+  jobsActive: number;
+  jobsPaused: number;
+  jobsFilled: number;
+  jobsClosed: number;
+};
+
+export type SignupBucket = {
+  bucketStart: string;
+  workerSignups: number;
+  employerSignups: number;
+};
+
+export type JobsActivityBucket = {
+  bucketStart: string;
+  jobsPosted: number;
+  applicationsSubmitted: number;
+};
+
+export type MessageTrafficBucket = {
+  bucketStart: string;
+  jobMessagesOut: number;
+  jobMessagesIn: number;
+  jobMessagesFailed: number;
+  waInbound: number;
+  waOutbound: number;
+  waFailed: number;
+};
+
+export type PayingEmployer = {
+  employerId: string;
+  displayName: string;
+  planCode: string;
+  status: string;
+  currentPeriodEnd?: string;
+  cancelAtPeriodEnd: boolean;
+};

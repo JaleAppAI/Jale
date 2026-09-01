@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import {
   AuthenticationDetails,
   CognitoUser,
@@ -8,7 +8,9 @@ import {
   type IAuthenticationCallback,
   type CognitoUserSession,
 } from 'amazon-cognito-identity-js';
+import QRCode from 'qrcode';
 import type { AdminAuthConfig } from '@/lib/auth';
+import { buildOtpauthUri } from '@/lib/otpauth';
 import { safeNextPath } from '@/lib/safe-redirect';
 
 type LoginStep = 'credentials' | 'new-password' | 'mfa-setup' | 'mfa';
@@ -39,12 +41,38 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [mfaCode, setMfaCode] = useState('');
   const [totpSecret, setTotpSecret] = useState('');
+  const [totpQrDataUrl, setTotpQrDataUrl] = useState<string | undefined>();
   const [requiredAttributes, setRequiredAttributes] = useState<Record<string, unknown>>({});
   const [step, setStep] = useState<LoginStep>('credentials');
   const [pendingUser, setPendingUser] = useState<CognitoUser | undefined>();
   const [status, setStatus] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!totpSecret) {
+      setTotpQrDataUrl(undefined);
+      return;
+    }
+
+    let cancelled = false;
+
+    QRCode.toDataURL(buildOtpauthUri(totpSecret, email), { width: 200, margin: 1 })
+      .then((dataUrl) => {
+        if (!cancelled) {
+          setTotpQrDataUrl(dataUrl);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTotpQrDataUrl(undefined);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [totpSecret, email]);
 
   async function establishSession(session: CognitoUserSession) {
     const body = JSON.stringify({ idToken: getIdToken(session) });
@@ -274,8 +302,18 @@ export function AdminLoginForm({ config }: AdminLoginFormProps) {
     return (
       <form className="stack-gap" onSubmit={submitTotpSetup}>
         {status ? <p aria-live="polite" className="muted" role="status">{status}</p> : null}
+        {totpQrDataUrl ? (
+          <div className="setup-qr">
+            <img
+              alt="Scan this QR code with your authenticator app"
+              height={200}
+              src={totpQrDataUrl}
+              width={200}
+            />
+          </div>
+        ) : null}
         <div className="setup-code" aria-label="Authenticator setup key">
-          <span className="muted">Setup key</span>
+          <span className="muted">Can&apos;t scan? Enter this code manually:</span>
           <code>{totpSecret}</code>
         </div>
         <label className="field">

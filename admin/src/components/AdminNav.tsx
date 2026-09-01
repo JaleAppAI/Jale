@@ -15,6 +15,7 @@ const NAV_LINKS = [
   { href: '/', label: 'Dashboard', exact: true },
   { href: '/cases', label: 'Cases', exact: false },
   { href: '/verifications', label: 'Verifications', exact: false },
+  { href: '/analytics', label: 'Analytics', exact: false },
   { href: '/audit', label: 'Audit', exact: false },
 ];
 
