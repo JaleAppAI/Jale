@@ -634,9 +634,11 @@ type TrustQ = { q_en: string; q_es: string };
 
 function createFakeTrustQuestions() {
   let mode: 'succeed' | 'fail' = 'succeed';
+  const calls: string[] = [];
   return {
     trustQuestions: {
       async generate(_client: PoolClient, profession: string): Promise<TrustQ[] | null> {
+        calls.push(profession);
         if (mode === 'fail') {
           throw new Error('generator_unavailable');
         }
@@ -653,6 +655,9 @@ function createFakeTrustQuestions() {
     _succeed(): void {
       mode = 'succeed';
     },
+    /** Every `profession` argument `generate` was called with, in order.
+     * R1-A: standard trades pass their trade KEY through here too. */
+    _calls: calls,
   };
 }
 
@@ -941,7 +946,14 @@ export class WhatsAppV2Harness {
   private readonly profileFake = createFakeProfileAdapter();
   private readonly voiceIntakeFake = createFakeVoiceIntake();
   private readonly locationResolver = createLocationResolver();
-  private readonly deps: OnboardingV2Deps;
+  /**
+   * S22 R2-C23: public so the WEB door's driver can be exercised against the
+   * SAME fakes the WhatsApp router uses. The web door is a second caller of
+   * this exact deps graph — giving it its own parallel set of fakes would let
+   * the two drift, which is the one thing a shared state machine cannot
+   * afford. Read-only by convention; nothing outside the harness reassigns it.
+   */
+  public readonly deps: OnboardingV2Deps;
   private readonly processedSids = new Map<string, RouteResult>();
   private readonly sent: SentMessage[] = [];
   private readonly canonicalLegalConsents: Array<{ workerId: string; documentVersion: string }> = [];
@@ -1077,11 +1089,31 @@ export class WhatsAppV2Harness {
     this.clockRef.now = new Date(this.clockRef.now.getTime() + ms);
   }
 
+  /** The worker id this conversation was bound to by OTP verification.
+   * Throws before the bind, which is the only state where there isn't one. */
+  boundWorkerId(): string {
+    const workerId = this.conversations._byId.get(this.conversationId)?.user_id;
+    if (!workerId) throw new Error('boundWorkerId: conversation is not bound yet');
+    return workerId;
+  }
+
+  /** The worker's gate as the fake repo holds it — the web door reads a gate
+   * before every mutation, so its tests need the same view. */
+  async gateFor(workerId?: string): Promise<WorkerGate | null> {
+    return this.gateRepo.loadWorkerGate(HARNESS_CLIENT, workerId ?? this.boundWorkerId());
+  }
+
   now(): Date {
     return this.clockRef.now;
   }
 
   // ── Adapter failure injection ────────────────────────────────────────
+
+  /** Every profession string `deps.adapters.trustQuestions.generate` was
+   * called with, in order. */
+  getTrustQuestionGenerateCalls(): string[] {
+    return [...this.trustQuestionsFake._calls];
+  }
 
   failAdapter(name: 'trustQuestions' | 'location'): void {
     if (name === 'trustQuestions') this.trustQuestionsFake._fail();
@@ -1473,7 +1505,10 @@ export class WhatsAppV2Harness {
         case 'trust.question.1':
         case 'trust.question.2':
         case 'trust.question.3':
-          await this.sendText('1');
+          // R1-A: trust questions are OPEN TEXT for every trade — a bare '1'
+          // would now be recorded verbatim as the answer, which is not what a
+          // canned "valid answer" should look like.
+          await this.sendText('I mostly do commercial work and I bring my own tools.');
           break;
         default:
           throw new Error(`driveToStep: no canned answer for ${step}`);

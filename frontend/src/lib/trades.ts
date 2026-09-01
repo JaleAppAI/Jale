@@ -9,6 +9,7 @@
  */
 
 import type { WorkerTrade } from '@/lib/api/worker';
+import { STANDARD_TRADE_KEYS } from '@/lib/worker-vocab';
 
 /**
  * The shape this helper needs from a next-intl translator: a callable that
@@ -20,16 +21,13 @@ import type { WorkerTrade } from '@/lib/api/worker';
 export type CommonTranslator = (key: string) => string;
 
 /**
- * Enum members that have their own label. `other` is deliberately absent: it
- * is not a trade, it is a pointer at `main_trade_other`.
+ * Enum members that have their own label — the shared worker vocabulary's
+ * standard five, not a second copy of them. `other` is deliberately absent
+ * (that is why this reads `STANDARD_TRADE_KEYS` and not `TRADE_KEYS`): it is
+ * not a trade, it is a pointer at `main_trade_other`, and the branch below
+ * handles it before this list is ever consulted.
  */
-const KNOWN_TRADES: readonly string[] = [
-    'electrician',
-    'plumber',
-    'carpenter',
-    'concrete',
-    'painting',
-];
+const KNOWN_TRADES: readonly string[] = STANDARD_TRADE_KEYS;
 
 /**
  * Translated label for a worker's main trade.

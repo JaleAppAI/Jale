@@ -15,10 +15,16 @@ export interface JaleLambdaFunctionProps {
   handler?: string;
   /** Environment variables */
   environment?: Record<string, string>;
-  /** VPC to deploy into */
-  vpc: ec2.IVpc;
-  /** Security groups to attach */
-  securityGroups: ec2.ISecurityGroup[];
+  /** VPC to deploy into. Omit ONLY for a Lambda that talks to no in-VPC
+   *  resource at all — a VPC-attached function pays ENI cold-start cost on
+   *  every invocation, so "no database, no cache, no private endpoint" is
+   *  the whole bar. Every Jale Lambda that touches Postgres must pass it.
+   *  (First omitter: the worker pool's VerifyAuthChallenge trigger, which
+   *  is a pure OTP string comparison plus one Cognito attribute write.) */
+  vpc?: ec2.IVpc;
+  /** Security groups to attach. Required alongside `vpc`; meaningless
+   *  without it. */
+  securityGroups?: ec2.ISecurityGroup[];
   /** Timeout in seconds (default 30) */
   timeout?: number;
   /** Description of the function */
@@ -32,6 +38,10 @@ export interface JaleLambdaFunctionProps {
   /** Node modules to bundle despite the @aws-sdk/* externalModules exclusion.
    *  Use for SDK packages NOT provided by the Node 20.x runtime (e.g. @aws-sdk/s3-request-presigner). */
   nodeModules?: string[];
+  /** Memory in MB (default 256). Raise it for Lambdas whose work is
+   *  bundle-heavy or latency-sensitive (a larger memory setting also buys
+   *  proportionally more CPU). */
+  memorySize?: number;
   /** Reserved concurrent executions. Use to cap a Lambda to N concurrent
    *  invocations (e.g. 1, to serialize a scheduled drain against itself
    *  instead of relying on an invocation-frequency assumption). Omit for the
@@ -42,9 +52,20 @@ export interface JaleLambdaFunctionProps {
 export class JaleLambdaFunction extends Construct {
   public readonly function: NodejsFunction;
   public readonly logGroup: logs.LogGroup;
+  /**
+   * Absolute path to the handler source this function bundles. NodejsFunction
+   * keeps `entry` private and the synthesized template only carries the asset
+   * hash, so nothing downstream can otherwise tell which source file a log
+   * group belongs to. test/unit/stacks/metric-filter-patterns.test.ts uses it
+   * to check each MetricFilter against the code that writes to ITS log group,
+   * rather than against the whole lambda/ tree.
+   */
+  public readonly entry: string;
 
   constructor(scope: Construct, id: string, props: JaleLambdaFunctionProps) {
     super(scope, id);
+
+    this.entry = props.entry;
 
     this.logGroup = new logs.LogGroup(this, 'LogGroup', {
       retention: logs.RetentionDays.ONE_MONTH,
@@ -55,15 +76,17 @@ export class JaleLambdaFunction extends Construct {
       entry: props.entry,
       handler: props.handler ?? 'handler',
       runtime: lambda.Runtime.NODEJS_20_X,
-      memorySize: 256,
+      memorySize: props.memorySize ?? 256,
       timeout: cdk.Duration.seconds(props.timeout ?? 30),
       description: props.description,
       environment: props.environment,
       tracing: lambda.Tracing.ACTIVE,
       vpc: props.vpc,
-      vpcSubnets: {
-        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
-      },
+      // CDK rejects `vpcSubnets` when there is no VPC ("Cannot configure
+      // 'vpcSubnets' without configuring a VPC"), so both travel together.
+      vpcSubnets: props.vpc
+        ? { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS }
+        : undefined,
       securityGroups: props.securityGroups,
       logGroup: this.logGroup,
       deadLetterQueue: props.deadLetterQueue,

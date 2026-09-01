@@ -26,6 +26,7 @@ import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { applyFlowReducer, initialApplyFlowState, flowHasProgress } from '@/lib/apply-flow-view';
 import { formatLongDate, formatStartDate } from '@/lib/date';
+import { docTypeLabel } from '@/lib/doc-types';
 import { durationLabel, scheduleSummary, type Translator } from '@/lib/job-detail-display';
 import { formatPay } from '@/lib/pay';
 import {
@@ -36,7 +37,6 @@ import { visibleJobStatusBadge } from '@/lib/jobStatusDisplay';
 
 export const dynamic = 'force-dynamic';
 
-const KNOWN_DOC_TYPES = ['resume', 'driver_license', 'ssn'];
 const KNOWN_JOB_TYPES = ['full-time', 'part-time', 'contract'];
 
 /** Where "back to jobs" goes, and the destination the S5 states offer. */
@@ -67,6 +67,7 @@ export default function WorkerJobDetailPage() {
   // itself borrows `worker_job_detail.what_you_need.proof_needed` the same
   // way) -- reuse over a duplicate `worker_job_detail`-scoped copy.
   const tPublicJob = useTranslations('public_job');
+  const tDocTypes = useTranslations('doc_types');
   const locale = useLocale();
 
   // `job-detail-display.ts`'s formatters take a deliberately structural
@@ -172,14 +173,13 @@ export default function WorkerJobDetailPage() {
     setApplyFeedback({ tone: 'danger', message });
   }
 
+  // One catalogue, one lookup -- this was a three-branch cascade over
+  // `worker_job_detail.doc_labels` and then `job_requirements.docs`, because
+  // the first namespace only ever held three of the five doc types. An
+  // unknown key still falls back to the raw string rather than vanishing from
+  // a `missing_docs` sentence.
   function docLabel(doc: string): string {
-    if (KNOWN_DOC_TYPES.includes(doc)) return t(`doc_labels.${doc}`);
-    // `work_auth_doc`/`certification_doc` have no `worker_job_detail.doc_labels`
-    // entry -- they live in the shared `job_requirements.docs.*` catalogue
-    // instead (same one `ApplyFlow`'s steps already read from), so a
-    // `missing_docs` message naming either no longer prints the raw key.
-    if (doc === 'work_auth_doc' || doc === 'certification_doc') return tReq(`docs.${doc}`);
-    return doc;
+    return docTypeLabel(doc, tDocTypes) ?? doc;
   }
 
   /**

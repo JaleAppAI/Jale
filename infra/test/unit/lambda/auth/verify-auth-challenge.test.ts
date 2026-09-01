@@ -134,59 +134,33 @@ describe('VerifyAuthChallenge Lambda', () => {
     warnSpy.mockRestore();
   });
 
-  // ── pending name promotion (migration 052) ────────────────────────────
+  // ── R2-C4: the trigger touches NO database ───────────────────────────
   //
-  // A name staged at signup (stage_worker_pending_name) is only ever
-  // promoted into users.full_name on the first correct OTP — the same
-  // event, and the same phone_number_verified gate, as the flip above.
+  // It used to call migration 052's `promote_worker_pending_name` on the
+  // first correct OTP, to adopt a name staged by the old web signup form.
+  // R2 made web signup phone-only — the worker types their name at
+  // `profile.name` inside the onboarding flow — so there is nothing left to
+  // promote. These two cases are the lock: no pool, no query, on ANY path.
 
-  it('promotes the pending name on a correct answer when not yet verified', async () => {
+  it('never opens a database connection, even on the first correct OTP', async () => {
     const result = await handler(baseEvent('123456', '123456', {
       phone_number: '+15125551234',
       sub: 'worker-sub',
     }));
 
     expect(result.response.answerCorrect).toBe(true);
-    expect(mockGetDbPool).toHaveBeenCalledTimes(1);
-    expect(mockQuery).toHaveBeenCalledWith('SELECT promote_worker_pending_name($1)', ['worker-sub']);
-    expect(mockRelease).toHaveBeenCalled();
-  });
-
-  it('does not promote the pending name on a wrong answer', async () => {
-    await handler(baseEvent('123456', '654321', {
-      phone_number: '+15125551234',
-      sub: 'worker-sub',
-    }));
-
+    expect(mockGetDbPool).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockRelease).not.toHaveBeenCalled();
   });
 
-  it('does not promote the pending name when already verified', async () => {
-    await handler(baseEvent('123456', '123456', {
-      phone_number: '+15125551234',
-      phone_number_verified: 'true',
-      sub: 'worker-sub',
-    }));
-
-    expect(mockQuery).not.toHaveBeenCalled();
-  });
-
-  it('a database error during promotion never fails a correct login (best-effort)', async () => {
-    mockQuery.mockImplementation(async (sql: string) => {
-      if (sql === 'SELECT promote_worker_pending_name($1)') {
-        throw new Error('db hiccup');
-      }
-      return {};
-    });
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const result = await handler(baseEvent('123456', '123456', {
-      phone_number: '+15125551234',
-      sub: 'worker-sub',
-    }));
-
-    expect(result.response.answerCorrect).toBe(true);
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+  it('does not import the db module at all', () => {
+    const source = fs.readFileSync(
+      path.join(__dirname, '../../../../lambda/auth/verify-auth-challenge.ts'),
+      'utf8',
+    );
+    // The doc comment still NAMES the removed definer to explain why it is
+    // gone; what must not survive is any call into it or into the pool.
+    expect(source).not.toMatch(/getDbPool|SELECT promote_worker_pending_name/);
   });
 });

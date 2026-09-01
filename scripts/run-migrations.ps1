@@ -135,6 +135,10 @@ $MigrationFiles = @(
     '083_media_board.sql'
     '084_preferred_cities_whatsapp_write.sql'
     '085_employer_trust_assessment_read.sql'
+    '086_trust_extractions_and_web_onboarding.sql'
+    '087_bind_reuses_ready_web_worker.sql'
+    '088_admin_analytics.sql'
+    '089_admin_analytics_rls_repair.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path
@@ -503,4 +507,15 @@ aws ssm list-command-invocations `
 Write-Host ""
 Write-Host ">> All done. Next:"
 Write-Host "   cd infra; npx cdk destroy JaleBastionStack    # cost hygiene"
-Write-Host "   cd infra; npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack"
+Write-Host ""
+Write-Host ">> Deploy through the GitHub workflow (.github/workflows/deploy-production.yml)."
+Write-Host "   A hand-run 'cdk deploy' sends CloudFormation only the context you type, and"
+Write-Host "   every flag you omit is applied as its template default. Two that bite:"
+Write-Host "     - omit -c sesEmailFromAddress/-c sesEmailRegion and the UpdateUserPool call"
+Write-Host "       resets the employer pool from SES back to Cognito's shared sender;"
+Write-Host "     - omit -c deletionProtection=true and infra/cdk.json's dev value (false)"
+Write-Host "       applies, disarming DeletionProtection on the three live Cognito pools"
+Write-Host "       and on the RDS instance."
+Write-Host "   If you must deploy by hand, pass the same context set _reusable-deploy.yml"
+Write-Host "   uses, substituting your GitHub Actions repository variables (one line):"
+Write-Host "     cd infra; npx cdk deploy JaleAuthStack JaleApiStack JaleLegalStack JaleWhatsAppStack JaleDocumentsStack -c environment=production -c deletionProtection=true -c emailFromAddress=<vars.EMAIL_FROM_ADDRESS> -c sesVerifiedIdentityArn=<vars.SES_VERIFIED_IDENTITY_ARN> -c sesEmailFromAddress=<vars.COGNITO_EMAIL_FROM_ADDRESS> -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl=<vars-derived JALE_WHATSAPP_STATUS_CALLBACK_URL> -c whatsappAlarmTopicArn=<vars.WHATSAPP_ALARM_TOPIC_ARN> -c billingAlarmTopicArn=<vars.WHATSAPP_ALARM_TOPIC_ARN> -c whatsappInboundV2TransportEnabled=true"

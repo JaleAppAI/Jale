@@ -2,7 +2,7 @@
 import * as React from 'react';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { X } from 'lucide-react';
+import { ImagePlus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Modal } from '@/components/ui/modal';
 import {
@@ -102,15 +102,28 @@ export function NewPostModal({
       }
     >
       <div className="space-y-4">
-        <label className="block">
-          <span className="sr-only">{t('select_photos')}</span>
+        {/* The native file input stays in the DOM (sr-only) so keyboard focus
+            and the existing tests keep working; the label is the visible,
+            obviously-clickable upload control. */}
+        <label
+          className={`flex w-full flex-col items-center justify-center gap-1 rounded-[var(--radius-input)] border-2 border-dashed border-[var(--jale-divider)] px-4 py-6 text-center transition-colors focus-within:ring-2 focus-within:ring-[var(--jale-blue-500)] focus-within:ring-offset-2 ${
+            busy
+              ? 'cursor-not-allowed opacity-50'
+              : 'cursor-pointer hover:border-[var(--jale-blue-500)] hover:bg-[var(--jale-blue-50)]'
+          }`}
+        >
+          <ImagePlus className="h-6 w-6 text-[var(--jale-ink-2)]" aria-hidden="true" />
+          <span className="text-sm font-medium text-[var(--jale-blue-600)]">
+            {t('select_photos')}
+          </span>
+          <span className="text-xs text-[var(--jale-ink-2)]">{t('select_photos_hint')}</span>
           <input
             data-testid="post-file-input"
             type="file"
             multiple
             accept="image/jpeg,image/png,image/webp"
             onChange={handlePick}
-            className="block w-full text-sm"
+            className="sr-only"
             disabled={busy}
           />
         </label>

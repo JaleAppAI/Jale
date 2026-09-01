@@ -32,11 +32,19 @@ export function LocationPicker({
   onChange,
   placeholder,
   required,
+  disabled = false,
+  invalid = false,
+  describedBy,
 }: {
   value: string;
   onChange: (value: LocationPickerValue) => void;
   placeholder?: string;
   required?: boolean;
+  /** Freezes the field while a save is in flight. */
+  disabled?: boolean;
+  /** Marks the input invalid; pair with `describedBy` pointing at the message. */
+  invalid?: boolean;
+  describedBy?: string;
 }) {
   const tCommon = useTranslations('common');
   const [results, setResults] = useState<LocationSuggestion[]>([]);
@@ -145,6 +153,9 @@ export function LocationPicker({
         value={value}
         placeholder={placeholder}
         required={required}
+        disabled={disabled}
+        aria-invalid={invalid ? true : undefined}
+        aria-describedby={describedBy}
         role="combobox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}

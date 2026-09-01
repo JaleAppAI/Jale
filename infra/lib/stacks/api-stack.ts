@@ -13,6 +13,7 @@ import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
 import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
+import { lambdaIntegration } from '../api-integration';
 
 export interface ApiStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
@@ -690,7 +691,7 @@ export class ApiStack extends cdk.Stack {
 
     // GET /health
     const healthResource = this.api.root.addResource('health');
-    healthResource.addMethod('GET', new apigateway.LambdaIntegration(healthLambda.function));
+    healthResource.addMethod('GET', lambdaIntegration(healthLambda.function));
 
     // GET /pay-reference — recommended-pay lookup (T-B2). Dual-authenticated:
     // both workers and employers call this (the only other dualAuthorizer
@@ -699,7 +700,7 @@ export class ApiStack extends cdk.Stack {
     // hygiene but is not load-bearing here (wage_references /
     // city_cbsa_crosswalk grant jale_admin a flat read-all policy).
     const payReferenceResource = this.api.root.addResource('pay-reference');
-    payReferenceResource.addMethod('GET', new apigateway.LambdaIntegration(payReferenceLambda.function), {
+    payReferenceResource.addMethod('GET', lambdaIntegration(payReferenceLambda.function), {
       authorizer: this.dualAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -717,18 +718,18 @@ export class ApiStack extends cdk.Stack {
     this.workerResource = this.api.root.addResource('worker');
     const workerResource = this.workerResource;
     const workerProfileResource = workerResource.addResource('profile');
-    workerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(workerProfileLambda.function), {
+    workerProfileResource.addMethod('GET', lambdaIntegration(workerProfileLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    workerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(workerProfileUpdateLambda.function), {
+    workerProfileResource.addMethod('PATCH', lambdaIntegration(workerProfileUpdateLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     // GET /worker/application-defaults — prefill data for a new application
     const workerApplicationDefaultsResource = workerResource.addResource('application-defaults');
-    workerApplicationDefaultsResource.addMethod('GET', new apigateway.LambdaIntegration(workerApplicationDefaultsGetLambda.function), {
+    workerApplicationDefaultsResource.addMethod('GET', lambdaIntegration(workerApplicationDefaultsGetLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -787,19 +788,19 @@ export class ApiStack extends cdk.Stack {
       || process.env.JALE_WORKER_JOBS_RENAME_PHASE1 === 'true';
 
     const workerJobsResource = workerResource.addResource('jobs');
-    workerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsListLambda.function), {
+    workerJobsResource.addMethod('GET', lambdaIntegration(workerJobsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     if (!workerJobsRenamePhase1) {
       this.workerJobResource = workerJobsResource.addResource('{jobId}');
       const workerJobResource = this.workerJobResource;
-      workerJobResource.addMethod('GET', new apigateway.LambdaIntegration(workerJobsDetailLambda.function), {
+      workerJobResource.addMethod('GET', lambdaIntegration(workerJobsDetailLambda.function), {
         authorizer: workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
       const workerJobApplyResource = workerJobResource.addResource('apply');
-      workerJobApplyResource.addMethod('POST', new apigateway.LambdaIntegration(workerJobsApplyLambda.function), {
+      workerJobApplyResource.addMethod('POST', lambdaIntegration(workerJobsApplyLambda.function), {
         authorizer: workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
@@ -807,7 +808,7 @@ export class ApiStack extends cdk.Stack {
 
     // GET /worker/applications — list worker's own applications
     const workerApplicationsResource = workerResource.addResource('applications');
-    workerApplicationsResource.addMethod('GET', new apigateway.LambdaIntegration(workerApplicationsListLambda.function), {
+    workerApplicationsResource.addMethod('GET', lambdaIntegration(workerApplicationsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -817,11 +818,11 @@ export class ApiStack extends cdk.Stack {
     // Exported as public readonly so BillingStack can hang /employer/billing routes off it.
     this.employerResource = this.api.root.addResource('employer');
     const employerProfileResource = this.employerResource.addResource('profile');
-    employerProfileResource.addMethod('GET', new apigateway.LambdaIntegration(employerProfileLambda.function), {
+    employerProfileResource.addMethod('GET', lambdaIntegration(employerProfileLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerProfileResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerProfileLambda.function), {
+    employerProfileResource.addMethod('PATCH', lambdaIntegration(employerProfileLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -834,11 +835,11 @@ export class ApiStack extends cdk.Stack {
     // fail browser preflight no matter what API Gateway accepted.
     const employerSettingsResource = this.employerResource.addResource('settings');
     const employerDigestSettingsResource = employerSettingsResource.addResource('digest');
-    employerDigestSettingsResource.addMethod('GET', new apigateway.LambdaIntegration(employerDigestSettingsLambda.function), {
+    employerDigestSettingsResource.addMethod('GET', lambdaIntegration(employerDigestSettingsLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerDigestSettingsResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerDigestSettingsLambda.function), {
+    employerDigestSettingsResource.addMethod('PATCH', lambdaIntegration(employerDigestSettingsLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -846,11 +847,11 @@ export class ApiStack extends cdk.Stack {
     // GET /employer/jobs — list all jobs for this employer
     // POST /employer/jobs — create a new job posting
     const employerJobsResource = this.employerResource.addResource('jobs');
-    employerJobsResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobsListLambda.function), {
+    employerJobsResource.addMethod('GET', lambdaIntegration(employerJobsListLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerJobsResource.addMethod('POST', new apigateway.LambdaIntegration(employerJobsCreateLambda.function), {
+    employerJobsResource.addMethod('POST', lambdaIntegration(employerJobsCreateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -859,7 +860,7 @@ export class ApiStack extends cdk.Stack {
     const employerJobsGenerateDescriptionResource = employerJobsResource.addResource('generate-description');
     employerJobsGenerateDescriptionResource.addMethod(
       'POST',
-      new apigateway.LambdaIntegration(employerGenerateDescriptionLambda.function),
+      lambdaIntegration(employerGenerateDescriptionLambda.function),
       {
         authorizer: employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
@@ -871,64 +872,64 @@ export class ApiStack extends cdk.Stack {
     // GET /employer/jobs/{jobId}/applicants — list applicants for a job
     this.employerJobResource = employerJobsResource.addResource('{jobId}');
     const employerJobResource = this.employerJobResource;
-    employerJobResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobsDetailLambda.function), {
+    employerJobResource.addMethod('GET', lambdaIntegration(employerJobsDetailLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerJobResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerJobsUpdateLambda.function), {
+    employerJobResource.addMethod('PATCH', lambdaIntegration(employerJobsUpdateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     // DELETE /employer/jobs/{jobId} — permanently delete a job the employer owns
-    employerJobResource.addMethod('DELETE', new apigateway.LambdaIntegration(employerJobsDeleteLambda.function), {
+    employerJobResource.addMethod('DELETE', lambdaIntegration(employerJobsDeleteLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     const employerJobApplicantsResource = employerJobResource.addResource('applicants');
-    employerJobApplicantsResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobApplicantsLambda.function), {
+    employerJobApplicantsResource.addMethod('GET', lambdaIntegration(employerJobApplicantsLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     const employerJobApplicantResource = employerJobApplicantsResource.addResource('{workerId}');
-    employerJobApplicantResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerApplicationStatusUpdateLambda.function), {
+    employerJobApplicantResource.addMethod('PATCH', lambdaIntegration(employerApplicationStatusUpdateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     const employerJobCandidatesResource = employerJobResource.addResource('candidates');
-    employerJobCandidatesResource.addMethod('GET', new apigateway.LambdaIntegration(employerJobCandidatesLambda.function), {
+    employerJobCandidatesResource.addMethod('GET', lambdaIntegration(employerJobCandidatesLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     const employerConversationsResource = this.employerResource.addResource('conversations');
-    employerConversationsResource.addMethod('GET', new apigateway.LambdaIntegration(employerConversationsListLambda.function), {
+    employerConversationsResource.addMethod('GET', lambdaIntegration(employerConversationsListLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerConversationsResource.addMethod('POST', new apigateway.LambdaIntegration(employerConversationsCreateLambda.function), {
+    employerConversationsResource.addMethod('POST', lambdaIntegration(employerConversationsCreateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     const employerConversationResource = employerConversationsResource.addResource('{conversationId}');
-    employerConversationResource.addMethod('GET', new apigateway.LambdaIntegration(employerConversationsDetailLambda.function), {
+    employerConversationResource.addMethod('GET', lambdaIntegration(employerConversationsDetailLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerConversationResource.addMethod('PATCH', new apigateway.LambdaIntegration(employerConversationsUpdateLambda.function), {
+    employerConversationResource.addMethod('PATCH', lambdaIntegration(employerConversationsUpdateLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     employerConversationResource
       .addResource('messages')
-      .addMethod('POST', new apigateway.LambdaIntegration(employerConversationsSendLambda.function), {
+      .addMethod('POST', lambdaIntegration(employerConversationsSendLambda.function), {
         authorizer: employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
 
     const employerInboxResource = this.employerResource.addResource('inbox');
-    employerInboxResource.addMethod('GET', new apigateway.LambdaIntegration(employerInboxLambda.function), {
+    employerInboxResource.addMethod('GET', lambdaIntegration(employerInboxLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -936,18 +937,18 @@ export class ApiStack extends cdk.Stack {
     // GET /employer/templates — list saved job templates for this employer
     // POST /employer/templates — save a new job template
     const employerTemplatesResource = this.employerResource.addResource('templates');
-    employerTemplatesResource.addMethod('GET', new apigateway.LambdaIntegration(employerTemplatesListLambda.function), {
+    employerTemplatesResource.addMethod('GET', lambdaIntegration(employerTemplatesListLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    employerTemplatesResource.addMethod('POST', new apigateway.LambdaIntegration(employerTemplatesSaveLambda.function), {
+    employerTemplatesResource.addMethod('POST', lambdaIntegration(employerTemplatesSaveLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     // DELETE /employer/templates/{templateId} — delete a job template the employer owns
     const employerTemplateResource = employerTemplatesResource.addResource('{templateId}');
-    employerTemplateResource.addMethod('DELETE', new apigateway.LambdaIntegration(employerTemplatesDeleteLambda.function), {
+    employerTemplateResource.addMethod('DELETE', lambdaIntegration(employerTemplatesDeleteLambda.function), {
       authorizer: employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -956,14 +957,14 @@ export class ApiStack extends cdk.Stack {
     const authResource = this.api.root.addResource('auth');
     const authWorkerResource = authResource.addResource('worker');
     const authWorkerSignupResource = authWorkerResource.addResource('signup');
-    authWorkerSignupResource.addMethod('POST', new apigateway.LambdaIntegration(workerWebSignupLambda.function));
+    authWorkerSignupResource.addMethod('POST', lambdaIntegration(workerWebSignupLambda.function));
 
     const refreshResource = authResource.addResource('refresh');
-    refreshResource.addMethod('POST', new apigateway.LambdaIntegration(tokenRefreshLambda.function));
+    refreshResource.addMethod('POST', lambdaIntegration(tokenRefreshLambda.function));
 
     // POST /auth/logout — no auth (user may have expired access token)
     const logoutResource = authResource.addResource('logout');
-    logoutResource.addMethod('POST', new apigateway.LambdaIntegration(logoutLambda.function));
+    logoutResource.addMethod('POST', lambdaIntegration(logoutLambda.function));
 
     // ── Centralized stage method-level throttles ──
     // All per-method throttle overrides live here so there is exactly one

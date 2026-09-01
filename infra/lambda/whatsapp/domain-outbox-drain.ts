@@ -19,7 +19,10 @@
 //     TrustScorer SQS queue — BEFORE marking the event completed. This
 //     Lambda never calls Bedrock and never scores anything itself; jale_ai
 //     (TrustScorer) owns scoring and is idempotent against duplicate
-//     messages.
+//     messages. The same payload is ALSO fanned out to the TrustExtractor
+//     queue (R1-X) on a fail-open path, AFTER the commit: that dispatch is
+//     best-effort and its failure — or its hang — is logged, never retried
+//     and never able to fail or delay the event.
 //
 // Renderer: `releaseWorkerReady` needs a `ReleaseRenderer`. C2's
 // `createReleaseRenderer()` (workflow lane) is not merged into this branch
@@ -69,6 +72,12 @@ export interface DomainOutboxDrainDeps {
   renderer: ReleaseRenderer;
   now?: () => Date;
   dispatchAssessment?: (payload: AssessmentDispatchPayload) => Promise<void>;
+  /**
+   * R1-X fan-out to the TrustExtractor queue. Optional and FAIL-OPEN: unlike
+   * `dispatchAssessment`, a rejection here is logged and swallowed at the call
+   * site (see processAssessmentRequested) so the event still completes.
+   */
+  dispatchExtraction?: (payload: AssessmentDispatchPayload) => Promise<void>;
 }
 
 /**
@@ -95,6 +104,37 @@ export async function defaultDispatchAssessment(payload: AssessmentDispatchPaylo
   const queueUrl = process.env.TRUST_ASSESSMENT_QUEUE_URL;
   if (!queueUrl) {
     throw new Error('trust_assessment_queue_url_not_configured');
+  }
+  const { SendMessageCommand } = await import('@aws-sdk/client-sqs');
+  const client = await getSqsClient();
+  await client.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify({
+        assessmentId: payload.assessmentId,
+        userId: payload.userId,
+        professionKey: payload.professionKey,
+      }),
+    }),
+  );
+}
+
+/**
+ * R1-X: default extraction dispatcher — sends the SAME `{ assessmentId,
+ * userId, professionKey }` payload to the TrustExtractor SQS queue
+ * (`props.trustExtractionQueue` in whatsapp-stack.ts, consumed by
+ * `lambda/ai/trust-extractor.ts`).
+ *
+ * This function itself fails closed (throws) when the queue URL is missing,
+ * exactly like `defaultDispatchAssessment`, so the misconfiguration is always
+ * visible. It is the CALL SITE that is fail-open: the extraction is a
+ * skill-summary nicety, and losing one must never fail an onboarding event or
+ * delay a trust score.
+ */
+export async function defaultDispatchExtraction(payload: AssessmentDispatchPayload): Promise<void> {
+  const queueUrl = process.env.TRUST_EXTRACTION_QUEUE_URL;
+  if (!queueUrl) {
+    throw new Error('trust_extraction_queue_url_not_configured');
   }
   const { SendMessageCommand } = await import('@aws-sdk/client-sqs');
   const client = await getSqsClient();
@@ -289,6 +329,7 @@ async function processAssessmentRequested(
   deps: DomainOutboxDrainDeps,
 ): Promise<boolean> {
   const dispatch = deps.dispatchAssessment ?? defaultDispatchAssessment;
+  const dispatchExtraction = deps.dispatchExtraction ?? defaultDispatchExtraction;
   try {
     await client.query('BEGIN');
     await setInternalUserRlsContext(client, event.aggregate_id);
@@ -325,6 +366,29 @@ async function processAssessmentRequested(
     );
     if (completion.rowCount !== 1) throw new Error('domain_event_lease_lost');
     await client.query('COMMIT');
+
+    // R1-X fan-out, FAIL-OPEN — and deliberately AFTER the COMMIT.
+    //
+    // Inside the transaction this only bounded REJECTIONS: an SQS call that
+    // hangs rather than rejects would run to the Lambda timeout with the
+    // transaction still open, so the event would roll back and be retried
+    // while the message it already sent became a duplicate. Committing first
+    // means the worst a stuck extraction queue can cost is the extraction.
+    //
+    // It is also outside the try/catch below on purpose: reaching that catch
+    // would ROLLBACK (a no-op now) and then markFailure() an event that has
+    // already completed. The inner catch swallows everything and the metric
+    // carries safe scalars only — never the caught message (an SQS error
+    // quotes the queue URL) and never the payload's ids.
+    try {
+      await dispatchExtraction({ assessmentId, userId: event.aggregate_id, professionKey });
+    } catch {
+      console.log(JSON.stringify({
+        metric: 'WhatsAppExtractionDispatchFailure',
+        event_type: event.event_type,
+      }));
+    }
+
     return true;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => undefined);

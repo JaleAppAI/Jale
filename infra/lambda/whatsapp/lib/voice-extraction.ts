@@ -34,20 +34,21 @@
 import type { ProfileField } from './flows';
 import type { VoiceExtractionFields } from './voice-events';
 import type { ResolvedLocation } from './onboarding-adapters';
+import {
+  STANDARD_TRADE_KEYS,
+  EXPERIENCE_KEYS,
+  AVAILABILITY_KEYS,
+} from '../../lib/worker-vocab';
 
-/** One `StandardTrade` slug (mirrors onboarding/constants.ts's TRADE_ORDER
- * minus 'other', duplicated here rather than imported so this module stays
- * dependency-free of the router's constants module). */
-const STANDARD_TRADES = new Set([
-  'electrician',
-  'plumber',
-  'carpenter',
-  'concrete',
-  'painting',
-]);
-
-const VALID_EXPERIENCE = new Set(['0-1', '2-4', '5-9', '10+']);
-const VALID_AVAILABILITY = new Set(['full_time', 'part_time', 'weekends', 'flexible']);
+/** The three enumerations this module matches against, from
+ * `lambda/lib/worker-vocab`. These used to be retyped here to keep the module
+ * dependency-free of the router's constants module; worker-vocab is a leaf
+ * with no imports of its own, so importing it preserves that property while
+ * removing the copy. `ReadonlySet<string>`, not the narrowed literal union:
+ * the lookups below pass plain strings off the extraction payload. */
+const STANDARD_TRADES: ReadonlySet<string> = new Set(STANDARD_TRADE_KEYS);
+const VALID_EXPERIENCE: ReadonlySet<string> = new Set(EXPERIENCE_KEYS);
+const VALID_AVAILABILITY: ReadonlySet<string> = new Set(AVAILABILITY_KEYS);
 
 /**
  * One concrete write to make, shaped 1:1 onto a `ProfilePersistenceAdapter`

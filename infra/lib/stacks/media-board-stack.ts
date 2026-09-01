@@ -12,6 +12,7 @@ import { Construct } from 'constructs';
 import { NetworkStack } from './network-stack';
 import { ApiStack } from './api-stack';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { lambdaIntegration } from '../api-integration';
 
 export interface MediaBoardStackProps extends cdk.StackProps {
   readonly network: NetworkStack;
@@ -113,26 +114,26 @@ export class MediaBoardStack extends cdk.Stack {
     const workerResource = restApi.root.getResource('worker')!;
     const posts = workerResource.addResource('posts');
 
-    posts.addMethod('GET', new apigateway.LambdaIntegration(listFn.function), {
+    posts.addMethod('GET', lambdaIntegration(listFn.function), {
       authorizer: workerAuth,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    posts.addMethod('POST', new apigateway.LambdaIntegration(createFn.function), {
+    posts.addMethod('POST', lambdaIntegration(createFn.function), {
       authorizer: workerAuth,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    posts.addResource('upload-urls').addMethod('POST', new apigateway.LambdaIntegration(uploadUrlsFn.function), {
+    posts.addResource('upload-urls').addMethod('POST', lambdaIntegration(uploadUrlsFn.function), {
       authorizer: workerAuth,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
-    posts.addResource('{post_id}').addMethod('DELETE', new apigateway.LambdaIntegration(deleteFn.function), {
+    posts.addResource('{post_id}').addMethod('DELETE', lambdaIntegration(deleteFn.function), {
       authorizer: workerAuth,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
 
     // employer/workers/{worker_id} was created by DocumentsStack on the shared API.
     const workerById = restApi.root.getResource('employer')!.getResource('workers')!.getResource('{worker_id}')!;
-    workerById.addResource('posts').addMethod('GET', new apigateway.LambdaIntegration(employerPostsFn.function), {
+    workerById.addResource('posts').addMethod('GET', lambdaIntegration(employerPostsFn.function), {
       authorizer: props.api.employerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });

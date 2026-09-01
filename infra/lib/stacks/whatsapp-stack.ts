@@ -20,6 +20,7 @@ import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
+import { lambdaIntegration } from '../api-integration';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -34,10 +35,27 @@ export interface WhatsAppStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
   /** Existing API Gateway (from ApiStack) — webhook route added here */
   readonly api: apigateway.RestApi;
+  /**
+   * ApiStack's `/worker` resource, already `public readonly` there for exactly
+   * this reason (ReferralsStack hangs `/worker/jobs/{jobId}/share` off it the
+   * same way). S22 R2-C23 adds `/worker/onboarding*` here rather than in
+   * ApiStack because the web door needs THIS stack's `jale/whatsapp/db`
+   * secret, question/alias generator ARNs and domain-outbox wake queue —
+   * moving it the other way would make ApiStack depend on WhatsAppStack,
+   * which already depends on ApiStack.
+   */
+  readonly workerResource: apigateway.Resource;
+  /** ApiStack's worker Cognito authorizer — the same one every other
+   * `/worker/*` route uses. */
+  readonly workerAuthorizer: apigateway.IAuthorizer;
   readonly workerRerankQueue?: sqs.IQueue;
   readonly questionGeneratorFn: lambda.IFunction;
   readonly aliasGeneratorFn: lambda.IFunction;
   readonly trustAssessmentQueue: sqs.IQueue;
+  /** R1-X: AiStack's trust-EXTRACTION queue. Required, not optional: the
+   *  drain's fan-out to it is fail-open at runtime, so an unwired queue would
+   *  otherwise hide behind a metric instead of failing synth. */
+  readonly trustExtractionQueue: sqs.IQueue;
   /**
    * Shared worker documents bucket (from DocumentsStack). The processor
    * lambda is granted PUT-only access (+ the KMS actions grantPut adds for
@@ -415,6 +433,7 @@ export class WhatsAppStack extends cdk.Stack {
       environment: {
         DB_SECRET_ARN: whatsappDbSecret.secretName,
         TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
+        TRUST_EXTRACTION_QUEUE_URL: props.trustExtractionQueue.queueUrl,
         WORKER_INTENT_WAKE_QUEUE_URL: workerIntentWakeQueue.queueUrl,
       },
     });
@@ -424,6 +443,8 @@ export class WhatsAppStack extends cdk.Stack {
     // it gets sqs:SendMessage only (no ReceiveMessage/DeleteMessage), and no
     // Twilio secret access.
     props.trustAssessmentQueue.grantSendMessages(domainOutboxDrainLambda.function);
+    // R1-X: same least-privilege posture for the extraction lane — send only.
+    props.trustExtractionQueue.grantSendMessages(domainOutboxDrainLambda.function);
     workerIntentWakeQueue.grantSendMessages(domainOutboxDrainLambda.function);
     domainOutboxDrainLambda.function.addEventSource(
       new lambdaEventSources.SqsEventSource(domainOutboxWakeQueue, {
@@ -540,7 +561,8 @@ export class WhatsAppStack extends cdk.Stack {
         BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
-        QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+        // Sprint 22 R1: QUESTION_GENERATOR_ARN removed — the v1 trust hand-off
+        // (autoAdvanceProfileAfterAi) that invoked it was deleted.
         ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
         TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
       },
@@ -549,7 +571,6 @@ export class WhatsAppStack extends cdk.Stack {
     whatsappDbSecret.grantRead(aiProfileWriterLambda.function);
     twilioSecret.grantRead(aiProfileWriterLambda.function);
     mediaBucket.grantRead(aiProfileWriterLambda.function);
-    props.questionGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
     props.aliasGeneratorFn.grantInvoke(aiProfileWriterLambda.function);
     // Stream B (Task 8d): a voice note ingested from the v2 lane's
     // profile.voice_choice step completes through this SAME lambda; its v2
@@ -587,22 +608,17 @@ export class WhatsAppStack extends cdk.Stack {
     // ── Step Functions: AI Pipeline ─────────────────────────────
     const voiceTrustReceiverLambda = new JaleLambdaFunction(this, 'VoiceTrustReceiverLambda', {
       entry: path.join(__dirname, '../../lambda/ai/voice-trust-receiver.ts'),
-      description: 'voice-trust-receiver: writes transcript to state_context, advances trust step',
+      description: 'voice-trust-receiver: re-enters the v2 lane with the trust transcript',
       vpc: props.vpc,
       securityGroups: [props.lambdaSg],
       timeout: 30,
-      environment: {
-        DB_SECRET_ARN: whatsappDbSecret.secretName,
-        TWILIO_SECRET_ARN: twilioSecret.secretName,
-        MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        TRUST_ASSESSMENT_QUEUE_URL: props.trustAssessmentQueue.queueUrl,
-        TWILIO_STATUS_CALLBACK_URL: statusCallbackUrl,
-      },
+      // Sprint 22 R1: the legacy v1 branch (DB writes, Twilio outbox, direct
+      // trust-queue send) was deleted; the receiver now only reads the
+      // transcript from S3 and re-enqueues onto the v2 inbound queue below,
+      // so it holds no DB/Twilio secrets and no assessment-queue grant.
+      environment: {},
     });
-    whatsappDbSecret.grantRead(voiceTrustReceiverLambda.function);
-    twilioSecret.grantRead(voiceTrustReceiverLambda.function);
     mediaBucket.grantRead(voiceTrustReceiverLambda.function);
-    props.trustAssessmentQueue.grantSendMessages(voiceTrustReceiverLambda.function);
     // v2 re-entry (Task 5): a trust voice note started from the v2 lane
     // completes by sending a synthetic event back onto the same v2 inbound
     // FIFO queue the webhook uses — gated on the identical transport flag so
@@ -740,10 +756,20 @@ export class WhatsAppStack extends cdk.Stack {
     }
     const alarmAction = new cloudwatchActions.SnsAction(alarmTopic);
 
+    // LITERAL term patterns, NOT `logs.FilterPattern.stringValue('$.metric',
+    // ...)`. A JSON selector pattern (`{ $.metric = "X" }`) is only evaluated
+    // against log events that are themselves a valid JSON object, and the Node
+    // 20 runtime's default TEXT log format prefixes every console line with
+    // `timestamp<TAB>requestId<TAB>LEVEL<TAB>` -- so the selector matched
+    // NOTHING and every alarm keyed off these filters was silently disarmed. A
+    // quoted term matches the substring inside the JSON.stringify payload under
+    // both the text and JSON log formats. notifications-stack.ts:260 is where
+    // this was first diagnosed; test/unit/stacks/metric-filter-patterns.test.ts
+    // now guards the whole repo against the selector idiom.
     const metricFilter = (id: string, metricValueEquals: string, metricName: string) =>
       new logs.MetricFilter(this, id, {
         logGroup: statusCallbackLambda.logGroup,
-        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
         metricNamespace: 'Jale/WhatsApp',
         metricName,
         metricValue: '1',
@@ -765,7 +791,7 @@ export class WhatsAppStack extends cdk.Stack {
       metricName: string,
     ) => new logs.MetricFilter(this, id, {
       logGroup: workerIntentDrainLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+      filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
       metricNamespace: 'Jale/WhatsApp',
       metricName,
       metricValue: '1',
@@ -871,14 +897,14 @@ export class WhatsAppStack extends cdk.Stack {
 
     const processorWakeFailureMetric = new logs.MetricFilter(this, 'ProcessorOutboxWakeFailureMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOutboxWakeFailure'),
+      filterPattern: logs.FilterPattern.literal('"WhatsAppOutboxWakeFailure"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OutboxWakeFailures',
       metricValue: '1',
     });
     new logs.MetricFilter(this, 'DomainOutboxWakeFailureMetric', {
       logGroup: domainOutboxDrainLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOutboxWakeFailure'),
+      filterPattern: logs.FilterPattern.literal('"WhatsAppOutboxWakeFailure"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OutboxWakeFailures',
       metricValue: '1',
@@ -896,7 +922,7 @@ export class WhatsAppStack extends cdk.Stack {
     const drainMetricFilter = (id: string, metricValueEquals: string, metricName: string) =>
       new logs.MetricFilter(this, id, {
         logGroup: domainOutboxDrainLambda.logGroup,
-        filterPattern: logs.FilterPattern.stringValue('$.metric', '=', metricValueEquals),
+        filterPattern: logs.FilterPattern.literal(`"${metricValueEquals}"`),
         metricNamespace: 'Jale/WhatsApp',
         metricName,
         metricValue: '1',
@@ -943,7 +969,7 @@ export class WhatsAppStack extends cdk.Stack {
     // the processor's log group.
     const otpLockMetric = new logs.MetricFilter(this, 'WhatsAppOtpLockMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'WhatsAppOtpLock'),
+      filterPattern: logs.FilterPattern.literal('"WhatsAppOtpLock"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OtpLockRate',
       metricValue: '1',
@@ -960,7 +986,7 @@ export class WhatsAppStack extends cdk.Stack {
     // invisible to operators.
     const trustQuestionGenFailedMetric = new logs.MetricFilter(this, 'WhatsAppTrustQuestionGenFailedMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingTrustQuestionGenerationFailed'),
+      filterPattern: logs.FilterPattern.literal('"OnboardingTrustQuestionGenerationFailed"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'TrustQuestionGenerationFailed',
       metricValue: '1',
@@ -976,14 +1002,14 @@ export class WhatsAppStack extends cdk.Stack {
     // no alarm; drop-off is a product signal, not a page.
     new logs.MetricFilter(this, 'WhatsAppOnboardingStepAdvancedMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingStepAdvanced'),
+      filterPattern: logs.FilterPattern.literal('"OnboardingStepAdvanced"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OnboardingStepAdvanced',
       metricValue: '1',
     });
     new logs.MetricFilter(this, 'WhatsAppOnboardingCompletedMetric', {
       logGroup: this.processorLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'OnboardingCompleted'),
+      filterPattern: logs.FilterPattern.literal('"OnboardingCompleted"'),
       metricNamespace: 'Jale/WhatsApp',
       metricName: 'OnboardingCompleted',
       metricValue: '1',
@@ -1016,8 +1042,9 @@ export class WhatsAppStack extends cdk.Stack {
     // spec §5's deliberate choice not to block posting on a Rekognition
     // outage. It logs `moderateImage service fault (fail-open) key=...` via
     // plain `console.error` (NOT the `{ metric: ... }` JSON convention the
-    // other filters above key off), so this needs a literal substring
-    // filter pattern instead of `logs.FilterPattern.stringValue`. Without
+    // other filters above key off), so the term this filter matches is a
+    // message substring rather than a metric name. (Every filter in this stack
+    // is a term pattern now -- see the metricFilter helper above.) Without
     // this, a sustained Rekognition outage would silently auto-approve
     // every worker photo with nobody paged.
     const moderationFailOpenMetric = new logs.MetricFilter(this, 'WhatsAppModerationFailOpenMetric', {
@@ -1041,7 +1068,7 @@ export class WhatsAppStack extends cdk.Stack {
     const webhookResource = whatsappResource.addResource('webhook');
     webhookResource.addMethod(
       'POST',
-      new apigateway.LambdaIntegration(this.webhookLambda.function),
+      lambdaIntegration(this.webhookLambda.function),
       {
         methodResponses: [{ statusCode: '200' }, { statusCode: '403' }],
       },
@@ -1049,7 +1076,7 @@ export class WhatsAppStack extends cdk.Stack {
     const statusCallbackResource = whatsappResource.addResource('status-callback');
     statusCallbackResource.addMethod(
       'POST',
-      new apigateway.LambdaIntegration(statusCallbackLambda.function),
+      lambdaIntegration(statusCallbackLambda.function),
       {
         authorizationType: apigateway.AuthorizationType.NONE,
         methodResponses: [
@@ -1058,5 +1085,159 @@ export class WhatsAppStack extends cdk.Stack {
         ],
       },
     );
+
+    // ═══════════════════════════════════════════════════════════════════
+    // S22 R2-C23 — WEB ONBOARDING DOOR
+    //
+    //   GET    /worker/onboarding
+    //   POST   /worker/onboarding/answers
+    //   POST   /worker/onboarding/back
+    //   PATCH  /worker/onboarding/language
+    //
+    // One Lambda driving the SAME `worker_workflow_runs` state machine the
+    // processor drives for WhatsApp, as the SAME `jale_whatsapp` role — every
+    // table the engine writes is granted to that role and no other API role,
+    // column by column, across migrations 042/049/066/084/086. Migration 086
+    // added the two SECURITY DEFINER entry points
+    // (`resolve_worker_internal_id`, `start_web_onboarding_workflow`) that let
+    // the web knock on that door.
+    //
+    // It lives in WhatsAppStack, not ApiStack, because WhatsAppStack already
+    // depends on ApiStack (`props.api`) and owns everything this Lambda needs:
+    // the `jale/whatsapp/db` secret, the question/alias generator ARNs and the
+    // domain-outbox wake queue. Wiring it the other way round would create an
+    // ApiStack ↔ WhatsAppStack cycle.
+    // ═══════════════════════════════════════════════════════════════════
+
+    const webOnboardingLambda = new JaleLambdaFunction(this, 'WorkerWebOnboardingLambda', {
+      entry: path.join(__dirname, '../../lambda/whatsapp/web/worker-onboarding.ts'),
+      description: 'Web worker onboarding — drives the WhatsApp v2 engine over HTTP',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      // API Gateway hard-caps a REST integration at 29s. `profile.trade`
+      // synchronously invokes the question-generator Lambda on a cache miss,
+      // so this is the one route that can legitimately take seconds rather
+      // than milliseconds — but it must return a 5xx we control rather than
+      // API Gateway's own 504.
+      timeout: 28,
+      environment: {
+        // Same role as the processor: getDbPool() reads this alias.
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+        // createTrustQuestionGenerator invokes this synchronously to build a
+        // trade's three questions. WITHOUT it the generator throws, the
+        // adapter swallows the throw and `seedTrustQuestions` silently seeds
+        // the generic FALLBACK set — a defect that is invisible in the flow
+        // and only shows up weeks later as un-scorable assessments. The
+        // handler logs `WebOnboardingFallbackQuestionsSeeded` when it happens.
+        QUESTION_GENERATOR_ARN: props.questionGeneratorFn.functionArn,
+        // Requested by the same custom-trust lane when a typed profession has
+        // no alias row yet.
+        ALIAS_GENERATOR_ARN: props.aliasGeneratorFn.functionArn,
+        // The third trust answer completes onboarding and enqueues
+        // `assessment.requested` + `worker.ready`. Poking the drain
+        // post-commit is what keeps scoring and skill extraction from waiting
+        // for the cron — exactly what the processor does.
+        DOMAIN_OUTBOX_WAKE_QUEUE_URL: domainOutboxWakeQueue.queueUrl,
+        // TOS_URL / PRIVACY_URL are INTENTIONALLY absent: the web copy owns
+        // the Terms and Privacy links, so the engine's legal prompt text (the
+        // only thing those two feed) is never shown by this door, and the
+        // handler's hardcoded jaleapp.ai/legal defaults stand.
+      },
+    });
+    whatsappDbSecret.grantRead(webOnboardingLambda.function);
+    props.questionGeneratorFn.grantInvoke(webOnboardingLambda.function);
+    props.aliasGeneratorFn.grantInvoke(webOnboardingLambda.function);
+    domainOutboxWakeQueue.grantSendMessages(webOnboardingLambda.function);
+
+    // ── Web-door observability ───────────────────────────────────────
+    //
+    // Idiom B (a single quoted term), the same one every sibling filter in
+    // this stack uses and the one `metric-filter-patterns.test.ts` resolves
+    // back to the emitting entry file. Each term below is logged by
+    // `lambda/whatsapp/web/worker-onboarding.ts` or by a module it imports
+    // (`web/onboarding-driver.ts`), which is what that audit checks.
+    const webOnboardingMetric = (id: string, term: string, metricName: string) =>
+      new logs.MetricFilter(this, id, {
+        logGroup: webOnboardingLambda.logGroup,
+        filterPattern: logs.FilterPattern.literal(`"${term}"`),
+        metricNamespace: 'Jale/WhatsApp',
+        metricName,
+        metricValue: '1',
+      });
+
+    // The generator was unreachable and the worker is being asked three
+    // GENERIC questions instead of their trade's. Invisible in the flow and
+    // only surfacing weeks later as un-scorable assessments, so it alarms on
+    // the first occurrence rather than on a rate.
+    const webFallbackQuestionsMetric = webOnboardingMetric(
+      'WebOnboardingFallbackQuestionsMetric',
+      'WebOnboardingFallbackQuestionsSeeded',
+      'WebOnboardingFallbackQuestions',
+    );
+    alarm(
+      'WebOnboardingFallbackQuestionsAlarm',
+      'WhatsAppWebOnboardingFallbackQuestions',
+      webFallbackQuestionsMetric.metric({ statistic: 'Sum', period: cdk.Duration.minutes(5) }),
+    ).addAlarmAction(alarmAction);
+
+    // Any 500 out of the door: a worker who cannot finish onboarding at all.
+    const webRequestFailedMetric = webOnboardingMetric(
+      'WebOnboardingRequestFailedMetric',
+      'WebOnboardingRequestFailed',
+      'WebOnboardingRequestFailures',
+    );
+    alarm(
+      'WebOnboardingRequestFailedAlarm',
+      'WhatsAppWebOnboardingRequestFailures',
+      webRequestFailedMetric.metric({ statistic: 'Sum', period: cdk.Duration.minutes(5) }),
+    ).addAlarmAction(alarmAction);
+
+    // METRIC ONLY, no alarm. A bound run parked on a pre-auth step is
+    // repaired in place and the worker never notices, so paging on it would
+    // be noise — but it can only come from operator tooling or a legacy row,
+    // so a non-zero count is worth being able to graph and go looking for.
+    webOnboardingMetric(
+      'WebOnboardingPreAuthSelfHealMetric',
+      'OnboardingBoundStepSelfHealed',
+      'OnboardingBoundStepSelfHealed',
+    );
+
+    const webOnboardingIntegration = lambdaIntegration(webOnboardingLambda.function);
+    // CORS preflight is inherited from the RestApi's
+    // `defaultCorsPreflightOptions` (ApiStack), exactly like every sibling
+    // `/worker/*` route — no per-resource CORS here on purpose.
+    const onboardingResource = props.workerResource.addResource('onboarding');
+    const workerAuth = {
+      authorizer: props.workerAuthorizer,
+      authorizationType: apigateway.AuthorizationType.COGNITO,
+    };
+    onboardingResource.addMethod('GET', webOnboardingIntegration, workerAuth);
+    // ONE `{action}` resource, not three siblings (`answers`, `back`,
+    // `language`). The URLs the browser calls are unchanged; the CloudFormation
+    // footprint is not. Every REST resource costs more than itself: a Resource,
+    // its method, the OPTIONS preflight `defaultCorsPreflightOptions` adds, and
+    // a Lambda::Permission per Lambda-backed method. Four sibling resources
+    // come to 16; this shape costs 8.
+    //
+    // ANY, because one resource has to carry POST (answers, back) and PATCH
+    // (language). It is not a widening: the Cognito worker authorizer is
+    // attached to the method exactly as it is to the GET, and the handler
+    // answers any method/action pair it does not route with 404 `not_found`.
+    //
+    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-08-29 with the CI
+    // production context, JaleApiStack synthesizes to 431 resources against
+    // CloudFormation's hard maximum of 500 — 423 without this door. It was
+    // 501 (synth failed with TooManyResourcesInStack) until every method on
+    // the shared RestApi moved to `lambdaIntegration()` from
+    // `lib/api-integration.ts`, which drops the console-only
+    // `test-invoke-stage` Lambda::Permission and freed 70 resources. Use that
+    // helper — never `new apigateway.LambdaIntegration(...)` — for any method
+    // on this API. `test/unit/stacks/api-stack-resource-ceiling.test.ts`
+    // synthesizes the real composition and fails the build above 470, which
+    // is where splitting ApiStack (a nested stack, or a second RestApi for
+    // `/worker/*`) becomes the answer.
+    onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
   }
 }

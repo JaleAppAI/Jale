@@ -34,13 +34,6 @@ import {
   normalizeProfession,
   type TrustQuestion,
 } from '../handlers/custom-trust';
-import {
-  TRUST_QUESTIONS,
-  TRUST_STEPS,
-  SENIORITY_OPTIONS,
-  getTrustOptions,
-  buildTrustQuestion,
-} from './flows';
 import { upsertWorkerProfileFromUsers } from './profile-flow';
 import { slugCityKey } from '../../lib/city-fields';
 import { UNAMBIGUOUS_CITY_TO_STATE } from './city-state-data';
@@ -744,20 +737,6 @@ export function createProfilePersistenceAdapter(
 export function normalizeTrade(raw: string): string {
   return normalizeProfession(raw);
 }
-
-/**
- * Builds the three standard (non-custom-trade) bilingual trust questions for
- * a trade, sourced from `TRUST_QUESTIONS`/`getTrustOptions`/`buildTrustQuestion`
- * (lambda/whatsapp/lib/flows.ts:163,196,205) and `SENIORITY_OPTIONS` (:193).
- */
-export function standardTrustQuestions(trade: string): TrustQuestion[] {
-  return TRUST_STEPS.map((_, step) => ({
-    q_en: buildTrustQuestion(step, trade, 'en'),
-    q_es: buildTrustQuestion(step, trade, 'es'),
-  }));
-}
-
-export { TRUST_QUESTIONS, SENIORITY_OPTIONS, getTrustOptions, buildTrustQuestion };
 
 // ── createOnboardingV2Adapters ─────────────────────────────────────────
 

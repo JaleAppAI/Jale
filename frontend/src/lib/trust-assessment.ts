@@ -10,57 +10,7 @@ export interface TrustAnswer {
   answered_at: string;
 }
 
-const MENU_MARKER = 'Reply with the number';
 const NUMBERED_OPTION_RE = /^\s*\d+\.\s/;
-
-// Mirrors TRUST_OPTION_LABELS_ES (infra/lambda/whatsapp/lib/flows.ts:234-273).
-// Menu answers are stored as English labels even for Spanish workers.
-// Identity mappings (Framing, Industrial, Interior, Exterior, Spray) are kept
-// so the map stays a verbatim mirror of the infra source.
-const MENU_LABEL_ES: Record<string, string> = {
-  Residential: 'Residencial',
-  Commercial: 'Comercial',
-  Industrial: 'Industrial',
-  Repairs: 'Reparaciones',
-  'New installs': 'Instalaciones nuevas',
-  'Drain/sewer': 'Drenaje',
-  Framing: 'Framing',
-  'Finish work': 'Acabados',
-  'Cabinets/trim': 'Gabinetes y molduras',
-  Forms: 'Formas',
-  Rebar: 'Varilla',
-  'Pour/finish': 'Colado y acabado',
-  Interior: 'Interior',
-  Exterior: 'Exterior',
-  'Prep/texture': 'Preparacion y textura',
-  'General labor': 'Trabajo general',
-  'Skilled trade': 'Oficio especializado',
-  'Equipment/tools': 'Equipo y herramientas',
-  Helper: 'Ayudante',
-  'Can work alone': 'Puedo trabajar solo',
-  'Lead crew': 'Lider de cuadrilla',
-  'Pull wire': 'Jalar cable',
-  'Bend conduit': 'Doblar conduit',
-  'Work panels': 'Trabajar paneles',
-  'Install pipe': 'Instalar tuberia',
-  'Set fixtures': 'Instalar accesorios',
-  'Water heaters': 'Calentadores de agua',
-  'Read plans': 'Leer planos',
-  'Frame walls': 'Levantar muros',
-  'Install doors/trim': 'Instalar puertas y molduras',
-  'Set forms': 'Poner formas',
-  'Tie rebar': 'Amarrar varilla',
-  'Finish concrete': 'Acabar concreto',
-  'Prep/sanding': 'Preparar y lijar',
-  Spray: 'Spray',
-  'Roll/brush': 'Rodillo y brocha',
-  'Use power tools': 'Usar herramientas electricas',
-  'Site cleanup/safety': 'Limpieza y seguridad',
-};
-
-export function isMenuAnswer(a: TrustAnswer): boolean {
-  return a.answer_source === 'text' && a.q_en.includes(MENU_MARKER);
-}
 
 export function displayQuestion(a: TrustAnswer, locale: string): string {
   const q = locale === 'es' && a.q_es ? a.q_es : a.q_en;
@@ -74,13 +24,15 @@ export function displayQuestion(a: TrustAnswer, locale: string): string {
   return q.trim();
 }
 
-export function displayAnswer(a: TrustAnswer, locale: string): { kind: 'text' | 'voice' | 'menu'; text: string } {
-  if (a.answer_source === 'voice') return { kind: 'voice', text: a.answer_text };
-  if (isMenuAnswer(a)) {
-    const text = locale === 'es' ? (MENU_LABEL_ES[a.answer_text] ?? a.answer_text) : a.answer_text;
-    return { kind: 'menu', text };
-  }
-  return { kind: 'text', text: a.answer_text };
+/**
+ * Answers are free text or a voice transcript -- never a menu pick, so there
+ * is nothing locale-dependent left to do here (contrast `displayQuestion`,
+ * which still picks `q_es`). Legacy rows answered through the retired
+ * WhatsApp numbered menu hold an English option label (e.g. "Framing"); they
+ * display verbatim as text, like any other text answer.
+ */
+export function displayAnswer(a: TrustAnswer): { kind: 'text' | 'voice'; text: string } {
+  return { kind: a.answer_source === 'voice' ? 'voice' : 'text', text: a.answer_text };
 }
 
 export function normalizeAnswers(raw: unknown): TrustAnswer[] {

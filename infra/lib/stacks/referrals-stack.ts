@@ -11,6 +11,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { lambdaIntegration } from '../api-integration';
 
 export interface ReferralsStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -474,12 +475,19 @@ export class ReferralsStack extends cdk.Stack {
 
     // 2. Deliberate skip paths -- missing/malformed secret or failed OAuth
     // exchange -- both already log `{"metric":"VisibilityOutboxDrainSkipped"}`;
-    // this MetricFilter (same pattern as AiStack's TrustScorerFailures /
+    // this MetricFilter (same idiom as AiStack's TrustScorerFailures /
     // WhatsAppStack's CallbackErrors) turns that log line into an alarmable
     // metric without any Lambda code change.
+    //
+    // LITERAL term pattern, NOT `logs.FilterPattern.stringValue('$.metric',
+    // ...)`: a JSON selector only matches events that are themselves valid
+    // JSON, and Node 20's default TEXT log format prefixes each console line
+    // with `timestamp<TAB>requestId<TAB>LEVEL<TAB>`, so the selector this used
+    // to carry matched nothing at all. See notifications-stack.ts:260 and
+    // test/unit/stacks/metric-filter-patterns.test.ts.
     const skippedMetric = new logs.MetricFilter(this, 'VisibilityOutboxDrainSkippedMetric', {
       logGroup: visibilityOutboxDrainLambda.logGroup,
-      filterPattern: logs.FilterPattern.stringValue('$.metric', '=', 'VisibilityOutboxDrainSkipped'),
+      filterPattern: logs.FilterPattern.literal('"VisibilityOutboxDrainSkipped"'),
       metricNamespace: 'Jale/Referrals',
       metricName: 'VisibilityOutboxDrainSkipped',
       metricValue: '1',
@@ -521,26 +529,26 @@ export class ReferralsStack extends cdk.Stack {
 
     // GET /public/jobs — unauthenticated index (SEO/search), on the SAME
     // parent resource as {code} below, not a newly-declared one.
-    publicJobsResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobsListLambda.function));
+    publicJobsResource.addMethod('GET', lambdaIntegration(publicJobsListLambda.function));
 
     const publicJobResource = publicJobsResource.addResource('{code}');
-    publicJobResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobLambda.function));
+    publicJobResource.addMethod('GET', lambdaIntegration(publicJobLambda.function));
 
     // POST /public/jobs/{code}/open — unauthenticated open-tracking beacon,
     // options argument omitted entirely, matching the DocumentsStack/LegalStack
     // precedent for downstream stacks adding unauthenticated methods.
     const publicJobOpenResource = publicJobResource.addResource('open');
-    publicJobOpenResource.addMethod('POST', new apigateway.LambdaIntegration(publicJobOpenLambda.function));
+    publicJobOpenResource.addMethod('POST', lambdaIntegration(publicJobOpenLambda.function));
 
     // GET /public/jobs/{code}/referrer — unauthenticated referrer-context
     // lookup, same unauthenticated shape as the routes above.
     const publicJobReferrerResource = publicJobResource.addResource('referrer');
-    publicJobReferrerResource.addMethod('GET', new apigateway.LambdaIntegration(publicJobReferrerLambda.function));
+    publicJobReferrerResource.addMethod('GET', lambdaIntegration(publicJobReferrerLambda.function));
 
     const publicJobApplyIntentResource = publicJobResource.addResource('apply-intent');
     publicJobApplyIntentResource.addMethod(
       'POST',
-      new apigateway.LambdaIntegration(publicJobApplyIntentLambda.function),
+      lambdaIntegration(publicJobApplyIntentLambda.function),
     );
 
     // NOTE: throttles for the routes above (GET {code} 20/10, POST open
@@ -554,7 +562,7 @@ export class ReferralsStack extends cdk.Stack {
     // deploy, so the share route is skipped and restored in phase 2.
     props.workerJobResource
       ?.addResource('share')
-      .addMethod('POST', new apigateway.LambdaIntegration(workerJobShareLambda.function), {
+      .addMethod('POST', lambdaIntegration(workerJobShareLambda.function), {
         authorizer: props.workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
@@ -562,13 +570,13 @@ export class ReferralsStack extends cdk.Stack {
     // GET  /worker/referrals
     // POST /worker/referrals/claim
     const workerReferralsResource = props.workerResource.addResource('referrals');
-    workerReferralsResource.addMethod('GET', new apigateway.LambdaIntegration(workerReferralsLambda.function), {
+    workerReferralsResource.addMethod('GET', lambdaIntegration(workerReferralsLambda.function), {
       authorizer: props.workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
     workerReferralsResource
       .addResource('claim')
-      .addMethod('POST', new apigateway.LambdaIntegration(workerReferralClaimLambda.function), {
+      .addMethod('POST', lambdaIntegration(workerReferralClaimLambda.function), {
         authorizer: props.workerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
@@ -577,7 +585,7 @@ export class ReferralsStack extends cdk.Stack {
     // hangs off the EXISTING employer {jobId} node exported by ApiStack.
     props.employerJobResource
       .addResource('public-listing')
-      .addMethod('PATCH', new apigateway.LambdaIntegration(employerJobPublicListingLambda.function), {
+      .addMethod('PATCH', lambdaIntegration(employerJobPublicListingLambda.function), {
         authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
@@ -587,7 +595,7 @@ export class ReferralsStack extends cdk.Stack {
     // of the public-listing mount above.
     props.employerJobResource
       .addResource('share')
-      .addMethod('POST', new apigateway.LambdaIntegration(employerJobShareLambda.function), {
+      .addMethod('POST', lambdaIntegration(employerJobShareLambda.function), {
         authorizer: props.employerAuthorizer,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });

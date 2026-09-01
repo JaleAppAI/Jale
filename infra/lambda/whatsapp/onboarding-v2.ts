@@ -50,6 +50,10 @@ import type {
   RouteResult,
 } from './onboarding/types';
 import { applyGate } from './onboarding/gate';
+import {
+  hydrateSessionFromRun,
+  persistDurableStateContext,
+} from './onboarding/durable-context';
 import { handleStartStep } from './onboarding/steps/start';
 import { handleOtpStep } from './onboarding/steps/otp';
 import { handleLegalStep } from './onboarding/steps/legal';
@@ -120,6 +124,82 @@ async function handleProfileAndTrust(
 
 // ── Bound-step dispatch ─────────────────────────────────────────────────
 
+/** A durable IDIOMA/LANGUAGE override (see applyGate) takes precedence over
+ * the run's originally-bound preferred_language. */
+function boundStepLang(session: OnboardingV2Session, gate: WorkerGate): Lang {
+  return (session.state_context?.v2PreferredLanguageOverride as Lang | undefined)
+    ?? gate.preferredLanguage;
+}
+
+/**
+ * Everything `routeBoundStep` does AFTER the command gate has declined to
+ * intercept: the legal branch, then the profile/trust switch.
+ *
+ * Split out (R2-C23) so the WEB door can reach the real step handlers WITHOUT
+ * the command gate. On WhatsApp the gate must run — plain text equal to
+ * `back`/`hola`/`trabajos`/... is a command, not an answer. On the web those
+ * same strings arrive as form field values that the worker typed on purpose:
+ * a custom trade of "back", a name of "Ayuda". Round-tripping them through
+ * the gate would swallow them and reply with WhatsApp copy nobody will read.
+ * BACK on the web is its own endpoint (`POST /worker/onboarding/back`), so
+ * nothing is lost by skipping the gate here.
+ */
+async function dispatchBoundStepPostGate(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  now: Date,
+  lang: Lang,
+  responseLang: Lang,
+): Promise<RouteResult> {
+  const stepKey = gate.currentStepKey as WorkflowStepKey;
+  if (stepKey === 'legal.review') {
+    return handleLegalStep(client, session, msg, deps, gate, lang, responseLang, now);
+  }
+  return handleProfileAndTrust(client, session, msg, deps, gate, stepKey, lang, now);
+}
+
+/**
+ * The WEB door's entry point into the engine: hydrate the durable
+ * `state_context` bag from `worker_workflow_runs.context`, dispatch the
+ * worker's value straight at the real step handler (no command gate — see
+ * `dispatchBoundStepPostGate`), then write the bag back.
+ *
+ * The caller owns the transaction, the RLS context and the run lock, exactly
+ * as `routeOnboardingV2` does for the processor. The caller must also have
+ * rejected steps with no handler (`isUnimplementedBoundStep`) — reaching
+ * `handleProfileAndTrust` with one throws `unhandled bound step`, which is a
+ * 500 rather than the 422 the web contract owes the browser.
+ */
+export async function dispatchWebBoundStep(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  now: Date,
+): Promise<RouteResult> {
+  const lang = boundStepLang(session, gate);
+  const responseLang = resolveResponseLanguage(lang, msg.body, Boolean(msg.interactivePayload));
+  await hydrateSessionFromRun(client, session, gate.runId!);
+  const result = await dispatchBoundStepPostGate(
+    client, session, msg, deps, gate, now, lang, responseLang,
+  );
+  await persistDurableStateContext(client, gate.runId!, session.state_context);
+  return result;
+}
+
+/**
+ * WhatsApp's bound-step path. Wraps the real routing in the same
+ * hydrate/persist pair the web door uses, so the durable bag stays in sync
+ * whichever door moved the run last — that is what lets a worker pick their
+ * trade on the web and answer the SAME three generated questions over
+ * WhatsApp, and vice versa. On WhatsApp the hydrate is a no-op (the
+ * conversation's own `state_context` already holds every key) and the persist
+ * is one extra column-scoped UPDATE per message.
+ */
 async function routeBoundStep(
   client: PoolClient,
   session: OnboardingV2Session,
@@ -128,11 +208,22 @@ async function routeBoundStep(
   gate: WorkerGate,
   now: Date,
 ): Promise<RouteResult> {
+  await hydrateSessionFromRun(client, session, gate.runId!);
+  const result = await routeBoundStepHydrated(client, session, msg, deps, gate, now);
+  await persistDurableStateContext(client, gate.runId!, session.state_context);
+  return result;
+}
+
+async function routeBoundStepHydrated(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  now: Date,
+): Promise<RouteResult> {
   const stepKey = gate.currentStepKey as WorkflowStepKey;
-  // A durable IDIOMA/LANGUAGE override (see applyGate) takes precedence over
-  // the run's originally-bound preferred_language.
-  const lang: Lang = (session.state_context?.v2PreferredLanguageOverride as Lang | undefined)
-    ?? gate.preferredLanguage;
+  const lang: Lang = boundStepLang(session, gate);
   const isInteractive = Boolean(msg.interactivePayload);
   const responseLang = resolveResponseLanguage(lang, msg.body, isInteractive);
 
@@ -208,11 +299,7 @@ async function routeBoundStep(
   });
   if (gateResult) return gateResult;
 
-  if (stepKey === 'legal.review') {
-    return handleLegalStep(client, session, msg, deps, gate, lang, responseLang, now);
-  }
-
-  return handleProfileAndTrust(client, session, msg, deps, gate, stepKey, lang, now);
+  return dispatchBoundStepPostGate(client, session, msg, deps, gate, now, lang, responseLang);
 }
 
 // ── Entry point ──────────────────────────────────────────────────────────

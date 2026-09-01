@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getApplications, getJob as getWorkerJob, getJobs as getWorkerJobs } from '../worker';
 import {
@@ -11,6 +14,7 @@ import {
     getJobs as getEmployerJobs,
     getWorkerDocuments,
     getWorkerProfile,
+    listJobTemplates,
 } from '../employer';
 
 /**
@@ -128,6 +132,7 @@ describe('AbortSignal forwarding in the API modules', () => {
             ['employer getWorkerDocuments', (s) => getWorkerDocuments('t', 'w-1', 'job-1', s)],
             ['employer getBilling', (s) => getBilling('t', s)],
             ['employer getEmployerDigestSettings', (s) => getEmployerDigestSettings('t', s)],
+            ['employer listJobTemplates', (s) => listJobTemplates('t', s)],
         ];
 
         it.each(cases)('%s aborts when the caller does', async (_name, call) => {
@@ -164,5 +169,41 @@ describe('AbortSignal forwarding in the API modules', () => {
                 code: 'boom',
             });
         });
+    });
+});
+
+/**
+ * The cases above prove the HELPERS forward a signal they are handed. That is
+ * only half the contract: `listJobTemplates` grew its optional `signal`
+ * parameter and then went a whole release with no caller passing one, behind a
+ * comment in the dashboard asserting the parameter did not exist.
+ *
+ * This block is the other half, and it is a SOURCE-TEXT pin rather than a
+ * render: there is no test harness for the employer dashboard page (it is a
+ * client page behind `useRequireAuth` + `usePageData`), and standing one up to
+ * observe one argument would cost far more than it defends. The pin is exact
+ * about what it can see -- the call site -- and says nothing it cannot.
+ */
+describe('the dashboard actually hands listJobTemplates its signal', () => {
+    const dashboardPage = fs.readFileSync(
+        path.resolve(
+            path.dirname(fileURLToPath(import.meta.url)),
+            '../../../app/[locale]/employer/dashboard/page.tsx',
+        ),
+        'utf8',
+    );
+
+    it('passes the page-data signal through to listJobTemplates', () => {
+        // `usePageData` names it `signal` in the fetcher context; the two
+        // sibling GET helpers on the same Promise.all already receive it.
+        expect(dashboardPage).toContain('listJobTemplates(token, signal)');
+        expect(dashboardPage).not.toMatch(/listJobTemplates\(\s*token\s*\)/);
+    });
+
+    it('no longer claims the helper takes no signal', () => {
+        // The comment outlived the parameter it denied. Left in place it would
+        // talk the next reader out of the fix.
+        expect(dashboardPage).not.toContain('takes no signal');
+        expect(dashboardPage).not.toContain('lib limitation');
     });
 });

@@ -8,6 +8,7 @@ import { Construct } from 'constructs';
 import { NetworkStack } from './network-stack';
 import { ApiStack } from './api-stack';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
+import { lambdaIntegration } from '../api-integration';
 
 export interface DocumentsStackProps extends cdk.StackProps {
   readonly network: NetworkStack;
@@ -195,17 +196,17 @@ export class DocumentsStack extends cdk.Stack {
     // POST /worker/documents/upload-url — no auth (employer-shared-link / pre-account tokenized flow)
     workerDocs
       .addResource('upload-url')
-      .addMethod('POST', new apigateway.LambdaIntegration(uploadUrlFn.function));
+      .addMethod('POST', lambdaIntegration(uploadUrlFn.function));
 
     // POST /worker/documents/confirm — no auth (tokenized flow)
     workerDocs
       .addResource('confirm')
-      .addMethod('POST', new apigateway.LambdaIntegration(confirmFn.function));
+      .addMethod('POST', lambdaIntegration(confirmFn.function));
 
     // POST /worker/documents/submit — no auth (legacy WhatsApp onboarding flow)
     workerDocs
       .addResource('submit')
-      .addMethod('POST', new apigateway.LambdaIntegration(submitFn.function));
+      .addMethod('POST', lambdaIntegration(submitFn.function));
 
     // Authenticated vault routes under /worker/vault (no path collision with tokenized flow)
     const workerVault = workerResource.addResource('vault');
@@ -213,7 +214,7 @@ export class DocumentsStack extends cdk.Stack {
     // POST /worker/vault/upload-url — worker auth (authenticated presigned URL)
     workerVault
       .addResource('upload-url')
-      .addMethod('POST', new apigateway.LambdaIntegration(workerDocUploadUrlAuthFn.function), {
+      .addMethod('POST', lambdaIntegration(workerDocUploadUrlAuthFn.function), {
         authorizer: workerAuth,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
@@ -221,13 +222,13 @@ export class DocumentsStack extends cdk.Stack {
     // POST /worker/vault/confirm — worker auth
     workerVault
       .addResource('confirm')
-      .addMethod('POST', new apigateway.LambdaIntegration(workerDocConfirmAuthFn.function), {
+      .addMethod('POST', lambdaIntegration(workerDocConfirmAuthFn.function), {
         authorizer: workerAuth,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
 
     // GET /worker/vault — worker auth (list own docs with presigned GET URLs)
-    workerVault.addMethod('GET', new apigateway.LambdaIntegration(workerDocumentsListFn.function), {
+    workerVault.addMethod('GET', lambdaIntegration(workerDocumentsListFn.function), {
       authorizer: workerAuth,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
@@ -235,7 +236,7 @@ export class DocumentsStack extends cdk.Stack {
     // DELETE /worker/vault/{doc_type} — worker auth
     workerVault
       .addResource('{doc_type}')
-      .addMethod('DELETE', new apigateway.LambdaIntegration(workerDocDeleteFn.function), {
+      .addMethod('DELETE', lambdaIntegration(workerDocDeleteFn.function), {
         authorizer: workerAuth,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
@@ -246,20 +247,20 @@ export class DocumentsStack extends cdk.Stack {
     const workerById = employerWorkers.addResource('{worker_id}');
     workerById
       .addResource('profile')
-      .addMethod('GET', new apigateway.LambdaIntegration(workerProfileFn.function), {
+      .addMethod('GET', lambdaIntegration(workerProfileFn.function), {
         authorizer: employerAuth,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
     workerById
       .addResource('documents')
-      .addMethod('GET', new apigateway.LambdaIntegration(workerDocsFn.function), {
+      .addMethod('GET', lambdaIntegration(workerDocsFn.function), {
         authorizer: employerAuth,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });
 
     employerRoot
       .addResource('upload-tokens')
-      .addMethod('POST', new apigateway.LambdaIntegration(uploadTokenFn.function), {
+      .addMethod('POST', lambdaIntegration(uploadTokenFn.function), {
         authorizer: employerAuth,
         authorizationType: apigateway.AuthorizationType.COGNITO,
       });

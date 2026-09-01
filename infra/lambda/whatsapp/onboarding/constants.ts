@@ -30,24 +30,18 @@ export const DEFAULT_ROUTING = STEP_ROUTING['legal.review'];
 
 // ── Task 5: profile/trust vocabulary + assessment provenance versions ───
 
-/** Canonical trade slugs in list-picker order; mirrors flows.ts's TRADE_KEYS
- * (never imported directly — that module is out of this task's scope). */
-export const TRADE_ORDER = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'] as const;
-export type StandardTrade = Exclude<(typeof TRADE_ORDER)[number], 'other'>;
-
-export const TRADE_LABELS: Record<(typeof TRADE_ORDER)[number], { en: string; es: string }> = {
-  electrician: { en: 'Electrician', es: 'Electricista' },
-  plumber: { en: 'Plumber', es: 'Plomero' },
-  carpenter: { en: 'Carpenter', es: 'Carpintero' },
-  concrete: { en: 'Concrete', es: 'Concreto' },
-  painting: { en: 'Painting', es: 'Pintura' },
-  other: { en: 'Other', es: 'Otro' },
-};
+/** Trade vocabulary. The slugs, their list-picker order and their bilingual
+ * labels all live in `lambda/lib/worker-vocab` now — the single source of
+ * truth shared with the worker API and, via a parity test, the frontend.
+ * Re-exported under this module's historical names so `prompts.ts` and
+ * `steps/profile.ts` keep compiling unchanged. */
+export { TRADE_KEYS as TRADE_ORDER, TRADE_LABELS } from '../../lib/worker-vocab';
+export type { StandardTradeKey as StandardTrade } from '../../lib/worker-vocab';
 
 /** Provenance identifiers recorded on the assessment (via `completeOnboarding`'s
  * `assessmentProvenance` payload) and on each `saveTrustAnswer` call. Bump the
  * relevant constant when the underlying question/rubric content changes. */
-export const V2_TRUST_QUESTION_SET_VERSION = 'v2-trust-questions-1';
+export const V2_TRUST_QUESTION_SET_VERSION = 'v2-trust-questions-2';
 export const V2_TRUST_FALLBACK_VERSION = 'v2-trust-fallback-1';
 export const V2_TRUST_RUBRIC_VERSION = 'v2-trust-rubric-1';
 
@@ -81,3 +75,19 @@ export const VOICE_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 /** Minimum Bedrock extraction confidence (per field) required before
  * `planExtractionWrites` (lib/voice-extraction.ts) will write it. */
 export const VOICE_CONFIDENCE_THRESHOLD = 0.75;
+
+// ── Workflow version ────────────────────────────────────────────────────
+
+/**
+ * The `worker_workflow_runs.workflow_version` every v2 run is bound with.
+ *
+ * Sprint 22 R2-C23: `processor.ts` has declared this as a module-private
+ * `const WHATSAPP_V2_WORKFLOW_VERSION = 1` since the lane was built, and the
+ * web door (`start_web_onboarding_workflow`'s third argument) needs the SAME
+ * number or the two doors mint runs the other cannot recognise. The processor
+ * keeps its own literal — this module is a second declaration, not a
+ * refactor of it — so `test/unit/lambda/whatsapp/onboarding/durable-context.
+ * test.ts` reads processor.ts's source and asserts the two agree. Bump both
+ * together.
+ */
+export const WHATSAPP_V2_WORKFLOW_VERSION = 1;

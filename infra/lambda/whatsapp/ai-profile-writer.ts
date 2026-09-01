@@ -1,7 +1,6 @@
 import type { Handler } from 'aws-lambda';
 import type { PoolClient } from 'pg';
 import { S3Client } from '@aws-sdk/client-s3';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import {
   BedrockRuntimeClient,
@@ -11,7 +10,6 @@ import { getDbPool, setRlsContext } from '../lib/db';
 import { readTranscriptResult, type TranscriptResult } from '../lib/transcript';
 import { t, type Lang } from './lib/templates';
 import { sendPendingOutbox } from './lib/outbox';
-import { autoAdvanceProfileAfterAi } from './lib/profile-flow';
 import {
   buildSyntheticVoiceInboundBody,
   syntheticVoiceSid,
@@ -19,12 +17,11 @@ import {
   type VoiceExtractionFields,
 } from './lib/voice-events';
 import { hashNormalizedPhone } from './lib/runtime-controls';
-import { requestTradeAliasGeneration } from '../lib/trade-alias-request';
+import { TRADE_KEYS, EXPERIENCE_KEYS, AVAILABILITY_KEYS } from '../lib/worker-vocab';
 
 // ── Module-level AWS clients ────────────────────────────────────
 const s3 = new S3Client({});
 const bedrock = new BedrockRuntimeClient({});
-const lambdaClient = new LambdaClient({});
 const sqsClient = new SQSClient({});
 
 const BEDROCK_MODEL_ID =
@@ -109,11 +106,6 @@ interface BedrockResult {
   summary_es: string;
 }
 
-interface TrustQuestion {
-  q_en: string;
-  q_es: string;
-}
-
 function parseBedrockJsonResponse(responseText: string): BedrockResult {
   const trimmed = responseText.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -178,11 +170,16 @@ async function extractProfileFromTranscript(
     `  "extracted_fields": {\n` +
     `    "full_name": string or null,\n` +
     `    "city": "City, ST" format using 2-letter US state abbreviation (e.g., "El Paso, TX"), infer state for unnamed US cities, null if no location or not a US location,\n` +
-    `    "main_trade": one of ["electrician","plumber","carpenter","concrete","painting","other"] or null,\n` +
+    // The three enumerations the model must choose from are rendered from
+    // `lib/worker-vocab` rather than retyped: JSON.stringify of those key
+    // tuples reproduces these arrays byte for byte (no spaces after the
+    // commas), and a vocabulary change now reaches the prompt and the
+    // validator below in the same edit instead of only one of them.
+    `    "main_trade": one of ${JSON.stringify(TRADE_KEYS)} or null,\n` +
     `    "main_trade_other": string or null (only if main_trade is "other"),\n` +
-    `    "years_experience": one of ["0-1","2-4","5-9","10+"] or null,\n` +
+    `    "years_experience": one of ${JSON.stringify(EXPERIENCE_KEYS)} or null,\n` +
     `    "has_transportation": boolean or null,\n` +
-    `    "availability": one of ["full_time","part_time","weekends","flexible"] or null\n` +
+    `    "availability": one of ${JSON.stringify(AVAILABILITY_KEYS)} or null\n` +
     `  },\n` +
     `  "confidence_scores": { same keys, values 0.0-1.0 indicating extraction confidence },\n` +
     `  "summary_en": "1-2 sentence profile summary in English",\n` +
@@ -232,9 +229,12 @@ function buildUserUpdateSql(
   fields: ExtractedFields,
   scores: Record<string, number>,
 ): { sql: string; params: unknown[] } | null {
-  const VALID_TRADES = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting', 'other'];
-  const VALID_EXPERIENCE = ['0-1', '2-4', '5-9', '10+'];
-  const VALID_AVAILABILITY = ['full_time', 'part_time', 'weekends', 'flexible'];
+  // Widened to readonly string[] on purpose: the callers below hand these
+  // `unknown` values cast to string, which a narrowed literal-union tuple
+  // would reject.
+  const VALID_TRADES: readonly string[] = TRADE_KEYS;
+  const VALID_EXPERIENCE: readonly string[] = EXPERIENCE_KEYS;
+  const VALID_AVAILABILITY: readonly string[] = AVAILABILITY_KEYS;
 
   const setClauses: string[] = [];
   const params: unknown[] = [];
@@ -294,39 +294,6 @@ async function setWorkerRlsContextByUserId(
   const cognitoSub = userRow.rows[0]?.cognito_sub;
   if (!cognitoSub) throw new Error('worker cognito_sub missing before ai extraction write');
   await setRlsContext(client, cognitoSub);
-}
-
-function questionGeneratorArn(): string {
-  const arn = process.env.QUESTION_GENERATOR_ARN;
-  if (!arn) throw new Error('QUESTION_GENERATOR_ARN not set');
-  return arn;
-}
-
-async function loadOrGenerateCustomTrustQuestions(
-  client: PoolClient,
-  professionKey: string,
-  professionRaw: string,
-): Promise<TrustQuestion[]> {
-  // Grows the bilingual trade-alias cache for the matcher. Awaited (rather
-  // than fired-and-forgotten with `void`) so it can't be aborted by a frozen
-  // Lambda execution environment; the helper never throws by contract and
-  // its Event-type invoke returns in milliseconds, so this never affects the
-  // trust-question flow below.
-  await requestTradeAliasGeneration(professionRaw);
-
-  const cached = await client.query<{ questions: TrustQuestion[] }>(
-    'SELECT questions FROM trade_questions WHERE profession_key = $1',
-    [professionKey],
-  );
-  if (cached.rows.length > 0) return cached.rows[0].questions;
-
-  const response = await lambdaClient.send(
-    new InvokeCommand({
-      FunctionName: questionGeneratorArn(),
-      Payload: Buffer.from(JSON.stringify({ professionKey, professionRaw })),
-    }),
-  );
-  return JSON.parse(Buffer.from(response.Payload ?? new Uint8Array()).toString()) as TrustQuestion[];
 }
 
 // ── Handler ─────────────────────────────────────────────────────
@@ -538,18 +505,12 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
         t('ai_extraction_failed', language),
       );
 
-      await autoAdvanceProfileAfterAi(
-        client,
-        {
-          userId,
-          conversationId,
-          inboundMessageSid: outboxMessageSid,
-          language,
-          queueBody: (body) => queueOutboxText(client, outboxMessageSid, whatsappNumber, body),
-          loadCustomTrustQuestions: loadOrGenerateCustomTrustQuestions,
-        },
-      );
-
+      // Sprint 22 R1-A: `autoAdvanceProfileAfterAi` was called here. It was
+      // the last writer of the v1 `building_trust_signal` /
+      // `building_custom_trust` hand-off, whose numbered-menu questions are
+      // gone. This whole v1 branch has had no producer since processor.ts
+      // started tagging BOTH StartExecution payloads with the v2 marker; the
+      // failed-extraction row and its notice still commit exactly as before.
       await client.query('COMMIT');
       committed = true;
       await sendPendingOutbox(client, outboxMessageSid);
@@ -626,18 +587,9 @@ export const handler: Handler<AiProfileWriterEvent> = async (event) => {
       t('ai_extraction_summary', language, { summary }),
     );
 
-    await autoAdvanceProfileAfterAi(
-      client,
-      {
-        userId,
-        conversationId,
-        inboundMessageSid: outboxMessageSid,
-        language,
-        queueBody: (body) => queueOutboxText(client, outboxMessageSid, whatsappNumber, body),
-        loadCustomTrustQuestions: loadOrGenerateCustomTrustQuestions,
-      },
-    );
-
+    // Sprint 22 R1-A: `autoAdvanceProfileAfterAi` was called here — see the
+    // FAILED branch above. The users UPDATE and the summary notice still
+    // commit exactly as before.
     await client.query('COMMIT');
     committed = true;
     await sendPendingOutbox(client, outboxMessageSid);

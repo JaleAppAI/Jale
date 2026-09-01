@@ -1,3 +1,4 @@
+import type { DocTypeKey } from '@/lib/doc-types';
 import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
 import type { ScoreBand } from '../match';
@@ -651,8 +652,11 @@ export type JobTemplate = {
   updated_at: string;
 };
 
-export async function listJobTemplates(token: string): Promise<JobTemplate[]> {
-  const res = await apiFetch('/employer/templates', {}, token);
+export async function listJobTemplates(
+  token: string,
+  signal?: AbortSignal,
+): Promise<JobTemplate[]> {
+  const res = await apiFetch('/employer/templates', { signal }, token);
   if (!res.ok) throw await parseApiError(res, 'fetch_failed');
   return (await res.json()).templates;
 }
@@ -791,13 +795,57 @@ export async function closeConversation(
 }
 
 export interface WorkerDocument {
-  doc_type: 'resume' | 'driver_license' | 'ssn';
-  s3_key: string;
+  /** Stable key for the certification slot, which holds several rows of one type. */
+  id: string;
+  /**
+   * `DocTypeKey`, not a narrower literal union: `worker_documents.doc_type`
+   * has accepted `work_auth_doc`/`certification_doc` since migration 074, and
+   * legacy rows can still carry `ssn`.
+   */
+  doc_type: DocTypeKey;
   file_name: string;
   file_size: number;
   uploaded_at: string;
+  /** Only meaningful for `certification_doc` (migration 078). */
+  cert_name?: string | null;
+  /**
+   * A server-minted presigned GET, valid 15 minutes and version-pinned to the
+   * bytes the worker uploaded. The raw `s3_key` deliberately does NOT travel:
+   * the bucket is private, so the key is an internal storage address with no
+   * use in a browser, and it names the worker and job it belongs to.
+   */
   url: string;
 }
+
+/** One skill/tool/signal the extractor pulled out of a worker's own answers. */
+export type TrustExtractionItem = {
+  label_en: string;
+  label_es: string;
+  /** Indexes into `trust_assessment.answers` -- which answer this came from. */
+  source?: number[];
+};
+
+/**
+ * The structured read of what a worker actually said (migration 086).
+ *
+ * Deliberately narrower than the table: `error` and `model_id` are outside
+ * the reader grant, so they never reach this type. Content is only ever
+ * populated for `status === 'completed'`; the API blanks a re-queued row's
+ * leftovers, and this UI shows a "still reading" line for anything else.
+ */
+export type TrustExtraction = {
+  status: 'pending' | 'extracting' | 'completed' | 'failed';
+  extracted: {
+    skills?: TrustExtractionItem[];
+    tools?: TrustExtractionItem[];
+    experience_signals?: TrustExtractionItem[];
+    safety?: TrustExtractionItem[];
+    notable?: TrustExtractionItem[];
+  };
+  summary_en: string | null;
+  summary_es: string | null;
+  extractor_version: string;
+};
 
 export interface WorkerProfile {
   worker_id: string;
@@ -806,6 +854,14 @@ export interface WorkerProfile {
   skills: string[] | null;
   availability: string | null;
   years_experience: number | null;
+  /**
+   * The months-precise figure behind `years_experience`. Both come off
+   * `worker_profiles` and the API has always returned both; only the years
+   * were ever rendered, which rounded a 20-month worker down to "1 year".
+   */
+  experience_months: number | null;
+  /** Free-text certification names the worker claims (no proof implied). */
+  certifications: string[] | null;
   location: string | null;
   main_trade: string | null;
   main_trade_other: string | null;
@@ -834,6 +890,8 @@ export interface WorkerProfile {
     answers: unknown; // normalized client-side via normalizeAnswers
     scored_at: string | null;
   } | null;
+  /** `null` when the worker has no assessment, or none has been extracted yet. */
+  trust_extraction: TrustExtraction | null;
 }
 
 export async function getWorkerProfile(

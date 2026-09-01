@@ -190,7 +190,23 @@ function createFakeAdapters(clockRef: { now: Date }) {
         return null;
       }),
     },
-    trustQuestions: { generate: jest.fn() },
+    // Every trade — standard or custom — now resolves through the per-trade
+    // cache, so this fake answers for all of them. The three questions below
+    // are the POST-086 shape (open, no seniority, no "how long"), not a copy
+    // of what any row holds today: migration 012's five standard rows still
+    // ask "What is your seniority level?", and sibling task R1-M's migration
+    // 086 is what rewrites them. Nothing here asserts real seeded content —
+    // that belongs to `test/unit/db/trust-extractions-086.integration.test.ts`
+    // (R1-M). What this file does assert is the ROUTING: that a standard trade
+    // calls `generate` with its trade key and stores whatever comes back.
+    // Tests that want the fallback lane mock a null/short/throwing result.
+    trustQuestions: {
+      generate: jest.fn(async (_c: any, profession: string): Promise<Array<{ q_en: string; q_es: string }> | null> => [
+        { q_en: `What do you specialise in as a ${profession}?`, q_es: `En que te especializas como ${profession}?` },
+        { q_en: `How do you start a ${profession} job you have never seen?`, q_es: `Como empiezas un trabajo de ${profession} que nunca has visto?` },
+        { q_en: `Tell us about a ${profession} job that went wrong.`, q_es: `Cuentanos de un trabajo de ${profession} que salio mal.` },
+      ]),
+    },
     profile: {
       saveName: jest.fn(async (c: any, workerId: string, name: string) => {
         saveNameCalls.push({ client: c, workerId, name });
@@ -686,7 +702,7 @@ describe('profile.location', () => {
 describe('profile.trade', () => {
   const standardTrades = ['electrician', 'plumber', 'carpenter', 'concrete', 'painting'];
 
-  it.each(standardTrades)('"%s" attaches the standard question set (cached for later) and advances to profile.experience, never calling generate', async (trade) => {
+  it.each(standardTrades)('"%s" seeds its question set from the per-trade cache via generate(<trade key>) and advances to profile.experience', async (trade) => {
     const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedActiveGate(gateRepo, { userId: `user-trade-${trade}`, currentStepKey: 'profile.trade' });
     const session = makeSession({ user_id: gate.userId });
@@ -698,8 +714,35 @@ describe('profile.trade', () => {
     // transportation/availability fields first.
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.experience' });
     expect(adapters._saveTradeCalls[0].trade).toBe(trade);
-    expect(session.state_context.v2TrustSource).toBe('standard');
-    expect(adapters.trustQuestions.generate).not.toHaveBeenCalled();
+    // R1-A: the numbered-menu ('standard') lane is gone — every trade, standard
+    // or custom, is seeded from `trade_questions` via the SAME generator call.
+    // The trade KEY is the profession passed through; normalizeProfession maps
+    // it to the seeded `trade_questions.profession_key` row.
+    expect(adapters.trustQuestions.generate).toHaveBeenCalledWith(client, trade);
+    expect(session.state_context.v2TrustSource).toBe('generated');
+    expect(session.state_context.v2QuestionSetVersion).toBe('v2-trust-questions-2');
+    expect(session.state_context.v2ProfileTrade).toBe(trade);
+    expect(session.state_context.v2TrustQuestions).toHaveLength(3);
+  });
+
+  it.each([
+    ['null', () => Promise.resolve(null)],
+    ['wrong-length', () => Promise.resolve([{ q_en: 'only one', q_es: 'solo una' }])],
+    ['throwing', () => Promise.reject(new Error('bedrock down'))],
+  ])('a STANDARD trade whose generator returns/throws %s falls back to the reviewed open-text set with source:fallback', async (_label, impl) => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    adapters.trustQuestions.generate.mockImplementationOnce(impl as any);
+    const gate = seedActiveGate(gateRepo, { userId: `user-trade-fb-${_label}`, currentStepKey: 'profile.trade' });
+    const session = makeSession({ user_id: gate.userId });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('carpenter'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'profile.experience' });
+    expect(session.state_context.v2TrustSource).toBe('fallback');
+    expect(session.state_context.v2QuestionSetVersion).toBe('v2-trust-fallback-1');
+    const questions = session.state_context.v2TrustQuestions as Array<{ en: string; es: string }>;
+    expect(questions).toHaveLength(3);
+    for (const q of questions) expect(q.en).not.toBe(q.es);
   });
 
   it('accepts a numeric list-picker choice too', async () => {
@@ -1011,7 +1054,7 @@ describe('profile.availability', () => {
 
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
     expect(adapters._saveAvailabilityCalls[0].availability).toBe('full_time');
-    expect(session.state_context.v2TrustSource).toBe('standard');
+    expect(session.state_context.v2TrustSource).toBe('generated');
   });
 });
 
@@ -1038,29 +1081,75 @@ async function driveThroughRemainingProfileFields(
 }
 
 describe('trust.question.{1,2,3}', () => {
-  it('a standard-trade question accepts a 1-based option index and advances (answer 1 -> 2)', async () => {
-    const { deps, gateRepo } = makeDeps();
+  it('a standard-trade question is free text: a bare "1" is stored VERBATIM as the answer, never resolved to a menu option', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-1', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
-    await routeOnboardingV2(client, session, makeMsg('electrician'), deps); // -> profile.experience, standard
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps); // -> profile.experience
     await driveThroughRemainingProfileFields(session, deps); // -> trust.question.1
 
     const result = await routeOnboardingV2(client, session, makeMsg('1'), deps);
 
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.2' });
     expect(gateRepo._completions).toHaveLength(0);
+    // R1-A: the numbered-menu lane is gone — "1" is just what the worker typed.
+    expect(adapters._saveTrustAnswerCalls[0].input.answerText).toBe('1');
+    expect(adapters._saveTrustAnswerCalls[0].input.answerSource).toBe('text');
+    expect(session.state_context.v2TrustSource).not.toBe('standard');
   });
 
-  it('an invalid option index reprompts trust.question.1', async () => {
-    const { deps, gateRepo } = makeDeps();
+  it('a run RESUMED with a legacy state_context (v2TrustSource:"standard") is answered as FREE TEXT, not as a menu index', async () => {
+    // Deploy-window case: sessions parked mid-run before R1-A still carry the
+    // retired `'standard'` marker. The menu lane is gone, so their next typed
+    // reply — including a bare digit — must be recorded verbatim rather than
+    // resolved against a numbered option list that no longer exists.
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedStandardTrustGate(gateRepo, 'user-trust-legacy-standard', 'trust.question.1');
+    const session = makeSession({
+      user_id: gate.userId,
+      state_context: {
+        v2ProfileTrade: 'electrician',
+        v2TrustSource: 'standard',
+        v2TrustQuestions: [
+          { en: 'Legacy Q1 en', es: 'Legacy Q1 es' },
+          { en: 'Legacy Q2 en', es: 'Legacy Q2 es' },
+          { en: 'Legacy Q3 en', es: 'Legacy Q3 es' },
+        ],
+      },
+    });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('2'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.2' });
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(1);
+    expect(adapters._saveTrustAnswerCalls[0].input.answerText).toBe('2');
+    expect(adapters._saveTrustAnswerCalls[0].input.qEn).toBe('Legacy Q1 en');
+  });
+
+  it('a standard-trade question accepts a free-text sentence and advances', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
+    const gate = seedStandardTrustGate(gateRepo, 'user-trust-sentence', 'profile.trade');
+    const session = makeSession({ user_id: gate.userId });
+    await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
+    await driveThroughRemainingProfileFields(session, deps);
+
+    const result = await routeOnboardingV2(client, session, makeMsg('Mostly commercial panel work and conduit runs.'), deps);
+
+    expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.2' });
+    expect(adapters._saveTrustAnswerCalls[0].input.answerText).toBe('Mostly commercial panel work and conduit runs.');
+  });
+
+  it('an empty/whitespace answer at a STANDARD trade question reprompts trust.question.1', async () => {
+    const { deps, gateRepo, adapters } = makeDeps();
     const gate = seedStandardTrustGate(gateRepo, 'user-trust-invalid', 'profile.trade');
     const session = makeSession({ user_id: gate.userId });
     await routeOnboardingV2(client, session, makeMsg('electrician'), deps);
     await driveThroughRemainingProfileFields(session, deps);
 
-    const result = await routeOnboardingV2(client, session, makeMsg('99'), deps);
+    const result = await routeOnboardingV2(client, session, makeMsg('   '), deps);
 
     expect(result).toEqual({ handled: true, workerId: gate.userId, stepKey: 'trust.question.1' });
+    expect(adapters._saveTrustAnswerCalls).toHaveLength(0);
   });
 
   it('answers 1 and 2 do not complete onboarding; answer 3 completes exactly once with all three answers and provenance', async () => {
@@ -1084,10 +1173,14 @@ describe('trust.question.{1,2,3}', () => {
 
     expect(adapters._saveTrustAnswerCalls).toHaveLength(3);
     expect(adapters._saveTrustAnswerCalls.map((c) => c.input.questionIndex)).toEqual([0, 1, 2]);
+    // Free text throughout: whatever was typed is what lands in
+    // `worker_trust_assessments.answers`, tagged answer_source:'text'.
+    expect(adapters._saveTrustAnswerCalls.map((c) => c.input.answerText)).toEqual(['1', '2', '1']);
+    expect(adapters._saveTrustAnswerCalls.map((c) => c.input.answerSource)).toEqual(['text', 'text', 'text']);
 
     const provenance = gateRepo._completions[0].assessmentProvenance;
-    expect(provenance).toMatchObject({ trade: 'plumber', source: 'standard' });
-    expect(provenance.questionSetVersion).toBeTruthy();
+    expect(provenance).toMatchObject({ trade: 'plumber', source: 'generated' });
+    expect(provenance.questionSetVersion).toBe('v2-trust-questions-2');
     expect(provenance.rubricVersion).toBeTruthy();
 
     // `scoring_model_id` is a canonical column another lane (the trust-scorer)
@@ -1344,8 +1437,7 @@ describe('trust answers are scorer-compatible (Defect 3)', () => {
     expect(saved.qEn).toBe(expectedQuestions[0].en);
     expect(saved.qEs).toBe(expectedQuestions[0].es);
     expect(saved.answerSource).toBe('text');
-    expect(typeof saved.answerText).toBe('string');
-    expect(saved.answerText.length).toBeGreaterThan(0);
+    expect(saved.answerText).toBe('1');
   });
 
   it('a CUSTOM trade (fallback) answer is saved with q_en, q_es, answer_source:"text", and the free-text answerText', async () => {

@@ -100,18 +100,20 @@ describe('complete onboarding end to end', () => {
 });
 
 describe('state_context durability across turns (round-tripped, not object-identity reuse)', () => {
-  it('a standard-trade question set survives the JSON round trip: an invalid option index at Q2 reprompts rather than being silently accepted as free text', async () => {
-    // This is the discriminating case: '99' is invalid as a standard-trade
-    // OPTION INDEX, but WOULD be silently accepted as free text if
-    // `v2TrustSource`/`v2ProfileTrade` were lost between turns (defaulting
-    // to 'fallback' free-text handling) — so this only passes if the
-    // harness's persist-then-reload-with-a-JSON-round-trip actually
-    // preserves what `profile.trade` wrote into state_context.
+  it('a standard-trade question set survives the JSON round trip: Q2 still asks the CACHE-seeded question, and an empty reply reprompts', async () => {
+    // R1-A: standard trades now carry a per-trade generated set, exactly like
+    // custom ones. The discriminating case is that the trade-specific question
+    // text written at `profile.trade` is still there two turns later — if
+    // `v2TrustQuestions`/`v2TrustSource` were lost between turns the router
+    // would silently fall back to the generic reviewed set instead.
     const h = createWhatsAppV2Harness({ phone: '+15551110400' });
     await h.driveToStep('trust.question.2', { trade: 'carpenter' });
-    expect(h.getState().stateContext.v2TrustSource).toBe('standard');
+    expect(h.getState().stateContext.v2TrustSource).toBe('generated');
+    const questions = h.getState().stateContext.v2TrustQuestions as Array<{ en: string; es: string }>;
+    expect(questions).toHaveLength(3);
+    for (const q of questions) expect(q.en).toContain('carpenter');
 
-    const result = await h.sendText('99');
+    const result = await h.sendText('   ');
 
     expect(result.stepKey).toBe('trust.question.2'); // reprompted, NOT advanced
     expect(h.getState().gate?.currentStepKey).toBe('trust.question.2');
@@ -630,7 +632,7 @@ describe('atomic readiness', () => {
     await h.sendText('1');
 
     expect(h.getCompletions()).toHaveLength(1);
-    expect(h.getCompletions()[0].assessmentProvenance).toMatchObject({ trade: 'concrete', source: 'standard' });
+    expect(h.getCompletions()[0].assessmentProvenance).toMatchObject({ trade: 'concrete', source: 'generated' });
     // No score is ever computed here — trust-scorer is a separate lane.
     expect(h.getCompletions()[0].assessmentProvenance).not.toHaveProperty('score');
   });
@@ -696,10 +698,10 @@ describe('idempotency: duplicate MessageSid and double button taps', () => {
     const h = createWhatsAppV2Harness({ phone: '+15551110212' });
     await h.driveToStep('trust.question.3', { trade: 'painting' });
 
-    await h.pressButton('trust:1', { messageSid: 'sid-final-1' });
+    await h.sendText('I framed the whole second floor on my last job.', { messageSid: 'sid-final-1' });
     expect(h.getCompletions()).toHaveLength(1);
 
-    await h.pressButton('trust:1', { messageSid: 'sid-final-2' });
+    await h.sendText('I framed the whole second floor on my last job.', { messageSid: 'sid-final-2' });
     expect(h.getCompletions()).toHaveLength(1); // gate.status === 'completed' short-circuits
   });
 });
