@@ -94,6 +94,8 @@ const expectedBaselineMigrations = [
   '083_media_board.sql',
   '084_preferred_cities_whatsapp_write.sql',
   '085_employer_trust_assessment_read.sql',
+  '086_admin_analytics.sql',
+  '087_admin_analytics_rls_repair.sql',
 ];
 
 function migrationFiles(): string[] {
