@@ -117,6 +117,7 @@ describe('database migrations', () => {
       '083',
       '084',
       '085',
+      '086',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -778,5 +779,26 @@ describe('database migrations', () => {
     // A subquery CHECK is parse-rejected (0A000) and `AT TIME ZONE` accepts
     // POSIX-style garbage, so neither may be used as the validator.
     expect(migration).not.toMatch(/CHECK\s*\([^)]*SELECT\s+name\s+FROM\s+pg_timezone_names/i);
+  });
+
+  it('admin analytics definer functions are locked to the console role', () => {
+    const sql = fs.readFileSync(path.join(migrationsDir, '086_admin_analytics.sql'), 'utf8');
+
+    // Five definer functions, each hardened per the migration-072 pattern.
+    // Line-anchored so prose in a comment mentioning "SECURITY DEFINER" can't
+    // inflate the count (the actual clauses each stand alone on their line).
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(5);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(5);
+    expect(sql.match(/OWNER TO jale_admin;/g)).toHaveLength(5);
+    expect(sql.match(/REVOKE ALL ON FUNCTION public\.admin_analytics_\w+\([^)]*\) FROM PUBLIC;/g)).toHaveLength(5);
+    expect(sql.match(/GRANT EXECUTE ON FUNCTION public\.admin_analytics_\w+\([^)]*\) TO jale_admin_console;/g)).toHaveLength(5);
+    // Exactly five mentions of the grantee total, so an extra GRANT ALL,
+    // role-membership grant, or default-privileges escalation to the console
+    // role can't slip in alongside the five reviewed EXECUTE grants.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(5);
+
+    // The console role must gain no table access from this migration.
+    expect(sql).not.toMatch(/GRANT\s+SELECT[\s\S]*?TO jale_admin_console/);
+    expect(sql).not.toMatch(/CREATE POLICY[\s\S]*?jale_admin_console/);
   });
 });
