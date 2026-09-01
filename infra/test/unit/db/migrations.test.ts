@@ -118,6 +118,7 @@ describe('database migrations', () => {
       '084',
       '085',
       '086',
+      '087',
     ]);
 
     // The insertion must sort strictly between 020 and 021 under plain
@@ -800,5 +801,54 @@ describe('database migrations', () => {
     // The console role must gain no table access from this migration.
     expect(sql).not.toMatch(/GRANT\s+SELECT[\s\S]*?TO jale_admin_console/);
     expect(sql).not.toMatch(/CREATE POLICY[\s\S]*?jale_admin_console/);
+  });
+
+  it('087 repairs the analytics definers without widening the console role', () => {
+    const sql = fs.readFileSync(
+      path.join(migrationsDir, '087_admin_analytics_rls_repair.sql'),
+      'utf8',
+    );
+
+    // 087 re-declares all five definers (086's RLS defect could not be fixed by
+    // policies alone — each body must also flip the gate flag), so it carries
+    // the same hardening counts 086 does.
+    expect(sql.match(/^SECURITY DEFINER$/gm)).toHaveLength(5);
+    expect(sql.match(/SET search_path = pg_catalog, pg_temp/g)).toHaveLength(5);
+    expect(sql.match(/OWNER TO jale_admin;/g)).toHaveLength(5);
+    expect(sql.match(/REVOKE ALL ON FUNCTION public\.admin_analytics_\w+\([^)]*\) FROM PUBLIC;/g)).toHaveLength(5);
+    expect(sql.match(/GRANT EXECUTE ON FUNCTION public\.admin_analytics_\w+\([^)]*\) TO jale_admin_console;/g)).toHaveLength(5);
+    // Exactly five mentions of the grantee total — same escalation guard as 086.
+    expect(sql.match(/TO jale_admin_console/g)).toHaveLength(5);
+
+    // Every function must convert to plpgsql and open the gate itself; a body
+    // that forgot the set_config would silently read zero rows again.
+    expect(sql.match(/^LANGUAGE plpgsql$/gm)).toHaveLength(5);
+    expect(
+      sql.match(/PERFORM set_config\('app\.admin_analytics_read', 'on', true\);/g),
+    ).toHaveLength(5);
+
+    // Exactly five gated policies, and EVERY CREATE POLICY in this file is
+    // scoped TO jale_admin (the definer owner) — never to the console role.
+    const policies = sql.match(/CREATE POLICY/g);
+    expect(policies).toHaveLength(5);
+    expect(
+      sql.match(
+        /CREATE POLICY \w+_admin_analytics_read\s+ON public\.\w+ FOR SELECT\s+TO jale_admin\s+USING \(current_setting\('app\.admin_analytics_read', true\) = 'on'\);/g,
+      ),
+    ).toHaveLength(5);
+
+    // The console role must gain no table access from this migration either.
+    expect(sql).not.toMatch(/GRANT\s+SELECT[\s\S]*?TO jale_admin_console/);
+    // Scoped per-statement, not across the file: 087 legitimately contains both
+    // CREATE POLICY statements and (later) the five EXECUTE grants, so 086's
+    // whole-file `CREATE POLICY[\s\S]*?jale_admin_console` form would match the
+    // span between two unrelated statements. Policy bodies contain no
+    // semicolons, so `[^;]*;` isolates one statement at a time.
+    for (const stmt of sql.match(/CREATE POLICY[^;]*;/g) ?? []) {
+      expect(stmt).not.toMatch(/jale_admin_console/);
+    }
+
+    // Forward-only: 087 must not try to edit or drop 086's objects.
+    expect(sql).not.toMatch(/DROP FUNCTION/);
   });
 });
