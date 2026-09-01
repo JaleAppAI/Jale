@@ -523,6 +523,30 @@ echo "$SENTINEL"
 LEDGER_READ
 } > "$WORKDIR/read-ledger.sh"
 
+# The bastion installs psql/jq in first-boot UserData, which finishes MINUTES
+# after `cdk deploy` returns. On 2026-09-01 a dry-run fired in that window and
+# died with "psql: command not found" (exit 127) before reading the ledger;
+# the same day a t4g.nano had dnf OOM-killed, so psql never arrived at all.
+# Wait (bounded) for cloud-init, then prove psql exists, and if it does not,
+# say exactly where to look instead of surfacing a bare 127 from line 12.
+cat <<'BASTION_READY' > "$WORKDIR/bastion-ready.sh"
+set -u
+timeout 420 cloud-init status --wait >/dev/null 2>&1 || true
+echo "cloud-init: $(cloud-init status 2>/dev/null || echo unknown)"
+if ! command -v psql >/dev/null 2>&1; then
+  echo "!! psql is not installed on the bastion." >&2
+  echo "!! First-boot UserData (dnf install postgresql15 jq) did not complete." >&2
+  echo "!! Inspect: /var/log/cloud-init-output.log (look for 'Killed' = OOM)." >&2
+  echo "!! Fix: scripts/deploy-bastion.sh --destroy && scripts/deploy-bastion.sh" >&2
+  tail -5 /var/log/cloud-init-output.log >&2 2>/dev/null || true
+  exit 1
+fi
+echo "psql: $(psql --version)"
+BASTION_READY
+printf 'echo "%s"\n' "$SENTINEL" >> "$WORKDIR/bastion-ready.sh"
+note "Waiting for the bastion to finish first boot (psql present)..."
+run_on_bastion "$WORKDIR/bastion-ready.sh" "bastion readiness" false | grep -E '^(cloud-init|psql):' | sed 's/^/>>    /'
+
 # strict_truncation=true: this call is what the rest of the run plans FROM.
 # A truncated read here cannot be waived the way apply/verify/rotate output
 # can, because there is no later state-verification pass to catch a
