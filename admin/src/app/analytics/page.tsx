@@ -33,11 +33,16 @@ export default async function AnalyticsPage({
   await requireAdminSession();
   const range = parseAnalyticsRange(searchParams?.range ?? DEFAULT_ANALYTICS_RANGE);
 
-  const [totals, signups, jobsActivity, messageTraffic, payingEmployers] = await Promise.all([
-    getAnalyticsTotals(),
+  // db.ts caps the shared pool at max: 5, so running all five analytics queries
+  // concurrently in one Promise.all would occupy the entire pool and could make a
+  // concurrent admin request hit the connect timeout. Split into two waves instead.
+  const [signups, jobsActivity, messageTraffic] = await Promise.all([
     getSignups(range),
     getJobsActivity(range),
     getMessageTraffic(range),
+  ]);
+  const [totals, payingEmployers] = await Promise.all([
+    getAnalyticsTotals(),
     getPayingEmployers(),
   ]);
 

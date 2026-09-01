@@ -393,8 +393,10 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- Every gated policy must exist, be a SELECT policy, be permissive, and be
-  -- scoped to exactly jale_admin — never to the console role.
+  -- Every gated policy must exist, be a SELECT policy, be permissive, be
+  -- scoped to exactly jale_admin — never to the console role — and gate on
+  -- exactly the analytics flag, so a pre-existing same-name policy with a
+  -- different (e.g. USING (true)) predicate cannot silently pass this check.
   FOR pol IN
     SELECT * FROM (VALUES
       ('users',                     'users_admin_analytics_read'),
@@ -404,7 +406,8 @@ BEGIN
       ('job_conversation_messages', 'job_conversation_messages_admin_analytics_read')
     ) AS t(tbl, polname)
   LOOP
-    SELECT p.polcmd, p.polpermissive, p.polroles
+    SELECT p.polcmd, p.polpermissive, p.polroles, p.polrelid,
+           pg_get_expr(p.polqual, p.polrelid) AS polqual_expr
       INTO pol_rec
       FROM pg_policy p
      WHERE p.polname = pol.polname
@@ -418,6 +421,9 @@ BEGIN
     END IF;
     IF pol_rec.polroles IS DISTINCT FROM ARRAY['jale_admin'::regrole::oid] THEN
       RAISE EXCEPTION 'admin_analytics repair check: policy % on % is not scoped to exactly jale_admin', pol.polname, pol.tbl;
+    END IF;
+    IF pol_rec.polqual_expr IS DISTINCT FROM $q$(current_setting('app.admin_analytics_read'::text, true) = 'on'::text)$q$ THEN
+      RAISE EXCEPTION 'admin_analytics repair check: policy % on % predicate has drifted', pol.polname, pol.tbl;
     END IF;
   END LOOP;
 
