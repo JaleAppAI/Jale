@@ -501,6 +501,24 @@ p {
   color: var(--jale-blue-700);
 }
 
+.badge.active {
+  background: var(--jale-success-bg);
+  border-color: rgba(31, 157, 85, 0.22);
+  color: #1f7a44;
+}
+
+.badge.trialing {
+  background: var(--jale-blue-50);
+  border-color: rgba(1, 121, 255, 0.2);
+  color: var(--jale-blue-700);
+}
+
+.badge.past_due {
+  background: var(--jale-warning-bg);
+  border-color: rgba(182, 90, 0, 0.2);
+  color: #8a4400;
+}
+
 .pill.success {
   background: var(--jale-success-bg);
   border-color: rgba(31, 157, 85, 0.22);
@@ -551,6 +569,19 @@ p {
   margin: 0;
   color: var(--jale-danger);
   font-weight: 650;
+}
+
+.setup-qr {
+  display: grid;
+  justify-content: start;
+  padding: 12px;
+  border: 1px solid var(--jale-divider);
+  border-radius: var(--radius-input);
+  background: #fff;
+}
+
+.setup-qr img {
+  display: block;
 }
 
 .setup-code {
@@ -622,4 +653,42 @@ p {
   .button {
     width: 100%;
   }
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.data-table th {
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+.range-picker {
+  display: flex;
+  gap: 8px;
+}
+
+.range-picker a[aria-current='page'] {
+  background: var(--jale-blue-900);
+  border-color: var(--jale-blue-900);
+  color: #ffffff;
+  box-shadow: none;
+}
+
+.range-picker a[aria-current='page']:hover {
+  background: var(--jale-blue-900);
+  border-color: var(--jale-blue-900);
+  color: #ffffff;
+  transform: none;
 }
