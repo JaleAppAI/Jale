@@ -140,6 +140,7 @@ $MigrationFiles = @(
     '088_admin_analytics.sql'
     '089_admin_analytics_rls_repair.sql'
     '090_email_outbox_delivery_metadata.sql'
+    '091_application_stages.sql'
 )
 
 $MigrationDir = (Resolve-Path (Join-Path $PSScriptRoot '..\infra\db\migrations')).Path

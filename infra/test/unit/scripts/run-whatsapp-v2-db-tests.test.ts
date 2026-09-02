@@ -24,9 +24,12 @@ const SUITE_RESET = 'test/unit/db/whatsapp-onboarding-reset.integration.test.ts'
 const SUITE_RETRIGGER = 'test/unit/db/retrigger-sweep-definer.integration.test.ts';
 // migration 080 (2026-08-20): WhatsApp application-fill DB contract --
 // jale_whatsapp DELETE-then-INSERT on worker_documents under RLS, the 073
-// application_answers column grant, the 022 guard's transaction-local GUC
-// bypass, the 075/078 cert caps (both constraint names) under RLS including
-// the RLS-scoped-COUNT footgun, and the snapshot-copy savepoint rollback.
+// application_answers column grant, the 075/078 cert caps (both constraint
+// names) under RLS including the RLS-scoped-COUNT footgun, and the
+// snapshot-copy savepoint rollback. Migration 091 retired the 022 INSERT
+// guard this suite used to exercise through its GUC bypass, so its two GUC
+// cases became one absence assertion (the doc-less INSERT now succeeds with
+// no GUC, and the GUC is inert).
 const SUITE_080 = 'test/unit/db/whatsapp-application-fill-080.integration.test.ts';
 // S22 R2-C0 / R2-C23 (2026-08-28): the WEB door onto the v2 onboarding
 // engine. The spike proves `jale_whatsapp` can drive the state machine for a
@@ -56,6 +59,14 @@ const SUITE_EMPLOYER_READS = 'test/unit/db/employer-worker-reads.integration.tes
 // The R2 hostile-input battery: SQL/encoding/boundary/envelope/lock/RLS probes
 // driven through the real web-door handler against the real policies.
 const SUITE_HOSTILE_INPUTS = 'test/unit/db/web-onboarding-hostile-inputs.integration.test.ts';
+// Sprint 23 L2.1: the migration-091 application-stages contract. The hire
+// trigger is deliberately NOT security definer -- it reads jobs and
+// worker_documents under the CALLER's RLS and fails closed when the job row
+// is invisible -- so its entire behavior (including the vault-only doc that
+// must NOT satisfy it) exists only where real policies do. Same for the
+// column-scoped jale_whatsapp grants: details_requested_at is withheld on
+// purpose, and a mocked pool would let that write through.
+const SUITE_STAGES_091 = 'test/unit/db/application-stages-091.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -80,6 +91,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_042, SUITE_CONCURRENCY, SUITE_049, SUITE_PROFILE_CONSTRAINTS, SUITE_052,
       SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR, SUITE_CROSSOVER,
       SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
+      SUITE_STAGES_091,
     ]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.
