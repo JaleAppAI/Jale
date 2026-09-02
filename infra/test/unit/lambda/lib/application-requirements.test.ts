@@ -1183,6 +1183,34 @@ describe('seedAnswersFromDefaults', () => {
     expect(query).toHaveBeenCalledTimes(3);
   });
 
+  it('keeps the ApplicationFillStep telemetry the WhatsApp flow emitted -- key NAMES and outcomes only, never a value', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const query = jest.fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ answers: { date_of_birth: '1990-04-03', desired_pay: 'bad' } }] })
+        .mockResolvedValueOnce({ rows: [{ application_answers: {} }] })
+        .mockResolvedValueOnce({ rows: [{ total: 60 }] });
+
+      await seedAnswersFromDefaults(
+        makeClient(query),
+        { applicationId: APP_ID, workerId: WORKER_ID },
+        ['date_of_birth', 'desired_pay'],
+        [],
+      );
+
+      const events = logSpy.mock.calls.map((c) => JSON.parse(String(c[0])));
+      expect(events).toEqual([
+        { event: 'ApplicationFillStep', key: 'desired_pay', outcome: 'seed_skipped', reason: 'invalid_default' },
+        { event: 'ApplicationFillStep', key: 'date_of_birth', outcome: 'seeded' },
+      ]);
+      // No answer VALUE ever reaches a log line.
+      expect(logSpy.mock.calls.every((c) => !String(c[0]).includes('1990-04-03'))).toBe(true);
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
   it('goes through the SAME merge choke point (application_answers || $1)', async () => {
     const query = jest.fn()
       .mockResolvedValueOnce({ rows: [] })

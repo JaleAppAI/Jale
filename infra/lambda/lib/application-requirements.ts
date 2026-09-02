@@ -113,6 +113,15 @@ const MAX_PER_MERGE_JSON_LENGTH = 8192;
 // instead of leaking a 500.
 export const HIRE_REQUIREMENTS_CONSTRAINT = 'job_applications_hire_requirements_check';
 
+// Metadata-ONLY step telemetry (spec §11: never the answer values). The
+// event name is carried over verbatim from the WhatsApp flow's private
+// `logStep` (application-fill.ts:406) so existing log queries keep
+// matching after the lift -- the stream is the same stream, it just now
+// also covers the web door.
+function logStep(key: string, outcome: string, reason?: string): void {
+  console.log(JSON.stringify({ event: 'ApplicationFillStep', key, outcome, reason }));
+}
+
 export type RequirementStage = 'apply' | 'details';
 
 export type DetailsStatus = 'not_requested' | 'requested' | 'complete';
@@ -934,7 +943,10 @@ export async function seedAnswersFromDefaults(
     if (!Object.prototype.hasOwnProperty.call(defaults, key)) continue;
     if (Object.prototype.hasOwnProperty.call(currentAnswers, key)) continue;
     const validated = validateApplicationAnswers([key], [], { [key]: defaults[key] });
-    if (!validated.ok) continue;
+    if (!validated.ok) {
+      logStep(key, 'seed_skipped', 'invalid_default');
+      continue;
+    }
     toMerge[key] = (validated.value as Record<string, unknown>)[key];
     seeded.push(key);
   }
@@ -942,6 +954,7 @@ export async function seedAnswersFromDefaults(
   if (seeded.length === 0) return [];
 
   await persistMergedAnswers(client, applicationId, JSON.stringify(toMerge));
+  for (const key of seeded) logStep(key, 'seeded');
   return seeded;
 }
 
