@@ -63,6 +63,13 @@ jobs:
       # variable drives the two-deploy {jobId} rename: set true for deploy 1,
       # unset for deploy 2 (an unset GitHub var is empty, which is falsy).
       JALE_PUBLIC_SITE_BASE_URL: ${{ vars.JALE_PUBLIC_SITE_BASE_URL }}
+      # SES configuration set that routes bounce/complaint events to the digest
+      # feedback handler (NotificationsStack creates it, BillingStack's sweeper
+      # tags outgoing mail with it). OPTIONAL: an unset GitHub var expands to the
+      # empty string, and bin/jale-app.ts treats '' as absent -- no configuration
+      # set, no event destination, no feedback Lambda, mail still sends. Leaving
+      # it unset is how the lane stays dark until the cutover.
+      JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}
       JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
     steps:
@@ -176,8 +183,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true --output "$RUNNER_TEMP/jale-cdk-synth-production"
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
+          npx cdk synth $DEPLOY_STACKS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" --output "$RUNNER_TEMP/jale-cdk-synth-production"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS --no-change-set -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" | tee "$RUNNER_TEMP/jale-cdk-diff.txt"
 
       - name: Upload production plan artifacts
         if: env.AWS_PLAN_ROLE_ARN != ''
@@ -218,6 +225,13 @@ jobs:
       # variable drives the two-deploy {jobId} rename: set true for deploy 1,
       # unset for deploy 2 (an unset GitHub var is empty, which is falsy).
       JALE_PUBLIC_SITE_BASE_URL: ${{ vars.JALE_PUBLIC_SITE_BASE_URL }}
+      # SES configuration set that routes bounce/complaint events to the digest
+      # feedback handler (NotificationsStack creates it, BillingStack's sweeper
+      # tags outgoing mail with it). OPTIONAL: an unset GitHub var expands to the
+      # empty string, and bin/jale-app.ts treats '' as absent -- no configuration
+      # set, no event destination, no feedback Lambda, mail still sends. Leaving
+      # it unset is how the lane stays dark until the cutover.
+      JALE_SES_CONFIGURATION_SET_NAME: ${{ vars.JALE_SES_CONFIGURATION_SET_NAME }}
       JALE_WHATSAPP_BUSINESS_NUMBER: ${{ vars.JALE_WHATSAPP_BUSINESS_NUMBER }}
       JALE_WORKER_JOBS_RENAME_PHASE1: ${{ vars.JALE_WORKER_JOBS_RENAME_PHASE1 }}
     steps:
@@ -353,14 +367,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
+          npx cdk diff $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" | tee "$RUNNER_TEMP/jale-cdk-diff-approved.txt"
 
       - name: Deploy CDK stacks
         working-directory: infra
         shell: bash
         run: |
           set -euo pipefail
-          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
+          npx cdk deploy $DEPLOY_STACKS $CDK_EXTRA_ARGS -c environment=${{ inputs.cdk-environment }} -c deletionProtection=true -c emailFromAddress="$BILLING_EMAIL_FROM_ADDRESS" -c sesVerifiedIdentityArn="$BILLING_SES_VERIFIED_IDENTITY_ARN" -c sesEmailFromAddress="$COGNITO_EMAIL_FROM_ADDRESS" -c sesEmailRegion=us-east-1 -c whatsappStatusCallbackUrl="$JALE_WHATSAPP_STATUS_CALLBACK_URL" -c whatsappAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c billingAlarmTopicArn="$WHATSAPP_ALARM_TOPIC_ARN" -c whatsappInboundV2TransportEnabled=true -c sesConfigurationSetName="$JALE_SES_CONFIGURATION_SET_NAME" --require-approval never --outputs-file "$RUNNER_TEMP/jale-cdk-outputs.json" 2>&1 | tee "$RUNNER_TEMP/jale-cdk-deploy.log"
 
       - name: Upload deployment artifacts
         if: always()

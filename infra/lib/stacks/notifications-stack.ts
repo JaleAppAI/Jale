@@ -6,9 +6,12 @@ import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as eventTargets from 'aws-cdk-lib/aws-events-targets';
+import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as ses from 'aws-cdk-lib/aws-ses';
 import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
@@ -51,20 +54,40 @@ export interface NotificationsStackProps extends cdk.StackProps {
    * Absent means "alarm exists and is visible in the console but pages nobody".
    */
   readonly alarmTopicArn?: string;
+  /**
+   * Name of the SES configuration set this stack CREATES, and that BillingStack's
+   * sweeper tags every outgoing message with. A literal threaded from
+   * bin/jale-app.ts to both stacks rather than a CDK reference between them --
+   * BillingStack is instantiated first (it must be; this stack consumes
+   * api.publicResource), so a real reference in this direction is a cycle.
+   *
+   * OPTIONAL, and absent is a supported deployment: no configuration set, no
+   * event destination, no SNS topic and no feedback Lambda are created, the
+   * sweeper sends without the X-SES-CONFIGURATION-SET header, and nothing
+   * listens for bounces. That is what keeps `cdk synth` working for a
+   * developer with no SES wiring, and it is why notifications-stack.test.ts's
+   * default harness still synths with the prop omitted.
+   */
+  readonly emailConfigurationSetName?: string;
 }
 
 /**
  * NotificationsStack — the employer daily-digest lane.
  *
  * Resources:
- *   EmployerDigestProducerLambda  EventBridge every 15 min, DB-only, jale_admin
- *   DigestUnsubscribeLambda       POST /public/employer-digest/unsubscribe (UNAUTHENTICATED)
- *   DigestUnsubscribeSecret       HMAC signing key for the unsubscribe links
+ *   EmployerDigestProducerLambda    EventBridge every 15 min, DB-only, jale_admin
+ *   DigestUnsubscribeLambda         POST /public/employer-digest/unsubscribe (UNAUTHENTICATED)
+ *   DigestUnsubscribeSecret         HMAC signing key for the unsubscribe links
+ *   EmployerEmailConfigurationSet   SES configuration set (only with emailConfigurationSetName)
+ *   EmployerEmailFeedbackTopic      SNS topic for its BOUNCE/COMPLAINT events
+ *   SesFeedbackHandlerLambda        applies those events, jale_admin
  *
  * The producer writes rows into `email_outbox` (migration 037) and the
  * EXISTING BillingStack EmailOutboxSweeperLambda drains them via SES,
- * unchanged. Nothing in this stack sends mail directly, and nothing here needs
- * SES permissions.
+ * unchanged. Nothing in this stack sends mail directly, and nothing here holds
+ * a send permission: the configuration set below is a RECEIVE-side construct
+ * (it names where delivery events go), and the sweeper that tags messages with
+ * it lives in BillingStack with the ses:SendEmail grant.
  *
  * Per-method throttles for the unauthenticated route live in ApiStack's single
  * centralized MethodSettings array — this stack must NOT call
@@ -156,6 +179,11 @@ export class NotificationsStack extends cdk.Stack {
         UNSUBSCRIBE_SECRET_ARN: unsubscribeSecret.secretArn,
         PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
+      // The producer queues digests through lib/email-outbox.ts, whose
+      // module-scope SESv2Client is bundled as an external `@aws-sdk/*`
+      // require. Ship the package or the 15-minute sweep dies at cold start
+      // ("Cannot find module '@aws-sdk/client-sesv2'") into the DLQ above.
+      nodeModules: ['@aws-sdk/client-sesv2'],
       // The default 30s is not enough: one run walks every due employer, and
       // each employer costs a jobs read plus three queries per active job
       // inside listEmployerCandidates. 120s is bounded well under the
@@ -304,6 +332,172 @@ export class NotificationsStack extends cdk.Stack {
         alarmDescription,
         metricFilter.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
       );
+    }
+
+    // ── SES delivery feedback ─────────────────────────────────────
+    // Configuration set -> SNS event destination -> topic -> Lambda ->
+    // migration 090's definer. Created as a unit or not at all: an event
+    // destination with no topic, or a topic with nothing subscribed, is a
+    // configuration that looks wired and silently drops every bounce.
+    if (props.emailConfigurationSetName) {
+      // Validated HERE, at synth, because nothing downstream does. The name is
+      // operator-supplied (vars.JALE_SES_CONFIGURATION_SET_NAME) and three
+      // resources derive their physical names from it; CDK's sqs.Queue
+      // validates `queueName` neither at construction NOR at synth (checked),
+      // so an illegal name synthesizes and diffs cleanly and then fails inside
+      // CloudFormation -- mid-deploy, after `--require-approval never` has
+      // already started creating resources.
+      //
+      // This is SES's own rule (1-64 chars, letters/digits/-/_), which is
+      // strictly tighter than SQS's (80 chars, same charset), so a name that
+      // passes here is guaranteed to produce a legal `<name>-feedback-dlq`
+      // (at most 64 + 13 = 77) and a legal `<name>-feedback` topic.
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(props.emailConfigurationSetName)) {
+        throw new Error(
+          `emailConfigurationSetName must be 1-64 characters of letters, digits, '-' or '_' `
+            + `(SES's rule, and it also has to yield a legal SQS queue name for the feedback DLQ); `
+            + `got ${JSON.stringify(props.emailConfigurationSetName)}`,
+        );
+      }
+
+      const configurationSet = new ses.CfnConfigurationSet(this, 'EmployerEmailConfigurationSet', {
+        name: props.emailConfigurationSetName,
+      });
+
+      // Not encrypted with a KMS key: SES publishes to this topic from the SES
+      // service principal, and an SSE-KMS topic needs a customer-managed key
+      // with a policy granting ses.amazonaws.com kms:GenerateDataKey. The
+      // payload is a message id, an event type and a recipient address -- the
+      // recipient is the only sensitive field, and it is one this account
+      // already holds in email_outbox.
+      const feedbackTopic = new sns.Topic(this, 'EmployerEmailFeedbackTopic', {
+        topicName: `${props.emailConfigurationSetName}-feedback`,
+        displayName: 'SES bounce and complaint events for employer email',
+      });
+
+      // Without this the lane is inert and every signal says it is healthy.
+      // SES publishes as the `ses.amazonaws.com` service principal, and
+      // nothing in `new sns.Topic` or the L1 event destination grants it
+      // `sns:Publish` — SES would drop each bounce on its own side, so the
+      // handler is never invoked, its error alarm never fires, and
+      // ses_feedback_unknown_message never counts. `aws:SourceAccount` keeps
+      // it from being a confused deputy: any account's SES could otherwise
+      // publish a Complaint here and switch an employer's digest off.
+      const feedbackPublish = feedbackTopic.addToResourcePolicy(new iam.PolicyStatement({
+        sid: 'AllowSesEventPublish',
+        principals: [new iam.ServicePrincipal('ses.amazonaws.com')],
+        actions: ['sns:Publish'],
+        resources: [feedbackTopic.topicArn],
+        conditions: { StringEquals: { 'aws:SourceAccount': this.account } },
+      }));
+
+      // The handler's own header promises SNS "dead-letters after retries".
+      // That is only true if a dead-letter target exists: an async Lambda
+      // failure without one is retried twice and then DISCARDED, and the
+      // bounce it carried is gone. Same shape as the producer's DLQ above,
+      // with retryAttempts 2 rather than 0 -- the failure this handler throws
+      // on is a database error, which is exactly the case a retry fixes.
+      const feedbackDlq = new sqs.Queue(this, 'SesFeedbackHandlerDlq', {
+        queueName: `${props.emailConfigurationSetName}-feedback-dlq`,
+        encryption: sqs.QueueEncryption.KMS_MANAGED,
+        retentionPeriod: cdk.Duration.days(14),
+      });
+
+      const feedbackLambda = new JaleLambdaFunction(this, 'SesFeedbackHandlerLambda', {
+        entry: path.join(__dirname, '../../lambda/notifications/ses-feedback-handler.ts'),
+        description: 'SES bounce/complaint handler — switches the employer digest off',
+        environment: {
+          // The SAME jale_admin secret the digest settings API uses: the
+          // handler reads email_outbox under 037's admin policy and calls
+          // 090's definer, both of which are granted to jale_admin and to
+          // nothing else.
+          DB_SECRET_ARN: props.dbSecret.secretArn,
+        },
+        // One SNS record per invocation, two short queries. 30s is the default
+        // and is generous; the point of naming it is that a hung DB connection
+        // must not hold a VPC ENI for the full Lambda maximum.
+        timeout: 30,
+        deadLetterQueue: feedbackDlq,
+        retryAttempts: 2,
+        ...lambdaProps,
+      });
+      props.dbSecret.grantRead(feedbackLambda.function);
+      feedbackDlq.grantSendMessages(feedbackLambda.function);
+      feedbackTopic.addSubscription(new snsSubscriptions.LambdaSubscription(feedbackLambda.function));
+
+      // BOUNCE and COMPLAINT only. DELIVERY/SEND/OPEN/CLICK would multiply the
+      // topic's traffic by the whole send volume to tell the handler nothing
+      // it acts on.
+      const feedbackDestination = new ses.CfnConfigurationSetEventDestination(
+        this,
+        'EmployerEmailFeedbackDestination',
+        {
+          configurationSetName: configurationSet.ref,
+          eventDestination: {
+            name: 'bounce-and-complaint-to-sns',
+            enabled: true,
+            matchingEventTypes: ['BOUNCE', 'COMPLAINT'],
+            snsDestination: { topicArn: feedbackTopic.topicArn },
+          },
+        },
+      );
+      // SES checks it can publish when the destination is created, so the
+      // topic policy has to land first. CloudFormation infers no ordering
+      // between them: both only reference the topic.
+      if (feedbackPublish.policyDependable) {
+        feedbackDestination.node.addDependency(feedbackPublish.policyDependable);
+      }
+
+      notificationsAlarm(
+        'SesFeedbackHandlerDlqAlarm',
+        'SesFeedbackHandlerDlqDepth',
+        'An SES bounce or complaint was dead-lettered after retries — that feedback was never '
+          + 'applied, so the employer it named keeps receiving the digest. Replay the queue.',
+        feedbackDlq.metricApproximateNumberOfMessagesVisible({
+          period: cdk.Duration.minutes(15), statistic: 'Sum',
+        }),
+      );
+
+      notificationsAlarm(
+        'SesFeedbackHandlerErrorsAlarm',
+        'SesFeedbackHandlerErrors',
+        'ses-feedback-handler Lambda reported an unhandled error — bounce and complaint events are '
+          + 'not being applied, so a dead mailbox keeps receiving a daily digest.',
+        feedbackLambda.function.metricErrors({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
+      );
+
+      // Same literal-term filter reasoning as the producer's metrics above.
+      for (const [id, literal, alarmName, alarmDescription] of [
+        [
+          'SesFeedbackMalformed',
+          'ses_feedback_malformed',
+          'SesFeedbackMalformed',
+          'An SES notification arrived that the feedback handler could not parse. It is dropped, not '
+            + 'retried, so nothing else reports it — and a payload shape change means bounces stop '
+            + 'being applied entirely.',
+        ],
+        [
+          'SesFeedbackUnknownMessage',
+          'ses_feedback_unknown_message',
+          'SesFeedbackUnknownMessage',
+          'A bounce or complaint named a message id no email_outbox row claims. Expected for mail sent '
+            + 'before migration 090; sustained afterwards it means ses_message_id is not being persisted.',
+        ],
+      ] as const) {
+        const metricFilter = new logs.MetricFilter(this, `${id}Metric`, {
+          logGroup: feedbackLambda.logGroup,
+          filterPattern: logs.FilterPattern.literal(`"${literal}"`),
+          metricNamespace: 'Jale/Notifications',
+          metricName: id,
+          metricValue: '1',
+        });
+        notificationsAlarm(
+          `${id}Alarm`,
+          alarmName,
+          alarmDescription,
+          metricFilter.metric({ period: cdk.Duration.minutes(15), statistic: 'Sum' }),
+        );
+      }
     }
 
     // ── Route ─────────────────────────────────────────────────────

@@ -310,4 +310,36 @@ describe('employer-digest-settings', () => {
     const bad = await handler(patchEvent({ language: 'fr' }));
     expect(bad.headers).toHaveProperty('Access-Control-Allow-Origin');
   });
+
+  // ── Unsubscribe token revocation (sprint 22 R3-E) ────────────────────────
+
+  /**
+   * The counter is the ONLY revocation mechanism an unsubscribe link has --
+   * lib/unsubscribe-token.ts embeds no expiry on purpose. Re-enabling the
+   * digest has to kill every link mailed during the previous ON period, or a
+   * mail client prefetching one silently undoes the change the employer just
+   * made. The shape of the bump is proved against a real database in
+   * test/unit/db/email-outbox-090.integration.test.ts; this pins that the
+   * handler still sends the statement that does it.
+   */
+  it('bumps unsubscribe_token_version only on the false -> true transition', async () => {
+    configureDb({ upsertRow: { enabled: true, send_hour_local: 8, timezone: 'America/Chicago', language: 'en' } });
+    await handler(patchEvent({ enabled: true }));
+
+    const upsert = mockQuery.mock.calls.find((c) => String(c[0]).includes('INSERT INTO employer_digest_settings'));
+    const sql = String(upsert![0]);
+    expect(sql).toContain('unsubscribe_token_version = CASE');
+    // The guard is "the new value is on AND the stored value was off".
+    expect(sql).toContain('WHEN COALESCE($2::boolean, employer_digest_settings.enabled)');
+    expect(sql).toContain('AND NOT employer_digest_settings.enabled');
+    expect(sql).toContain('THEN LEAST(employer_digest_settings.unsubscribe_token_version + 1, 32767)');
+    expect(sql).toContain('ELSE employer_digest_settings.unsubscribe_token_version');
+  });
+
+  it('never writes the token version outside that one CASE, and never on the GET path', async () => {
+    configureDb({ settingsRow: { enabled: true, send_hour_local: 8, timezone: 'America/Chicago', language: 'en' } });
+    await handler(makeEvent());
+    expect(mockQuery.mock.calls.map((c) => String(c[0])).join('\n'))
+      .not.toContain('unsubscribe_token_version');
+  });
 });

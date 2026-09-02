@@ -766,4 +766,64 @@ describe('employer-digest-producer', () => {
     await handler();
     expect(mockQueueEmail.mock.calls[0][1].bodyText).toMatch(/since your last digest/);
   });
+
+  // ── RFC 8058 one-click header material (sprint 22 R3-E) ──────────────────
+
+  /**
+   * TWO unsubscribe URLs and they are not interchangeable: the footer link is
+   * the human page (whose GET is inert, because mail scanners follow links),
+   * and the headers bag carries the API endpoint a mail provider can POST to.
+   */
+  it('queues the API one-click endpoint in headers while the body keeps the human page link', async () => {
+    configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([
+      candidate({ display_name: 'Fresh', applied_at: new Date(Date.now() - 60 * 1000) }),
+    ]));
+
+    await handler();
+
+    const input = mockQueueEmail.mock.calls[0][1];
+    expect(input.headers).toEqual({
+      unsubscribe_url: `${BASE_URL}/api/public/employer-digest/unsubscribe?token=tok.sig`,
+    });
+    // The rendered body still points at the Next.js page, not the API.
+    expect(input.bodyText).toContain(`${BASE_URL}/en/digest-unsubscribe?token=tok.sig`);
+    expect(input.bodyText).not.toContain('/api/public/employer-digest/unsubscribe');
+  });
+
+  it('honours an explicit PUBLIC_API_BASE_URL for a deployment whose API is elsewhere', async () => {
+    process.env.PUBLIC_API_BASE_URL = 'https://api.jaleapp.ai/';
+    configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([
+      candidate({ display_name: 'Fresh', applied_at: new Date(Date.now() - 60 * 1000) }),
+    ]));
+
+    await handler();
+
+    expect(mockQueueEmail.mock.calls[0][1].headers).toEqual({
+      unsubscribe_url: 'https://api.jaleapp.ai/public/employer-digest/unsubscribe?token=tok.sig',
+    });
+  });
+
+  it('percent-encodes the token so a signature character cannot end the query string', async () => {
+    mockMintUnsubscribeToken.mockResolvedValue('payload.sig+with/chars=');
+    configureDb({
+      due: [dueRow()],
+      jobs: { [EMPLOYER_A]: [{ id: JOB_1, title: 'Electrician' }] },
+    });
+    mockListEmployerCandidates.mockResolvedValue(rankingResult([
+      candidate({ display_name: 'Fresh', applied_at: new Date(Date.now() - 60 * 1000) }),
+    ]));
+
+    await handler();
+
+    expect(mockQueueEmail.mock.calls[0][1].headers.unsubscribe_url)
+      .toBe(`${BASE_URL}/api/public/employer-digest/unsubscribe?token=payload.sig%2Bwith%2Fchars%3D`);
+  });
 });

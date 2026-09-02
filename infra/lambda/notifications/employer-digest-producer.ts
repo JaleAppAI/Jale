@@ -150,6 +150,28 @@ export const handler = async (): Promise<DigestRunSummary> => {
   const baseUrl = requireAbsoluteBaseUrl(process.env.PUBLIC_SITE_BASE_URL);
   if (!baseUrl) throw new Error('digest_public_site_base_url_missing');
 
+  /**
+   * TWO unsubscribe URLs, on purpose, and they are not interchangeable.
+   *
+   * `${baseUrl}/${language}/digest-unsubscribe?token=` is the HUMAN one: a
+   * Next.js page with a button, reached by an employer clicking a link in the
+   * footer. Its GET is deliberately inert (see the page's header) because mail
+   * scanners follow links.
+   *
+   * The RFC 8058 `List-Unsubscribe` header needs the opposite thing: an
+   * endpoint a MAIL PROVIDER can POST to unattended. That is the API route,
+   * which CloudFront serves at `<site>/api/*` -- the same origin
+   * NEXT_PUBLIC_API_BASE_URL is baked to in frontend-stack.ts, and the same
+   * reason this is derived from PUBLIC_SITE_BASE_URL rather than from
+   * props.api.url: an API Gateway URL in a Lambda env var is the synth cycle
+   * documented at whatsapp-stack.ts:174-183.
+   *
+   * PUBLIC_API_BASE_URL overrides the derivation for a deployment whose API
+   * does not live behind the site origin. Absent and underivable => no header,
+   * which is exactly today's behaviour.
+   */
+  const apiBaseUrl = requireAbsoluteBaseUrl(process.env.PUBLIC_API_BASE_URL) ?? `${baseUrl}/api`;
+
   // Warm the signing secret HERE, not lazily inside mintUnsubscribeToken.
   // Fetched in the loop it would be a Secrets-Manager-over-VPC round trip
   // INSIDE an open email_outbox-writing transaction on a cold container, and a
@@ -292,6 +314,8 @@ export const handler = async (): Promise<DigestRunSummary> => {
         }
 
         const token = await mintUnsubscribeToken(row.employer_id, row.unsubscribe_token_version);
+        const oneClickUnsubscribeUrl =
+          `${apiBaseUrl}/public/employer-digest/unsubscribe?token=${encodeURIComponent(token)}`;
         const rendered = renderEmployerDigest({
           language,
           jobs: digestJobs,
@@ -316,6 +340,11 @@ export const handler = async (): Promise<DigestRunSummary> => {
           sourceType: 'employer_digest',
           sourceId: row.employer_id,
           idempotencyKey: `employer-digest:${row.employer_id}:${localCalendarDate}`,
+          // Digest mail only. The billing-pause producer queues no headers:
+          // a transactional notice about a suspended account is not something
+          // an employer may opt out of, and offering a one-click header on it
+          // would advertise an opt-out that does not exist.
+          headers: { unsubscribe_url: oneClickUnsubscribeUrl },
         });
 
         // The watermark stores the EXACT cutoff the candidate filter used, so no

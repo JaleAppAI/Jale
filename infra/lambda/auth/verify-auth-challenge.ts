@@ -24,7 +24,7 @@ const cognito = new CognitoIdentityProviderClient({});
  * This trigger touches NO database: R2 made web signup phone-only, so there
  * is no staged name to promote here any more (migration 052's
  * stage_worker_pending_name / promote_worker_pending_name have no caller
- * left, and 089 drops them). The worker types their name at `profile.name`
+ * left, and 091 drops them). The worker types their name at `profile.name`
  * inside the onboarding flow.
  */
 export const handler = async (

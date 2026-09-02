@@ -8,7 +8,7 @@ import { getUnsubscribeSecret } from './unsubscribe-secret';
  *
  * There is no expiry embedded in the token on purpose: revocation is the
  * `employer_digest_settings.unsubscribe_token_version` counter (migration
- * 080). Bumping it makes every previously-mailed link a no-op, which
+ * 082). Bumping it makes every previously-mailed link a no-op, which
  * `jale_digest_internal.unsubscribe_employer(uuid, smallint)` enforces by
  * refusing to act when the presented version no longer matches the row.
  *

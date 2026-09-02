@@ -29,6 +29,7 @@ const TOPIC_ARN = 'arn:aws:sns:us-east-2:123456789012:jale-ci-whatsapp-alarms';
 function buildStack(options: {
   alarmTopicArn?: string;
   publicSiteBaseUrl?: string | null;
+  emailConfigurationSetName?: string;
 } = {}) {
   const context: Record<string, unknown> = {};
   if (options.publicSiteBaseUrl !== null) {
@@ -50,6 +51,7 @@ function buildStack(options: {
     dbSecret,
     publicResource,
     alarmTopicArn: options.alarmTopicArn,
+    emailConfigurationSetName: options.emailConfigurationSetName,
   });
   return { app, apiHarness, api, stack };
 }
@@ -332,6 +334,182 @@ describe('NotificationsStack', () => {
     apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
       HttpMethod: 'POST',
       AuthorizationType: 'NONE',
+    });
+  });
+
+  // ── SES delivery feedback (sprint 22 R3-E) ───────────────────────────────
+
+  /**
+   * The default harness passes no configuration-set name, which is the
+   * dev-synth shape this whole prop exists to keep working. Nothing is created
+   * and nothing is half-created.
+   */
+  describe('without a configuration set name', () => {
+    it('creates no configuration set, no event destination and no feedback lambda', () => {
+      template.resourceCountIs('AWS::SES::ConfigurationSet', 0);
+      template.resourceCountIs('AWS::SES::ConfigurationSetEventDestination', 0);
+      template.resourceCountIs('AWS::SNS::Topic', 0);
+      const functions = Object.values(template.findResources('AWS::Lambda::Function'));
+      expect(functions.map((fn: any) => fn.Properties.Description))
+        .not.toContain('SES bounce/complaint handler — switches the employer digest off');
+    });
+  });
+
+  describe('with a configuration set name threaded in', () => {
+    const CONFIGURATION_SET = 'jale-employer-email';
+    let feedbackTemplate: Template;
+
+    beforeAll(() => {
+      feedbackTemplate = Template.fromStack(
+        buildStack({ emailConfigurationSetName: CONFIGURATION_SET, alarmTopicArn: TOPIC_ARN }).stack,
+      );
+    });
+
+    /**
+     * The DLQ, the topic and the set all take their physical names from an
+     * operator-supplied string, and CDK validates `queueName` neither at
+     * construction nor at synth -- an illegal name synthesizes clean, diffs
+     * clean, and then fails INSIDE CloudFormation, mid-deploy, after
+     * `--require-approval never` has begun creating resources. The bound is
+     * SES's own (1-64, letters/digits/-/_), which is tighter than SQS's 80, so
+     * anything that passes yields a legal `<name>-feedback-dlq` too.
+     */
+    it.each([
+      ['over 64 characters', 'a'.repeat(65)],
+      ['a dot', 'jale.employer.email'],
+      ['a space', 'jale employer email'],
+      ['empty after the optional check', ' '],
+    ])('refuses a configuration set name with %s, at synth', (_label, name) => {
+      expect(() => Template.fromStack(buildStack({ emailConfigurationSetName: name }).stack))
+        .toThrow(/emailConfigurationSetName must be 1-64 characters/);
+    });
+
+    it('accepts the longest legal SES name, which still yields a legal DLQ name', () => {
+      const longest = 'a'.repeat(64);
+      const built = Template.fromStack(buildStack({ emailConfigurationSetName: longest }).stack);
+      built.hasResourceProperties('AWS::SQS::Queue', { QueueName: `${longest}-feedback-dlq` });
+      expect(`${longest}-feedback-dlq`.length).toBeLessThanOrEqual(80);
+    });
+
+    it('creates the configuration set under the name both stacks compute independently', () => {
+      feedbackTemplate.hasResourceProperties('AWS::SES::ConfigurationSet', {
+        Name: CONFIGURATION_SET,
+      });
+    });
+
+    /**
+     * BOUNCE and COMPLAINT only. Adding DELIVERY/SEND/OPEN would multiply the
+     * topic's traffic by the whole send volume to tell the handler nothing it
+     * acts on.
+     */
+    it('routes only BOUNCE and COMPLAINT to the SNS destination', () => {
+      feedbackTemplate.hasResourceProperties('AWS::SES::ConfigurationSetEventDestination', {
+        EventDestination: Match.objectLike({
+          Enabled: true,
+          MatchingEventTypes: ['BOUNCE', 'COMPLAINT'],
+          SnsDestination: Match.objectLike({ TopicARN: Match.anyValue() }),
+        }),
+      });
+    });
+
+    it('creates the topic and subscribes the feedback Lambda to it', () => {
+      feedbackTemplate.resourceCountIs('AWS::SNS::Topic', 1);
+      feedbackTemplate.hasResourceProperties('AWS::SNS::Topic', {
+        TopicName: `${CONFIGURATION_SET}-feedback`,
+      });
+      feedbackTemplate.hasResourceProperties('AWS::SNS::Subscription', {
+        Protocol: 'lambda',
+      });
+    });
+
+    /**
+     * The failure this catches is silent in every other signal. SES publishes
+     * to the topic as the `ses.amazonaws.com` service principal, and neither
+     * `new sns.Topic` nor the L1 event destination writes a resource policy
+     * granting it `sns:Publish`. Without one, SES drops every bounce and
+     * complaint on its own side: the handler is never invoked, so
+     * SesFeedbackHandlerErrors stays flat, ses_feedback_unknown_message stays
+     * flat, and the whole lane reads as deployed and healthy while a dead
+     * mailbox keeps receiving a daily digest.
+     *
+     * `aws:SourceAccount` is the confused-deputy guard: without it any other
+     * account's SES could publish bounce events into this topic and switch
+     * arbitrary employers' digests off.
+     */
+    it('lets the SES service principal publish to the feedback topic, this account only', () => {
+      feedbackTemplate.resourceCountIs('AWS::SNS::TopicPolicy', 1);
+      feedbackTemplate.hasResourceProperties('AWS::SNS::TopicPolicy', {
+        PolicyDocument: Match.objectLike({
+          Statement: Match.arrayWith([
+            Match.objectLike({
+              Effect: 'Allow',
+              Action: 'sns:Publish',
+              Principal: { Service: 'ses.amazonaws.com' },
+              Condition: { StringEquals: { 'aws:SourceAccount': Match.anyValue() } },
+            }),
+          ]),
+        }),
+      });
+    });
+
+    /**
+     * Without a dead-letter target an async Lambda failure is retried and then
+     * DISCARDED: the bounce SES accepted is simply gone, and the only trace is
+     * an employer who keeps receiving a digest at a dead address. The handler's
+     * own header promises this queue exists.
+     */
+    it('dead-letters a feedback invocation that keeps failing, and alarms on the depth', () => {
+      feedbackTemplate.hasResourceProperties('AWS::SQS::Queue', {
+        QueueName: `${CONFIGURATION_SET}-feedback-dlq`,
+      });
+      feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
+        Description: 'SES bounce/complaint handler — switches the employer digest off',
+        DeadLetterConfig: { TargetArn: Match.anyValue() },
+      });
+      feedbackTemplate.hasResourceProperties('AWS::Lambda::EventInvokeConfig', {
+        MaximumRetryAttempts: 2,
+      });
+      feedbackTemplate.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'SesFeedbackHandlerDlqDepth',
+        AlarmActions: [TOPIC_ARN],
+      });
+    });
+
+    it('runs the handler in the VPC as jale_admin, on the same secret the settings API uses', () => {
+      feedbackTemplate.hasResourceProperties('AWS::Lambda::Function', {
+        Description: 'SES bounce/complaint handler — switches the employer digest off',
+        Timeout: 30,
+        Environment: { Variables: Match.objectLike({ DB_SECRET_ARN: Match.anyValue() }) },
+        VpcConfig: Match.anyValue(),
+      });
+    });
+
+    /**
+     * The handler holds NO SES permission: a configuration set is a
+     * receive-side construct, and the only role that may send is the sweeper's
+     * over in BillingStack.
+     */
+    it('grants the feedback handler no SES permissions at all', () => {
+      expect(JSON.stringify(feedbackTemplate.findResources('AWS::IAM::Policy'))).not.toContain('ses:Send');
+    });
+
+    it('alarms on handler errors and on the two silent outcomes', () => {
+      feedbackTemplate.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        AlarmName: 'SesFeedbackHandlerErrors',
+        AlarmActions: [TOPIC_ARN],
+      });
+      for (const [literal, metricName] of [
+        ['ses_feedback_malformed', 'SesFeedbackMalformed'],
+        ['ses_feedback_unknown_message', 'SesFeedbackUnknownMessage'],
+      ]) {
+        feedbackTemplate.hasResourceProperties('AWS::Logs::MetricFilter', {
+          FilterPattern: `"${literal}"`,
+          MetricTransformations: Match.arrayWith([Match.objectLike({
+            MetricNamespace: 'Jale/Notifications', MetricName: metricName,
+          })]),
+        });
+        feedbackTemplate.hasResourceProperties('AWS::CloudWatch::Alarm', { AlarmName: metricName });
+      }
     });
   });
 });

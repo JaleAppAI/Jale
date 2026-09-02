@@ -893,7 +893,7 @@ describe('Processor Lambda', () => {
 
     // R2-C8: `users.trust_signals` / `trust_signals_completed_at` (the v1
     // three-question lane) no longer have a writer and no longer have a
-    // reader — `formatProfileSummary`'s legacy branch is gone and 088 drops
+    // reader — `formatProfileSummary`'s legacy branch is gone and 091 drops
     // the columns. A worker with no `worker_trust_assessments` row now gets
     // the plain "not set" line, never a v1 specialty/level/main-work block.
     it('returns profile details for a linked worker profile command', async () => {
