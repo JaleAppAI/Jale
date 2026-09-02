@@ -187,7 +187,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         employerSub: cognitoSub,
         kind: status,
         jobId,
-        jobTitle: job.title ?? '',
+        jobTitle: job.title, // jobs.title is NOT NULL (003:15).
         companyName,
         frontendBaseUrl: process.env.FRONTEND_BASE_URL ?? DEFAULT_FRONTEND_BASE_URL,
         updatedAt: result.rows[0].updated_at,

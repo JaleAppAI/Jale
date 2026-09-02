@@ -282,12 +282,16 @@ describe('employer-application-status-update', () => {
           rows: [{
             id: JOB_ID, number_of_workers_needed: 3, workers_hired: 2,
             status: statusBefore, public_listing_enabled: publicListingEnabled, public_code: publicCode,
+            employer_id: EMPLOYER_ID, title: 'Concrete Finisher',
           }],
         });
       }
       // Post-update re-read of jobs.status (after the trigger has run).
       if (/^SELECT status FROM jobs WHERE id/.test(q.trim())) {
         return Promise.resolve({ rows: [{ status: statusAfter }] });
+      }
+      if (q.includes('employer_display_name')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'RM Construction' }] });
       }
       if (q.includes('UPDATE job_applications')) {
         return Promise.resolve({
@@ -318,6 +322,16 @@ describe('employer-application-status-update', () => {
     expect(enqueueCall).toBeDefined();
     expect(enqueueCall![1]).toEqual([JOB_ID, 'PUBCODE', 'removed']);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+
+    // Hiring also notifies the worker, and employer_display_name() must come
+    // AFTER the visibility work: it widens employer_profiles reads until COMMIT.
+    const sqls = mockQuery.mock.calls.map(([sql]: [string]) => (typeof sql === 'string' ? sql : ''));
+    const visibilityIdx = sqls.findIndex((s: string) => s.includes('enqueue_job_visibility_event'));
+    const displayNameIdx = sqls.findIndex((s: string) => s.includes('employer_display_name'));
+    expect(displayNameIdx).toBeGreaterThan(visibilityIdx);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({
+      kind: 'hired', companyName: 'RM Construction', jobTitle: 'Concrete Finisher',
+    });
   });
 
   it("enqueues a 'published' visibility event when un-hiring reopens a listed job (filled->active)", async () => {
@@ -501,6 +515,18 @@ describe('employer-application-status-update', () => {
     expect(mockNotify.mock.calls[0][1]).toMatchObject({ frontendBaseUrl: 'https://app.jaleapp.ai' });
   });
 
+  it("falls back to employer_display_name()'s own default when the lookup yields no row", async () => {
+    const base = makeStageQueryMock({ appStatusBefore: 'talking', appStatusRequested: 'details_requested' });
+    mockQuery.mockImplementation((q: string) => (
+      q.includes('employer_display_name') ? Promise.resolve({ rowCount: 0, rows: [] }) : base(q)
+    ));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ companyName: 'Empleador' });
+  });
+
   it('does NOT enqueue for a non-notifying status such as contacted', async () => {
     mockQuery.mockImplementation(makeStageQueryMock({
       appStatusBefore: 'pending', appStatusRequested: 'contacted',
@@ -522,6 +548,8 @@ describe('employer-application-status-update', () => {
 
     expect(res.statusCode).toBe(200);
     expect(mockNotify).not.toHaveBeenCalled();
+    // The GUC-widening lookup must not run for a no-op PATCH either.
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('employer_display_name'), expect.anything());
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
   });
 
