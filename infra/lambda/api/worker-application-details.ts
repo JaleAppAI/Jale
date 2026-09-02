@@ -26,8 +26,8 @@
  * about ownership on a read: every application query here carries an
  * explicit `AND worker_id = $2`. The shared engine's own snapshot SELECT is
  * keyed on the application id alone by design — this handler is the caller
- * that must have proven ownership first, and the `assertOwnership` SELECT
- * below is that proof.
+ * that must have proven ownership first, and the `worker_id = $2` SELECT in
+ * the entry sequence below is that proof.
  *
  * ── ALL LOGIC LIVES IN THE ENGINE ─────────────────────────────────────
  * Every requirement decision — what is still missing, what to ask next,
@@ -88,6 +88,9 @@ const MAX_BODY_BYTES = 16 * 1024;
  * silently dropping the 21st answer would lose a worker's typing with a 200.
  */
 const MAX_ANSWER_KEYS = 20;
+
+/** The three `{action}` write doors. Anything else is a 404. */
+const WRITE_ACTIONS = new Set(['answers', 'certifications', 'prompt-answers']);
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -346,6 +349,25 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return fail(404, 'not_found');
     }
 
+    // ROUTE VALIDATION BEFORE THE SNAPSHOT LOAD. The load is not a pure
+    // read -- it copies the worker's vault documents onto the job -- so a
+    // request that can only ever be refused must not reach it. Still inside
+    // the transaction (and still rolled back) because ownership is what
+    // decides whether this caller is allowed to learn anything at all,
+    // including which actions exist.
+    if (action === '') {
+      if (method !== 'GET') {
+        await rollback();
+        return fail(405, 'method_not_allowed');
+      }
+    } else if (!WRITE_ACTIONS.has(action)) {
+      await rollback();
+      return fail(404, 'not_found');
+    } else if (method !== 'POST') {
+      await rollback();
+      return fail(405, 'method_not_allowed');
+    }
+
     let snapshot: RequirementSnapshot | null;
     try {
       snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
@@ -364,10 +386,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
 
     // ── GET: the state document ────────────────────────────────────
     if (action === '') {
-      if (method !== 'GET') {
-        await rollback();
-        return fail(405, 'method_not_allowed');
-      }
       // A doc uploaded through `/worker/vault/*` never touches this engine,
       // so the read is what completes the application. Re-load when it
       // flipped: `details_completed_at` is part of the response.
@@ -385,11 +403,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // ── POST {action}: the three write doors ───────────────────────
-    if (method !== 'POST') {
-      await rollback();
-      return fail(405, 'method_not_allowed');
-    }
-
     let result: MergeResult;
     if (action === 'answers') {
       const answers = body.answers;
@@ -409,11 +422,10 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       });
     } else if (action === 'certifications') {
       result = await mergeCertificationClaims(client, { applicationId, workerId, claims: body.claims });
-    } else if (action === 'prompt-answers') {
-      result = await mergePromptAnswers(client, { applicationId, workerId, answers: body.answers });
     } else {
-      await rollback();
-      return fail(404, 'not_found');
+      // `prompt-answers` -- WRITE_ACTIONS above has already refused every
+      // other action, so this branch cannot be reached by an unknown one.
+      result = await mergePromptAnswers(client, { applicationId, workerId, answers: body.answers });
     }
 
     if (result.ok) {
