@@ -179,6 +179,11 @@ export class NotificationsStack extends cdk.Stack {
         UNSUBSCRIBE_SECRET_ARN: unsubscribeSecret.secretArn,
         PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
       },
+      // The producer queues digests through lib/email-outbox.ts, whose
+      // module-scope SESv2Client is bundled as an external `@aws-sdk/*`
+      // require. Ship the package or the 15-minute sweep dies at cold start
+      // ("Cannot find module '@aws-sdk/client-sesv2'") into the DLQ above.
+      nodeModules: ['@aws-sdk/client-sesv2'],
       // The default 30s is not enough: one run walks every due employer, and
       // each employer costs a jobs read plus three queries per active job
       // inside listEmployerCandidates. 120s is bounded well under the
