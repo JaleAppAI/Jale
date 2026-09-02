@@ -2,6 +2,8 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { isPlainObject } from '../lib/application-answers';
+import { promptAnswersView, stageView } from '../lib/application-stage-view';
+import { parsePreApplicationPromptList } from '../lib/pre-application-prompts';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { checkCompliance } from '../legal/check-compliance';
 
@@ -57,9 +59,15 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // Verify this job belongs to the caller (RLS returns no rows if not).
     // Also carries optional_fields/optional_docs so the applicant query
     // below can compute each applicant's not_provided list without a
-    // second round trip.
+    // second round trip -- and, since 091, the rest of the job's
+    // requirement columns too. Those are job-level, identical for every
+    // applicant, so they are fetched ONCE here and folded into each row's
+    // snapshot below rather than re-joined per applicant.
     const jobCheck = await client.query(
-      'SELECT id, optional_fields, optional_docs FROM jobs WHERE id = $1 AND employer_id = $2',
+      `SELECT id, optional_fields, optional_docs,
+              required_fields, required_docs,
+              certification_requirements, pre_application_prompts
+         FROM jobs WHERE id = $1 AND employer_id = $2`,
       [jobId, employerId],
     );
     if (jobCheck.rowCount === 0) {
@@ -69,6 +77,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const jobRow = (jobCheck.rows ?? [])[0] ?? {};
     const optionalFields: string[] = Array.isArray(jobRow.optional_fields) ? jobRow.optional_fields : [];
     const optionalDocs: string[] = Array.isArray(jobRow.optional_docs) ? jobRow.optional_docs : [];
+    const preApplicationPrompts = parsePreApplicationPromptList(jobRow.pre_application_prompts);
 
     // Build applicant query with optional filters
     const qs = event.queryStringParameters ?? {};
@@ -130,6 +139,13 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
          END AS status,
          ja.applied_at,
          ja.application_answers,
+         -- 091 stage columns. stage/details_status are derived from these
+         -- TIMESTAMPS, never from the literal status, so moving a
+         -- details_requested applicant on to contacted/talking does not
+         -- silently reset the stage.
+         ja.prompt_answers,
+         ja.details_requested_at,
+         ja.details_completed_at,
          ARRAY(
            SELECT ws.skill
            FROM worker_skills ws
@@ -150,7 +166,23 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
                 AND wd.doc_type = dt
                 AND (wd.job_id IS NULL OR wd.job_id = ja.job_id)
            )
-         ) AS missing_optional_docs
+         ) AS missing_optional_docs,
+         -- JOB-SCOPED doc types, the input computeRemaining expects and
+         -- exactly what 091's hire gate measures. DELIBERATELY narrower than
+         -- missing_optional_docs above, which also counts vault rows
+         -- (job_id IS NULL): that one answers "did the worker skip an
+         -- optional item", this one answers "can this application be hired".
+         -- The two can disagree on the same row; both are correct.
+         --
+         -- No syncDocumentSnapshots here: this is an employer (jale_admin)
+         -- session, and the sync sets a WORKER GUC and writes worker_documents
+         -- (FORCE RLS). Only worker sessions may do that.
+         ARRAY(
+           SELECT DISTINCT wd.doc_type
+             FROM worker_documents wd
+            WHERE wd.worker_id = ja.worker_id
+              AND wd.job_id = ja.job_id
+         ) AS have_docs
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id
@@ -168,7 +200,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // missing_optional_docs is an internal helper column, dropped from the
     // response -- only its contribution to not_provided is exposed.
     const applicants = result.rows.map((row: any) => {
-      const { missing_optional_docs, ...applicant } = row;
+      const { missing_optional_docs, have_docs, ...applicant } = row;
       // Guard + normalize, not just guard: application_answers is JSONB NOT
       // NULL DEFAULT '{}' and node-pg returns it pre-parsed in production,
       // but if it ever arrived as something else, ship the normalized {}
@@ -178,13 +210,43 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         ...optionalFields.filter((field) => !Object.prototype.hasOwnProperty.call(answers, field)),
         ...(Array.isArray(missing_optional_docs) ? missing_optional_docs : []),
       ];
-      return { ...applicant, application_answers: answers, not_provided: notProvided };
+      // The shared stage vocabulary, computed by the SAME pure functions the
+      // worker's own door runs -- fed a snapshot assembled from the columns
+      // already selected, so no per-row engine round trip.
+      const stage = stageView({
+        ...row,
+        // The selected `status` is the CASE-remapped one; the snapshot wants
+        // the application status only for exits it never evaluates here, so
+        // either is safe -- passed explicitly for clarity.
+        application_status: row.status,
+        required_fields: jobRow.required_fields,
+        optional_fields: jobRow.optional_fields,
+        required_docs: jobRow.required_docs,
+        optional_docs: jobRow.optional_docs,
+        certification_requirements: jobRow.certification_requirements,
+        pre_application_prompts: jobRow.pre_application_prompts,
+        have_docs,
+      });
+      return {
+        ...applicant,
+        application_answers: answers,
+        not_provided: notProvided,
+        ...stage,
+        // Overwrites the RAW jsonb column with the joined view: the employer
+        // must never have to correlate answer ids against the job's prompts
+        // themselves, and an answer to a since-deleted prompt still shows.
+        prompt_answers: promptAnswersView(jobRow.pre_application_prompts, row.prompt_answers),
+      };
     });
 
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ applicants, total: result.rowCount }),
+      body: JSON.stringify({
+        applicants,
+        total: result.rowCount,
+        pre_application_prompts: preApplicationPrompts,
+      }),
     };
   } catch (err) {
     if (client) { try { await client.query('ROLLBACK'); } catch (_) {} }
