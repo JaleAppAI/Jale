@@ -152,6 +152,19 @@ describe('worker-application-details', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
   });
 
+  it('returns 400 for a NUL inside a string value, before the pool', async () => {
+    // Legal JSON that every length/trim validator accepts and jsonb refuses.
+    const res = await handler(makeEvent({
+      httpMethod: 'POST',
+      pathParameters: { applicationId: APP_ID, action: 'answers' },
+      body: '{"answers":{"home_address":{"street":"a\\u0000b"}}}',
+    }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid_request' });
+    expect(mockGetDbPool).not.toHaveBeenCalled();
+  });
+
   it('returns 404 (never 500) for a malformed, non-UUID application id', async () => {
     const res = await handler(makeEvent({ pathParameters: { applicationId: 'not-a-uuid' } }));
 
@@ -340,6 +353,25 @@ describe('worker-application-details', () => {
     expect(mockMergeFieldAnswers).not.toHaveBeenCalled();
     expect(sqlCalls()).toContain('ROLLBACK');
     expect(sqlCalls()).not.toContain('COMMIT');
+  });
+
+  it('POST answers refuses a __proto__ key with a NAMED error, not the engine\'s silent 200', async () => {
+    // `errors['__proto__'] = ...` inside the engine runs Object.prototype's
+    // setter instead of creating an own property, so its error map stays
+    // empty and an entirely rejected batch reads as ok. The door stops that.
+    const res = await handler(makeEvent({
+      httpMethod: 'POST',
+      pathParameters: { applicationId: APP_ID, action: 'answers' },
+      body: '{"answers":{"__proto__":{"polluted":true}}}',
+    }));
+
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.error).toBe('invalid_answers');
+    expect(Object.keys(body.errors)).toEqual(['__proto__']);
+    expect(mockMergeFieldAnswers).not.toHaveBeenCalled();
+    expect(({} as any).polluted).toBeUndefined();
+    expect(sqlCalls()).toContain('ROLLBACK');
   });
 
   it('POST answers maps the engine\'s per-key errors onto 400 invalid_answers', async () => {

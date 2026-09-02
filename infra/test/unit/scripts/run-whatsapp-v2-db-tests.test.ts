@@ -67,6 +67,14 @@ const SUITE_HOSTILE_INPUTS = 'test/unit/db/web-onboarding-hostile-inputs.integra
 // column-scoped jale_whatsapp grants: details_requested_at is withheld on
 // purpose, and a mocked pool would let that write through.
 const SUITE_STAGES_091 = 'test/unit/db/application-stages-091.integration.test.ts';
+// Sprint 23 L2.4: the WEB stage-2 details door. Belongs here for the same
+// reason as its neighbours -- `jobapp_whatsapp_select` is USING (true), so the
+// door's own `worker_id = $2` is the ONLY cross-tenant boundary, and
+// `jobapp_whatsapp_update` keys on a GUC whose absence is a zero-row UPDATE
+// (a SQL SUCCESS a mocked pool renders as a green 200 over a write that never
+// happened). It also drives 091's BEFORE-UPDATE hire gate to a PASS, which
+// nothing else in the repo does.
+const SUITE_APPLICATION_DETAILS = 'test/unit/db/worker-application-details.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -92,6 +100,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_RESET, SUITE_RETRIGGER, SUITE_080, SUITE_WEB_SPIKE, SUITE_WEB_DOOR, SUITE_CROSSOVER,
       SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
       SUITE_STAGES_091,
+      SUITE_APPLICATION_DETAILS,
     ]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.

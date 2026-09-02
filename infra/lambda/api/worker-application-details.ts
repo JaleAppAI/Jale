@@ -292,6 +292,16 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
   const body = parseBody(event);
   if (body === null) return fail(400, 'invalid_request');
 
+  // A NUL inside a STRING VALUE (`"\u0000"`, which is legal JSON) survives
+  // every app-side validator -- `boundedString` measures length and trims
+  // whitespace, and U+0000 is neither -- and only fails at the very bottom,
+  // when Postgres refuses `\u0000` in a jsonb text value. That raise lands in
+  // the catch-all as a 500. Refusing it at the door makes it the 400 it
+  // always was. Checked on the SERIALIZED body so the input form does not
+  // matter: `JSON.stringify` emits U+0000 as the `\u0000` escape wherever it
+  // sits, at any depth, in a key or a value.
+  if (JSON.stringify(body).includes('\\u0000')) return fail(400, 'invalid_request');
+
   // A non-UUID id is answered 404 with no DB round trip at all. Handing it
   // to Postgres would raise 22P02 and leak out as a 500, and "no such
   // application" is the honest answer either way — an id that cannot exist
@@ -410,10 +420,31 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
         await rollback();
         return fail(400, 'invalid_answers', { errors: {} });
       }
-      const keyCount = Object.keys(answers).length;
-      if (keyCount === 0 || keyCount > MAX_ANSWER_KEYS) {
+      const keys = Object.keys(answers);
+      if (keys.length === 0 || keys.length > MAX_ANSWER_KEYS) {
         await rollback();
         return fail(400, 'invalid_answers', { errors: {} });
+      }
+      // `__proto__` is refused HERE rather than left to the engine. Nothing
+      // is ever written for it either way -- the engine skips any key the job
+      // does not ask for -- but it records the rejection as
+      // `errors['__proto__'] = 'unknown_answer_key'`, and on a plain object
+      // that assignment runs Object.prototype's `__proto__` SETTER instead of
+      // creating an own property. A string value makes that setter a no-op,
+      // so the map stays EMPTY, the engine reads "no errors", and a batch
+      // that was entirely rejected comes back 200. The prototype is never
+      // touched and no answer is stored; the lie is only in the status code,
+      // and this is where it stops. (The engine is another lane's file.)
+      if (keys.includes('__proto__')) {
+        await rollback();
+        // A COMPUTED key, not the literal `{__proto__: ...}` -- the literal
+        // form sets the prototype and the body would ship an empty map,
+        // which is the very bug this branch exists to avoid.
+        const errors: Record<string, string> = {};
+        Object.defineProperty(errors, '__proto__', {
+          value: 'unknown_answer_key', enumerable: true, writable: true, configurable: true,
+        });
+        return fail(400, 'invalid_answers', { errors });
       }
       result = await mergeFieldAnswers(client, {
         applicationId,
