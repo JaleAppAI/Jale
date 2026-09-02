@@ -225,10 +225,13 @@ maybeDescribe('L2.4: the web stage-2 details door, end to end', () => {
     )).rows[0].id;
 
     // ── Applications ──────────────────────────────────────────────
-    // The 022 guard (`job_applications_required_docs_check`) refuses an
-    // INSERT whose required docs are missing; sprint 23 applies BEFORE the
-    // docs exist by design, which is exactly what the transaction-local
-    // bypass GUC is for.
+    // Sprint 23 applies BEFORE any document exists, by design. 091 dropped
+    // the 022 required-docs INSERT guard for exactly that reason (verified on
+    // this testbed: job_applications carries only updated_at,
+    // hired_count_sync and hire_requirements_guard triggers), so the
+    // transaction-local bypass below is currently a no-op. It stays because
+    // it costs nothing and keeps this fixture correct against a database
+    // where the guard is still installed.
     await su.query('BEGIN');
     await su.query(`SELECT set_config('app.allow_incomplete_docs', 'on', true)`);
     appA = (await su.query<{ id: string }>(
