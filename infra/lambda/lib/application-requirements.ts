@@ -674,6 +674,9 @@ function writeGate(
  * `markDetailsCompleteIfDone`. A defaults failure is never swallowed: it
  * propagates so the caller rolls the whole merge back rather than committing
  * an answer whose default silently vanished.
+ *
+ * Doc snapshot copies can trip either 078 trigger cap; both collapse to
+ * `certification_document_limit`, same as the apply path.
  */
 export async function mergeFieldAnswers(
   client: PoolClient,
@@ -689,7 +692,15 @@ export async function mergeFieldAnswers(
   const keys = Object.keys(answers);
   if (keys.length === 0) return { ok: false, reason: 'invalid', errors: {} };
 
-  const snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
+  let snapshot: RequirementSnapshot | null;
+  try {
+    snapshot = await loadRequirementSnapshot(client, applicationId, { syncDocumentSnapshots: true });
+  } catch (err: any) {
+    if (err?.code === '23514' && CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS.has(err?.constraint)) {
+      return { ok: false, reason: 'certification_document_limit' };
+    }
+    throw err;
+  }
   if (!snapshot) return { ok: false, reason: 'not_found' };
   const gated = writeGate(snapshot, { requireDetailsStage: true });
   if (gated) return gated;

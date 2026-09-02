@@ -782,6 +782,19 @@ describe('mergeFieldAnswers', () => {
       applicationId: APP_ID, workerId: WORKER_ID, answers: { date_of_birth: '1990-04-03' },
     })).rejects.toThrow('permission denied');
   });
+
+  it('maps either 078 trigger cap constraint raised by the doc-snapshot sync to certification_document_limit instead of a 500', async () => {
+    for (const constraint of ['certification_document_limit', 'certification_document_name_limit']) {
+      const query = jest.fn()
+        .mockResolvedValueOnce({ rows: [detailsRow({ required_fields: ['date_of_birth'], required_docs: ['certification_doc'] })] })
+        .mockResolvedValueOnce({ rows: [] })  // GUC
+        .mockRejectedValueOnce(Object.assign(new Error('cap'), { code: '23514', constraint }));
+
+      expect(await mergeFieldAnswers(makeClient(query), {
+        applicationId: APP_ID, workerId: WORKER_ID, answers: { date_of_birth: '1990-04-03' },
+      })).toEqual({ ok: false, reason: 'certification_document_limit' });
+    }
+  });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
