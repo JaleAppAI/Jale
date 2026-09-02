@@ -2,17 +2,22 @@ import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-application-status-update';
 import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
+import { enqueueApplicationStageNotification } from '../../../../lambda/lib/application-stage-notify';
 
 jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/legal/check-compliance');
+jest.mock('../../../../lambda/lib/application-stage-notify');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
+const mockNotify = enqueueApplicationStageNotification as jest.Mock;
 const mockQuery = jest.fn();
 const mockRelease = jest.fn();
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const WORKER_ID = '22222222-2222-4222-8222-222222222222';
+const APPLICATION_ID = '33333333-3333-4333-8333-333333333333';
+const EMPLOYER_ID = '44444444-4444-4444-8444-444444444444';
 
 function makeEvent(overrides: Partial<APIGatewayProxyEvent> = {}): APIGatewayProxyEvent {
   return {
@@ -29,8 +34,15 @@ describe('employer-application-status-update', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     process.env = { ...env, REQUIRED_TOS_VERSION: 'v1.0' };
+    delete process.env.FRONTEND_BASE_URL;
     mockGetDbPool.mockResolvedValue({ connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }) });
     mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockNotify.mockResolvedValue({
+      outcome: 'enqueued',
+      intentId: 'intent-1',
+      decision: { action: 'allow', reason: 'worker_ready' },
+      outboxMaterialized: true,
+    });
   });
 
   afterAll(() => { process.env = env; });
@@ -121,6 +133,16 @@ describe('employer-application-status-update', () => {
       expect.stringContaining('UPDATE job_applications'),
       ['contacted', JOB_ID, WORKER_ID],
     );
+    // 091 stage columns: details_requested_at is stamped once, on the first
+    // move into details_requested, and never cleared by a later transition.
+    const updateSql = mockQuery.mock.calls.find(
+      ([sql]: [string]) => typeof sql === 'string' && sql.includes('UPDATE job_applications'),
+    )![0] as string;
+    expect(updateSql).toContain(
+      "details_requested_at = CASE WHEN $1 = 'details_requested' THEN COALESCE(details_requested_at, now()) ELSE details_requested_at END",
+    );
+    expect(updateSql).toContain('updated_at = now()');
+    expect(updateSql).toMatch(/RETURNING[\s\S]*details_requested_at[\s\S]*details_completed_at/);
     expect(mockQuery).toHaveBeenCalledWith('COMMIT');
     expect(mockRelease).toHaveBeenCalled();
   });
@@ -337,5 +359,203 @@ describe('employer-application-status-update', () => {
     expect(findVisibilityEnqueueCall()).toBeUndefined();
     const calls = mockQuery.mock.calls.map(([sql]: [string]) => sql);
     expect(calls.some((s: string) => typeof s === 'string' && /^SELECT status FROM jobs WHERE id/.test(s.trim()))).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Sprint 23 stage awareness -- the 091 hire gate and the worker notification
+  // ---------------------------------------------------------------------------
+
+  const UPDATED_AT = '2026-09-02T12:00:00.000Z';
+
+  function makeStageQueryMock(opts: {
+    appStatusBefore: string;
+    appStatusRequested: string;
+    updateError?: unknown;
+  }) {
+    return (q: string) => {
+      if (q.includes('JOIN users u ON u.id = jobs.employer_id')) {
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            id: JOB_ID, number_of_workers_needed: 3, workers_hired: 0,
+            status: 'active', public_listing_enabled: false, public_code: null,
+            employer_id: EMPLOYER_ID, title: 'Concrete Finisher',
+          }],
+        });
+      }
+      if (q.includes('employer_display_name')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ company_name: 'RM Construction' }] });
+      }
+      if (q.includes('UPDATE job_applications')) {
+        if (opts.updateError) return Promise.reject(opts.updateError);
+        return Promise.resolve({
+          rowCount: 1,
+          rows: [{
+            application_id: APPLICATION_ID, job_id: JOB_ID, worker_id: WORKER_ID,
+            status: opts.appStatusRequested, applied_at: 'ts', updated_at: UPDATED_AT,
+            details_requested_at: null, details_completed_at: null,
+          }],
+        });
+      }
+      if (q.includes('FROM job_applications')) {
+        return Promise.resolve({ rowCount: 1, rows: [{ id: APPLICATION_ID, status: opts.appStatusBefore }] });
+      }
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    };
+  }
+
+  it("returns 409 details_incomplete (and rolls back) when 091's hire gate rejects the UPDATE", async () => {
+    const gateError = Object.assign(new Error('new row violates check constraint'), {
+      code: '23514',
+      constraint: 'job_applications_hire_requirements_check',
+      detail: JSON.stringify({ fields: ['start_date'], docs: ['id'], certifications: ['OSHA 10'] }),
+    });
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'hired', updateError: gateError,
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      error: 'details_incomplete',
+      missing: { fields: ['start_date'], docs: ['id'], certifications: ['OSHA 10'] },
+    });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('still 500s and rolls back on a CHECK violation that is not the hire gate', async () => {
+    const otherError = Object.assign(new Error('nope'), {
+      code: '23514',
+      constraint: 'job_applications_status_check',
+    });
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'hired', updateError: otherError,
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+  });
+
+  it('enqueues the worker notification on details_requested, after resolving the company name', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify).toHaveBeenCalledWith(expect.anything(), {
+      applicationId: APPLICATION_ID,
+      workerId: WORKER_ID,
+      employerSub: 'e-sub',
+      kind: 'details_requested',
+      jobId: JOB_ID,
+      jobTitle: 'Concrete Finisher',
+      companyName: 'RM Construction',
+      frontendBaseUrl: 'https://jaleapp.ai',
+      updatedAt: UPDATED_AT,
+    });
+
+    // employer_display_name() widens employer_profiles reads until COMMIT, so
+    // it must be the LAST employer-adjacent query -- immediately before the
+    // enqueue, which is itself the last thing before COMMIT.
+    const displayNameCall = mockQuery.mock.calls.findIndex(
+      ([sql]: [string]) => typeof sql === 'string' && sql.includes('employer_display_name'),
+    );
+    const commitCall = mockQuery.mock.calls.findIndex(([sql]: [string]) => sql === 'COMMIT');
+    expect(displayNameCall).toBeGreaterThan(-1);
+    expect(displayNameCall).toBe(commitCall - 1);
+    expect(mockQuery.mock.invocationCallOrder[displayNameCall])
+      .toBeLessThan(mockNotify.mock.invocationCallOrder[0]);
+    expect(mockQuery.mock.invocationCallOrder[commitCall])
+      .toBeGreaterThan(mockNotify.mock.invocationCallOrder[0]);
+  });
+
+  it('enqueues with kind hired when the employer hires the worker', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'hired',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'hired' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ kind: 'hired', applicationId: APPLICATION_ID });
+  });
+
+  it('uses FRONTEND_BASE_URL when it is configured', async () => {
+    process.env.FRONTEND_BASE_URL = 'https://app.jaleapp.ai';
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(mockNotify.mock.calls[0][1]).toMatchObject({ frontendBaseUrl: 'https://app.jaleapp.ai' });
+  });
+
+  it('does NOT enqueue for a non-notifying status such as contacted', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'pending', appStatusRequested: 'contacted',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'contacted' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalledWith(expect.stringContaining('employer_display_name'), expect.anything());
+  });
+
+  it('does NOT enqueue when the status did not actually change', async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'details_requested', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+  });
+
+  it('commits the status change and logs a metric when the worker cannot be rendered', async () => {
+    mockNotify.mockResolvedValue({ outcome: 'renderer_unavailable', reason: 'renderer_unavailable' });
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('details_requested');
+    expect(mockQuery).toHaveBeenCalledWith('COMMIT');
+    expect(logSpy).toHaveBeenCalledWith(JSON.stringify({
+      metric: 'ApplicationStageNotifySkipped',
+      reason: 'renderer_unavailable',
+      applicationId: APPLICATION_ID,
+    }));
+    logSpy.mockRestore();
+  });
+
+  it('rolls back to 500 when the enqueue fails for any other reason', async () => {
+    mockNotify.mockRejectedValue(new Error('permission denied for table worker_message_intents'));
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(500);
+    expect(JSON.parse(res.body)).toEqual({ error: 'internal_error' });
+    expect(mockQuery).toHaveBeenCalledWith('ROLLBACK');
+    expect(mockQuery).not.toHaveBeenCalledWith('COMMIT');
   });
 });

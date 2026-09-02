@@ -402,6 +402,9 @@ export class ApiStack extends cdk.Stack {
         DB_SECRET_ARN: props.dbSecret.secretArn,
         REQUIRED_TOS_VERSION: tosVersion,
         ALLOWED_ORIGIN: allowedOrigin,
+        // Deep link in the worker's stage-change WhatsApp message. Same source
+        // the DocumentsStack uses for FRONTEND_BASE_URL (documents-stack.ts:69).
+        FRONTEND_BASE_URL: allowedOrigin,
       },
     });
     props.dbSecret.grantRead(employerApplicationStatusUpdateLambda.function);
