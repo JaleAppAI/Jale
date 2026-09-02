@@ -51,6 +51,7 @@ export function TradeStep({
     const t = useTranslations('worker_onboarding.trade');
     const tVocab = useTranslations('worker_vocab');
     const tCommon = useTranslations('common');
+    const tStepChrome = useTranslations('worker_onboarding.common');
     const rejectionMessage = useRejectionMessage();
     const fieldId = useId();
 
@@ -59,6 +60,7 @@ export function TradeStep({
         : null;
     const errorId = `${fieldId}-error`;
     const hintId = `${fieldId}-hint`;
+    const switchHintId = `${fieldId}-switch-hint`;
     // The server measures the trimmed text at 2..60 and answers `too_short` /
     // `too_long`. Saying it BEFORE the save turns a round trip into a sentence
     // that is already on screen -- and it is the same sentence either way.
@@ -70,6 +72,22 @@ export function TradeStep({
             draft.customTrade.trim().length > MAX_CUSTOM_TRADE_CHARS ? 'too_long' : 'too_short',
             'profile.custom_trade',
         )
+        : null;
+    // The one place Continue goes quiet with the screen fully filled in: the
+    // engine is parked ON `profile.custom_trade` -- they picked Other on
+    // WhatsApp and it is still waiting for the name -- and the worker has now
+    // picked a STANDARD trade instead. That batch is one item BEHIND the
+    // cursor, so `itemsFromCursor` filters it to nothing and `canContinue`
+    // correctly says no. Without a sentence it just reads as a broken button.
+    // Back is the honest control (it walks the engine off `custom_trade`),
+    // gated on `onBack` actually being there -- pointing at a link that is
+    // not rendered is worse than the silence. Staying on Other still posts
+    // `profile.custom_trade` AT the cursor, so that case is excluded.
+    const parkedOnCustomTrade = stepKey === 'profile.custom_trade'
+        && draft.trade !== null
+        && draft.trade !== 'other';
+    const switchHint = parkedOnCustomTrade && onBack
+        ? t('switch_from_custom_hint', { back: tStepChrome('back') })
         : null;
 
     return (
@@ -102,12 +120,25 @@ export function TradeStep({
             </StepBody>
             <StepFooter>
                 {error ? <InlineFeedback tone="danger">{error}</InlineFeedback> : null}
+                {/*
+                  * Mounted unconditionally so the polite region EXISTS before
+                  * the sentence lands in it -- a live region created in the
+                  * same tick as its own first content is routinely not
+                  * announced. It is also the Continue button's description:
+                  * the button is disabled, so it takes no focus and a screen
+                  * reader would otherwise never reach the one sentence that
+                  * explains why it is dead.
+                  */}
+                <span id={switchHintId} aria-live="polite">
+                    {switchHint ? <StepHint>{switchHint}</StepHint> : null}
+                </span>
                 <Button
                     className="w-full"
                     size="lg"
                     loading={saving}
                     loadingLabel={tCommon('loading')}
                     disabled={!canContinue('trade', draft, stepKey)}
+                    aria-describedby={switchHint ? switchHintId : undefined}
                     onClick={() => onSubmit(answersForScreen('trade', draft, stepKey))}
                 >
                     {t('cta')}
