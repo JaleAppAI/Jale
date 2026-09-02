@@ -322,6 +322,15 @@ export function buildJaleApp(app: cdk.App): void {
     api,
     dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
+    // Both buckets: MediaBoardStack owns the employer-worker-detail dispatcher
+    // (GET /employer/workers/{worker_id}/{profile|documents|posts}), whose one
+    // IAM role must read the documents bucket AND the media bucket. It cannot
+    // live in DocumentsStack — that stack would then need `whatsapp.
+    // mediaBucket` while WhatsAppStack already consumes `documents.bucket`,
+    // which is a cycle. This direction is acyclic: DocumentsStack ->
+    // WhatsAppStack -> MediaBoardStack, with MediaBoardStack importing from
+    // both.
+    documentsBucket: documents.bucket,
     allowedOrigin: app.node.tryGetContext('allowedOrigin') ?? 'https://jaleapp.ai',
     requiredTosVersion: app.node.tryGetContext('requiredTosVersion') ?? 'v1.0',
     // Same shared alarm topic as AiStack/WhatsAppStack/ReferralsStack so the

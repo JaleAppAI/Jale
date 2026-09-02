@@ -313,14 +313,39 @@ describe('ReferralsStack', () => {
     });
   });
 
-  test('GET /worker/referrals is protected by WorkerAuthorizer', () => {
-    expect(authorizationTypeForLambda('Worker referral history endpoint')).toBe('COGNITO_USER_POOLS');
-    apiTemplate.hasResourceProperties('AWS::ApiGateway::Method', {
-      HttpMethod: 'GET',
-      AuthorizationType: 'COGNITO_USER_POOLS',
-      AuthorizerId: Match.objectLike({
-        Ref: Match.stringLikeRegexp('WorkerAuthorizer'),
-      }),
+  test('/worker/referrals carries NO method of its own -- not even a CORS preflight', () => {
+    // PHASE 1: the dead GET is gone from the API (nothing ever called it --
+    // frontend/src/lib/api/worker.ts only reaches /worker/referrals/claim),
+    // while its Lambda is RETAINED one deploy longer so the cross-stack export
+    // of its ARN can outlive JaleApiStack's import of it. Phase 2 deletes the
+    // Lambda; this route assertion is identical in both phases.
+    //
+    // With no method left, /worker/referrals exists only to carry /claim, so
+    // it is built with addPathOnlyResource(): no OPTIONS either. An OPTIONS
+    // there could never be reached (a browser preflights the URL of a request
+    // it is about to send, and no request can target a path with no method),
+    // and an OPTIONS-only resource fails the JaleApiStack invariant in
+    // test/unit/stacks/api-stack-resource-ceiling.test.ts.
+    const resources = apiTemplate.toJSON().Resources as Record<string, any>;
+    const [referralsLogicalId] = Object.entries(resources).find(
+      ([, resource]: [string, any]) =>
+        resource.Type === 'AWS::ApiGateway::Resource' && resource.Properties.PathPart === 'referrals',
+    )!;
+    const methods = Object.values(resources).filter(
+      (resource: any) =>
+        resource.Type === 'AWS::ApiGateway::Method' &&
+        resource.Properties.ResourceId?.Ref === referralsLogicalId,
+    );
+    expect(methods).toEqual([]);
+  });
+
+  test('the worker-referrals Lambda is retained (phase 1) even though its route is gone', () => {
+    // Phase 2 flips this to an absence assertion. Retaining it is what keeps
+    // JaleReferralsStack:ExportsOutputFnGetAttWorkerReferralsLambdaFunction...
+    // Arn... alive for the one deploy in which JaleApiStack stops importing
+    // it -- CloudFormation will not delete an export that is still in use.
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      Description: 'Worker referral history endpoint',
     });
   });
 

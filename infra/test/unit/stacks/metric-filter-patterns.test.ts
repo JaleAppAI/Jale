@@ -174,6 +174,7 @@ function buildStacks(): Record<string, cdk.Stack> {
     api,
     dbSecret: database.dbSecret,
     mediaBucket: whatsapp.mediaBucket,
+    documentsBucket: documents.bucket,
     allowedOrigin: 'https://jaleapp.ai',
     requiredTosVersion: 'v1.0',
     alarmTopicArn: ALARM_TOPIC_ARN,
