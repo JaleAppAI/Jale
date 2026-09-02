@@ -133,40 +133,6 @@ export class MediaBoardStack extends cdk.Stack {
       ...lambdaProps,
     });
 
-    // ── PHASE 1 ONLY: the two Lambdas the dispatchers above replace ────────
-    //
-    // Unrouted, retained for exactly one deploy with their logical ids, grants
-    // and env unchanged, so the automatic cross-stack exports of their ARNs
-    // survive the deploy in which JaleApiStack stops importing them.
-    // CloudFormation refuses to delete an in-use export, and JaleApiStack
-    // depends on this stack, so this stack updates first — deleting them now
-    // would fail the changeset with "Export
-    // JaleMediaBoardStack:ExportsOutputFnGetAtt...Arn... cannot be deleted as
-    // it is in use by JaleApiStack". Phase 2 (the next commit) removes them.
-    // See documents-stack.ts for the full note; the seven there and the one in
-    // referrals-stack.ts are the same mechanism.
-    const uploadUrlsFn = new JaleLambdaFunction(this, 'WorkerPostUploadUrls', {
-      entry: path.join(__dirname, '../../lambda/api/worker-post-upload-urls.ts'),
-      description: 'worker-post-upload-urls',
-      environment: commonEnv,
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
-      ...lambdaProps,
-    });
-    const employerPostsFn = new JaleLambdaFunction(this, 'EmployerWorkerPosts', {
-      entry: path.join(__dirname, '../../lambda/api/employer-worker-posts.ts'),
-      description: 'employer-worker-posts',
-      environment: commonEnv,
-      nodeModules: ['@aws-sdk/s3-request-presigner'],
-      ...lambdaProps,
-    });
-    for (const legacyFn of [uploadUrlsFn, employerPostsFn]) {
-      this.exportValue(legacyFn.function.functionArn);
-      props.dbSecret.grantRead(legacyFn.function);
-    }
-    props.mediaBucket.grantPut(uploadUrlsFn.function);
-    props.mediaBucket.grantRead(employerPostsFn.function);
-    // ── end phase 1 retention ──────────────────────────────────────────────
-
     props.mediaBucket.grantPut(postsDispatchFn.function);
     // create: HeadObject verification + Rekognition reads via caller perms
     props.mediaBucket.grantRead(createFn.function);

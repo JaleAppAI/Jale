@@ -113,7 +113,6 @@ export interface ReferralsStackProps extends cdk.StackProps {
  *   public-job-referrer      : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   public-job-apply-intent : REFERRALS_DB_SECRET_ARN (jale_public_jobs) only
  *   worker-job-share         : DB_SECRET_ARN (app DB / jale_admin) only
- *   worker-referrals         : DB_SECRET_ARN (app DB / jale_admin) only (phase 1: retained, unrouted)
  *   worker-referral-claim    : DB_SECRET_ARN (app DB / jale_admin) only
  *   employer-job-share       : DB_SECRET_ARN (app DB / jale_admin) only
  *   visibility-outbox-drain  : DB_SECRET_ARN (app DB / jale_admin) plus the
@@ -266,33 +265,6 @@ export class ReferralsStack extends cdk.Stack {
       ...lambdaProps,
     });
     props.appDbSecret.grantRead(workerJobShareLambda.function);
-
-    // ── PHASE 1 ONLY: worker-referrals, the deleted GET /worker/referrals ──
-    //
-    // The route is gone (dead code: nothing ever called it — see the mount
-    // below), but the Lambda is retained for exactly one deploy so its
-    // automatic cross-stack ARN export survives the deploy in which
-    // JaleApiStack stops importing it. JaleApiStack depends on this stack and
-    // so updates second; deleting the function now would fail this stack's
-    // changeset with "Export
-    // JaleReferralsStack:ExportsOutputFnGetAttWorkerReferralsLambdaFunction...
-    // Arn... cannot be deleted as it is in use by JaleApiStack". Phase 2 (the
-    // next commit) deletes the Lambda, its handler and its test. See
-    // documents-stack.ts for the full note.
-    const workerReferralsLambda = new JaleLambdaFunction(this, 'WorkerReferralsLambda', {
-      entry: path.join(__dirname, '../../lambda/api/worker-referrals.ts'),
-      description: 'Worker referral history endpoint',
-      environment: {
-        DB_SECRET_ARN: props.appDbSecret.secretArn,
-        REQUIRED_TOS_VERSION: tosVersion,
-        PUBLIC_SITE_BASE_URL: publicSiteBaseUrl,
-        ALLOWED_ORIGIN: allowedOrigin,
-      },
-      ...lambdaProps,
-    });
-    props.appDbSecret.grantRead(workerReferralsLambda.function);
-    this.exportValue(workerReferralsLambda.function.functionArn);
-    // ── end phase 1 retention ──────────────────────────────────────────────
 
     // ── Lambda: worker-referral-claim (POST /worker/referrals/claim) ──
     // App DB (jale_admin) only. Worker-authenticated. Writes worker_attribution
