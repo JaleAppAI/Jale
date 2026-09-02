@@ -401,10 +401,12 @@ describe('employer-jobs-update', () => {
     required_fields: string[]; optional_fields: string[];
     applicant_count: number; hired_count: number; city: string | null; state_region: string | null;
     certification_requirements: Array<{ name: string; tier: string; proof_required: boolean }> | null;
+    pre_application_prompts: Array<{ id: string; text: string }>;
   }> = {}) {
     const row = {
       job_type: 'full-time', required_docs: ['resume'], optional_docs: [], required_fields: [], optional_fields: [],
-      applicant_count: 0, hired_count: 0, city: null, state_region: null, certification_requirements: null, ...over,
+      applicant_count: 0, hired_count: 0, city: null, state_region: null, certification_requirements: null,
+      pre_application_prompts: [], ...over,
     };
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT') && q.includes('applicant_count') && !q.includes('UPDATE jobs')) {
@@ -1458,5 +1460,116 @@ describe('employer-jobs-update', () => {
     expect(res.statusCode).toBe(200);
     const params = findUpdateCall()![1] as unknown[];
     expect(params.slice(27, 33)).toEqual([null, null, null, null, null, null]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // pre_application_prompts (091), field-edit path
+  // ---------------------------------------------------------------------------
+  //
+  // Appended at the END of EDITABLE_COLUMNS (index 33), so every positional
+  // index above is undisturbed; WHERE id is now bind $35.
+
+  describe('pre_application_prompts (091)', () => {
+    const PROMPTS_INDEX = 33;
+
+    it('threads the parsed list through UPDATE, SET-cast to jsonb, and RETURNING', async () => {
+      mockCurrentJob();
+      const res = await handler(makeEvent({
+        body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [{ id: 'p1', text: '  Do you own tools?  ' }] }),
+      }));
+      expect(res.statusCode).toBe(200);
+      const updateCall = findUpdateCall()!;
+      const setClause = (updateCall[0] as string).split('SET')[1].split('WHERE')[0];
+      expect(setClause).toMatch(/pre_application_prompts = \$\d+::jsonb/);
+      expect((updateCall[0] as string).split('RETURNING')[1]).toMatch(/\bpre_application_prompts\b/);
+      // Trimmed by the parser before it reaches SQL.
+      expect((updateCall[1] as unknown[])[PROMPTS_INDEX]).toBe(JSON.stringify([{ id: 'p1', text: 'Do you own tools?' }]));
+      // The cur SELECT must carry the column so the omit/lock paths below can
+      // compare against it.
+      const curCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('applicant_count') && !c[0].includes('UPDATE jobs'),
+      );
+      expect(curCall![0]).toContain('jobs.pre_application_prompts');
+    });
+
+    it('leaves the stored list untouched when the body omits the key', async () => {
+      // Preserve-on-omit, NOT clear-on-omit: an editor that never rendered the
+      // prompts control must not silently delete the employer's questions
+      // (and, with applicants, must not trip the lock below either).
+      mockCurrentJob({ pre_application_prompts: [{ id: 'p1', text: 'Kept' }] });
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[PROMPTS_INDEX]).toBe(JSON.stringify([{ id: 'p1', text: 'Kept' }]));
+    });
+
+    it('clears the list on an explicit empty array', async () => {
+      mockCurrentJob({ pre_application_prompts: [{ id: 'p1', text: 'Gone' }] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [] }) }));
+      expect(res.statusCode).toBe(200);
+      expect((findUpdateCall()![1] as unknown[])[PROMPTS_INDEX]).toBe('[]');
+    });
+
+    it('rejects a malformed list with 400 before opening a DB connection', async () => {
+      // An EMPTY-STRING id fails PROMPT_ID_PATTERN and is rejected, never
+      // re-minted -- re-minting would orphan any answer stored under it.
+      const res = await handler(makeEvent({
+        body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [{ id: '', text: 'A' }] }),
+      }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_pre_application_prompts' });
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('rejects changing the prompts once the job has applicants (409 field_locked)', async () => {
+      // Same lock, same code as certification_requirements: prompt_answers are
+      // keyed on these ids, so re-writing them after someone answered would
+      // orphan or re-label their answers.
+      mockCurrentJob({ applicant_count: 1, pre_application_prompts: [{ id: 'p1', text: 'A' }] });
+      const res = await handler(makeEvent({
+        body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [{ id: 'p1', text: 'A changed' }] }),
+      }));
+      expect(res.statusCode).toBe(409);
+      const body = JSON.parse(res.body);
+      expect(body.error).toBe('field_locked');
+      expect(body.fields).toContain('pre_application_prompts');
+    });
+
+    it('rejects REMOVING a prompt once the job has applicants (409 field_locked)', async () => {
+      mockCurrentJob({ applicant_count: 1, pre_application_prompts: [{ id: 'p1', text: 'A' }] });
+      const res = await handler(makeEvent({ body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [] }) }));
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).fields).toContain('pre_application_prompts');
+    });
+
+    it('allows an unchanged round-trip with applicants, despite jsonb key-order normalization', async () => {
+      // jsonb sorts object keys on storage, so the stored row comes back
+      // {text, id}; promptsNormalized compares CONTENT, not bytes.
+      mockCurrentJob({
+        applicant_count: 3,
+        pre_application_prompts: [{ text: 'A', id: 'p1' } as unknown as { id: string; text: string }],
+      });
+      const res = await handler(makeEvent({
+        body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [{ id: 'p1', text: 'A' }] }),
+      }));
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('an omitted list never trips the lock, even with applicants', async () => {
+      mockCurrentJob({ applicant_count: 9, pre_application_prompts: [{ id: 'p1', text: 'A' }] });
+      const res = await handler(makeEvent({ body: JSON.stringify(VALID_EDIT) }));
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('treats a REORDER as an edit (409 with applicants)', async () => {
+      mockCurrentJob({
+        applicant_count: 1,
+        pre_application_prompts: [{ id: 'p1', text: 'A' }, { id: 'p2', text: 'B' }],
+      });
+      const res = await handler(makeEvent({
+        body: JSON.stringify({ ...VALID_EDIT, pre_application_prompts: [{ id: 'p2', text: 'B' }, { id: 'p1', text: 'A' }] }),
+      }));
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).fields).toContain('pre_application_prompts');
+    });
   });
 });

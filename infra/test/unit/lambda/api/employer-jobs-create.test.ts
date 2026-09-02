@@ -456,7 +456,9 @@ describe('employer-jobs-create', () => {
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
     // New columns land at the END of the column/param list (indices 28-33)
     // so every pre-existing positional assertion in this file stays valid.
-    expect(insertCall[1].slice(28)).toEqual([null, null, null, null, null, null]);
+    // Sliced with an explicit END now that 091's pre_application_prompts sits
+    // at 34 -- it is NOT NULL DEFAULT '[]', so it is never one of these nulls.
+    expect(insertCall[1].slice(28, 34)).toEqual([null, null, null, null, null, null]);
   });
 
   it('threads all six new fields through INSERT and RETURNING', async () => {
@@ -642,5 +644,78 @@ describe('employer-jobs-create', () => {
     const insertCall = mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'));
     // certifications is bind param index 23 (0-based), unchanged position.
     expect(insertCall[1][23]).toEqual(['OSHA 30']);
+  });
+
+  describe('pre_application_prompts (091)', () => {
+    const insertCall = () =>
+      mockQuery.mock.calls.find(([sql]) => typeof sql === 'string' && sql.includes('INSERT INTO jobs'))!;
+    // Appended at the END of the column/VALUES/params lists, so every
+    // pre-existing positional index above is undisturbed.
+    const PROMPTS_PARAM_INDEX = 34;
+
+    it('defaults to the empty list when the body omits the field', async () => {
+      const res = await handler(makeEvent({}));
+      expect(res.statusCode).toBe(201);
+      const [sql, params] = insertCall();
+      expect(sql).toContain('pre_application_prompts');
+      expect(sql).toContain('$35::jsonb');
+      expect(sql).toContain('shift_end, certification_requirements, pre_application_prompts');
+      expect(params[PROMPTS_PARAM_INDEX]).toBe('[]');
+    });
+
+    it('mints an id for a prompt that supplies only text', async () => {
+      const res = await handler(makeEvent({ pre_application_prompts: [{ text: '  Do you own tools?  ' }] }));
+      expect(res.statusCode).toBe(201);
+      const stored = JSON.parse(insertCall()[1][PROMPTS_PARAM_INDEX]);
+      expect(stored).toHaveLength(1);
+      // Trimmed by the parser, and keyed on a minted id the answers column
+      // can be written against.
+      expect(stored[0].text).toBe('Do you own tools?');
+      expect(stored[0].id).toMatch(/^[A-Za-z0-9_-]{1,40}$/);
+    });
+
+    it('preserves an employer-supplied id verbatim (prompt_answers are keyed on it)', async () => {
+      const res = await handler(makeEvent({
+        pre_application_prompts: [{ id: 'p1', text: 'A' }, { id: 'p2', text: 'B' }],
+      }));
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(insertCall()[1][PROMPTS_PARAM_INDEX])).toEqual([
+        { id: 'p1', text: 'A' }, { id: 'p2', text: 'B' },
+      ]);
+    });
+
+    it.each([
+      ['not an array', 'nope'],
+      ['more than ten prompts', Array.from({ length: 11 }, (_, i) => ({ text: `q${i}` }))],
+      ['an empty text', [{ text: '   ' }]],
+      ['text over 500 chars', [{ text: 'x'.repeat(501) }]],
+      ['a duplicate id', [{ id: 'p1', text: 'A' }, { id: 'p1', text: 'B' }]],
+      ['a malformed id', [{ id: 'has spaces', text: 'A' }]],
+      // parsePreApplicationPrompts mints only for undefined/null -- an EMPTY
+      // STRING id fails PROMPT_ID_PATTERN and is rejected, never re-minted,
+      // because re-minting would orphan any answer stored under it.
+      ['an empty-string id', [{ id: '', text: 'A' }]],
+      ['an extra key', [{ id: 'p1', text: 'A', kind: 'text' }]],
+      ['a non-object entry', ['just a string']],
+    ])('rejects %s with 400 before opening a DB connection', async (_label, value) => {
+      const res = await handler(makeEvent({ pre_application_prompts: value }));
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body)).toEqual({ error: 'invalid_pre_application_prompts' });
+      expect(mockGetDbPool).not.toHaveBeenCalled();
+    });
+
+    it('returns the stored list to the employer', async () => {
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('FOR UPDATE')) return Promise.resolve({ rows: [{ id: 'user-uuid-1' }] });
+        if (sql.includes('COUNT(*)')) return Promise.resolve({ rows: [{ active_jobs: 0 }] });
+        if (sql.includes('INSERT INTO jobs')) {
+          return Promise.resolve({ rows: [{ id: 'job-1', pre_application_prompts: [{ id: 'p1', text: 'A' }] }] });
+        }
+        return Promise.resolve({});
+      });
+      const res = await handler(makeEvent({ pre_application_prompts: [{ id: 'p1', text: 'A' }] }));
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.body).pre_application_prompts).toEqual([{ id: 'p1', text: 'A' }]);
+    });
   });
 });
