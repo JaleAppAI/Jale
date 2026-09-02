@@ -8,7 +8,7 @@ import { normalizeProfession } from '../whatsapp/handlers/custom-trust';
 
 const bedrock = new BedrockRuntimeClient({});
 const BEDROCK_MODEL_ID =
-  process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+  process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 export interface QuestionSet {
   q_en: string;

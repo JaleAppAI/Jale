@@ -14,8 +14,8 @@
  * (ai-profile-writer.ts, matching/employer-candidate-rerank.ts,
  * ai/alias-generator.ts, ai/trust-scorer.ts, ai/question-generator.ts,
  * api/employer-generate-description.ts) uses `ConverseCommand`, which is
- * model-agnostic across the Nova/Claude model IDs `BEDROCK_MODEL_ID` has
- * held (the CDK stack currently overrides the default to a Claude model).
+ * model-agnostic across whatever model id `BEDROCK_MODEL_ID` carries (one
+ * shared baseline for the whole app -- see infra/lib/bedrock-arns.ts).
  * This module follows that same house pattern rather than a raw
  * `InvokeModelCommand` body tied to one model family's native schema --
  * `makeBedrockExtractionClient` is the ONLY place the bounded-call knobs
@@ -139,7 +139,7 @@ function buildPrompt(key: ExtractionKey, freeText: string, lang: Lang): string {
 }
 
 // Same env var name/default as ai-profile-writer.ts.
-const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.amazon.nova-lite-v1:0';
+const BEDROCK_MODEL_ID = process.env.BEDROCK_MODEL_ID ?? 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
 
 /** Real implementation, used by the fill-flow processor's wiring. The
  * ONLY place `maxAttempts`/`requestTimeout` are configured -- a bounded,

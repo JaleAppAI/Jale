@@ -20,7 +20,7 @@ describe('generateAndCacheQuestions', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
+    process.env.BEDROCK_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
   });
 
   it('returns cached questions on cache hit', async () => {

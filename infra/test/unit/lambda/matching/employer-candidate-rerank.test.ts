@@ -17,7 +17,7 @@ const mockBedrockSend = jest.fn();
 describe('employer candidate rerank worker', () => {
   beforeEach(() => {
     jest.resetAllMocks();
-    process.env.BEDROCK_MODEL_ID = 'us.amazon.nova-lite-v1:0';
+    process.env.BEDROCK_MODEL_ID = 'us.anthropic.claude-haiku-4-5-20251001-v1:0';
     (BedrockRuntimeClient as jest.Mock).mockImplementation(() => ({ send: mockBedrockSend }));
     mockGetMatchingDbPool.mockResolvedValue({
       connect: jest.fn().mockResolvedValue({ query: mockQuery, release: mockRelease }),

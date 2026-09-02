@@ -16,6 +16,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
+import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
@@ -258,10 +259,10 @@ export class WhatsAppStack extends cdk.Stack {
         // ConverseCommand for application-fill field extraction
         // (lib/application-fill-extraction.ts's makeBedrockExtractionClient)
         // but had no BEDROCK_MODEL_ID env at all — every extraction turn hit
-        // that module's `?? 'us.amazon.nova-lite-v1:0'` fallback. Same
-        // model ID as the ai-profile-writer Lambda below (BEDROCK_MODEL_ID
-        // env + bedrock:InvokeModel policy, ~line 489/522).
-        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        // that module's hardcoded fallback. Same model id as the
+        // ai-profile-writer Lambda below, and now the same shared constant
+        // every other Bedrock caller in the app uses (lib/bedrock-arns.ts).
+        BEDROCK_MODEL_ID,
       },
       // Task 15 (confirmed blocker, not just the IAM/env gap): processor.ts
       // imports handleFillMessage from lib/application-fill.ts, which
@@ -558,7 +559,7 @@ export class WhatsAppStack extends cdk.Stack {
         TWILIO_SECRET_ARN: twilioSecret.secretName,
         TWILIO_REQUEST_TIMEOUT_MS: '4000',
         MEDIA_BUCKET_NAME: mediaBucket.bucketName,
-        BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        BEDROCK_MODEL_ID,
         AI_EXTRACTION_CONFIDENCE_THRESHOLD: '0.75',
         AI_INDUSTRY_KEYWORDS: '[]',
         // Sprint 22 R1: QUESTION_GENERATOR_ARN removed — the v1 trust hand-off
@@ -592,12 +593,17 @@ export class WhatsAppStack extends cdk.Stack {
     // construction instead of by comment. ConverseCommand (used by both
     // Lambdas) only needs bedrock:InvokeModel, not a separate
     // bedrock:Converse action.
-    const bedrockHaiku45Arns = [
-      `arn:aws:bedrock:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0`,
-      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-      `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0`,
-      'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
-    ];
+    //
+    // This list used to be spelled out inline here, which is how the rest of
+    // the app stayed on the retired Nova Lite id after this stack moved to
+    // Claude Haiku 4.5. It now comes from lib/bedrock-arns.ts, which every
+    // Bedrock-invoking stack shares; the ARNs it produces are byte-identical
+    // to the inline list it replaces (whatsapp-stack.test.ts's two 4-ARN
+    // assertions were left untouched across that change and still pass).
+    const bedrockHaiku45Arns = bedrockArns(
+      cdk.Stack.of(this).region,
+      cdk.Stack.of(this).account,
+    );
     aiProfileWriterLambda.function.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],

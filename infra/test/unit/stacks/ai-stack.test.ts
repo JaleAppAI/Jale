@@ -112,16 +112,16 @@ describe('AiStack', () => {
   // without duplicating the ARN list). This pins the exact IAM resource ARN
   // set every Bedrock-invoking Lambda in this stack is granted, so a future
   // edit to the shared module cannot silently change AiStack's template.
-  it('grants bedrock:InvokeModel scoped to the exact pinned Nova Lite ARN set (extracted to lib/bedrock-arns.ts)', () => {
+  it('grants bedrock:InvokeModel scoped to the exact pinned Claude Haiku 4.5 ARN set (extracted to lib/bedrock-arns.ts)', () => {
     // bedrockArns() returns 4 entries, but in this us-east-1 test harness the
     // hardcoded 'us-east-1' literal foundation-model ARN and the region-templated
     // one are byte-identical -- CDK's PolicyDocument rendering dedupes the
     // Resource array, so the synthesized template carries 3 unique ARNs here.
     // (In us-east-2 production this harness's collision does not occur.)
     const expectedResources = [
-      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.amazon.nova-lite-v1:0',
-      'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
-      'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0',
+      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+      'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
     ];
     const policies = template.findResources('AWS::IAM::Policy');
     const bedrockStatements = Object.values(policies)
@@ -132,6 +132,9 @@ describe('AiStack', () => {
     for (const statement of bedrockStatements) {
       expect(statement.Resource).toEqual(expectedResources);
       expect(statement.Effect).toBe('Allow');
+      // The Nova Lite -> Claude Haiku 4.5 switch is a one-baseline move: no
+      // Lambda in this stack may keep a retired nova-lite ARN.
+      expect(JSON.stringify(statement.Resource)).not.toContain('nova-lite');
     }
   });
 
@@ -186,7 +189,10 @@ describe('AiStack', () => {
       Environment: {
         Variables: Match.objectLike({
           DB_SECRET_ARN: Match.anyValue(),
-          BEDROCK_MODEL_ID: Match.anyValue(),
+          // Pinned, not Match.anyValue(): the shared BEDROCK_MODEL_ID baseline
+          // is the whole point of lib/bedrock-arns.ts, and an "env var exists"
+          // assertion would pass with a stale/retired model id.
+          BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
           TRUST_EXTRACTION_QUEUE_URL: Match.anyValue(),
         }),
       },
@@ -244,10 +250,11 @@ describe('AiStack', () => {
     expect(bedrock).toHaveLength(1);
     expect(bedrock[0].Effect).toBe('Allow');
     expect(bedrock[0].Resource).toEqual([
-      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.amazon.nova-lite-v1:0',
-      'arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-lite-v1:0',
-      'arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0',
+      'arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0',
+      'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
+      'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0',
     ]);
+    expect(JSON.stringify(bedrock[0].Resource)).not.toContain('nova-lite');
     // The extractor has no rubric, so it must not carry the scorer's SSM read.
     const ssm = statements.filter((s: any) => {
       const actions = Array.isArray(s.Action) ? s.Action : [s.Action];

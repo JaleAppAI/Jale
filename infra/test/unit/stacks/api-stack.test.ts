@@ -870,6 +870,14 @@ describe('ApiStack', () => {
     // token shapes match the synthesized template exactly.
     const expectedResources = cdk.Stack.of(apiStack).resolve(bedrockArns(apiStack.region, apiStack.account));
     expect(bedrockStatement.Resource).toEqual(expectedResources);
+
+    // The equality above is derived from bedrockArns() itself, so on its own
+    // it would still pass if the shared baseline were switched back to a
+    // retired model. Pin the model id independently of the helper.
+    const rendered = JSON.stringify(bedrockStatement.Resource);
+    expect(rendered).toContain('inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(rendered).toContain('foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0');
+    expect(rendered).not.toContain('nova-lite');
   });
 
   test('centralized MethodSettings includes exactly one POST /employer/jobs/generate-description throttle entry (burst 5, rate 2)', () => {
@@ -907,7 +915,10 @@ describe('ApiStack', () => {
         Variables: Match.objectLike({
           GENERATION_CAP_TABLE: Match.anyValue(),
           GENERATION_DAILY_LIMIT: Match.anyValue(),
-          BEDROCK_MODEL_ID: Match.anyValue(),
+          // Pinned to the shared lib/bedrock-arns.ts baseline (Claude Haiku
+          // 4.5), not Match.anyValue(): an "env var exists" assertion passes
+          // just as happily with a retired model id.
+          BEDROCK_MODEL_ID: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
           ALLOWED_ORIGIN: Match.anyValue(),
         }),
       },
