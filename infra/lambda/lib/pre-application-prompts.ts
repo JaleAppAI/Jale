@@ -32,22 +32,39 @@
 // change to either side is a two-file change.
 //
 //   MAX_PRE_APPLICATION_PROMPTS  10     prompts per job
-//   MAX_PROMPT_TEXT_LENGTH       500    chars per prompt, trimmed
-//   MAX_PROMPT_ANSWER_LENGTH     1000   chars per answer, trimmed
-//   MAX_PROMPT_ANSWERS_BYTES     12288  UTF-8 bytes for the whole object
+//   MAX_PROMPT_TEXT_LENGTH       500    CHARACTERS per prompt, trimmed
+//   MAX_PROMPT_ANSWER_LENGTH     1000   CHARACTERS per answer, trimmed
+//   MAX_PROMPT_ANSWERS_BYTES     16384  UTF-8 BYTES for the whole object
 //
-// The byte cap matters on its own: ten 1000-character answers pass every
-// per-answer rule, but ten 1000-character answers of accented or emoji text
-// are 2-4 bytes per character and would breach the column CHECK, raising a
-// raw 23514 that no handler maps -- an unhandled 500 on entirely ordinary
-// Spanish input. `validatePromptAnswers`/`normalizePromptAnswers` therefore
-// measure `Buffer.byteLength` of the serialized object, not just its length.
+// The two units are deliberate and must not be unified. The per-answer
+// bound is in CHARACTERS because that is what a worker experiences and what
+// the UI counts -- "1000 characters" must mean the same thing in English and
+// in Spanish, so an accented answer may not be silently shorter. The whole-
+// object bound is in BYTES because that is what the column CHECK
+// (`job_applications_prompt_answers_valid`, 091) measures.
+//
+// The byte cap therefore matters on its own: ten 1000-character answers pass
+// every per-answer rule, but ten 1000-character answers of accented or emoji
+// text are 2-4 bytes per character and would breach the CHECK, raising a raw
+// 23514 -- an unhandled 500 on entirely ordinary Spanish input.
+// `validatePromptAnswers`/`normalizePromptAnswers` therefore also measure
+// `Buffer.byteLength` of the serialized object. That app-side check is the
+// FIRST line of defence; `mergePromptAnswers` (application-requirements.ts)
+// additionally maps the constraint itself to a clean `too_large`, because
+// only the DB can see the POST-MERGE accumulated size.
 import { randomUUID } from 'crypto';
 
 export const MAX_PRE_APPLICATION_PROMPTS = 10;
 export const MAX_PROMPT_TEXT_LENGTH = 500;
 export const MAX_PROMPT_ANSWER_LENGTH = 1000;
-export const MAX_PROMPT_ANSWERS_BYTES = 12288;
+// Mirrors `octet_length(prompt_answers::text) <= 16384` in
+// job_applications_prompt_answers_valid (091). Hand-synced -- see the header.
+export const MAX_PROMPT_ANSWERS_BYTES = 16384;
+
+// The CONSTRAINT name that CHECK raises its 23514 with. Exported so
+// `mergePromptAnswers` can map it to a graceful `too_large` instead of a
+// 500. See PROMPT_ANSWERS_CONSTRAINT's use in application-requirements.ts.
+export const PROMPT_ANSWERS_CONSTRAINT = 'job_applications_prompt_answers_valid';
 
 // Mirrors 091's `id ~ '^[A-Za-z0-9_-]{1,40}$'`. A minted `randomUUID()` (36
 // chars of hex and dashes) satisfies it by construction.

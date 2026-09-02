@@ -3,6 +3,7 @@ import {
   MAX_PROMPT_TEXT_LENGTH,
   MAX_PROMPT_ANSWER_LENGTH,
   MAX_PROMPT_ANSWERS_BYTES,
+  PROMPT_ANSWERS_CONSTRAINT,
   parsePreApplicationPrompts,
   promptsNormalized,
   validatePromptAnswers,
@@ -16,10 +17,14 @@ const ID_SHAPE = /^[A-Za-z0-9_-]{1,40}$/;
 describe('pre-application-prompts bounds', () => {
   it('pins the single bound set shared by web and WhatsApp (B4.0 §6)', () => {
     expect(MAX_PRE_APPLICATION_PROMPTS).toBe(10);
+    // CHARACTERS -- what the worker and the UI counter experience, so
+    // "1000 characters" means the same in English and in Spanish.
     expect(MAX_PROMPT_TEXT_LENGTH).toBe(500);
     expect(MAX_PROMPT_ANSWER_LENGTH).toBe(1000);
-    // Mirrors 091's octet_length CHECK on job_applications.prompt_answers.
-    expect(MAX_PROMPT_ANSWERS_BYTES).toBe(12288);
+    // BYTES -- mirrors job_applications_prompt_answers_valid (091):
+    // octet_length(prompt_answers::text) <= 16384.
+    expect(MAX_PROMPT_ANSWERS_BYTES).toBe(16384);
+    expect(PROMPT_ANSWERS_CONSTRAINT).toBe('job_applications_prompt_answers_valid');
   });
 });
 
@@ -211,7 +216,19 @@ describe('validatePromptAnswers', () => {
     });
   });
 
-  it('rejects a payload whose UTF-8 byte size would breach the 12288-byte column CHECK, even though every answer is under 1000 chars', () => {
+  it('measures the per-answer bound in CHARACTERS, not bytes: 1000 accented chars (2000 bytes) is a legal answer', () => {
+    // The byte budget only binds the whole object; a single Spanish answer
+    // must never be cut short at ~500 characters just because it has
+    // accents. 2000 bytes is well under MAX_PROMPT_ANSWERS_BYTES.
+    const accented = 'á'.repeat(1000);
+    expect(Buffer.byteLength(accented, 'utf8')).toBe(2000);
+    expect(validatePromptAnswers(prompts, { p1: accented, p2: 'y' })).toEqual({
+      ok: true,
+      value: { p1: accented, p2: 'y' },
+    });
+  });
+
+  it('rejects a payload whose UTF-8 byte size would breach the 16384-byte column CHECK, even though every answer is under 1000 chars', () => {
     // 10 prompts x 500 four-byte emoji (= 1000 JS chars, 2000 bytes) each:
     // every per-answer rule passes; octet_length would be ~20 KB.
     const many = Array.from({ length: 10 }, (_v, i) => ({ id: `q${i}`, text: `t${i}` }));

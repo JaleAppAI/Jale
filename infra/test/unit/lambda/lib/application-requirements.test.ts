@@ -12,6 +12,7 @@ import {
   seedAnswersFromDefaults,
   markDetailsCompleteIfDone,
   HIRE_REQUIREMENTS_CONSTRAINT,
+  PROMPT_ANSWERS_CONSTRAINT,
   parseHireGateError,
   type RequirementSnapshot,
 } from '../../../../lambda/lib/application-requirements';
@@ -1062,11 +1063,11 @@ describe('mergePromptAnswers', () => {
     })).toEqual({ ok: false, reason: 'not_found' });
   });
 
-  it('guards the 12288-byte column CHECK on the POST-MERGE total inside a savepoint', async () => {
+  it('guards the 16384-byte column CHECK on the POST-MERGE total inside a savepoint', async () => {
     const query = jest.fn()
       .mockResolvedValueOnce({ rows: [promptRow()] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ total: 12289 }] })
+      .mockResolvedValueOnce({ rows: [{ total: 16385 }] })
       .mockResolvedValueOnce({ rows: [] });
 
     expect(await mergePromptAnswers(makeClient(query), {
@@ -1074,6 +1075,51 @@ describe('mergePromptAnswers', () => {
     })).toEqual({ ok: false, reason: 'too_large' });
     expect(String(query.mock.calls[2][0])).toContain('RETURNING octet_length(prompt_answers::text) AS total');
     expect(String(query.mock.calls[3][0])).toContain('ROLLBACK TO SAVEPOINT');
+  });
+
+  it('accepts a post-merge total at exactly 16384', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [promptRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ total: 16384 }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    expect(await mergePromptAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { p1: 'a' },
+    })).toEqual({ ok: true, keys: ['p1'] });
+    expect(String(query.mock.calls[3][0])).toContain('RELEASE SAVEPOINT');
+  });
+
+  it('maps the 091 prompt_answers CHECK violation to too_large, rolling back to the savepoint instead of 500-ing', async () => {
+    // Belt and braces for the emoji/CJK case: if the app-side byte constant
+    // and the DB CHECK ever disagree, Postgres raises before the savepoint
+    // total check can fire. Both paths must answer the same way.
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [promptRow()] })
+      .mockResolvedValueOnce({ rows: [] })  // SAVEPOINT
+      .mockRejectedValueOnce(Object.assign(new Error('violates check constraint'), {
+        code: '23514', constraint: PROMPT_ANSWERS_CONSTRAINT,
+      }))
+      .mockResolvedValueOnce({ rows: [] }); // ROLLBACK TO SAVEPOINT
+
+    expect(await mergePromptAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { p1: '\u{1F600}'.repeat(500) },
+    })).toEqual({ ok: false, reason: 'too_large' });
+    expect(String(query.mock.calls[3][0])).toContain('ROLLBACK TO SAVEPOINT');
+  });
+
+  it('re-throws a DIFFERENT check-constraint violation rather than mislabelling it too_large', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [promptRow()] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockRejectedValueOnce(Object.assign(new Error('other'), {
+        code: '23514', constraint: 'job_applications_status_check',
+      }))
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(mergePromptAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { p1: 'a' },
+    })).rejects.toThrow('other');
   });
 });
 

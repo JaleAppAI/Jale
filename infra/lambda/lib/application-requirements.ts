@@ -86,11 +86,14 @@ import {
 } from './worker-application-defaults';
 import {
   MAX_PROMPT_ANSWERS_BYTES,
+  PROMPT_ANSWERS_CONSTRAINT,
   normalizePromptAnswers,
   parsePreApplicationPromptList,
   type PreApplicationPrompt,
   type PromptAnswers,
 } from './pre-application-prompts';
+
+export { PROMPT_ANSWERS_CONSTRAINT } from './pre-application-prompts';
 
 // DOC_TYPES (job-fields.ts) already excludes 'ssn' -- legacy jobs may still
 // require it (it is kept in the DB CHECK constraints for that reason), but
@@ -813,9 +816,20 @@ export async function mergeCertificationClaims(
  * write door that works there.
  *
  * The post-merge total is bounded in OCTETS, matching 091's
- * `octet_length(prompt_answers) <= 12288` CHECK: the per-answer byte guard
- * in `normalizePromptAnswers` only ever sees THIS call's object, never the
- * accumulated column.
+ * `job_applications_prompt_answers_valid` CHECK
+ * (`octet_length(prompt_answers::text) <= 16384`): the per-answer byte
+ * guard in `normalizePromptAnswers` only ever sees THIS call's object,
+ * never the accumulated column.
+ *
+ * TWO layers guard that, both needed. The `withSizeGuard` savepoint
+ * measures the post-merge size and rolls back cleanly -- but it can only
+ * fire if the CHECK let the row through first. When the app-side constant
+ * and the DB CHECK disagree (they are hand-synced across two lanes), or the
+ * CHECK measures a slightly different expression, Postgres raises the
+ * 23514 instead. Mapping that constraint to the SAME `too_large` reason
+ * means a byte overflow from emoji or CJK answers is a clean 400 at the
+ * door either way, never a 500. The savepoint is what makes the caller's
+ * transaction survivable after that raise.
  */
 export async function mergePromptAnswers(
   client: PoolClient,
@@ -836,17 +850,27 @@ export async function mergePromptAnswers(
   const keys = Object.keys(normalized.value);
   if (keys.length === 0) return { ok: true, keys: [] };
 
-  const guarded = await withSizeGuard(client, MAX_PROMPT_ANSWERS_BYTES, async () => {
-    const res = await client.query<{ total: number }>(
-      `UPDATE job_applications
-          SET prompt_answers = $1::jsonb || prompt_answers, updated_at = now()
-        WHERE id = $2
-        RETURNING octet_length(prompt_answers::text) AS total`,
-      [JSON.stringify(normalized.value), applicationId],
-    );
-    const total = res.rows[0]?.total;
-    return { total: total === undefined || total === null ? null : Number(total) };
-  });
+  let guarded: { ok: true } | { ok: false; reason: 'too_large' };
+  try {
+    guarded = await withSizeGuard(client, MAX_PROMPT_ANSWERS_BYTES, async () => {
+      const res = await client.query<{ total: number }>(
+        `UPDATE job_applications
+            SET prompt_answers = $1::jsonb || prompt_answers, updated_at = now()
+          WHERE id = $2
+          RETURNING octet_length(prompt_answers::text) AS total`,
+        [JSON.stringify(normalized.value), applicationId],
+      );
+      const total = res.rows[0]?.total;
+      return { total: total === undefined || total === null ? null : Number(total) };
+    });
+  } catch (err: any) {
+    // withSizeGuard has already rolled back to its savepoint, so the
+    // caller's transaction is intact and can still answer the request.
+    if (err?.code === '23514' && err?.constraint === PROMPT_ANSWERS_CONSTRAINT) {
+      return { ok: false, reason: 'too_large' };
+    }
+    throw err;
+  }
   if (!guarded.ok) return guarded;
 
   return { ok: true, keys };
