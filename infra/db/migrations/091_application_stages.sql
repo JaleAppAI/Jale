@@ -101,8 +101,19 @@
 --     Object.keys(application_answers) reader untouched, and makes
 --     write-once a single SQL expression ($1::jsonb || prompt_answers,
 --     where the EXISTING value wins). Only the outer shape and a byte cap
---     are enforced (12288 -- deliberately under application_answers' 16384,
---     since prompts are capped at 10 x 1000-char answers plus keys).
+--     are enforced, and the cap is 16384 -- the SAME number, measured the
+--     same way (octet_length of the ::text rendering), as
+--     MAX_ANSWERS_JSON_LENGTH for application_answers, so the two JSONB
+--     columns on this table are bounded by one comparable constant instead
+--     of two unrelated ones. It is deliberately NOT derived from the app
+--     bound of 10 prompts x 1000 CHARACTERS, because octet_length counts
+--     BYTES and jsonb renders UTF-8 verbatim: that same set is ~10.7 KB in
+--     Spanish but ~30 KB in a 3-bytes-per-character script, so NO byte cap
+--     can both admit the worst case and stay a sane ceiling. Hence the CHECK
+--     is a BACKSTOP, not the primary guard -- the shared engine validates
+--     each answer's length before writing and maps a 23514 raised under
+--     this constraint name to its `too_large` result, so an overflow still
+--     reaches the worker as a clean app-layer rejection.
 -- (e) The hire gate: a BEFORE UPDATE OF status trigger that refuses the
 --     transition to 'hired' while any required field, required doc or
 --     required-tier certification claim is missing. See the long note above
@@ -251,12 +262,26 @@ ALTER TABLE job_applications
 ALTER TABLE job_applications
   ADD CONSTRAINT job_applications_prompt_answers_valid
   -- Outer shape + a byte cap only; per-key validation is app-layer
-  -- (validatePromptAnswers), same 073/074/077 precedent. octet_length on the
-  -- text rendering is the same measure MAX_ANSWERS_JSON_LENGTH uses for
-  -- application_answers, so the two caps are directly comparable.
+  -- (validatePromptAnswers), same 073/074/077 precedent.
+  --
+  -- 16384 BYTES: the same number and the same octet_length(...::text)
+  -- measure MAX_ANSWERS_JSON_LENGTH applies to application_answers, so both
+  -- JSONB columns on this table share one comparable bound rather than two
+  -- unrelated numbers.
+  --
+  -- Deliberately NOT derived from the app-layer bound of 10 prompts x 1000
+  -- CHARACTERS, because octet_length counts bytes while jsonb renders UTF-8
+  -- verbatim: that maximum set is ~10.7 KB of ordinary Spanish but ~30 KB in
+  -- a 3-bytes-per-character script, so no byte cap can simultaneously admit
+  -- the worst case and remain a sane ceiling.
+  --
+  -- This CHECK is a BACKSTOP, not the primary guard. The shared requirement
+  -- engine validates each answer's length before writing and maps a 23514
+  -- raised under this constraint name to its `too_large` result, so the
+  -- database is the last line rather than the enforcement point.
   CHECK (
     jsonb_typeof(prompt_answers) = 'object'
-    AND octet_length(prompt_answers::text) <= 12288
+    AND octet_length(prompt_answers::text) <= 16384
   );
 
 -- ── (e) the hire gate ───────────────────────────────────────────
@@ -655,7 +680,7 @@ BEGIN
   IF def IS NULL
      OR def NOT LIKE '%jsonb_typeof%'
      OR def NOT LIKE '%octet_length%'
-     OR def NOT LIKE '%12288%'
+     OR def NOT LIKE '%16384%'
   THEN
     RAISE EXCEPTION 'job_applications_prompt_answers_valid CHECK missing or malformed: %', COALESCE(def, '<absent>');
   END IF;

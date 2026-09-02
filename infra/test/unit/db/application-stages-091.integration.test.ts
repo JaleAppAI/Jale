@@ -719,20 +719,66 @@ maybeDescribe('migration 091 application-stages DB contract', () => {
       .resolves.toMatchObject({ rowCount: 1 });
   });
 
-  it('job_applications_prompt_answers_valid enforces the object shape and the byte cap', async () => {
-    await expect(setup.query(
+  it('job_applications_prompt_answers_valid enforces the object shape and the 16384-byte backstop', async () => {
+    const write = (value: unknown) => setup.query(
       `UPDATE job_applications SET prompt_answers = $2::jsonb WHERE id = $1`,
-      [appStatus, JSON.stringify(['not', 'an', 'object'])],
-    )).rejects.toMatchObject({
+      [appStatus, JSON.stringify(value)],
+    );
+    const rejects = (value: unknown) => expect(write(value)).rejects.toMatchObject({
       code: '23514', constraint: 'job_applications_prompt_answers_valid',
     });
+    const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
 
-    await expect(setup.query(
-      `UPDATE job_applications SET prompt_answers = $2::jsonb WHERE id = $1`,
-      [appStatus, JSON.stringify({ big: 'x'.repeat(12289) })],
-    )).rejects.toMatchObject({
-      code: '23514', constraint: 'job_applications_prompt_answers_valid',
-    });
+    // Outer shape: only a JSON object is admissible.
+    await rejects(['not', 'an', 'object']);
+    await rejects('a string');
+    await rejects(42);
+
+    // Over the cap. jsonb's text rendering adds the braces, quotes and key,
+    // so 16384 ASCII value bytes is already past 16384 bytes in total.
+    await rejects({ big: 'x'.repeat(16384) });
+
+    // A full, realistic prompt set -- the app's own maximum of 10 prompts x
+    // 1000 characters, in ordinary Spanish -- must PASS. Spanish is only a
+    // few percent multi-byte, so this renders as ~10.7 KB of UTF-8. This is
+    // the payload the cap must never reject.
+    const spanish = 'La instalación eléctrica del edificio requiere atención. ';
+    const answer = spanish.repeat(Math.ceil(1000 / spanish.length)).slice(0, 1000);
+    expect(answer).toHaveLength(1000);
+    const fullSet = Object.fromEntries(
+      Array.from({ length: 10 }, (_, n) => [`prompt-${n}`, answer]),
+    );
+    expect(bytes(fullSet)).toBeLessThan(16384);
+    await expect(write(fullSet)).resolves.toMatchObject({ rowCount: 1 });
+
+    // Pins the cap NUMBER, not merely "some cap exists". This payload sits in
+    // the 12289..16384 band, so it passes only because the cap is
+    // MAX_ANSWERS_JSON_LENGTH (16384) and would raise 23514 under a tighter
+    // one. That alignment is the whole point: application_answers and
+    // prompt_answers are capped by the same number, measured the same way
+    // (octet_length of the ::text rendering), rather than by two unrelated
+    // constants nobody can compare.
+    const bandSet = { 'prompt-0': 'ñ'.repeat(7000) };
+    expect(bytes(bandSet)).toBeGreaterThan(12288);
+    expect(bytes(bandSet)).toBeLessThanOrEqual(16384);
+    await expect(write(bandSet)).resolves.toMatchObject({ rowCount: 1 });
+
+    // The honest limit of a BYTE cap, recorded rather than discovered in
+    // production: the same ten 1000-character answers in a 3-bytes-per-
+    // character script render as ~30 KB and exceed 16384. No byte cap derived
+    // from a character bound can admit both that and a sane ceiling, which is
+    // why this CHECK is a BACKSTOP: the shared engine validates each answer's
+    // length before writing, and maps a 23514 raised under this constraint
+    // name to its `too_large` result -- so the worker still sees a clean
+    // rejection rather than a raw database error.
+    const cjkSet = Object.fromEntries(
+      Array.from({ length: 10 }, (_, n) => [`prompt-${n}`, '\u5efa'.repeat(1000)]),
+    );
+    expect(bytes(cjkSet)).toBeGreaterThan(16384);
+    await rejects(cjkSet);
+
+    // Restore the fixture row's default.
+    await expect(write({})).resolves.toMatchObject({ rowCount: 1 });
   });
 
   // ── (7) read/write grants around the new column and defaults ───

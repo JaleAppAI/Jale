@@ -913,7 +913,12 @@ describe('database migrations', () => {
     expect(sql).toContain("ADD COLUMN IF NOT EXISTS prompt_answers JSONB NOT NULL DEFAULT '{}'::jsonb");
     expect(sql).toContain('ADD CONSTRAINT job_applications_prompt_answers_valid');
     expect(sql).toContain("jsonb_typeof(prompt_answers) = 'object'");
-    expect(sql).toContain('octet_length(prompt_answers::text) <= 12288');
+    // 16384 BYTES -- the same number and measure as MAX_ANSWERS_JSON_LENGTH
+    // for application_answers, NOT a byte cap derived from the app's 10 x
+    // 1000-CHARACTER bound (which a CJK/emoji answer set legitimately blows
+    // past at 3-4 bytes per character).
+    expect(sql).toContain('octet_length(prompt_answers::text) <= 16384');
+    expect(sql).not.toContain('12288');
 
     // (e) The hire gate: invoker rights, WHEN-clause-scoped, fail-closed, and
     // job-scoped docs only.
