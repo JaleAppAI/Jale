@@ -18,15 +18,34 @@
  * Delivery: no wake-queue wiring. The outbox row this produces is drained by
  * the existing minute drain -- the locked sprint decision.
  *
- * RLS: `worker_message_intents` is worker-owned and forced. The employer API
- * transaction runs with `app.current_user_id` = the employer's Cognito sub,
- * so `enqueueApplicationStageNotification` switches
- * `app.current_internal_user_id` to the worker around the enqueue and
- * restores the employer's `app.current_user_id` in a `finally` -- the same
- * shape `lib/job-messaging.ts:505-529` uses for the employer_chat intent.
+ * ── RLS CONTRACT (binding) ───────────────────────────────────────
+ * `enqueueApplicationStageNotification` sets NO GUC and restores none. The
+ * CALLER must already have, for the whole transaction:
+ *   * `app.current_user_id`          = the employer's Cognito sub
+ *                                      (`setRlsContext`, db.ts:58)
+ *   * `app.current_internal_user_id` = the EMPLOYER's `users.id`
+ *                                      (`setInternalUserRlsContext`, db.ts:70)
+ *
+ * The second one is load-bearing and counter-intuitive: this runs as
+ * jale_admin, and every read/write the enqueue performs is admitted under
+ * that pair.
+ *   1. `users_employer_applicant_read` (020b:261-269, repaired by 038) --
+ *      jale_admin's ONLY SELECT policy over a worker row, matching on
+ *      `employer_has_applicant_relationship(app.current_internal_user_id,
+ *      users.id)`. `loadVerifiedRecipient` below reads the worker's phone
+ *      through it. Point that GUC at the WORKER (the shape
+ *      `job-messaging.ts:505-529` uses, which only ever runs on the
+ *      non-rendering deferred branch) and the SELECT returns zero rows: the
+ *      renderer returns null, the gateway rejects the intent
+ *      `renderer_unavailable`, and the notification is silently dropped.
+ *   2. `worker_message_intents_definer` (043) -- USING (true) for the definer
+ *      path, so the INSERT/UPDATE need no worker identity.
+ *   3. `whatsapp_outbox` is ENABLE (not FORCE) RLS, so the owning role writes
+ *      it directly.
+ *   4. `worker_onboarding_state` / `worker_workflow_runs` `*_definer`
+ *      policies (042) admit the gate and language reads.
  */
 import type { PoolClient } from 'pg';
-import { setInternalUserRlsContext, setRlsContext } from './db';
 import {
   enqueueWorkerMessage,
   registerCategoryRenderer,
@@ -250,13 +269,6 @@ export function registerApplicationStageRenderer(): void {
 export interface ApplicationStageNotifyInput {
   applicationId: string;
   workerId: string;
-  /**
-   * The employer's Cognito sub -- NOT `users.id`. `setRlsContext` writes
-   * `app.current_user_id`, which every employer policy compares against
-   * `users.cognito_sub`, so this is what the handler had set and what must be
-   * restored.
-   */
-  employerSub: string;
   kind: ApplicationStageKind;
   jobId?: string | null;
   jobTitle: string;
@@ -321,9 +333,10 @@ export async function enqueueApplicationStageNotification(
 ): Promise<ApplicationStageNotifyResult> {
   registerApplicationStageRenderer();
 
-  // The API transaction is employer-scoped; the forced-RLS intent is
-  // worker-owned. Switch only around the enqueue.
-  await setInternalUserRlsContext(client, input.workerId);
+  // No GUC switching here -- see the RLS CONTRACT in the header. The
+  // employer's users.id must already be in `app.current_internal_user_id`,
+  // and switching it to the worker is precisely the bug this contract exists
+  // to prevent.
   try {
     const result = await enqueueWorkerMessage(client, {
       workerId: input.workerId,
@@ -350,7 +363,5 @@ export async function enqueueApplicationStageNotification(
       return { outcome: 'renderer_unavailable', reason: 'renderer_unavailable' };
     }
     throw err;
-  } finally {
-    await setRlsContext(client, input.employerSub);
   }
 }

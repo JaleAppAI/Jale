@@ -1,6 +1,6 @@
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import { handler } from '../../../../lambda/api/employer-application-status-update';
-import { getDbPool, setRlsContext } from '../../../../lambda/lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import { checkCompliance } from '../../../../lambda/legal/check-compliance';
 import { enqueueApplicationStageNotification } from '../../../../lambda/lib/application-stage-notify';
 
@@ -10,6 +10,7 @@ jest.mock('../../../../lambda/lib/application-stage-notify');
 
 const mockGetDbPool = getDbPool as jest.Mock;
 const mockSetRlsContext = setRlsContext as jest.Mock;
+const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
 const mockCheckCompliance = checkCompliance as jest.Mock;
 const mockNotify = enqueueApplicationStageNotification as jest.Mock;
 const mockQuery = jest.fn();
@@ -282,7 +283,7 @@ describe('employer-application-status-update', () => {
           rows: [{
             id: JOB_ID, number_of_workers_needed: 3, workers_hired: 2,
             status: statusBefore, public_listing_enabled: publicListingEnabled, public_code: publicCode,
-            employer_id: EMPLOYER_ID, title: 'Concrete Finisher',
+            employer_id: EMPLOYER_ID, title: 'Concrete Finisher', employer_user_id: EMPLOYER_ID,
           }],
         });
       }
@@ -393,7 +394,7 @@ describe('employer-application-status-update', () => {
           rows: [{
             id: JOB_ID, number_of_workers_needed: 3, workers_hired: 0,
             status: 'active', public_listing_enabled: false, public_code: null,
-            employer_id: EMPLOYER_ID, title: 'Concrete Finisher',
+            employer_id: EMPLOYER_ID, title: 'Concrete Finisher', employer_user_id: EMPLOYER_ID,
           }],
         });
       }
@@ -417,6 +418,29 @@ describe('employer-application-status-update', () => {
       return Promise.resolve({ rowCount: 0, rows: [] });
     };
   }
+
+  it("puts the EMPLOYER's users.id in app.current_internal_user_id, after the jobCheck and before the UPDATE", async () => {
+    mockQuery.mockImplementation(makeStageQueryMock({
+      appStatusBefore: 'talking', appStatusRequested: 'details_requested',
+    }));
+
+    const res = await handler(makeEvent({ body: JSON.stringify({ status: 'details_requested' }) }));
+
+    expect(res.statusCode).toBe(200);
+    // users_employer_applicant_read (020b:261-269) is jale_admin's only path to
+    // a worker row and matches on this GUC holding the EMPLOYER's users.id.
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledTimes(1);
+    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(expect.anything(), EMPLOYER_ID);
+
+    const sqls = mockQuery.mock.calls.map(([sql]: [string]) => (typeof sql === 'string' ? sql : ''));
+    const jobCheckIdx = sqls.findIndex((q: string) => q.includes('JOIN users u ON u.id = jobs.employer_id'));
+    const updateIdx = sqls.findIndex((q: string) => q.includes('UPDATE job_applications'));
+    const gucOrder = mockSetInternalUserRlsContext.mock.invocationCallOrder[0];
+    expect(gucOrder).toBeGreaterThan(mockQuery.mock.invocationCallOrder[jobCheckIdx]);
+    expect(gucOrder).toBeLessThan(mockQuery.mock.invocationCallOrder[updateIdx]);
+    // ...and it is never re-pointed at the worker.
+    expect(mockSetInternalUserRlsContext).not.toHaveBeenCalledWith(expect.anything(), WORKER_ID);
+  });
 
   it("returns 409 details_incomplete (and rolls back) when 091's hire gate rejects the UPDATE", async () => {
     const gateError = Object.assign(new Error('new row violates check constraint'), {
@@ -468,7 +492,6 @@ describe('employer-application-status-update', () => {
     expect(mockNotify).toHaveBeenCalledWith(expect.anything(), {
       applicationId: APPLICATION_ID,
       workerId: WORKER_ID,
-      employerSub: 'e-sub',
       kind: 'details_requested',
       jobId: JOB_ID,
       jobTitle: 'Concrete Finisher',

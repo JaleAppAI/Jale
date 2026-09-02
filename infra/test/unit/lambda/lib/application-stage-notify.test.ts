@@ -4,7 +4,6 @@ import {
   enqueueApplicationStageNotification,
   registerApplicationStageRenderer,
 } from '../../../../lambda/lib/application-stage-notify';
-import { setInternalUserRlsContext, setRlsContext } from '../../../../lambda/lib/db';
 import {
   _clearCategoryRenderersForTests,
   enqueueWorkerMessage,
@@ -12,7 +11,6 @@ import {
 } from '../../../../lambda/whatsapp/lib/worker-delivery-gateway';
 import type { CategoryRenderer, WorkerMessageIntentInput } from '../../../../lambda/whatsapp/lib/onboarding-types';
 
-jest.mock('../../../../lambda/lib/db');
 jest.mock('../../../../lambda/whatsapp/lib/worker-delivery-gateway', () => {
   const actual = jest.requireActual('../../../../lambda/whatsapp/lib/worker-delivery-gateway');
   return {
@@ -24,8 +22,6 @@ jest.mock('../../../../lambda/whatsapp/lib/worker-delivery-gateway', () => {
   };
 });
 
-const mockSetInternalUserRlsContext = setInternalUserRlsContext as jest.Mock;
-const mockSetRlsContext = setRlsContext as jest.Mock;
 const mockEnqueueWorkerMessage = enqueueWorkerMessage as jest.Mock;
 const mockRegisterCategoryRenderer = registerCategoryRenderer as jest.Mock;
 
@@ -42,7 +38,6 @@ function notifyInput(overrides: Record<string, unknown> = {}) {
   return {
     applicationId: APPLICATION_ID,
     workerId: WORKER_ID,
-    employerSub: 'e-sub',
     kind: 'details_requested' as const,
     jobId: JOB_ID,
     jobTitle: 'Concrete Finisher',
@@ -143,7 +138,7 @@ describe('enqueueApplicationStageNotification', () => {
     _clearCategoryRenderersForTests();
   });
 
-  it('registers the account renderer, switches to the worker, enqueues, and restores the employer', async () => {
+  it('registers the account renderer and enqueues without touching either RLS GUC', async () => {
     const client = fakeClient();
 
     const result = await enqueueApplicationStageNotification(client, notifyInput());
@@ -155,13 +150,13 @@ describe('enqueueApplicationStageNotification', () => {
       outboxMaterialized: true,
     });
     expect(mockRegisterCategoryRenderer).toHaveBeenCalledWith('account', expect.any(Function));
-    expect(mockSetInternalUserRlsContext).toHaveBeenCalledWith(client, WORKER_ID);
-    expect(mockSetRlsContext).toHaveBeenCalledWith(client, 'e-sub');
-    // Worker GUC before the enqueue, employer restore after it.
-    expect(mockSetInternalUserRlsContext.mock.invocationCallOrder[0])
-      .toBeLessThan(mockEnqueueWorkerMessage.mock.invocationCallOrder[0]);
-    expect(mockSetRlsContext.mock.invocationCallOrder[0])
-      .toBeGreaterThan(mockEnqueueWorkerMessage.mock.invocationCallOrder[0]);
+    // The employer's users.id must stay in app.current_internal_user_id for the
+    // whole transaction (see the module's RLS CONTRACT): switching it to the
+    // worker here hides the worker row from users_employer_applicant_read and
+    // silently drops every notification.
+    const setConfigCalls = (client.query as jest.Mock).mock.calls
+      .filter(([sql]: [string]) => typeof sql === 'string' && sql.includes('set_config'));
+    expect(setConfigCalls).toHaveLength(0);
   });
 
   it('passes the exact worker message intent input', async () => {
@@ -190,22 +185,20 @@ describe('enqueueApplicationStageNotification', () => {
     });
   });
 
-  it('reports renderer_unavailable instead of throwing, and still restores the employer', async () => {
+  it('reports renderer_unavailable instead of throwing', async () => {
     mockEnqueueWorkerMessage.mockRejectedValue(new Error('renderer_unavailable:account'));
     const client = fakeClient();
 
     const result = await enqueueApplicationStageNotification(client, notifyInput());
 
     expect(result).toEqual({ outcome: 'renderer_unavailable', reason: 'renderer_unavailable' });
-    expect(mockSetRlsContext).toHaveBeenCalledWith(client, 'e-sub');
   });
 
-  it('propagates any other enqueue error and still restores the employer in finally', async () => {
+  it('propagates any other enqueue error', async () => {
     mockEnqueueWorkerMessage.mockRejectedValue(new Error('boom'));
     const client = fakeClient();
 
     await expect(enqueueApplicationStageNotification(client, notifyInput())).rejects.toThrow('boom');
-    expect(mockSetRlsContext).toHaveBeenCalledWith(client, 'e-sub');
   });
 });
 

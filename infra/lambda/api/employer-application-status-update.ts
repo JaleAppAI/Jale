@@ -1,5 +1,5 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
-import { getDbPool, setRlsContext } from '../lib/db';
+import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
 import { APPLICATION_STATUSES } from '../lib/job-fields';
 import { enqueueVisibilityTransition, isEffectivelyVisible } from '../lib/job-visibility';
@@ -77,7 +77,7 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const jobCheck = await client.query(
       `SELECT jobs.id, jobs.number_of_workers_needed, jobs.workers_hired,
               jobs.status, jobs.public_listing_enabled, jobs.public_code,
-              jobs.employer_id, jobs.title
+              jobs.employer_id, jobs.title, u.id AS employer_user_id
        FROM jobs
        JOIN users u ON u.id = jobs.employer_id
        WHERE jobs.id = $1 AND u.cognito_sub = $2
@@ -88,6 +88,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       await client.query('ROLLBACK');
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'forbidden' }) };
     }
+
+    const job = jobCheck.rows[0];
+
+    // `app.current_internal_user_id` must hold the EMPLOYER's users.id for the
+    // rest of this transaction -- the same thing employer-job-applicants.ts:55
+    // does. Two readers below depend on it:
+    //   * `users_employer_applicant_read` (020b:261-269, repaired by 038) is
+    //     the ONLY jale_admin SELECT policy that exposes a worker row, and it
+    //     matches on `employer_has_applicant_relationship(<this GUC>, users.id)`.
+    //     The stage notification's renderer reads the worker's phone through
+    //     it; with the GUC unset (or pointed at the worker) that SELECT returns
+    //     zero rows and every notification is silently dropped as
+    //     `renderer_unavailable`.
+    //   * `worker_message_intents_definer` / the 042 `*_definer` policies admit
+    //     jale_admin regardless, so nothing else in the enqueue needs a switch.
+    await setInternalUserRlsContext(client, job.employer_user_id);
 
     const application = await client.query(
       `SELECT id, status
@@ -101,7 +117,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 404, headers: CORS_HEADERS, body: JSON.stringify({ error: 'not_found' }) };
     }
 
-    const job = jobCheck.rows[0];
     const currentStatus = application.rows[0].status;
     // Transitions stay any->any; `changed` only gates the worker notification.
     const changed = currentStatus !== status;
@@ -184,7 +199,6 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       const notified = await enqueueApplicationStageNotification(client, {
         applicationId,
         workerId,
-        employerSub: cognitoSub,
         kind: status,
         jobId,
         jobTitle: job.title, // jobs.title is NOT NULL (003:15).
