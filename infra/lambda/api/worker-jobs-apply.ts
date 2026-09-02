@@ -18,18 +18,37 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_id' }) };
     }
 
-    let body: { answers?: unknown; certification_claims?: unknown };
+    let body: { prompt_answers?: unknown; answers?: unknown; certification_claims?: unknown };
     try {
       body = JSON.parse(event.body ?? '{}');
     } catch {
       return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_json' }) };
     }
-    const answers = body.answers as Record<string, unknown> | undefined;
-    // Top-level sibling of `answers`, NEVER routed through it or through
-    // validateApplicationAnswers -- shape is checked by
-    // validateCertificationClaims (certification-claims.ts) inside
-    // applyWorkerToJob, not here.
-    const certificationClaims = body.certification_claims;
+    // Raw, unvalidated: shape, known-prompt-id and completeness checks all
+    // happen in validatePromptAnswers (lib/pre-application-prompts.ts)
+    // inside applyWorkerToJob, not here.
+    const promptAnswers = body.prompt_answers;
+
+    // LEGACY COMPAT WINDOW -- ONE RELEASE ONLY (release plan B4.5).
+    // FrontendStack deploys last, but a browser holding a CloudFront-cached
+    // pre-sprint-23 bundle will keep POSTing the old
+    // `{answers, certification_claims}` payload for as long as its TTL
+    // lasts. Those two fields are now meaningless: the questionnaire and
+    // certification claims are collected in stage 2
+    // (lib/application-requirements.ts). Rejecting them would break apply
+    // for exactly those users, so they are ACCEPTED AND IGNORED -- never
+    // validated, never stored, never partially honoured.
+    //
+    // DELETE THIS BLOCK in sprint 24, once the CloudFront TTL has expired
+    // and the metric below has gone quiet.
+    if (body.answers !== undefined || body.certification_claims !== undefined) {
+      console.log(JSON.stringify({
+        metric: 'LegacyApplyPayloadIgnored',
+        jobId,
+        hasAnswers: body.answers !== undefined,
+        hasCertificationClaims: body.certification_claims !== undefined,
+      }));
+    }
 
     const pool = await getDbPool();
     client = await pool.connect();
@@ -57,34 +76,22 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       workerId,
       jobId,
       surface: 'web',
-      answers,
-      certificationClaims,
+      promptAnswers,
     });
     await client.query('COMMIT');
 
     if (applyResult.status === 'job_closed') {
       return { statusCode: 410, headers: CORS_HEADERS, body: JSON.stringify({ error: 'job_closed' }) };
     }
-    if (applyResult.status === 'missing_documents') {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_documents', missing_docs: applyResult.missing_docs }) };
+    if (applyResult.status === 'missing_prompt_answers') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_prompt_answers', missing: applyResult.missing }) };
     }
-    if (applyResult.status === 'missing_answers') {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_answers', missing_fields: applyResult.missing_fields }) };
-    }
-    if (applyResult.status === 'invalid_answers') {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_answers', detail: applyResult.error }) };
-    }
-    if (applyResult.status === 'invalid_certification_claims') {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_certification_claims' }) };
-    }
-    if (applyResult.status === 'missing_certification_claims') {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_certification_claims' }) };
-    }
-    if (applyResult.status === 'missing_certification_proof') {
-      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'missing_certification_proof', certs: applyResult.certs }) };
+    if (applyResult.status === 'invalid_prompt_answers') {
+      return { statusCode: 400, headers: CORS_HEADERS, body: JSON.stringify({ error: 'invalid_prompt_answers' }) };
     }
     if (applyResult.status === 'certification_document_limit') {
       // Matches worker-doc-confirm.ts's precedent for the same DB-level cap.
+      // Still reachable in stage 1: the snapshot copy runs on every apply.
       return { statusCode: 409, headers: CORS_HEADERS, body: JSON.stringify({ error: 'certification_document_limit' }) };
     }
     if (applyResult.status === 'already_applied') {
@@ -94,10 +101,12 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 403, headers: CORS_HEADERS, body: JSON.stringify({ error: 'apply_forbidden' }) };
     }
     if (applyResult.status === 'guard_blocked') {
-      // Only reachable for surface === 'whatsapp' (see applyWorkerToJob); this
-      // handler always calls it with surface: 'web', so this is unreachable
-      // in practice but required for the exhaustive status narrowing below.
-      console.error('worker-jobs-apply: unexpected guard_blocked for web surface');
+      // UNREACHABLE. 091 drops the 022 trigger that produced this and
+      // applyWorkerToJob no longer maps it; the union member survives only
+      // to keep whatsapp/processor.ts:2202 compiling (see ApplyWorkerResult).
+      // Kept here purely so the exhaustive narrowing below still holds --
+      // delete both together in the WhatsApp lane.
+      console.error('worker-jobs-apply: unexpected guard_blocked (022 guard is dropped)');
       return { statusCode: 500, headers: CORS_HEADERS, body: JSON.stringify({ error: 'internal_error' }) };
     }
 

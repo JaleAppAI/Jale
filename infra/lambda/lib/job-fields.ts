@@ -1,7 +1,17 @@
 export const JOB_TYPES = ['full-time', 'part-time', 'contract'] as const;
 export const JOB_STATUSES = ['active', 'paused', 'filled', 'closed'] as const;
 export const WRITABLE_JOB_STATUSES = ['active', 'paused', 'closed'] as const;
-export const APPLICATION_STATUSES = ['pending', 'contacted', 'talking', 'hired', 'not_interested'] as const;
+// 'details_requested' (sprint 23) sits after 'talking': the employer has
+// moved the applicant forward and asked them for the full requirement list
+// (jobs.required_fields/required_docs/certification_requirements). It is a
+// waypoint, not a terminal state -- the stage-2 fill is gated on the
+// `details_requested_at`/`details_completed_at` TIMESTAMPTZ pair, never on
+// this literal, so `details_requested -> contacted/talking` keeps the fill
+// alive. Mirrors job_applications_status_check as rewritten by
+// 091_application_stages.sql BY HAND. This array is also echoed verbatim as
+// the `valid:` field of two 400 bodies (employer-application-status-update,
+// employer-job-applicants).
+export const APPLICATION_STATUSES = ['pending', 'contacted', 'talking', 'details_requested', 'hired', 'not_interested'] as const;
 export const LEGACY_APPLICATION_STATUS_MAP: Record<string, ApplicationStatus> = {
   reviewed: 'contacted',
   rejected: 'not_interested',

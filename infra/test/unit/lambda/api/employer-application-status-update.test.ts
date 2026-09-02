@@ -42,7 +42,7 @@ describe('employer-application-status-update', () => {
     expect(mockGetDbPool).not.toHaveBeenCalled();
     expect(JSON.parse(res.body)).toEqual({
       error: 'invalid_status',
-      valid: ['pending', 'contacted', 'talking', 'hired', 'not_interested'],
+      valid: ['pending', 'contacted', 'talking', 'details_requested', 'hired', 'not_interested'],
     });
   });
 

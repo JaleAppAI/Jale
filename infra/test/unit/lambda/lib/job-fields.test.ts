@@ -1,4 +1,5 @@
 import {
+  APPLICATION_STATUSES,
   DOC_TYPES,
   EXPECTED_DURATION_BUCKETS,
   MAX_CERTIFICATION_FILES,
@@ -126,6 +127,23 @@ describe('job-fields parser', () => {
     expect(normalizeApplicationStatus('rejected')).toBe('not_interested');
     expect(normalizeApplicationStatus('hired')).toBe('hired');
     expect(normalizeApplicationStatus('bogus')).toBeNull();
+  });
+
+  // Sprint 23: the stage-2 status. Mirrors job_applications_status_check as
+  // rewritten by 091_application_stages.sql BY HAND -- nothing enforces the
+  // app-layer list and the DB CHECK stay in sync, and this array is echoed
+  // verbatim in the `valid:` field of two 400 bodies
+  // (employer-application-status-update.ts, employer-job-applicants.ts).
+  it("includes 'details_requested' in APPLICATION_STATUSES, positioned after 'talking'", () => {
+    expect(APPLICATION_STATUSES).toEqual([
+      'pending', 'contacted', 'talking', 'details_requested', 'hired', 'not_interested',
+    ]);
+    expect(normalizeApplicationStatus('details_requested')).toBe('details_requested');
+  });
+
+  it('keeps the legacy status map pointing at the pre-existing statuses, never at details_requested', () => {
+    expect(normalizeApplicationStatus('reviewed')).toBe('contacted');
+    expect(normalizeApplicationStatus('rejected')).toBe('not_interested');
   });
 
   // A-7: 4000-char cap on `description`, shared by employer-jobs-create,
