@@ -75,6 +75,12 @@ const SUITE_STAGES_091 = 'test/unit/db/application-stages-091.integration.test.t
 // happened). It also drives 091's BEFORE-UPDATE hire gate to a PASS, which
 // nothing else in the repo does.
 const SUITE_APPLICATION_DETAILS = 'test/unit/db/worker-application-details.integration.test.ts';
+// Sprint 23 L2.5: the employer stage notification. It belongs here for the
+// same reason as the two above -- the whole feature turns on
+// `users_employer_applicant_read` (020b:261-269) seeing the EMPLOYER's users.id
+// in app.current_internal_user_id. Under a mocked pool every variant passes;
+// against the real policies the wrong GUC silently drops every notification.
+const SUITE_STAGE_NOTIFY = 'test/unit/db/application-stage-notify.integration.test.ts';
 
 // The guard must fail closed regardless of the ambient environment. The final
 // verification battery exports JALE_TEST_DATABASE_URL to run the guarded
@@ -101,6 +107,7 @@ describe('test:whatsapp-v2-db fail-closed URL guard', () => {
       SUITE_EXTRACTIONS_086, SUITE_EMPLOYER_READS, SUITE_HOSTILE_INPUTS,
       SUITE_STAGES_091,
       SUITE_APPLICATION_DETAILS,
+      SUITE_STAGE_NOTIFY,
     ]);
     expect(script).toContain('--runInBand');
     // No other db integration suite leaks into this focused command.

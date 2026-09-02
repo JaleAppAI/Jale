@@ -26,6 +26,9 @@
 # WHAT THE DATABASE MUST BE. `JALE_TEST_DATABASE_URL` must point at a
 # disposable local Postgres 16 database with migrations 001 THROUGH 091
 # applied, and the connecting role must be a SUPERUSER. The suites are not
+# disposable local Postgres 16 database with migrations 001 THROUGH 087
+# applied (091 for the sprint-23 stage suite), and the connecting role must be
+# a SUPERUSER. The suites are not
 # merely readers: they ALTER ROLE jale_whatsapp / jale_ai to set the test
 # passwords they then reconnect with, insert fixtures past RLS, and read
 # columns those roles are not granted. A non-superuser URL fails deep inside
@@ -102,3 +105,4 @@ exec npx jest --runInBand \
   test/unit/db/web-onboarding-hostile-inputs.integration.test.ts \
   test/unit/db/application-stages-091.integration.test.ts
   test/unit/db/worker-application-details.integration.test.ts
+  test/unit/db/application-stage-notify.integration.test.ts
