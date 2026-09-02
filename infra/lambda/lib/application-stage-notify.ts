@@ -288,6 +288,18 @@ function dedupeStamp(updatedAt: ApplicationStageNotifyInput['updatedAt']): strin
   return Number.isFinite(ms) ? String(ms) : String(updatedAt);
 }
 
+/**
+ * The gateway signals "the renderer could not build a message" by throwing a
+ * bare `Error('renderer_unavailable:<category>')`
+ * (worker-delivery-gateway.ts:158). Matching on the message prefix is the only
+ * contract available today.
+ *
+ * FOLLOW-UP (Ivan / WhatsApp lane, highest priority of the three here): export
+ * a `RendererUnavailableError` class or an `isRendererUnavailable(err)`
+ * predicate. If that message string ever changes, every stage PATCH for a
+ * worker with no verified phone silently flips from 200-with-metric to
+ * 500-with-rollback, and nothing in this lane's tests goes red.
+ */
 function isRendererUnavailable(err: unknown): boolean {
   return err instanceof Error && err.message.startsWith('renderer_unavailable:');
 }
