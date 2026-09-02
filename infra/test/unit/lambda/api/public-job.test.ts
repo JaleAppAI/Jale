@@ -257,4 +257,43 @@ describe('public-job Lambda', () => {
       expect(body.company).toBe('Fallback Inc');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // pre_application_prompts (091)
+  // ---------------------------------------------------------------------------
+
+  it('selects pre_application_prompts (091 grants it to jale_public_jobs) and never employer_id', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [ACTIVE_JOB_ROW] });
+    await handler(makeEvent({ code: 'ABC123' }));
+    const jobLookupCall = mockQuery.mock.calls[0];
+    expect(jobLookupCall[0]).toMatch(/\bpre_application_prompts\b/);
+    // The column-scoped GRANT is the access control here, not handler
+    // discipline -- but employer_id has never been in it and must not appear.
+    expect(jobLookupCall[0]).not.toMatch(/\bemployer_id\b/);
+  });
+
+  it('returns the parsed prompt list for an active job', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ...ACTIVE_JOB_ROW, pre_application_prompts: [{ id: 'p1', text: '  Do you own tools?  ' }] }],
+    });
+    const res = await handler(makeEvent({ code: 'ABC123' }));
+    expect(JSON.parse(res.body).pre_application_prompts).toEqual([{ id: 'p1', text: 'Do you own tools?' }]);
+  });
+
+  it('degrades a corrupt stored prompt list to [] instead of 500-ing the public page', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ...ACTIVE_JOB_ROW, pre_application_prompts: [{ id: 'ok', text: 'A' }, 'garbage', { text: 'no id' }] }],
+    });
+    const res = await handler(makeEvent({ code: 'ABC123' }));
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).pre_application_prompts).toEqual([{ id: 'ok', text: 'A' }]);
+  });
+
+  it('omits pre_application_prompts from the closed-job minimal view', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ...ACTIVE_JOB_ROW, status: 'filled', pre_application_prompts: [{ id: 'p1', text: 'A' }] }],
+    });
+    const res = await handler(makeEvent({ code: 'ABC123' }));
+    expect(JSON.parse(res.body).pre_application_prompts).toBeUndefined();
+  });
 });

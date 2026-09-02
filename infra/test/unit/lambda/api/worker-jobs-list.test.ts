@@ -96,6 +96,9 @@ describe('worker-jobs-list', () => {
         company_name: 'Acme',
         pay: '$24/hr',
         required_docs: ['resume'],
+        // 091: always present, [] when the job asks nothing -- the feed card
+        // uses it to tell a one-tap apply from one that will ask questions.
+        pre_application_prompts: [],
         created_at: '2026-04-20T00:00:00Z',
         match_score: 87,
         match_reasons: ['profession_exact_or_alias'],
@@ -267,5 +270,30 @@ describe('worker-jobs-list', () => {
       excludeCityKeys: ['el-paso-tx'],
       cityAnchors: [{ latitude: 31.7619, longitude: -106.485 }],
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // pre_application_prompts (091)
+  // ---------------------------------------------------------------------------
+
+  it('shapes the parsed prompt list onto every job (and onto other_jobs)', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockCityKeys(['tx-el-paso']);
+    mockListMatchedJobsForWorker
+      .mockResolvedValueOnce([{ ...job('a'), pre_application_prompts: [{ id: 'p1', text: '  Tools?  ' }] }])
+      .mockResolvedValueOnce([{ ...job('b'), pre_application_prompts: 'corrupt' }]);
+
+    const res = await handler(baseEvent);
+    const body = JSON.parse(res.body);
+    expect(body.jobs[0].pre_application_prompts).toEqual([{ id: 'p1', text: 'Tools?' }]);
+    // Fails open: a corrupt stored value reads as "asks no prompts".
+    expect(body.other_jobs[0].pre_application_prompts).toEqual([]);
+  });
+
+  it('defaults a job with no prompts column to []', async () => {
+    mockCheckCompliance.mockResolvedValue({ compliant: true, userExists: true });
+    mockListMatchedJobsForWorker.mockResolvedValue([job('a')]);
+    const res = await handler(baseEvent);
+    expect(JSON.parse(res.body).jobs[0].pre_application_prompts).toEqual([]);
   });
 });
