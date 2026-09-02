@@ -1,6 +1,7 @@
 import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { getDbPool, setInternalUserRlsContext, setRlsContext } from '../lib/db';
 import { corsHeaders, errorMessage } from '../lib/http';
+import { promptAnswersView, stageView } from '../lib/application-stage-view';
 import { checkCompliance } from '../legal/check-compliance';
 
 const CORS_HEADERS = corsHeaders();
@@ -130,7 +131,29 @@ export const handler = async (
                 WHEN 'rejected' THEN 'not_interested'
                 ELSE ja.status
               END AS application_status,
-              ja.applied_at
+              ja.applied_at,
+              -- 091 stage inputs. application_answers and the job's
+              -- requirement columns feed computeRemaining and are STRIPPED
+              -- from the response below: this endpoint has never exposed raw
+              -- answer values to the employer and must not start here.
+              ja.id AS application_id,
+              ja.application_answers,
+              ja.prompt_answers,
+              ja.details_requested_at,
+              ja.details_completed_at,
+              j.required_fields, j.optional_fields,
+              j.required_docs, j.optional_docs,
+              j.certification_requirements, j.pre_application_prompts,
+              -- JOB-SCOPED, and no syncDocumentSnapshots: this is a
+              -- jale_admin employer session, and the sync sets a worker GUC
+              -- and writes FORCE-RLS worker_documents. Same set 091's hire
+              -- gate measures.
+              ARRAY(
+                SELECT DISTINCT wd.doc_type
+                  FROM worker_documents wd
+                 WHERE wd.worker_id = ja.worker_id
+                   AND wd.job_id = ja.job_id
+              ) AS have_docs
        FROM job_applications ja
        JOIN jobs j ON j.id = ja.job_id
        JOIN users u ON u.id = ja.worker_id
@@ -229,10 +252,31 @@ export const handler = async (
 
     await client.query('COMMIT');
 
+    // Engine inputs in, derived vocabulary out -- the raw columns never
+    // reach the wire.
+    const {
+      application_answers: _answers,
+      prompt_answers: rawPromptAnswers,
+      have_docs: _haveDocs,
+      required_fields: _requiredFields,
+      optional_fields: _optionalFields,
+      required_docs: _requiredDocs,
+      optional_docs: _optionalDocs,
+      certification_requirements: _certReqs,
+      pre_application_prompts: prompts,
+      ...applicant
+    } = result.rows[0];
+
     return {
       statusCode: 200,
       headers: CORS_HEADERS,
-      body: JSON.stringify({ ...result.rows[0], trust_assessment, trust_extraction }),
+      body: JSON.stringify({
+        ...applicant,
+        ...stageView(result.rows[0]),
+        prompt_answers: promptAnswersView(prompts, rawPromptAnswers),
+        trust_assessment,
+        trust_extraction,
+      }),
     };
   } catch (err) {
     if (client) {
