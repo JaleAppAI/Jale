@@ -45,7 +45,7 @@ import { checkCompliance } from '../legal/check-compliance';
  *
  * A brand-new row starts at the column default of 1 with no bump: nothing has
  * ever been mailed to it, so there is nothing to revoke. LEAST() pins the
- * SMALLINT ceiling -- migration 088's definer does the same, and between them
+ * SMALLINT ceiling -- migration 090's definer does the same, and between them
  * they are the only two writers of this column.
  *
  * ── Timezone validation is two-layered, and the DB owns layer two ─
@@ -95,7 +95,7 @@ interface PatchInput {
  * The PATCH upsert, hoisted to a constant so the PostgreSQL-backed suite can
  * run the STATEMENT THIS HANDLER ACTUALLY SENDS against a real database rather
  * than a copy of it. The token-version bump is a two-writer invariant (the
- * other writer is migration 088's bounce definer) and a mocked assertion on
+ * other writer is migration 090's bounce definer) and a mocked assertion on
  * SQL text cannot show that it fires on the right transition.
  */
 export const DIGEST_SETTINGS_UPSERT_SQL = `INSERT INTO employer_digest_settings

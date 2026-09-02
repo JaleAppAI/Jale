@@ -231,7 +231,7 @@ MIGRATIONS=(
   "087_bind_reuses_ready_web_worker.sql"
   "088_admin_analytics.sql"
   "089_admin_analytics_rls_repair.sql"
-  "088_email_outbox_delivery_metadata.sql"
+  "090_email_outbox_delivery_metadata.sql"
 )
 
 WORKDIR="$(mktemp -d)"

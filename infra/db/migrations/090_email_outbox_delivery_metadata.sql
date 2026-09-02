@@ -1,6 +1,6 @@
 -- ============================================================
--- 088_email_outbox_delivery_metadata.sql
--- Run manually AFTER 087_bind_reuses_ready_web_worker.sql
+-- 090_email_outbox_delivery_metadata.sql
+-- Run manually AFTER 089_admin_analytics_rls_repair.sql
 -- Connect as: jale_admin (NOT the RDS master user)
 --
 -- DEPLOY ORDER (REVERSE of migration 086's rule): apply THIS migration BEFORE
@@ -11,14 +11,24 @@
 -- send) until this file lands. Applying first is safe: the old code never
 -- reads the new columns.
 --
--- SEQUENCING NOTE. This file was written as 087 and renumbered to 088 when
--- release 2 claimed that slot for 087_bind_reuses_ready_web_worker.sql (a fix
--- to 047's bind function). 087 does NOT exist on this branch, so the
--- registration points here list 086 -> 088 with a gap; the gap closes when the
--- two releases integrate, and 087 must be inserted BEFORE this file in all of
--- them at that point. Nothing in this migration depends on 087 -- disjoint
--- objects, either order applies cleanly -- so the ordering matters only for
--- the numbering invariant, not for correctness.
+-- SEQUENCING NOTE. This file was written as 087, renumbered to 088 when
+-- release 2 claimed 087 for the bind-reuses-ready-web-worker fix, and
+-- renumbered again to 090 at integration: the admin-analytics work (PR #57)
+-- had meanwhile taken BOTH 088 and 089 on main. The sequence is contiguous
+-- again -- 086, 087, 088, 089, 090 -- with no gap left to close, so the
+-- registration points below list this file plainly after 089.
+--
+-- Nothing in this migration depends on 087, 088 or 089: disjoint objects
+-- (a bind function, and the admin-analytics reporting functions), so any
+-- order applies cleanly. The number matters for the contiguity invariant
+-- migrations.test.ts asserts, not for correctness.
+--
+-- Two follow-on numbers move with it. The planned CLEANUP migration that
+-- drops the dead v1 columns (users.trust_signals /
+-- trust_signals_completed_at) and migration 052's
+-- stage_worker_pending_name / promote_worker_pending_name -- referenced in
+-- lambda/auth/verify-auth-challenge.ts and the WhatsApp processor tests --
+-- is now 091, not 088 or 089 as those comments used to say.
 --
 -- There are FIVE registration points, not the four usually quoted:
 --   1  scripts/run-migrations.sh                              MIGRATIONS array
@@ -28,11 +38,10 @@
 --   5  infra/test/unit/scripts/run-migrations-sh.test.ts      compares (1) to
 --      the on-disk directory. It extracts the list with
 --      /\d{3}b?_[a-zA-Z0-9_]+\.sql/g over the whole block, so a COMMENT that
---      names a migration file reads as a list entry and fails the comparison
---      -- which is why the gap comments here and in (1)-(4) say "migration
---      087" in prose rather than naming the file.
+--      names a migration file inside that block reads as a list entry and
+--      fails the comparison -- name numbers in prose there, never files.
 --
--- Next free migration after this one: 089.
+-- Next free migration after this one: 091.
 --
 -- Sprint 22 release 3, employer emails phase 4. Two parts:
 --
@@ -93,7 +102,7 @@
 -- the partial index is usable for the claim scan. Recreating the index with a
 -- different bound, or moving the constant, would CHANGE which rows the
 -- sweeper retries in production -- so this migration deliberately changes
--- NEITHER. What it adds is the missing enforcement: the 088 integration suite
+-- NEITHER. What it adds is the missing enforcement: the 090 integration suite
 -- reads pg_get_indexdef() and asserts the literal in the index equals the
 -- TypeScript constant, so the next person who edits one side is stopped by a
 -- red test instead of by a silent full-table scan (or, worse, an index that
@@ -234,7 +243,7 @@ GRANT SELECT, UPDATE ON email_outbox TO jale_admin;
 --
 -- Unset GUC => current_setting(..., true) is NULL => `employer_id::text =
 -- NULL` is NULL => not true => no row qualifies. The policies fail CLOSED by
--- construction, and 088's integration suite asserts it with a direct UPDATE
+-- construction, and 090's integration suite asserts it with a direct UPDATE
 -- from jale_admin with no GUCs set.
 --
 -- WHY BOTH A SELECT AND AN UPDATE POLICY
@@ -316,7 +325,7 @@ GRANT EXECUTE ON FUNCTION public.disable_digest_for_employer(UUID) TO jale_admin
 
 -- ============================================================
 -- Self-audit. On RDS there is no Jest: this DO block is the only thing
--- standing between a half-applied 088 and a bounce handler that silently
+-- standing between a half-applied 090 and a bounce handler that silently
 -- does nothing.
 -- ============================================================
 DO $$
@@ -342,7 +351,7 @@ BEGIN
         AND c.is_nullable = v_col.is_nullable
         AND c.data_type = v_col.data_type
     ) THEN
-      RAISE EXCEPTION 'migration 088: email_outbox.% missing, or not (%, %)',
+      RAISE EXCEPTION 'migration 090: email_outbox.% missing, or not (%, %)',
         v_col.column_name, v_col.is_nullable, v_col.data_type;
     END IF;
   END LOOP;
@@ -352,7 +361,7 @@ BEGIN
     WHERE rel.relname = 'email_outbox' AND c.contype = 'c'
       AND c.conname = 'email_outbox_headers_object'
   ) THEN
-    RAISE EXCEPTION 'migration 088: email_outbox_headers_object CHECK missing';
+    RAISE EXCEPTION 'migration 090: email_outbox_headers_object CHECK missing';
   END IF;
 
   IF NOT EXISTS (
@@ -360,24 +369,24 @@ BEGIN
     WHERE rel.relname = 'email_outbox' AND c.contype = 'c'
       AND c.conname = 'email_outbox_ses_message_id_shape'
   ) THEN
-    RAISE EXCEPTION 'migration 088: email_outbox_ses_message_id_shape CHECK missing';
+    RAISE EXCEPTION 'migration 090: email_outbox_ses_message_id_shape CHECK missing';
   END IF;
 
   SELECT pg_get_indexdef(i.indexrelid) INTO v_indexdef
     FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
    WHERE c.relname = 'email_outbox_ses_message_id_unique' AND i.indisunique;
   IF v_indexdef IS NULL THEN
-    RAISE EXCEPTION 'migration 088: email_outbox_ses_message_id_unique missing or not UNIQUE';
+    RAISE EXCEPTION 'migration 090: email_outbox_ses_message_id_unique missing or not UNIQUE';
   END IF;
   IF v_indexdef NOT LIKE '%WHERE (ses_message_id IS NOT NULL)%' THEN
-    RAISE EXCEPTION 'migration 088: email_outbox_ses_message_id_unique is not the partial index (%)',
+    RAISE EXCEPTION 'migration 090: email_outbox_ses_message_id_unique is not the partial index (%)',
       v_indexdef;
   END IF;
 
   IF NOT EXISTS (
     SELECT 1 FROM pg_class c WHERE c.relname = 'email_outbox_recipient_email_idx'
   ) THEN
-    RAISE EXCEPTION 'migration 088: email_outbox_recipient_email_idx missing';
+    RAISE EXCEPTION 'migration 090: email_outbox_recipient_email_idx missing';
   END IF;
 
   -- The reconciliation this migration promises but does not silently change.
@@ -385,7 +394,7 @@ BEGIN
     FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
    WHERE c.relname = 'email_outbox_sweeper_idx';
   IF v_indexdef IS NULL OR v_indexdef NOT LIKE '%attempt_count < 5%' THEN
-    RAISE EXCEPTION 'migration 088: email_outbox_sweeper_idx no longer bounds attempt_count < 5, '
+    RAISE EXCEPTION 'migration 090: email_outbox_sweeper_idx no longer bounds attempt_count < 5, '
       'which is what lambda/lib/email-outbox.ts MAX_EMAIL_SEND_ATTEMPTS binds (%)', v_indexdef;
   END IF;
 
@@ -398,7 +407,7 @@ BEGIN
     WHERE grantee = 'jale_admin' AND table_schema = 'public'
       AND table_name = 'email_outbox' AND privilege_type = 'SELECT'
   ) THEN
-    RAISE EXCEPTION 'migration 088: jale_admin lost SELECT/UPDATE on email_outbox';
+    RAISE EXCEPTION 'migration 090: jale_admin lost SELECT/UPDATE on email_outbox';
   END IF;
 
   ---------------------------------------------------------------- Part 2
@@ -409,7 +418,7 @@ BEGIN
       AND p.polcmd::TEXT = 'r'
       AND p.polroles = ARRAY[(SELECT oid FROM pg_roles WHERE rolname = 'jale_admin')]
   ) THEN
-    RAISE EXCEPTION 'migration 088: the delivery-feedback SELECT policy is missing or not scoped to jale_admin';
+    RAISE EXCEPTION 'migration 090: the delivery-feedback SELECT policy is missing or not scoped to jale_admin';
   END IF;
 
   IF NOT EXISTS (
@@ -420,7 +429,7 @@ BEGIN
       AND p.polroles = ARRAY[(SELECT oid FROM pg_roles WHERE rolname = 'jale_admin')]
       AND p.polwithcheck IS NOT NULL
   ) THEN
-    RAISE EXCEPTION 'migration 088: the delivery-feedback UPDATE policy is missing, not scoped to jale_admin, '
+    RAISE EXCEPTION 'migration 090: the delivery-feedback UPDATE policy is missing, not scoped to jale_admin, '
       'or has no WITH CHECK';
   END IF;
 
@@ -434,7 +443,7 @@ BEGIN
      OR v_owner <> 'jale_admin'
      OR NOT v_secdef
      OR v_config IS DISTINCT FROM ARRAY['search_path=pg_catalog, pg_temp']::TEXT[] THEN
-    RAISE EXCEPTION 'migration 088: disable_digest_for_employer definer invariant failed '
+    RAISE EXCEPTION 'migration 090: disable_digest_for_employer definer invariant failed '
       '(owner=%, secdef=%, config=%)', v_owner, v_secdef, v_config;
   END IF;
 
@@ -443,20 +452,20 @@ BEGIN
       LATERAL aclexplode(COALESCE(f.proacl, acldefault('f', f.proowner))) acl
     WHERE f.oid = v_oid AND acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
   ) THEN
-    RAISE EXCEPTION 'migration 088: disable_digest_for_employer is EXECUTE-able by PUBLIC';
+    RAISE EXCEPTION 'migration 090: disable_digest_for_employer is EXECUTE-able by PUBLIC';
   END IF;
 
   IF NOT has_function_privilege('jale_admin', v_oid, 'EXECUTE') THEN
-    RAISE EXCEPTION 'migration 088: jale_admin cannot execute disable_digest_for_employer';
+    RAISE EXCEPTION 'migration 090: jale_admin cannot execute disable_digest_for_employer';
   END IF;
 
   -- Smoke: a random uuid owns no settings row, so the function must report 0
   -- rather than raise -- and must leave no GUC behind.
   IF public.disable_digest_for_employer('00000000-0000-4000-8000-000000000000'::uuid) <> 0 THEN
-    RAISE EXCEPTION 'migration 088 smoke: disable_digest_for_employer claimed to disable an impossible employer';
+    RAISE EXCEPTION 'migration 090 smoke: disable_digest_for_employer claimed to disable an impossible employer';
   END IF;
   IF COALESCE(current_setting('app.digest_feedback_employer_id', true), '') <> '' THEN
-    RAISE EXCEPTION 'migration 088 smoke: disable_digest_for_employer leaked its GUC';
+    RAISE EXCEPTION 'migration 090 smoke: disable_digest_for_employer leaked its GUC';
   END IF;
 END;
 $$;

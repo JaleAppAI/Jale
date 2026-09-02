@@ -319,7 +319,7 @@ describe('employer-digest-settings', () => {
    * digest has to kill every link mailed during the previous ON period, or a
    * mail client prefetching one silently undoes the change the employer just
    * made. The shape of the bump is proved against a real database in
-   * test/unit/db/email-outbox-088.integration.test.ts; this pins that the
+   * test/unit/db/email-outbox-090.integration.test.ts; this pins that the
    * handler still sends the statement that does it.
    */
   it('bumps unsubscribe_token_version only on the false -> true transition', async () => {
