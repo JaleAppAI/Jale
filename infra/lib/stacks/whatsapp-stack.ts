@@ -45,6 +45,17 @@ export interface WhatsAppStackProps extends cdk.StackProps {
    * which already depends on ApiStack.
    */
   readonly workerResource: apigateway.Resource;
+  /**
+   * ApiStack's `/worker/applications` resource. S23 L2.4 hangs the stage-2
+   * details door — `GET /worker/applications/{applicationId}` and
+   * `ANY /worker/applications/{applicationId}/{action}` — off it. Same
+   * reasoning as `workerResource`: `job_applications` is FORCE RLS and the
+   * only worker-scoped UPDATE policy is `jobapp_whatsapp_update` (028), for
+   * role `jale_whatsapp`, so the handler needs this stack's
+   * `jale/whatsapp/db` secret. REQUIRED, not optional: an optional prop
+   * would let a future composition silently drop the route.
+   */
+  readonly workerApplicationsResource: apigateway.Resource;
   /** ApiStack's worker Cognito authorizer — the same one every other
    * `/worker/*` route uses. */
   readonly workerAuthorizer: apigateway.IAuthorizer;
@@ -1239,5 +1250,65 @@ export class WhatsAppStack extends cdk.Stack {
     // is where splitting ApiStack (a nested stack, or a second RestApi for
     // `/worker/*`) becomes the answer.
     onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
+
+    // ═══════════════════════════════════════════════════════════════════
+    // S23 L2.4 — WORKER APPLICATION DETAILS DOOR (web "stage 2")
+    //
+    //   GET  /worker/applications/{applicationId}
+    //   POST /worker/applications/{applicationId}/answers
+    //   POST /worker/applications/{applicationId}/certifications
+    //   POST /worker/applications/{applicationId}/prompt-answers
+    //
+    // Same reason as the onboarding door above: `job_applications` is FORCE
+    // RLS and the ONLY worker-scoped UPDATE policy is
+    // `jobapp_whatsapp_update` (migration 028) for role `jale_whatsapp`,
+    // keyed on `app.current_internal_user_id`. Migration 091 adds that
+    // role's UPDATE on `prompt_answers` / `details_completed_at` and its
+    // INSERT/UPDATE on `worker_application_defaults`. So the handler needs
+    // THIS stack's `jale/whatsapp/db` secret and cannot be an ApiStack
+    // Lambda; ApiStack owns `/worker/applications` and exports it, this
+    // stack hangs the child routes off it.
+    //
+    // NO generator ARNs, NO wake queue, NO documents bucket: every write it
+    // makes goes through `lib/application-requirements.ts` over the DB
+    // connection. `whatsappDbSecret.grantRead` is the only grant, and
+    // `whatsapp-stack.test.ts` asserts the absence of the others.
+    // ═══════════════════════════════════════════════════════════════════
+
+    const applicationDetailsLambda = new JaleLambdaFunction(this, 'WorkerApplicationDetailsLambda', {
+      entry: path.join(__dirname, '../../lambda/api/worker-application-details.ts'),
+      description: 'Worker application details — the web stage-2 requirements door',
+      vpc: props.vpc,
+      securityGroups: [props.lambdaSg],
+      // API Gateway hard-caps a REST integration at 29s. A merge syncs the
+      // worker's vault documents onto the job before it validates anything,
+      // so this must return a 5xx we control rather than API Gateway's 504.
+      timeout: 28,
+      environment: {
+        // jale_whatsapp, for the RLS reason above. getDbPool() reads this.
+        DB_SECRET_ARN: whatsappDbSecret.secretName,
+        // Unlike the onboarding door this IS an ordinary `/worker/*` route,
+        // so it carries the legal wall (004 grants jale_whatsapp SELECT on
+        // `users.tos_version`).
+        REQUIRED_TOS_VERSION: tosVersion,
+        ALLOWED_ORIGIN: allowedOrigin,
+      },
+    });
+    whatsappDbSecret.grantRead(applicationDetailsLambda.function);
+
+    const applicationDetailsIntegration = lambdaIntegration(applicationDetailsLambda.function);
+    // CORS preflight is inherited from the RestApi's
+    // `defaultCorsPreflightOptions` (ApiStack), like every sibling
+    // `/worker/*` route.
+    const applicationResource = props.workerApplicationsResource.addResource('{applicationId}');
+    applicationResource.addMethod('GET', applicationDetailsIntegration, workerAuth);
+    // ONE `{action}` resource carrying answers / certifications /
+    // prompt-answers, for the resource-budget reason spelled out on the
+    // onboarding door above: three named siblings would cost 12 ApiStack
+    // resources, this shape costs 4 on top of the `{applicationId}` node.
+    // ANY, because the resource has to answer POST and refuse everything
+    // else IN THE HANDLER (405) — it is not a widening, the Cognito worker
+    // authorizer is attached exactly as it is to the GET.
+    applicationResource.addResource('{action}').addMethod('ANY', applicationDetailsIntegration, workerAuth);
   }
 }

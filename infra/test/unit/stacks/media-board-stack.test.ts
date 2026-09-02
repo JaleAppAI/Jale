@@ -78,6 +78,7 @@ function buildMediaBoardApp(alarmTopicArn?: string): { template: Template; apiTe
     workerPool: auth.workerPool,
     api: api.api,
     workerResource: api.workerResource,
+    workerApplicationsResource: api.workerApplicationsResource,
     workerAuthorizer: api.workerAuthorizer,
     questionGeneratorFn: ai.questionGeneratorFn.function,
     aliasGeneratorFn: ai.aliasGeneratorFn.function,

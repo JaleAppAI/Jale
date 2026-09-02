@@ -305,6 +305,11 @@ export function buildJaleApp(app: cdk.App): void {
     // S22 R2-C23: the web onboarding door hangs `/worker/onboarding*` off
     // ApiStack's own `/worker` resource and reuses its worker authorizer.
     workerResource: api.workerResource,
+    // S23 L2.4: the stage-2 details door hangs
+    // `/worker/applications/{applicationId}*` off ApiStack's own
+    // `/worker/applications` resource, for the same reason — it needs THIS
+    // stack's `jale/whatsapp/db` secret.
+    workerApplicationsResource: api.workerApplicationsResource,
     workerAuthorizer: api.workerAuthorizer,
     workerRerankQueue: matching.workerRerankQueue,
     questionGeneratorFn: ai.questionGeneratorFn.function,

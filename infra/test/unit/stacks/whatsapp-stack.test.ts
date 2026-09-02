@@ -90,6 +90,7 @@ describe('WhatsAppStack', () => {
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,
+      workerApplicationsResource: api.workerApplicationsResource,
       workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,
@@ -307,9 +308,10 @@ describe('event-driven outbox wake queues', () => {
   });
 
   // ── Lambda functions ───────────────────────────────────────────
-  // 13 since S22 R2-C23 added the web onboarding door.
-  test('Stack creates 13 Lambda functions including the worker-intent drain', () => {
-    template.resourceCountIs('AWS::Lambda::Function', 13);
+  // 13 since S22 R2-C23 added the web onboarding door; 14 since S23 L2.4
+  // added the worker application details door.
+  test('Stack creates 14 Lambda functions including the worker-intent drain', () => {
+    template.resourceCountIs('AWS::Lambda::Function', 14);
   });
 
   test('worker-intent outbox drain has Twilio + DB configuration and a one-minute schedule', () => {
@@ -1324,6 +1326,112 @@ describe('event-driven outbox wake queues', () => {
       expect(mine.length).toBe(8);
     });
   });
+
+  // ── S23 L2.4: the worker application details door ──────────────
+  //
+  // Same split as the onboarding door above: the Lambda is a WhatsAppStack
+  // resource (it needs this stack's `jale/whatsapp/db` secret), the ROUTES
+  // are ApiStack resources because `props.workerApplicationsResource
+  // .addResource()` creates its children in that resource's scope.
+  describe('worker application details door', () => {
+    function detailsFn(): any {
+      const functions = template.findResources('AWS::Lambda::Function');
+      return Object.values(functions).find((resource: any) =>
+        /application details/i.test(resource.Properties?.Description ?? '')) as any;
+    }
+
+    test('a single Lambda serves all four routes, inside the VPC', () => {
+      const fn = detailsFn();
+      expect(fn).toBeDefined();
+      expect(fn.Properties.VpcConfig).toBeDefined();
+      // API Gateway hard-caps a REST integration at 29s; a merge syncs the
+      // worker's vault documents onto the job first.
+      expect(fn.Properties.Timeout).toBeLessThanOrEqual(28);
+    });
+
+    test('connects as jale_whatsapp — the ONLY role with a worker UPDATE policy on job_applications', () => {
+      // `jobapp_whatsapp_update` (migration 028) is keyed on
+      // app.current_internal_user_id and exists for no other API role, so
+      // running this door as jale_admin would silently write nothing.
+      const env = detailsFn().Properties.Environment.Variables;
+      expect(env.DB_SECRET_ARN).toBe('jale/whatsapp/db');
+      // Unlike the onboarding door, this one IS legally gated.
+      expect(env.REQUIRED_TOS_VERSION).toBeDefined();
+      expect(env.ALLOWED_ORIGIN).toBeDefined();
+    });
+
+    test('its role reads the DB secret and NOTHING else — no invoke, no queue', () => {
+      const fn = detailsFn();
+      const roleRef = fn.Properties.Role['Fn::GetAtt'][0];
+      const policies = template.findResources('AWS::IAM::Policy');
+      const statements = Object.values(policies)
+        .filter((policy: any) => JSON.stringify(policy.Properties.Roles ?? []).includes(roleRef))
+        .flatMap((policy: any) => policy.Properties.PolicyDocument.Statement as any[]);
+      const actions = statements.flatMap((st) =>
+        Array.isArray(st.Action) ? st.Action : [st.Action]);
+
+      expect(actions).toEqual(expect.arrayContaining(['secretsmanager:GetSecretValue']));
+      // Every write this door makes goes through the shared engine over the
+      // DB connection. A grant appearing here means something else crept in.
+      expect(actions).not.toEqual(expect.arrayContaining(['lambda:InvokeFunction']));
+      expect(actions).not.toEqual(expect.arrayContaining(['sqs:SendMessage']));
+      expect(actions).not.toEqual(expect.arrayContaining(['s3:PutObject']));
+    });
+
+    test.each([
+      ['{applicationId}', 'GET'],
+      // ONE `{action}` resource carries answers / certifications /
+      // prompt-answers, for the ApiStack resource-budget reason documented
+      // on the onboarding door.
+      ['{action}', 'ANY'],
+    ])('/worker/applications/%s serves %s behind the worker Cognito authorizer', (part, method) => {
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const applicationsId = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === 'applications',
+      )![0];
+      // `{action}` is an ambiguous PathPart (the onboarding door has one
+      // too), so walk down from /worker/applications rather than matching
+      // the part name globally.
+      const childrenOf = (parentId: string) => Object.entries(resources).filter(
+        ([, r]: [string, any]) =>
+          JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: parentId }),
+      );
+      const [applicationId] = childrenOf(applicationsId)
+        .find(([, r]: [string, any]) => r.Properties.PathPart === '{applicationId}')!;
+      const logicalId = part === '{applicationId}'
+        ? applicationId
+        : childrenOf(applicationId).find(
+          ([, r]: [string, any]) => r.Properties.PathPart === part,
+        )![0];
+
+      const methods = apiTemplate.findResources('AWS::ApiGateway::Method');
+      const match = Object.values(methods).find((m: any) =>
+        m.Properties.HttpMethod === method
+        && JSON.stringify(m.Properties.ResourceId) === JSON.stringify({ Ref: logicalId })) as any;
+
+      expect(match).toBeDefined();
+      expect(match.Properties.AuthorizationType).toBe('COGNITO_USER_POOLS');
+      expect(match.Properties.AuthorizerId).toBeDefined();
+    });
+
+    test('{action} is the ONLY child of /worker/applications/{applicationId}', () => {
+      // ANY on `{action}` matches every single-segment path below
+      // {applicationId}, so a named sibling added later by another stack
+      // would keep its route but lose the traffic to this handler's 404.
+      const resources = apiTemplate.findResources('AWS::ApiGateway::Resource');
+      const applicationsId = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === 'applications',
+      )![0];
+      const [applicationId] = Object.entries(resources).find(
+        ([, r]: [string, any]) => r.Properties.PathPart === '{applicationId}'
+          && JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: applicationsId }),
+      )!;
+      const children = Object.values(resources).filter(
+        (r: any) => JSON.stringify(r.Properties.ParentId) === JSON.stringify({ Ref: applicationId }),
+      );
+      expect(children.map((c: any) => c.Properties.PathPart)).toEqual(['{action}']);
+    });
+  });
 });
 
 // ── Task 5: voice-trust-receiver v2 re-entry (transport flag ON) ─────────
@@ -1391,6 +1499,7 @@ describe('WhatsAppStack — v2 inbound transport enabled', () => {
       workerPool: auth.workerPool,
       api: api.api,
       workerResource: api.workerResource,
+      workerApplicationsResource: api.workerApplicationsResource,
       workerAuthorizer: api.workerAuthorizer,
       questionGeneratorFn: ai.questionGeneratorFn.function,
       aliasGeneratorFn: ai.aliasGeneratorFn.function,

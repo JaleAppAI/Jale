@@ -45,6 +45,15 @@ export class ApiStack extends cdk.Stack {
   /** Exported so ReferralsStack (and other downstream stacks) can hang routes off /worker */
   public readonly workerResource: apigateway.Resource;
   /**
+   * Exported so WhatsAppStack can hang the stage-2 details door
+   * (`/worker/applications/{applicationId}*`) off it. That door runs as
+   * `jale_whatsapp` — the only role with a worker-scoped UPDATE policy on
+   * `job_applications` (`jobapp_whatsapp_update`, migration 028) — so its
+   * Lambda needs WhatsAppStack's `jale/whatsapp/db` secret and cannot live
+   * here; ApiStack owns the resource, WhatsAppStack hangs the methods.
+   */
+  public readonly workerApplicationsResource: apigateway.Resource;
+  /**
    * Exported so ReferralsStack and NotificationsStack can hang their
    * UNAUTHENTICATED routes off /public.
    *
@@ -807,8 +816,8 @@ export class ApiStack extends cdk.Stack {
     }
 
     // GET /worker/applications — list worker's own applications
-    const workerApplicationsResource = workerResource.addResource('applications');
-    workerApplicationsResource.addMethod('GET', lambdaIntegration(workerApplicationsListLambda.function), {
+    this.workerApplicationsResource = workerResource.addResource('applications');
+    this.workerApplicationsResource.addMethod('GET', lambdaIntegration(workerApplicationsListLambda.function), {
       authorizer: workerAuthorizer,
       authorizationType: apigateway.AuthorizationType.COGNITO,
     });
