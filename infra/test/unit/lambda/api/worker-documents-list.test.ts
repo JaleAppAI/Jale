@@ -53,6 +53,39 @@ describe('worker-documents-list', () => {
     expect(listSql).toContain('cert_name');
   });
 
+  it('never ships the raw s3_key to the browser, but still presigns from it', async () => {
+    // `s3_key` has to stay in the SELECT -- it is the only thing the presign
+    // can key off -- but it is an internal bucket layout the worker's browser
+    // has no use for. The presigned `url` is the whole contract. Same rule the
+    // employer side already follows (see frontend/src/lib/api/employer.ts).
+    mockQuery.mockImplementation((q: string) => {
+      if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
+      if (q.includes('FROM worker_documents')) return Promise.resolve({ rows: [{ id: 'doc-1', doc_type: 'work_auth_doc', s3_key: 'workers/u1/secret-layout.pdf', file_name: 'f.pdf', file_size: 10, uploaded_at: 'ts', cert_name: null }] });
+      return Promise.resolve({});
+    });
+
+    const res = await handler(ev);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('secret-layout.pdf');
+    const body = JSON.parse(res.body);
+    expect(body.documents[0]).not.toHaveProperty('s3_key');
+    // Everything the browser does need survived the strip.
+    expect(body.documents[0]).toEqual({
+      id: 'doc-1',
+      doc_type: 'work_auth_doc',
+      file_name: 'f.pdf',
+      file_size: 10,
+      uploaded_at: 'ts',
+      cert_name: null,
+      url: 'https://get.example',
+    });
+    // The key still reached the presigner -- stripping it from the response
+    // must not break the only reason it is selected.
+    expect(mockGetSignedUrl).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mockGetSignedUrl.mock.calls[0][1])).toContain('workers/u1/secret-layout.pdf');
+  });
+
   it('lists a legacy certification_doc row with cert_name NULL fine (no label supplied is not an error)', async () => {
     mockQuery.mockImplementation((q: string) => {
       if (q.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'u1' }] });
