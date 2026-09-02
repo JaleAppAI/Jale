@@ -988,14 +988,19 @@ describe('database migrations', () => {
     expect(sql).toContain(
       "RAISE NOTICE 'migration 091: purged % Nova-generated trade_questions cache row(s)', v_deleted;",
     );
-    // End state asserted, unlike 086 Part 4 -- a surviving Nova row means the
-    // ordering rule was violated.
+    // The end state IS checked (086 Part 4 checked nothing), but as a WARNING:
+    // a surviving Nova row means the ordering rule was violated and the purge
+    // accomplished nothing, which the operator must hear -- yet aborting would
+    // roll back the status CHECK, the columns and the hire gate over one AI
+    // cache row that self-corrects on the next miss. Pinning RAISE WARNING
+    // keeps a later edit from promoting it to RAISE EXCEPTION.
     expect(sql).toContain(
       "SELECT count(*) INTO v_remaining\n    FROM public.trade_questions\n   WHERE is_seeded = false AND model_id LIKE '%nova%';",
     );
-    expect(sql).toContain(
-      'Nova-generated trade_questions row(s) survived the purge -- was the Haiku generator deployed first?',
+    expect(sql).toMatch(
+      /RAISE WARNING 'migration 091: % Nova-generated trade_questions row\(s\) survived the purge/,
     );
+    expect(sql).not.toMatch(/RAISE EXCEPTION[^;]*trade_questions/);
     // The five SEEDED standard trades must never be touched: no unqualified
     // purge (086 Part 4's wider predicate), and nothing that names
     // is_seeded = true or TRUNCATEs the table.

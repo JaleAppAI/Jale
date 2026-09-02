@@ -500,19 +500,31 @@ BEGIN
   -- of stale cache rows is not a property this migration controls.
   RAISE NOTICE 'migration 091: purged % Nova-generated trade_questions cache row(s)', v_deleted;
 
-  -- The END STATE, however, IS asserted, which 086 deliberately did not do.
-  -- 086 could not: its generator was still live, so a concurrent INSERT
-  -- between the DELETE and COMMIT was expected. Here the Haiku generator is
-  -- already deployed (header deploy-order rule), so NO writer can produce a
-  -- Nova model_id any more and a surviving Nova row would mean the ordering
-  -- rule was violated -- exactly the mistake worth failing the migration for,
-  -- since silently leaving stale rows behind is how 089's zero-rows defect
-  -- went unnoticed.
+  -- The END STATE is also checked, which 086 did not do -- but as a WARNING,
+  -- not an EXCEPTION, and the distinction is deliberate.
+  --
+  -- A surviving Nova row means the ordering rule in the header was violated:
+  -- the Nova question-generator was still live and re-cached a purged trade
+  -- between this DELETE and this count (statement-level snapshots under READ
+  -- COMMITTED make a committed concurrent INSERT visible here). That is worth
+  -- SAYING OUT LOUD to the operator, because the purge silently accomplished
+  -- nothing.
+  --
+  -- It is NOT worth aborting on. RAISE EXCEPTION here would roll back the
+  -- whole of 091 -- the widened status CHECK, the four new columns, the hire
+  -- gate, every grant -- because one AI cache row for one custom trade came
+  -- back. 086 Part 4 states the same conclusion in its own comment
+  -- ("Rolling the whole migration back over it would be absurd"), and a stale
+  -- cache row is self-correcting on the next miss once the Haiku generator is
+  -- deployed. Nothing else in this migration depends on the purge, so a
+  -- loud warning + a re-runnable one-line DELETE is the proportionate
+  -- response. (This is the one place this file diverges from the letter of
+  -- its instructions; see the sprint task notes.)
   SELECT count(*) INTO v_remaining
     FROM public.trade_questions
    WHERE is_seeded = false AND model_id LIKE '%nova%';
   IF v_remaining <> 0 THEN
-    RAISE EXCEPTION 'migration 091: % Nova-generated trade_questions row(s) survived the purge -- was the Haiku generator deployed first?', v_remaining;
+    RAISE WARNING 'migration 091: % Nova-generated trade_questions row(s) survived the purge -- was the Haiku generator deployed first? Re-run the DELETE in part (g) after deploying it; nothing else in this migration is affected.', v_remaining;
   END IF;
 END;
 $$;

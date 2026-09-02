@@ -899,6 +899,13 @@ maybeDescribe('migration 091 application-stages DB contract', () => {
     )?.[0];
     expect(purge).toBeDefined();
 
+    // The two model ids are the real literals, not invented ones:
+    // 'us.amazon.nova-lite-v1:0' is the current default in
+    // lambda/ai/question-generator.ts (and lib/bedrock-arns.ts), and
+    // 'us.anthropic.claude-haiku-4-5-20251001-v1:0' is the id
+    // lib/stacks/whatsapp-stack.ts already pins for its Bedrock Lambdas --
+    // the one the question generator moves to. A made-up "Haiku" string would
+    // survive the purge for the trivial reason that any non-Nova string does.
     const questions = JSON.stringify([
       { q_en: 'What do you specialize in?', q_es: '¿En qué te especializas?' },
     ]);
