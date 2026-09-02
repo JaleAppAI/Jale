@@ -15,7 +15,7 @@ import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface BillingStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -313,8 +313,9 @@ export class BillingStack extends cdk.Stack {
     );
 
     // POST /billing/webhook — public, no Cognito auth; Stripe HMAC validated in handler
-    props.api.root
-      .addResource('billing')
+    // Path-only: nothing on /billing itself, only /billing/webhook.
+    const publicBillingResource = addPathOnlyResource(props.api.root, 'billing');
+    publicBillingResource
       .addResource('webhook')
       .addMethod('POST', lambdaIntegration(webhookVerifierLambda.function));
 

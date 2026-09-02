@@ -13,7 +13,7 @@ import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
 import { BEDROCK_MODEL_ID, bedrockArns } from '../bedrock-arns';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface ApiStackProps extends cdk.StackProps {
   readonly workerPool: JaleCognitoPool;
@@ -709,13 +709,15 @@ export class ApiStack extends cdk.Stack {
     // downstream stack (ReferralsStack's /public/jobs*, NotificationsStack's
     // /public/employer-digest/unsubscribe). Declared here, exported, and never
     // re-declared downstream: see the publicResource field comment.
-    this.publicResource = this.api.root.addResource('public');
+    // Path-only: no method on /public itself, so no CORS preflight is built.
+    this.publicResource = addPathOnlyResource(this.api.root, 'public');
 
     // GET /worker/profile
     // PATCH /worker/profile
     // Exported as public readonly so ReferralsStack (and other downstream
     // stacks) can hang routes off /worker.
-    this.workerResource = this.api.root.addResource('worker');
+    // Path-only: no method on /worker itself, so no CORS preflight is built.
+    this.workerResource = addPathOnlyResource(this.api.root, 'worker');
     const workerResource = this.workerResource;
     const workerProfileResource = workerResource.addResource('profile');
     workerProfileResource.addMethod('GET', lambdaIntegration(workerProfileLambda.function), {
@@ -816,7 +818,8 @@ export class ApiStack extends cdk.Stack {
     // GET /employer/profile
     // PATCH /employer/profile
     // Exported as public readonly so BillingStack can hang /employer/billing routes off it.
-    this.employerResource = this.api.root.addResource('employer');
+    // Path-only: no method on /employer itself, so no CORS preflight is built.
+    this.employerResource = addPathOnlyResource(this.api.root, 'employer');
     const employerProfileResource = this.employerResource.addResource('profile');
     employerProfileResource.addMethod('GET', lambdaIntegration(employerProfileLambda.function), {
       authorizer: employerAuthorizer,
@@ -833,7 +836,8 @@ export class ApiStack extends cdk.Stack {
     // PATCH, not PUT: lib/http.ts's corsHeaders() advertises
     // GET,POST,PATCH,DELETE,OPTIONS and PUT is absent, so a PUT route would
     // fail browser preflight no matter what API Gateway accepted.
-    const employerSettingsResource = this.employerResource.addResource('settings');
+    // Path-only: nothing on /employer/settings itself, only /settings/digest below.
+    const employerSettingsResource = addPathOnlyResource(this.employerResource, 'settings');
     const employerDigestSettingsResource = employerSettingsResource.addResource('digest');
     employerDigestSettingsResource.addMethod('GET', lambdaIntegration(employerDigestSettingsLambda.function), {
       authorizer: employerAuthorizer,
@@ -954,8 +958,10 @@ export class ApiStack extends cdk.Stack {
     });
 
     // POST /auth/refresh — no auth (user's access token may be expired)
-    const authResource = this.api.root.addResource('auth');
-    const authWorkerResource = authResource.addResource('worker');
+    // Path-only: nothing on /auth itself, only /refresh, /logout, /worker/signup.
+    const authResource = addPathOnlyResource(this.api.root, 'auth');
+    // Path-only: nothing on /auth/worker itself, only /auth/worker/signup.
+    const authWorkerResource = addPathOnlyResource(authResource, 'worker');
     const authWorkerSignupResource = authWorkerResource.addResource('signup');
     authWorkerSignupResource.addMethod('POST', lambdaIntegration(workerWebSignupLambda.function));
 

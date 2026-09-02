@@ -20,7 +20,7 @@ import { JaleLambdaFunction } from '../constructs/lambda-function';
 import { JaleCognitoPool } from '../constructs/cognito-pool';
 import { VoiceTranscriptionPipeline } from '../constructs/voice-transcription-pipeline';
 import { normalizeWhatsappStatusCallbackUrl } from '../whatsapp-status-callback-url';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface WhatsAppStackProps extends cdk.StackProps {
   /** VPC shared across all stacks */
@@ -1064,7 +1064,8 @@ export class WhatsAppStack extends cdk.Stack {
     // X-Twilio-Signature (HMAC-SHA1 over the full URL + sorted body params).
     // Signature validation happens in the webhook Lambda; API Gateway just
     // forwards all POSTs to the Lambda. Matches the /health pattern.
-    const whatsappResource = props.api.root.addResource('whatsapp');
+    // Path-only: nothing on /whatsapp itself, only /webhook and /status-callback.
+    const whatsappResource = addPathOnlyResource(props.api.root, 'whatsapp');
     const webhookResource = whatsappResource.addResource('webhook');
     webhookResource.addMethod(
       'POST',
@@ -1226,18 +1227,21 @@ export class WhatsAppStack extends cdk.Stack {
     // attached to the method exactly as it is to the GET, and the handler
     // answers any method/action pair it does not route with 404 `not_found`.
     //
-    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-08-29 with the CI
-    // production context, JaleApiStack synthesizes to 431 resources against
-    // CloudFormation's hard maximum of 500 — 423 without this door. It was
+    // NOTE FOR WHOEVER ADDS THE NEXT ROUTE: measured 2026-09-02 with the CI
+    // production context, JaleApiStack synthesizes to 418 resources against
+    // CloudFormation's hard maximum of 500 — 410 without this door. It was
     // 501 (synth failed with TooManyResourcesInStack) until every method on
     // the shared RestApi moved to `lambdaIntegration()` from
     // `lib/api-integration.ts`, which drops the console-only
-    // `test-invoke-stage` Lambda::Permission and freed 70 resources. Use that
-    // helper — never `new apigateway.LambdaIntegration(...)` — for any method
-    // on this API. `test/unit/stacks/api-stack-resource-ceiling.test.ts`
-    // synthesizes the real composition and fails the build above 470, which
-    // is where splitting ApiStack (a nested stack, or a second RestApi for
-    // `/worker/*`) becomes the answer.
+    // `test-invoke-stage` Lambda::Permission and freed 70 resources (431), and
+    // then `addPathOnlyResource()` from the same file stopped building the 13
+    // no-op CORS preflights on path-only intermediate resources (418). Use
+    // both helpers — never `new apigateway.LambdaIntegration(...)`, and never
+    // a plain `addResource()` for a node that carries no method of its own.
+    // `test/unit/stacks/api-stack-resource-ceiling.test.ts` synthesizes the
+    // real composition, asserts the exact count, and fails the build above
+    // 470, which is where splitting ApiStack (a nested stack, or a second
+    // RestApi for `/worker/*`) becomes the answer.
     onboardingResource.addResource('{action}').addMethod('ANY', webOnboardingIntegration, workerAuth);
   }
 }

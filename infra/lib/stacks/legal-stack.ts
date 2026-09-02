@@ -6,7 +6,7 @@ import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface LegalStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -72,7 +72,8 @@ export class LegalStack extends cdk.Stack {
     props.dbSecret.grantRead(acceptTosFn.function);
 
     // ── API Gateway routes ──
-    const legalResource = props.api.root.addResource('legal');
+    // Path-only: nothing on /legal itself, only /legal/tos and /legal/accept.
+    const legalResource = addPathOnlyResource(props.api.root, 'legal');
 
     // GET /legal/tos — public, no auth, rate-limited via method throttling
     const tosResource = legalResource.addResource('tos');

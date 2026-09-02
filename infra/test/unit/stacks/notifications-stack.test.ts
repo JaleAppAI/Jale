@@ -42,7 +42,19 @@ function buildStack(options: {
   const dbSecret = new secretsmanager.Secret(infraHarness, 'DbSecret');
 
   const apiHarness = new cdk.Stack(app, 'NotificationsApiHarness');
-  const api = new apigateway.RestApi(apiHarness, 'Api');
+  // `defaultCorsPreflightOptions` is not decoration here: ApiStack's real
+  // RestApi sets it, so every `addResource()` node in production gets an
+  // OPTIONS MOCK method — and NotificationsStack calls
+  // `addPathOnlyResource()` for /public/employer-digest so the one no browser
+  // can ever reach is never built. A harness without the prop has no preflight
+  // to suppress and so measures a DIFFERENT API than the one that deploys.
+  const api = new apigateway.RestApi(apiHarness, 'Api', {
+    defaultCorsPreflightOptions: {
+      allowOrigins: ['https://jaleapp.ai'],
+      allowMethods: apigateway.Cors.ALL_METHODS,
+      allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    },
+  });
   const publicResource = api.root.addResource('public');
 
   const stack = new NotificationsStack(app, 'TestNotificationsStack', {

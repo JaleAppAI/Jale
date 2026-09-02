@@ -53,7 +53,7 @@ const CI_PRODUCTION_CONTEXT: Record<string, unknown> = {
 // regions and CDK rejects a cross-region reference between env-agnostic
 // stacks. The placeholder account/region pair is one that `cdk.context.json`
 // already caches availability zones for, so nothing here calls AWS — and the
-// resource count is identical to the real account's (verified: 431 either
+// resource count is identical to the real account's (verified: 418 either
 // way).
 const PLACEHOLDER_ACCOUNT = '111111111111';
 const PLACEHOLDER_REGION = 'us-east-2';
@@ -112,6 +112,53 @@ const CFN_MAX_RESOURCES = 500;
 // SPLIT ApiStack (a nested stack, or a second RestApi for `/worker/*`), not
 // to raise this number.
 const CEILING = 470;
+// The number this composition ACTUALLY synthesizes to, measured with the
+// production CI context above. Asserted exactly, not just against the gate,
+// so that a route added without noticing shows up as a diff on this line
+// instead of quietly eating the headroom: bump it deliberately, in the same
+// commit that adds the routes, and only after reading the printed count.
+//
+// History: 501 (hard synth failure) → 431 once every method on the shared
+// RestApi moved to `lambdaIntegration()` → 418 once the 13 path-only
+// intermediate resources stopped building a CORS preflight nothing can reach
+// (`addPathOnlyResource()`, `lib/api-integration.ts`).
+//
+// DELIBERATE COUPLING: an exact count also moves when aws-cdk-lib changes what
+// it emits, so an `npm update` of the CDK can fail this line with no route
+// change at all. That is the intended trade — a bump here is cheap and forces
+// someone to look at the diff, whereas silently absorbing +9 resources is how
+// the stack reached 501 in the first place.
+const MEASURED_RESOURCES = 418;
+
+/**
+ * Every `AWS::ApiGateway::Method` in the template, grouped by the resource it
+ * hangs off. The key is the resource's logical id for a real
+ * `AWS::ApiGateway::Resource`, or `ROOT` for a method on the RestApi's
+ * implicit root (`Fn::GetAtt: [..., RootResourceId]`), which is NOT itself a
+ * template resource and so cannot be counted or stripped.
+ */
+function methodsByResource(template: Template): Map<string, string[]> {
+  const byResource = new Map<string, string[]>();
+  for (const method of Object.values(
+    template.findResources('AWS::ApiGateway::Method'),
+  ) as Array<{ Properties: Record<string, any> }>) {
+    const resourceId = method.Properties?.ResourceId;
+    const key: string = resourceId?.Ref ?? (resourceId?.['Fn::GetAtt'] ? 'ROOT' : '?');
+    const methods = byResource.get(key) ?? [];
+    methods.push(method.Properties.HttpMethod);
+    byResource.set(key, methods);
+  }
+  return byResource;
+}
+
+/** `/employer/settings/digest`-style path for a resource's logical id. */
+function pathOf(resources: Record<string, { Properties: Record<string, any> }>, id: string): string {
+  const resource = resources[id];
+  if (!resource) return `?${id}`;
+  const parentRef: string | undefined = resource.Properties?.ParentId?.Ref;
+  const parent = parentRef ? pathOf(resources, parentRef) : '';
+  return `${parent}/${resource.Properties.PathPart}`;
+}
 
 describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () => {
   let apiTemplate: Template;
@@ -136,7 +183,7 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
       context: cliContext(),
       // The CLI turns version reporting on by default, which adds one
       // `AWS::CDK::Metadata` resource to every stack. `new cdk.App()` does
-      // not — without this the count is 430 where the deploy sees 431, and
+      // not — without this the count is 417 where the deploy sees 418, and
       // the gate would be measuring a template that never ships.
       analyticsReporting: true,
     });
@@ -186,9 +233,119 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     console.log(`JaleApiStack resources: ${total} / ${CFN_MAX_RESOURCES} (gate ${CEILING})`);
 
     expect(total).toBeLessThanOrEqual(CEILING);
-    // Measured 2026-08-29 with the production CI context: 431. It was 501 —
-    // a hard synth failure — until every method on the shared RestApi moved
-    // to `lambdaIntegration()` (`lib/api-integration.ts`).
+    // Exact, so the headroom cannot be spent by accident — and explained on
+    // failure, because `Expected: 418 Received: 427` tells whoever hits it
+    // nothing about what to do next.
+    if (total !== MEASURED_RESOURCES) {
+      throw new Error(
+        `JaleApiStack synthesizes ${total} CloudFormation resources but this test `
+        + `pins MEASURED_RESOURCES = ${MEASURED_RESOURCES} `
+        + `(${total > MEASURED_RESOURCES ? '+' : ''}${total - MEASURED_RESOURCES}).\n`
+        + 'If the new routes are intended, bump MEASURED_RESOURCES in this file in '
+        + 'the same commit that adds them, and check the remaining headroom against '
+        + `the ${CEILING} gate (max ${CFN_MAX_RESOURCES}).\n`
+        + 'If you did NOT add routes, something else grew the stack — an aws-cdk-lib '
+        + 'bump, or a helper that stopped being used. Read the synth diff before '
+        + 'touching this number.',
+      );
+    }
+  });
+
+  // ── CORS preflight lives on exactly the resources that can be preflighted ──
+  //
+  // `api-stack.ts` sets `defaultCorsPreflightOptions` on the shared RestApi,
+  // so CDK adds an OPTIONS MOCK method to EVERY `addResource()` node — real
+  // routes and path-only intermediates alike. A browser only ever preflights
+  // the URL of a request it is about to make, so an OPTIONS on a path that
+  // carries no real method (`/employer`, `/worker/documents`, …) can never be
+  // reached: it is a pure CloudFormation resource tax. `addPathOnlyResource()`
+  // in `lib/api-integration.ts` never builds those, and these two assertions
+  // are the REAL guard on it — the helper cannot verify its own claim, since
+  // the node is empty at creation and the parents ApiStack exports
+  // (`/public`, `/worker`, `/employer`) are attached to by downstream stacks
+  // only later.
+
+  it('gives every resource with a real method a CORS preflight', () => {
+    const resources = apiTemplate.findResources('AWS::ApiGateway::Resource') as Record<
+      string,
+      { Properties: Record<string, any> }
+    >;
+    const byResource = methodsByResource(apiTemplate);
+
+    const missingPreflight = Object.keys(resources)
+      .filter((id) => {
+        const methods = byResource.get(id) ?? [];
+        return methods.some((m) => m !== 'OPTIONS') && !methods.includes('OPTIONS');
+      })
+      .map((id) => pathOf(resources, id));
+
+    // A real route without a preflight breaks every browser call that sends
+    // Authorization or Content-Type: application/json.
+    expect(missingPreflight).toEqual([]);
+  });
+
+  it('carries no resource whose ONLY method is the CORS preflight', () => {
+    const resources = apiTemplate.findResources('AWS::ApiGateway::Resource') as Record<
+      string,
+      { Properties: Record<string, any> }
+    >;
+    const byResource = methodsByResource(apiTemplate);
+
+    const preflightOnly = Object.keys(resources)
+      .filter((id) => {
+        const methods = byResource.get(id) ?? [];
+        return methods.length > 0 && methods.every((m) => m === 'OPTIONS');
+      })
+      .map((id) => pathOf(resources, id))
+      .sort();
+
+    // 13 of these existed before `addPathOnlyResource()`: /auth,
+    // /auth/worker, /billing, /employer, /employer/settings,
+    // /employer/workers, /employer/workers/{worker_id}, /legal, /public,
+    // /public/employer-digest, /whatsapp, /worker, /worker/documents.
+    // Adding an intermediate with a plain `addResource()` fails here; the fix
+    // is to switch that call to `addPathOnlyResource(parent, 'seg')`, NOT a
+    // carve-out in this list.
+    expect(preflightOnly).toEqual([]);
+
+    // The one preflight-only OPTIONS that legitimately remains is the
+    // RestApi's implicit root ("/"): `RestApi`'s RootResource applies
+    // `defaultCorsPreflightOptions` too, and the root is not an
+    // `AWS::ApiGateway::Resource` in the template (methods reference it via
+    // `Fn::GetAtt RootResourceId`), so it is invisible to the loop above and
+    // there is no `addResource()` call to route through the helper. It costs
+    // one Method.
+    expect([...(byResource.get('ROOT') ?? [])].sort()).toEqual(['OPTIONS']);
+
+    // Nothing may land in the unbucketed `?` key: a Method whose ResourceId is
+    // neither a `Ref` nor a root `Fn::GetAtt` would be invisible to BOTH
+    // preflight invariants above, so it must fail loudly here instead.
+    expect(byResource.get('?')).toBeUndefined();
+  });
+
+  it('emits no DependsOn pointing at a resource that is not in the template', () => {
+    // Template integrity, and the reason `addPathOnlyResource()` never
+    // CONSTRUCTS the preflight instead of removing it afterwards.
+    //
+    // `Method`'s constructor registers itself with the RestApi's
+    // `latestDeployment` (`node.addDependency(cfnMethod)` +
+    // `addToLogicalId(...)`). Deleting the construct from the tree afterwards
+    // does NOT retract that: constructs have no removeDependency API, so the
+    // Deployment kept a `DependsOn` on 13 logical ids that were no longer
+    // emitted. cfn-lint E3005 is an ERROR on that, and CloudFormation rejects
+    // it at changeset creation — but CDK only WARNS (the
+    // `@aws-cdk/core:validateAgainstDefaultRules` flag is unset), so `cdk
+    // synth` and every test here passed while the production deploy would
+    // have failed. Building the tree correctly in the first place is the only
+    // fix; this assertion is the tripwire.
+    const resources = apiTemplate.toJSON().Resources as Record<string, { DependsOn?: string | string[] }>;
+    const dangling: string[] = [];
+    for (const [id, resource] of Object.entries(resources)) {
+      for (const target of [resource.DependsOn ?? []].flat()) {
+        if (!resources[target]) dangling.push(`${id} -> ${target}`);
+      }
+    }
+    expect(dangling).toEqual([]);
   });
 
   it('emits exactly one Lambda::Permission per Lambda-backed method', () => {
@@ -201,7 +358,7 @@ describe('JaleApiStack resource ceiling (real bin/jale-app.ts composition)', () 
     // CDK's default is TWO: the real stage-scoped grant, plus a
     // `.../test-invoke-stage/...` grant that only serves the API Gateway
     // console's "Test" button. At ~70 methods that console-only half is ~70
-    // resources — the difference between 501 (synth fails) and 431.
+    // resources — the difference between 501 (synth fails) and today's 418.
     expect(Object.keys(permissions)).toHaveLength(methods.length);
     expect(JSON.stringify(json)).not.toContain('test-invoke-stage');
   });

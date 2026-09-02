@@ -8,7 +8,7 @@ import { Construct } from 'constructs';
 import { NetworkStack } from './network-stack';
 import { ApiStack } from './api-stack';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface DocumentsStackProps extends cdk.StackProps {
   readonly network: NetworkStack;
@@ -191,7 +191,8 @@ export class DocumentsStack extends cdk.Stack {
 
     // Worker document routes (unauthenticated tokenized flow). /worker already exists from ApiStack.
     const workerResource = restApi.root.getResource('worker')!;
-    const workerDocs = workerResource.addResource('documents');
+    // Path-only: nothing on /worker/documents itself, only the three POSTs below.
+    const workerDocs = addPathOnlyResource(workerResource, 'documents');
 
     // POST /worker/documents/upload-url — no auth (employer-shared-link / pre-account tokenized flow)
     workerDocs
@@ -243,8 +244,10 @@ export class DocumentsStack extends cdk.Stack {
 
     // Employer routes (Cognito auth). /employer already exists from ApiStack.
     const employerRoot = restApi.root.getResource('employer')!;
-    const employerWorkers = employerRoot.addResource('workers');
-    const workerById = employerWorkers.addResource('{worker_id}');
+    // Path-only: nothing on /employer/workers itself, only under {worker_id}.
+    const employerWorkers = addPathOnlyResource(employerRoot, 'workers');
+    // Path-only: nothing on {worker_id} itself, only /profile and /documents.
+    const workerById = addPathOnlyResource(employerWorkers, '{worker_id}');
     workerById
       .addResource('profile')
       .addMethod('GET', lambdaIntegration(workerProfileFn.function), {

@@ -15,7 +15,7 @@ import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { JaleLambdaFunction } from '../constructs/lambda-function';
-import { lambdaIntegration } from '../api-integration';
+import { lambdaIntegration, addPathOnlyResource } from '../api-integration';
 
 export interface NotificationsStackProps extends cdk.StackProps {
   readonly vpc: ec2.IVpc;
@@ -508,8 +508,9 @@ export class NotificationsStack extends cdk.Stack {
     //
     // Throttle (burst 10 / rate 5, the unauthenticated-write tier) lives in
     // ApiStack's centralized MethodSettings array, not here.
-    props.publicResource
-      .addResource('employer-digest')
+    // Path-only: nothing on /public/employer-digest itself, only /unsubscribe.
+    const employerDigestResource = addPathOnlyResource(props.publicResource, 'employer-digest');
+    employerDigestResource
       .addResource('unsubscribe')
       .addMethod('POST', lambdaIntegration(unsubscribeLambda.function));
   }
