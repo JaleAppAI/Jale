@@ -42,6 +42,13 @@ export type ApiErrorPayload = {
    */
   missing?: string[] | { fields: string[]; docs: string[]; certifications: string[] };
   /**
+   * `field_locked` (409, employer job update): the writable keys the request
+   * tried to change on a job that already has applicants -- e.g.
+   * `['pre_application_prompts']`. The UI names the locked field rather than
+   * saying "something is locked"; a malformed value drops the key.
+   */
+  fields?: string[];
+  /**
    * `job_limit_reached`: the active jobs holding the employer's slots, oldest
    * first. Forward-compat -- no backend sends this yet, so the limit dialog
    * derives the list client-side (see `lib/plan-limit`'s `blockingJobsFrom`)
@@ -72,6 +79,7 @@ const ALLOWED_PAYLOAD_KEYS = [
   'detail',
   'certs',
   'missing',
+  'fields',
   'blocking_jobs',
 ] as const;
 
@@ -134,7 +142,10 @@ function pickAllowedPayload(body: Record<string, unknown>): ApiErrorPayload {
     // renders a label per entry, the other a joined cert-name list), so a
     // malformed value would crash the page rather than degrade it. Everything
     // else is passed through as the backend sent it.
-    if ((key === 'missing_docs' || key === 'missing_fields' || key === 'certs') && !isStringArray(value)) continue;
+    if (
+      (key === 'missing_docs' || key === 'missing_fields' || key === 'certs' || key === 'fields')
+      && !isStringArray(value)
+    ) continue;
     if (key === 'detail' && typeof value !== 'string') continue;
     // Both `missing` shapes are rendered as lists, so a malformed one would
     // crash the surface rather than degrade it -- same reasoning as

@@ -241,6 +241,23 @@ describe('parseApiError', () => {
     expect(err.code).toBe('details_incomplete');
   });
 
+  it('allowlists the `fields` of a field_locked 409 so the UI can name what is frozen', async () => {
+    const err = await parseApiError(
+      jsonResponse(409, { error: 'field_locked', fields: ['pre_application_prompts', 'required_docs'] }),
+      'update_failed',
+    );
+    expect(err.code).toBe('field_locked');
+    expect(err.payload.fields).toEqual(['pre_application_prompts', 'required_docs']);
+  });
+
+  it('drops a malformed `fields` rather than handing the UI something it cannot render', async () => {
+    const err = await parseApiError(
+      jsonResponse(409, { error: 'field_locked', fields: 'pre_application_prompts' }),
+      'update_failed',
+    );
+    expect(err.payload.fields).toBeUndefined();
+  });
+
   it('keeps the legal-wall payload fields the accept page reads', async () => {
     const err = await parseApiError(
       jsonResponse(403, { error: 'legal_required', requiredVersion: 'v3', currentVersion: 'v2', required: ['tos'] }),
