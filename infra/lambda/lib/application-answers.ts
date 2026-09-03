@@ -72,10 +72,13 @@ function hasOnlyAllowedKeys(obj: Record<string, unknown>, allowed: readonly stri
  * pre-trim string so padding with whitespace cannot smuggle extra
  * characters past it; `min` is a content floor enforced on the TRIMMED
  * string, so a whitespace-only value cannot satisfy a required field. The
- * TRIMMED value is what gets stored.
+ * TRIMMED value is what gets stored. A U+0000 NUL byte is rejected outright
+ * -- Postgres jsonb cannot store it, and it would otherwise reach the
+ * column and raise at write time instead of failing validation.
  */
 function boundedString(value: unknown, min: number, max: number): string | null {
   if (typeof value !== 'string') return null;
+  if (value.includes('\u0000')) return null;
   if (value.length > max) return null;
   const trimmed = value.trim();
   if (trimmed.length < min) return null;

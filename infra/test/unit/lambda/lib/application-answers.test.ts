@@ -319,6 +319,8 @@ describe('validateApplicationAnswers', () => {
       ['malformed zip', { ...base, zip: '1234' }],
       ['malformed extended zip', { ...base, zip: '78701-123' }],
       ['unknown sub-key', { ...base, country: 'US' }],
+      ['NUL byte in street', { ...base, street: 'Main St\u0000' }],
+      ['NUL byte in city', { ...base, city: 'Austin\u0000' }],
     ])('rejects %s', (_case, address) => {
       expect(validateApplicationAnswers(['home_address'], [], { home_address: address })).toEqual({
         ok: false,
@@ -344,6 +346,7 @@ describe('validateApplicationAnswers', () => {
       ['too-long phone', { name: 'Jane', phone: '1'.repeat(21) }],
       ['phone with letters', { name: 'Jane', phone: 'call-me-maybe' }],
       ['missing phone', { name: 'Jane' }],
+      ['NUL byte in name', { name: 'Jane\u0000', phone: '5125550100' }],
     ])('rejects %s', (_case, contact) => {
       expect(validateApplicationAnswers(['emergency_contact'], [], { emergency_contact: contact })).toEqual({
         ok: false,

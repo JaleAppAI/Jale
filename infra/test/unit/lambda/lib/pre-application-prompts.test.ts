@@ -96,6 +96,13 @@ describe('parsePreApplicationPrompts', () => {
     }
   });
 
+  it('rejects a NUL byte in prompt text (jsonb cannot store it)', () => {
+    expect(parsePreApplicationPrompts([{ id: 'a', text: 'How many years\u0000?' }])).toEqual({
+      ok: false,
+      error: 'invalid_pre_application_prompts',
+    });
+  });
+
   it('rejects duplicate ids rather than silently de-duping (answers are keyed by id)', () => {
     expect(parsePreApplicationPrompts([
       { id: 'same', text: 'one' },
@@ -245,6 +252,13 @@ describe('validatePromptAnswers', () => {
     expect(validatePromptAnswers(prompts, raw)).toEqual({ ok: false, error: 'invalid_prompt_answers' });
   });
 
+  it('rejects a NUL byte in an answer (jsonb cannot store it)', () => {
+    expect(validatePromptAnswers(prompts, { p1: 'five\u0000', p2: 'yes' })).toEqual({
+      ok: false,
+      error: 'invalid_prompt_answers',
+    });
+  });
+
   it('tolerates a raw jsonb prompts column value in place of a parsed list', () => {
     expect(validatePromptAnswers(null, undefined)).toEqual({ ok: true, value: {} });
     expect(validatePromptAnswers([{ id: 'p1', text: 'q' }], { p1: 'a' })).toEqual({
@@ -273,5 +287,12 @@ describe('normalizePromptAnswers (partial top-up path)', () => {
     expect(normalizePromptAnswers(prompts, { nope: 'x' })).toEqual({ ok: false, error: 'invalid_prompt_answers' });
     expect(normalizePromptAnswers(prompts, { p1: 'x'.repeat(1001) })).toEqual({ ok: false, error: 'invalid_prompt_answers' });
     expect(normalizePromptAnswers(prompts, { p1: '  ' })).toEqual({ ok: false, error: 'invalid_prompt_answers' });
+  });
+
+  it('rejects a NUL byte in a top-up answer too', () => {
+    expect(normalizePromptAnswers(prompts, { p2: 'yes\u0000' })).toEqual({
+      ok: false,
+      error: 'invalid_prompt_answers',
+    });
   });
 });

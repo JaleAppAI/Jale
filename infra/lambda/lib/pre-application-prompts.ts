@@ -134,6 +134,8 @@ export function parsePreApplicationPrompts(raw: unknown): ParsePreApplicationPro
     }
 
     if (typeof entry.text !== 'string') return INVALID_PROMPTS;
+    // jsonb cannot store U+0000; reject it here instead of raising at write time.
+    if (entry.text.includes('\u0000')) return INVALID_PROMPTS;
     const text = entry.text.trim();
     if (text.length === 0 || text.length > MAX_PROMPT_TEXT_LENGTH) return INVALID_PROMPTS;
 
@@ -217,6 +219,8 @@ function collectAnswers(
     if (!knownIds.has(key)) return { ok: false };
     const answer = raw[key];
     if (typeof answer !== 'string') return { ok: false };
+    // jsonb cannot store U+0000; reject it here instead of raising at write time.
+    if (answer.includes('\u0000')) return { ok: false };
     const trimmed = answer.trim();
     if (trimmed.length === 0 || trimmed.length > MAX_PROMPT_ANSWER_LENGTH) return { ok: false };
     value[key] = trimmed;
