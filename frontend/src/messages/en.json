@@ -702,6 +702,7 @@
         "pending": "New",
         "contacted": "Contacted",
         "talking": "In conversation",
+        "details_requested": "Details requested",
         "hired": "Hired",
         "not_interested": "Not selected"
       }
@@ -975,6 +976,15 @@
       "pending": "Applied",
       "contacted": "Employer contacted",
       "talking": "In conversation",
+      "details_requested": "Employer wants to hire you — complete your details",
+      "hired": "Hired",
+      "not_interested": "Not selected"
+    },
+    "status_short": {
+      "pending": "Applied",
+      "contacted": "Contacted",
+      "talking": "In conversation",
+      "details_requested": "Details needed",
       "hired": "Hired",
       "not_interested": "Not selected"
     },

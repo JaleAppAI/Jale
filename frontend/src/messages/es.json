@@ -702,6 +702,7 @@
         "pending": "Nuevo",
         "contacted": "Contactado",
         "talking": "En conversación",
+        "details_requested": "Datos solicitados",
         "hired": "Contratado",
         "not_interested": "No seleccionado"
       }
@@ -975,6 +976,15 @@
       "pending": "Aplicado",
       "contacted": "Empleador contactó",
       "talking": "En conversación",
+      "details_requested": "El empleador quiere contratarte: completa tus datos",
+      "hired": "Contratado",
+      "not_interested": "No seleccionado"
+    },
+    "status_short": {
+      "pending": "Aplicado",
+      "contacted": "Contactado",
+      "talking": "En conversación",
+      "details_requested": "Faltan tus datos",
       "hired": "Contratado",
       "not_interested": "No seleccionado"
     },
