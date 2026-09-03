@@ -199,3 +199,81 @@ export async function advanceLegalAcceptToProfileEntry(
 
   return advanceProfileToNextStep(client, session, msg, deps, gate, 'legal.review', contextPatch, reason, now);
 }
+
+// ── L7: the cohort ToS skip ─────────────────────────────────────────────
+
+/**
+ * A worker who has ALREADY accepted the current Terms must not be shown the
+ * Terms screen again by a door they happen to arrive through second.
+ *
+ * WHO THIS IS FOR. Web signup collects consent at the account step, before
+ * `worker_workflow_runs` exists. The run is then born at `legal.review` —
+ * the only step a run is ever born at, on either door — so those workers see
+ * an acceptance screen for a document their own `users` row already records
+ * them as having accepted. There is a cohort of them parked exactly there.
+ * The same thing happens the other way round: a worker who finished consent
+ * on WhatsApp and later opens the web app, and vice versa.
+ *
+ * WHAT IT DOES NOT DO. It never records consent. `recordLegalAcceptance` is
+ * deliberately NOT called: this is not a second acceptance, it is the
+ * recognition of the first one, and writing a duplicate `legal_consent_log`
+ * row (or refreshing `tos_accepted_at`) would falsify the audit trail about
+ * WHEN the worker agreed. The transition is tagged `legal_already_accepted`
+ * so `worker_workflow_transitions` says plainly that no new consent was taken,
+ * and the run context carries `legalSkipped: true` rather than the
+ * `legalAcceptedAt` timestamp the real Accept branch writes.
+ *
+ * THE EVIDENCE HAS TO BE BOTH HALVES. A `legal_consent_log` row for `tos` at
+ * the required version AND `users.tos_version` matching it. Either alone is
+ * ambiguous: a log row with a stale `users.tos_version` is a half-written
+ * consent (exactly the identity-split failure `recordCanonicalWhatsAppConsent`
+ * verifies against), and a `tos_version` with no log row is a repaired column
+ * with no audit trail behind it. Neither is a worker we can say has agreed.
+ * `privacy` is deliberately not checked: `tos` is the gate this step exists
+ * for, and the two are always written together by the one writer.
+ *
+ * Returns null when nothing was skipped, so a caller can carry on exactly as
+ * it did before.
+ */
+export async function maybeSkipLegalReview(
+  client: PoolClient,
+  session: OnboardingV2Session,
+  msg: OnboardingV2InboundMessage,
+  deps: OnboardingV2Deps,
+  gate: WorkerGate,
+  now: Date,
+): Promise<RouteResult | null> {
+  // Only ever at the Terms screen, and only on a run that can still move. A
+  // declined run is a worker who said no — it must keep its Terms screen and
+  // its REVIEW TERMS path, whatever their `users` row says.
+  if (gate.currentStepKey !== 'legal.review') return null;
+  if (gate.status !== 'active') return null;
+  if (!gate.runId || gate.lockVersion === null || gate.lockVersion === undefined) return null;
+
+  const version = deps.requiredLegalVersion;
+  const evidence = await client.query<{ ok: boolean }>(
+    `SELECT true AS ok
+       FROM legal_consent_log l
+       JOIN users u ON u.id = l.user_id
+      WHERE l.user_id = $1
+        AND l.document_type = 'tos'
+        AND l.document_version = $2
+        AND u.tos_version = $2
+      LIMIT 1`,
+    [gate.userId, version],
+  );
+  if ((evidence.rowCount ?? evidence.rows.length) === 0) return null;
+
+  console.log(JSON.stringify({
+    metric: 'OnboardingLegalReviewSkipped',
+    runId: gate.runId,
+    documentVersion: version,
+  }));
+
+  return advanceLegalAcceptToProfileEntry(
+    client, session, msg, deps, gate,
+    { legalSkipped: true },
+    'legal_already_accepted',
+    now,
+  );
+}

@@ -54,6 +54,7 @@ import {
   healPreAuthStep,
   isLockConflict,
   setPreferredLanguage,
+  skipLegalIfAlreadyAccepted,
   type WebAnswerItem,
 } from './onboarding-driver';
 import { buildOnboardingState, type OnboardingStateDto } from './onboarding-state';
@@ -331,6 +332,18 @@ export const handler = async (event: APIGatewayProxyEvent): Promise<APIGatewayPr
     // browser re-renders on `legal.review` and retries once. Checking the lock
     // first would instead answer from a cursor no screen can post against.
     gate = await healPreAuthStep(client, deps, { workerId, gate });
+
+    // L7 (cohort ToS skip). BEFORE the lockVersion check below, and for the
+    // same reason `healPreAuthStep` is: the skip goes through `advanceWorkflow`
+    // and bumps `lock_version`, so a POST holding the pre-skip version now
+    // 409s — carrying the SKIPPED state, which the browser re-renders and
+    // retries once. Placed after the lock check instead, a worker whose
+    // consent is already on file would post `legal.review` and be answered
+    // `step_mismatch` forever, with nothing to self-correct from.
+    //
+    // Runs on the GET as well, so the Terms screen is never rendered to
+    // someone who has already agreed to these exact Terms.
+    gate = await skipLegalIfAlreadyAccepted(client, deps, { workerId, gate, session, now });
 
     let result: APIGatewayProxyResult | null = null;
 

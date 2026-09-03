@@ -33,8 +33,23 @@ function setProfileDbField(workerId: string, field: string, value: string | bool
   profileDb.set(workerId, row);
 }
 
+// L7: the cohort ToS-skip's evidence query (`maybeSkipLegalReview`) is a real
+// `client.query`, so the shared fake needs a minimal in-memory
+// `legal_consent_log` + `users.tos_version` join. Empty by default — a
+// first-time worker has no consent on file and must still see the Terms.
+const consentDb = new Set<string>();
+
+function recordConsent(workerId: string, version: string): void {
+  consentDb.add(`${workerId}|${version}`);
+}
+
 const client = {
-  query: async (_sql: string, params: unknown[]) => {
+  query: async (sql: string, params: unknown[]) => {
+    if (/legal_consent_log/.test(sql)) {
+      const key = `${params[0] as string}|${params[1] as string}`;
+      const rows = consentDb.has(key) ? [{ ok: true }] : [];
+      return { rows, rowCount: rows.length };
+    }
     const workerId = params[0] as string;
     const row = profileDb.get(workerId) ?? {};
     return {
@@ -563,6 +578,38 @@ describe('identity.verify_otp', () => {
     expect(gateway.calls).toHaveLength(1);
     expect(gateway.calls[0].sourceId).toBe('run-user-1');
     expect(gateway.calls[0].dedupeKey).toContain(otpMessage.messageSid);
+  });
+
+  // ── L7: the cohort ToS skip ──────────────────────────────────────
+  //
+  // A worker who accepted these exact Terms on the WEB and then messages
+  // WhatsApp must not be shown a Terms screen as the channel's very first
+  // word to them. The test above ("a correct code verifies and binds
+  // identity, starting the workflow at legal.review") is the other half of
+  // this pair: it shares this harness and has NO consent row, so it proves a
+  // first-time worker still gets the Terms.
+  it('a worker who already accepted the current Terms skips legal.review, and no new consent is written', async () => {
+    const { deps, gateRepo, adapters, gateway } = makeDeps();
+    const session = makeSession({ user_id: 'user-1' });
+    await bootstrapOtp(deps, session);
+    recordConsent('user-1', deps.requiredLegalVersion);
+    adapters.identity.verifyChallenge.mockResolvedValueOnce({ status: 'verified', workerId: 'user-1' });
+
+    const result = await routeOnboardingV2(client, session, makeMsg('123456', {
+      messageSid: 'SM0123456789abcdef0123456789abcdef',
+    }), deps);
+
+    expect(result).toEqual({ handled: true, workerId: 'user-1', stepKey: 'profile.name' });
+    expect(gateRepo._gates.get('user-1')?.currentStepKey).toBe('profile.name');
+
+    const skip = gateRepo._transitions.at(-1) as any;
+    expect(skip.fromStepKey).toBe('legal.review');
+    expect(skip.reason).toBe('legal_already_accepted');
+    expect(skip.contextPatch).toEqual({ legalSkipped: true });
+
+    // The prompt the worker gets is the FIRST PROFILE QUESTION, not the Terms.
+    expect(gateway.calls.at(-1)?.sourceType).toBe('onboarding_v2:profile.name');
+    consentDb.clear();
   });
 
   it('a READY worker who verifies OTP is handed off, never re-prompted their last step', async () => {
