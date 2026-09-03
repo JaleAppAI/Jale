@@ -604,6 +604,40 @@ describe('mergeFieldAnswers', () => {
     expect(query).not.toHaveBeenCalled();
   });
 
+  it('treats a JSON-parsed __proto__ key as unknown_answer_key without polluting Object.prototype, and issues no UPDATE', async () => {
+    const query = jest.fn().mockResolvedValueOnce({ rows: [detailsRow()] });
+    // JSON.parse (unlike an object literal) makes "__proto__" a real own key --
+    // the same shape a hostile request body arrives in.
+    const attack = JSON.parse('{"__proto__":{"polluted":true}}');
+
+    const res = await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: attack,
+    });
+
+    expect(res.ok).toBe(false);
+    const errors = (res as { ok: false; errors: Record<string, string> }).errors;
+    expect(Object.keys(errors)).toContain('__proto__');
+    expect(errors.__proto__).toBe('unknown_answer_key');
+    expect(res).toMatchObject({ ok: false, reason: 'invalid' });
+
+    // Only the snapshot SELECT ran -- no merge UPDATE, no defaults upsert.
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('UPDATE job_applications'))).toBe(false);
+    expect((Object.prototype as any).polluted).toBeUndefined();
+  });
+
+  it('treats a constructor key as unknown_answer_key too', async () => {
+    const query = jest.fn().mockResolvedValueOnce({ rows: [detailsRow()] });
+
+    const res = await mergeFieldAnswers(makeClient(query), {
+      applicationId: APP_ID, workerId: WORKER_ID, answers: { constructor: 'x' },
+    });
+
+    expect(res).toEqual({ ok: false, reason: 'invalid', errors: { constructor: 'unknown_answer_key' } });
+    expect(Object.keys((res as any).errors)).toContain('constructor');
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
   // PER-MERGE 8192 cap (the backstop lifted from the WhatsApp mergeAnswer,
   // spec §12). It is measured on the POST-validation batch, so by
   // construction no legal input can trip it today: every per-key validator

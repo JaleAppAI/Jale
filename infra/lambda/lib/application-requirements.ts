@@ -677,6 +677,10 @@ function writeGate(
  *
  * Doc snapshot copies can trip either 078 trigger cap; both collapse to
  * `certification_document_limit`, same as the apply path.
+ *
+ * `errors` and `toMerge` are built as null-prototype objects so a key like
+ * `__proto__` lands as a real own property instead of silently hitting
+ * `Object.prototype`'s accessor and vanishing from the error map.
  */
 export async function mergeFieldAnswers(
   client: PoolClient,
@@ -706,8 +710,8 @@ export async function mergeFieldAnswers(
   if (gated) return gated;
 
   const allowed = new Set([...snapshot.requiredFields, ...snapshot.optionalFields]);
-  const errors: Record<string, string> = {};
-  const toMerge: Record<string, unknown> = {};
+  const errors: Record<string, string> = Object.create(null) as Record<string, string>;
+  const toMerge: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 
   for (const key of keys) {
     if (!allowed.has(key)) {
@@ -723,6 +727,7 @@ export async function mergeFieldAnswers(
   }
 
   if (Object.keys(errors).length > 0) return { ok: false, reason: 'invalid', errors };
+  if (Object.keys(toMerge).length === 0) return { ok: false, reason: 'invalid', errors };
 
   const mergedJson = JSON.stringify(toMerge);
   if (mergedJson.length > MAX_PER_MERGE_JSON_LENGTH) return { ok: false, reason: 'too_large' };
