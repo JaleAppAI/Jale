@@ -21,7 +21,7 @@ import { PayReferenceHint } from '@/components/PayReferenceHint';
 import { ShareJobPanel } from '@/components/worker/ShareJobPanel';
 import { WhatYouNeedPanel } from '@/components/worker/WhatYouNeedPanel';
 import { ProfileCompleteModal, type ProfileCompleteValues } from '@/components/worker/ProfileCompleteModal';
-import { ApplyFlow, type ApplyFlowSubmitError, type ApplyFlowSubmitPayload } from '@/components/worker/apply-flow/ApplyFlow';
+import { ApplyFlow, type ApplyFlowSubmitError } from '@/components/worker/apply-flow/ApplyFlow';
 import { apiFetch, isLegalWallError } from '@/lib/api';
 import { ApiError, classifyError, parseApiError, type ErrorKind } from '@/lib/api/errors';
 import { applyFlowReducer, initialApplyFlowState, flowHasProgress } from '@/lib/apply-flow-view';
@@ -266,12 +266,16 @@ export default function WorkerJobDetailPage() {
    * the legacy keys, so sending them would be discarded.
    *
    * Until the wave-2 UI collects prompt answers there is nothing to send, so
-   * this passes `{}`. CONSEQUENCE, deliberate and scoped to this window: a
-   * job that DOES ask pre-application prompts is refused here with a 400
-   * `missing_prompt_answers`. `ApplyFlow`/`ReviewStep` keep building
-   * `payload` untouched -- wave 2 owns re-pointing them.
+   * this passes `{}` and takes NO parameter: `ApplyFlow`/`ReviewStep` still
+   * build the old `ApplyFlowSubmitPayload` (reshaping them is a UI change
+   * this wave is not making), and a zero-arity handler is still assignable to
+   * `onSubmit` while making it obvious the payload goes nowhere.
+   *
+   * CONSEQUENCE, deliberate and scoped to this window: a job that DOES ask
+   * pre-application prompts is refused here with a 400
+   * `missing_prompt_answers`. Wave 2 owns re-pointing the flow.
    */
-  async function doApply(payload: ApplyFlowSubmitPayload) {
+  async function doApply() {
     if (!idToken || !id) return;
     setSubmitError(null);
     setSubmitting(true);

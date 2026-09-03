@@ -213,6 +213,34 @@ describe('parseApiError', () => {
     expect(err.code).toBe('missing_certification_proof');
   });
 
+  it('allowlists the string-array `missing` of a missing_prompt_answers 400', async () => {
+    const err = await parseApiError(
+      jsonResponse(400, { error: 'missing_prompt_answers', missing: ['p1', 'p2'] }),
+      'apply_failed',
+    );
+    expect(err.payload.missing).toEqual(['p1', 'p2']);
+  });
+
+  it('allowlists the three-bucket `missing` of a details_incomplete 409', async () => {
+    // Same key, a different shape, under a different code -- readers
+    // discriminate on `err.code`, never on the shape alone.
+    const missing = { fields: ['date_available'], docs: ['resume'], certifications: [] };
+    const err = await parseApiError(
+      jsonResponse(409, { error: 'details_incomplete', missing }),
+      'status_update_failed',
+    );
+    expect(err.payload.missing).toEqual(missing);
+  });
+
+  it('drops a `missing` that is neither shape', async () => {
+    const err = await parseApiError(
+      jsonResponse(409, { error: 'details_incomplete', missing: { fields: 'date_available' } }),
+      'status_update_failed',
+    );
+    expect(err.payload.missing).toBeUndefined();
+    expect(err.code).toBe('details_incomplete');
+  });
+
   it('keeps the legal-wall payload fields the accept page reads', async () => {
     const err = await parseApiError(
       jsonResponse(403, { error: 'legal_required', requiredVersion: 'v3', currentVersion: 'v2', required: ['tos'] }),

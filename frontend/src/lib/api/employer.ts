@@ -3,7 +3,13 @@ import { apiFetch } from '../api';
 import { ApiError, parseApiError } from './errors';
 import type { ScoreBand } from '../match';
 import type { ApplicationStatus, JobStatus, WritableJobStatus } from '../status';
-import type { WorkerPost } from './worker';
+import type {
+  ApplicationDetailsStatus,
+  ApplicationStage,
+  PreApplicationPrompt,
+  RequirementsRemaining,
+  WorkerPost,
+} from './worker';
 export type { ApplicationStatus } from '../status';
 
 // The typed-error layer now lives in `./errors` (it is shared with worker.ts
@@ -195,6 +201,18 @@ export type Job = {
   /** Per-certification requirement rows; independent of the legacy
    *  `certification_doc` three-state row in required_docs/optional_docs. */
   certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }> | null;
+  /**
+   * The employer's apply-time questions (sprint 23, migration 091). `[]` for a
+   * job that asks none; optional only for a payload from a cached pre-rollout
+   * client, so readers must treat absence as empty rather than crash.
+   *
+   * `id` is the KEY every stored answer is filed under. An edit that re-uses a
+   * prompt's text but mints a new id ORPHANS the answers already given to it
+   * (they survive with `question: null` -- see `prompt_answers` on `Applicant`
+   * -- but no longer sit under their question), so always round-trip the ids
+   * this read handed you.
+   */
+  pre_application_prompts?: PreApplicationPrompt[];
 };
 
 export type EmployerJobDetail = Job & {
@@ -221,6 +239,14 @@ export type EmployerJobDetail = Job & {
   public_listing_enabled: boolean;
 };
 
+/** One answered pre-application prompt, as an employer read publishes it. */
+export type EmployerPromptAnswer = {
+  prompt_id: string;
+  /** The prompt's text, or null when the job no longer asks this prompt. */
+  question: string | null;
+  text: string;
+};
+
 export type Applicant = {
   application_id: string;
   worker_id: string;
@@ -242,6 +268,33 @@ export type Applicant = {
   application_answers?: Record<string, unknown>;
   /** Optional fields the job asked for that this applicant left unanswered. */
   not_provided?: string[];
+  /**
+   * The stage-2 vocabulary (sprint 23, migration 091), derived server-side by
+   * the SAME pure functions the worker's own door runs. Optional throughout:
+   * the frontend may ship before the backend does.
+   *
+   * `details_status` and `stage` come from the TIMESTAMPS, never from
+   * `status`, so moving a `details_requested` applicant on to `contacted` or
+   * `talking` does NOT reset the stage -- the two legitimately disagree.
+   */
+  details_status?: ApplicationDetailsStatus;
+  stage?: ApplicationStage;
+  details_requested_at?: string | null;
+  details_completed_at?: string | null;
+  /**
+   * What this applicant still owes. NOTE `remaining.docs` is JOB-SCOPED: it
+   * names docs not attached to THIS job, which is exactly what the hire gate
+   * measures, so a worker who holds the doc in their vault but never attached
+   * it still appears here. That is the same answer a hire attempt gives.
+   */
+  remaining?: RequirementsRemaining;
+  /**
+   * The applicant's prompt answers, already joined to the job's prompt texts
+   * so nothing here has to correlate two columns. Job prompt order, ANSWERED
+   * prompts only. `question` is null for an answer to a prompt the employer
+   * has since deleted -- render it as orphaned, never under a neighbour.
+   */
+  prompt_answers?: EmployerPromptAnswer[];
 };
 
 export type ApplicantFilters = {
@@ -505,6 +558,21 @@ export type JobWritePayload = {
   shift_start?: string;
   shift_end?: string;
   certification_requirements?: Array<{ name: string; tier: 'required' | 'optional'; proof_required: boolean }>;
+  /**
+   * Apply-time questions (migration 091). At most 10, each 1..500 characters
+   * after trimming; a malformed list is a 400 `invalid_pre_application_prompts`.
+   *
+   * `id` is OPTIONAL only for a NEW prompt -- the backend mints one. When
+   * EDITING, always send back the id the read gave you: a prompt that arrives
+   * without its id is a new prompt, and every answer already filed under the
+   * old one is orphaned.
+   *
+   * Omit the key entirely to preserve the stored list (same contract as
+   * `required_docs`). Once anyone has applied the list is LOCKED: a changed
+   * list is refused with 409 `field_locked` naming `pre_application_prompts`
+   * in `fields`, exactly like `certification_requirements`.
+   */
+  pre_application_prompts?: Array<{ id?: string; text: string }>;
 };
 
 export async function createJob(token: string, data: JobWritePayload): Promise<Job> {
@@ -690,12 +758,23 @@ export type JobCreatedOutcome = {
   templateSaved?: boolean;
 };
 
+/**
+ * The job's prompt list rides at the TOP LEVEL, not per applicant: it is one
+ * property of the job, and repeating it on every row would invite the two
+ * copies to disagree. Optional for a pre-rollout payload.
+ */
+export type JobApplicantsResponse = {
+  applicants: Applicant[];
+  total: number;
+  pre_application_prompts?: PreApplicationPrompt[];
+};
+
 export async function getJobApplicants(
   token: string,
   jobId: string,
   filters: ApplicantFilters = {},
   signal?: AbortSignal,
-): Promise<{ applicants: Applicant[]; total: number }> {
+): Promise<JobApplicantsResponse> {
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
   if (filters.skills) params.set('skills', filters.skills);
@@ -892,6 +971,35 @@ export interface WorkerProfile {
   } | null;
   /** `null` when the worker has no assessment, or none has been extracted yet. */
   trust_extraction: TrustExtraction | null;
+  /** This worker's application to the `job_id` the profile was read for. */
+  application_id?: string;
+  /**
+   * The stage-2 vocabulary (sprint 23, migration 091), derived server-side by
+   * the SAME pure functions the worker's own door runs. Optional throughout:
+   * the frontend may ship before the backend does.
+   *
+   * `details_status` and `stage` come from the TIMESTAMPS, never from
+   * `status`, so moving a `details_requested` applicant on to `contacted` or
+   * `talking` does NOT reset the stage -- the two legitimately disagree.
+   */
+  details_status?: ApplicationDetailsStatus;
+  stage?: ApplicationStage;
+  details_requested_at?: string | null;
+  details_completed_at?: string | null;
+  /**
+   * What this applicant still owes. NOTE `remaining.docs` is JOB-SCOPED: it
+   * names docs not attached to THIS job, which is exactly what the hire gate
+   * measures, so a worker who holds the doc in their vault but never attached
+   * it still appears here. That is the same answer a hire attempt gives.
+   */
+  remaining?: RequirementsRemaining;
+  /**
+   * The applicant's prompt answers, already joined to the job's prompt texts
+   * so nothing here has to correlate two columns. Job prompt order, ANSWERED
+   * prompts only. `question` is null for an answer to a prompt the employer
+   * has since deleted -- render it as orphaned, never under a neighbour.
+   */
+  prompt_answers?: EmployerPromptAnswer[];
 }
 
 export async function getWorkerProfile(
@@ -909,6 +1017,15 @@ export async function getWorkerProfile(
   return res.json();
 }
 
+/**
+ * Unchanged on the wire -- but as of sprint 23 (migration 091) HIRING has a
+ * gate, and every caller must handle it: moving an applicant to `hired` while
+ * their details are incomplete is refused with 409 `details_incomplete`,
+ * carrying `payload.missing` as `{ fields, docs, certifications }` (the
+ * `missing` key is allowlisted onto `ApiError.payload` in `./errors`). The
+ * employer's move is to set `details_requested` first and let the worker fill
+ * the gaps; retrying `hired` unchanged will keep failing.
+ */
 export async function updateApplicantStatus(
   token: string,
   jobId: string,
