@@ -25,13 +25,24 @@
  */
 import type { PoolClient } from 'pg';
 import { randomUUID } from 'crypto';
-import { setInternalUserRlsContext } from '../../lib/db';
-import { DOC_TYPES, type PayInterval } from '../../lib/job-fields';
-import { validateApplicationAnswers, EDUCATION_LEVELS } from '../../lib/application-answers';
+import { type PayInterval } from '../../lib/job-fields';
+import { EDUCATION_LEVELS } from '../../lib/application-answers';
 import {
   copyRequiredDocumentSnapshots,
   CERTIFICATION_DOCUMENT_LIMIT_CONSTRAINTS,
 } from '../../lib/applications';
+// Sprint 23: this lane no longer owns a "what's missing" engine of its own.
+// Everything below derives from lib/application-requirements.ts -- the ONE
+// shared engine both the web stage-2 door and this flow run on.
+import {
+  loadRequirementSnapshot,
+  computeRemaining,
+  mergeFieldAnswers,
+  markDetailsCompleteIfDone,
+  seedAnswersFromDefaults,
+  type RequirementSnapshot,
+  type MergeFailureReason,
+} from '../../lib/application-requirements';
 import {
   fieldQuestion,
   fieldRetryHint,
@@ -56,81 +67,97 @@ import {
   isHelpCommand,
   isSupportCommand,
   isProfileCommand,
+  isApplicationsCommand,
   parseTypedJobAction,
   normalizeCommandText,
   type ProfileStateContext,
 } from './flows';
 
+/** The four step kinds the WhatsApp fill lane can act on, plus the sprint-23
+ * `details_not_requested` exit. Deliberately NARROWER than the shared
+ * engine's `nextStep`: this lane has no certification-claim collector (that
+ * step is web-only), so a job whose only gap is a certification reads as
+ * `complete` here and the worker finishes it through the `web_handoff` link.
+ * `markDetailsCompleteIfDone` still refuses to stamp `details_completed_at`
+ * in that case -- the engine, not this lane, owns that verdict. */
+export type FillExitReason =
+  | 'job_inactive'
+  | 'application_gone'
+  | 'application_closed'
+  | 'details_not_requested';
+
 export type NextStep =
   | { kind: 'field'; key: FillFieldKey; uncollectable: string[] }
   | { kind: 'doc'; docType: CollectableDocType; uncollectable: string[] }
-  | { kind: 'exit'; reason: 'job_inactive' | 'application_gone' | 'application_closed'; uncollectable: string[] }
+  | { kind: 'exit'; reason: FillExitReason; uncollectable: string[] }
   | { kind: 'complete'; uncollectable: string[] };
 
-// DOC_TYPES (job-fields.ts) already excludes 'ssn' -- legacy rows may still
-// carry it (kept in DB CHECK constraints for that reason), but it can never
-// be collected through this flow. See job-fields.ts's DOC_TYPES comment.
-const COLLECTABLE = new Set<string>(DOC_TYPES);
+export interface FillStepResult {
+  step: NextStep;
+  /** The snapshot the step was derived from -- null for a vanished row.
+   * Threaded on so completion can call `markDetailsCompleteIfDone` without a
+   * second synced load, and so callers can read jobId/requiredFields. */
+  snapshot: RequirementSnapshot | null;
+}
 
 /**
- * Computes the next unanswered required field, then the next missing
- * required doc, for a worker's job application -- or an exit/complete
- * verdict. Field keys are walked in `required_fields` array order using
- * `hasOwnProperty` presence (a stored `false`/`null` answer counts as
- * answered -- only an ABSENT key is unanswered), so re-ordering or widening
- * `required_fields` on the job takes effect on the very next call. Docs are
- * only checked once every field is answered, matching the design's
- * fields-before-docs ordering.
+ * THE STAGE GATE (B4.0 section 7). The shared engine's compat
+ * `computeNextStep` deliberately does NOT gate on stage -- it preserves the
+ * pre-sprint-23 shape for callers that armed the fill at accept time. This
+ * lane arms only after the employer requested details, so it applies the
+ * gate itself, on EVERY turn (not just at arm time): an employer who moves a
+ * `details_requested` applicant on to contacted/talking keeps the fill alive
+ * because the gate reads the TIMESTAMPS, never the literal status.
+ *
+ * Order mirrors the compat wrapper's, with two insertions:
+ *   1. lifecycle exits (job filled/closed, application hired/not_interested)
+ *   2. stage === 'apply'          -> exit `details_not_requested`   (NEW)
+ *   3. details_completed_at set   -> complete                        (NEW)
+ *   4. fields, then docs, then complete.
  */
-export async function computeNextStep(client: PoolClient, applicationId: string): Promise<NextStep> {
-  const appRes = await client.query(
-    `SELECT ja.worker_id, ja.job_id, ja.status AS application_status,
-            ja.application_answers, j.status AS job_status,
-            j.required_fields, j.required_docs
-       FROM job_applications ja JOIN jobs j ON j.id = ja.job_id
-      WHERE ja.id = $1`,
-    [applicationId],
-  );
-  if (appRes.rows.length === 0) {
-    return { kind: 'exit', reason: 'application_gone', uncollectable: [] };
-  }
-  const row = appRes.rows[0];
-  const uncollectable: string[] = (row.required_docs ?? []).filter(
-    (d: string) => !COLLECTABLE.has(d),
-  );
+export function fillStepFor(snapshot: RequirementSnapshot | null): NextStep {
+  if (!snapshot) return { kind: 'exit', reason: 'application_gone', uncollectable: [] };
 
-  if (row.job_status === 'filled' || row.job_status === 'closed') {
+  const remaining = computeRemaining(snapshot);
+  const uncollectable = remaining.uncollectableDocs;
+
+  if (snapshot.jobStatus === 'filled' || snapshot.jobStatus === 'closed') {
     return { kind: 'exit', reason: 'job_inactive', uncollectable };
   }
-  if (row.application_status === 'hired' || row.application_status === 'not_interested') {
+  if (snapshot.applicationStatus === 'hired' || snapshot.applicationStatus === 'not_interested') {
     return { kind: 'exit', reason: 'application_closed', uncollectable };
   }
-
-  const answers = row.application_answers ?? {};
-  for (const key of row.required_fields ?? []) {
-    if (!Object.prototype.hasOwnProperty.call(answers, key)) {
-      return { kind: 'field', key, uncollectable };
-    }
+  if (snapshot.stage === 'apply') {
+    return { kind: 'exit', reason: 'details_not_requested', uncollectable };
   }
+  if (snapshot.detailsCompletedAt) return { kind: 'complete', uncollectable };
 
-  // worker_documents is FORCE ROW LEVEL SECURITY (005_document_vault.sql):
-  // its SELECT policy requires app.current_internal_user_id = worker_id.
-  // Without this, the query below silently returns zero rows and every
-  // required doc reads as missing forever. Same house pattern as
-  // applyWorkerToJob (../../lib/applications.ts).
-  await setInternalUserRlsContext(client, row.worker_id);
-  const docRes = await client.query(
-    `SELECT DISTINCT doc_type FROM worker_documents
-      WHERE worker_id = $1 AND (job_id IS NULL OR job_id = $2)`,
-    [row.worker_id, row.job_id],
-  );
-  const have = new Set(docRes.rows.map((r: { doc_type: string }) => r.doc_type));
-  for (const docType of row.required_docs ?? []) {
-    if (!COLLECTABLE.has(docType)) continue;
-    if (!have.has(docType)) return { kind: 'doc', docType, uncollectable };
+  const fieldKey = remaining.fields[0];
+  if (fieldKey !== undefined) {
+    return { kind: 'field', key: fieldKey as FillFieldKey, uncollectable };
   }
-
+  const docType = remaining.docs[0];
+  if (docType !== undefined) {
+    return { kind: 'doc', docType: docType as CollectableDocType, uncollectable };
+  }
   return { kind: 'complete', uncollectable };
+}
+
+/**
+ * One synced snapshot load (`syncDocumentSnapshots: true` copies the
+ * worker's vault docs onto the job first, so a vault-only resume is never
+ * re-asked -- see the engine header) plus the gate above. Replaces this
+ * module's former two/three-query `computeNextStep`/`countRemainingRequirements`
+ * pair: the shared engine answers both from the SAME select.
+ */
+export async function computeFillStep(
+  client: PoolClient,
+  applicationId: string,
+): Promise<FillStepResult> {
+  const snapshot = await loadRequirementSnapshot(client, applicationId, {
+    syncDocumentSnapshots: true,
+  });
+  return { step: fillStepFor(snapshot), snapshot };
 }
 
 export interface FillCounts {
@@ -139,59 +166,28 @@ export interface FillCounts {
   uncollectable: string[];
 }
 
+/** The intro's "N questions and M documents" counts, now derived PURELY from
+ * a snapshot the caller already loaded -- no extra round trip. */
+export function fillCountsFor(snapshot: RequirementSnapshot | null): FillCounts {
+  if (!snapshot) return { nFields: 0, nDocs: 0, uncollectable: [] };
+  const remaining = computeRemaining(snapshot);
+  return {
+    nFields: remaining.counts.fields,
+    nDocs: remaining.counts.docs,
+    uncollectable: remaining.uncollectableDocs,
+  };
+}
+
 /**
- * Task 9: the intro's "N preguntas y M documentos" counts. A deliberately
- * SEPARATE query from `computeNextStep` (which only ever answers "what's
- * the very next gap", not "how many remain") -- one targeted SELECT that
- * mirrors computeNextStep's own two-query shape (job_applications JOIN jobs,
- * plus the worker_documents presence check) but folded into a single round
- * trip via a correlated subquery, since counting (unlike computeNextStep's
- * early-return walk) always needs both halves. Simplest-correct choice
- * (task brief): one extra SELECT, not N calls to computeNextStep in a loop.
- *
- * Callers MUST have already set the `app.current_internal_user_id` RLS GUC
- * this turn (worker_documents is FORCE RLS, 005_document_vault.sql, exactly
- * as in computeNextStep) -- this function does not set it itself, since by
- * the time the fill-arm intro is being built the caller
- * (`handleJobAction`/`seedAnswersFromDefaults` in processor.ts) always
- * already has.
+ * The `{{url}}` the `web_handoff` note points at: the worker's own stage-2
+ * page for THIS application. `PUBLIC_SITE_BASE_URL` is wired onto the
+ * processor Lambda by whatsapp-stack.ts; the literal fallback keeps unit
+ * tests and any un-migrated environment producing a real link rather than
+ * "undefined/es/worker/...".
  */
-export async function countRemainingRequirements(
-  client: PoolClient,
-  applicationId: string,
-): Promise<FillCounts> {
-  const res = await client.query<{
-    application_answers: Record<string, unknown> | null;
-    required_fields: string[] | null;
-    required_docs: string[] | null;
-    have_docs: string[] | null;
-  }>(
-    `SELECT ja.application_answers, j.required_fields, j.required_docs,
-            COALESCE((
-              SELECT array_agg(DISTINCT wd.doc_type)
-                FROM worker_documents wd
-               WHERE wd.worker_id = ja.worker_id
-                 AND (wd.job_id IS NULL OR wd.job_id = ja.job_id)
-            ), '{}') AS have_docs
-       FROM job_applications ja JOIN jobs j ON j.id = ja.job_id
-      WHERE ja.id = $1`,
-    [applicationId],
-  );
-  const row = res.rows[0];
-  if (!row) return { nFields: 0, nDocs: 0, uncollectable: [] };
-
-  const answers = row.application_answers ?? {};
-  const requiredFields = row.required_fields ?? [];
-  const requiredDocs = row.required_docs ?? [];
-  const have = new Set(row.have_docs ?? []);
-
-  const nFields = requiredFields.filter(
-    (key) => !Object.prototype.hasOwnProperty.call(answers, key),
-  ).length;
-  const uncollectable = requiredDocs.filter((d) => !COLLECTABLE.has(d));
-  const nDocs = requiredDocs.filter((d) => COLLECTABLE.has(d) && !have.has(d)).length;
-
-  return { nFields, nDocs, uncollectable };
+export function workerApplicationUrl(lang: Lang, applicationId: string): string {
+  const base = (process.env.PUBLIC_SITE_BASE_URL ?? 'https://jaleapp.ai').replace(/\/+$/, '');
+  return `${base}/${lang}/worker/applications/${applicationId}`;
 }
 
 /**
@@ -374,6 +370,13 @@ export type FillStateContext = ProfileStateContext & {
   // `handleFillMessage` resolves it as a one-shot yes/no (see
   // `resolveOfferOnlyTurn`) whenever `fill_application_id` itself is unset.
   fill_offer_application_id?: string | null;
+  // Sprint 23 prompt lane (application-prompts.ts). Declared here, not in a
+  // second loose type, so the mutual-exclusion scrub (`FILL_SCRUB`) and the
+  // processor's two lane gates read one shape.
+  prompt_application_id?: string | null;
+  prompt_last_prompt_at?: number | null;
+  /** One-shot numbered `aplicaciones` menu (applications-command.ts). */
+  applications_menu?: { ids: string[]; at: number } | null;
 };
 
 // references/work_history are the only two array-shaped answer keys
@@ -466,7 +469,20 @@ function matchesCommandEscape(body: string): boolean {
     || isHelpCommand(body)
     || isSupportCommand(body)
     || isProfileCommand(body)
+    || isApplicationsCommand(body)
   );
+}
+
+/**
+ * The full "this body is a command, not an answer" predicate: the reserved
+ * commands above, the EXACT jobs keyword, and a typed job action. Exported
+ * so the sprint-23 prompt lane (application-prompts.ts) applies byte-identical
+ * escape rules -- a worker must be able to reach `ayuda`/`chats`/`trabajos`
+ * mid-prompts exactly as they can mid-fill, and a single grammar change in
+ * flows.ts must move both lanes at once.
+ */
+export function matchesFillEscape(body: string): boolean {
+  return matchesCommandEscape(body) || isExactJobsKeyword(body) || parseTypedJobAction(body) !== null;
 }
 
 // ── Deterministic per-key parsers (spec §7) ─────────────────────────────
@@ -640,43 +656,38 @@ function mapExtractionFailure(
   }
 }
 
-// ── Merge choke point (spec §4.3) ───────────────────────────────────────
+// ── Merge choke point (spec section 4.3, now the shared engine) ─────────
 
-type MergeResult = { ok: true } | { ok: false; reason: 'invalid' | 'too_large' };
-
-/**
- * THE single UPDATE statement that ever writes `job_applications
- * .application_answers` from this module -- both `mergeAnswer` (one
- * worker-confirmed key per call) and `seedAnswersFromDefaults` (Task 9, a
- * batch of pre-seeded keys in one call) go through this, so the `||`-merge
- * SQL text exists in exactly one place. Caller is responsible for having
- * already called `deps.setRls` in this turn (job_applications UPDATEs are
- * not RLS-gated the way worker_documents is, but every write in this module
- * runs after the RLS GUC is set anyway, by convention -- see mergeAnswer's
- * own call order test).
- */
-async function persistMergedAnswers(
-  client: PoolClient,
-  applicationId: string,
-  mergedJson: string,
-): Promise<void> {
-  await client.query(
-    `UPDATE job_applications
-        SET application_answers = application_answers || $1::jsonb, updated_at = now()
-      WHERE id = $2`,
-    [mergedJson, applicationId],
-  );
-}
+type MergeResult = { ok: true } | { ok: false; reason: MergeFailureReason | 'invalid' };
 
 /**
- * The ONLY path from an extracted/parsed value to the DB. Re-validates
- * (defense in depth -- extraction/deterministic parsing already produced a
- * plausible value, but this is the last gate before a write) via
- * `validateApplicationAnswers`, which rebuilds a fresh object from
- * validated fields only -- `merged` is never built from the raw input.
- * The 8192-byte check is a backstop (spec §12): per-key validator bounds
- * already keep every real shape far under this, but a future validator
- * change should fail loud here rather than silently growing the column.
+ * The ONLY path from an extracted/parsed value to the DB, and now a thin
+ * adapter over the shared engine's `mergeFieldAnswers` -- ONE key per turn,
+ * exactly the batch shape the web door posts with many.
+ *
+ * What the engine adds over this module's former private `mergeAnswer`:
+ *   - the same per-key `validateApplicationAnswers([key], [], {...})` gate
+ *     (unchanged), plus a check that the key is actually one THIS job asks
+ *     for, which subsumes the de-required guard `finalizeAnswer` used to do
+ *     on its own (an employer who dropped the key mid-confirm now gets
+ *     `unknown_answer_key` -> 'invalid');
+ *   - the post-merge column-size SAVEPOINT (this lane previously bounded
+ *     only the per-merge JSON);
+ *   - the `worker_application_defaults` WRITE-BACK, which WhatsApp never had
+ *     (B4.0 section 9 -- 091 grants jale_whatsapp the INSERT/UPDATE). This is
+ *     why the swap is not cosmetic: answering on WhatsApp now pre-fills the
+ *     worker's NEXT application, same as the web door.
+ *   - `markDetailsCompleteIfDone` on success.
+ *
+ * `deps.setRls` still runs FIRST (call-order test): the defaults write-back
+ * lands on FORCE-RLS `worker_application_defaults`, and the engine only sets
+ * the GUC itself on the document-sync path (skipped entirely for a job that
+ * asks for no documents).
+ *
+ * A defaults-write failure propagates out of the engine BY DESIGN rather
+ * than being swallowed, so a turn cannot commit an answer whose default
+ * silently vanished. That aborts the whole turn transaction -- louder than
+ * the pre-swap behavior, and deliberate.
  */
 async function mergeAnswer(
   client: PoolClient,
@@ -685,102 +696,40 @@ async function mergeAnswer(
   value: unknown,
   deps: FillDeps,
 ): Promise<MergeResult> {
-  const validated = validateApplicationAnswers([key], [], { [key]: value });
-  if (!validated.ok) return { ok: false, reason: 'invalid' };
-  const merged = JSON.stringify({ [key]: (validated.value as Record<string, unknown>)[key] });
-  if (merged.length > 8192) return { ok: false, reason: 'too_large' };
   await deps.setRls(client, ctx.workerId);
-  await persistMergedAnswers(client, ctx.stateContext.fill_application_id as string, merged);
-  return { ok: true };
+  const result = await mergeFieldAnswers(client, {
+    applicationId: ctx.stateContext.fill_application_id as string,
+    workerId: ctx.workerId,
+    answers: { [key]: value },
+  });
+  if (result.ok) return { ok: true };
+  return { ok: false, reason: result.reason };
 }
 
-/**
- * Task 9: pre-fills an application's answers from the worker's saved
- * `worker_application_defaults` row (079_worker_application_defaults.sql;
- * read access for jale_whatsapp added by 081, keyed on
- * `app.current_internal_user_id` -- see task-9a-report.md's RLS analysis),
- * so a worker who already answered these questions on a past application is
- * not re-asked. Called once at fill-arm time (`handleJobAction`'s accept
- * path in processor.ts), BEFORE `computeNextStep`/the intro counts, for both
- * fresh accepts and re-arms.
- *
- * Contract (binding, from the task brief):
- *   - `deps.setRls` runs FIRST, before any SELECT (worker_application_defaults
- *     is FORCE RLS -- see 079/081).
- *   - Only a key that is (a) present in `requiredFields`/`optionalFields` --
- *     i.e. actually relevant to THIS job, (b) present in the defaults row,
- *     and (c) ABSENT (via `hasOwnProperty`, matching `computeNextStep`'s own
- *     presence convention -- a stored `false`/`null` answer already counts
- *     as answered) from the application's CURRENT `application_answers` is a
- *     seed candidate.
- *   - Each candidate is re-validated via the same single-key
- *     `validateApplicationAnswers([key], [], {[key]: value})` shape
- *     `mergeAnswer` uses -- a defaults row is worker-supplied history, not a
- *     trusted-by-construction value (a validator can also legitimately
- *     tighten between when the default was saved and now). A key that fails
- *     validation is skipped SILENTLY (never an error to the worker -- the
- *     bot simply asks the question, exactly as if no default existed).
- *   - All keys that DO validate are merged in exactly ONE UPDATE (via
- *     `persistMergedAnswers`, the same choke point `mergeAnswer` uses) --
- *     batching one call is straightforward here since every seeded key is
- *     already known before any write happens (unlike the confirm-per-turn
- *     flow `mergeAnswer` serves), so there is no reason to prefer N
- *     round-trips over one.
- *
- * Returns the seeded key NAMES ONLY (spec §11: metadata-only logging) --
- * never the values. Short-circuits (no `job_applications` SELECT, no
- * UPDATE) when the worker has no defaults row, or the row's `answers` is
- * empty -- the common case for a worker's very first application.
- */
-export async function seedAnswersFromDefaults(
-  client: PoolClient,
-  ctx: FillContext,
-  requiredFields: readonly string[],
-  optionalFields: readonly string[],
-  deps: FillDeps,
-): Promise<string[]> {
-  await deps.setRls(client, ctx.workerId);
-
-  const defaultsRes = await client.query<{ answers: Record<string, unknown> }>(
-    `SELECT answers FROM worker_application_defaults WHERE worker_id = $1`,
-    [ctx.workerId],
-  );
-  const defaults = defaultsRes.rows[0]?.answers ?? {};
-  if (Object.keys(defaults).length === 0) return [];
-
-  const applicationId = ctx.stateContext.fill_application_id as string;
-  const appRes = await client.query<{ application_answers: Record<string, unknown> }>(
-    `SELECT application_answers FROM job_applications WHERE id = $1`,
-    [applicationId],
-  );
-  const currentAnswers = appRes.rows[0]?.application_answers ?? {};
-
-  const seeded: string[] = [];
-  const toMerge: Record<string, unknown> = {};
-  for (const key of [...requiredFields, ...optionalFields]) {
-    if (!Object.prototype.hasOwnProperty.call(defaults, key)) continue;
-    if (Object.prototype.hasOwnProperty.call(currentAnswers, key)) continue;
-    const validated = validateApplicationAnswers([key], [], { [key]: defaults[key] });
-    if (!validated.ok) {
-      logStep(key, 'seed_skipped', 'invalid_default');
-      continue;
-    }
-    toMerge[key] = (validated.value as Record<string, unknown>)[key];
-    seeded.push(key);
+/** Maps every `mergeFieldAnswers` failure reason to caller-facing copy. The
+ * lifecycle reasons reuse the SAME exit copy `sendExitPrompt` sends, so a
+ * job that closed between the question and the answer reads identically
+ * whichever code path notices first. */
+function mergeFailureMessage(
+  reason: MergeFailureReason | 'invalid',
+  key: FillFieldKey,
+  lang: Lang,
+): string {
+  switch (reason) {
+    case 'too_large':
+      return fillMessage('answer_too_long', lang);
+    case 'not_found':
+      return fillMessage('exit_application_gone', lang);
+    case 'closed':
+      return fillMessage('exit_application_closed', lang);
+    case 'stage_locked':
+      return fillMessage('exit_details_not_requested', lang);
+    case 'certification_document_limit':
+      return fillMessage('cert_cap', lang);
+    case 'invalid':
+    default:
+      return fieldRetryHint(key, lang);
   }
-
-  if (seeded.length === 0) return [];
-
-  await persistMergedAnswers(client, applicationId, JSON.stringify(toMerge));
-  for (const key of seeded) logStep(key, 'seeded');
-  return seeded;
-}
-
-/** Maps a merge failure to the caller-facing message (brief's caller
- * contract): 'too_large' -> answer_too_long; 'invalid' -> the per-key retry
- * hint. */
-function mergeFailureMessage(reason: 'invalid' | 'too_large', key: FillFieldKey, lang: Lang): string {
-  return reason === 'too_large' ? fillMessage('answer_too_long', lang) : fieldRetryHint(key, lang);
 }
 
 // ── job_id surfacing (see FillContext's jsdoc) ──────────────────────────
@@ -848,17 +797,33 @@ interface ContinueOtherOffer {
 }
 
 /**
- * Task 11: scans the worker's OTHER open applications (most-recently-
- * updated first, per the brief's SQL) for one with a real field/doc gap
- * left, to offer right after the just-completed application's completion
- * message. The scan is capped at 5 candidates -- taken in code (not via a
- * SQL LIMIT, matching the brief text exactly) since the query itself is
- * already small and ordered -- and always through `computeNextStep` itself
- * (the single source of truth for "does this application still need
- * something"), never a hand-rolled duplicate check. Returns `null` the
- * instant either the query is empty or none of the first 5 candidates has a
- * real gap (already complete/exited) -- callers offer AT MOST ONE
- * application, ever.
+ * The employer's display name for a job, for the `intro`/`completion` copy.
+ * `employer_display_name` (031) is a SECURITY DEFINER lookup: it flips a
+ * transaction-local `app.employer_name_lookup` GUC that widens
+ * `employer_profiles` reads until COMMIT. That widening is INERT for this
+ * lane -- jale_whatsapp holds no table grant on `employer_profiles` at all
+ * (031's header) -- which is why the WhatsApp lane may call it mid-turn
+ * where an API handler (worker-jobs-detail.ts:44-46) must keep it last
+ * before COMMIT. Same precedent as conversation-router.ts:566.
+ */
+async function loadJobCompanyName(client: PoolClient, jobId: string): Promise<string> {
+  const res = await client.query<{ company: string }>(
+    `SELECT employer_display_name(j.employer_id) AS company FROM jobs j WHERE j.id = $1`,
+    [jobId],
+  );
+  return res.rows[0]?.company ?? 'Jale';
+}
+
+/**
+ * Scans the worker's OTHER applications for one that is genuinely awaiting
+ * stage-2 answers, to offer right after the just-completed one.
+ *
+ * Sprint 23 narrows the SQL with the stage predicate itself -- an
+ * application nobody has asked details for is NOT something to offer to
+ * continue, and re-deriving that per candidate would burn a synced snapshot
+ * load each time. `details_requested_at IS NOT NULL AND details_completed_at
+ * IS NULL` mirrors the gate in `fillStepFor`; the per-candidate
+ * `computeFillStep` below is still what decides there is a REAL gap.
  */
 async function findContinueOtherOffer(
   client: PoolClient,
@@ -871,11 +836,13 @@ async function findContinueOtherOffer(
       WHERE ja.worker_id = $1 AND ja.id <> $2
         AND j.status IN ('active','paused')
         AND ja.status IN ('pending','contacted','talking')
+        AND ja.details_requested_at IS NOT NULL
+        AND ja.details_completed_at IS NULL
       ORDER BY ja.updated_at DESC`,
     [workerId, excludeApplicationId],
   );
   for (const row of res.rows.slice(0, 5)) {
-    const step = await computeNextStep(client, row.id);
+    const { step } = await computeFillStep(client, row.id);
     if (step.kind === 'field' || step.kind === 'doc') {
       return { applicationId: row.id, jobTitle: row.title };
     }
@@ -884,34 +851,21 @@ async function findContinueOtherOffer(
 }
 
 /**
- * Completion arm (`kind: 'complete'`). Sends the `completion` copy --
- * appending the `web_handoff` note (same append pattern Task 9's intro-arm
- * uses, via `localizeDocList`) when `uncollectable` is non-empty -- then
- * scrubs ALL fill keys (`fill_application_id`, `fill_pending`,
- * `fill_cert_more_pending`; Task 8 forward note fixed here: the fill's own
- * cert-loop flag was NOT part of the Task 7 placeholder's scrub) in ONE
- * spread write. `findContinueOtherOffer` is queried BEFORE that write so a
- * found candidate's id can ride in the SAME write as
- * `fill_offer_application_id` -- never a second, separate write. The
- * `continue_other` message (naming the offered job) is queued AFTER that
- * write, as its own reply, only when an offer was found.
+ * Completion arm (`kind: 'complete'`). Order is BINDING:
+ *   1. `markDetailsCompleteIfDone` -- the employer's applicant list and 091's
+ *      hire gate both read `details_completed_at`, so it must be stamped
+ *      BEFORE the worker is told their details went out. The already-loaded
+ *      snapshot is passed in so this costs one UPDATE, not a second synced
+ *      load. The engine refuses to stamp when anything is still outstanding
+ *      (e.g. a certification this lane cannot collect) -- that is its call,
+ *      not this lane's.
+ *   2. the `completion` copy (naming the employer), plus the `web_handoff`
+ *      note with the worker's own stage-2 URL when an uncollectable doc
+ *      (legacy `ssn`) remains.
+ *   3. the offer/scrub write, then the `continue_other` message.
  *
- * FINAL-REVIEW Finding 1a: `fill_relay_override` IS part of the scrub here
- * (reversing an earlier task brief's "leave it be, it self-clears" call) --
- * that reasoning only holds while a fill/offer key is still armed, since
- * `handleFillMessage` step 10 is the flag's ONLY consume site and it is
- * reachable only then. Once this write clears `fill_application_id`, the
- * flag has no consume site left and would survive untouched into the NEXT
- * fill arm, where it swallows the worker's first free-text answer (e.g.
- * their DOB) and relays it into a stale focused employer thread instead.
- *
- * FINAL-REVIEW Finding 3: `fill_offer_application_id` is now ALWAYS written
- * in this patch -- `offer?.applicationId ?? null` -- never only on the
- * `if (offer)` branch as before. A stale key from an EARLIER completion's
- * offer (already declined/ignored, or never cleared by some other path)
- * must not survive a completion that itself found no new offer; otherwise a
- * later stray "1"/"si" could re-arm a long-finished application via
- * `resolveOfferOnlyTurn`.
+ * Scrub set: every fill key, the prompt lane's keys, and the one-shot
+ * applications menu -- see `FILL_SCRUB` for why each one is in there.
  */
 async function sendCompletionPrompt(
   client: PoolClient,
@@ -921,21 +875,25 @@ async function sendCompletionPrompt(
   from: string,
   deps: FillDeps,
   uncollectable: string[],
+  snapshot: RequirementSnapshot | null,
   leadIn?: string,
 ): Promise<void> {
-  let body = fillMessage('completion', ctx.lang);
+  await markDetailsCompleteIfDone(client, applicationId, snapshot);
+
+  const company = await loadJobCompanyName(client, snapshot?.jobId ?? ctx.jobId);
+  let body = fillMessage('completion', ctx.lang, { company });
   if (uncollectable.length > 0) {
-    body += `\n\n${fillMessage('web_handoff', ctx.lang, { doc: localizeDocList(uncollectable, ctx.lang) })}`;
+    body += `\n\n${fillMessage('web_handoff', ctx.lang, {
+      doc: localizeDocList(uncollectable, ctx.lang),
+      url: workerApplicationUrl(ctx.lang, applicationId),
+    })}`;
   }
   if (leadIn) body = `${leadIn}\n\n${body}`;
 
   const offer = await findContinueOtherOffer(client, ctx.workerId, applicationId);
 
   const patch: Record<string, unknown> = {
-    fill_application_id: null,
-    fill_pending: null,
-    fill_cert_more_pending: null,
-    fill_relay_override: null,
+    ...FILL_SCRUB,
     fill_offer_application_id: offer ? offer.applicationId : null,
     fill_last_prompt_at: deps.nowMs(),
   };
@@ -955,23 +913,39 @@ async function sendCompletionPrompt(
   }
 }
 
-// Lifecycle exit reason -> the mapped prompts key (spec §9 / computeNextStep's
-// own header comment documents the DB-enum mapping this mirrors).
-const EXIT_MESSAGE_KEYS: Record<'job_inactive' | 'application_gone' | 'application_closed', FillMessageKey> = {
+// Lifecycle exit reason -> the mapped prompts key. `details_not_requested`
+// (sprint 23) is the one exit that is not terminal: the employer simply has
+// not asked yet, so its copy points the worker at "aplicaciones" instead of
+// telling them the application is over.
+const EXIT_MESSAGE_KEYS: Record<FillExitReason, FillMessageKey> = {
   job_inactive: 'exit_job_inactive',
   application_gone: 'exit_application_gone',
   application_closed: 'exit_application_closed',
+  details_not_requested: 'exit_details_not_requested',
 };
 
 /**
+ * Every state_context key a fill ENTRY or EXIT must clear, in one place.
+ * The prompt-lane keys (`prompt_application_id`, `prompt_last_prompt_at`)
+ * and the one-shot `applications_menu` are in here because the two lanes are
+ * mutually exclusive: arming or leaving the fill must never leave a prompt
+ * turn or a stale numbered menu addressable.
+ */
+const FILL_SCRUB = {
+  fill_application_id: null,
+  fill_pending: null,
+  fill_cert_more_pending: null,
+  fill_relay_override: null,
+  fill_offer_application_id: null,
+  prompt_application_id: null,
+  prompt_last_prompt_at: null,
+  applications_menu: null,
+} as const;
+
+/**
  * Lifecycle-exit arm (`kind: 'exit'`). Sends the reason-mapped copy, then a
- * full scrub + disarm -- the SAME key set the completion arm clears
- * (including, per FINAL-REVIEW Finding 1a/3, `fill_relay_override` and
- * `fill_offer_application_id` -- an exit is exactly as much a "fill exit" as
- * a completion, and a stale override/offer surviving it would poison the
- * NEXT fill arm the same way), but NEVER an offer (task brief requirement 4:
- * no continue-other offer on an exit -- the worker didn't finish anything
- * here, there is nothing to "continue from").
+ * full scrub + disarm -- the SAME key set the completion arm clears, but
+ * NEVER an offer (the worker didn't finish anything here).
  */
 async function sendExitPrompt(
   client: PoolClient,
@@ -979,18 +953,14 @@ async function sendExitPrompt(
   inboundSid: string,
   from: string,
   deps: FillDeps,
-  reason: 'job_inactive' | 'application_gone' | 'application_closed',
+  reason: FillExitReason,
   leadIn?: string,
 ): Promise<void> {
   let body = fillMessage(EXIT_MESSAGE_KEYS[reason], ctx.lang);
   if (leadIn) body = `${leadIn}\n\n${body}`;
 
   await deps.updateStateContext(client, ctx.conversationId, {
-    fill_application_id: null,
-    fill_pending: null,
-    fill_cert_more_pending: null,
-    fill_relay_override: null,
-    fill_offer_application_id: null,
+    ...FILL_SCRUB,
     fill_last_prompt_at: deps.nowMs(),
   });
   await deps.queueReplyText(client, inboundSid, from, body);
@@ -1006,24 +976,26 @@ async function sendNextStepPrompt(
   leadIn?: string,
 ): Promise<void> {
   const applicationId = ctx.stateContext.fill_application_id as string;
-  const nextStep = await computeNextStep(client, applicationId);
+  const { step, snapshot } = await computeFillStep(client, applicationId);
 
-  if (nextStep.kind === 'complete') {
-    return sendCompletionPrompt(client, ctx, applicationId, inboundSid, from, deps, nextStep.uncollectable, leadIn);
+  if (step.kind === 'complete') {
+    return sendCompletionPrompt(
+      client, ctx, applicationId, inboundSid, from, deps, step.uncollectable, snapshot, leadIn,
+    );
   }
-  if (nextStep.kind === 'exit') {
-    return sendExitPrompt(client, ctx, inboundSid, from, deps, nextStep.reason, leadIn);
+  if (step.kind === 'exit') {
+    return sendExitPrompt(client, ctx, inboundSid, from, deps, step.reason, leadIn);
   }
 
   const patch: Record<string, unknown> = { fill_last_prompt_at: deps.nowMs() };
   let body: string;
   let logKey: string;
-  if (nextStep.kind === 'field') {
-    body = fieldQuestion(nextStep.key, ctx.lang);
-    logKey = nextStep.key;
+  if (step.kind === 'field') {
+    body = fieldQuestion(step.key, ctx.lang);
+    logKey = step.key;
   } else {
-    body = docPrompt(nextStep.docType, ctx.lang);
-    logKey = nextStep.docType;
+    body = docPrompt(step.docType, ctx.lang);
+    logKey = step.docType;
   }
 
   if (leadIn) body = `${leadIn}\n\n${body}`;
@@ -1034,12 +1006,10 @@ async function sendNextStepPrompt(
 }
 
 /**
- * Queues the current `computeNextStep` prompt (field question / doc prompt
- * / the Task 11 completion-or-exit copy, scrub, and offer) and stamps
- * `fill_last_prompt_at`. Exposed separately from `handleFillMessage` so
- * `handleJobAction`'s new-accept / already-applied paths (outside this
- * module) and the Task 10 dispatch tail can invoke it directly without
- * synthesizing an inbound message.
+ * Queues the current step's prompt and stamps `fill_last_prompt_at`. Exposed
+ * separately from `handleFillMessage` so `armFill` and the processor's
+ * dispatch tail can invoke it directly without synthesizing an inbound
+ * message.
  */
 export async function promptNextStep(
   client: PoolClient,
@@ -1049,6 +1019,84 @@ export async function promptNextStep(
   deps: FillDeps,
 ): Promise<void> {
   await sendNextStepPrompt(client, ctx, inboundSid, from, deps);
+}
+
+export type ArmFillOutcome =
+  | { armed: true }
+  | { armed: false; reason: FillExitReason };
+
+/**
+ * THE one place stage 2 is armed (sprint 23). Three entry points share it --
+ * the `application:start:app-<uuid>` button on the details-requested
+ * template, a pick from the `aplicaciones` list, and the idle fallback --
+ * and nothing else may arm the lane. In particular the job-accept path no
+ * longer does: at accept time the employer has not asked for anything.
+ *
+ * Order (each step depends on the previous):
+ *   1. gate on the CALLER's already-loaded snapshot. An apply-stage or
+ *      closed application never arms, and the caller sends the matching
+ *      copy from the returned reason.
+ *   2. capture the previously-armed application id (for `switched_job`)
+ *      BEFORE the arm write mutates state_context in place.
+ *   3. `seedAnswersFromDefaults` -- pre-fill from the worker's saved
+ *      answers. B4.0 section 9 moves this from accept time to HERE: there is
+ *      nothing worth pre-filling until the employer asks. Runs BEFORE the
+ *      counts so the intro never advertises a question the seed just
+ *      answered.
+ *   4. the arm write (full scrub + `fill_application_id`).
+ *   5. `switched_job`, then the intro (counts re-derived from a FRESH
+ *      snapshot, post-seed), then the first prompt.
+ */
+export async function armFill(
+  client: PoolClient,
+  ctx: FillContext,
+  snapshot: RequirementSnapshot,
+  inboundSid: string,
+  from: string,
+  deps: FillDeps,
+): Promise<ArmFillOutcome> {
+  const gate = fillStepFor(snapshot);
+  if (gate.kind === 'exit') return { armed: false, reason: gate.reason };
+
+  const applicationId = snapshot.applicationId;
+  const previousApplicationId = ctx.stateContext.fill_application_id as string | undefined;
+
+  await seedAnswersFromDefaults(
+    client,
+    { applicationId, workerId: ctx.workerId },
+    snapshot.requiredFields,
+    snapshot.optionalFields,
+  );
+
+  await deps.updateStateContext(client, ctx.conversationId, {
+    ...FILL_SCRUB,
+    pending_picker: null,
+    fill_application_id: applicationId,
+  });
+  ctx.jobId = snapshot.jobId;
+
+  if (previousApplicationId !== undefined && previousApplicationId !== applicationId) {
+    await deps.queueReplyText(client, inboundSid, from, fillMessage('switched_job', ctx.lang));
+  }
+
+  const { snapshot: seeded } = await computeFillStep(client, applicationId);
+  const counts = fillCountsFor(seeded);
+  const company = await loadJobCompanyName(client, snapshot.jobId);
+  let introBody = fillMessage('intro', ctx.lang, {
+    company,
+    n_fields: String(counts.nFields),
+    n_docs: String(counts.nDocs),
+  });
+  if (counts.uncollectable.length > 0) {
+    introBody += `\n\n${fillMessage('web_handoff', ctx.lang, {
+      doc: localizeDocList(counts.uncollectable, ctx.lang),
+      url: workerApplicationUrl(ctx.lang, applicationId),
+    })}`;
+  }
+  await deps.queueReplyText(client, inboundSid, from, introBody);
+
+  await promptNextStep(client, ctx, inboundSid, from, deps);
+  return { armed: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1254,7 +1302,7 @@ async function handleFillMediaTurn(
   if (ctx.stateContext.fill_cert_more_pending) {
     docType = 'certification_doc';
   } else {
-    const nextStep = await computeNextStep(client, applicationId);
+    const { step: nextStep } = await computeFillStep(client, applicationId);
     if (nextStep.kind === 'field') {
       await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('field_step_media', ctx.lang));
       logStep(nextStep.key, 'field_step_media');
@@ -1756,13 +1804,7 @@ export async function handleFillMessage(
     // first free-text answer and relays it into an old focused thread; a
     // stale offer id lets a later stray "1"/"si" re-arm a long-finished
     // application).
-    await deps.updateStateContext(client, ctx.conversationId, {
-      fill_application_id: null,
-      fill_pending: null,
-      fill_cert_more_pending: null,
-      fill_relay_override: null,
-      fill_offer_application_id: null,
-    });
+    await deps.updateStateContext(client, ctx.conversationId, { ...FILL_SCRUB });
     await deps.queueReplyText(client, msg.messageSid, msg.from, fillMessage('canceled', ctx.lang));
     logStep('cancel', 'canceled');
     return { handled: true };
@@ -1822,7 +1864,7 @@ export async function handleFillMessage(
     return resolveFillPending(client, ctx, msg, deps, pending, applicationId, body);
   }
 
-  const nextStep = await computeNextStep(client, applicationId);
+  const { step: nextStep } = await computeFillStep(client, applicationId);
   if (nextStep.kind === 'doc') {
     // Free text at a doc step (spec §6 item 7): never interpreted as a
     // document -- re-send the doc prompt, cooldown-guarded.

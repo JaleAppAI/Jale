@@ -44,8 +44,18 @@ export type FillMessageKey =
   | 'exit_job_inactive'
   | 'exit_application_gone'
   | 'exit_application_closed'
+  // Sprint 23: the fill lane's stage gate. NOT terminal -- the employer
+  // simply has not asked for details yet.
+  | 'exit_details_not_requested'
   | 'guard_error'
-  | 'reconfirm';
+  | 'reconfirm'
+  // Sprint 23 prompt lane (application-prompts.ts). Kept in THIS module,
+  // not templates.ts, because the prompt lane is part of the application
+  // flow and reuses `fillMessage`'s `{{var}}` substitution.
+  | 'prompt_ask'
+  | 'prompt_text_only'
+  | 'prompt_too_long'
+  | 'prompt_canceled';
 
 interface Bilingual {
   en: string;
@@ -181,9 +191,12 @@ const DOC_PROMPTS: Record<CollectableDocType, Bilingual> = {
 // ── Flow-level messages ──────────────────────────────────────────────────
 
 const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
+  // Sprint 23: this intro is now sent ONLY at the stage-2 arm (armFill), so
+  // it names the employer who asked -- the worker may have several open
+  // applications and needs to know which one this is.
   intro: {
-    en: "We got your interest. To complete your application there are {{n_fields}} questions and {{n_docs}} documents left. Let's start:",
-    es: 'Recibimos tu interes. Para completar tu aplicacion faltan {{n_fields}} preguntas y {{n_docs}} documentos. Empezamos:',
+    en: "{{company}} wants to move forward with your application and needs a few details. There are {{n_fields}} questions and {{n_docs}} documents left. Let's start:",
+    es: '{{company}} quiere avanzar con tu aplicacion y necesita algunos datos. Faltan {{n_fields}} preguntas y {{n_docs}} documentos. Empezamos:',
   },
   confirm_footer: {
     en: '1. Yes\n2. No\nReply with 1 or 2.',
@@ -194,8 +207,8 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
     es: 'Quieres agregar otro?\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
   },
   completion: {
-    en: 'Done, you completed your application. The employer will receive your information.',
-    es: 'Listo, completaste tu aplicacion. El empleador recibira tu informacion.',
+    en: 'Done, we sent your details to {{company}}. We will let you know when there is news.',
+    es: 'Listo, enviamos tus datos a {{company}}. Te avisaremos cuando haya novedades.',
   },
   // spec 6.2: canceling the fill flow does NOT promise the website -- the
   // only way back in is re-accepting the job. Tu-preterite ("cancelaste"),
@@ -204,8 +217,8 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
   // file's own tu convention (review ruling: the binding convention
   // governs over the brief's sample text).
   canceled: {
-    en: 'Done, I canceled the form. To continue, reply "1 accept" to the job or tap the job button again.',
-    es: 'Listo, cancelaste el formulario. Para continuar responde "1 aceptar" al empleo o toca el boton del empleo otra vez.',
+    en: 'Done, I canceled the form. Reply "applications" when you want to continue.',
+    es: 'Listo, cancelaste el formulario. Escribe "aplicaciones" cuando quieras continuar.',
   },
   doc_invalid_type: {
     en: 'That file is not a valid format. Please send a photo in JPG or PNG, or a PDF file.',
@@ -247,8 +260,8 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
   // -- unlike 'canceled', this key legitimately points at the website
   // because it names a specific document the WhatsApp flow cannot collect.
   web_handoff: {
-    en: 'The {{doc}} document can only be completed with the employer or on the website.',
-    es: 'El documento {{doc}} solo se puede completar con el empleador o en el sitio web.',
+    en: 'The {{doc}} document can only be completed with the employer or on the website: {{url}}',
+    es: 'El documento {{doc}} solo se puede completar con el empleador o en el sitio web: {{url}}',
   },
   switched_job: {
     en: "You switched to a different job application. Let's continue with the questions for this new job.",
@@ -277,6 +290,26 @@ const FILL_MESSAGES: Record<FillMessageKey, Bilingual> = {
   reconfirm: {
     en: "Are you still there? Let's confirm your last answer.\n\n1. Yes\n2. No\n\nReply with 1 or 2.",
     es: 'Sigues ahi? Confirmamos tu ultima respuesta.\n\n1. Si\n2. No\n\nResponde con 1 o 2.',
+  },
+  exit_details_not_requested: {
+    en: 'We have not asked you for extra details on this application yet. We will let you know here when the employer asks. Reply "applications" to see your applications.',
+    es: 'Todavia no te pedimos datos adicionales para esta aplicacion. Te avisaremos aqui cuando el empleador los pida. Escribe "aplicaciones" para ver tus solicitudes.',
+  },
+  prompt_ask: {
+    en: 'Question {{i}} of {{n}}: {{text}}',
+    es: 'Pregunta {{i}} de {{n}}: {{text}}',
+  },
+  prompt_text_only: {
+    en: 'For this question we need your answer in text. Type your answer to continue.',
+    es: 'Para esta pregunta necesitamos tu respuesta en texto. Escribe tu respuesta para continuar.',
+  },
+  prompt_too_long: {
+    en: 'Your answer is too long. The limit is 1000 characters. Please write a shorter answer.',
+    es: 'Tu respuesta es muy larga. El limite es 1000 caracteres. Escribe una respuesta mas corta.',
+  },
+  prompt_canceled: {
+    en: 'Done, we will leave the questions for now. Your application is still sent. Reply "applications" when you want to continue.',
+    es: 'Listo, dejamos las preguntas por ahora. Tu aplicacion sigue enviada. Escribe "aplicaciones" cuando quieras continuar.',
   },
 };
 
